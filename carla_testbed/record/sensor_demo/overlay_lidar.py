@@ -48,7 +48,7 @@ def project_lidar_to_image(
         return img, stats
     stats["n_in"] = pts.shape[0]
     if max_range:
-        r = np.linalg.norm(pts[:, :3], axis=1)
+        r = np.sqrt(np.sum(np.square(pts[:, :3]), axis=1, dtype=np.float64))
         pts = pts[r <= max_range]
     if max_points and pts.shape[0] > max_points:
         idx = np.linspace(0, pts.shape[0] - 1, max_points).astype(int)
@@ -61,34 +61,29 @@ def project_lidar_to_image(
     # base->sensor transforms; point_cam = inv(T_base_cam) @ T_base_lidar @ point_lidar
     T_lidar_to_cam = inverse_matrix(T_base_cam) @ T_base_lidar
     pts_cam = T_lidar_to_cam @ pts_h
-    pts_opt = ue_to_optical(pts_cam)
-    zc = pts_opt[2, :]
-    front_mask = zc > 0.1
-    pts_opt = pts_opt[:, front_mask]
-    if pts_opt.shape[1] == 0:
-        if debug:
-            print("[lidar] no points after Z>0.1 filter")
-        return img, stats
-    stats["n_front"] = pts_opt.shape[1]
-    u, v = _project_uv(K, pts_opt)
+    candidates = [
+        ("optical_xyz=[y,-z,x]", ue_to_optical),
+        ("optical_fallback_xyz=[x,-y,z]", lambda pc: np.vstack([pc[0, :], -pc[1, :], pc[2, :]])),
+        ("optical_xyz=[x,y,z]", lambda pc: np.vstack([pc[0, :], pc[1, :], pc[2, :]])),
+    ]
     h, w = img.shape[:2]
-    mask = (u >= 0) & (u < w) & (v >= 0) & (v < h)
-    mapping_used = "optical_xyz=[y,-z,x]"
-    if not np.any(mask):
-        # Fallback mapping to improve observability
-        pts_opt2 = np.vstack([pts_cam[0, :], -pts_cam[1, :], pts_cam[2, :]])
-        u2, v2 = _project_uv(K, pts_opt2)
-        mask2 = (u2 >= 0) & (u2 < w) & (v2 >= 0) & (v2 < h)
-        if np.any(mask2):
-            u, v, mask = u2, v2, mask2
-            mapping_used = "optical_fallback_xyz=[x,-y,z]"
-        else:
-            if debug:
-                print("[lidar] projected points all out of image (both mappings)")
+    for name, fn in candidates:
+        pts_opt = fn(pts_cam)
+        zc = pts_opt[2, :]
+        front_mask = zc > 0.1
+        pts_front = pts_opt[:, front_mask]
+        if pts_front.shape[1] == 0:
+            continue
+        stats["n_front"] = pts_front.shape[1]
+        u, v = _project_uv(K, pts_front)
+        mask = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        if np.any(mask):
+            u = u[mask]
+            v = v[mask]
+            stats["n_inimg"] = u.shape[0]
+            stats["mapping"] = name
+            img[v, u] = color
             return img, stats
-    u = u[mask]
-    v = v[mask]
-    stats["n_inimg"] = u.shape[0]
-    stats["mapping"] = mapping_used
-    img[v, u] = color
+    if debug:
+        print("[lidar] projected points all out of image for all mappings")
     return img, stats
