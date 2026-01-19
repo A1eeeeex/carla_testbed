@@ -50,8 +50,8 @@ def project_lidar_to_image(
         return img, stats
 
     pts_h = np.concatenate([pts[:, :3], np.ones((pts.shape[0], 1), dtype=np.float32)], axis=1).T
-    # base->sensor transforms; lidar->cam = inv(T_base_cam) @ T_base_lidar
-    T_lidar_to_cam = inverse_matrix(T_base_cam) @ T_base_lidar
+    # base->sensor transforms; p_cam = T_base_cam @ inv(T_base_lidar) @ p_lidar
+    T_lidar_to_cam = T_base_cam @ inverse_matrix(T_base_lidar)
     pts_cam = T_lidar_to_cam @ pts_h
     pts_opt = ue_to_optical(pts_cam)
     zc = pts_opt[2, :]
