@@ -95,6 +95,7 @@ def expand_specs(meta_typed: Dict, rig_final: Dict, rig_name: str = "") -> List[
     sensors = []
     meta_sensors = meta_typed.get("sensors", {})
     rig_sensors = {s["id"]: s for s in rig_final.get("sensors", [])}
+    ros2_prefix = "/sim/ego"
     for sid, info in meta_sensors.items():
         rig_info = rig_sensors.get(sid, {})
         enabled = rig_info.get("enabled", True)
@@ -127,27 +128,28 @@ def expand_specs(meta_typed: Dict, rig_final: Dict, rig_name: str = "") -> List[
             "tf_static": True,
             "rig": rig_name,
         }
+        sensor_path = sid.replace("_", "/")
         if sensor_type == "camera":
             intr = derive_camera_intrinsics(attributes)
             entry["camera"] = {"intrinsics": intr, "distortion": {"model": "none", "coeffs": []}}
             entry["data_format"] = {"encoding": "rgb8", "compression": None}
-            entry["io"]["ros2"] = {"topic": f"/{sid}/image", "msg_type": "sensor_msgs/msg/Image", "qos": "SENSOR_DATA"}
+            entry["io"]["ros2"] = {"topic": f"{ros2_prefix}/{sensor_path}/image_raw", "msg_type": "sensor_msgs/msg/Image", "qos": "SENSOR_DATA"}
             entry["io"]["cyber"] = {"channel": f"/{sid}", "proto": "apollo.drivers.Image", "mapping_required": True}
         elif sensor_type == "lidar":
             entry["data_format"] = {"encoding": "pointcloud_xyzirt", "compression": None}
-            entry["io"]["ros2"] = {"topic": f"/{sid}/points", "msg_type": "sensor_msgs/msg/PointCloud2", "qos": "SENSOR_DATA"}
+            entry["io"]["ros2"] = {"topic": f"{ros2_prefix}/{sensor_path}/points", "msg_type": "sensor_msgs/msg/PointCloud2", "qos": "SENSOR_DATA"}
             entry["io"]["cyber"] = {"channel": f"/{sid}", "proto": "apollo.drivers.PointCloud", "mapping_required": True}
         elif sensor_type == "radar":
             entry["data_format"] = {"encoding": "radar_returns", "compression": None}
-            entry["io"]["ros2"] = {"topic": f"/{sid}/radar", "msg_type": "sensor_msgs/msg/PointCloud2", "qos": "SENSOR_DATA"}
+            entry["io"]["ros2"] = {"topic": f"{ros2_prefix}/{sensor_path}/radar", "msg_type": "sensor_msgs/msg/PointCloud2", "qos": "SENSOR_DATA"}
             entry["io"]["cyber"] = {"channel": f"/{sid}", "proto": "apollo.drivers.ContiRadar", "mapping_required": True}
         elif sensor_type == "imu":
             entry["data_format"] = {"encoding": "imu", "compression": None}
-            entry["io"]["ros2"] = {"topic": f"/{sid}", "msg_type": "sensor_msgs/msg/Imu", "qos": "SENSOR_DATA"}
+            entry["io"]["ros2"] = {"topic": f"{ros2_prefix}/{sensor_path}", "msg_type": "sensor_msgs/msg/Imu", "qos": "SENSOR_DATA"}
             entry["io"]["cyber"] = {"channel": f"/{sid}", "proto": "apollo.drivers.Imu", "mapping_required": True}
         elif sensor_type == "gnss":
             entry["data_format"] = {"encoding": "navsatfix", "compression": None}
-            entry["io"]["ros2"] = {"topic": f"/{sid}", "msg_type": "sensor_msgs/msg/NavSatFix", "qos": "SENSOR_DATA"}
+            entry["io"]["ros2"] = {"topic": f"{ros2_prefix}/{sensor_path}", "msg_type": "sensor_msgs/msg/NavSatFix", "qos": "SENSOR_DATA"}
             entry["io"]["cyber"] = {"channel": f"/{sid}", "proto": "apollo.drivers.GnssBestPose", "mapping_required": True}
         sensors.append(entry)
     return sensors

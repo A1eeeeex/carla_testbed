@@ -9,7 +9,9 @@ import yaml
 from carla_testbed.io.ros2_msg_builders import (
     build_image_msg,
     build_imu_msg,
+    build_event_msg,
     build_navsatfix_msg,
+    build_pointcloud2_msg,
     build_tf_static_msgs,
     to_ros_time,
 )
@@ -35,10 +37,12 @@ class ROS2BridgeAdapter:
         self.sensors: Dict[str, Dict[str, Any]] = {}
         self.calibration: Dict[str, Any] = {}
         self.sensor_publishers: Dict[str, Any] = {}
+        self.event_publishers: Dict[str, Any] = {}
         self.clock_pub = None
         self.tf_static_pub = None
         self._tf_sent = False
         self._warned_missing_contract = set()
+        self._warned_radar = set()
 
     def _load_rclpy(self):
         if self._rclpy is None:
@@ -143,6 +147,17 @@ class ROS2BridgeAdapter:
                 "type": spec.get("type"),
                 "frame_id": spec.get("frame_id", sensor_id),
             }
+        self._create_event_publishers()
+
+    def _create_event_publishers(self):
+        from rclpy.qos import QoSProfile, QoSReliabilityPolicy
+        from std_msgs.msg import String
+
+        qos = QoSProfile(depth=50, reliability=QoSReliabilityPolicy.RELIABLE)
+        self.event_publishers = {
+            "collision": self.node.create_publisher(String, "/sim/ego/events/collision", qos),
+            "lane_invasion": self.node.create_publisher(String, "/sim/ego/events/lane_invasion", qos),
+        }
 
     def start(self):
         self._load_rclpy()
@@ -195,15 +210,35 @@ class ROS2BridgeAdapter:
                 msg = build_imu_msg(sample, stamp, frame_id)
             elif sample.sensor_type == "gnss":
                 msg = build_navsatfix_msg(sample, stamp, frame_id)
+            elif sample.sensor_type == "lidar":
+                msg = build_pointcloud2_msg(sample, stamp, frame_id)
             elif sample.sensor_type == "radar":
-                # placeholder; mapping not implemented
+                if sid not in self._warned_radar:
+                    print(f"[ROS2Bridge] radar mapping not implemented for {sid}, skipping publication")
+                    self._warned_radar.add(sid)
                 continue
             if msg is not None:
                 info["publisher"].publish(msg)
 
     def publish_truth(self, truth_packet):
-        # Placeholder: event/ego publication added in later commits
-        return
+        if self.node is None or truth_packet is None:
+            return
+        if not getattr(truth_packet, "events", None):
+            return
+        stamp = to_ros_time(truth_packet.timestamp)
+        for evt in truth_packet.events:
+            key = None
+            if "collision" in evt.event_type.lower():
+                key = "collision"
+            elif "lane" in evt.event_type.lower():
+                key = "lane_invasion"
+            if key is None:
+                continue
+            pub = self.event_publishers.get(key)
+            if not pub:
+                continue
+            msg = build_event_msg(evt, stamp, frame_id="base_link")
+            pub.publish(msg)
 
     def poll_algo_output(self):
         return None

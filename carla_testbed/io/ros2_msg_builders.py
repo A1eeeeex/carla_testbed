@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 import math
 from typing import Any, Dict, Iterable, List, Optional
 
 import numpy as np
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import TransformStamped
-from sensor_msgs.msg import Image, Imu, NavSatFix, NavSatStatus
+from sensor_msgs.msg import Image, Imu, NavSatFix, NavSatStatus, PointCloud2, PointField
+from std_msgs.msg import String
 from tf2_msgs.msg import TFMessage
 
 
@@ -138,9 +140,40 @@ def build_navsatfix_msg(sample, stamp: Time, frame_id: str, covariance: Optional
 
 
 # Placeholders to be filled when corresponding publishers are implemented
-def build_pointcloud2_msg(*args, **kwargs):
-    raise NotImplementedError("PointCloud2 bridge not implemented yet.")
+def build_pointcloud2_msg(sample, stamp: Time, frame_id: str, fields: Optional[List[PointField]] = None) -> PointCloud2:
+    payload = sample.payload or {}
+    pts = payload.get("points")
+    if pts is None:
+        raise ValueError("Lidar sample missing points payload")
+    arr = np.asarray(pts, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] < 4:
+        raise ValueError(f"Unexpected point shape {arr.shape}")
+    arr = np.ascontiguousarray(arr[:, :4], dtype=np.float32)
+    msg = PointCloud2()
+    msg.header.stamp = stamp
+    msg.header.frame_id = frame_id
+    msg.height = 1
+    msg.width = arr.shape[0]
+    msg.is_bigendian = False
+    msg.is_dense = False
+    msg.point_step = 16
+    msg.row_step = msg.point_step * msg.width
+    msg.fields = fields or [
+        PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name="intensity", offset=12, datatype=PointField.FLOAT32, count=1),
+    ]
+    msg.data = arr.tobytes()
+    return msg
 
 
-def build_event_msg(*args, **kwargs):
-    raise NotImplementedError("Event bridge not implemented yet.")
+def build_event_msg(event, stamp: Time, frame_id: str) -> String:
+    body = {
+        "event_type": getattr(event, "event_type", ""),
+        "frame": getattr(event, "frame_id", None),
+        "timestamp": getattr(event, "timestamp", None),
+        "frame_id": frame_id,
+        "meta": getattr(event, "meta", {}) or {},
+    }
+    return String(data=json.dumps(body))

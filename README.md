@@ -123,9 +123,17 @@ carla_testbed/
     - `--rig-override`：点路径覆盖，可多次使用（如 camera_front.attributes.image_size_x=1024）
   - `--enable-fail-capture`：失败窗口 HUD 录制（run_dir/fail_window）
   - `--record-demo`：录制双相机 png 序列（run_dir/demo/raw_*），若安装 ffmpeg 同时生成 mp4
-  - `--make-hud`：在 --record-demo 时基于 timeseries.csv 生成 HUD overlay mp4（依赖 pillow+ffmpeg）
-  - 失败策略（在 `carla_testbed/config/defaults.py` 配置）：`fail_strategy`=`fail_fast` 或 `log_and_continue`（后者继续 `post_fail_steps` 再退出）
+- `--make-hud`：在 --record-demo 时基于 timeseries.csv 生成 HUD overlay mp4（依赖 pillow+ffmpeg）
+- 失败策略（在 `carla_testbed/config/defaults.py` 配置）：`fail_strategy`=`fail_fast` 或 `log_and_continue`（后者继续 `post_fail_steps` 再退出）
 - 产物默认写入：`runs/followstop_<timestamp>/`
+
+ROS2 在线桥接（runtime bridge）
+- 需先 `source /opt/ros/<distro>/setup.bash`，订阅端记得 `use_sim_time=true`（如 `ros2 param set /rviz2 use_sim_time true`）。
+- 运行：`python carla_testbed/examples/run_followstop.py --rig fullstack --enable-ros2-bridge [--ros2-contract run_dir/config/io_contract_ros2.yaml]`。
+- 主题约定（来自 contract）：`/clock`、`/tf_static`（transient_local）、`/sim/ego/<sensor_id_用/分段>/image_raw|points|imu|gnss`，事件 `/sim/ego/events/collision`、`/sim/ego/events/lane_invasion`（std_msgs/String，JSON payload）；雷达暂未映射，会在日志提示。
+- QoS：相机/激光雷达最佳努力（depth 5）、IMU best_effort depth 50、GNSS best_effort depth 10、事件 reliable depth 50、tf_static transient_local。
+- 录包（桥接只负责发布，录制请用 ros2 bag/cyber_recorder）：`ros2 bag record /clock /tf_static /sim/ego/camera/front/image_raw /sim/ego/lidar/top/points /sim/ego/imu /sim/ego/gnss`
+- 验证：`ros2 topic list | grep /sim/ego`、`ros2 topic echo /clock`、`ros2 topic hz /sim/ego/imu`、RViz2 订阅 Image / PointCloud2。
 
 高级选项（尚未完全模块化）：
 - 传感器硬同步、HUD/视频录制、完整评测/KPI 仍在旧脚本 `code/followstop/test_followstop_policy.py` 与 `step1_record_demo.py` 中，未移植到新框架；如需这些功能，暂用旧脚本运行。
