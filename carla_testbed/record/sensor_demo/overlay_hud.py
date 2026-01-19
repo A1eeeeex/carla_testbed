@@ -12,7 +12,7 @@ def _fmt_vec(vec):
     return f"x={vec.get('x', 0):.2f} y={vec.get('y', 0):.2f} z={vec.get('z', 0):.2f}"
 
 
-def draw_hud(img, frame_id=None, timestamp=None, imu=None, gnss=None, events=None):
+def draw_hud(img, frame_id=None, timestamp=None, imu=None, gnss=None, events=None, stats=None):
     """Lightweight HUD overlay: frame info + optional IMU/GNSS + events."""
     if cv2 is None:
         return img
@@ -56,6 +56,46 @@ def draw_hud(img, frame_id=None, timestamp=None, imu=None, gnss=None, events=Non
             cv2.LINE_AA,
         )
         y += 20
+    if stats:
+        lidar_stat = stats.get("lidar")
+        radar_stat = stats.get("radar")
+        missing = stats.get("missing")
+        if lidar_stat:
+            cv2.putText(
+                img,
+                f"LiDAR {lidar_stat}",
+                (pad + 12, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 255, 0),
+                1,
+                cv2.LINE_AA,
+            )
+            y += 20
+        if radar_stat:
+            cv2.putText(
+                img,
+                f"Radar {radar_stat}",
+                (pad + 12, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 200, 0),
+                1,
+                cv2.LINE_AA,
+            )
+            y += 20
+        if missing:
+            cv2.putText(
+                img,
+                f"Missing: {','.join(missing)}",
+                (pad + 12, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (200, 150, 150),
+                1,
+                cv2.LINE_AA,
+            )
+            y += 18
     if events:
         for evt in events:
             cv2.putText(

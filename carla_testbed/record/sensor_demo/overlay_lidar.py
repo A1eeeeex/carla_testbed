@@ -10,38 +10,70 @@ except ImportError:  # pragma: no cover
 from carla_testbed.record.sensor_demo.geometry import inverse_matrix
 
 
+def ue_to_optical(points_cam: np.ndarray) -> np.ndarray:
+    """
+    UE/vehicle frame (x forward, y right, z up) -> camera optical (x right, y down, z forward).
+    """
+    x = points_cam[1, :]
+    y = -points_cam[2, :]
+    z = points_cam[0, :]
+    return np.vstack([x, y, z])
+
+
 def project_lidar_to_image(
     img: np.ndarray,
     points: np.ndarray,
-    T_cam: np.ndarray,
-    T_lidar: np.ndarray,
+    T_base_cam: np.ndarray,
+    T_base_lidar: np.ndarray,
     K: np.ndarray,
     color=(0, 255, 0),
-    max_points: int = 10000,
+    max_points: int = 8000,
+    max_range: float = None,
+    debug: bool = False,
 ):
+    """Project lidar points (base->lidar) onto camera (base->cam) optical frame."""
+    stats = {"n_in": 0, "n_sampled": 0, "n_front": 0, "n_inimg": 0}
     if cv2 is None or img is None:
-        return img
+        return img, stats
     pts = np.asarray(points, dtype=np.float32)
     if pts.ndim != 2 or pts.shape[1] < 3:
-        return img
+        return img, stats
+    stats["n_in"] = pts.shape[0]
+    if max_range:
+        r = np.linalg.norm(pts[:, :3], axis=1)
+        pts = pts[r <= max_range]
     if max_points and pts.shape[0] > max_points:
         idx = np.linspace(0, pts.shape[0] - 1, max_points).astype(int)
         pts = pts[idx]
+    stats["n_sampled"] = pts.shape[0]
+    if pts.size == 0:
+        return img, stats
+
     pts_h = np.concatenate([pts[:, :3], np.ones((pts.shape[0], 1), dtype=np.float32)], axis=1).T
-    # Transform lidar->cam (both expressed relative to base_link)
-    T_lidar_to_cam = T_cam @ inverse_matrix(T_lidar)
+    # base->sensor transforms; lidar->cam = inv(T_base_cam) @ T_base_lidar
+    T_lidar_to_cam = inverse_matrix(T_base_cam) @ T_base_lidar
     pts_cam = T_lidar_to_cam @ pts_h
-    zs = pts_cam[2, :]
-    valid = zs > 0.1
-    pts_cam = pts_cam[:, valid]
-    if pts_cam.shape[1] == 0:
-        return img
-    proj = K @ pts_cam[:3, :]
+    pts_opt = ue_to_optical(pts_cam)
+    zc = pts_opt[2, :]
+    front_mask = zc > 0.1
+    pts_opt = pts_opt[:, front_mask]
+    if pts_opt.shape[1] == 0:
+        if debug:
+            print("[lidar] no points after Z>0.1 filter")
+        return img, stats
+    stats["n_front"] = pts_opt.shape[1]
+    proj = K @ pts_opt
     proj[:2, :] /= proj[2, :]
-    uvs = proj[:2, :].T
+    u = proj[0, :].astype(np.int32)
+    v = proj[1, :].astype(np.int32)
     h, w = img.shape[:2]
-    for uv in uvs:
-        u, v = int(uv[0]), int(uv[1])
-        if 0 <= u < w and 0 <= v < h:
-            cv2.circle(img, (u, v), 1, color, thickness=-1)
-    return img
+    mask = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    if not np.any(mask):
+        if debug:
+            print("[lidar] projected points all out of image")
+        return img, stats
+    u = u[mask]
+    v = v[mask]
+    stats["n_inimg"] = u.shape[0]
+    img[v, u] = color
+    return img, stats

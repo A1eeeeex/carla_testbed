@@ -168,6 +168,7 @@ class SensorDemoRecorder:
             fid = item.get("frame_id")
             per_frame.setdefault(fid, []).append(item)
 
+        warned_zero = False
         for fid in sorted(per_frame.keys()):
             entries = per_frame[fid]
             img_path = None
@@ -192,6 +193,7 @@ class SensorDemoRecorder:
                         gnss_data = json.loads(path.read_text())
                     except Exception:
                         gnss_data = None
+            stats = {"lidar": None, "radar": "sector_only", "missing": []}
             if img_path and img_path.exists():
                 frame = cv2.imread(str(img_path))
             else:
@@ -204,7 +206,7 @@ class SensorDemoRecorder:
                         import open3d as o3d
                         pc = o3d.io.read_point_cloud(str(lidar_path))
                         pts = np.asarray(pc.points)
-                        if "intensity" in pc.point["intensity"]:
+                        if hasattr(pc, "point") and "intensity" in pc.point:
                             inten = np.asarray(pc.point["intensity"]).reshape(-1, 1)
                             pts = np.hstack([pts, inten])
                     except Exception:
@@ -217,9 +219,28 @@ class SensorDemoRecorder:
                     else:
                         pts = None
                 if pts is not None and pts.size > 0:
-                    frame = project_lidar_to_image(frame, pts, T_cam, T_lidar, K, max_points=self.opts.max_lidar_points)
+                    frame, st = project_lidar_to_image(
+                        frame,
+                        pts,
+                        T_base_cam=T_cam,
+                        T_base_lidar=T_lidar,
+                        K=K,
+                        max_points=self.opts.max_lidar_points,
+                        max_range=80.0,
+                        debug=False,
+                    )
+                    stats["lidar"] = f"{st.get('n_inimg',0)}/{st.get('n_sampled',0)}"
+                    if st.get("n_inimg", 0) == 0 and not warned_zero:
+                        print("[sensor_demo] LiDAR projected 0 points; check calibration/transform or range filter.")
+                        warned_zero = True
+                else:
+                    stats["lidar"] = "no_points"
+            else:
+                stats["lidar"] = "skipped"
             if not self.opts.skip_radar:
                 frame = draw_radar_sector(frame)
+            else:
+                stats["radar"] = "disabled"
             if not self.opts.skip_hud:
                 evts = events_by_frame.get(fid, [])
                 ts_val = None
@@ -227,7 +248,7 @@ class SensorDemoRecorder:
                     ts_val = imu_data.get("timestamp")
                 elif gnss_data and "timestamp" in gnss_data:
                     ts_val = gnss_data.get("timestamp")
-                frame = draw_hud(frame, frame_id=fid, timestamp=ts_val, imu=imu_data, gnss=gnss_data, events=evts)
+                frame = draw_hud(frame, frame_id=fid, timestamp=ts_val, imu=imu_data, gnss=gnss_data, events=evts, stats=stats)
             if self.opts.keep_frames:
                 frames_dir = self.video_dir / "frames"
                 frames_dir.mkdir(parents=True, exist_ok=True)
