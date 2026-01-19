@@ -1,0 +1,44 @@
+name: apollo_like
+version: 1
+sensors:
+  - id: camera_front
+    type: camera
+    blueprint: sensor.camera.rgb
+    enabled: true
+    sensor_tick: 0.05
+    transform: {x: 1.50, y: 0.00, z: 1.60, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    attributes:
+      image_size_x: 1920
+      image_size_y: 1080
+      fov: 90
+  - id: lidar_top
+    type: lidar
+    blueprint: sensor.lidar.ray_cast
+    enabled: true
+    sensor_tick: 0.05
+    transform: {x: 0.00, y: 0.00, z: 1.80, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    attributes:
+      range: 80.0
+      rotation_frequency: 20.0
+      channels: 64
+      points_per_second: 1300000
+      upper_fov: 10.0
+      lower_fov: -30.0
+      horizontal_fov: 360.0
+  - id: imu
+    type: imu
+    blueprint: sensor.other.imu
+    enabled: true
+    sensor_tick: 0.01
+    transform: {x: 0.00, y: 0.00, z: 0.00, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    attributes: {}
+  - id: gnss
+    type: gnss
+    blueprint: sensor.other.gnss
+    enabled: true
+    sensor_tick: 0.10
+    transform: {x: 0.00, y: 0.00, z: 0.00, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    attributes: {}
+events:
+  collision: true
+  lane_invasion: true

@@ -1,0 +1,26 @@
+你要为本仓库更新README.md，读者是第一次接触该项目的工程师/算法同学。README 不是宣传文案，而是“使用手册 + 架构导览 + 回归测试说明”，必须可按步骤跑通。请遵循以下要求：
+
+【强制要求：从代码与目录推导，不要臆测】
+1) 只能写仓库里真实存在的命令、脚本、文件路径与参数；如果某个能力尚未实现，要明确标注“Not implemented yet”并给出当前替代方案/占位模块位置。
+2) 必须引用实际目录结构（tree -L 2 或手写），并解释每个顶层模块负责什么，以及数据在模块间如何流动（FramePacket/Truth/Control/KPI）。
+3) README 必须包含一个“最小可运行示例（MVP）”，读者复制命令即可跑通并产出 runs/<...>/results/summary.json。
+4) README 必须包含“产物目录说明”：run_dir 下每个文件是什么、怎么用于调试与回归。
+5) README 必须包含“常见问题/排错”：同步 tick、CARLA settings 恢复、传感器缺帧、坐标系不一致、性能（RTF）等。
+6) README 必须包含“如何扩展”：新增场景、新增传感器、新增 KPI、新增 I/O adapter（ROS2/CyberRT）的具体入口文件与接口。
+7) 文风务必简洁、命令可复制、参数解释清楚。
+
+【内容结构（必须按此大纲输出）】
+- 项目简介：一句话目标（算法测试而非训练），支持 ROS2/CyberRT，占位状态说明
+- 快速开始（5~10分钟跑通）：环境要求、启动 CARLA、运行一个 scenario、查看结果
+- 核心概念：FramePacket / GroundTruthPacket / ControlCommand / Evaluator / Recorder / Harness 的关系图（ASCII 图即可）
+- 目录结构导览：逐模块说明（runner/scenarios/sensors/sync/oracle/control/record/eval/io/storage）
+- 运行方式详解：examples 下脚本、关键参数、fail_strategy/post_fail_steps、enable_sensors/record_demo 等
+- 输出与回归：runs/ 目录布局、summary.json 字段解释、baseline 对比（如果已实现）
+- 扩展指南：如何新增一个 Scenario、SensorDriver、Evaluator、TransportAdapter（给出最小代码片段）
+- 常见问题与排错：列出至少 8 条（同步、settings、缺帧、ffmpeg、权限、性能、坐标系、Apollo 接口）
+- Roadmap：下一步计划（ROS2/CyberRT 接入、更多 KPI、fault injection 等）
+
+【验收】
+- README 中的命令必须在本仓库现有脚本里找到对应文件
+- 不允许写“TODO later”一笔带过；必须告诉读者在哪里实现/如何替代
+现在开始：先扫描仓库文件，确认 examples/、carla_testbed/、runs/ 相关实现，再按大纲写 README.md。

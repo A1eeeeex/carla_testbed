@@ -1,0 +1,16 @@
+name: minimal
+version: 1
+sensors:
+  - id: camera_front
+    type: camera
+    blueprint: sensor.camera.rgb
+    enabled: true
+    sensor_tick: 0.05
+    transform: {x: 1.50, y: 0.00, z: 1.60, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    attributes:
+      image_size_x: 1280
+      image_size_y: 720
+      fov: 90
+events:
+  collision: true
+  lane_invasion: true
