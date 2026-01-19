@@ -245,6 +245,7 @@ class SensorDemoRecorder:
                     path = Path(e.get("path"))
                     if sensors_meta.get(sid, {}).get("type") == "radar":
                         radar_path = path
+                        radar_id = sid
                         break
                 if radar_path and radar_path.exists():
                     raw = radar_path.read_bytes()
