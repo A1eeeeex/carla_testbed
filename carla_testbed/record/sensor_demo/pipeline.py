@@ -257,8 +257,8 @@ class SensorDemoRecorder:
                             from carla_testbed.record.sensor_demo.overlay_radar import project_radar_to_image
                             frame, rst = project_radar_to_image(frame, dets, T_base_cam=T_cam, T_base_radar=mats.get(radar_id, np.eye(4)), K=K)
                         except Exception as exc:
-                            print(f\"[sensor_demo] radar projection failed: {exc}\")
-                    stats["radar"] = f\"{rst.get('n_inimg',0)}/{rst.get('n_det',0)}\"
+                            print(f"[sensor_demo] radar projection failed: {exc}")
+                    stats["radar"] = f"{rst.get('n_inimg',0)}/{rst.get('n_det',0)}"
                 else:
                     frame = draw_radar_sector(frame)
                     stats["radar"] = "sector_only"
