@@ -237,14 +237,14 @@ class SensorDemoRecorder:
                     stats["lidar"] = "no_points"
             else:
                 stats["lidar"] = "skipped"
-            radar_path = None
-            for e in entries:
-                sid = e.get("sensor_id")
-                path = Path(e.get("path"))
-                if sensors_meta.get(sid, {}).get("type") == "radar":
-                    radar_path = path
-                    break
             if not self.opts.skip_radar:
+                radar_path = None
+                for e in entries:
+                    sid = e.get("sensor_id")
+                    path = Path(e.get("path"))
+                    if sensors_meta.get(sid, {}).get("type") == "radar":
+                        radar_path = path
+                        break
                 if radar_path and radar_path.exists():
                     raw = radar_path.read_bytes()
                     n = len(raw) // 16
@@ -253,8 +253,12 @@ class SensorDemoRecorder:
                         dets = np.frombuffer(raw[: n * 16], dtype=np.float32).reshape((-1, 4))
                     frame, rst = draw_radar_sector(frame), {"n_det": 0, "n_inimg": 0}
                     if dets is not None and dets.size > 0:
-                        frame, rst = project_radar_to_image(frame, dets, T_base_cam=T_cam, T_base_radar=mats.get(radar_id, np.eye(4)), K=K)
-                    stats["radar"] = f"{rst.get('n_inimg',0)}/{rst.get('n_det',0)}"
+                        try:
+                            from carla_testbed.record.sensor_demo.overlay_radar import project_radar_to_image
+                            frame, rst = project_radar_to_image(frame, dets, T_base_cam=T_cam, T_base_radar=mats.get(radar_id, np.eye(4)), K=K)
+                        except Exception as exc:
+                            print(f\"[sensor_demo] radar projection failed: {exc}\")
+                    stats["radar"] = f\"{rst.get('n_inimg',0)}/{rst.get('n_det',0)}\"
                 else:
                     frame = draw_radar_sector(frame)
                     stats["radar"] = "sector_only"
