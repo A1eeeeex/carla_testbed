@@ -30,7 +30,14 @@ class SensorDemoRecorder:
         self.recorder_file = self.run_dir / "replay" / "recording.log"
         self.frames_index = self.run_dir / "frames.jsonl"
         self.sensors_dir = self.run_dir / "sensors"
-        self.video_dir = Path(opts.output_dir or (self.run_dir / "video"))
+        base = opts.output_dir
+        if base is None:
+            base = self.run_dir / "video"
+        else:
+            base = Path(base)
+            if not base.is_absolute():
+                base = self.run_dir / base
+        self.video_dir = base
         self.out_mp4 = self.video_dir / "demo.mp4"
         self._client = None
 
@@ -204,8 +211,13 @@ class SensorDemoRecorder:
                         pts = None
                 if pts is None:
                     raw = lidar_path.read_bytes()
-                    pts = np.frombuffer(raw, dtype=np.float32).reshape((-1, 4))
-                frame = project_lidar_to_image(frame, pts, T_cam, T_lidar, K, max_points=self.opts.max_lidar_points)
+                    n = len(raw) // 16
+                    if n > 0:
+                        pts = np.frombuffer(raw[: n * 16], dtype=np.float32).reshape((-1, 4))
+                    else:
+                        pts = None
+                if pts is not None and pts.size > 0:
+                    frame = project_lidar_to_image(frame, pts, T_cam, T_lidar, K, max_points=self.opts.max_lidar_points)
             if not self.opts.skip_radar:
                 frame = draw_radar_sector(frame)
             if not self.opts.skip_hud:

@@ -13,7 +13,14 @@ class HudRenderer:
         self.run_dir = Path(run_dir)
         self.opts = opts
         self.dt = dt
-        self.base_dir = Path(opts.output_dir or (self.run_dir / "video")) / "dual_cam"
+        base = opts.output_dir
+        if base is None:
+            base = self.run_dir / "video"
+        else:
+            base = Path(base)
+            if not base.is_absolute():
+                base = self.run_dir / base
+        self.base_dir = base / "dual_cam"
 
     def start(self, world=None, ego=None, client=None):
         # No capture required

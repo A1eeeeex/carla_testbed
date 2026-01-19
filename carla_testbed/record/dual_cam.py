@@ -15,7 +15,14 @@ class DualCamRecorder:
         self.run_dir = Path(run_dir)
         self.opts = opts
         self.dt = dt
-        self.out_dir = Path(opts.output_dir or (self.run_dir / "video")) / "dual_cam"
+        base = opts.output_dir
+        if base is None:
+            base = self.run_dir / "video"
+        else:
+            base = Path(base)
+            if not base.is_absolute():
+                base = self.run_dir / base
+        self.out_dir = base / "dual_cam"
         self.recorder: Optional[DemoRecorder] = None
 
     def start(self, world: carla.World, ego: carla.Vehicle, client=None):
