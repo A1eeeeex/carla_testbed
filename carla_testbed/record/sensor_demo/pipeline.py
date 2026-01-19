@@ -222,7 +222,12 @@ class SensorDemoRecorder:
                 frame = draw_radar_sector(frame)
             if not self.opts.skip_hud:
                 evts = events_by_frame.get(fid, [])
-                frame = draw_hud(frame, imu=imu_data, gnss=gnss_data, events=evts)
+                ts_val = None
+                if imu_data and "timestamp" in imu_data:
+                    ts_val = imu_data.get("timestamp")
+                elif gnss_data and "timestamp" in gnss_data:
+                    ts_val = gnss_data.get("timestamp")
+                frame = draw_hud(frame, frame_id=fid, timestamp=ts_val, imu=imu_data, gnss=gnss_data, events=evts)
             if self.opts.keep_frames:
                 frames_dir = self.video_dir / "frames"
                 frames_dir.mkdir(parents=True, exist_ok=True)

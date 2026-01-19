@@ -6,48 +6,67 @@ except ImportError:  # pragma: no cover
     cv2 = None
 
 
-def draw_hud(img, imu=None, gnss=None, events=None):
+def _fmt_vec(vec):
+    if not isinstance(vec, dict):
+        return ""
+    return f"x={vec.get('x', 0):.2f} y={vec.get('y', 0):.2f} z={vec.get('z', 0):.2f}"
+
+
+def draw_hud(img, frame_id=None, timestamp=None, imu=None, gnss=None, events=None):
+    """Lightweight HUD overlay: frame info + optional IMU/GNSS + events."""
     if cv2 is None:
         return img
     h, w = img.shape[:2]
-    y = 30
-    cv2.putText(img, "sensor_demo", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
-    y += 24
+    pad = 14
+    y = pad + 10
+    bar_h = 120
+    cv2.rectangle(img, (pad, pad), (w - pad, pad + bar_h), (0, 0, 0), thickness=-1)
+    cv2.rectangle(img, (pad, pad), (w - pad, pad + bar_h), (80, 80, 80), thickness=1)
+    cv2.putText(img, "sensor_demo", (pad + 12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+    y += 26
+    header = []
+    if frame_id is not None:
+        header.append(f"frame {frame_id}")
+    if timestamp is not None:
+        header.append(f"t={timestamp:.3f}s")
+    if header:
+        cv2.putText(img, " | ".join(header), (pad + 12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA)
+        y += 22
     if imu:
         cv2.putText(
             img,
-            f"IMU ang: {imu.get('gyroscope', {})} lin: {imu.get('accelerometer', {})}",
-            (20, y),
+            f"IMU ang {_fmt_vec(imu.get('gyroscope', {}))} lin {_fmt_vec(imu.get('accelerometer', {}))}",
+            (pad + 12, y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
+            0.55,
             (200, 200, 255),
             1,
             cv2.LINE_AA,
         )
-        y += 22
+        y += 20
     if gnss:
         cv2.putText(
             img,
             f"GNSS lat {gnss.get('latitude', 0):.6f} lon {gnss.get('longitude', 0):.6f} alt {gnss.get('altitude', 0):.1f}",
-            (20, y),
+            (pad + 12, y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
+            0.55,
             (200, 255, 200),
             1,
             cv2.LINE_AA,
         )
-        y += 22
+        y += 20
     if events:
         for evt in events:
             cv2.putText(
                 img,
                 f"EVENT: {evt}",
-                (20, y),
+                (pad + 12, y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 (0, 0, 255),
                 2,
                 cv2.LINE_AA,
             )
-            y += 24
+            y += 22
     return img
