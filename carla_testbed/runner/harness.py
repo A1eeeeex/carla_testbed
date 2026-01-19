@@ -286,7 +286,7 @@ class TestHarness:
                 if adapter:
                     samples = {}
                     if rig:
-                        captured = rig.capture(frame_id)
+                        captured = rig.capture(frame_id, timestamp=timestamp, return_samples=True)
                         if captured:
                             samples = captured
                     frame_packet = FramePacket(
@@ -301,7 +301,7 @@ class TestHarness:
                     adapter.spin_once(0.0)
                 else:
                     if rig:
-                        rig.capture(frame_id)
+                        rig.capture(frame_id, timestamp=timestamp, return_samples=False)
 
                 last_debug = cmd.meta.get("last_debug", {}) if cmd.meta else {}
                 row = {

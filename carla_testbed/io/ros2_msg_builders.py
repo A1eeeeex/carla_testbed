@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, List, Optional
 
+import numpy as np
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import TransformStamped
+from sensor_msgs.msg import Image, Imu, NavSatFix, NavSatStatus
 from tf2_msgs.msg import TFMessage
 
 
@@ -55,21 +57,89 @@ def build_tf_static_msgs(calibration: Dict[str, Any]) -> TFMessage:
     return TFMessage(transforms=transforms)
 
 
-# Placeholders for runtime builders; implemented in subsequent commits
-def build_image_msg(*args, **kwargs):
-    raise NotImplementedError("Image bridge not implemented yet.")
+def build_image_msg(sample, stamp: Time, frame_id: str) -> Image:
+    payload = sample.payload or {}
+    bgra = payload.get("bgra")
+    if bgra is None:
+        raise ValueError("Camera sample missing BGRA payload")
+    rgb = np.ascontiguousarray(bgra[:, :, :3][:, :, ::-1])  # BGRA -> RGB, contiguous for ROS
+    height, width = rgb.shape[0], rgb.shape[1]
+    msg = Image()
+    msg.header.stamp = stamp
+    msg.header.frame_id = frame_id
+    msg.height = int(payload.get("height", height))
+    msg.width = int(payload.get("width", width))
+    msg.encoding = "rgb8"
+    msg.step = int(msg.width * 3)
+    msg.data = rgb.tobytes()
+    return msg
 
 
+def build_imu_msg(sample, stamp: Time, frame_id: str, covariances: Optional[Dict[str, Iterable[float]]] = None) -> Imu:
+    payload = sample.payload or {}
+    cov = covariances or {}
+    imu_msg = Imu()
+    imu_msg.header.stamp = stamp
+    imu_msg.header.frame_id = frame_id
+
+    ang = payload.get("gyroscope") or {}
+    lin = payload.get("accelerometer") or {}
+    imu_msg.angular_velocity.x = float(ang.get("x", 0.0) or 0.0)
+    imu_msg.angular_velocity.y = float(ang.get("y", 0.0) or 0.0)
+    imu_msg.angular_velocity.z = float(ang.get("z", 0.0) or 0.0)
+
+    imu_msg.linear_acceleration.x = float(lin.get("x", 0.0) or 0.0)
+    imu_msg.linear_acceleration.y = float(lin.get("y", 0.0) or 0.0)
+    imu_msg.linear_acceleration.z = float(lin.get("z", 0.0) or 0.0)
+
+    imu_msg.orientation.w = 1.0
+    imu_msg.orientation.x = 0.0
+    imu_msg.orientation.y = 0.0
+    imu_msg.orientation.z = 0.0
+    imu_msg.orientation_covariance[0] = -1.0  # mark orientation invalid
+
+    ang_cov: List[float] = list(cov.get("angular_velocity", []))
+    if len(ang_cov) == 9:
+        imu_msg.angular_velocity_covariance = ang_cov
+    else:
+        imu_msg.angular_velocity_covariance[0] = 1e-6
+        imu_msg.angular_velocity_covariance[4] = 1e-6
+        imu_msg.angular_velocity_covariance[8] = 1e-6
+
+    lin_cov: List[float] = list(cov.get("linear_acceleration", []))
+    if len(lin_cov) == 9:
+        imu_msg.linear_acceleration_covariance = lin_cov
+    else:
+        imu_msg.linear_acceleration_covariance[0] = 1e-6
+        imu_msg.linear_acceleration_covariance[4] = 1e-6
+        imu_msg.linear_acceleration_covariance[8] = 1e-6
+    return imu_msg
+
+
+def build_navsatfix_msg(sample, stamp: Time, frame_id: str, covariance: Optional[Iterable[float]] = None) -> NavSatFix:
+    payload = sample.payload or {}
+    msg = NavSatFix()
+    msg.header.stamp = stamp
+    msg.header.frame_id = frame_id
+    msg.latitude = float(payload.get("latitude", 0.0) or 0.0)
+    msg.longitude = float(payload.get("longitude", 0.0) or 0.0)
+    msg.altitude = float(payload.get("altitude", 0.0) or 0.0)
+    msg.status.status = NavSatStatus.STATUS_FIX
+    msg.status.service = NavSatStatus.SERVICE_GPS
+
+    cov_list = list(covariance) if covariance is not None else []
+    if len(cov_list) == 9:
+        msg.position_covariance = cov_list
+        msg.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+    else:
+        msg.position_covariance = [0.0] * 9
+        msg.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
+    return msg
+
+
+# Placeholders to be filled when corresponding publishers are implemented
 def build_pointcloud2_msg(*args, **kwargs):
     raise NotImplementedError("PointCloud2 bridge not implemented yet.")
-
-
-def build_imu_msg(*args, **kwargs):
-    raise NotImplementedError("IMU bridge not implemented yet.")
-
-
-def build_navsatfix_msg(*args, **kwargs):
-    raise NotImplementedError("NavSatFix bridge not implemented yet.")
 
 
 def build_event_msg(*args, **kwargs):

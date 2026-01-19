@@ -6,7 +6,14 @@ from typing import Any, Dict, Optional
 
 import yaml
 
-from carla_testbed.io.ros2_msg_builders import build_tf_static_msgs, to_ros_time
+from carla_testbed.io.ros2_msg_builders import (
+    build_image_msg,
+    build_imu_msg,
+    build_navsatfix_msg,
+    build_tf_static_msgs,
+    to_ros_time,
+)
+from carla_testbed.io.ros2_qos import qos_from_contract
 
 
 class ROS2BridgeAdapter:
@@ -27,10 +34,11 @@ class ROS2BridgeAdapter:
         self.contract: Dict[str, Dict[str, Any]] = {}
         self.sensors: Dict[str, Dict[str, Any]] = {}
         self.calibration: Dict[str, Any] = {}
-        self.publishers: Dict[str, Any] = {}
+        self.sensor_publishers: Dict[str, Any] = {}
         self.clock_pub = None
         self.tf_static_pub = None
         self._tf_sent = False
+        self._warned_missing_contract = set()
 
     def _load_rclpy(self):
         if self._rclpy is None:
@@ -53,9 +61,52 @@ class ROS2BridgeAdapter:
             except Exception:
                 return json.loads(text)
 
-        self.contract = _load(self.contract_path)
-        self.sensors = _load(self.sensors_path)
+        contract_raw = _load(self.contract_path)
+        if isinstance(contract_raw, dict):
+            self.contract = contract_raw
+        elif isinstance(contract_raw, list):
+            self.contract = {c.get("id"): c for c in contract_raw if isinstance(c, dict)}
+        sensors_raw = _load(self.sensors_path)
+        if isinstance(sensors_raw, dict) and "sensors" in sensors_raw:
+            sensors_raw = sensors_raw.get("sensors") or {}
+        if isinstance(sensors_raw, list):
+            self.sensors = {s.get("id"): s for s in sensors_raw if isinstance(s, dict)}
+        elif isinstance(sensors_raw, dict):
+            self.sensors = sensors_raw
         self.calibration = _load(self.calib_path)
+
+    def _resolve_msg_cls(self, msg_type: str):
+        if not msg_type:
+            return None
+        mt = msg_type.replace(" ", "")
+        try:
+            from sensor_msgs.msg import Image, Imu, NavSatFix, PointCloud2
+            from std_msgs.msg import String
+        except Exception:
+            return None
+        mapping = {
+            "sensor_msgs/msg/Image": Image,
+            "sensor_msgs/Image": Image,
+            "sensor_msgs/msg/Imu": Imu,
+            "sensor_msgs/Imu": Imu,
+            "sensor_msgs/msg/NavSatFix": NavSatFix,
+            "sensor_msgs/NavSatFix": NavSatFix,
+            "sensor_msgs/msg/PointCloud2": PointCloud2,
+            "sensor_msgs/PointCloud2": PointCloud2,
+            "std_msgs/msg/String": String,
+        }
+        return mapping.get(mt)
+
+    def _default_qos_for_type(self, sensor_type: str):
+        from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
+
+        if sensor_type == "camera" or sensor_type == "lidar":
+            return QoSProfile(depth=5, reliability=QoSReliabilityPolicy.BEST_EFFORT, durability=QoSDurabilityPolicy.VOLATILE)
+        if sensor_type == "imu":
+            return QoSProfile(depth=50, reliability=QoSReliabilityPolicy.BEST_EFFORT, durability=QoSDurabilityPolicy.VOLATILE)
+        if sensor_type == "gnss":
+            return QoSProfile(depth=10, reliability=QoSReliabilityPolicy.BEST_EFFORT, durability=QoSDurabilityPolicy.VOLATILE)
+        return QoSProfile(depth=10)
 
     def _create_publishers(self):
         from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
@@ -68,6 +119,30 @@ class ROS2BridgeAdapter:
         self.tf_static_pub = self.node.create_publisher(
             TFMessage, "/tf_static", QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         )
+        self.sensor_publishers = {}
+        for sensor_id, spec in self.sensors.items():
+            if not spec or not spec.get("enabled", True):
+                continue
+            io_cfg = self.contract.get(sensor_id, {})
+            if not io_cfg:
+                if sensor_id not in self._warned_missing_contract:
+                    print(f"[ROS2Bridge] missing contract for sensor {sensor_id}, skip publisher")
+                    self._warned_missing_contract.add(sensor_id)
+                continue
+            msg_type = io_cfg.get("msg_type")
+            msg_cls = self._resolve_msg_cls(msg_type)
+            if msg_cls is None:
+                print(f"[ROS2Bridge] unsupported msg_type for {sensor_id}: {msg_type}")
+                continue
+            topic = io_cfg.get("topic") or f"/{sensor_id}"
+            qos_profile = qos_from_contract(io_cfg.get("qos"), default_profile=self._default_qos_for_type(spec.get("type")))
+            pub = self.node.create_publisher(msg_cls, topic, qos_profile)
+            self.sensor_publishers[sensor_id] = {
+                "publisher": pub,
+                "msg_cls": msg_cls,
+                "type": spec.get("type"),
+                "frame_id": spec.get("frame_id", sensor_id),
+            }
 
     def start(self):
         self._load_rclpy()
@@ -108,6 +183,23 @@ class ROS2BridgeAdapter:
             clk = Clock()
             clk.clock = stamp
             self.clock_pub.publish(clk)
+        for sid, sample in (frame_packet.samples or {}).items():
+            info = self.sensor_publishers.get(sid)
+            if not info:
+                continue
+            msg = None
+            frame_id = info.get("frame_id") or sid
+            if sample.sensor_type == "camera":
+                msg = build_image_msg(sample, stamp, frame_id)
+            elif sample.sensor_type == "imu":
+                msg = build_imu_msg(sample, stamp, frame_id)
+            elif sample.sensor_type == "gnss":
+                msg = build_navsatfix_msg(sample, stamp, frame_id)
+            elif sample.sensor_type == "radar":
+                # placeholder; mapping not implemented
+                continue
+            if msg is not None:
+                info["publisher"].publish(msg)
 
     def publish_truth(self, truth_packet):
         # Placeholder: event/ego publication added in later commits
