@@ -23,7 +23,8 @@ from carla_testbed.config.rig_postprocess import (
     save_json,
     hash_file,
 )
-from carla_testbed.record import DemoRecorder, SummaryRecorder, TimeseriesRecorder
+from carla_testbed.record import SummaryRecorder, TimeseriesRecorder
+from carla_testbed.record.manager import RecordManager, RecordOptions
 from carla_testbed.record.fail_capture import FailFrameCapture
 from carla_testbed.schemas import ControlCommand, Event, FramePacket, GroundTruthPacket, ObjectTruth
 from carla_testbed.sensors import CollisionEventSource, LaneInvasionEventSource, SensorRig
@@ -188,8 +189,8 @@ class TestHarness:
         rig_final: Optional[dict] = None,
         rig_name: Optional[str] = None,
         enable_fail_capture: bool = False,
-        enable_demo: bool = False,
-        make_hud: bool = False,
+        record_manager: Optional[RecordManager] = None,
+        client: Optional[carla.Client] = None,
     ) -> Tuple[HarnessState, dict]:
         out_dir.mkdir(parents=True, exist_ok=True)
         ts_rec = TimeseriesRecorder(out_dir / "timeseries.csv")
@@ -214,14 +215,23 @@ class TestHarness:
             rig = SensorRig(world, ego, sensor_specs, sensor_out)
             rig.start()
         fail_cap = FailFrameCapture(world, ego, out_dir, dt=self.cfg.dt) if enable_fail_capture else None
-        demo = None
-        if enable_demo:
-            demo = DemoRecorder(world, ego, out_dir / "demo", dt=self.cfg.dt)
-            demo.start()
+        record_mgr = record_manager
+        if record_mgr:
+            try:
+                record_mgr.start(world=world, ego=ego, client=client, dt=self.cfg.dt)
+            except Exception as exc:
+                print(f"[WARN] record manager start failed: {exc}")
         cfg_dir.mkdir(parents=True, exist_ok=True)
         cfg_meta = (cfg_dir, None, None)
         if sensor_out.exists() or sensor_specs or rig_final:
             cfg_meta = self._ensure_config_outputs(out_dir, sensor_out, rig_final, rig_name, sensor_specs)
+        cfg_dir_final, meta_typed, expanded = cfg_meta
+        if record_mgr:
+            record_mgr.config_paths = {
+                "calibration": cfg_dir_final / "calibration.json",
+                "sensors": cfg_dir_final / "sensors_expanded.json",
+                "time_sync": cfg_dir_final / "time_sync.json",
+            }
         adapter = None
         if self.cfg.enable_ros2_bridge:
             try:
@@ -356,8 +366,8 @@ class TestHarness:
                 ):
                     self.state.success = True
                     break
-                if demo:
-                    demo.capture(frame_id)
+                if record_mgr:
+                    record_mgr.capture(frame_id, timestamp)
 
                 if step % progress_interval == 0:
                     remaining = (self.cfg.max_steps - step - 1) * self.cfg.dt
@@ -372,15 +382,16 @@ class TestHarness:
                 adapter.stop()
             if fail_cap:
                 fail_cap.stop()
-            if demo:
-                demo.stop()
+            if record_mgr:
+                record_mgr.stop()
             ts_rec.close()
 
-        if enable_demo and demo:
+        if record_mgr:
             try:
-                demo.finalize(ts_rec.path if hasattr(ts_rec, "path") else out_dir / "timeseries.csv", make_hud=make_hud, fps=1.0 / self.cfg.dt)
-            except Exception as e:
-                print(f"[WARN] demo finalize failed: {e}")
+                ts_path = ts_rec.path if hasattr(ts_rec, "path") else out_dir / "timeseries.csv"
+                record_mgr.finalize(timeseries_path=ts_path, dt=self.cfg.dt)
+            except Exception as exc:
+                print(f"[WARN] record manager finalize failed: {exc}")
 
         summary = {
             "success": self.state.success and self.state.fail_reason is None,
@@ -399,7 +410,7 @@ class TestHarness:
             "sensors_enabled": sensor_specs is not None,
             "sensor_frames_saved": None if rig is None else rig.stats.frames_saved,
             "sensor_dropped": None if rig is None else rig.stats.dropped,
-            "demo_enabled": enable_demo,
+            "record_modes": self.cfg.record_modes if hasattr(self.cfg, "record_modes") else [],
             "rig_name": rig_name,
             "ros2_bridge_enabled": self.cfg.enable_ros2_bridge,
         }
@@ -409,7 +420,6 @@ class TestHarness:
 
         # Post-process calibration/IO/time/noise/data_format (ensure available even when bridge disabled)
         meta_path = sensor_out / "meta.json"
-        cfg_dir_final, meta_typed, expanded = cfg_meta
         if meta_typed is None:
             cfg_dir_final, meta_typed, expanded = self._ensure_config_outputs(out_dir, sensor_out, rig_final, rig_name, sensor_specs)
 
