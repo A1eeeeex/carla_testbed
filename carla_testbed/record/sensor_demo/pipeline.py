@@ -229,7 +229,8 @@ class SensorDemoRecorder:
                         max_range=80.0,
                         debug=False,
                     )
-                    stats["lidar"] = f"{st.get('n_inimg',0)}/{st.get('n_sampled',0)}"
+                    mapping = st.get("mapping", "")
+                    stats["lidar"] = f"{st.get('n_inimg',0)}/{st.get('n_sampled',0)} {mapping}"
                     if st.get("n_inimg", 0) == 0 and not warned_zero:
                         print("[sensor_demo] LiDAR projected 0 points; check calibration/transform or range filter.")
                         warned_zero = True
@@ -251,6 +252,8 @@ class SensorDemoRecorder:
                     dets = None
                     if n > 0:
                         dets = np.frombuffer(raw[: n * 16], dtype=np.float32).reshape((-1, 4))
+                    else:
+                        print(f"[sensor_demo] radar file {radar_path.name} size {len(raw)} not multiple of 16, n=0")
                     frame, rst = draw_radar_sector(frame), {"n_det": 0, "n_inimg": 0}
                     if dets is not None and dets.size > 0:
                         try:
@@ -258,7 +261,9 @@ class SensorDemoRecorder:
                             frame, rst = project_radar_to_image(frame, dets, T_base_cam=T_cam, T_base_radar=mats.get(radar_id, np.eye(4)), K=K)
                         except Exception as exc:
                             print(f"[sensor_demo] radar projection failed: {exc}")
-                    stats["radar"] = f"{rst.get('n_inimg',0)}/{rst.get('n_det',0)}"
+                    else:
+                        stats["radar"] = "0_det"
+                    stats["radar"] = stats["radar"] or f"{rst.get('n_inimg',0)}/{rst.get('n_det',0)}"
                 else:
                     frame = draw_radar_sector(frame)
                     stats["radar"] = "sector_only"

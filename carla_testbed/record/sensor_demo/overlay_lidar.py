@@ -20,6 +20,14 @@ def ue_to_optical(points_cam: np.ndarray) -> np.ndarray:
     return np.vstack([x, y, z])
 
 
+def _project_uv(K: np.ndarray, pts_opt: np.ndarray):
+    proj = K @ pts_opt
+    proj[:2, :] /= proj[2, :]
+    u = proj[0, :].astype(np.int32)
+    v = proj[1, :].astype(np.int32)
+    return u, v
+
+
 def project_lidar_to_image(
     img: np.ndarray,
     points: np.ndarray,
@@ -50,8 +58,8 @@ def project_lidar_to_image(
         return img, stats
 
     pts_h = np.concatenate([pts[:, :3], np.ones((pts.shape[0], 1), dtype=np.float32)], axis=1).T
-    # base->sensor transforms; p_cam = T_base_cam @ inv(T_base_lidar) @ p_lidar
-    T_lidar_to_cam = T_base_cam @ inverse_matrix(T_base_lidar)
+    # base->sensor transforms; point_cam = inv(T_base_cam) @ T_base_lidar @ point_lidar
+    T_lidar_to_cam = inverse_matrix(T_base_cam) @ T_base_lidar
     pts_cam = T_lidar_to_cam @ pts_h
     pts_opt = ue_to_optical(pts_cam)
     zc = pts_opt[2, :]
@@ -62,18 +70,25 @@ def project_lidar_to_image(
             print("[lidar] no points after Z>0.1 filter")
         return img, stats
     stats["n_front"] = pts_opt.shape[1]
-    proj = K @ pts_opt
-    proj[:2, :] /= proj[2, :]
-    u = proj[0, :].astype(np.int32)
-    v = proj[1, :].astype(np.int32)
+    u, v = _project_uv(K, pts_opt)
     h, w = img.shape[:2]
     mask = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    mapping_used = "optical_xyz=[y,-z,x]"
     if not np.any(mask):
-        if debug:
-            print("[lidar] projected points all out of image")
-        return img, stats
+        # Fallback mapping to improve observability
+        pts_opt2 = np.vstack([pts_cam[0, :], -pts_cam[1, :], pts_cam[2, :]])
+        u2, v2 = _project_uv(K, pts_opt2)
+        mask2 = (u2 >= 0) & (u2 < w) & (v2 >= 0) & (v2 < h)
+        if np.any(mask2):
+            u, v, mask = u2, v2, mask2
+            mapping_used = "optical_fallback_xyz=[x,-y,z]"
+        else:
+            if debug:
+                print("[lidar] projected points all out of image (both mappings)")
+            return img, stats
     u = u[mask]
     v = v[mask]
     stats["n_inimg"] = u.shape[0]
+    stats["mapping"] = mapping_used
     img[v, u] = color
     return img, stats
