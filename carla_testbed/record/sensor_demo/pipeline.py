@@ -15,7 +15,11 @@ from carla_testbed.record.sensor_demo.geometry import inverse_matrix, transform_
 from carla_testbed.record.sensor_demo.index import write_index
 from carla_testbed.record.sensor_demo.overlay_hud import draw_hud
 from carla_testbed.record.sensor_demo.overlay_lidar import project_lidar_to_image
-from carla_testbed.record.sensor_demo.overlay_radar import draw_radar_sector
+from carla_testbed.record.sensor_demo.overlay_radar import (
+    draw_radar_minimap,
+    draw_radar_targets_on_image,
+    project_radar_to_image,
+)
 
 
 class SensorDemoRecorder:
@@ -91,17 +95,46 @@ class SensorDemoRecorder:
             return {s.get("id"): s for s in raw if isinstance(s, dict)}
         return raw or {}
 
-    def _camera_intrinsics(self, sensors: Dict[str, dict], camera_id: str):
-        cam = sensors.get(camera_id, {})
-        intr = cam.get("camera", {}).get("intrinsics", {}) if cam else {}
-        if not intr:
-            w = float(cam.get("attributes", {}).get("image_size_x", 1920))
-            h = float(cam.get("attributes", {}).get("image_size_y", 1080))
-            fx = fy = w / 2.0
-            cx, cy = w / 2.0, h / 2.0
-            intr = {"fx": fx, "fy": fy, "cx": cx, "cy": cy}
-        K = np.array([[intr.get("fx", 1.0), 0, intr.get("cx", 0)], [0, intr.get("fy", 1.0), intr.get("cy", 0)], [0, 0, 1]])
-        return K
+    def _read_ply_points(self, path: Path):
+        """Lightweight PLY reader for ascii point clouds with x y z [intensity]."""
+        try:
+            import open3d as o3d  # type: ignore
+
+            pc = o3d.io.read_point_cloud(str(path))
+            pts = np.asarray(pc.points)
+            if hasattr(pc, "point") and "intensity" in pc.point:
+                inten = np.asarray(pc.point["intensity"]).reshape(-1, 1)
+                pts = np.hstack([pts, inten])
+            return pts
+        except Exception:
+            # fallback to ascii load
+            header_lines = 0
+            with path.open("r") as f:
+                for line in f:
+                    header_lines += 1
+                    if line.strip() == "end_header":
+                        break
+            try:
+                pts = np.loadtxt(path, skiprows=header_lines, dtype=np.float32)
+                return pts
+            except Exception:
+                return None
+
+    def _load_lidar_points(self, path: Path):
+        if path.suffix.lower() == ".ply":
+            return self._read_ply_points(path)
+        raw = path.read_bytes()
+        n = len(raw) // 16
+        if n > 0:
+            return np.frombuffer(raw[: n * 16], dtype=np.float32).reshape((-1, 4))
+        return None
+
+    def _intrinsics_from_fov(self, w: int, h: int, fov_deg: float):
+        fx = (w / 2.0) / np.tan(np.radians(fov_deg) / 2.0)
+        fy = fx
+        cx = (w - 1) / 2.0
+        cy = (h - 1) / 2.0
+        return np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
 
     def _frame_matrices(self, calib: dict):
         mats = {}
@@ -136,8 +169,8 @@ class SensorDemoRecorder:
                     frames.append(json.loads(line))
                 except Exception:
                     continue
-        sensors_meta = self._load_sensors()
         calib = self._load_calib()
+        sensors_meta = self._load_sensors()
         mats = self._frame_matrices(calib)
         events_by_frame = self._load_events()
         cam_id = None
@@ -149,18 +182,15 @@ class SensorDemoRecorder:
         if cam_id is None:
             print("[sensor_demo] No camera found; skip rendering.")
             return
-        K = self._camera_intrinsics(sensors_meta, cam_id)
         T_cam = mats.get(cam_id, np.eye(4))
         lidar_id = next((sid for sid, m in sensors_meta.items() if m.get("type") == "lidar"), None)
         T_lidar = mats.get(lidar_id, np.eye(4)) if lidar_id else np.eye(4)
+        radar_id_default = next((sid for sid, m in sensors_meta.items() if m.get("type") == "radar"), None)
+        radar_attrs_default = sensors_meta.get(radar_id_default, {}).get("attributes", {}) if radar_id_default else {}
+        radar_fov_default = float(radar_attrs_default.get("horizontal_fov", radar_attrs_default.get("fov", 30.0)))
+        radar_range_default = float(radar_attrs_default.get("range", 80.0))
         self.video_dir.mkdir(parents=True, exist_ok=True)
         fps = self.opts.fps or (1.0 / self.dt if self.dt > 0 else 20.0)
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        w, h = self.opts.resolution
-        writer = cv2.VideoWriter(str(self.out_mp4), fourcc, fps, (w, h))
-        if not writer.isOpened():
-            print("[sensor_demo] VideoWriter cannot open output.")
-            return
 
         # Build frame lookup
         per_frame = {}
@@ -169,12 +199,16 @@ class SensorDemoRecorder:
             per_frame.setdefault(fid, []).append(item)
 
         warned_zero = False
+        writer = None
+        writer_size = None
         for fid in sorted(per_frame.keys()):
             entries = per_frame[fid]
             img_path = None
             lidar_path = None
             imu_data = None
             gnss_data = None
+            radar_path = None
+            radar_id = None
             for e in entries:
                 sid = e.get("sensor_id")
                 path = Path(e.get("path"))
@@ -183,6 +217,9 @@ class SensorDemoRecorder:
                     img_path = path
                 elif stype == "lidar":
                     lidar_path = path
+                elif stype == "radar":
+                    radar_path = path
+                    radar_id = sid
                 elif stype == "imu":
                     try:
                         imu_data = json.loads(path.read_text())
@@ -197,27 +234,26 @@ class SensorDemoRecorder:
             if img_path and img_path.exists():
                 frame = cv2.imread(str(img_path))
             else:
-                frame = np.zeros((h, w, 3), dtype=np.uint8)
+                frame = np.zeros((self.opts.record_resolution[1], self.opts.record_resolution[0], 3), dtype=np.uint8) if hasattr(self.opts, "record_resolution") else None
+            if frame is None:
+                continue
+            h, w = frame.shape[:2]
+            if writer_size is None:
+                writer_size = (w, h)
+            elif (w, h) != writer_size:
+                frame = cv2.resize(frame, writer_size)
+                w, h = writer_size
+            fov_deg = sensors_meta.get(cam_id, {}).get("attributes", {}).get("fov", 90.0)
+            K = self._intrinsics_from_fov(w, h, float(fov_deg))
+
+            if writer is None:
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                writer = cv2.VideoWriter(str(self.out_mp4), fourcc, fps, (w, h))
+                if not writer.isOpened():
+                    print("[sensor_demo] VideoWriter cannot open output.")
+                    return
             if lidar_path and lidar_path.exists() and not self.opts.skip_lidar:
-                pts = None
-                if lidar_path.suffix.lower() == ".ply":
-                    # lightweight ply reader
-                    try:
-                        import open3d as o3d
-                        pc = o3d.io.read_point_cloud(str(lidar_path))
-                        pts = np.asarray(pc.points)
-                        if hasattr(pc, "point") and "intensity" in pc.point:
-                            inten = np.asarray(pc.point["intensity"]).reshape(-1, 1)
-                            pts = np.hstack([pts, inten])
-                    except Exception:
-                        pts = None
-                if pts is None:
-                    raw = lidar_path.read_bytes()
-                    n = len(raw) // 16
-                    if n > 0:
-                        pts = np.frombuffer(raw[: n * 16], dtype=np.float32).reshape((-1, 4))
-                    else:
-                        pts = None
+                pts = self._load_lidar_points(lidar_path)
                 if pts is not None and pts.size > 0:
                     frame, st = project_lidar_to_image(
                         frame,
@@ -225,28 +261,28 @@ class SensorDemoRecorder:
                         T_base_cam=T_cam,
                         T_base_lidar=T_lidar,
                         K=K,
-                        max_points=self.opts.max_lidar_points,
+                        max_points=min(self.opts.max_lidar_points, 2000),
                         max_range=80.0,
                         debug=False,
                     )
                     mapping = st.get("mapping", "")
                     stats["lidar"] = f"{st.get('n_inimg',0)}/{st.get('n_sampled',0)} {mapping}"
                     if st.get("n_inimg", 0) == 0 and not warned_zero:
-                        print("[sensor_demo] LiDAR projected 0 points; check calibration/transform or range filter.")
+                        print(
+                            "[sensor_demo] LiDAR projected 0 points; check calibration/transform or range filter. "
+                            f"front={st.get('n_front',0)} inimg={st.get('n_inimg',0)} mapping={mapping}"
+                        )
                         warned_zero = True
                 else:
                     stats["lidar"] = "no_points"
             else:
                 stats["lidar"] = "skipped"
             if not self.opts.skip_radar:
-                radar_path = None
-                for e in entries:
-                    sid = e.get("sensor_id")
-                    path = Path(e.get("path"))
-                    if sensors_meta.get(sid, {}).get("type") == "radar":
-                        radar_path = path
-                        radar_id = sid
-                        break
+                radar_attrs = sensors_meta.get(radar_id or radar_id_default, {}).get("attributes", {}) if (radar_id or radar_id_default) else {}
+                radar_fov = float(radar_attrs.get("horizontal_fov", radar_attrs.get("fov", radar_fov_default)))
+                radar_range = float(radar_attrs.get("range", radar_range_default))
+                rings = None
+                radar_rst = {"n_det": 0, "n_front": 0, "n_inimg": 0, "depth": np.array([]), "vel": np.array([]), "az": np.array([]), "layout": None}
                 if radar_path and radar_path.exists():
                     raw = radar_path.read_bytes()
                     n = len(raw) // 16
@@ -255,19 +291,51 @@ class SensorDemoRecorder:
                         dets = np.frombuffer(raw[: n * 16], dtype=np.float32).reshape((-1, 4))
                     else:
                         print(f"[sensor_demo] radar file {radar_path.name} size {len(raw)} not multiple of 16, n=0")
-                    frame, rst = draw_radar_sector(frame), {"n_det": 0, "n_inimg": 0}
                     if dets is not None and dets.size > 0:
                         try:
-                            from carla_testbed.record.sensor_demo.overlay_radar import project_radar_to_image
-                            frame, rst = project_radar_to_image(frame, dets, T_base_cam=T_cam, T_base_radar=mats.get(radar_id, np.eye(4)), K=K)
+                            frame, radar_rst = project_radar_to_image(
+                                frame,
+                                dets,
+                                T_base_cam=T_cam,
+                                T_base_radar=mats.get(radar_id or radar_id_default, np.eye(4)),
+                                K=K,
+                                max_depth=radar_range,
+                                draw=False,
+                            )
+                            if fid % 50 == 0:
+                                print(f"[sensor_demo] radar stats frame {fid}: {radar_rst}")
                         except Exception as exc:
                             print(f"[sensor_demo] radar projection failed: {exc}")
                     else:
                         stats["radar"] = "0_det"
-                    stats["radar"] = stats["radar"] or f"{rst.get('n_inimg',0)}/{rst.get('n_det',0)}"
-                else:
-                    frame = draw_radar_sector(frame)
-                    stats["radar"] = "sector_only"
+                # Draw targets on main image and minimap
+                frame = draw_radar_targets_on_image(
+                    frame,
+                    radar_rst,
+                    max_range_m=radar_range,
+                    topk=8,
+                    label_topk=4,
+                    draw_arrow=True,
+                    static_thresh=0.3,
+                )
+                frame = draw_radar_minimap(
+                    frame,
+                    radar_rst.get("depth"),
+                    radar_rst.get("az"),
+                    radar_rst.get("vel"),
+                    fov_deg=radar_fov,
+                    max_range_m=radar_range,
+                    origin_px=(120, 120),
+                    radius_px=90,
+                    rings_m=rings,
+                )
+                stats["radar"] = f"{radar_rst.get('n_inimg',0)}/{radar_rst.get('n_det',0)} front={radar_rst.get('n_front',0)}"
+                if radar_rst.get("vel_min") is not None and radar_rst.get("vel_max") is not None:
+                    stats["radar"] += f" v[{radar_rst.get('vel_min',0):.1f},{radar_rst.get('vel_max',0):.1f}]"
+                if radar_rst.get("depth_min") is not None and radar_rst.get("depth_max") is not None:
+                    stats["radar"] += f" d[{radar_rst.get('depth_min',0):.1f},{radar_rst.get('depth_max',0):.1f}]"
+                if radar_rst.get("layout"):
+                    stats["radar"] += f" {radar_rst.get('layout')}"
             else:
                 stats["radar"] = "disabled"
             if not self.opts.skip_hud:
@@ -283,5 +351,6 @@ class SensorDemoRecorder:
                 frames_dir.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(frames_dir / f"{fid:06d}.png"), frame)
             writer.write(frame)
-        writer.release()
-        print(f"[sensor_demo] wrote {self.out_mp4}")
+        if writer is not None:
+            writer.release()
+            print(f"[sensor_demo] wrote {self.out_mp4}")

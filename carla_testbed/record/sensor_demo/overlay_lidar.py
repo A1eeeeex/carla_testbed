@@ -37,6 +37,7 @@ def project_lidar_to_image(
     color=(0, 255, 0),
     max_points: int = 8000,
     max_range: float = None,
+    max_depth: float = 60.0,
     debug: bool = False,
 ):
     """Project lidar points (base->lidar) onto camera (base->cam) optical frame."""
@@ -71,6 +72,8 @@ def project_lidar_to_image(
         pts_opt = fn(pts_cam)
         zc = pts_opt[2, :]
         front_mask = zc > 0.1
+        if max_depth is not None:
+            front_mask &= zc < max_depth
         pts_front = pts_opt[:, front_mask]
         if pts_front.shape[1] == 0:
             continue
@@ -82,7 +85,9 @@ def project_lidar_to_image(
             v = v[mask]
             stats["n_inimg"] = u.shape[0]
             stats["mapping"] = name
-            img[v, u] = color
+            # Thicker points for visibility
+            for ui, vi in zip(u, v):
+                cv2.circle(img, (int(ui), int(vi)), 2, color, thickness=-1, lineType=cv2.LINE_AA)
             return img, stats
     if debug:
         print("[lidar] projected points all out of image for all mappings")

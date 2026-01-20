@@ -21,7 +21,10 @@ python carla_testbed/examples/run_followstop.py \
   --lateral-mode dummy \
   --policy-mode acc \
   --ticks 1000 \
-  --rig minimal
+  --rig minimal \
+  --record dual_cam \
+  --record hud \
+  --record sensor_demo
 ```
 预期产物：`runs/followstop_<timestamp>/timeseries.csv` 与 `summary.json`。此示例场景为直线跟停（front_idx=210, ego_idx=120）。
 
