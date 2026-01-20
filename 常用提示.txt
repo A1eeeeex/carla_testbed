@@ -18,7 +18,7 @@
 - 输出与回归：runs/ 目录布局、summary.json 字段解释、baseline 对比（如果已实现）
 - 扩展指南：如何新增一个 Scenario、SensorDriver、Evaluator、TransportAdapter（给出最小代码片段）
 - 常见问题与排错：列出至少 8 条（同步、settings、缺帧、ffmpeg、权限、性能、坐标系、Apollo 接口）
-- Roadmap：下一步计划（ROS2/CyberRT 接入、更多 KPI、fault injection 等）
+- Roadmap：下一步计划
 
 【验收】
 - README 中的命令必须在本仓库现有脚本里找到对应文件
