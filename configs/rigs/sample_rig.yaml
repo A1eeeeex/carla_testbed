@@ -1,0 +1,86 @@
+# sample_rig：简洁示例（camera + LiDAR + radar + IMU + GNSS），仅保留加载器会读取的字段。
+# 坐标系：CARLA 车辆系（x 前、y 右、z 上）；角度单位：度。未知属性会被安全忽略。
+# 注释格式：定义 / 作用 / 常用值
+
+name: sample_rig
+version: 1
+
+sensors:
+  - id: camera_front
+    type: camera
+    blueprint: sensor.camera.rgb
+    enabled: true
+    sensor_tick: 0.05           # 定义：采样周期(s)；作用：决定帧率；常用：0.05(20Hz)/0.033(30Hz)/0.1(10Hz)
+    transform:                  # 定义：相对 base_link 的安装外参；作用：投影/TF；常用：x 1.0~1.8, y 0, z 1.2~1.8
+      x: 1.50                   # 前向偏移(m)
+      y: 0.00                   # 右向偏移(m)
+      z: 1.60                   # 高度(m)
+      roll: 0.0                 # 绕 x 旋转(度)，右手系
+      pitch: 0.0                # 绕 y 旋转(度)
+      yaw: 0.0                  # 绕 z 旋转(度)
+    attributes:
+      image_size_x: 1920        # 定义：分辨率宽；作用：输出尺寸；常用：1280/1920
+      image_size_y: 1080        # 定义：分辨率高；作用：输出尺寸；常用：720/1080
+      fov: 90                   # 定义：水平视场角(度)；作用：内参推导；常用：70~110
+      # 可选：gamma(2.2)/motion_blur_intensity(0.0) 等，未识别字段会被忽略
+
+  - id: lidar_top
+    type: lidar
+    blueprint: sensor.lidar.ray_cast
+    enabled: true
+    sensor_tick: 0.05           # 定义：采样周期；常用：0.05(20Hz)/0.1(10Hz)
+    transform:                  # 安装外参：顶置常用 z 1.6~2.2
+      x: 0.00
+      y: 0.00
+      z: 1.85
+      roll: 0.0
+      pitch: 0.0
+      yaw: 0.0
+    attributes:
+      range: 90.0               # 定义：量程(m)；常用：80~120（城市）
+      rotation_frequency: 20.0  # 定义：旋转频率(Hz)；常用：10~20
+      channels: 64              # 定义：线数；常用：16/32/64/128
+      points_per_second: 1500000# 定义：点频；常用：300k~1.5M
+      upper_fov: 10.0           # 定义：上俯仰(度)；常用：10~15
+      lower_fov: -30.0          # 定义：下俯仰(度)；常用：-25~-35
+      horizontal_fov: 360.0     # 定义：水平视场(度)；常用：360（全向）
+      # 可选：noise_stddev(0~0.05)/dropoff_*（未支持会忽略）
+
+  - id: radar_front
+    type: radar
+    blueprint: sensor.other.radar
+    enabled: true
+    sensor_tick: 0.05           # 定义：采样周期；常用：0.05~0.1
+    transform:                  # 前杠附近：x 1.2~1.8, z 0.5~1.0
+      x: 1.60
+      y: 0.00
+      z: 0.90
+      roll: 0.0
+      pitch: 0.0
+      yaw: 0.0
+    attributes:
+      range: 80.0               # 定义：量程(m)；常用：50~150
+      horizontal_fov: 30.0      # 定义：水平视场(度)；常用：20~60
+      vertical_fov: 10.0        # 定义：垂直视场(度)；常用：5~15
+      points_per_second: 1500   # 定义：每秒检测数；常用：500~3000
+      # 可选：noise_stddev（不同版本支持差异）
+
+  - id: imu
+    type: imu
+    blueprint: sensor.other.imu
+    enabled: true
+    sensor_tick: 0.01           # 定义：采样周期；常用：0.005~0.02 (50~200Hz)
+    transform: {x: 0.00, y: 0.00, z: 0.00, roll: 0.0, pitch: 0.0, yaw: 0.0}  # 通常置于质心附近
+    attributes: {}              # CARLA 默认；如需噪声/偏置可添加
+
+  - id: gnss
+    type: gnss
+    blueprint: sensor.other.gnss
+    enabled: true
+    sensor_tick: 0.10           # 定义：采样周期；常用：0.1(10Hz)/0.2(5Hz)
+    transform: {x: 0.00, y: 0.00, z: 0.00, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    attributes: {}              # CARLA 默认；可扩展噪声/漂移
+
+events:
+  collision: true
+  lane_invasion: true
