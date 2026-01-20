@@ -67,7 +67,7 @@ def main():
     ap.add_argument("--front-idx", type=int, default=210)
     ap.add_argument("--ego-idx", type=int, default=120)
     ap.add_argument("--controller", default="composite")
-    ap.add_argument("--lateral-mode", default="pure_pursuit")
+    ap.add_argument("--lateral-mode", default="dummy")
     ap.add_argument("--policy-mode", default="acc")
     ap.add_argument("--agent-type", default="basic")
     ap.add_argument("--takeover-dist", type=float, default=200.0)

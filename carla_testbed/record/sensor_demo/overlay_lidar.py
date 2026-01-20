@@ -68,6 +68,7 @@ def project_lidar_to_image(
         ("optical_xyz=[x,y,z]", lambda pc: np.vstack([pc[0, :], pc[1, :], pc[2, :]])),
     ]
     h, w = img.shape[:2]
+    overlay = img.copy()
     for name, fn in candidates:
         pts_opt = fn(pts_cam)
         zc = pts_opt[2, :]
@@ -87,7 +88,9 @@ def project_lidar_to_image(
             stats["mapping"] = name
             # Thicker points for visibility
             for ui, vi in zip(u, v):
-                cv2.circle(img, (int(ui), int(vi)), 2, color, thickness=-1, lineType=cv2.LINE_AA)
+                cv2.circle(overlay, (int(ui), int(vi)), 2, color, thickness=-1, lineType=cv2.LINE_AA)
+            # Blend to reduce visual noise
+            cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
             return img, stats
     if debug:
         print("[lidar] projected points all out of image for all mappings")

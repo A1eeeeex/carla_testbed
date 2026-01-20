@@ -61,6 +61,10 @@ def draw_radar_minimap(
     origin_px=(120, 120),
     radius_px: int = 90,
     rings_m=None,
+    az_sign: int = 1,
+    alt: np.ndarray = None,
+    alt_limit: float = 0.2,
+    v_deadband: float = 0.3,
 ):
     """Left-bottom mini-map showing radar FOV, range rings, and targets."""
     if cv2 is None or img is None:
@@ -109,17 +113,26 @@ def draw_radar_minimap(
     cv2.line(img, (ox + 6, oy + 8), (ox, oy - 10), (255, 255, 255), 1, cv2.LINE_AA)
     # targets
     if depth is not None and az is not None and vel is not None:
-        mask = (depth <= max_range_m) & (np.abs(az) <= np.radians(fov_deg / 2.0))
+        mask = (depth > 0) & (depth <= max_range_m)
+        if alt is not None:
+            mask &= np.abs(alt) <= alt_limit
+        if az is not None:
+            az_adj = az_sign * az
+            mask &= np.abs(az_adj) <= np.radians(fov_deg / 2.0)
+        else:
+            az_adj = az
         if np.any(mask):
             d = depth[mask]
-            a = az[mask]
+            a = az_adj[mask] if az_adj is not None else None
             v = vel[mask]
-            sx = d * np.cos(a)
-            sy = d * np.sin(a)
-            px = (sx / max_range_m * radius_px + ox).astype(int)
-            py = (oy - sy / max_range_m * radius_px).astype(int)
-            for xi, yi, vi in zip(px, py, v):
-                _draw_marker(img, int(xi), int(yi), _vel_to_color(vi, vmax=15.0), size=4, thickness=1, halo=True)
+            if a is not None:
+                x_fwd = d * np.cos(a)
+                y_right = d * np.sin(a)
+                px = (y_right / max_range_m * radius_px + ox).astype(int)
+                py = (oy - x_fwd / max_range_m * radius_px).astype(int)
+                for xi, yi, vi in zip(px, py, v):
+                    color = (210, 210, 210) if abs(vi) < v_deadband else _vel_to_color(vi, vmax=15.0)
+                    _draw_marker(img, int(xi), int(yi), color, size=5, thickness=2, halo=True)
     cv2.putText(img, "Radar", (ox - radius_px, oy + radius_px + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA)
     return img
 
@@ -166,6 +179,9 @@ def project_radar_to_image(
     color=(255, 0, 0),
     max_depth: float = 120.0,
     draw: bool = False,
+    az_sign: int = 1,
+    alt_limit: float = 0.2,
+    v_deadband: float = 0.3,
 ):
     """Project radar detections into camera frame."""
     stats = {
@@ -207,13 +223,15 @@ def project_radar_to_image(
     mask = zc > 0.1
     if max_depth is not None:
         mask &= zc < max_depth
+    if alt is not None:
+        mask &= np.abs(alt) <= alt_limit
     stats["n_front"] = int(np.count_nonzero(mask))
     if not np.any(mask):
         return img, stats
     pts_opt = pts_opt[:, mask]
     depths_masked = depths[mask]
     vel_masked = vel[mask]
-    az_masked = az[mask]
+    az_masked = az_sign * az[mask]
     alt_masked = alt[mask]
     proj = K @ pts_opt
     proj[:2, :] /= proj[2, :]
@@ -233,7 +251,8 @@ def project_radar_to_image(
         stats["v_min"], stats["v_max"] = int(v[inimg].min()), int(v[inimg].max())
     if draw and stats["n_inimg"] > 0:
         for ui, vi, vv in zip(u[inimg], v[inimg], vel_masked[inimg]):
-            cv2.circle(img, (int(ui), int(vi)), 3, _vel_to_color(float(vv)), thickness=-1, lineType=cv2.LINE_AA)
+            col = (220, 220, 220) if abs(vv) < v_deadband else _vel_to_color(float(vv))
+            _draw_marker(img, int(ui), int(vi), col, size=6, thickness=2, halo=True)
     return img, stats
 
 
@@ -281,5 +300,14 @@ def draw_radar_targets_on_image(
                 tipLength=0.3,
             )
         if i < label_topk:
-            cv2.putText(img, f"d={d:.1f} v={vv:+.1f}", (int(u) + 6, int(v) - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)
+            cv2.putText(
+                img,
+                f"d={d:.1f} v={vv:+.1f}",
+                (int(u) + 6, int(v) - 8 - 14 * i),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
     return img

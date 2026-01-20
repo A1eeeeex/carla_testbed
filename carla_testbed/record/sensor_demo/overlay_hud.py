@@ -84,6 +84,19 @@ def draw_hud(img, frame_id=None, timestamp=None, imu=None, gnss=None, events=Non
                 cv2.LINE_AA,
             )
             y += 20
+        radar_dbg = stats.get("radar_debug")
+        if radar_dbg:
+            cv2.putText(
+                img,
+                radar_dbg,
+                (pad + 12, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (180, 180, 180),
+                1,
+                cv2.LINE_AA,
+            )
+            y += 18
         if missing:
             cv2.putText(
                 img,

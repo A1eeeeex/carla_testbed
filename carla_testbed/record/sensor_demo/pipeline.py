@@ -189,6 +189,9 @@ class SensorDemoRecorder:
         radar_attrs_default = sensors_meta.get(radar_id_default, {}).get("attributes", {}) if radar_id_default else {}
         radar_fov_default = float(radar_attrs_default.get("horizontal_fov", radar_attrs_default.get("fov", 30.0)))
         radar_range_default = float(radar_attrs_default.get("range", 80.0))
+        radar_az_sign = getattr(self.opts, "radar_az_sign", 1)
+        radar_alt_limit = getattr(self.opts, "radar_alt_limit", 0.2)
+        radar_v_deadband = getattr(self.opts, "radar_v_deadband", 0.3)
         self.video_dir.mkdir(parents=True, exist_ok=True)
         fps = self.opts.fps or (1.0 / self.dt if self.dt > 0 else 20.0)
 
@@ -282,7 +285,16 @@ class SensorDemoRecorder:
                 radar_fov = float(radar_attrs.get("horizontal_fov", radar_attrs.get("fov", radar_fov_default)))
                 radar_range = float(radar_attrs.get("range", radar_range_default))
                 rings = None
-                radar_rst = {"n_det": 0, "n_front": 0, "n_inimg": 0, "depth": np.array([]), "vel": np.array([]), "az": np.array([]), "layout": None}
+                radar_rst = {
+                    "n_det": 0,
+                    "n_front": 0,
+                    "n_inimg": 0,
+                    "depth": np.array([]),
+                    "vel": np.array([]),
+                    "az": np.array([]),
+                    "alt": np.array([]),
+                    "layout": None,
+                }
                 if radar_path and radar_path.exists():
                     raw = radar_path.read_bytes()
                     n = len(raw) // 16
@@ -301,6 +313,9 @@ class SensorDemoRecorder:
                                 K=K,
                                 max_depth=radar_range,
                                 draw=False,
+                                az_sign=radar_az_sign,
+                                alt_limit=radar_alt_limit,
+                                v_deadband=radar_v_deadband,
                             )
                             if fid % 50 == 0:
                                 print(f"[sensor_demo] radar stats frame {fid}: {radar_rst}")
@@ -316,7 +331,7 @@ class SensorDemoRecorder:
                     topk=8,
                     label_topk=4,
                     draw_arrow=True,
-                    static_thresh=0.3,
+                    static_thresh=radar_v_deadband,
                 )
                 frame = draw_radar_minimap(
                     frame,
@@ -328,6 +343,10 @@ class SensorDemoRecorder:
                     origin_px=(120, 120),
                     radius_px=90,
                     rings_m=rings,
+                    az_sign=radar_az_sign,
+                    alt=radar_rst.get("alt"),
+                    alt_limit=radar_alt_limit,
+                    v_deadband=radar_v_deadband,
                 )
                 stats["radar"] = f"{radar_rst.get('n_inimg',0)}/{radar_rst.get('n_det',0)} front={radar_rst.get('n_front',0)}"
                 if radar_rst.get("vel_min") is not None and radar_rst.get("vel_max") is not None:
@@ -336,6 +355,7 @@ class SensorDemoRecorder:
                     stats["radar"] += f" d[{radar_rst.get('depth_min',0):.1f},{radar_rst.get('depth_max',0):.1f}]"
                 if radar_rst.get("layout"):
                     stats["radar"] += f" {radar_rst.get('layout')}"
+                stats["radar_debug"] = f"az_sign={radar_az_sign} alt_lim={radar_alt_limit} v_db={radar_v_deadband}"
             else:
                 stats["radar"] = "disabled"
             if not self.opts.skip_hud:
