@@ -19,8 +19,8 @@
 ```
 scenario -> sim(world/tick) -> sensors(capture) -> runner(config/record) -> record(mp4/csv/json)
                                      \-> control(step -> ControlCommand) -> sim.apply_control
-                                     \-> io(ROS2 bridge) -> external nodes/rosbag
-schemas 提供数据结构，config 提供 rig/calibration/contract
+                                     \-> io(ROS2 native enable_for_ros) -> external nodes/ros2 subscribers
+schemas 提供数据结构，config 提供 rig/calibration/meta
 ```
 
 ## 三条快速上手路径
@@ -34,11 +34,12 @@ python examples/run_followstop.py --rig fullstack --ticks 500 --record-keep-fram
 python examples/run_followstop.py --rig fullstack --ticks 1000 --record sensor_demo --record-keep-frames
 # 产物：runs/followstop_<ts>/video/demo.mp4（frames/ 可选保留）
 ```
-3) **启用 ROS2 bridge 发布 topic 并录 rosbag**
+3) **启用 CARLA 原生 ROS2 发布**
 ```bash
-python examples/run_followstop.py --rig fullstack --enable-ros2-bridge --ticks 500
-# 另一个终端（已 source ROS2）：
-ros2 bag record /clock /tf_static /sim/ego/camera/front/image_raw /sim/ego/lidar/top/points /sim/ego/imu /sim/ego/gnss
+python examples/run_followstop.py --rig fullstack --enable-ros2-native --ticks 500
+# 另一个终端（已 source ROS2，服务器以 --ros2 启动）：
+ros2 topic list | grep /carla/hero
+ros2 topic hz /carla/hero/imu
 ```
 
 如需更多细节，请进入对应模块 README。★ 如果遇到坐标系/时间戳问题，优先检查 config/calibration.json 与 time_sync.json 是否匹配当前 run。 

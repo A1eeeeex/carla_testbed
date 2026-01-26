@@ -91,11 +91,11 @@ def derive_camera_intrinsics(attrs: Dict[str, float]) -> Dict[str, float]:
     return {"fx": fx, "fy": fy, "cx": cx, "cy": cy, "K": [fx, 0, cx, 0, fy, cy, 0, 0, 1]}
 
 
-def expand_specs(meta_typed: Dict, rig_final: Dict, rig_name: str = "") -> List[Dict]:
+def expand_specs(meta_typed: Dict, rig_final: Dict, rig_name: str = "", ego_id: str = "hero") -> List[Dict]:
     sensors = []
     meta_sensors = meta_typed.get("sensors", {})
     rig_sensors = {s["id"]: s for s in rig_final.get("sensors", [])}
-    ros2_prefix = "/sim/ego"
+    ros2_prefix = f"/carla/{ego_id}"
     for sid, info in meta_sensors.items():
         rig_info = rig_sensors.get(sid, {})
         enabled = rig_info.get("enabled", True)
@@ -128,12 +128,12 @@ def expand_specs(meta_typed: Dict, rig_final: Dict, rig_name: str = "") -> List[
             "tf_static": True,
             "rig": rig_name,
         }
-        sensor_path = sid.replace("_", "/")
+        sensor_path = sid
         if sensor_type == "camera":
             intr = derive_camera_intrinsics(attributes)
             entry["camera"] = {"intrinsics": intr, "distortion": {"model": "none", "coeffs": []}}
             entry["data_format"] = {"encoding": "rgb8", "compression": None}
-            entry["io"]["ros2"] = {"topic": f"{ros2_prefix}/{sensor_path}/image_raw", "msg_type": "sensor_msgs/msg/Image", "qos": "SENSOR_DATA"}
+            entry["io"]["ros2"] = {"topic": f"{ros2_prefix}/{sensor_path}/image", "msg_type": "sensor_msgs/msg/Image", "qos": "SENSOR_DATA"}
             entry["io"]["cyber"] = {"channel": f"/{sid}", "proto": "apollo.drivers.Image", "mapping_required": True}
         elif sensor_type == "lidar":
             entry["data_format"] = {"encoding": "pointcloud_xyzirt", "compression": None}

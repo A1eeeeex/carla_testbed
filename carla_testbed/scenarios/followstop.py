@@ -14,6 +14,8 @@ class FollowStopConfig:
     front_idx: int = 210
     ego_idx: int = 120
     stop_brake: float = 1.0
+    ego_id: str = "hero"
+    front_id: str = "front"
 
 
 class FollowStopScenario(Scenario):
@@ -38,11 +40,29 @@ class FollowStopScenario(Scenario):
         self.cfg.front_idx = _safe_idx(self.cfg.front_idx)
         self.cfg.ego_idx = _safe_idx(self.cfg.ego_idx)
 
+        try:
+            veh_bp.set_attribute("role_name", self.cfg.front_id)
+        except Exception:
+            pass
+        try:
+            veh_bp.set_attribute("ros_name", self.cfg.front_id)
+        except Exception:
+            pass
+
         front, front_idx = spawn_with_retry(world, veh_bp, spawns, preferred_idx=self.cfg.front_idx)
         if front is None:
             raise RuntimeError("Failed to spawn front vehicle")
         front.set_simulate_physics(True)
         front.apply_control(carla.VehicleControl(throttle=0.0, brake=self.cfg.stop_brake, hand_brake=True))
+
+        try:
+            veh_bp.set_attribute("role_name", self.cfg.ego_id)
+        except Exception:
+            pass
+        try:
+            veh_bp.set_attribute("ros_name", self.cfg.ego_id)
+        except Exception:
+            pass
 
         ego, ego_idx = spawn_with_retry(world, veh_bp, spawns, preferred_idx=self.cfg.ego_idx)
         if ego is None:

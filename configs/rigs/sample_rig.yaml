@@ -40,7 +40,7 @@ sensors:
       range: 90.0               # 定义：量程(m)；常用：80~120（城市）
       rotation_frequency: 20.0  # 定义：旋转频率(Hz)；常用：10~20
       channels: 64              # 定义：线数；常用：16/32/64/128
-      points_per_second: 1500000# 定义：点频；常用：300k~1.5M
+      points_per_second: 1500000 # 定义：点频；常用：300k~1.5M
       upper_fov: 10.0           # 定义：上俯仰(度)；常用：10~15
       lower_fov: -30.0          # 定义：下俯仰(度)；常用：-25~-35
       horizontal_fov: 360.0     # 定义：水平视场(度)；常用：360（全向）

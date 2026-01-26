@@ -39,11 +39,23 @@ class SensorRigStats:
 class SensorRig:
     """Generic sensor rig driven by SensorSpec list."""
 
-    def __init__(self, world: carla.World, ego: carla.Vehicle, specs: List[SensorSpec], out_dir: Path):
+    def __init__(
+        self,
+        world: carla.World,
+        ego: carla.Vehicle,
+        specs: List[SensorSpec],
+        out_dir: Path,
+        enable_ros: bool = False,
+        invert_tf: bool = True,
+        ego_id: str = "hero",
+    ):
         self.world = world
         self.ego = ego
         self.specs = specs
         self.out_dir = out_dir
+        self.enable_ros = enable_ros
+        self.invert_tf = invert_tf
+        self.ego_id = ego_id
         self.entries = []  # list of dicts {spec, actor, queue, put, type}
         self.stats = SensorRigStats()
 
@@ -54,7 +66,8 @@ class SensorRig:
         for spec in self.specs:
             if not spec.enabled:
                 continue
-            bp = bp_lib.find(spec.blueprint)
+            bp_candidates = bp_lib.filter(spec.blueprint)
+            bp = bp_candidates[0] if len(bp_candidates) > 0 else bp_lib.find(spec.blueprint)
             if spec.sensor_tick is not None:
                 bp.set_attribute("sensor_tick", str(spec.sensor_tick))
             for k, v in spec.attributes.items():
@@ -62,24 +75,54 @@ class SensorRig:
                     bp.set_attribute(k, str(v))
                 except Exception:
                     pass
-            tr = carla.Transform(
-                carla.Location(x=spec.transform.get("x", 0.0), y=spec.transform.get("y", 0.0), z=spec.transform.get("z", 0.0)),
-                carla.Rotation(
-                    roll=spec.transform.get("roll", 0.0),
-                    pitch=spec.transform.get("pitch", 0.0),
-                    yaw=spec.transform.get("yaw", 0.0),
-                ),
+            if self.enable_ros:
+                for attr in ["ros_name", "role_name"]:
+                    try:
+                        bp.set_attribute(attr, spec.sensor_id)
+                    except Exception:
+                        pass
+            raw_tf = spec.transform or {}
+            loc = carla.Location(
+                x=raw_tf.get("x", 0.0),
+                y=-(raw_tf.get("y", 0.0)) if self.invert_tf else raw_tf.get("y", 0.0),
+                z=raw_tf.get("z", 0.0),
             )
+            rot = carla.Rotation(
+                roll=raw_tf.get("roll", 0.0),
+                pitch=-(raw_tf.get("pitch", 0.0)) if self.invert_tf else raw_tf.get("pitch", 0.0),
+                yaw=-(raw_tf.get("yaw", 0.0)) if self.invert_tf else raw_tf.get("yaw", 0.0),
+            )
+            tr = carla.Transform(loc, rot)
+            if self.enable_ros:
+                print(
+                    f"[SensorRig] spawn {spec.sensor_id} enable_ros={self.enable_ros} "
+                    f"transform=({loc.x:.2f},{loc.y:.2f},{loc.z:.2f}) "
+                    f"rpy=({rot.roll:.2f},{rot.pitch:.2f},{rot.yaw:.2f})"
+                )
             actor = self.world.spawn_actor(bp, tr, attach_to=self.ego)
             q, put = _latest_queue()
             actor.listen(put)
+            if self.enable_ros:
+                try:
+                    actor.enable_for_ros()
+                except Exception:
+                    pass
             entry = {"spec": spec, "actor": actor, "queue": q, "put": put, "type": spec.sensor_type}
             self.entries.append(entry)
+            final_tf = {
+                "x": tr.location.x,
+                "y": tr.location.y,
+                "z": tr.location.z,
+                "roll": tr.rotation.roll,
+                "pitch": tr.rotation.pitch,
+                "yaw": tr.rotation.yaw,
+            }
             meta[spec.sensor_id] = {
                 "type": spec.sensor_type,
                 "blueprint": spec.blueprint,
                 "sensor_tick": spec.sensor_tick,
-                "transform": spec.transform,
+                "transform": final_tf,
+                "transform_rig": spec.transform,
                 "attributes": spec.attributes,
             }
         (self.out_dir / "meta.json").write_text(json.dumps(meta, indent=2))

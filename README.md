@@ -1,7 +1,7 @@
 CARLA 算法测试平台（仓库使用手册）
 ==============================
 
-> 目标：基于 CARLA 搭建可复现的**算法测试平台**，聚合场景复现、传感器采集、真值输出、控制闭环、录制与评测。当前实现以本仓库内的跟停（follow-stop）控制器为核心，ROS2 在线桥接已实现（`io/ros2_adapter.py`），CyberRT 适配尚未实现（占位接口已在蓝图与 schemas 中，扩展方式见“如何扩展”）。
+> 目标：基于 CARLA 搭建可复现的**算法测试平台**，聚合场景复现、传感器采集、真值输出、控制闭环、录制与评测。当前实现以本仓库内的跟停（follow-stop）控制器为核心，支持开启 CARLA 原生 ROS2 发布（`--enable-ros2-native`），CyberRT 适配尚未实现（占位接口已在蓝图与 schemas 中，扩展方式见“如何扩展”）。
 
 ------------------------------------------------------------
 快速开始（5–10 分钟跑通）
@@ -70,7 +70,7 @@ Apply to ego vehicle; record timeseries; evaluate fail/success; write summary
 - `ControlCommand`：控制器输出油门/刹车/转向，包含 `last_debug` 元信息。
 - `Evaluator`：尚未独立模块化；当前 Harness 内部使用基础规则（碰撞/侵线/停稳）决定成功与否。
 - `Recorder`：timeseries CSV、summary JSON、可选视频。
-- `Harness`：驱动 tick、调用控制器、采集事件/可选传感器、执行失败策略并落盘；可选调用 ROS2 桥接。
+- `Harness`：驱动 tick、调用控制器、采集事件/可选传感器、执行失败策略并落盘；可选启用 ROS2 原生发布。
 
 ------------------------------------------------------------
 目录结构导览（核心模块）
@@ -88,7 +88,7 @@ carla_testbed/
     sensors/                      # 事件传感器源 + 基于 rig specs 的传感器挂载
     runner/                       # Harness 主循环（fail_fast/log_and_continue、记录）
     record/                       # timeseries/summary 录制器、fail 捕获、demo 录制
-    io/                           # ROS2 runtime bridge、消息 builder、QoS 映射
+    io/                           # ROS2 原生发布启用（enable_for_ros 辅助）
     utils/                        # 预留
   configs/rigs/                   # 传感器 rig 预设 (minimal/fullstack/…/sample_rig)
   examples/
@@ -102,7 +102,7 @@ carla_testbed/
 - sensors：`events.py` 监听碰撞/侵线；`rigs.py::SensorRig` 按 rig specs 采集并落盘。
 - runner：`harness.py` 调用 tick_world、控制器 step、应用 ControlCommand；根据 fail_strategy 决定退出；写 timeseries/summary；可选调用 SensorRig、FailFrameCapture、RecordManager。
 - record：TimeseriesRecorder/SummaryRecorder 写文件；FailFrameCapture 失败单帧抓取；RecordManager 调度 dual_cam/hud/sensor_demo。
-- io：`ros2_adapter.py` 按 io_contract_ros2.yaml 发布消息，`ros2_msg_builders.py` 构造 ROS2 标准消息。
+- io：`Ros2NativePublisher` 对已挂载传感器调用 `enable_for_ros()`，并协助 Traffic Manager 同步模式。
 - schemas：定义 FramePacket/GroundTruthPacket/AlgoIO，供上述模块共享。
 
 ------------------------------------------------------------
@@ -123,6 +123,10 @@ carla_testbed/
     - `--rig-file`：自定义 rig yaml/json
     - `--rig-override`：点路径覆盖，可多次使用（如 camera_front.attributes.image_size_x=1024）
   - `--enable-fail-capture`：失败窗口 HUD 录制（run_dir/fail_window）
+  - ROS2 原生发布：
+    - `--enable-ros2-native`：调用 CARLA 原生接口在 `/carla/<ego>/<sensor>/...` 发布话题（需服务器 `--ros2`）
+    - `--ros-invert-tf` / `--ros-keep-tf`：是否对 rig 的 y/pitch/yaw 取反（默认取反以匹配官方示例）
+    - `--ego-id`：ego role_name/ros_name，默认 `hero`
   - 录制/渲染（采集与合成分离）：
     - `--record dual_cam`：车内+第三人称原始视频（mp4；可选 `--record-keep-frames` 保留 png）
     - `--record hud`：基于 dual_cam 帧与 timeseries 渲染 HUD mp4
@@ -132,13 +136,13 @@ carla_testbed/
   - 失败策略（在 `carla_testbed/config/defaults.py` 配置）：`fail_strategy`=`fail_fast` 或 `log_and_continue`，`post_fail_steps` 控制失败后继续步数
   - 产物默认写入：`runs/followstop_<timestamp>/`
 
-ROS2 在线桥接（runtime bridge）
-- 需先 `source /opt/ros/<distro>/setup.bash`，订阅端记得 `use_sim_time=true`。
-- 运行：`python examples/run_followstop.py --rig fullstack --enable-ros2-bridge [--ros2-contract run_dir/config/io_contract_ros2.yaml]`。
-- 主题约定（来自 contract）：`/clock`、`/tf_static`（transient_local）、`/sim/ego/<sensor>/image_raw|points|imu|gnss`，事件 `/sim/ego/events/collision`、`/sim/ego/events/lane_invasion`（std_msgs/String JSON）。Radar 发布占位/解析未完成，日志有提示。
-- QoS：相机/激光雷达 best_effort(depth 5)，IMU best_effort(depth 50)，GNSS best_effort(depth 10)，事件 reliable(depth 50)，tf_static transient_local。
-- 录包：`ros2 bag record /clock /tf_static /sim/ego/camera/front/image_raw /sim/ego/lidar/top/points /sim/ego/imu /sim/ego/gnss`
-- 验证：`ros2 topic list | grep /sim/ego`、`ros2 topic echo /clock`、`ros2 topic hz /sim/ego/imu`、RViz2 订阅 Image / PointCloud2。
+ROS2 原生发布
+- 启动 CARLA：`./CarlaUE4.sh --ros2` 或 `CarlaUnreal.sh --ros2`（订阅端建议 `use_sim_time=true`）。
+- 运行：`python examples/run_followstop.py --rig fullstack --enable-ros2-native [--ego-id hero --ros-invert-tf]`。
+- 主题约定：`/carla/<ego_id>/<sensor_id>/...`，如 `/carla/hero/camera_front/image`、`/carla/hero/lidar_top/points`、`/carla/hero/imu`。事件传感器同样调用 `enable_for_ros()`，实际发布取决于 CARLA 版本，评测仍以 runs/summary/timeseries 为准。
+- 验证：`ros2 topic list | grep /carla/hero`、`ros2 topic info /carla/hero/camera_front/image`、`ros2 topic hz /carla/hero/imu`、`rviz2` 订阅 Image/PointCloud2。
+- 录包示例：`ros2 bag record /carla/hero/camera_front/image /carla/hero/lidar_top/points /carla/hero/imu /carla/hero/gnss`。
+- 迁移提示：旧的 `/sim/ego/...` 话题与 QoS 契约已移除，订阅端需改为 `/carla/...`。
 
 录制/渲染模式对比（record 模块）：
 
@@ -157,7 +161,7 @@ ROS2 在线桥接（runtime bridge）
 `runs/followstop_<timestamp>/`
 - `timeseries.csv`：每帧记录 frame,t,step,v_mps,throttle,brake,steer,collision_count,lane_invasion_count,dbg_*（控制器 last_debug）。
 - `summary.json`：汇总 success/fail_reason/collision_count/lane_invasion_count/max_speed_mps/first_failure_step/continued_steps_after_failure/controller 配置/fail_strategy/sensor_frames_saved/dropped。
-- `config/`：sensors_expanded.json、calibration.json、time_sync.json、noise_model.json、data_format.json、io_contract_ros2.yaml/io_contract_cyber.yaml。
+- `config/`：sensors_expanded.json、calibration.json、time_sync.json、noise_model.json、data_format.json。
 - `sensors/`：原始数据（camera png；lidar ply/bin；radar bin；imu/gnss json）。
 - `video/`：录制产物（dual_cam/hud/sensor_demo mp4，frames/ 可选保留）。
 - `frames.jsonl`：sensor_demo 索引；`replay/recording.log`：CARLA recorder。
@@ -187,7 +191,7 @@ class MyScenario(Scenario):
 - 评测逻辑当前嵌在 `runner/harness.py`（碰撞/侵线/停稳）。可在其中添加指标写入 timeseries/summary，或新建 `eval/` 模块并从 Harness 调用。
 
 新增 I/O Adapter：
-- 参考 `io/ros2_adapter.py`、`ros2_msg_builders.py`；实现 `start/stop/publish_frame/publish_truth/poll_algo_output`，在 Harness 初始化时挂载。CyberRT 可仿照 ROS2 接口占位 `io_contract_cyber.yaml`。
+- ROS2 已通过 CARLA 原生接口发布；如需其他中间件，可在 `io/` 下新建适配层，自行管理发布/订阅生命周期，并在 Harness 中挂载。
 
 ------------------------------------------------------------
 常见问题与排错
@@ -197,7 +201,7 @@ class MyScenario(Scenario):
 3) **传感器缺帧/丢帧**：SensorRig 按“取最新”策略，未实现硬同步；缺失会计入 dropped；可降低 sensor_tick 或 ticks。
 4) **LiDAR 投影全 0**：检查 calibration.json 是否与 rig/FOV/分辨率匹配；HUD 会打印 front/inimg；确保未缩放 png。
 5) **Radar 左右颠倒或全静止**：可调整 `radar_az_sign`、`radar_v_deadband`（sensor_demo opts）；raw bin 解析假设 vel/alt/az/depth 或 depth/az/alt/vel。
-6) **ROS2 无 topic**：确认 `--enable-ros2-bridge` 且已 `source` ROS；查看 io_contract_ros2.yaml 的话题命名；tf_static 需 transient_local；Radar mapping 未完成属已知限制。
+6) **ROS2 无 topic**：确认 CARLA 服务器以 `--ros2` 启动且示例传入 `--enable-ros2-native`；查看日志中的传感器 Transform；尝试 `--ros-keep-tf` 或检查 ros_name/role_name 是否与预期一致。
 7) **视频生成失败**：确保 opencv/pillow/ffmpeg 可用；若缺失会提示并跳过；可用 `--record-keep-frames` 检查中间 png。
 8) **性能/RTF 低**：减少 `--ticks`、降低分辨率/点数（`--record-max-lidar-points`）、关闭不必要记录；RenderOffScreen 可提速。
 9) **坐标系混淆**：默认 CARLA 世界/ego（x 前 y 右 z 上）；相机 optical 投影用 x 右 y 下 z 前；TF 由 calibration.json 提供。
@@ -206,7 +210,7 @@ class MyScenario(Scenario):
 ------------------------------------------------------------
 Roadmap
 ------------------------------------------------------------
-- CyberRT 适配（io_contract_cyber，占位待实现）。
+- CyberRT 适配（占位待实现）。
 - 传感器硬同步/插值，完善雷达解析。
 - 评测/KPI 模块化与 baseline 回归门槛。
 - 录制/回放增强：追踪相机、雷达目标聚类。

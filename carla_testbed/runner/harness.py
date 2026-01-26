@@ -19,7 +19,6 @@ from carla_testbed.config.rig_postprocess import (
     derive_time_sync,
     derive_noise,
     derive_data_format,
-    derive_io,
     save_json,
     hash_file,
 )
@@ -27,6 +26,7 @@ from carla_testbed.record import SummaryRecorder, TimeseriesRecorder
 from carla_testbed.record.manager import RecordManager, RecordOptions
 from carla_testbed.record.fail_capture import FailFrameCapture
 from carla_testbed.schemas import ControlCommand, Event, FramePacket, GroundTruthPacket, ObjectTruth
+from carla_testbed.io import Ros2NativePublisher
 from carla_testbed.sensors import CollisionEventSource, LaneInvasionEventSource, SensorRig
 from carla_testbed.sim import tick_world
 
@@ -136,6 +136,7 @@ class TestHarness:
         rig_final: Optional[dict],
         rig_name: Optional[str],
         sensor_specs: Optional[list],
+        ego_id: str,
     ):
         cfg_dir = out_dir / "config"
         cfg_dir.mkdir(parents=True, exist_ok=True)
@@ -150,14 +151,12 @@ class TestHarness:
 
         expanded = None
         if meta_typed:
-            expanded = expand_specs(meta_typed, rig_final or {}, rig_name or "")
+            expanded = expand_specs(meta_typed, rig_final or {}, rig_name or "", ego_id=ego_id)
             save_json(cfg_dir / "sensors_expanded.json", expanded)
             save_json(cfg_dir / "calibration.json", derive_calibration(expanded))
             save_json(cfg_dir / "time_sync.json", derive_time_sync(expanded))
             save_json(cfg_dir / "noise_model.json", derive_noise(expanded))
             save_json(cfg_dir / "data_format.json", derive_data_format(expanded))
-            save_json(cfg_dir / "io_contract_ros2.yaml", derive_io(expanded, "ros2"))
-            save_json(cfg_dir / "io_contract_cyber.yaml", derive_io(expanded, "cyber"))
         return cfg_dir, meta_typed, expanded
 
     def _check_fail(self, collision_events, invasion_events) -> Optional[str]:
@@ -188,6 +187,7 @@ class TestHarness:
         rig_raw: Optional[dict] = None,
         rig_final: Optional[dict] = None,
         rig_name: Optional[str] = None,
+        events_cfg: Optional[dict] = None,
         enable_fail_capture: bool = False,
         record_manager: Optional[RecordManager] = None,
         client: Optional[carla.Client] = None,
@@ -206,25 +206,38 @@ class TestHarness:
         )
         controller.reset()
 
-        col_src = CollisionEventSource(world, ego)
-        inv_src = LaneInvasionEventSource(world, ego)
-        col_src.start()
-        inv_src.start()
+        events_cfg = events_cfg or {"collision": True, "lane_invasion": True}
+        enable_collision = events_cfg.get("collision", True)
+        enable_invasion = events_cfg.get("lane_invasion", True)
+        col_src = CollisionEventSource(world, ego) if enable_collision else None
+        inv_src = LaneInvasionEventSource(world, ego) if enable_invasion else None
+        if col_src:
+            col_src.start(enable_ros=self.cfg.enable_ros2_native, name="collision")
+        if inv_src:
+            inv_src.start(enable_ros=self.cfg.enable_ros2_native, name="lane_invasion")
         rig = None
         if sensor_specs:
-            rig = SensorRig(world, ego, sensor_specs, sensor_out)
+            rig = SensorRig(
+                world,
+                ego,
+                sensor_specs,
+                sensor_out,
+                enable_ros=self.cfg.enable_ros2_native,
+                invert_tf=self.cfg.ros_invert_tf,
+                ego_id=self.cfg.ego_id,
+            )
             rig.start()
         fail_cap = FailFrameCapture(world, ego, out_dir, dt=self.cfg.dt) if enable_fail_capture else None
         record_mgr = record_manager
         if record_mgr:
             try:
-                record_mgr.start(world=world, ego=ego, client=client, dt=self.cfg.dt)
-            except Exception as exc:
-                print(f"[WARN] record manager start failed: {exc}")
+            record_mgr.start(world=world, ego=ego, client=client, dt=self.cfg.dt)
+        except Exception as exc:
+            print(f"[WARN] record manager start failed: {exc}")
         cfg_dir.mkdir(parents=True, exist_ok=True)
         cfg_meta = (cfg_dir, None, None)
         if sensor_out.exists() or sensor_specs or rig_final:
-            cfg_meta = self._ensure_config_outputs(out_dir, sensor_out, rig_final, rig_name, sensor_specs)
+        cfg_meta = self._ensure_config_outputs(out_dir, sensor_out, rig_final, rig_name, sensor_specs, ego_id=self.cfg.ego_id)
         cfg_dir_final, meta_typed, expanded = cfg_meta
         if record_mgr:
             record_mgr.config_paths = {
@@ -232,29 +245,22 @@ class TestHarness:
                 "sensors": cfg_dir_final / "sensors_expanded.json",
                 "time_sync": cfg_dir_final / "time_sync.json",
             }
-        adapter = None
-        if self.cfg.enable_ros2_bridge:
+        ros_native = None
+        tm = None
+        if self.cfg.enable_ros2_native:
             try:
-                from carla_testbed.io.ros2_adapter import ROS2BridgeAdapter
-            except Exception as exc:
-                print(f"[WARN] ROS2 bridge not started: {exc}")
-            else:
-                contract_path = (self.cfg.ros2_contract_path or cfg_dir / "io_contract_ros2.yaml")
-                calib_path = cfg_dir / "calibration.json"
-                time_sync_path = cfg_dir / "time_sync.json"
-                sensors_path = cfg_dir / "sensors_expanded.json"
-                try:
-                    adapter = ROS2BridgeAdapter(
-                        contract_path=contract_path,
-                        calib_path=calib_path,
-                        time_sync_path=time_sync_path,
-                        sensors_path=sensors_path,
-                    )
-                    adapter.start()
-                    adapter.spin_once(0.0)
-                except Exception as exc:
-                    adapter = None
-                    print(f"[WARN] Failed to start ROS2 bridge: {exc}")
+                tm = world.get_trafficmanager()
+            except Exception:
+                tm = None
+            ros_native = Ros2NativePublisher(
+                world=world,
+                traffic_manager=tm,
+                ego_vehicle=ego,
+                rig_spec=rig or sensor_specs or [],
+                ego_id=self.cfg.ego_id,
+                invert_tf=self.cfg.ros_invert_tf,
+            )
+            ros_native.setup_publishers()
 
         stopped_counter = 0
         hold_steps = max(1, int(1.0 / self.cfg.dt)) if self.cfg.dt > 0 else 20
@@ -289,29 +295,12 @@ class TestHarness:
 
                 v = (ego.get_velocity().length())
                 self.state.max_speed_mps = max(self.state.max_speed_mps, v)
-                collisions = col_src.fetch_and_clear()
-                invasions = inv_src.fetch_and_clear()
+                collisions = col_src.fetch_and_clear() if col_src else []
+                invasions = inv_src.fetch_and_clear() if inv_src else []
                 self.state.collision_count += len(collisions)
                 self.state.lane_invasion_count += len(invasions)
-                if adapter:
-                    samples = {}
-                    if rig:
-                        captured = rig.capture(frame_id, timestamp=timestamp, return_samples=True)
-                        if captured:
-                            samples = captured
-                    frame_packet = FramePacket(
-                        frame_id=frame_id,
-                        timestamp=timestamp,
-                        ego_pose_world=self._pose_from_actor(ego),
-                        samples=samples or {},
-                    )
-                    truth_packet = self._build_truth_packet(frame_id, timestamp, ego, front, collisions, invasions)
-                    adapter.publish_frame(frame_packet)
-                    adapter.publish_truth(truth_packet)
-                    adapter.spin_once(0.0)
-                else:
-                    if rig:
-                        rig.capture(frame_id, timestamp=timestamp, return_samples=False)
+                if rig:
+                    rig.capture(frame_id, timestamp=timestamp, return_samples=False)
 
                 last_debug = cmd.meta.get("last_debug", {}) if cmd.meta else {}
                 row = {
@@ -374,12 +363,14 @@ class TestHarness:
                     pct = step / float(self.cfg.max_steps) * 100.0
                     print(f"[progress] {step}/{self.cfg.max_steps} ({pct:.0f}%), est remaining {remaining:.1f}s")
         finally:
-            col_src.stop()
-            inv_src.stop()
+            if col_src:
+                col_src.stop()
+            if inv_src:
+                inv_src.stop()
             if rig:
                 rig.stop()
-            if adapter:
-                adapter.stop()
+            if ros_native:
+                ros_native.teardown()
             if fail_cap:
                 fail_cap.stop()
             if record_mgr:
@@ -412,16 +403,16 @@ class TestHarness:
             "sensor_dropped": None if rig is None else rig.stats.dropped,
             "record_modes": self.cfg.record_modes if hasattr(self.cfg, "record_modes") else [],
             "rig_name": rig_name,
-            "ros2_bridge_enabled": self.cfg.enable_ros2_bridge,
+            "ros2_native_enabled": self.cfg.enable_ros2_native,
         }
         summary_rec.write(summary)
         if rig_raw is not None and rig_final is not None:
             dump_rig(out_dir, rig_raw, rig_final, sensor_specs or [], meta_path=sensor_out / "meta.json")
 
-        # Post-process calibration/IO/time/noise/data_format (ensure available even when bridge disabled)
+        # Post-process calibration/IO/time/noise/data_format (ensure available even when ROS disabled)
         meta_path = sensor_out / "meta.json"
         if meta_typed is None:
-            cfg_dir_final, meta_typed, expanded = self._ensure_config_outputs(out_dir, sensor_out, rig_final, rig_name, sensor_specs)
+            cfg_dir_final, meta_typed, expanded = self._ensure_config_outputs(out_dir, sensor_out, rig_final, rig_name, sensor_specs, ego_id=self.cfg.ego_id)
 
         if meta_typed and expanded:
             manifest = {
@@ -434,8 +425,6 @@ class TestHarness:
                 "time_sync_hash": hash_file(cfg_dir_final / "time_sync.json"),
                 "noise_hash": hash_file(cfg_dir_final / "noise_model.json"),
                 "format_hash": hash_file(cfg_dir_final / "data_format.json"),
-                "io_ros2_hash": hash_file(cfg_dir_final / "io_contract_ros2.yaml"),
-                "io_cyber_hash": hash_file(cfg_dir_final / "io_contract_cyber.yaml"),
                 "time_base": "sim_time",
             }
             save_json(cfg_dir_final / "manifest.json", manifest)

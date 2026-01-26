@@ -76,6 +76,10 @@ def main():
     ap.add_argument("--rig-file", type=str, default=None, help="自定义 rig yaml/json 路径")
     ap.add_argument("--rig-override", action="append", default=[], help="rig 覆盖，格式 key=value，支持点路径")
     ap.add_argument("--enable-fail-capture", action="store_true", help="失败时抓取失败窗口 HUD 视频")
+    ap.add_argument("--enable-ros2-native", action="store_true", help="启用 CARLA 原生 ROS2 发布（/carla/<ego>/<sensor>/...）")
+    ap.add_argument("--ros-invert-tf", dest="ros_invert_tf", action="store_true", default=True, help="ROS2 模式下对 y/pitch/yaw 取反（默认开启以兼容 CARLA 示例）")
+    ap.add_argument("--ros-keep-tf", dest="ros_invert_tf", action="store_false", help="禁用取反，直接使用 rig 坐标")
+    ap.add_argument("--ego-id", default="hero", help="ego role_name/ros_name（默认 hero）")
     # Recording modes (new)
     ap.add_argument("--record", action="append", choices=["dual_cam", "hud", "sensor_demo"], help="录制/渲染模式（可多次传递）")
     ap.add_argument("--record-output", type=Path, default=None, help="录制输出目录（默认 run_dir/video）")
@@ -92,8 +96,6 @@ def main():
     # Deprecated
     ap.add_argument("--record-demo", action="store_true", help="(deprecated) 录制双相机 demo")
     ap.add_argument("--make-hud", action="store_true", help="(deprecated) 生成 HUD overlay")
-    ap.add_argument("--enable-ros2-bridge", action="store_true", help="启用 ROS2 在线桥接（发布传感器数据）")
-    ap.add_argument("--ros2-contract", type=Path, default=None, help="自定义 io_contract_ros2.yaml 路径（默认使用 run_dir/config 下生成的文件）")
     args = ap.parse_args()
 
     default_out = Path(__file__).resolve().parents[1] / "runs"
@@ -123,8 +125,9 @@ def main():
         town=args.town,
         max_steps=args.ticks,
         out_dir=default_out,
-        enable_ros2_bridge=args.enable_ros2_bridge,
-        ros2_contract_path=args.ros2_contract,
+        enable_ros2_native=args.enable_ros2_native,
+        ros_invert_tf=args.ros_invert_tf,
+        ego_id=args.ego_id,
         record_modes=record_modes,
         record_output=args.record_output,
         record_fps=args.record_fps,
@@ -152,10 +155,12 @@ def main():
         world = client.load_world(args.town)
         time.sleep(1.0)
 
-    original_settings = configure_synchronous_mode(world, cfg.dt)
+    original_settings = world.get_settings()
+    if cfg.synchronous_mode:
+        original_settings = configure_synchronous_mode(world, cfg.dt)
     bp_lib = world.get_blueprint_library()
 
-    scenario = FollowStopScenario(FollowStopConfig(front_idx=args.front_idx, ego_idx=args.ego_idx))
+    scenario = FollowStopScenario(FollowStopConfig(front_idx=args.front_idx, ego_idx=args.ego_idx, ego_id=args.ego_id))
     actors = None
 
     try:
@@ -213,6 +218,7 @@ def main():
             rig_raw=rig_raw,
             rig_final=rig_final,
             rig_name=args.rig if not args.rig_file else Path(args.rig_file).name,
+            events_cfg=events_cfg,
             enable_fail_capture=args.enable_fail_capture,
             record_manager=record_mgr,
             client=client,

@@ -87,7 +87,7 @@ carla_testbed/
     io/
       __init__.py
       base.py                  # Publisher/Subscriber/TransportAdapter
-      ros2_adapter.py
+      ros2_native.py
       cyber_adapter.py
       mapping/
         __init__.py

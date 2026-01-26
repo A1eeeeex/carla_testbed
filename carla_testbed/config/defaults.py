@@ -10,6 +10,7 @@ class HarnessConfig:
     town: str = "Town01"
     dt: float = 0.05
     max_steps: int = 10
+    synchronous_mode: bool = True
     out_dir: Path = Path("runs/default")
     fail_strategy: str = "fail_fast"  # or log_and_continue
     post_fail_steps: int = 400
@@ -25,5 +26,6 @@ class HarnessConfig:
     record_no_lidar: bool = False
     record_no_radar: bool = False
     record_no_hud: bool = False
-    enable_ros2_bridge: bool = False
-    ros2_contract_path: Optional[Path] = None
+    ego_id: str = "hero"
+    enable_ros2_native: bool = False
+    ros_invert_tf: bool = True

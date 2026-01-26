@@ -12,9 +12,9 @@
 - `HarnessState`：运行统计（step/frame_id/timestamp/success/fail_reason/collision_count 等）。
 
 # 数据契约（I/O）
-- 输入：CARLA world/map/ego/front，控制器配置 `LegacyControllerConfig`，传感器 specs，rig/config（用于派生 calibration/time_sync/io_contract）。
+- 输入：CARLA world/map/ego/front，控制器配置 `LegacyControllerConfig`，传感器 specs，rig/config（用于派生 calibration/time_sync）。
 - 输出：
-  - `runs/<run>/config/*.json/yaml`（sensors_expanded/calibration/time_sync/noise/data_format/io_contract_*）
+  - `runs/<run>/config/*.json/yaml`（sensors_expanded/calibration/time_sync/noise/data_format）
   - 传感器数据目录 `runs/<run>/sensors/<sensor_id>/...`
   - `runs/<run>/timeseries.csv`、`summary.json`
   - 可选视频/失败抓帧（record manager）
@@ -23,7 +23,7 @@
 # 用法（How to Use）
 - 通过示例脚本运行（推荐）：
 ```bash
-python examples/run_followstop.py --rig fullstack --ticks 1000 --record sensor_demo --enable-ros2-bridge
+python examples/run_followstop.py --rig fullstack --ticks 1000 --record sensor_demo --enable-ros2-native
 ```
 - 在自定义脚本中使用：
 ```python
@@ -43,7 +43,7 @@ state, summary = harness.run(world, carla_map, ego, front,
 # 配置（Config）
 - HarnessConfig（defaults.py 中定义）：ticks/host/port/town/rig 相关配置。
 - 控制器配置：`LegacyControllerConfig`（控制模式/agent 类型）。
-- CLI 参数参见 `examples/run_followstop.py`（如 `--ticks`、`--enable-fail-capture`、`--record*`、`--enable-ros2-bridge`）。
+- CLI 参数参见 `examples/run_followstop.py`（如 `--ticks`、`--enable-fail-capture`、`--record*`、`--enable-ros2-native`）。
 
 # 常见问题与排错
 - config 未生成：检查 rig 是否加载成功；确保 run_dir 可写。
