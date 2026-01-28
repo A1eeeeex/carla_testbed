@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>udp_transport</transport_id>
+      <type>UDPv4</type>
+      <use_builtin_transports>false</use_builtin_transports>
+      <sendBufferSize>1048576</sendBufferSize>
+      <receiveBufferSize>1048576</receiveBufferSize>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="carla_rviz_native" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>udp_transport</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+    <builtin>
+      <leaseDuration>
+        <durationbyname>INFINITE</durationbyname>
+      </leaseDuration>
+      <initialPeersList>
+        <address>127.0.0.1</address>
+      </initialPeersList>
+    </builtin>
+    <publisher profile_name="default_publisher">
+      <qos>
+        <publishMode>
+          <kind>SYNCHRONOUS</kind>
+        </publishMode>
+      </qos>
+    </publisher>
+    <subscriber profile_name="default_subscriber">
+      <qos>
+        <publishMode>
+          <kind>SYNCHRONOUS</kind>
+        </publishMode>
+      </qos>
+    </subscriber>
+  </participant>
+</profiles>

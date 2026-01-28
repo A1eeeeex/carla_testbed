@@ -29,3 +29,17 @@ class HarnessConfig:
     ego_id: str = "hero"
     enable_ros2_native: bool = False
     ros_invert_tf: bool = True
+    enable_ros2_bag: bool = False
+    ros2_bag_out: Optional[Path] = None
+    ros2_bag_storage: str = "sqlite3"
+    ros2_bag_compress: str = "none"
+    ros2_bag_max_size_mb: Optional[int] = None
+    ros2_bag_max_duration_s: Optional[int] = None
+    ros2_bag_include_tf: bool = True
+    ros2_bag_include_clock: bool = True
+    ros2_bag_topics: Optional[List[str]] = None
+    ros2_bag_extra_topics: Optional[List[str]] = None
+    ros2_bag_auto_topics: bool = True
+    ros2_bag_camera_image_suffix: str = "image"
+    ros2_bag_lidar_cloud_suffix: str = "point_cloud"
+    ros2_bag_radar_cloud_suffix: str = "point_cloud"

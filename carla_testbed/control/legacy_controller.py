@@ -14,7 +14,7 @@ from .base import Controller
 
 @dataclass
 class LegacyControllerConfig:
-    lateral_mode: str = "pure_pursuit"
+    lateral_mode: str = "dummy"
     policy_mode: str = "acc"
     controller_mode: str = "composite"  # or hybrid_agent_acc
     agent_type: str = "basic"

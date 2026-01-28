@@ -10,6 +10,7 @@
 - `video_recorder.py`：基础视频写入工具。
 - `fail_capture.py`：失败时抓取 HUD 视频/截图。
 - `sensor_demo/`：传感器解释性 demo 渲染流水线（详见子目录 README）。
+- `rviz/`：原生 ROS2 模式下生成 RViz 配置并启动 docker/本地 RViz（随主线可选启用）。
 
 # 对外接口（Public API）
 - `RecordManager(run_dir, rig_resolved, config_paths, args)`：

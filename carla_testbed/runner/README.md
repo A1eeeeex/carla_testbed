@@ -7,7 +7,7 @@
 
 # 对外接口（Public API）
 - `TestHarness(cfg: HarnessConfig)`：
-  - `run(world, carla_map, ego, front, controller_cfg, out_dir, sensor_specs, rig_raw, rig_final, rig_name, enable_fail_capture, record_manager, client) -> (HarnessState, summary)`。
+  - `run(world, carla_map, ego, front, controller_cfg, out_dir, sensor_specs, rig_raw, rig_final, rig_name, events_cfg, enable_fail_capture, record_manager, client, rviz_launcher=None) -> (HarnessState, summary)`。
   - `reset()`：重置内部状态。
 - `HarnessState`：运行统计（step/frame_id/timestamp/success/fail_reason/collision_count 等）。
 

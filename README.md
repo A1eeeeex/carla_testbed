@@ -127,6 +127,8 @@ carla_testbed/
     - `--enable-ros2-native`：调用 CARLA 原生接口在 `/carla/<ego>/<sensor>/...` 发布话题（需服务器 `--ros2`）
     - `--ros-invert-tf` / `--ros-keep-tf`：是否对 rig 的 y/pitch/yaw 取反（默认取反以匹配官方示例）
     - `--ego-id`：ego role_name/ros_name，默认 `hero`
+    - `--enable-rviz`：在 ROS2 模式下自动启动 RViz（默认 docker，可用 `--rviz-mode local` 直接调用本机 rviz2），可配合 `--rviz-domain/--rviz-docker-image/--rviz-camera-image-suffix/--rviz-lidar-cloud-suffix`
+    - `--enable-ros2-bag`：开启 rosbag2 录制，可配合 `--ros2-bag-out/--ros2-bag-storage/--ros2-bag-compress/--ros2-bag-max-size-mb/--ros2-bag-max-duration-s/--ros2-bag-topics/--ros2-bag-extra-topics/--ros2-bag-camera-image-suffix/--ros2-bag-lidar-cloud-suffix`
   - 录制/渲染（采集与合成分离）：
     - `--record dual_cam`：车内+第三人称原始视频（mp4；可选 `--record-keep-frames` 保留 png）
     - `--record hud`：基于 dual_cam 帧与 timeseries 渲染 HUD mp4
@@ -143,6 +145,8 @@ ROS2 原生发布
 - 验证：`ros2 topic list | grep /carla/hero`、`ros2 topic info /carla/hero/camera_front/image`、`ros2 topic hz /carla/hero/imu`、`rviz2` 订阅 Image/PointCloud2。
 - 录包示例：`ros2 bag record /carla/hero/camera_front/image /carla/hero/lidar_top/points /carla/hero/imu /carla/hero/gnss`。
 - 迁移提示：旧的 `/sim/ego/...` 话题与 QoS 契约已移除，订阅端需改为 `/carla/...`。
+- RViz 可选启用：`python examples/run_followstop.py --enable-ros2-native --enable-rviz --rig fullstack`（或 `--rig-file configs/rigs/<rig>.yaml`）。默认使用 docker（镜像 `carla_testbed_rviz:humble`，自动 build），根据 rig 自动订阅首个 camera/lidar，生成 `record/rviz/rviz/native_<rig>.rviz`。若无 DISPLAY 或 Wayland 会跳过且不影响主线；可自备本机 RViz。DDS 配置 `record/rviz/config/fastrtps-profile.xml` 提升 docker/多网卡场景稳定性。
+- ROS2 bag 录制（原生话题）：`python examples/run_followstop.py --enable-ros2-native --enable-ros2-bag --rig configs/rigs/<any>.yaml`。输出默认写入 `runs/<run>/ros2_bag/`，topics 自动根据 rig 生成（可用 `--ros2-bag-topics` 指定，`--ros2-bag-extra-topics` 追加，suffix 可调）。自检：`ros2 bag info <bag>`、`ros2 bag play <bag>`，确保 ROS_DOMAIN_ID 与录制时一致。
 
 录制/渲染模式对比（record 模块）：
 

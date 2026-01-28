@@ -10,7 +10,8 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Optional
+import yaml
 
 
 def _resolve_carla_root(cli_root: Path) -> Path:
@@ -55,6 +56,61 @@ from carla_testbed.runner import TestHarness
 from carla_testbed.scenarios import FollowStopConfig, FollowStopScenario
 from carla_testbed.sim import CarlaClientManager, configure_synchronous_mode, restore_settings
 from carla_testbed.record import RecordManager, RecordOptions
+from carla_testbed.record.rviz.launcher import RvizLauncher
+from carla_testbed.record.ros2_bag import Ros2BagRecorder
+
+
+def _dedup(seq):
+    seen = set()
+    out = []
+    for x in seq:
+        if x in seen:
+            continue
+        seen.add(x)
+        out.append(x)
+    return out
+
+
+def build_ros2_bag_topics(
+    rig_final: dict,
+    ego_id: str,
+    camera_suffix: str = "image",
+    lidar_suffix: str = "point_cloud",
+    radar_suffix: str = "point_cloud",
+    include_tf: bool = True,
+    include_clock: bool = True,
+    auto_topics: bool = True,
+    explicit_topics: Optional[List[str]] = None,
+    extra_topics: Optional[List[str]] = None,
+) -> List[str]:
+    topics = []
+    if auto_topics and rig_final:
+        for sensor in rig_final.get("sensors", []) or []:
+            if not sensor.get("enabled", True):
+                continue
+            sid = sensor.get("id")
+            bp = sensor.get("blueprint", "")
+            prefix = f"/carla/{ego_id}/{sid}"
+            if bp.startswith("sensor.camera"):
+                topics.append(f"{prefix}/{camera_suffix}")
+                topics.append(f"{prefix}/camera_info")
+            elif bp.startswith("sensor.lidar"):
+                topics.append(f"{prefix}/{lidar_suffix}")
+            elif "sensor.other.imu" in bp:
+                topics.append(f"{prefix}/imu")
+            elif "sensor.other.gnss" in bp:
+                topics.append(f"{prefix}/gnss")
+            elif "sensor.other.radar" in bp:
+                topics.append(f"{prefix}/{radar_suffix}")
+        # 安全兜底：即便 rig 未声明，也默认尝试录 imu/gnss 话题（原生接口常见命名）
+        topics.append(f"/carla/{ego_id}/imu")
+        topics.append(f"/carla/{ego_id}/gnss")
+    if explicit_topics:
+        topics.extend([t.strip() for t in explicit_topics if t.strip()])
+    if extra_topics:
+        topics.extend([t.strip() for t in extra_topics if t.strip()])
+    # include_tf/clock handled by recorder flags; no need to insert here unless user specified explicitly
+    return _dedup(topics)
 
 
 def main():
@@ -80,6 +136,31 @@ def main():
     ap.add_argument("--ros-invert-tf", dest="ros_invert_tf", action="store_true", default=True, help="ROS2 模式下对 y/pitch/yaw 取反（默认开启以兼容 CARLA 示例）")
     ap.add_argument("--ros-keep-tf", dest="ros_invert_tf", action="store_false", help="禁用取反，直接使用 rig 坐标")
     ap.add_argument("--ego-id", default="hero", help="ego role_name/ros_name（默认 hero）")
+    ap.add_argument("--enable-rviz", action="store_true", help="在 ROS2 原生模式下启动 RViz 可视化（默认 docker）")
+    ap.add_argument("--rviz-mode", choices=["docker", "local"], default="docker", help="RViz 运行方式，默认 docker（local 暂作占位）")
+    ap.add_argument("--rviz-domain", type=int, default=0, help="ROS_DOMAIN_ID（默认 0）")
+    ap.add_argument("--rviz-ego", type=str, default=None, help="RViz 订阅使用的 ego 名称（默认跟随 --ego-id）")
+    ap.add_argument("--rviz-camera-image-suffix", type=str, default="image", help="相机话题后缀（默认 image）")
+    ap.add_argument("--rviz-lidar-cloud-suffix", type=str, default="point_cloud", help="激光雷达话题后缀（默认 point_cloud）")
+    ap.add_argument("--rviz-docker-image", type=str, default="carla_testbed_rviz:humble", help="RViz docker 镜像名（默认 carla_testbed_rviz:humble）")
+    # ROS2 bag
+    ap.add_argument("--enable-ros2-bag", action="store_true", help="在 ROS2 原生模式下录制 rosbag2")
+    ap.add_argument("--ros2-bag-out", type=Path, default=None, help="rosbag 输出目录/前缀（默认 runs/<run>/ros2_bag/bag）")
+    ap.add_argument("--ros2-bag-storage", choices=["sqlite3", "mcap"], default="sqlite3", help="rosbag2 存储后端")
+    ap.add_argument("--ros2-bag-compress", choices=["none", "zstd"], default="none", help="压缩方式（需相关插件支持）")
+    ap.add_argument("--ros2-bag-max-size-mb", type=int, default=None, help="单 bag 最大尺寸（MB），超出则切分")
+    ap.add_argument("--ros2-bag-max-duration-s", type=int, default=None, help="单 bag 最长时长（秒），超出则切分")
+    ap.add_argument("--ros2-bag-include-tf", action="store_true", default=True, help="录制 /tf /tf_static")
+    ap.add_argument("--ros2-bag-no-tf", dest="ros2_bag_include_tf", action="store_false", help="不录 /tf /tf_static")
+    ap.add_argument("--ros2-bag-include-clock", action="store_true", default=True, help="录制 /clock")
+    ap.add_argument("--ros2-bag-no-clock", dest="ros2_bag_include_clock", action="store_false", help="不录 /clock")
+    ap.add_argument("--ros2-bag-topics", type=str, default=None, help="显式 topic 列表，逗号分隔")
+    ap.add_argument("--ros2-bag-auto-topics", action="store_true", default=True, help="根据 rig 自动推导 topic")
+    ap.add_argument("--ros2-bag-no-auto-topics", dest="ros2_bag_auto_topics", action="store_false", help="禁用自动推导 topic")
+    ap.add_argument("--ros2-bag-extra-topics", type=str, default=None, help="追加录制的话题，逗号分隔")
+    ap.add_argument("--ros2-bag-camera-image-suffix", type=str, default="image", help="自动 camera topic 后缀（默认 image）")
+    ap.add_argument("--ros2-bag-lidar-cloud-suffix", type=str, default="point_cloud", help="自动 lidar topic 后缀（默认 point_cloud）")
+    ap.add_argument("--ros2-bag-radar-cloud-suffix", type=str, default="point_cloud", help="自动 radar topic 后缀（默认 point_cloud）")
     # Recording modes (new)
     ap.add_argument("--record", action="append", choices=["dual_cam", "hud", "sensor_demo"], help="录制/渲染模式（可多次传递）")
     ap.add_argument("--record-output", type=Path, default=None, help="录制输出目录（默认 run_dir/video）")
@@ -97,6 +178,14 @@ def main():
     ap.add_argument("--record-demo", action="store_true", help="(deprecated) 录制双相机 demo")
     ap.add_argument("--make-hud", action="store_true", help="(deprecated) 生成 HUD overlay")
     args = ap.parse_args()
+
+    if args.enable_rviz and not args.enable_ros2_native:
+        print("[ERROR] --enable-rviz 仅在 --enable-ros2-native 模式下可用")
+        sys.exit(1)
+    if args.enable_ros2_bag and not args.enable_ros2_native:
+        print("[ERROR] --enable-ros2-bag 仅支持原生 ROS2 发布模式，请先加 --enable-ros2-native")
+        sys.exit(1)
+    rviz_ego = args.rviz_ego or args.ego_id
 
     default_out = Path(__file__).resolve().parents[1] / "runs"
     # Parse resolution
@@ -140,6 +229,20 @@ def main():
         record_no_lidar=args.record_no_lidar,
         record_no_radar=args.record_no_radar,
         record_no_hud=args.record_no_hud,
+        enable_ros2_bag=args.enable_ros2_bag,
+        ros2_bag_out=args.ros2_bag_out,
+        ros2_bag_storage=args.ros2_bag_storage,
+        ros2_bag_compress=args.ros2_bag_compress,
+        ros2_bag_max_size_mb=args.ros2_bag_max_size_mb,
+        ros2_bag_max_duration_s=args.ros2_bag_max_duration_s,
+        ros2_bag_include_tf=args.ros2_bag_include_tf,
+        ros2_bag_include_clock=args.ros2_bag_include_clock,
+        ros2_bag_topics=args.ros2_bag_topics.split(",") if args.ros2_bag_topics else None,
+        ros2_bag_extra_topics=args.ros2_bag_extra_topics.split(",") if args.ros2_bag_extra_topics else None,
+        ros2_bag_auto_topics=args.ros2_bag_auto_topics,
+        ros2_bag_camera_image_suffix=args.ros2_bag_camera_image_suffix,
+        ros2_bag_lidar_cloud_suffix=args.ros2_bag_lidar_cloud_suffix,
+        ros2_bag_radar_cloud_suffix=args.ros2_bag_radar_cloud_suffix,
     )
     harness = TestHarness(cfg)
 
@@ -184,7 +287,53 @@ def main():
         if args.rig_file:
             rig_raw = load_rig_file(args.rig_file)
         rig_final = apply_overrides(rig_raw, args.rig_override)
+        rig_label = args.rig if not args.rig_file else Path(args.rig_file).stem
         sensor_specs, events_cfg = rig_to_specs(rig_final)
+        rviz_launcher = None
+        if args.enable_ros2_native and args.enable_rviz:
+            rviz_rig_path = out_run_dir / "config" / f"{rig_label}_rviz.yaml"
+            rviz_rig_path.parent.mkdir(parents=True, exist_ok=True)
+            rviz_rig_path.write_text(yaml.safe_dump(rig_final))
+            rviz_launcher = RvizLauncher(
+                rig_path=rviz_rig_path,
+                ego_id=rviz_ego,
+                domain_id=args.rviz_domain,
+                mode=args.rviz_mode,
+                docker_image=args.rviz_docker_image,
+                camera_suffix=args.rviz_camera_image_suffix,
+                lidar_suffix=args.rviz_lidar_cloud_suffix,
+            )
+        bag_cfg = None
+        if args.enable_ros2_native and args.enable_ros2_bag:
+            bag_out = args.ros2_bag_out or (out_run_dir / "ros2_bag" / "bag")
+            topics = []
+            explicit = args.ros2_bag_topics.split(",") if args.ros2_bag_topics else None
+            extras = args.ros2_bag_extra_topics.split(",") if args.ros2_bag_extra_topics else None
+            topics = build_ros2_bag_topics(
+                rig_final=rig_final,
+                ego_id=args.ego_id,
+                camera_suffix=args.ros2_bag_camera_image_suffix,
+                lidar_suffix=args.ros2_bag_lidar_cloud_suffix,
+                radar_suffix=args.ros2_bag_radar_cloud_suffix,
+                include_tf=args.ros2_bag_include_tf,
+                include_clock=args.ros2_bag_include_clock,
+                auto_topics=args.ros2_bag_auto_topics,
+                explicit_topics=explicit,
+                extra_topics=extras,
+            )
+            print(f"[ROS2 bag] topics: {topics}")
+            bag_cfg = {
+                "out_path": bag_out,
+                "topics": topics,
+                "storage": args.ros2_bag_storage,
+                "compress": args.ros2_bag_compress,
+                "include_tf": args.ros2_bag_include_tf,
+                "include_clock": args.ros2_bag_include_clock,
+                "max_size_mb": args.ros2_bag_max_size_mb,
+                "max_duration_s": args.ros2_bag_max_duration_s,
+                "env": None,
+                "log_path": out_run_dir / "logs" / "ros2_bag.log",
+            }
         # Prepare record manager (run_dir not created until run)
         record_opts = RecordOptions(
             modes=record_modes,
@@ -222,6 +371,8 @@ def main():
             enable_fail_capture=args.enable_fail_capture,
             record_manager=record_mgr,
             client=client,
+            rviz_launcher=rviz_launcher,
+            bag_recorder_cfg=bag_cfg,
         )
         print(f"Run finished: success={summary['success']} fail_reason={summary['fail_reason']} collisions={summary['collision_count']}")
     finally:

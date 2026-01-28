@@ -1,0 +1,65 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Selection
+    Name: Selection
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF
+    - Class: rviz_common/Group
+      Enabled: true
+      Name: Cameras
+      Displays:
+        - Class: rviz_default_plugins/Image
+          Enabled: __CAMERA_ENABLED__
+          Name: RGB
+          Image Topic: __CAMERA_IMAGE_TOPIC__
+          Queue Size: 10
+          Normalize Range: true
+          Transport Hint: raw
+    - Class: rviz_common/Group
+      Enabled: true
+      Name: Lidar
+      Displays:
+        - Class: rviz_default_plugins/PointCloud2
+          Enabled: __LIDAR_ENABLED__
+          Name: PointCloud
+          Topic: __LIDAR_CLOUD_TOPIC__
+          Queue Size: 10
+          Size (Pixels): 3
+          Color Transformer: Intensity
+          Style: Flat Squares
+          Use Fixed Frame: true
+          Unreliable: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: __FIXED_FRAME__
+    Frame Rate: 30
+  Enabled: true
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 15
+      Name: Orbit
+      Pitch: 0.785398
+      Target Frame: __FIXED_FRAME__
+      Yaw: 0
+Window Geometry:
+  Width: 1280
+  Height: 720
+  X: 0
+  Y: 0
+  QMainWindow State: >
+    000000ff00000000fd0000000400000000000001cc0000031efc020000000bfb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb000000120056006900650077007300200054006f006f6c7300000001e10000009b0000005c00fffffffb0000000c0044006900730070006c006100790073010000003d0000016b000000e600fffffffb0000000c0056006900650077007300000002a7000000bb000000ad00fffffffb0000000a0049006d00610067006500000001e1000000a40000002600fffffffb0000000a0049006d006100670065000000020a000000a90000002600fffffffb0000000a0054004600200054007200650065000000003d0000016b000000ad00fffffffb0000000a00430061006d00650072006100000001e1000000a40000002600fffffffb0000000a004c006900640061007200000001e1000000a40000002600fffffffb000000080054006f006f006c007300000002f8000000b00000005400ffffff000000010000010f0000031efc0200000002fb0000000a0044006f0063006b00540066000000003d0000016b0000007d00fffffffb0000000a0044006f0063006b0049006d00000002a7000000bb0000007d00ffffff000000030000031e00000004

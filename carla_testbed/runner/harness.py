@@ -191,6 +191,8 @@ class TestHarness:
         enable_fail_capture: bool = False,
         record_manager: Optional[RecordManager] = None,
         client: Optional[carla.Client] = None,
+        rviz_launcher=None,
+        bag_recorder_cfg: Optional[dict] = None,
     ) -> Tuple[HarnessState, dict]:
         out_dir.mkdir(parents=True, exist_ok=True)
         ts_rec = TimeseriesRecorder(out_dir / "timeseries.csv")
@@ -231,13 +233,13 @@ class TestHarness:
         record_mgr = record_manager
         if record_mgr:
             try:
-            record_mgr.start(world=world, ego=ego, client=client, dt=self.cfg.dt)
-        except Exception as exc:
-            print(f"[WARN] record manager start failed: {exc}")
+                record_mgr.start(world=world, ego=ego, client=client, dt=self.cfg.dt)
+            except Exception as exc:
+                print(f"[WARN] record manager start failed: {exc}")
         cfg_dir.mkdir(parents=True, exist_ok=True)
         cfg_meta = (cfg_dir, None, None)
         if sensor_out.exists() or sensor_specs or rig_final:
-        cfg_meta = self._ensure_config_outputs(out_dir, sensor_out, rig_final, rig_name, sensor_specs, ego_id=self.cfg.ego_id)
+            cfg_meta = self._ensure_config_outputs(out_dir, sensor_out, rig_final, rig_name, sensor_specs, ego_id=self.cfg.ego_id)
         cfg_dir_final, meta_typed, expanded = cfg_meta
         if record_mgr:
             record_mgr.config_paths = {
@@ -247,6 +249,7 @@ class TestHarness:
             }
         ros_native = None
         tm = None
+        bag_recorder = None
         if self.cfg.enable_ros2_native:
             try:
                 tm = world.get_trafficmanager()
@@ -261,6 +264,22 @@ class TestHarness:
                 invert_tf=self.cfg.ros_invert_tf,
             )
             ros_native.setup_publishers()
+            if rviz_launcher is not None:
+                try:
+                    rviz_launcher.start()
+                except Exception as exc:
+                    print(f"[WARN] RViz launcher failed: {exc}")
+            if bag_recorder_cfg:
+                try:
+                    from carla_testbed.record import Ros2BagRecorder
+
+                    bag_recorder = Ros2BagRecorder(**bag_recorder_cfg)
+                    bag_recorder.start()
+                    print(f"[ROS2 bag] recording to {bag_recorder_cfg.get('out_path')}")
+                except FileNotFoundError:
+                    print("[ERROR] ros2 命令未找到，无法录制 rosbag2")
+                except Exception as exc:
+                    print(f"[WARN] rosbag2 recorder start failed: {exc}")
 
         stopped_counter = 0
         hold_steps = max(1, int(1.0 / self.cfg.dt)) if self.cfg.dt > 0 else 20
@@ -371,6 +390,16 @@ class TestHarness:
                 rig.stop()
             if ros_native:
                 ros_native.teardown()
+            if rviz_launcher:
+                try:
+                    rviz_launcher.stop()
+                except Exception as exc:
+                    print(f"[WARN] RViz launcher stop failed: {exc}")
+            if bag_recorder:
+                try:
+                    bag_recorder.stop()
+                except Exception as exc:
+                    print(f"[WARN] rosbag2 recorder stop failed: {exc}")
             if fail_cap:
                 fail_cap.stop()
             if record_mgr:
@@ -404,7 +433,11 @@ class TestHarness:
             "record_modes": self.cfg.record_modes if hasattr(self.cfg, "record_modes") else [],
             "rig_name": rig_name,
             "ros2_native_enabled": self.cfg.enable_ros2_native,
+            "ros2_bag_enabled": self.cfg.enable_ros2_bag if hasattr(self.cfg, "enable_ros2_bag") else False,
         }
+        if bag_recorder_cfg:
+            summary["ros2_bag_out"] = str(bag_recorder_cfg.get("out_path"))
+            summary["ros2_bag_topics"] = bag_recorder_cfg.get("topics", [])
         summary_rec.write(summary)
         if rig_raw is not None and rig_final is not None:
             dump_rig(out_dir, rig_raw, rig_final, sensor_specs or [], meta_path=sensor_out / "meta.json")

@@ -37,6 +37,7 @@ python examples/run_followstop.py --rig fullstack --ticks 1000 --record sensor_d
 3) **启用 CARLA 原生 ROS2 发布**
 ```bash
 python examples/run_followstop.py --rig fullstack --enable-ros2-native --ticks 500
+# 可选：再加 --enable-rviz 自动启动 RViz（需 X11/docker）
 # 另一个终端（已 source ROS2，服务器以 --ros2 启动）：
 ros2 topic list | grep /carla/hero
 ros2 topic hz /carla/hero/imu
