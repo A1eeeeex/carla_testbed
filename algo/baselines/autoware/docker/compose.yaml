@@ -1,0 +1,18 @@
+version: "3.8"
+services:
+  autoware:
+    image: ghcr.io/autowarefoundation/autoware:universe-devel-cuda
+    network_mode: host
+    working_dir: /work
+    environment:
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - AUTOWARE_WORKSPACE=/opt/Autoware
+      - USE_SIM_TIME=true
+    volumes:
+      - ../../../..:/work:rw
+    command: >
+      bash -lc "source /opt/ros/humble/setup.bash && \
+      source /opt/Autoware/install/setup.bash && \
+      export PYTHONPATH=/work:${PYTHONPATH}; \
+      ros2 launch autoware_carla_interface autoware_carla_interface.launch.xml || \
+      (echo 'launch failed, dropping into shell'; exec bash)"

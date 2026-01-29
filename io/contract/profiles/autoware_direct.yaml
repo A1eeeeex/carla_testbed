@@ -1,0 +1,15 @@
+backend: autoware_direct
+carla:
+  host: 127.0.0.1
+  port: 2000
+  start_server: false
+autoware:
+  compose_file: algo/baselines/autoware/docker/compose.yaml
+  map_path: null
+  town: Town01
+rig:
+  rig_path: configs/rigs/minimal.yaml
+contract:
+  canon_ros2: io/contract/canon_ros2.yaml
+notes: |
+  Mode-2：Autoware 容器通过 autoware_carla_interface 直连 CARLA，自动生成传感器映射与标定文件。

@@ -1,0 +1,30 @@
+frames:
+  map:
+    parent: null
+    description: Global frame aligned with CARLA map
+  odom:
+    parent: map
+    description: Drift-prone odometry frame
+  base_link:
+    parent: odom
+    description: Ego vehicle body frame (front axle center)
+  imu_link:
+    parent: base_link
+    description: IMU sensor frame
+  gnss:
+    parent: base_link
+    description: GNSS antenna frame
+  camera_front:
+    parent: base_link
+    description: Forward RGB camera optical frame
+  lidar_top:
+    parent: base_link
+    description: Top lidar frame
+required_tf:
+  - map
+  - odom
+  - base_link
+  - camera_front
+  - lidar_top
+  - imu_link
+  - gnss

@@ -1,0 +1,36 @@
+slots:
+  front_camera:
+    topic: /carla/ego/front_camera/image
+    type: sensor_msgs/msg/Image
+    frame_id: camera_front
+    rate_hz: 20
+    encoding: rgba8
+  top_lidar:
+    topic: /carla/ego/lidar_top/points
+    type: sensor_msgs/msg/PointCloud2
+    frame_id: lidar_top
+    rate_hz: 10
+  imu:
+    topic: /carla/ego/imu
+    type: sensor_msgs/msg/Imu
+    frame_id: imu_link
+    rate_hz: 100
+  gnss:
+    topic: /carla/ego/gnss
+    type: sensor_msgs/msg/NavSatFix
+    frame_id: gnss
+    rate_hz: 5
+  odometry:
+    topic: /carla/ego/odom
+    type: nav_msgs/msg/Odometry
+    frame_id: odom
+    child_frame_id: base_link
+    rate_hz: 20
+  control_cmd:
+    topic: /tb/ego/control_cmd
+    type: ackermann_msgs/msg/AckermannDriveStamped
+    frame_id: base_link
+    direction: subscribe
+notes: |
+  - 以 slot 语义定义稳定话题，CARLA 侧可按 rig 与 role_name/ego_id 生成实际发布
+  - 算法端只需订阅/发布以上 topics；额外传感器请在本文件追加 slot 并保持语义稳定

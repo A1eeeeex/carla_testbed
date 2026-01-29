@@ -1,0 +1,16 @@
+backend: ros2_native
+carla:
+  host: 127.0.0.1
+  port: 2000
+  ros2_native_expected: true
+  start_server: false
+contract:
+  canon_ros2: io/contract/canon_ros2.yaml
+control_bridge:
+  enabled: true
+  node: algo.nodes.control.carla_control_bridge
+  topic: slot.control_cmd
+  max_steer_angle: 0.6
+  timeout_sec: 0.8
+notes: |
+  Mode-1：CARLA 原生 ROS2 输出，任意算法订阅传感器并发布 AckermannDriveStamped 到控制桥。

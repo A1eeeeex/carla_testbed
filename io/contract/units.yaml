@@ -1,0 +1,9 @@
+fields:
+  linear_velocity: m/s
+  linear_acceleration: m/s^2
+  angular_velocity: rad/s
+  angle: rad
+  distance: m
+  time: s
+notes: |
+  所有 ROS2 消息应保持 SI 单位；carla 控制桥假定角度单位为弧度、速度为 m/s。

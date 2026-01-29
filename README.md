@@ -1,6 +1,15 @@
 CARLA 算法测试平台（仓库使用手册）
 ==============================
 
+👉 新架构总览（架构收敛）
+- 顶层三层次：`carla_testbed/` 专注仿真/场景/录制，`io/` 统一 I/O 契约与编排，`algo/` 承载算法栈（Autoware 等）与控制桥。
+- 快速入口：  
+  - Mode-1：CARLA 原生 ROS2 + 任意算法（含控制桥）  
+    `python io/scripts/run.py --profile io/contract/profiles/ros2_native_any_algo.yaml`
+  - Mode-2：Autoware 直连 CARLA（autoware_carla_interface）  
+    `python io/scripts/run.py --profile io/contract/profiles/autoware_direct.yaml`
+- IO 相关逻辑已抽离到顶层 `io/`（contract/backends/tools）。`carla_testbed` 内部仅提供最小 hook，原 `carla_testbed/io` 已移除。
+
 > 目标：基于 CARLA 搭建可复现的**算法测试平台**，聚合场景复现、传感器采集、真值输出、控制闭环、录制与评测。当前实现以本仓库内的跟停（follow-stop）控制器为核心，支持开启 CARLA 原生 ROS2 发布（`--enable-ros2-native`），CyberRT 适配尚未实现（占位接口已在蓝图与 schemas 中，扩展方式见“如何扩展”）。
 
 ------------------------------------------------------------
@@ -76,23 +85,15 @@ Apply to ego vehicle; record timeseries; evaluate fail/success; write summary
 目录结构导览（核心模块）
 ------------------------------------------------------------
 ```
-carla_testbed/
-  README.md                       # 本指南
-  carla_testbed_module_blueprint.md # 目标蓝图/接口定义
-  carla_testbed/
-    schemas/                      # 统一数据结构：FramePacket / GroundTruthPacket / ControlCommand
-    config/                       # HarnessConfig（同步模式、步数、失败策略等），rig 解析/派生 calibration
-    sim/                          # CARLA 连接、同步 tick、spawn 帮助
-    scenarios/                    # 场景定义（已实现 follow-stop 直线场景）
-    control/                      # 控制器接口 + 本地 legacy_followstop 适配
-    sensors/                      # 事件传感器源 + 基于 rig specs 的传感器挂载
-    runner/                       # Harness 主循环（fail_fast/log_and_continue、记录）
-    record/                       # timeseries/summary 录制器、fail 捕获、demo 录制
-    io/                           # ROS2 原生发布启用（enable_for_ros 辅助）
-    utils/                        # 预留
-  configs/rigs/                   # 传感器 rig 预设 (minimal/fullstack/…/sample_rig)
-  examples/
-    run_followstop.py             # MVP 入口：构建场景、运行 Harness、生成产物
+repo_root/
+  carla_testbed/                  # 仿真/场景/录制核心（保持原目录层级）
+    schemas/ config/ sim/ scenarios/ control/ sensors/ runner/ record/ utils/
+  io/                             # 新：I/O 契约、profiles、backends、工具与脚本
+    contract/ backends/ ros2/ scripts/
+  algo/                           # 新：算法/栈承载（Autoware baseline、控制桥、插件占位）
+    baselines/autoware/ ... , nodes/control/carla_control_bridge/, plugins/
+  configs/rigs/                   # rig 预设
+  examples/run_followstop.py      # 示例入口
 ```
 
 模块职责（数据如何流动）
@@ -139,6 +140,7 @@ carla_testbed/
   - 产物默认写入：`runs/followstop_<timestamp>/`
 
 ROS2 原生发布
+- 提示：原 `carla_testbed/io` 已抽离；现在由 `io/backends/ros2_native.py` 和 `io/scripts/run.py` 统一入口管理。
 - 启动 CARLA：`./CarlaUE4.sh --ros2` 或 `CarlaUnreal.sh --ros2`（订阅端建议 `use_sim_time=true`）。
 - 运行：`python examples/run_followstop.py --rig fullstack --enable-ros2-native [--ego-id hero --ros-invert-tf]`。
 - 主题约定：`/carla/<ego_id>/<sensor_id>/...`，如 `/carla/hero/camera_front/image`、`/carla/hero/lidar_top/points`、`/carla/hero/imu`。事件传感器同样调用 `enable_for_ros()`，实际发布取决于 CARLA 版本，评测仍以 runs/summary/timeseries 为准。
