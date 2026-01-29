@@ -4,11 +4,21 @@ CARLA 算法测试平台（仓库使用手册）
 👉 新架构总览（架构收敛）
 - 顶层三层次：`carla_testbed/` 专注仿真/场景/录制，`io/` 统一 I/O 契约与编排，`algo/` 承载算法栈（Autoware 等）与控制桥。
 - 快速入口：  
-  - Mode-1：CARLA 原生 ROS2 + 任意算法（含控制桥）  
-    `python io/scripts/run.py --profile io/contract/profiles/ros2_native_any_algo.yaml`
-  - Mode-2：Autoware 直连 CARLA（autoware_carla_interface）  
-    `python io/scripts/run.py --profile io/contract/profiles/autoware_direct.yaml`
+- Mode-1：CARLA 原生 ROS2 + 任意算法（含控制桥）  
+  `python io/scripts/run.py --profile io/contract/profiles/ros2_native_any_algo.yaml`
+- Mode-2：Autoware 直连 CARLA（autoware_carla_interface）  
+  `python io/scripts/run.py --config configs/io/examples/followstop_autoware.yaml`
+
+Autoware 容器说明
+- 镜像：`ghcr.io/autowarefoundation/autoware:universe-devel-cuda`
+- Compose 启动后默认尝试 source `/opt/Autoware/install/setup.bash`，若不存在则回退到 `/autoware/install/setup.bash` 并给出提示。
+- 宿主未装 ROS2 时 healthcheck 会被跳过（WARN）；可在容器内 `source /opt/ros/humble/setup.bash && source /opt/Autoware/install/setup.bash` 再运行 `ros2 topic list` 进行自检。
 - IO 相关逻辑已抽离到顶层 `io/`（contract/backends/tools）。`carla_testbed` 内部仅提供最小 hook，原 `carla_testbed/io` 已移除。
+
+配置驱动（推荐）
+- 入口：`python io/scripts/run.py --config <yaml> [--override key=val ...] [--dry-run]`
+- 示例：`configs/io/examples/followstop_autoware.yaml`（选择算法 stack=autoware），`configs/io/examples/followstop_dummy.yaml`（不跑算法仅驱动场景）
+- 每次运行都会写 `runs/<timestamp>/effective.yaml` 和 `runs/<timestamp>/artifacts/`（mapping/calibration/qos/frames），可用来完全复现。
 
 > 目标：基于 CARLA 搭建可复现的**算法测试平台**，聚合场景复现、传感器采集、真值输出、控制闭环、录制与评测。当前实现以本仓库内的跟停（follow-stop）控制器为核心，支持开启 CARLA 原生 ROS2 发布（`--enable-ros2-native`），CyberRT 适配尚未实现（占位接口已在蓝图与 schemas 中，扩展方式见“如何扩展”）。
 
@@ -157,6 +167,14 @@ ROS2 原生发布
 | dual_cam    | 车内/第三人称 png 序列                 | 是       | ffmpeg(可选)              | 原 dual_cam 录制功能 |
 | hud         | 依赖 dual_cam png + timeseries.csv     | 是       | pillow + ffmpeg(可选)     | 基于 dual_cam 叠加 HUD |
 | sensor_demo | recorder.log + sensors raw + frames.jsonl | 是    | OpenCV(+open3d 可选)      | 解释性传感器可视化（LiDAR+Radar+HUD） |
+
+常见问题（Mode-2）
+- 话题可见但无数据：检查 `runs/<ts>/artifacts/qos_overrides.yaml` 是否被 Autoware 读取；必要时将 QoS 设为 best_effort/volatile。
+- 时间不同步：确保 `use_sim_time=true`（配置文件 io.ros.use_sim_time），并在 Autoware/自建节点都开启。
+- ROS 域不一致：`ROS_DOMAIN_ID` 需与配置 `io.ros.domain_id` 相同；容器通过 env 注入。
+- TF 异常：确认 artifacts 中 frames/static_tf 是否加载；健康检查脚本 `python io/scripts/healthcheck_ros2.py --config runs/<ts>/effective.yaml` 可快速定位。
+- 健康检查失败自动退出：run.py 默认在启动后调用 healthcheck，必要时可加 `--no-healthcheck` 或延长 timeout（修改脚本）。
+- 记录 Autoware 控制话题：在容器内可运行 `python /work/io/ros2/tools/control_logger.py --topic /control/command/control_cmd --out /work/runs/<ts>/artifacts/autoware_control.jsonl`（需先 source ROS2/Autoware 环境），用于确认算法有输出控制指令。
 
 高级选项（尚未完全模块化）：
 - 传感器硬同步、完整评测/KPI 仍在旧脚本 `code/followstop/test_followstop_policy.py` 与 `step1_record_demo.py` 中，未移植到新框架；如需这些功能，暂用旧脚本运行。

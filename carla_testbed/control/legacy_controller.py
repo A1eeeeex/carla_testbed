@@ -54,13 +54,17 @@ class LegacyFollowStopController(Controller):
         if root_path_resolved is None:
             raise RuntimeError("Cannot locate repository root containing code/followstop/controllers.py")
 
+        # controllers 已搬迁到 algo/controllers/legacy_followstop；兼容旧路径 code/followstop
+        new_ctrl_path = Path(__file__).resolve().parents[2] / "algo" / "controllers" / "legacy_followstop"
+        if new_ctrl_path.exists() and str(new_ctrl_path) not in sys.path:
+            sys.path.insert(0, str(new_ctrl_path))
         followstop_dir = root_path_resolved / "code" / "followstop"
         if followstop_dir.exists() and str(followstop_dir) not in sys.path:
             sys.path.insert(0, str(followstop_dir))
         try:
             import controllers as legacy_ctrl  # type: ignore
         except Exception as e:
-            raise RuntimeError(f"Failed to import legacy controllers from {followstop_dir}: {e}") from e
+            raise RuntimeError(f"Failed to import legacy controllers (checked {new_ctrl_path} and {followstop_dir}): {e}") from e
 
         self._legacy = legacy_ctrl
         self.cfg = cfg

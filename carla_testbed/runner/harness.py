@@ -24,6 +24,7 @@ from carla_testbed.config.rig_postprocess import (
     hash_file,
 )
 from carla_testbed.record import SummaryRecorder, TimeseriesRecorder
+from carla_testbed.record.monitor import SignalMonitor
 from carla_testbed.record.manager import RecordManager, RecordOptions
 from carla_testbed.record.fail_capture import FailFrameCapture
 from carla_testbed.schemas import ControlCommand, Event, FramePacket, GroundTruthPacket, ObjectTruth
@@ -210,6 +211,9 @@ class TestHarness:
         client: Optional[carla.Client] = None,
         rviz_launcher=None,
         bag_recorder_cfg: Optional[dict] = None,
+        monitor: Optional[SignalMonitor] = None,
+        disable_control: bool = False,
+        sensor_capture_enabled: bool = True,
     ) -> Tuple[HarnessState, dict]:
         out_dir.mkdir(parents=True, exist_ok=True)
         ts_rec = TimeseriesRecorder(out_dir / "timeseries.csv")
@@ -321,17 +325,29 @@ class TestHarness:
                     ego=ego,
                     front=front,
                 )
-                ego.apply_control(
-                    carla.VehicleControl(
-                        throttle=cmd.throttle,
-                        brake=cmd.brake,
-                        steer=cmd.steer,
-                        reverse=cmd.reverse,
-                        hand_brake=cmd.hand_brake,
-                        manual_gear_shift=cmd.manual_gear_shift,
-                        gear=cmd.gear,
+                if not disable_control:
+                    ego.apply_control(
+                        carla.VehicleControl(
+                            throttle=cmd.throttle,
+                            brake=cmd.brake,
+                            steer=cmd.steer,
+                            reverse=cmd.reverse,
+                            hand_brake=cmd.hand_brake,
+                            manual_gear_shift=cmd.manual_gear_shift,
+                            gear=cmd.gear,
+                        )
                     )
-                )
+                    if monitor:
+                        monitor.record_control(
+                            "carla_control",
+                            timestamp,
+                            ctrl={
+                                "throttle": cmd.throttle,
+                                "brake": cmd.brake,
+                                "steer": cmd.steer,
+                                "reverse": cmd.reverse,
+                            },
+                        )
 
                 v = (ego.get_velocity().length())
                 self.state.max_speed_mps = max(self.state.max_speed_mps, v)
@@ -339,8 +355,12 @@ class TestHarness:
                 invasions = inv_src.fetch_and_clear() if inv_src else []
                 self.state.collision_count += len(collisions)
                 self.state.lane_invasion_count += len(invasions)
-                if rig:
+                if rig and sensor_capture_enabled:
                     rig.capture(frame_id, timestamp=timestamp, return_samples=False)
+                    if monitor:
+                        monitor.record_sensor("rig_capture", timestamp)
+                if monitor:
+                    monitor.maybe_snapshot(step, timestamp, ctrl={"throttle": cmd.throttle, "brake": cmd.brake, "steer": cmd.steer})
 
                 last_debug = cmd.meta.get("last_debug", {}) if cmd.meta else {}
                 row = {
@@ -460,6 +480,8 @@ class TestHarness:
             summary["ros2_bag_out"] = str(bag_recorder_cfg.get("out_path"))
             summary["ros2_bag_topics"] = bag_recorder_cfg.get("topics", [])
         summary_rec.write(summary)
+        if monitor:
+            monitor.persist(out_dir / "artifacts" / "monitor.json")
         if rig_raw is not None and rig_final is not None:
             dump_rig(out_dir, rig_raw, rig_final, sensor_specs or [], meta_path=sensor_out / "meta.json")
 

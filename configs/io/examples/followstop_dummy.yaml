@@ -1,0 +1,33 @@
+run:
+  seed: 1
+  ticks: 200
+  ego_id: ego
+  map: Town01
+  weather: ClearNoon
+  traffic:
+    enable: false
+    density: 0.0
+scenario:
+  driver: carla_followstop
+  publish_ros2_native: false
+io:
+  mode: autoware_direct
+  ros:
+    domain_id: 0
+    use_sim_time: true
+  contract:
+    sensor_minimal: configs/rigs/minimal.yaml
+    canon_ros2: io/contract/canon_ros2.yaml
+  generate:
+    sensor_mapping: true
+    sensor_kit_calibration: true
+    qos_overrides: true
+    frames: true
+algo:
+  stack: dummy
+record:
+  rosbag:
+    enable: false
+    topics: []
+logging:
+  level: INFO

@@ -6,11 +6,12 @@ This is a placeholder; follow-stop scenario/control will be migrated in later st
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import yaml
 
 
@@ -46,6 +47,10 @@ def _inject_paths(testbed_root: Path, carla_root: Path):
 TESTBED_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CARLA_ROOT = _resolve_carla_root(Path(os.environ.get("CARLA_ROOT", "/home/ubuntu/CARLA_0.9.16")))
 _inject_paths(TESTBED_ROOT, DEFAULT_CARLA_ROOT)
+if str(TESTBED_ROOT) not in sys.path:
+    sys.path.insert(0, str(TESTBED_ROOT))
+if str(TESTBED_ROOT / "io") not in sys.path:
+    sys.path.insert(0, str(TESTBED_ROOT / "io"))
 
 import carla
 
@@ -56,8 +61,35 @@ from carla_testbed.runner import TestHarness
 from carla_testbed.scenarios import FollowStopConfig, FollowStopScenario
 from carla_testbed.sim import CarlaClientManager, configure_synchronous_mode, restore_settings
 from carla_testbed.record import RecordManager, RecordOptions
+from carla_testbed.record.monitor import SignalMonitor
 from carla_testbed.record.rviz.launcher import RvizLauncher
 from carla_testbed.record.ros2_bag import Ros2BagRecorder
+
+# import orchestrator helpers (avoid stdlib io name collision by loading via path)
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+def _load_from_path(py_path: Path, attr: str):
+    spec = importlib.util.spec_from_file_location(py_path.stem, py_path)
+    if spec and spec.loader:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return getattr(module, attr)
+    raise ImportError(f"cannot load {attr} from {py_path}")
+
+generate_all = _load_from_path(ROOT / "io" / "contract" / "generate_artifacts.py", "generate_all")
+healthcheck = _load_from_path(ROOT / "io" / "scripts" / "healthcheck_ros2.py", "healthcheck")
+get_adapter = _load_from_path(ROOT / "algo" / "registry.py", "get_adapter")
+
+
+def _load_func(py_path: Path, func_name: str):
+    spec = importlib.util.spec_from_file_location(func_name, py_path)
+    if spec and spec.loader:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return getattr(module, func_name, None)
+    return None
 
 
 def _dedup(seq):
@@ -114,7 +146,10 @@ def build_ros2_bag_topics(
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="Follow-stop demo（支持配置驱动）")
+    ap.add_argument("--config", type=Path, required=False, help="推荐：configs/io/examples/followstop_autoware.yaml")
+    ap.add_argument("--override", action="append", default=[], help="key=value 覆盖配置，可多次")
+    ap.add_argument("--run-dir", type=Path, default=None, help="输出目录；不填则自动 runs/followstop_<ts>")
     ap.add_argument("--town", default="Town01")
     ap.add_argument("--ticks", type=int, default=10)
     ap.add_argument("--host", default="localhost")
@@ -132,35 +167,7 @@ def main():
     ap.add_argument("--rig-file", type=str, default=None, help="自定义 rig yaml/json 路径")
     ap.add_argument("--rig-override", action="append", default=[], help="rig 覆盖，格式 key=value，支持点路径")
     ap.add_argument("--enable-fail-capture", action="store_true", help="失败时抓取失败窗口 HUD 视频")
-    ap.add_argument("--enable-ros2-native", action="store_true", help="启用 CARLA 原生 ROS2 发布（/carla/<ego>/<sensor>/...）")
-    ap.add_argument("--ros-invert-tf", dest="ros_invert_tf", action="store_true", default=True, help="ROS2 模式下对 y/pitch/yaw 取反（默认开启以兼容 CARLA 示例）")
-    ap.add_argument("--ros-keep-tf", dest="ros_invert_tf", action="store_false", help="禁用取反，直接使用 rig 坐标")
     ap.add_argument("--ego-id", default="hero", help="ego role_name/ros_name（默认 hero）")
-    ap.add_argument("--enable-rviz", action="store_true", help="在 ROS2 原生模式下启动 RViz 可视化（默认 docker）")
-    ap.add_argument("--rviz-mode", choices=["docker", "local"], default="docker", help="RViz 运行方式，默认 docker（local 暂作占位）")
-    ap.add_argument("--rviz-domain", type=int, default=0, help="ROS_DOMAIN_ID（默认 0）")
-    ap.add_argument("--rviz-ego", type=str, default=None, help="RViz 订阅使用的 ego 名称（默认跟随 --ego-id）")
-    ap.add_argument("--rviz-camera-image-suffix", type=str, default="image", help="相机话题后缀（默认 image）")
-    ap.add_argument("--rviz-lidar-cloud-suffix", type=str, default="point_cloud", help="激光雷达话题后缀（默认 point_cloud）")
-    ap.add_argument("--rviz-docker-image", type=str, default="carla_testbed_rviz:humble", help="RViz docker 镜像名（默认 carla_testbed_rviz:humble）")
-    # ROS2 bag
-    ap.add_argument("--enable-ros2-bag", action="store_true", help="在 ROS2 原生模式下录制 rosbag2")
-    ap.add_argument("--ros2-bag-out", type=Path, default=None, help="rosbag 输出目录/前缀（默认 runs/<run>/ros2_bag/bag）")
-    ap.add_argument("--ros2-bag-storage", choices=["sqlite3", "mcap"], default="sqlite3", help="rosbag2 存储后端")
-    ap.add_argument("--ros2-bag-compress", choices=["none", "zstd"], default="none", help="压缩方式（需相关插件支持）")
-    ap.add_argument("--ros2-bag-max-size-mb", type=int, default=None, help="单 bag 最大尺寸（MB），超出则切分")
-    ap.add_argument("--ros2-bag-max-duration-s", type=int, default=None, help="单 bag 最长时长（秒），超出则切分")
-    ap.add_argument("--ros2-bag-include-tf", action="store_true", default=True, help="录制 /tf /tf_static")
-    ap.add_argument("--ros2-bag-no-tf", dest="ros2_bag_include_tf", action="store_false", help="不录 /tf /tf_static")
-    ap.add_argument("--ros2-bag-include-clock", action="store_true", default=True, help="录制 /clock")
-    ap.add_argument("--ros2-bag-no-clock", dest="ros2_bag_include_clock", action="store_false", help="不录 /clock")
-    ap.add_argument("--ros2-bag-topics", type=str, default=None, help="显式 topic 列表，逗号分隔")
-    ap.add_argument("--ros2-bag-auto-topics", action="store_true", default=True, help="根据 rig 自动推导 topic")
-    ap.add_argument("--ros2-bag-no-auto-topics", dest="ros2_bag_auto_topics", action="store_false", help="禁用自动推导 topic")
-    ap.add_argument("--ros2-bag-extra-topics", type=str, default=None, help="追加录制的话题，逗号分隔")
-    ap.add_argument("--ros2-bag-camera-image-suffix", type=str, default="image", help="自动 camera topic 后缀（默认 image）")
-    ap.add_argument("--ros2-bag-lidar-cloud-suffix", type=str, default="point_cloud", help="自动 lidar topic 后缀（默认 point_cloud）")
-    ap.add_argument("--ros2-bag-radar-cloud-suffix", type=str, default="point_cloud", help="自动 radar topic 后缀（默认 point_cloud）")
     # Recording modes (new)
     ap.add_argument("--record", action="append", choices=["dual_cam", "hud", "sensor_demo"], help="录制/渲染模式（可多次传递）")
     ap.add_argument("--record-output", type=Path, default=None, help="录制输出目录（默认 run_dir/video）")
@@ -178,6 +185,156 @@ def main():
     ap.add_argument("--record-demo", action="store_true", help="(deprecated) 录制双相机 demo")
     ap.add_argument("--make-hud", action="store_true", help="(deprecated) 生成 HUD overlay")
     args = ap.parse_args()
+    print("[INFO] 建议使用 --config 简化参数；其他参数保留为兼容覆盖。")
+
+    # defaults for ROS2/rviz/rosbag even if CLI flags未声明
+    _defaults = {
+        "enable_ros2_native": False,
+        "ros_invert_tf": True,
+        "enable_rviz": False,
+        "rviz_mode": "docker",
+        "rviz_domain": 0,
+        "rviz_ego": None,
+        "rviz_camera_image_suffix": "image",
+        "rviz_lidar_cloud_suffix": "point_cloud",
+        "rviz_docker_image": "carla_testbed_rviz:humble",
+        "enable_ros2_bag": False,
+        "ros2_bag_out": None,
+        "ros2_bag_storage": "sqlite3",
+        "ros2_bag_compress": "none",
+        "ros2_bag_max_size_mb": None,
+        "ros2_bag_max_duration_s": None,
+        "ros2_bag_include_tf": True,
+        "ros2_bag_include_clock": True,
+        "ros2_bag_topics": None,
+        "ros2_bag_extra_topics": None,
+        "ros2_bag_auto_topics": True,
+        "ros2_bag_camera_image_suffix": "image",
+        "ros2_bag_lidar_cloud_suffix": "point_cloud",
+        "ros2_bag_radar_cloud_suffix": "point_cloud",
+    }
+    for k, v in _defaults.items():
+        if not hasattr(args, k):
+            setattr(args, k, v)
+
+    def deep_update(base: Dict[str, Any], patch: Dict[str, Any]):
+        for k, v in patch.items():
+            if isinstance(v, dict) and isinstance(base.get(k), dict):
+                deep_update(base[k], v)
+            else:
+                base[k] = v
+        return base
+
+    def parse_overrides(pairs):
+        out: Dict[str, Any] = {}
+        for item in pairs or []:
+            if "=" not in item:
+                continue
+            k, v = item.split("=", 1)
+            cursor = out
+            parts = k.split(".")
+            for p in parts[:-1]:
+                cursor = cursor.setdefault(p, {})
+            cursor[parts[-1]] = yaml.safe_load(v)
+        return out
+
+    # 若提供 config，则将其字段映射到现有参数，其他保持默认/CLI 值
+    if args.config:
+        cfg = yaml.safe_load(args.config.read_text()) or {}
+        cfg = deep_update(cfg, parse_overrides(args.override))
+        # 保存 effective 到 run_dir 后面再写
+        run_cfg = cfg.get("run", {})
+        args.town = run_cfg.get("map", args.town)
+        args.ticks = run_cfg.get("ticks", args.ticks)
+        args.ego_id = run_cfg.get("ego_id", args.ego_id)
+        scenario_cfg = cfg.get("scenario", {})
+        args.front_idx = scenario_cfg.get("front_idx", args.front_idx)
+        args.ego_idx = scenario_cfg.get("ego_idx", args.ego_idx)
+        args.enable_ros2_native = scenario_cfg.get("publish_ros2_native", args.enable_ros2_native)
+        # rig
+        io_contract = cfg.get("io", {}).get("contract", {}) if cfg.get("io") else {}
+        rig_path = io_contract.get("sensor_minimal")
+        if rig_path:
+            rig_path = Path(rig_path)
+            if rig_path.exists() and rig_path.suffix in [".yaml", ".yml", ".json"]:
+                args.rig_file = rig_path
+            else:
+                args.rig = str(rig_path)
+        # control/record 映射
+        record_cfg = cfg.get("record", {})
+        rb = record_cfg.get("rosbag", {}) if record_cfg else {}
+        if rb.get("enable"):
+            args.enable_ros2_bag = True
+            args.ros2_bag_out = Path(rb.get("out")) if rb.get("out") else args.ros2_bag_out
+            args.ros2_bag_storage = rb.get("storage", args.ros2_bag_storage)
+            args.ros2_bag_compress = rb.get("compress", args.ros2_bag_compress)
+            args.ros2_bag_include_tf = rb.get("include_tf", args.ros2_bag_include_tf)
+            args.ros2_bag_include_clock = rb.get("include_clock", args.ros2_bag_include_clock)
+            args.ros2_bag_max_size_mb = rb.get("max_size_mb", args.ros2_bag_max_size_mb)
+            args.ros2_bag_max_duration_s = rb.get("max_duration_s", args.ros2_bag_max_duration_s)
+            args.ros2_bag_auto_topics = rb.get("auto_topics", args.ros2_bag_auto_topics)
+            if rb.get("camera_suffix"):
+                args.ros2_bag_camera_image_suffix = rb["camera_suffix"]
+            if rb.get("lidar_suffix"):
+                args.ros2_bag_lidar_cloud_suffix = rb["lidar_suffix"]
+            if rb.get("radar_suffix"):
+                args.ros2_bag_radar_cloud_suffix = rb["radar_suffix"]
+            if rb.get("topics"):
+                args.ros2_bag_topics = ",".join(rb.get("topics", []))
+            if rb.get("extra_topics"):
+                args.ros2_bag_extra_topics = ",".join(rb.get("extra_topics", []))
+        # visual/record
+        vis = record_cfg.get("visual", {})
+        modes = vis.get("modes") or []
+        if modes:
+            args.record = modes
+        if vis.get("output"):
+            args.record_output = Path(vis["output"])
+        if vis.get("fps") is not None:
+            args.record_fps = vis.get("fps")
+        if vis.get("resolution"):
+            args.record_resolution = str(vis["resolution"])
+        for key, attr in [
+            ("chase_distance", "record_chase_distance"),
+            ("chase_height", "record_chase_height"),
+            ("chase_pitch", "record_chase_pitch"),
+            ("max_lidar_points", "record_max_lidar_points"),
+            ("keep_frames", "record_keep_frames"),
+            ("no_lidar", "record_no_lidar"),
+            ("no_radar", "record_no_radar"),
+            ("no_hud", "record_no_hud"),
+        ]:
+            if key in vis:
+                setattr(args, attr, vis[key])
+        # rviz
+        rviz_cfg = cfg.get("rviz", {}) or {}
+        if rviz_cfg:
+            args.enable_rviz = rviz_cfg.get("enable", args.enable_rviz)
+            args.rviz_mode = rviz_cfg.get("mode", args.rviz_mode)
+            args.rviz_domain = rviz_cfg.get("domain", args.rviz_domain)
+            args.rviz_ego = rviz_cfg.get("ego", args.rviz_ego)
+            args.rviz_camera_image_suffix = rviz_cfg.get("camera_suffix", args.rviz_camera_image_suffix)
+            args.rviz_lidar_cloud_suffix = rviz_cfg.get("lidar_suffix", args.rviz_lidar_cloud_suffix)
+            args.rviz_docker_image = rviz_cfg.get("docker_image", args.rviz_docker_image)
+        # log
+        log_level = cfg.get("logging", {}).get("level")
+        if log_level:
+            os.environ["LOGLEVEL"] = str(log_level)
+    else:
+        cfg = {}
+
+    # run_dir and effective config
+    ts = int(time.time())
+    out_run_dir = args.run_dir or (Path(__file__).resolve().parents[1] / "runs" / f"followstop_{ts}")
+    out_run_dir.mkdir(parents=True, exist_ok=True)
+    eff_path = out_run_dir / "effective.yaml"
+    effective_cfg = deep_update(cfg.copy(), parse_overrides(args.override))
+    effective_cfg.setdefault("run", {})["ticks"] = args.ticks
+    effective_cfg.setdefault("run", {})["map"] = args.town
+    effective_cfg.setdefault("run", {})["ego_id"] = args.ego_id
+    effective_cfg.setdefault("scenario", {})["front_idx"] = args.front_idx
+    effective_cfg.setdefault("scenario", {})["ego_idx"] = args.ego_idx
+    eff_path.write_text(yaml.safe_dump(effective_cfg, sort_keys=False))
 
     if args.enable_rviz and not args.enable_ros2_native:
         print("[ERROR] --enable-rviz 仅在 --enable-ros2-native 模式下可用")
@@ -187,7 +344,7 @@ def main():
         sys.exit(1)
     rviz_ego = args.rviz_ego or args.ego_id
 
-    default_out = Path(__file__).resolve().parents[1] / "runs"
+    default_out = out_run_dir
     # Parse resolution
     def _parse_res(text: str):
         if isinstance(text, (list, tuple)) and len(text) == 2:
@@ -244,7 +401,35 @@ def main():
         ros2_bag_lidar_cloud_suffix=args.ros2_bag_lidar_cloud_suffix,
         ros2_bag_radar_cloud_suffix=args.ros2_bag_radar_cloud_suffix,
     )
+    # Prepare Autoware/dummy via adapter when stack 指定
+    adapter = None
+    stack = effective_cfg.get("algo", {}).get("stack") if effective_cfg else None
+    if stack:
+        try:
+            adapter = get_adapter(stack)
+            profile = effective_cfg
+            # generate artifacts if requested
+            gen_cfg = profile.get("io", {}).get("generate", {}) if profile.get("io") else {}
+            contract_paths = profile.get("io", {}).get("contract", {}) if profile.get("io") else {}
+            artifacts_dir = Path(profile.get("artifacts", {}).get("dir", out_run_dir / "artifacts"))
+            if any(gen_cfg.get(k, False) for k in ["sensor_mapping", "sensor_kit_calibration", "qos_overrides", "frames"]):
+                generate_all(
+                    rig_path=Path(contract_paths.get("sensor_minimal", "configs/rigs/minimal.yaml")),
+                    contract_path=Path(contract_paths.get("canon_ros2", "io/contract/canon_ros2.yaml")),
+                    frames_path=Path("io/contract/frames.yaml"),
+                    out_dir=artifacts_dir,
+                )
+            profile.setdefault("artifacts", {})["dir"] = str(artifacts_dir)
+            profile.setdefault("runtime", {})["compose_clean"] = profile.get("runtime", {}).get("compose_clean", False)
+            adapter.prepare(profile, out_run_dir)
+            adapter.start(profile, out_run_dir)
+            # optional healthcheck; skip failure when rclpy missing (healthcheck returns True in that case)
+            healthcheck(eff_path, timeout=5.0)
+        except Exception as exc:
+            print(f"[WARN] adapter start failed: {exc}")
+
     harness = TestHarness(cfg)
+    monitor = SignalMonitor(snapshot_interval=20)
 
     client_mgr = CarlaClientManager(host=args.host, port=args.port, timeout=30.0, root=args.carla_root)
     client = client_mgr.create_client()
@@ -280,7 +465,6 @@ def main():
             takeover_dist_m=args.takeover_dist,
             blend_time_s=args.blend_time,
         )
-        out_run_dir = default_out / f"followstop_{int(time.time())}"
         # rig loading
         preset_dir = Path(__file__).resolve().parents[1] / "configs" / "rigs"
         rig_raw = load_rig_preset(args.rig, preset_dir)
@@ -356,6 +540,32 @@ def main():
             opts=record_opts,
         ) if record_modes else None
 
+        sensor_capture_enabled = True
+        if effective_cfg.get("record", {}).get("sensors", {}).get("enable") is False:
+            sensor_capture_enabled = False
+        disable_control = bool(effective_cfg.get("algo", {}).get("stack") == "autoware")
+        # optional: start control logger inside Autoware container
+        control_log_cfg = effective_cfg.get("record", {}).get("control_log", {}) if effective_cfg else {}
+        control_logger_proc = None
+        if disable_control and control_log_cfg.get("enable", True):
+            topic = control_log_cfg.get("topic", "/control/command/control_cmd")
+            max_msgs = control_log_cfg.get("max_msgs")
+            compose_file = effective_cfg.get("algo", {}).get("autoware", {}).get("compose", "algo/baselines/autoware/docker/compose.yaml")
+            out_log = out_run_dir / "artifacts" / "autoware_control.jsonl"
+            cmd = [
+                "docker", "compose", "-f", str(Path(compose_file).resolve()), "exec", "autoware",
+                "bash", "-lc",
+                "source /opt/ros/humble/setup.bash; "
+                "if [ -f /opt/Autoware/install/setup.bash ]; then source /opt/Autoware/install/setup.bash; "
+                "elif [ -f /autoware/install/setup.bash ]; then source /autoware/install/setup.bash; fi; "
+                f"python /work/io/ros2/tools/control_logger.py --topic {topic} --out {out_log}" + (f" --max-msgs {max_msgs}" if max_msgs else "")
+            ]
+            try:
+                control_logger_proc = subprocess.Popen(cmd)
+                print(f"[monitor] control logger started for {topic}, writing to {out_log}")
+            except Exception as exc:
+                print(f"[WARN] failed to start control logger: {exc}")
+
         state, summary = harness.run(
             world=world,
             carla_map=world.get_map(),
@@ -373,9 +583,18 @@ def main():
             client=client,
             rviz_launcher=rviz_launcher,
             bag_recorder_cfg=bag_cfg,
+            monitor=monitor,
+            disable_control=disable_control,
+            sensor_capture_enabled=sensor_capture_enabled,
         )
         print(f"Run finished: success={summary['success']} fail_reason={summary['fail_reason']} collisions={summary['collision_count']}")
     finally:
+        if 'control_logger_proc' in locals() and control_logger_proc and control_logger_proc.poll() is None:
+            control_logger_proc.terminate()
+            try:
+                control_logger_proc.wait(timeout=5)
+            except Exception:
+                control_logger_proc.kill()
         restore_settings(world, original_settings)
         if actors is not None:
             scenario.destroy()

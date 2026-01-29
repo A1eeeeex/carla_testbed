@@ -1,0 +1,87 @@
+run:  # 运行相关
+  seed: 42                   # 随机种子
+  ticks: 700                 # 仿真步数（对应 followstop --ticks）
+  ego_id: ego                # 车辆 role_name / ros_name
+  map: Town01                # CARLA 地图
+  weather: ClearNoon         # 天气预设
+  traffic:
+    enable: false            # 是否启用交通流
+    density: 0.0             # 交通密度（占位）
+
+scenario:                    # 场景/驱动层
+  driver: carla_followstop   # 场景驱动器（目前 follow-stop）
+  publish_ros2_native: false # Mode-2 下必须 false（传感器发布由 Autoware 接口负责）
+  front_idx: 210             # 前车 spawn 点（CARLA waypoint 索引）
+  ego_idx: 120               # 自车 spawn 点
+
+io:                          # I/O 契约与生成
+  mode: autoware_direct      # 后端模式（固定 autoware_direct）
+  ros:
+    domain_id: 0             # ROS_DOMAIN_ID，Autoware 容器会继承
+    use_sim_time: true       # 强制仿真时间
+  contract:
+    sensor_minimal: configs/rigs/fullstack.yaml  # rig 配置（可换 fullstack 等）
+    canon_ros2: io/contract/canon_ros2.yaml    # 槽位->topic 契约
+  generate:                  # 是否生成工件（mapping/calib/QoS/frames）
+    sensor_mapping: true
+    sensor_kit_calibration: true
+    qos_overrides: true
+    frames: true
+
+algo:                        # 算法栈选择
+  stack: autoware            # 可选：autoware | dummy | e2e(占位) | apollo(占位) | legacy_followstop
+  autoware:
+    compose: algo/baselines/autoware/docker/compose.yaml   # docker compose 路径
+    interface: autoware_carla_interface                    # 接口包/launch 名（提示）
+    params:
+      use_sim_time: true
+  legacy_followstop:         # 直连本地 legacy 控制器（不走 Autoware）
+    controller: composite    # composite | hybrid_agent_acc
+    lateral_mode: dummy      # pure_pursuit | stanley | dummy
+    policy_mode: acc         # acc（占位）
+    agent_type: basic        # basic | behavior
+
+record:                      # 录制配置
+  rosbag:
+    enable: false            # 是否录制 rosbag2
+    out: null                # 自定义输出前缀，可留空使用脚本默认
+    storage: sqlite3         # sqlite3 | mcap
+    compress: none           # none | zstd
+    include_tf: true         # 录 /tf /tf_static
+    include_clock: true      # 录 /clock
+    max_size_mb: null        # 单 bag 最大体积（MB），null 表示不限
+    max_duration_s: null     # 单 bag 最长时长（秒），null 表示不限
+    auto_topics: true        # 按 rig 自动推导 topic
+    camera_suffix: image
+    lidar_suffix: point_cloud
+    radar_suffix: point_cloud
+    topics: []               # 显式 topics（列表）
+    extra_topics: []         # 追加 topics
+  visual:                    # 视频/可视化录制
+    modes: []                # 可选 dual_cam | hud | sensor_demo，列表可为空
+    output: null             # 录制输出目录，null 则跟随脚本默认 runs/<ts>/video
+    fps: null                # 输出 fps，null 取仿真 1/dt
+    resolution: 1920x1080    # 录制分辨率
+    chase_distance: 8.0
+    chase_height: 3.0
+    chase_pitch: -15.0
+    max_lidar_points: 10000
+    keep_frames: false
+    no_lidar: false
+    no_radar: false
+    no_hud: false
+  control_log:               # 控制话题记录（自动用 docker compose exec autoware 运行）
+    enable: true
+    topic: /control/command/control_cmd
+    max_msgs: null           # 可选：记录 N 条后退出；null 表示全程
+rviz:                        # RViz 可选参数（仅在 enable_ros2_native 模式下有效）
+  enable: false
+  mode: docker               # docker | local
+  domain: 0
+  ego: null                  # RViz 订阅 ego 名称，null 使用 ego_id
+  camera_suffix: image
+  lidar_suffix: point_cloud
+  docker_image: carla_testbed_rviz:humble
+
+logging:
+  level: INFO                # 日志级别

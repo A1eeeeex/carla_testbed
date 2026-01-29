@@ -1,4 +1,3 @@
-version: "3.8"
 services:
   autoware:
     image: ghcr.io/autowarefoundation/autoware:universe-devel-cuda
@@ -12,7 +11,9 @@ services:
       - ../../../..:/work:rw
     command: >
       bash -lc "source /opt/ros/humble/setup.bash && \
-      source /opt/Autoware/install/setup.bash && \
+      if [ -f /opt/Autoware/install/setup.bash ]; then source /opt/Autoware/install/setup.bash; \
+      elif [ -f /autoware/install/setup.bash ]; then source /autoware/install/setup.bash; \
+      else echo '[autoware] setup.bash not found under /opt/Autoware or /autoware' >&2; fi && \
       export PYTHONPATH=/work:${PYTHONPATH}; \
       ros2 launch autoware_carla_interface autoware_carla_interface.launch.xml || \
       (echo 'launch failed, dropping into shell'; exec bash)"
