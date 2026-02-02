@@ -1,14 +1,17 @@
 services:
   autoware:
     image: ghcr.io/autowarefoundation/autoware:universe-devel-cuda
+    container_name: autoware
     network_mode: host
     working_dir: /work
     environment:
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       - AUTOWARE_WORKSPACE=/opt/Autoware
-      - USE_SIM_TIME=true
+      - USE_SIM_TIME=${USE_SIM_TIME:-true}
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
     volumes:
       - ../../../..:/work:rw
+      - ../../../../runs:/work/runs:rw
     command: >
       bash -lc "source /opt/ros/humble/setup.bash && \
       if [ -f /opt/Autoware/install/setup.bash ]; then source /opt/Autoware/install/setup.bash; \

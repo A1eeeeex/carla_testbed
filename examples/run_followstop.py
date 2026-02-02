@@ -10,6 +10,8 @@ import importlib.util
 import os
 import sys
 import time
+import subprocess
+import socket
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 import yaml
@@ -42,6 +44,27 @@ def _inject_paths(testbed_root: Path, carla_root: Path):
     ]:
         if p and p.exists() and str(p) not in sys.path:
             sys.path.insert(0, str(p))
+
+
+def _is_port_open(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1.0)
+        return sock.connect_ex((host, port)) == 0
+
+
+def _wait_for_carla(host: str, port: int, timeout: float = 30.0) -> bool:
+    end = time.time() + timeout
+    while time.time() < end:
+        if _is_port_open(host, port):
+            try:
+                client = carla.Client(host, port)
+                client.set_timeout(1.0)
+                client.get_server_version()
+                return True
+            except Exception:
+                pass
+        time.sleep(1.0)
+    return False
 
 
 TESTBED_ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +104,7 @@ def _load_from_path(py_path: Path, attr: str):
 generate_all = _load_from_path(ROOT / "io" / "contract" / "generate_artifacts.py", "generate_all")
 healthcheck = _load_from_path(ROOT / "io" / "scripts" / "healthcheck_ros2.py", "healthcheck")
 get_adapter = _load_from_path(ROOT / "algo" / "registry.py", "get_adapter")
+CarlaLauncher = _load_from_path(ROOT / "io" / "carla" / "launcher.py", "CarlaLauncher")
 
 
 def _load_func(py_path: Path, func_name: str):
@@ -145,7 +169,7 @@ def build_ros2_bag_topics(
     return _dedup(topics)
 
 
-def main():
+def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Follow-stop demo（支持配置驱动）")
     ap.add_argument("--config", type=Path, required=False, help="推荐：configs/io/examples/followstop_autoware.yaml")
     ap.add_argument("--override", action="append", default=[], help="key=value 覆盖配置，可多次")
@@ -184,6 +208,16 @@ def main():
     # Deprecated
     ap.add_argument("--record-demo", action="store_true", help="(deprecated) 录制双相机 demo")
     ap.add_argument("--make-hud", action="store_true", help="(deprecated) 生成 HUD overlay")
+    # CARLA server auto-start
+    ap.add_argument("--start-carla", action="store_true", help="若未手动启动 CARLA，自动按给定参数拉起服务器")
+    ap.add_argument("--carla-binary", type=Path, default=None, help="CarlaUE4.sh 路径（默认 carla_root/CarlaUE4.sh）")
+    ap.add_argument("--carla-extra-args", type=str, default="", help="透传给 CarlaUE4 的其他参数，例如 \"-quality-level=Epic\"")
+    ap.add_argument("--carla-foreground", action="store_true", help="前台输出 CARLA 日志（同时写入 log 文件）")
+    return ap
+
+
+def main():
+    ap = build_arg_parser()
     args = ap.parse_args()
     print("[INFO] 建议使用 --config 简化参数；其他参数保留为兼容覆盖。")
 
@@ -327,6 +361,8 @@ def main():
     ts = int(time.time())
     out_run_dir = args.run_dir or (Path(__file__).resolve().parents[1] / "runs" / f"followstop_{ts}")
     out_run_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = out_run_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     eff_path = out_run_dir / "effective.yaml"
     effective_cfg = deep_update(cfg.copy(), parse_overrides(args.override))
     effective_cfg.setdefault("run", {})["ticks"] = args.ticks
@@ -431,16 +467,69 @@ def main():
     harness = TestHarness(cfg)
     monitor = SignalMonitor(snapshot_interval=20)
 
+    carla_launcher = None
+    if args.start_carla:
+        carla_launcher = CarlaLauncher(
+            carla_root=args.carla_root,
+            host=args.host,
+            port=args.port,
+            town=args.town,
+            extra_args=args.carla_extra_args,
+            foreground=args.carla_foreground,
+            run_dir=out_run_dir,
+        )
+        try:
+            carla_launcher.start()
+            if not carla_launcher.wait_ready(timeout_s=180.0, poll_s=1.0):
+                print("[ERROR] CARLA 未在超时时间内就绪")
+                print(carla_launcher.diagnose_tail())
+                sys.exit(1)
+        except Exception as exc:
+            print(f"[ERROR] CARLA 启动失败: {exc}")
+            if carla_launcher:
+                print(carla_launcher.diagnose_tail())
+            sys.exit(1)
+    else:
+        if not _wait_for_carla(args.host, args.port, timeout=10.0):
+            print("[ERROR] 未检测到运行中的 CARLA，请先启动或使用 --start-carla")
+            sys.exit(1)
+
     client_mgr = CarlaClientManager(host=args.host, port=args.port, timeout=30.0, root=args.carla_root)
     client = client_mgr.create_client()
+    # 有些情况下 CARLA 已启动但地图加载较慢，增加 get_world 重试以避免 30s 超时
+    def _get_world_retry(cli, attempts=3, delay=3.0):
+        last_exc = None
+        for i in range(1, attempts + 1):
+            try:
+                return cli.get_world()
+            except Exception as exc:
+                last_exc = exc
+                print(f"[carla][WARN] get_world attempt {i} failed: {exc}")
+                time.sleep(delay)
+        raise last_exc or RuntimeError("get_world failed")
 
-    world = client.get_world()
+    world = _get_world_retry(client, attempts=3, delay=3.0)
     try:
         current_town = world.get_map().name.split("/")[-1]
     except Exception:
         current_town = ""
     if current_town != args.town:
-        world = client.load_world(args.town)
+        def _load_world_retry(cli, town: str, attempts: int = 3, delay: float = 3.0, timeout: float = 60.0):
+            last_exc = None
+            for i in range(1, attempts + 1):
+                try:
+                    # temporarily extend timeout for loading heavy maps
+                    cli.set_timeout(timeout)
+                    w = cli.load_world(town)
+                    return w
+                except Exception as exc:
+                    last_exc = exc
+                    print(f"[carla][WARN] load_world attempt {i} failed: {exc}")
+                    time.sleep(delay)
+            raise last_exc or RuntimeError("load_world failed")
+
+        world = _load_world_retry(client, args.town, attempts=3, delay=3.0, timeout=60.0)
+        client.set_timeout(client_mgr.timeout)
         time.sleep(1.0)
 
     original_settings = world.get_settings()
@@ -552,19 +641,63 @@ def main():
             max_msgs = control_log_cfg.get("max_msgs")
             compose_file = effective_cfg.get("algo", {}).get("autoware", {}).get("compose", "algo/baselines/autoware/docker/compose.yaml")
             out_log = out_run_dir / "artifacts" / "autoware_control.jsonl"
-            cmd = [
-                "docker", "compose", "-f", str(Path(compose_file).resolve()), "exec", "autoware",
-                "bash", "-lc",
+            out_err = out_run_dir / "artifacts" / "autoware_control.log"
+            cmd_str = (
                 "source /opt/ros/humble/setup.bash; "
                 "if [ -f /opt/Autoware/install/setup.bash ]; then source /opt/Autoware/install/setup.bash; "
                 "elif [ -f /autoware/install/setup.bash ]; then source /autoware/install/setup.bash; fi; "
-                f"python /work/io/ros2/tools/control_logger.py --topic {topic} --out {out_log}" + (f" --max-msgs {max_msgs}" if max_msgs else "")
+                f"python /work/io/ros2/tools/control_logger.py --topic {topic} --out {out_log}"
+            )
+            if max_msgs:
+                cmd_str += f" --max-msgs {max_msgs}"
+            cmd = [
+                "docker", "compose", "-f", str(Path(compose_file).resolve()), "exec", "-T", "autoware",
+                "bash", "-lc", cmd_str,
             ]
             try:
-                control_logger_proc = subprocess.Popen(cmd)
+                control_logger_proc = subprocess.Popen(cmd, stdout=open(out_err, "w"), stderr=subprocess.STDOUT)
                 print(f"[monitor] control logger started for {topic}, writing to {out_log}")
             except Exception as exc:
                 print(f"[WARN] failed to start control logger: {exc}")
+
+        # sensor probe inside autoware container
+        probe_cfg = effective_cfg.get("record", {}).get("sensor_probe", {}) if effective_cfg else {}
+        sensor_probe_proc = None
+        if probe_cfg.get("enable", True) and stack == "autoware":
+            probe_topics = probe_cfg.get("topics") or list((contract_paths or {}).get("slots", {}).values()) if False else None
+            if not probe_topics:
+                # derive from contract slots
+                slots = (effective_cfg.get("io", {}).get("contract", {}) or {}).get("canon_ros2", None)
+                # load contract file to get topics
+                try:
+                    cpath = Path(slots or "io/contract/canon_ros2.yaml")
+                    if not cpath.is_absolute():
+                        cpath = Path.cwd() / cpath
+                    data = yaml.safe_load(cpath.read_text()) if cpath.exists() else {}
+                    probe_topics = [spec.get("topic") for spec in (data.get("slots", {}) or {}).values() if spec.get("topic")]
+                except Exception:
+                    probe_topics = []
+            probe_topics = [t for t in (probe_topics or []) if t]
+            if probe_topics:
+                max_msgs = probe_cfg.get("max_msgs", 5)
+                compose_file = effective_cfg.get("algo", {}).get("autoware", {}).get("compose", "algo/baselines/autoware/docker/compose.yaml")
+                out_probe = out_run_dir / "artifacts" / "sensor_probe.json"
+                topics_arg = " ".join(probe_topics)
+                cmd_str = (
+                    "source /opt/ros/humble/setup.bash; "
+                    "if [ -f /opt/Autoware/install/setup.bash ]; then source /opt/Autoware/install/setup.bash; "
+                    "elif [ -f /autoware/install/setup.bash ]; then source /autoware/install/setup.bash; fi; "
+                    f"python /work/io/ros2/tools/topic_probe.py --topics {topics_arg} --max-msgs {max_msgs} --out {out_probe}"
+                )
+                cmd = [
+                    "docker", "compose", "-f", str(Path(compose_file).resolve()), "exec", "-T", "autoware",
+                    "bash", "-lc", cmd_str,
+                ]
+                try:
+                    sensor_probe_proc = subprocess.Popen(cmd)
+                    print(f"[monitor] sensor probe started for {len(probe_topics)} topics, writing to {out_probe}")
+                except Exception as exc:
+                    print(f"[WARN] failed to start sensor probe: {exc}")
 
         state, summary = harness.run(
             world=world,
@@ -595,6 +728,8 @@ def main():
                 control_logger_proc.wait(timeout=5)
             except Exception:
                 control_logger_proc.kill()
+        if 'carla_launcher' in locals() and carla_launcher:
+            carla_launcher.stop()
         restore_settings(world, original_settings)
         if actors is not None:
             scenario.destroy()

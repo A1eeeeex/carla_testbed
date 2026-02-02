@@ -74,6 +74,10 @@ record:                      # 录制配置
     enable: true
     topic: /control/command/control_cmd
     max_msgs: null           # 可选：记录 N 条后退出；null 表示全程
+  sensor_probe:              # 传感器话题探测（自动在 autoware 容器内订阅）
+    enable: true
+    topics: []               # 留空则按 contract slots 自动推导
+    max_msgs: 5              # 每个话题最多记录 N 条（统计用）
 rviz:                        # RViz 可选参数（仅在 enable_ros2_native 模式下有效）
   enable: false
   mode: docker               # docker | local

@@ -51,6 +51,12 @@ python examples/run_followstop.py \
 python examples/run_followstop.py --controller hybrid_agent_acc --agent-type basic
 ```
 
+单独启动/诊断 CARLA（可复用 launcher 逻辑）
+```bash
+python io/scripts/start_carla.py --start-carla --town Town01 --host localhost --port 2000 --carla-foreground
+```
+失败时会自动打印 `CarlaUE4.log` 尾部到终端，并写入 `runs/<ts>/logs/carlaue4_tail.log`。
+
 传感器 rig（预设/自定义/覆盖）示例：
 ```bash
 # 使用内置预设（minimal/apollo_like/perception_lidar/perception_camera/fullstack/sample_rig/sample_rig2）

@@ -337,17 +337,17 @@ class TestHarness:
                             gear=cmd.gear,
                         )
                     )
-                    if monitor:
-                        monitor.record_control(
-                            "carla_control",
-                            timestamp,
-                            ctrl={
-                                "throttle": cmd.throttle,
-                                "brake": cmd.brake,
-                                "steer": cmd.steer,
-                                "reverse": cmd.reverse,
-                            },
-                        )
+                if monitor and not disable_control:
+                    monitor.record_control(
+                        "carla_control_applied",
+                        timestamp,
+                        ctrl={
+                            "throttle": cmd.throttle,
+                            "brake": cmd.brake,
+                            "steer": cmd.steer,
+                            "reverse": cmd.reverse,
+                        },
+                    )
 
                 v = (ego.get_velocity().length())
                 self.state.max_speed_mps = max(self.state.max_speed_mps, v)
