@@ -1,13 +1,14 @@
 CARLA 算法测试平台（仓库使用手册）
 ==============================
 
-👉 新架构总览（架构收敛）
-- 顶层三层次：`carla_testbed/` 专注仿真/场景/录制，`io/` 统一 I/O 契约与编排，`algo/` 承载算法栈（Autoware 等）与控制桥。
-- 快速入口：  
-- Mode-1：CARLA 原生 ROS2 + 任意算法（含控制桥）  
-  `python io/scripts/run.py --profile io/contract/profiles/ros2_native_any_algo.yaml`
-- Mode-2：Autoware 直连 CARLA（autoware_carla_interface）  
-  `python io/scripts/run.py --config configs/io/examples/followstop_autoware.yaml`
+Quickstart（全新主机）
+1) `bash tools/bootstrap_native.sh`
+2) 在 shell 设置 `CARLA_ROOT=/path/to/CARLA_0.9.16`（必填，未设置会直接报错）
+3) `python -m carla_testbed doctor`
+4) 运行最小闭环（dummy）：`python -m carla_testbed run --config configs/io/examples/followstop_dummy.yaml`
+
+兼容入口（旧脚本）
+- 保留 `io/scripts/run.py` 等，但仅作包装，建议统一使用 `python -m carla_testbed ...`
 
 Autoware 容器说明
 - 镜像：`ghcr.io/autowarefoundation/autoware:universe-devel-cuda`
@@ -26,17 +27,14 @@ Autoware 容器说明
 快速开始（5–10 分钟跑通）
 ------------------------------------------------------------
 环境要求
-- 已安装 CARLA 0.9.16（本仓库假定默认路径 `/home/ubuntu/CARLA_0.9.16`）。
-- Python 3.10（推荐在已有 `carla16` conda 环境中运行）。
-- 启动 CARLA 服务器：在 CARLA 目录执行 `./CarlaUE4.sh`（确保 2000 端口空闲）。
+- 已安装 CARLA 0.9.16（请设置环境变量 `CARLA_ROOT=/path/to/CARLA_0.9.16`）。
+- Python 3.10（推荐在虚拟环境中运行）。
+- 启动 CARLA 服务器：在 `${CARLA_ROOT}` 目录执行 `./CarlaUE4.sh`（确保 2000 端口空闲）。
 
 运行最小示例（生成 runs/…/summary.json）
 ```bash
-cd /home/ubuntu/CARLA_0.9.16
-# 启动服务器后另开终端运行：
-cd /home/ubuntu/carla_testbed
-python examples/run_followstop.py \
-  --town Town01 \
+# 启动服务器后在仓库根运行：
+python -m carla_testbed run --config configs/io/examples/followstop_dummy.yaml
   --controller composite \
   --lateral-mode dummy \
   --policy-mode acc \

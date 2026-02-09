@@ -147,6 +147,26 @@ class TestHarness:
             )
         return GroundTruthPacket(frame_id=frame_id, timestamp=timestamp, ego=ego_truth, actors=actors, events=events)
 
+    def _spectator_follow(self, world: carla.World, ego: carla.Vehicle):
+        """Move CARLA spectator to chase the ego vehicle."""
+        if not self.cfg.follow_spectator or ego is None:
+            return
+        try:
+            spectator = world.get_spectator()
+            tr = ego.get_transform()
+            yaw = math.radians(tr.rotation.yaw)
+            dx = -self.cfg.spectator_distance * math.cos(yaw)
+            dy = -self.cfg.spectator_distance * math.sin(yaw)
+            loc = carla.Location(
+                tr.location.x + dx,
+                tr.location.y + dy,
+                tr.location.z + self.cfg.spectator_height,
+            )
+            rot = carla.Rotation(pitch=self.cfg.spectator_pitch, yaw=tr.rotation.yaw, roll=0.0)
+            spectator.set_transform(carla.Transform(loc, rot))
+        except Exception as exc:
+            print(f"[WARN] spectator follow failed: {exc}")
+
     def _ensure_config_outputs(
         self,
         out_dir: Path,
@@ -422,6 +442,7 @@ class TestHarness:
                     remaining = (self.cfg.max_steps - step - 1) * self.cfg.dt
                     pct = step / float(self.cfg.max_steps) * 100.0
                     print(f"[progress] {step}/{self.cfg.max_steps} ({pct:.0f}%), est remaining {remaining:.1f}s")
+                    self._spectator_follow(world, ego)
         finally:
             if col_src:
                 col_src.stop()

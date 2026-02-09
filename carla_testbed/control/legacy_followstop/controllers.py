@@ -5,7 +5,6 @@
 - 去除 legacy/route graph/Dijkstra/多版本限速，保留最小可解释逻辑
 """
 import math
-import sys
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -25,21 +24,6 @@ def ensure_agents_imported():
     if BasicAgent is not None and BehaviorAgent is not None:
         return
 
-    root = Path(__file__).resolve().parents[2]
-    paths_to_add = []
-    # 先添加 dist 下 wheel/egg 以提供 carla 模块
-    dist_dir = root / "PythonAPI" / "carla" / "dist"
-    if dist_dir.exists():
-        for pkg in sorted(dist_dir.glob("carla-*"), reverse=True):
-            paths_to_add.append(pkg)
-    paths_to_add += [
-        root / "PythonAPI",
-        root / "PythonAPI" / "carla",
-    ]
-    for p in paths_to_add:
-        if p.exists() and str(p) not in sys.path:
-            sys.path.insert(0, str(p))
-
     # Pre-flight dependency checks
     try:
         import shapely  # type: ignore
@@ -58,14 +42,18 @@ def ensure_agents_imported():
             BasicAgent = BA
             _basic_import_error = None
         except Exception as e:
-            _basic_import_error = e
+            _basic_import_error = RuntimeError(
+                f"导入 agents.navigation.basic_agent 失败，请确认 CARLA_ROOT/PythonAPI 已加入 PYTHONPATH。原始错误: {e}"
+            )
     if BehaviorAgent is None:
         try:
             from agents.navigation.behavior_agent import BehaviorAgent as BehA  # type: ignore
             BehaviorAgent = BehA
             _behavior_import_error = None
         except Exception as e:
-            _behavior_import_error = e
+            _behavior_import_error = RuntimeError(
+                f"导入 agents.navigation.behavior_agent 失败，请确认 CARLA_ROOT/PythonAPI 已加入 PYTHONPATH。原始错误: {e}"
+            )
 
 # Try import once on module load
 ensure_agents_imported()
@@ -819,10 +807,8 @@ class HybridAgentLongitudinalController:
                 "shapely_ok": _shapely_import_error is None,
                 "networkx_ok": _networkx_import_error is None,
             }
-            path_head = sys.path[:8]
             raise RuntimeError(
                 f"Missing agents: {missing}; import_errors={errors}; exists={exists_info}; "
-                f"sys.path[:8]={path_head} "
                 f"(attempted module agents.navigation.basic_agent; ensure shapely, networkx installed)"
             )
         self.world = carla_world

@@ -1,55 +1,38 @@
 #!/usr/bin/env python3
 """
-Step0+Step1 demo: connect to CARLA, enable synchronous mode, tick a few frames.
-This is a placeholder; follow-stop scenario/control will be migrated in later steps.
+Mode-2 (Autoware container direct CARLA) follow-stop harness.
+需提前准备 Town01 地图（点云+lanelet2），放在宿主机路径如 /home/ubuntu/autoware-contents/maps/Town01，并通过 AUTOWARE_MAP_PATH 挂载进 Autoware 容器（默认已指向该路径）。
+一条命令跑通：
+python examples/run_followstop.py --config configs/io/examples/followstop_autoware.yaml --start-carla --carla-root <CARLA_ROOT> --ticks 500
 """
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import json
 import os
-import sys
 import time
 import subprocess
 import socket
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 import yaml
+import math
 
-
-def _resolve_carla_root(cli_root: Path) -> Path:
-    env_root = os.environ.get("CARLA_ROOT")
-    candidates = []
-    if env_root:
-        candidates.append(Path(env_root))
-    if cli_root:
-        candidates.append(cli_root)
-    candidates.append(Path("/home/ubuntu/CARLA_0.9.16"))
-    for c in candidates:
-        if c and (c / "code" / "followstop" / "controllers.py").exists():
-            return c
-    for p in Path(__file__).resolve().parents:
-        if (p / "code" / "followstop" / "controllers.py").exists():
-            return p
-    return cli_root
-
-
-def _inject_paths(testbed_root: Path, carla_root: Path):
-    for p in [
-        testbed_root,
-        testbed_root / "carla_testbed",
-        carla_root / "code" / "followstop",
-        carla_root / "PythonAPI",
-        carla_root / "PythonAPI" / "carla",
-    ]:
-        if p and p.exists() and str(p) not in sys.path:
-            sys.path.insert(0, str(p))
+from carla_testbed.utils.env import resolve_repo_root, resolve_carla_root
+from tbio.contract.generate_artifacts import generate_all
+from tbio.scripts.healthcheck_ros2 import healthcheck
+from algo.registry import get_adapter
+from tbio.carla.launcher import CarlaLauncher
 
 
 def _is_port_open(host: str, port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(1.0)
-        return sock.connect_ex((host, port)) == 0
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1.0)
+            return sock.connect_ex((host, port)) == 0
+    except PermissionError:
+        print("[WARN] socket permission denied; skipping port probe")
+        return True
 
 
 def _wait_for_carla(host: str, port: int, timeout: float = 30.0) -> bool:
@@ -67,13 +50,8 @@ def _wait_for_carla(host: str, port: int, timeout: float = 30.0) -> bool:
     return False
 
 
-TESTBED_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CARLA_ROOT = _resolve_carla_root(Path(os.environ.get("CARLA_ROOT", "/home/ubuntu/CARLA_0.9.16")))
-_inject_paths(TESTBED_ROOT, DEFAULT_CARLA_ROOT)
-if str(TESTBED_ROOT) not in sys.path:
-    sys.path.insert(0, str(TESTBED_ROOT))
-if str(TESTBED_ROOT / "io") not in sys.path:
-    sys.path.insert(0, str(TESTBED_ROOT / "io"))
+TESTBED_ROOT = resolve_repo_root()
+DEFAULT_CARLA_ROOT = resolve_carla_root(os.environ.get("CARLA_ROOT"))
 
 import carla
 
@@ -87,33 +65,10 @@ from carla_testbed.record import RecordManager, RecordOptions
 from carla_testbed.record.monitor import SignalMonitor
 from carla_testbed.record.rviz.launcher import RvizLauncher
 from carla_testbed.record.ros2_bag import Ros2BagRecorder
-
-# import orchestrator helpers (avoid stdlib io name collision by loading via path)
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-def _load_from_path(py_path: Path, attr: str):
-    spec = importlib.util.spec_from_file_location(py_path.stem, py_path)
-    if spec and spec.loader:
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return getattr(module, attr)
-    raise ImportError(f"cannot load {attr} from {py_path}")
-
-generate_all = _load_from_path(ROOT / "io" / "contract" / "generate_artifacts.py", "generate_all")
-healthcheck = _load_from_path(ROOT / "io" / "scripts" / "healthcheck_ros2.py", "healthcheck")
-get_adapter = _load_from_path(ROOT / "algo" / "registry.py", "get_adapter")
-CarlaLauncher = _load_from_path(ROOT / "io" / "carla" / "launcher.py", "CarlaLauncher")
-
-
-def _load_func(py_path: Path, func_name: str):
-    spec = importlib.util.spec_from_file_location(func_name, py_path)
-    if spec and spec.loader:
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return getattr(module, func_name, None)
-    return None
+from tbio.contract.generate_artifacts import generate_all
+from tbio.scripts.healthcheck_ros2 import healthcheck
+from algo.registry import get_adapter
+from tbio.carla.launcher import CarlaLauncher
 
 
 def _dedup(seq):
@@ -125,6 +80,141 @@ def _dedup(seq):
         seen.add(x)
         out.append(x)
     return out
+
+
+def _quaternion_from_yaw(yaw_deg: float):
+    yaw_rad = math.radians(yaw_deg)
+    half = yaw_rad / 2.0
+    return 0.0, 0.0, math.sin(half), math.cos(half)
+
+
+def _send_goal_to_autoware(
+    compose_file: Path,
+    pose: Dict[str, float],
+    frame_id: str = "map",
+    container: str = "autoware",
+):
+    """
+    Push a PoseStamped goal into Autoware mission planner using ros2 topic pub.
+    pose keys: x,y,z,qx,qy,qz,qw
+    """
+    compose_file = Path(compose_file).resolve()
+    def _exec(cmd, timeout=30):
+        return subprocess.check_output(cmd, text=True, timeout=timeout)
+
+    def _compose_exec(bash_cmd: str, timeout=20) -> str:
+        full = ["docker", "compose", "-f", str(compose_file), "exec", "-T", container, "bash", "-lc", bash_cmd]
+        return _exec(full, timeout=timeout)
+
+    log_lines = []
+    def log(msg):
+        print(msg)
+        log_lines.append(msg)
+
+    # wait container Up
+    try:
+        for _ in range(30):
+            ps = _exec(["docker", "compose", "-f", str(compose_file), "ps", "--status", "running"], timeout=10)
+            if "autoware" in ps and "running" in ps:
+                break
+            time.sleep(1)
+        else:
+            log("[goal] autoware not running within 30s")
+            return False, log_lines
+    except Exception as exc:
+        log(f"[goal] compose ps failed: {exc}")
+        return False, log_lines
+
+    env_setup = (
+        "source /opt/ros/humble/setup.bash; "
+        "if [ -f /opt/Autoware/install/setup.bash ]; then source /opt/Autoware/install/setup.bash; "
+        "elif [ -f /autoware/install/setup.bash ]; then source /autoware/install/setup.bash; fi; "
+    )
+    pose_yaml = (
+        f"{{header:{{frame_id:'{frame_id}'}}, "
+        f"pose:{{position:{{x:{pose['x']:.3f},y:{pose['y']:.3f},z:{pose['z']:.3f}}}, "
+        f"orientation:{{x:{pose['qx']:.6f},y:{pose['qy']:.6f},z:{pose['qz']:.6f},w:{pose['qw']:.6f}}}}}}}"
+    )
+
+    # wait for subscriber
+    sub_ready = False
+    for _ in range(30):
+        try:
+            info = _compose_exec(f"{env_setup} ros2 topic info -v /planning/mission_planning/goal || true", timeout=5)
+            log(info)
+            if "Subscription count" in info:
+                for line in info.splitlines():
+                    if "Subscription count" in line:
+                        try:
+                            cnt = int(line.strip().split()[-1])
+                            if cnt >= 1:
+                                sub_ready = True
+                                break
+                        except Exception:
+                            pass
+        except Exception as exc:
+            log(f"[goal] topic info error: {exc}")
+        if sub_ready:
+            break
+        time.sleep(1)
+    if not sub_ready:
+        log("[goal] no subscriber detected within 30s; abort goal publish")
+        return False, log_lines
+
+    cmd_str = f"{env_setup} ros2 topic pub --once --qos-reliability reliable /planning/mission_planning/goal geometry_msgs/msg/PoseStamped \"{pose_yaml}\""
+    try:
+        log(f"[autoware] sending goal via compose: {cmd_str}")
+        out = _compose_exec(cmd_str, timeout=20)
+        log(out)
+    except Exception as exc:
+        log(f"[WARN] failed to send goal: {exc}")
+        return False, log_lines
+
+    # Engage / change to autonomous (best effort)
+    try:
+        svc_list = _compose_exec(f"{env_setup} ros2 service list", timeout=10)
+        topic_list = _compose_exec(f"{env_setup} ros2 topic list", timeout=10)
+        log("[engage] services:\n" + svc_list)
+        log("[engage] topics:\n" + topic_list)
+    except Exception as exc:
+        log(f"[engage] list failed: {exc}")
+        svc_list = topic_list = ""
+
+    def try_service(name, payload):
+        if name not in svc_list:
+            return False
+        try:
+            typ = _compose_exec(f"{env_setup} ros2 service type {name}", timeout=5).strip()
+            log(f"[engage] calling {name} type={typ} payload={payload}")
+            call_cmd = f"{env_setup} ros2 service call {name} {typ} '{payload}'"
+            log(_compose_exec(call_cmd, timeout=10))
+            return True
+        except Exception as exc:
+            log(f"[engage] {name} failed: {exc}")
+            return False
+
+    def try_topic(name, payload):
+        if name not in topic_list:
+            return False
+        try:
+            typ = _compose_exec(f"{env_setup} ros2 topic type {name}", timeout=5).strip()
+            log(f"[engage] pub {name} type={typ} payload={payload}")
+            pub_cmd = f"{env_setup} ros2 topic pub --once {name} {typ} '{payload}'"
+            log(_compose_exec(pub_cmd, timeout=10))
+            return True
+        except Exception as exc:
+            log(f"[engage] {name} failed: {exc}")
+            return False
+
+    engaged = False
+    engaged = engaged or try_service("/api/operation_mode/change_to_autonomous", "{}")
+    engaged = engaged or try_service("/api/autoware/set/engage", "{data: true}")
+    engaged = engaged or try_topic("/autoware/engage", "{data: true}")
+    engaged = engaged or try_topic("/vehicle/engage", "{data: true}")
+    if not engaged:
+        log("[engage] no engage interface succeeded")
+
+    return True, log_lines
 
 
 def build_ros2_bag_topics(
@@ -208,6 +298,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # Deprecated
     ap.add_argument("--record-demo", action="store_true", help="(deprecated) 录制双相机 demo")
     ap.add_argument("--make-hud", action="store_true", help="(deprecated) 生成 HUD overlay")
+    # Spectator follow
+    ap.add_argument("--follow-spectator", action="store_true", help="让 CARLA spectator 视角跟随 ego（本地渲染时便于观察）")
+    ap.add_argument("--follow-spectator-distance", type=float, default=None, help="跟车视角距离，默认沿用 record_chase_distance")
+    ap.add_argument("--follow-spectator-height", type=float, default=None, help="跟车视角高度，默认沿用 record_chase_height")
+    ap.add_argument("--follow-spectator-pitch", type=float, default=None, help="跟车视角俯仰角，默认沿用 record_chase_pitch")
     # CARLA server auto-start
     ap.add_argument("--start-carla", action="store_true", help="若未手动启动 CARLA，自动按给定参数拉起服务器")
     ap.add_argument("--carla-binary", type=Path, default=None, help="CarlaUE4.sh 路径（默认 carla_root/CarlaUE4.sh）")
@@ -337,6 +432,10 @@ def main():
             ("no_lidar", "record_no_lidar"),
             ("no_radar", "record_no_radar"),
             ("no_hud", "record_no_hud"),
+            ("follow_spectator", "follow_spectator"),
+            ("follow_distance", "follow_spectator_distance"),
+            ("follow_height", "follow_spectator_height"),
+            ("follow_pitch", "follow_spectator_pitch"),
         ]:
             if key in vis:
                 setattr(args, attr, vis[key])
@@ -359,7 +458,18 @@ def main():
 
     # run_dir and effective config
     ts = int(time.time())
-    out_run_dir = args.run_dir or (Path(__file__).resolve().parents[1] / "runs" / f"followstop_{ts}")
+    repo_root = Path(__file__).resolve().parents[1]
+    out_run_dir = args.run_dir or (repo_root / "runs" / f"followstop_{ts}")
+    if args.run_dir and not out_run_dir.resolve().is_relative_to(repo_root):
+        # redirect to repo runs
+        redirected = repo_root / "runs" / args.run_dir.name
+        redirected.mkdir(parents=True, exist_ok=True)
+        out_run_dir = redirected
+        try:
+            args.run_dir.mkdir(parents=True, exist_ok=True)
+            (args.run_dir / "RUN_DIR_REDIRECT.txt").write_text(str(out_run_dir))
+        except Exception:
+            pass
     out_run_dir.mkdir(parents=True, exist_ok=True)
     log_dir = out_run_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -371,6 +481,8 @@ def main():
     effective_cfg.setdefault("scenario", {})["front_idx"] = args.front_idx
     effective_cfg.setdefault("scenario", {})["ego_idx"] = args.ego_idx
     eff_path.write_text(yaml.safe_dump(effective_cfg, sort_keys=False))
+    acceptance_cfg = effective_cfg.get("acceptance", {}) if effective_cfg else {}
+    acceptance_speed_threshold = acceptance_cfg.get("min_speed_mps", 5.0)
 
     if args.enable_rviz and not args.enable_ros2_native:
         print("[ERROR] --enable-rviz 仅在 --enable-ros2-native 模式下可用")
@@ -402,6 +514,11 @@ def main():
     # deduplicate
     record_modes = list(dict.fromkeys(record_modes))
     record_resolution = _parse_res(args.record_resolution)
+    # spectator follow defaults reuse chase params unless用户覆盖
+    follow_spectator = args.follow_spectator
+    follow_distance = args.follow_spectator_distance or args.record_chase_distance
+    follow_height = args.follow_spectator_height or args.record_chase_height
+    follow_pitch = args.follow_spectator_pitch or args.record_chase_pitch
 
     cfg = HarnessConfig(
         town=args.town,
@@ -422,6 +539,10 @@ def main():
         record_no_lidar=args.record_no_lidar,
         record_no_radar=args.record_no_radar,
         record_no_hud=args.record_no_hud,
+        follow_spectator=follow_spectator,
+        spectator_distance=follow_distance,
+        spectator_height=follow_height,
+        spectator_pitch=follow_pitch,
         enable_ros2_bag=args.enable_ros2_bag,
         ros2_bag_out=args.ros2_bag_out,
         ros2_bag_storage=args.ros2_bag_storage,
@@ -439,15 +560,16 @@ def main():
     )
     # Prepare Autoware/dummy via adapter when stack 指定
     adapter = None
+    adapter_profile = None
     stack = effective_cfg.get("algo", {}).get("stack") if effective_cfg else None
     if stack:
         try:
             adapter = get_adapter(stack)
-            profile = effective_cfg
+            adapter_profile = effective_cfg
             # generate artifacts if requested
-            gen_cfg = profile.get("io", {}).get("generate", {}) if profile.get("io") else {}
-            contract_paths = profile.get("io", {}).get("contract", {}) if profile.get("io") else {}
-            artifacts_dir = Path(profile.get("artifacts", {}).get("dir", out_run_dir / "artifacts"))
+            gen_cfg = adapter_profile.get("io", {}).get("generate", {}) if adapter_profile.get("io") else {}
+            contract_paths = adapter_profile.get("io", {}).get("contract", {}) if adapter_profile.get("io") else {}
+            artifacts_dir = Path(adapter_profile.get("artifacts", {}).get("dir", out_run_dir / "artifacts"))
             if any(gen_cfg.get(k, False) for k in ["sensor_mapping", "sensor_kit_calibration", "qos_overrides", "frames"]):
                 generate_all(
                     rig_path=Path(contract_paths.get("sensor_minimal", "configs/rigs/minimal.yaml")),
@@ -455,19 +577,19 @@ def main():
                     frames_path=Path("io/contract/frames.yaml"),
                     out_dir=artifacts_dir,
                 )
-            profile.setdefault("artifacts", {})["dir"] = str(artifacts_dir)
-            profile.setdefault("runtime", {})["compose_clean"] = profile.get("runtime", {}).get("compose_clean", False)
-            adapter.prepare(profile, out_run_dir)
-            adapter.start(profile, out_run_dir)
-            # optional healthcheck; skip failure when rclpy missing (healthcheck returns True in that case)
-            healthcheck(eff_path, timeout=5.0)
+            adapter_profile.setdefault("artifacts", {})["dir"] = str(artifacts_dir)
+            adapter_profile.setdefault("runtime", {})["compose_clean"] = adapter_profile.get("runtime", {}).get("compose_clean", False)
         except Exception as exc:
-            print(f"[WARN] adapter start failed: {exc}")
+            print(f"[WARN] adapter init failed: {exc}")
+            adapter = None
+            adapter_profile = None
 
     harness = TestHarness(cfg)
     monitor = SignalMonitor(snapshot_interval=20)
 
     carla_launcher = None
+    adapter_started = False
+    adapter_fail_reason = None
     if args.start_carla:
         carla_launcher = CarlaLauncher(
             carla_root=args.carla_root,
@@ -493,6 +615,20 @@ def main():
         if not _wait_for_carla(args.host, args.port, timeout=10.0):
             print("[ERROR] 未检测到运行中的 CARLA，请先启动或使用 --start-carla")
             sys.exit(1)
+
+    if adapter and adapter_profile:
+        try:
+            adapter.prepare(adapter_profile, out_run_dir)
+            adapter_started = adapter.start(adapter_profile, out_run_dir)
+            if not adapter_started:
+                adapter_fail_reason = "AUTOWARE_CONTAINER_EXIT"
+            else:
+                ok = healthcheck(eff_path, timeout=5.0)
+                if not ok:
+                    print("[WARN] ROS2 healthcheck failed (non-fatal); see messages above")
+        except Exception as exc:
+            adapter_fail_reason = "AUTOWARE_START_FAIL"
+            print(f"[WARN] adapter start failed: {exc}")
 
     client_mgr = CarlaClientManager(host=args.host, port=args.port, timeout=30.0, root=args.carla_root)
     client = client_mgr.create_client()
@@ -545,6 +681,32 @@ def main():
         ego = actors.ego
         front = actors.front
         print(f"Spawned ego at idx={scenario.cfg.ego_idx}, front at idx={scenario.cfg.front_idx}")
+
+        # optional: send goal to Autoware mission planner (front车前方一定距离)
+        if stack == "autoware":
+            goal_cfg = effective_cfg.get("algo", {}).get("autoware", {}).get("goal", {}) if effective_cfg else {}
+            if goal_cfg.get("enable", False):
+                ahead_m = float(goal_cfg.get("ahead_m", 50.0) or 0.0)
+                frame_id = goal_cfg.get("frame_id", "map")
+                compose_file = Path(effective_cfg.get("algo", {}).get("autoware", {}).get("compose", "algo/baselines/autoware/docker/compose.yaml"))
+                container_name = effective_cfg.get("algo", {}).get("autoware", {}).get("container_name", "autoware")
+                target_actor = front or ego
+                tr = target_actor.get_transform()
+                loc = tr.location
+                yaw = tr.rotation.yaw
+                dx = ahead_m * math.cos(math.radians(yaw))
+                dy = ahead_m * math.sin(math.radians(yaw))
+                qx, qy, qz, qw = _quaternion_from_yaw(yaw)
+                goal_pose = {
+                    "x": loc.x + dx,
+                    "y": loc.y + dy,
+                    "z": loc.z,
+                    "qx": qx,
+                    "qy": qy,
+                    "qz": qz,
+                    "qw": qw,
+                }
+                _send_goal_to_autoware(compose_file, goal_pose, frame_id=frame_id, container=container_name)
 
         ctrl_cfg = LegacyControllerConfig(
             lateral_mode=args.lateral_mode,
@@ -636,9 +798,13 @@ def main():
         # optional: start control logger inside Autoware container
         control_log_cfg = effective_cfg.get("record", {}).get("control_log", {}) if effective_cfg else {}
         control_logger_proc = None
-        if disable_control and control_log_cfg.get("enable", True):
+        if disable_control and control_log_cfg.get("enable", True) and adapter_started:
             topic = control_log_cfg.get("topic", "/control/command/control_cmd")
             max_msgs = control_log_cfg.get("max_msgs")
+            reliability = control_log_cfg.get("reliability", "best_effort")
+            if reliability not in ["best_effort", "reliable"]:
+                reliability = "best_effort"
+            force_anymsg = control_log_cfg.get("force_anymsg", True)
             compose_file = effective_cfg.get("algo", {}).get("autoware", {}).get("compose", "algo/baselines/autoware/docker/compose.yaml")
             out_log = out_run_dir / "artifacts" / "autoware_control.jsonl"
             out_err = out_run_dir / "artifacts" / "autoware_control.log"
@@ -650,6 +816,10 @@ def main():
             )
             if max_msgs:
                 cmd_str += f" --max-msgs {max_msgs}"
+            if force_anymsg:
+                cmd_str += " --force-anymsg"
+            if reliability:
+                cmd_str += f" --reliability {reliability}"
             cmd = [
                 "docker", "compose", "-f", str(Path(compose_file).resolve()), "exec", "-T", "autoware",
                 "bash", "-lc", cmd_str,
@@ -661,23 +831,16 @@ def main():
                 print(f"[WARN] failed to start control logger: {exc}")
 
         # sensor probe inside autoware container
-        probe_cfg = effective_cfg.get("record", {}).get("sensor_probe", {}) if effective_cfg else {}
+        probe_cfg = None
+        if effective_cfg:
+            rec = effective_cfg.get("record", {}) or {}
+            probe_cfg = rec.get("probe") or rec.get("sensor_probe") or {}
+        else:
+            probe_cfg = {}
         sensor_probe_proc = None
-        if probe_cfg.get("enable", True) and stack == "autoware":
-            probe_topics = probe_cfg.get("topics") or list((contract_paths or {}).get("slots", {}).values()) if False else None
-            if not probe_topics:
-                # derive from contract slots
-                slots = (effective_cfg.get("io", {}).get("contract", {}) or {}).get("canon_ros2", None)
-                # load contract file to get topics
-                try:
-                    cpath = Path(slots or "io/contract/canon_ros2.yaml")
-                    if not cpath.is_absolute():
-                        cpath = Path.cwd() / cpath
-                    data = yaml.safe_load(cpath.read_text()) if cpath.exists() else {}
-                    probe_topics = [spec.get("topic") for spec in (data.get("slots", {}) or {}).values() if spec.get("topic")]
-                except Exception:
-                    probe_topics = []
-            probe_topics = [t for t in (probe_topics or []) if t]
+        if probe_cfg.get("enable", True) and stack == "autoware" and adapter_started:
+            control_topic_default = control_log_cfg.get("topic", "/control/command/control_cmd")
+            probe_topics = [t for t in (probe_cfg.get("topics") or []) if t] or ["/clock", "/tf", control_topic_default]
             if probe_topics:
                 max_msgs = probe_cfg.get("max_msgs", 5)
                 compose_file = effective_cfg.get("algo", {}).get("autoware", {}).get("compose", "algo/baselines/autoware/docker/compose.yaml")
@@ -721,6 +884,88 @@ def main():
             sensor_capture_enabled=sensor_capture_enabled,
         )
         print(f"Run finished: success={summary['success']} fail_reason={summary['fail_reason']} collisions={summary['collision_count']}")
+
+        summary_path = out_run_dir / "summary.json"
+        summary_data = summary
+        try:
+            if summary_path.exists():
+                summary_data = json.loads(summary_path.read_text())
+        except Exception as exc:
+            print(f"[WARN] failed to read summary.json for augmentation: {exc}")
+
+        control_log_path = out_run_dir / "artifacts" / "autoware_control.jsonl"
+        control_log_ok = False
+        control_log_size = control_log_path.stat().st_size if control_log_path.exists() else 0
+        if control_log_path.exists() and control_log_size > 0:
+            try:
+                for line in control_log_path.read_text().splitlines():
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    raw_len = rec.get("raw_len", 0)
+                    if isinstance(raw_len, (int, float)) and raw_len > 0:
+                        control_log_ok = True
+                        break
+            except Exception as exc:
+                print(f"[WARN] failed to parse control log: {exc}")
+
+        sensor_probe_path = out_run_dir / "artifacts" / "sensor_probe.json"
+        sensor_probe_ok = False
+        clock_count = 0
+        tf_count = None
+        if sensor_probe_path.exists():
+            try:
+                probe_data = json.loads(sensor_probe_path.read_text())
+                clock_count = int((probe_data.get("/clock") or {}).get("count", 0))
+                tf_entry = probe_data.get("/tf")
+                tf_count = None if tf_entry is None else int(tf_entry.get("count", 0))
+                sensor_probe_ok = clock_count >= 2 and (tf_count is None or tf_count >= 1)
+            except Exception as exc:
+                print(f"[WARN] failed to parse sensor probe: {exc}")
+        motion_ok = state.max_speed_mps > acceptance_speed_threshold
+
+        failures = []
+        if adapter_fail_reason and not adapter_started:
+            failures.append(adapter_fail_reason)
+        if not control_log_ok:
+            failures.append("NO_CONTROL_LOG")
+        if not sensor_probe_ok:
+            failures.append("NO_SENSOR_DATA")
+        if not motion_ok:
+            failures.append("EGO_NOT_MOVING")
+
+        acceptance = {
+            "success": len(failures) == 0,
+            "fail_reason": failures[0] if failures else None,
+            "checks": {
+                "control_log": {
+                    "ok": control_log_ok,
+                    "path": str(control_log_path),
+                    "size_bytes": control_log_size,
+                },
+                "sensor_probe": {
+                    "ok": sensor_probe_ok,
+                    "path": str(sensor_probe_path),
+                    "clock_count": clock_count,
+                    "tf_count": tf_count,
+                },
+                "ego_motion": {
+                    "ok": motion_ok,
+                    "max_speed_mps": state.max_speed_mps,
+                    "threshold": acceptance_speed_threshold,
+                },
+            },
+        }
+        summary_data["adapter_started"] = adapter_started
+        if adapter_fail_reason:
+            summary_data["adapter_fail_reason"] = adapter_fail_reason
+        summary_data["acceptance"] = acceptance
+        if failures:
+            summary_data["success"] = False
+            summary_data.setdefault("fail_reason", failures[0])
+        summary_path.write_text(json.dumps(summary_data, indent=2))
+        print(f"[acceptance] success={acceptance['success']} fail_reason={acceptance['fail_reason']}")
     finally:
         if 'control_logger_proc' in locals() and control_logger_proc and control_logger_proc.poll() is None:
             control_logger_proc.terminate()
@@ -728,6 +973,12 @@ def main():
                 control_logger_proc.wait(timeout=5)
             except Exception:
                 control_logger_proc.kill()
+        if 'sensor_probe_proc' in locals() and sensor_probe_proc and sensor_probe_proc.poll() is None:
+            sensor_probe_proc.terminate()
+            try:
+                sensor_probe_proc.wait(timeout=5)
+            except Exception:
+                sensor_probe_proc.kill()
         if 'carla_launcher' in locals() and carla_launcher:
             carla_launcher.stop()
         restore_settings(world, original_settings)

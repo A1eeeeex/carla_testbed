@@ -1,0 +1,6 @@
+PyYAML
+numpy
+opencv-python
+networkx
+shapely
+python-dotenv

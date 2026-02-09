@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 from pathlib import Path
 
@@ -8,7 +9,6 @@ import rclpy
 from rclpy.node import Node
 from rclpy.any_msg import AnyMsg
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from rosidl_runtime_py import message_to_ordereddict
 
 
 class TopicProbe(Node):
@@ -37,7 +37,15 @@ class TopicProbe(Node):
                 st["first"] = self.get_clock().now().nanoseconds / 1e9
             st["last"] = self.get_clock().now().nanoseconds / 1e9
             if st["count"] <= 3:
-                st.setdefault("samples", []).append(message_to_ordereddict(msg))
+                raw = bytes(getattr(msg, "_buff", b""))
+                sample = {
+                    "raw_len": len(raw),
+                }
+                try:
+                    sample["raw_b64"] = base64.b64encode(raw).decode("ascii")
+                except Exception:
+                    sample["raw_repr"] = repr(raw)
+                st.setdefault("samples", []).append(sample)
             if self.max_msgs and st["count"] >= self.max_msgs:
                 # check if all reached max
                 if all((self.max_msgs is None) or (v["count"] >= self.max_msgs) for v in self.stats.values()):

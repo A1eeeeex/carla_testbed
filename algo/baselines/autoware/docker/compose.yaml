@@ -4,19 +4,40 @@ services:
     container_name: autoware
     network_mode: host
     working_dir: /work
+    restart: "no"
+    tty: true
+    stdin_open: true
+    gpus: all
+    ipc: host
+    shm_size: "1gb"
     environment:
-      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-      - AUTOWARE_WORKSPACE=/opt/Autoware
-      - USE_SIM_TIME=${USE_SIM_TIME:-true}
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - USE_SIM_TIME=${USE_SIM_TIME:-true}
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      - AUTOWARE_MODE=${AUTOWARE_MODE:-gt_planning}
+      - AUTOWARE_PERCEPTION_MODE=${AUTOWARE_PERCEPTION_MODE:-gt}
+      - AUTOWARE_DISABLE_CAMERAS=${AUTOWARE_DISABLE_CAMERAS:-1}
+      - AUTOWARE_TRUTH_OBJECTS_TOPIC=${AUTOWARE_TRUTH_OBJECTS_TOPIC:-/perception/object_recognition/objects}
+      - AUTOWARE_LAUNCH_FILE=${AUTOWARE_LAUNCH_FILE:-autoware.launch.xml}
+      - AUTOWARE_LAUNCH_EXTRA_ARGS=${AUTOWARE_LAUNCH_EXTRA_ARGS:-}
+      - EGO_ROLE_NAME=${EGO_ROLE_NAME:-ego}
+      - CARLA_HOST=${CARLA_HOST:-127.0.0.1}
+      - CARLA_PORT=${CARLA_PORT:-2000}
+      - CARLA_MAP=${CARLA_MAP:-Town01}
+      - AUTOWARE_MAP_ROOT=${AUTOWARE_MAP_ROOT:-/home/ubuntu/autoware-contents/maps}
+      - CARLA_WHEEL_DIR=/carla_wheels
+      - AUTOWARE_ENABLE_PERCEPTION=${AUTOWARE_ENABLE_PERCEPTION:-0}
+      - AUTOWARE_DATA_PATH=${AUTOWARE_DATA_PATH:-/tmp/autoware_data_empty}
+      - CONTROL_TOPIC=${CONTROL_TOPIC:-/control/command/control_cmd}
+      - PROBE_TOPICS=${PROBE_TOPICS:-/clock,/tf}
+      - PROBE_MAX_MSGS=${PROBE_MAX_MSGS:-5}
+      - RUN_ARTIFACT_DIR=${RUN_ARTIFACT_DIR:-/work/runs/latest}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
-      - ../../../..:/work:rw
+      - ${TESTBED_ROOT:-../../../..}:/work:rw
       - ../../../../runs:/work/runs:rw
-    command: >
-      bash -lc "source /opt/ros/humble/setup.bash && \
-      if [ -f /opt/Autoware/install/setup.bash ]; then source /opt/Autoware/install/setup.bash; \
-      elif [ -f /autoware/install/setup.bash ]; then source /autoware/install/setup.bash; \
-      else echo '[autoware] setup.bash not found under /opt/Autoware or /autoware' >&2; fi && \
-      export PYTHONPATH=/work:${PYTHONPATH}; \
-      ros2 launch autoware_carla_interface autoware_carla_interface.launch.xml || \
-      (echo 'launch failed, dropping into shell'; exec bash)"
+      - ${AUTOWARE_MAP_ROOT:-/home/ubuntu/autoware-contents/maps}:/autoware_map:ro
+      - ${CARLA_WHEEL_DIR:-}:/carla_wheels:ro
+      - ${AUTOWARE_DATA_PATH:-/tmp/autoware_data_empty}:/autoware_data:ro
+    command: ["bash", "/work/algo/baselines/autoware/docker/entrypoint.sh"]

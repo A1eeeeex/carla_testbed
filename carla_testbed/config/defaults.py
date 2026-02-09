@@ -26,6 +26,11 @@ class HarnessConfig:
     record_no_lidar: bool = False
     record_no_radar: bool = False
     record_no_hud: bool = False
+    # spectator camera follow
+    follow_spectator: bool = False
+    spectator_distance: float = 8.0
+    spectator_height: float = 3.0
+    spectator_pitch: float = -15.0
     ego_id: str = "hero"
     enable_ros2_native: bool = False
     ros_invert_tf: bool = True

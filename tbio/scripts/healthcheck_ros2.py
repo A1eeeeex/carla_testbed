@@ -57,14 +57,8 @@ def healthcheck(config_path: Path, timeout: float = 5.0) -> bool:
         print("[healthcheck] rclpy not available on host; skipping ROS2 checks (treat as WARN)")
         return True
     cfg = load_config(config_path)
-    contract_path = Path(cfg.get("io", {}).get("contract", {}).get("canon_ros2", "io/contract/canon_ros2.yaml"))
-    contract = load_config(contract_path) if contract_path.exists() else {"slots": {}}
-
-    slots = contract.get("slots", {}) or {}
-    topics = {spec.get("topic") for spec in slots.values() if spec.get("topic")}
-    control_topics = [spec.get("topic") for spec in slots.values() if spec.get("direction") == "subscribe" and spec.get("topic")]
-    topics.add("/clock")
-    topics.update(control_topics)
+    topics_cfg = cfg.get("record", {}).get("sensor_probe", {}).get("topics") or []
+    topics = [t for t in topics_cfg if t]
 
     rclpy.init(args=None)
     node = rclpy.create_node("io_healthcheck")
@@ -75,8 +69,7 @@ def healthcheck(config_path: Path, timeout: float = 5.0) -> bool:
         print("[FAIL] /clock missing or no data")
         ok = False
     # sensors
-    sensor_required = [t for t in topics if t not in [REQUIRED["clock"], REQUIRED["control"]]]
-    for t in sensor_required:
+    for t in topics:
         if not wait_for_topic(node, t, sample=1, timeout=timeout):
             print(f"[FAIL] topic missing or empty: {t}")
             ok = False
@@ -84,12 +77,10 @@ def healthcheck(config_path: Path, timeout: float = 5.0) -> bool:
     if not check_tf(node, timeout=timeout):
         print("[FAIL] TF not received")
         ok = False
-    # control topic presence
-    for t in control_topics:
-        if not wait_for_topic(node, t, sample=1, timeout=timeout):
-            print(f"[WARN] control topic {t} has no data (algorithm may not be sending yet)")
     if ok:
         print("[PASS] ROS2 healthcheck OK")
+    else:
+        print("[WARN] ROS2 healthcheck failed; see messages above")
     rclpy.try_shutdown()
     return ok
 

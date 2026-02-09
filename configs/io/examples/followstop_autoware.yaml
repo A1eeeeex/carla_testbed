@@ -33,6 +33,33 @@ algo:                        # 算法栈选择
   autoware:
     compose: algo/baselines/autoware/docker/compose.yaml   # docker compose 路径
     interface: autoware_carla_interface                    # 接口包/launch 名（提示）
+    is_direct: true                                         # Mode-2 直连 CARLA
+    mode: gt_planning                                      # gt_planning | e2e
+    perception_mode: gt                                    # gt | ml | off，默认使用 GT
+    disable_cameras: true                                  # 阶段1：硬关相机链路
+    truth_objects_topic: /perception/object_recognition/objects
+    launch_file: autoware.launch.xml
+    launch_extra_args: >-
+      launch_sensing:=false
+      launch_perception:=false
+      launch_localization:=false
+      launch_planning:=true
+      launch_control:=true
+      launch_map:=true
+      launch_vehicle:=true
+    map_root: /home/ubuntu/autoware-contents/maps           # 推荐：maps 根目录（含 point_cloud_maps / vector_maps）
+    map_path: /home/ubuntu/autoware-contents/maps           # 兼容旧字段；若指向 Town 子目录会自动推断
+    carla_map: Town01
+    carla_host: 127.0.0.1
+    carla_port: 2000
+    carla_wheel_dir: ""                                      # 请通过 CARLA_ROOT/PythonAPI/carla/dist 提供
+    enable_perception: false                               # 兼容旧字段；若 perception_mode 未显式设置则按此推导
+    launch_sensing: false                                  # 兼容旧字段（阶段1关闭 sensing）
+    autoware_data_path: ""                                 # 若需要感知，请提供该路径并设置 enable_perception=true
+    goal:                                                   # 给 Autoware 下发目标点（map 坐标）
+      enable: true
+      ahead_m: 20.0                                         # 相对前车朝向前推的距离；0 表示用前车当前位置
+      frame_id: map
     params:
       use_sim_time: true
   legacy_followstop:         # 直连本地 legacy 控制器（不走 Autoware）
@@ -74,10 +101,16 @@ record:                      # 录制配置
     enable: true
     topic: /control/command/control_cmd
     max_msgs: null           # 可选：记录 N 条后退出；null 表示全程
-  sensor_probe:              # 传感器话题探测（自动在 autoware 容器内订阅）
+    force_anymsg: true       # 强制 AnyMsg 以避免缺少 Python type support
+    reliability: best_effort # best_effort | reliable
+  sensor_probe:              # 传感器话题探测（旧字段，兼容保留）
     enable: true
-    topics: []               # 留空则按 contract slots 自动推导
-    max_msgs: 5              # 每个话题最多记录 N 条（统计用）
+    topics: ["/clock", "/tf", "/control/command/control_cmd"]
+    max_msgs: 5
+  probe:                     # 新字段：同上，更简短
+    enable: true
+    topics: ["/clock", "/tf"]
+    max_msgs: 5
 rviz:                        # RViz 可选参数（仅在 enable_ros2_native 模式下有效）
   enable: false
   mode: docker               # docker | local
@@ -89,3 +122,5 @@ rviz:                        # RViz 可选参数（仅在 enable_ros2_native 模
 
 logging:
   level: INFO                # 日志级别
+acceptance:
+  min_speed_mps: 5.0         # 闭环判定阈值（最大速度需超过该值）

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carla-testbed"
+version = "0.1.0"
+description = "CARLA-based testbed with Autoware/dummy stacks"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "PyYAML",
+    "numpy",
+    "opencv-python",
+    "networkx",
+    "shapely",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = ["ruff", "pytest", "pre-commit"]
+
+[tool.setuptools]
+packages = ["carla_testbed", "tbio", "algo"]
