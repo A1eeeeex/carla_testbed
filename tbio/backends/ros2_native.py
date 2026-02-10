@@ -100,6 +100,18 @@ class Ros2NativePublisher:
 
     def setup_publishers(self) -> int:
         print("[ROS2 native] ensure CARLA server started with --ros2; server will publish /carla/<ego>/<sensor>/...")
+        actor_has_enable = hasattr(carla.Actor, "enable_for_ros")
+        sensor_has_enable = hasattr(carla.Sensor, "enable_for_ros")
+        if not (actor_has_enable or sensor_has_enable):
+            print("[WARN] CARLA Python API has no enable_for_ros(); relying on server-side native ROS2 only")
+        if self.ego_vehicle is not None and hasattr(self.ego_vehicle, "enable_for_ros"):
+            try:
+                self.ego_vehicle.enable_for_ros()
+                print("[ROS2 native] ego vehicle enable_for_ros() succeeded")
+            except Exception as exc:
+                print(f"[WARN] ego enable_for_ros failed: {exc}")
+        elif self.ego_vehicle is not None:
+            print("[WARN] ego enable_for_ros unavailable in current CARLA Python API")
         if self.traffic_manager is not None:
             try:
                 self._tm_sync_original = self.traffic_manager.get_synchronous_mode()
@@ -112,11 +124,12 @@ class Ros2NativePublisher:
 
         enabled = 0
         for sid, actor in self._iter_sensor_actors():
-            try:
-                actor.enable_for_ros()
-                enabled += 1
-            except Exception as exc:
-                print(f"[WARN] enable_for_ros failed for {sid}: {exc}")
+            if hasattr(actor, "enable_for_ros"):
+                try:
+                    actor.enable_for_ros()
+                    enabled += 1
+                except Exception as exc:
+                    print(f"[WARN] enable_for_ros failed for {sid}: {exc}")
             try:
                 tr = actor.get_transform()
                 print(

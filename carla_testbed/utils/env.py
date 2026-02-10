@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import yaml
 
+DEFAULT_CARLA_ROOT = Path("/home/ubuntu/CARLA_0.9.16")
+
 
 def resolve_repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -20,15 +22,14 @@ def load_local_config(repo_root: Path) -> dict:
 def resolve_carla_root(override: str | None = None) -> Path:
     repo_root = resolve_repo_root()
     local_cfg = load_local_config(repo_root)
-    root = override or os.environ.get("CARLA_ROOT") or local_cfg.get("carla", {}).get("root")
-    if not root:
-        raise RuntimeError(
-            "CARLA_ROOT 未设置。请设置环境变量 CARLA_ROOT 或在 configs/local.yaml 中配置 carla.root。\n"
-            "示例：export CARLA_ROOT=/path/to/CARLA_0.9.16"
-        )
+    root = override or os.environ.get("CARLA_ROOT") or local_cfg.get("carla", {}).get("root") or str(DEFAULT_CARLA_ROOT)
     root_path = Path(root).expanduser().resolve()
     if not root_path.exists():
-        raise RuntimeError(f"CARLA_ROOT 路径不存在: {root_path}")
+        raise RuntimeError(
+            f"CARLA_ROOT 路径不存在: {root_path}\n"
+            f"默认路径为: {DEFAULT_CARLA_ROOT}\n"
+            "可通过环境变量 CARLA_ROOT 或 configs/local.yaml 的 carla.root 覆盖。"
+        )
     return root_path
 
 

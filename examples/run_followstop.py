@@ -8,21 +8,47 @@ python examples/run_followstop.py --config configs/io/examples/followstop_autowa
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
-import time
-import subprocess
-import socket
-from pathlib import Path
-from typing import List, Optional, Dict, Any
-import yaml
 import math
+import socket
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from carla_testbed.utils.env import resolve_repo_root, resolve_carla_root
-from tbio.contract.generate_artifacts import generate_all
-from tbio.scripts.healthcheck_ros2 import healthcheck
+import carla
+import yaml
+
 from algo.registry import get_adapter
+from carla_testbed.config import HarnessConfig
+from carla_testbed.config.rig_loader import apply_overrides, load_rig_file, load_rig_preset, rig_to_specs
+from carla_testbed.control import LegacyControllerConfig
+from carla_testbed.record import RecordManager, RecordOptions
+from carla_testbed.record.monitor import SignalMonitor
+from carla_testbed.record.rviz.launcher import RvizLauncher
+from carla_testbed.runner import TestHarness
+from carla_testbed.scenarios import FollowStopConfig, FollowStopScenario
+from carla_testbed.sim import CarlaClientManager, configure_synchronous_mode, restore_settings
+from carla_testbed.utils.env import resolve_carla_root, resolve_repo_root
+from carla_testbed.utils.run_naming import build_run_name, next_available_run_dir, update_latest_pointer
 from tbio.carla.launcher import CarlaLauncher
+from tbio.contract.generate_artifacts import generate_all
+from tbio.ros2.goal_engage import ComposeRos2Runner, LocalRos2Runner, send_goal_and_engage
+from tbio.ros2.observability import (
+    assess_probe_results,
+    default_probe_topics,
+    infer_topic_types,
+    start_control_logger,
+    start_topic_probe,
+    stop_process,
+)
+from tbio.scripts.healthcheck_ros2 import healthcheck
+
+
+TESTBED_ROOT = resolve_repo_root()
+DEFAULT_CARLA_ROOT = resolve_carla_root(os.environ.get("CARLA_ROOT"))
 
 
 def _is_port_open(host: str, port: int) -> bool:
@@ -50,27 +76,6 @@ def _wait_for_carla(host: str, port: int, timeout: float = 30.0) -> bool:
     return False
 
 
-TESTBED_ROOT = resolve_repo_root()
-DEFAULT_CARLA_ROOT = resolve_carla_root(os.environ.get("CARLA_ROOT"))
-
-import carla
-
-from carla_testbed.config import HarnessConfig
-from carla_testbed.control import LegacyControllerConfig
-from carla_testbed.config.rig_loader import apply_overrides, load_rig_file, load_rig_preset, rig_to_specs
-from carla_testbed.runner import TestHarness
-from carla_testbed.scenarios import FollowStopConfig, FollowStopScenario
-from carla_testbed.sim import CarlaClientManager, configure_synchronous_mode, restore_settings
-from carla_testbed.record import RecordManager, RecordOptions
-from carla_testbed.record.monitor import SignalMonitor
-from carla_testbed.record.rviz.launcher import RvizLauncher
-from carla_testbed.record.ros2_bag import Ros2BagRecorder
-from tbio.contract.generate_artifacts import generate_all
-from tbio.scripts.healthcheck_ros2 import healthcheck
-from algo.registry import get_adapter
-from tbio.carla.launcher import CarlaLauncher
-
-
 def _dedup(seq):
     seen = set()
     out = []
@@ -88,133 +93,34 @@ def _quaternion_from_yaw(yaw_deg: float):
     return 0.0, 0.0, math.sin(half), math.cos(half)
 
 
-def _send_goal_to_autoware(
-    compose_file: Path,
-    pose: Dict[str, float],
-    frame_id: str = "map",
-    container: str = "autoware",
-):
-    """
-    Push a PoseStamped goal into Autoware mission planner using ros2 topic pub.
-    pose keys: x,y,z,qx,qy,qz,qw
-    """
-    compose_file = Path(compose_file).resolve()
-    def _exec(cmd, timeout=30):
-        return subprocess.check_output(cmd, text=True, timeout=timeout)
+def _build_ros2_runner(effective_cfg: Dict[str, Any], adapter_started: bool):
+    stack = effective_cfg.get("algo", {}).get("stack")
+    if stack == "autoware" and adapter_started:
+        aw_cfg = effective_cfg.get("algo", {}).get("autoware", {}) or {}
+        compose_file = Path(aw_cfg.get("compose", "algo/baselines/autoware/docker/compose.yaml"))
+        service = aw_cfg.get("container_name", "autoware")
+        return ComposeRos2Runner(compose_file=compose_file, service=service, repo_root=TESTBED_ROOT)
+    return LocalRos2Runner()
 
-    def _compose_exec(bash_cmd: str, timeout=20) -> str:
-        full = ["docker", "compose", "-f", str(compose_file), "exec", "-T", container, "bash", "-lc", bash_cmd]
-        return _exec(full, timeout=timeout)
 
-    log_lines = []
-    def log(msg):
-        print(msg)
-        log_lines.append(msg)
-
-    # wait container Up
-    try:
-        for _ in range(30):
-            ps = _exec(["docker", "compose", "-f", str(compose_file), "ps", "--status", "running"], timeout=10)
-            if "autoware" in ps and "running" in ps:
-                break
-            time.sleep(1)
-        else:
-            log("[goal] autoware not running within 30s")
-            return False, log_lines
-    except Exception as exc:
-        log(f"[goal] compose ps failed: {exc}")
-        return False, log_lines
-
-    env_setup = (
-        "source /opt/ros/humble/setup.bash; "
-        "if [ -f /opt/Autoware/install/setup.bash ]; then source /opt/Autoware/install/setup.bash; "
-        "elif [ -f /autoware/install/setup.bash ]; then source /autoware/install/setup.bash; fi; "
+def _default_followstop_run_dir(
+    repo_root: Path,
+    ts: int,
+    cfg: Dict[str, Any],
+    *,
+    town: str,
+) -> Path:
+    run_name = build_run_name(
+        str(ts),
+        [
+            "followstop",
+            (cfg.get("algo", {}) or {}).get("stack", "algo"),
+            (cfg.get("io", {}) or {}).get("mode", "io"),
+            (cfg.get("scenario", {}) or {}).get("driver", "scenario"),
+            town,
+        ],
     )
-    pose_yaml = (
-        f"{{header:{{frame_id:'{frame_id}'}}, "
-        f"pose:{{position:{{x:{pose['x']:.3f},y:{pose['y']:.3f},z:{pose['z']:.3f}}}, "
-        f"orientation:{{x:{pose['qx']:.6f},y:{pose['qy']:.6f},z:{pose['qz']:.6f},w:{pose['qw']:.6f}}}}}}}"
-    )
-
-    # wait for subscriber
-    sub_ready = False
-    for _ in range(30):
-        try:
-            info = _compose_exec(f"{env_setup} ros2 topic info -v /planning/mission_planning/goal || true", timeout=5)
-            log(info)
-            if "Subscription count" in info:
-                for line in info.splitlines():
-                    if "Subscription count" in line:
-                        try:
-                            cnt = int(line.strip().split()[-1])
-                            if cnt >= 1:
-                                sub_ready = True
-                                break
-                        except Exception:
-                            pass
-        except Exception as exc:
-            log(f"[goal] topic info error: {exc}")
-        if sub_ready:
-            break
-        time.sleep(1)
-    if not sub_ready:
-        log("[goal] no subscriber detected within 30s; abort goal publish")
-        return False, log_lines
-
-    cmd_str = f"{env_setup} ros2 topic pub --once --qos-reliability reliable /planning/mission_planning/goal geometry_msgs/msg/PoseStamped \"{pose_yaml}\""
-    try:
-        log(f"[autoware] sending goal via compose: {cmd_str}")
-        out = _compose_exec(cmd_str, timeout=20)
-        log(out)
-    except Exception as exc:
-        log(f"[WARN] failed to send goal: {exc}")
-        return False, log_lines
-
-    # Engage / change to autonomous (best effort)
-    try:
-        svc_list = _compose_exec(f"{env_setup} ros2 service list", timeout=10)
-        topic_list = _compose_exec(f"{env_setup} ros2 topic list", timeout=10)
-        log("[engage] services:\n" + svc_list)
-        log("[engage] topics:\n" + topic_list)
-    except Exception as exc:
-        log(f"[engage] list failed: {exc}")
-        svc_list = topic_list = ""
-
-    def try_service(name, payload):
-        if name not in svc_list:
-            return False
-        try:
-            typ = _compose_exec(f"{env_setup} ros2 service type {name}", timeout=5).strip()
-            log(f"[engage] calling {name} type={typ} payload={payload}")
-            call_cmd = f"{env_setup} ros2 service call {name} {typ} '{payload}'"
-            log(_compose_exec(call_cmd, timeout=10))
-            return True
-        except Exception as exc:
-            log(f"[engage] {name} failed: {exc}")
-            return False
-
-    def try_topic(name, payload):
-        if name not in topic_list:
-            return False
-        try:
-            typ = _compose_exec(f"{env_setup} ros2 topic type {name}", timeout=5).strip()
-            log(f"[engage] pub {name} type={typ} payload={payload}")
-            pub_cmd = f"{env_setup} ros2 topic pub --once {name} {typ} '{payload}'"
-            log(_compose_exec(pub_cmd, timeout=10))
-            return True
-        except Exception as exc:
-            log(f"[engage] {name} failed: {exc}")
-            return False
-
-    engaged = False
-    engaged = engaged or try_service("/api/operation_mode/change_to_autonomous", "{}")
-    engaged = engaged or try_service("/api/autoware/set/engage", "{data: true}")
-    engaged = engaged or try_topic("/autoware/engage", "{data: true}")
-    engaged = engaged or try_topic("/vehicle/engage", "{data: true}")
-    if not engaged:
-        log("[engage] no engage interface succeeded")
-
-    return True, log_lines
+    return next_available_run_dir(repo_root / "runs", run_name)
 
 
 def build_ros2_bag_topics(
@@ -459,7 +365,8 @@ def main():
     # run_dir and effective config
     ts = int(time.time())
     repo_root = Path(__file__).resolve().parents[1]
-    out_run_dir = args.run_dir or (repo_root / "runs" / f"followstop_{ts}")
+    effective_cfg = deep_update(cfg.copy(), parse_overrides(args.override))
+    out_run_dir = args.run_dir or _default_followstop_run_dir(repo_root, ts, effective_cfg, town=args.town)
     if args.run_dir and not out_run_dir.resolve().is_relative_to(repo_root):
         # redirect to repo runs
         redirected = repo_root / "runs" / args.run_dir.name
@@ -471,10 +378,10 @@ def main():
         except Exception:
             pass
     out_run_dir.mkdir(parents=True, exist_ok=True)
+    update_latest_pointer(out_run_dir)
     log_dir = out_run_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     eff_path = out_run_dir / "effective.yaml"
-    effective_cfg = deep_update(cfg.copy(), parse_overrides(args.override))
     effective_cfg.setdefault("run", {})["ticks"] = args.ticks
     effective_cfg.setdefault("run", {})["map"] = args.town
     effective_cfg.setdefault("run", {})["ego_id"] = args.ego_id
@@ -590,6 +497,9 @@ def main():
     carla_launcher = None
     adapter_started = False
     adapter_fail_reason = None
+    carla_stop_hook = None
+    runtime_carla_cfg = ((effective_cfg.get("runtime", {}) or {}).get("carla", {}) or {}) if effective_cfg else {}
+    stop_reused_on_exit = bool(runtime_carla_cfg.get("stop_reused_on_exit", True))
     if args.start_carla:
         carla_launcher = CarlaLauncher(
             carla_root=args.carla_root,
@@ -599,7 +509,10 @@ def main():
             extra_args=args.carla_extra_args,
             foreground=args.carla_foreground,
             run_dir=out_run_dir,
+            stop_reused_on_exit=stop_reused_on_exit,
         )
+        carla_stop_hook = lambda: carla_launcher.stop()
+        atexit.register(carla_stop_hook)
         try:
             carla_launcher.start()
             if not carla_launcher.wait_ready(timeout_s=180.0, poll_s=1.0):
@@ -619,8 +532,9 @@ def main():
     if adapter and adapter_profile:
         try:
             adapter.prepare(adapter_profile, out_run_dir)
-            adapter_started = adapter.start(adapter_profile, out_run_dir)
-            if not adapter_started:
+            started_result = adapter.start(adapter_profile, out_run_dir)
+            adapter_started = True if started_result is None else bool(started_result)
+            if stack == "autoware" and not adapter_started:
                 adapter_fail_reason = "AUTOWARE_CONTAINER_EXIT"
             else:
                 ok = healthcheck(eff_path, timeout=5.0)
@@ -682,31 +596,45 @@ def main():
         front = actors.front
         print(f"Spawned ego at idx={scenario.cfg.ego_idx}, front at idx={scenario.cfg.front_idx}")
 
-        # optional: send goal to Autoware mission planner (front车前方一定距离)
-        if stack == "autoware":
-            goal_cfg = effective_cfg.get("algo", {}).get("autoware", {}).get("goal", {}) if effective_cfg else {}
-            if goal_cfg.get("enable", False):
-                ahead_m = float(goal_cfg.get("ahead_m", 50.0) or 0.0)
-                frame_id = goal_cfg.get("frame_id", "map")
-                compose_file = Path(effective_cfg.get("algo", {}).get("autoware", {}).get("compose", "algo/baselines/autoware/docker/compose.yaml"))
-                container_name = effective_cfg.get("algo", {}).get("autoware", {}).get("container_name", "autoware")
-                target_actor = front or ego
-                tr = target_actor.get_transform()
-                loc = tr.location
-                yaw = tr.rotation.yaw
-                dx = ahead_m * math.cos(math.radians(yaw))
-                dy = ahead_m * math.sin(math.radians(yaw))
-                qx, qy, qz, qw = _quaternion_from_yaw(yaw)
-                goal_pose = {
-                    "x": loc.x + dx,
-                    "y": loc.y + dy,
-                    "z": loc.z,
-                    "qx": qx,
-                    "qy": qy,
-                    "qz": qz,
-                    "qw": qw,
-                }
-                _send_goal_to_autoware(compose_file, goal_pose, frame_id=frame_id, container=container_name)
+        ros2_runner = _build_ros2_runner(effective_cfg, adapter_started)
+
+        # optional: send goal + engage (backend-agnostic for compose/local ROS2)
+        goal_cfg = effective_cfg.get("algo", {}).get("autoware", {}).get("goal", {}) if effective_cfg else {}
+        goal_log_path = out_run_dir / "artifacts" / "autoware_goal_and_engage.log"
+        if goal_cfg.get("enable", False) and (args.enable_ros2_native or (stack == "autoware" and adapter_started)):
+            ahead_m = float(goal_cfg.get("ahead_m", 50.0) or 0.0)
+            frame_id = goal_cfg.get("frame_id", "map")
+            target_actor = front or ego
+            tr = target_actor.get_transform()
+            loc = tr.location
+            yaw = tr.rotation.yaw
+            dx = ahead_m * math.cos(math.radians(yaw))
+            dy = ahead_m * math.sin(math.radians(yaw))
+            qx, qy, qz, qw = _quaternion_from_yaw(yaw)
+            goal_pose = {
+                "x": loc.x + dx,
+                "y": loc.y + dy,
+                "z": loc.z,
+                "qx": qx,
+                "qy": qy,
+                "qz": qz,
+                "qw": qw,
+            }
+            result = send_goal_and_engage(
+                ros2_runner,
+                goal_pose,
+                frame_id=frame_id,
+                log_path=goal_log_path,
+            )
+            print(
+                "[goal] sent=%s subscriber_ready=%s subscriber_count=%d engage=%s"
+                % (
+                    result.goal_sent,
+                    result.goal_subscriber_ready,
+                    result.goal_subscriber_count,
+                    result.engage_succeeded,
+                )
+            )
 
         ctrl_cfg = LegacyControllerConfig(
             lateral_mode=args.lateral_mode,
@@ -795,42 +723,38 @@ def main():
         if effective_cfg.get("record", {}).get("sensors", {}).get("enable") is False:
             sensor_capture_enabled = False
         disable_control = bool(effective_cfg.get("algo", {}).get("stack") == "autoware")
-        # optional: start control logger inside Autoware container
+        ros2_mode_active = bool(args.enable_ros2_native or (stack == "autoware" and adapter_started))
+
+        # optional: start control logger via shared ROS2 runner
         control_log_cfg = effective_cfg.get("record", {}).get("control_log", {}) if effective_cfg else {}
         control_logger_proc = None
-        if disable_control and control_log_cfg.get("enable", True) and adapter_started:
-            topic = control_log_cfg.get("topic", "/control/command/control_cmd")
+        default_control_topic = "/control/command/control_cmd" if stack == "autoware" else "/tb/ego/control_cmd"
+        control_log_enable_default = bool(stack == "autoware")
+        if ros2_mode_active and control_log_cfg.get("enable", control_log_enable_default):
+            topic = control_log_cfg.get("topic", default_control_topic)
             max_msgs = control_log_cfg.get("max_msgs")
             reliability = control_log_cfg.get("reliability", "best_effort")
             if reliability not in ["best_effort", "reliable"]:
                 reliability = "best_effort"
             force_anymsg = control_log_cfg.get("force_anymsg", True)
-            compose_file = effective_cfg.get("algo", {}).get("autoware", {}).get("compose", "algo/baselines/autoware/docker/compose.yaml")
             out_log = out_run_dir / "artifacts" / "autoware_control.jsonl"
             out_err = out_run_dir / "artifacts" / "autoware_control.log"
-            cmd_str = (
-                "source /opt/ros/humble/setup.bash; "
-                "if [ -f /opt/Autoware/install/setup.bash ]; then source /opt/Autoware/install/setup.bash; "
-                "elif [ -f /autoware/install/setup.bash ]; then source /autoware/install/setup.bash; fi; "
-                f"python /work/io/ros2/tools/control_logger.py --topic {topic} --out {out_log}"
-            )
-            if max_msgs:
-                cmd_str += f" --max-msgs {max_msgs}"
-            if force_anymsg:
-                cmd_str += " --force-anymsg"
-            if reliability:
-                cmd_str += f" --reliability {reliability}"
-            cmd = [
-                "docker", "compose", "-f", str(Path(compose_file).resolve()), "exec", "-T", "autoware",
-                "bash", "-lc", cmd_str,
-            ]
             try:
-                control_logger_proc = subprocess.Popen(cmd, stdout=open(out_err, "w"), stderr=subprocess.STDOUT)
+                control_logger_proc = start_control_logger(
+                    ros2_runner,
+                    TESTBED_ROOT,
+                    topic=topic,
+                    out_jsonl=out_log,
+                    out_log=out_err,
+                    max_msgs=max_msgs,
+                    force_anymsg=force_anymsg,
+                    reliability=reliability,
+                )
                 print(f"[monitor] control logger started for {topic}, writing to {out_log}")
             except Exception as exc:
                 print(f"[WARN] failed to start control logger: {exc}")
 
-        # sensor probe inside autoware container
+        # optional: topic probe via shared ROS2 runner
         probe_cfg = None
         if effective_cfg:
             rec = effective_cfg.get("record", {}) or {}
@@ -838,26 +762,32 @@ def main():
         else:
             probe_cfg = {}
         sensor_probe_proc = None
-        if probe_cfg.get("enable", True) and stack == "autoware" and adapter_started:
-            control_topic_default = control_log_cfg.get("topic", "/control/command/control_cmd")
-            probe_topics = [t for t in (probe_cfg.get("topics") or []) if t] or ["/clock", "/tf", control_topic_default]
+        probe_topics_effective: List[str] = []
+        if probe_cfg.get("enable", True) and ros2_mode_active:
+            control_topic_default = control_log_cfg.get("topic", default_control_topic)
+            probe_topics = [t for t in (probe_cfg.get("topics") or []) if t] or default_probe_topics(
+                stack=stack,
+                ego_id=args.ego_id,
+                rig_final=rig_final,
+                control_topic=control_topic_default,
+            )
+            probe_topics_effective = probe_topics
             if probe_topics:
                 max_msgs = probe_cfg.get("max_msgs", 5)
-                compose_file = effective_cfg.get("algo", {}).get("autoware", {}).get("compose", "algo/baselines/autoware/docker/compose.yaml")
                 out_probe = out_run_dir / "artifacts" / "sensor_probe.json"
-                topics_arg = " ".join(probe_topics)
-                cmd_str = (
-                    "source /opt/ros/humble/setup.bash; "
-                    "if [ -f /opt/Autoware/install/setup.bash ]; then source /opt/Autoware/install/setup.bash; "
-                    "elif [ -f /autoware/install/setup.bash ]; then source /autoware/install/setup.bash; fi; "
-                    f"python /work/io/ros2/tools/topic_probe.py --topics {topics_arg} --max-msgs {max_msgs} --out {out_probe}"
-                )
-                cmd = [
-                    "docker", "compose", "-f", str(Path(compose_file).resolve()), "exec", "-T", "autoware",
-                    "bash", "-lc", cmd_str,
-                ]
+                out_probe_log = out_run_dir / "artifacts" / "sensor_probe.log"
                 try:
-                    sensor_probe_proc = subprocess.Popen(cmd)
+                    typed_topics = infer_topic_types(probe_topics)
+                    sensor_probe_proc = start_topic_probe(
+                        ros2_runner,
+                        TESTBED_ROOT,
+                        topics=probe_topics,
+                        out_json=out_probe,
+                        out_log=out_probe_log,
+                        max_msgs=max_msgs,
+                        discover_prefixes=["/carla"] if args.enable_ros2_native else None,
+                        typed_topics=typed_topics,
+                    )
                     print(f"[monitor] sensor probe started for {len(probe_topics)} topics, writing to {out_probe}")
                 except Exception as exc:
                     print(f"[WARN] failed to start sensor probe: {exc}")
@@ -883,7 +813,10 @@ def main():
             disable_control=disable_control,
             sensor_capture_enabled=sensor_capture_enabled,
         )
-        print(f"Run finished: success={summary['success']} fail_reason={summary['fail_reason']} collisions={summary['collision_count']}")
+        print(
+            f"Run core finished: harness_success={summary['success']} "
+            f"harness_fail_reason={summary['fail_reason']} collisions={summary['collision_count']}"
+        )
 
         summary_path = out_run_dir / "summary.json"
         summary_data = summary
@@ -914,24 +847,44 @@ def main():
         sensor_probe_ok = False
         clock_count = 0
         tf_count = None
+        ros2_sensor_topic_count = 0
+        ros2_sensor_msgs = 0
+        ros2_sensor_ok = False
+        ros2_invalid_topics: List[str] = []
         if sensor_probe_path.exists():
             try:
-                probe_data = json.loads(sensor_probe_path.read_text())
-                clock_count = int((probe_data.get("/clock") or {}).get("count", 0))
-                tf_entry = probe_data.get("/tf")
-                tf_count = None if tf_entry is None else int(tf_entry.get("count", 0))
-                sensor_probe_ok = clock_count >= 2 and (tf_count is None or tf_count >= 1)
+                probe_assess = assess_probe_results(sensor_probe_path, probe_topics_effective, args.ego_id)
+                sensor_probe_ok = probe_assess.sensor_probe_ok
+                clock_count = probe_assess.clock_count
+                tf_count = probe_assess.tf_count
+                ros2_sensor_topic_count = probe_assess.ros2_sensor_topic_count
+                ros2_sensor_msgs = probe_assess.ros2_sensor_msgs
+                ros2_sensor_ok = probe_assess.ros2_sensor_ok
+                raw_probe = json.loads(sensor_probe_path.read_text())
+                ros2_invalid_topics = ((raw_probe.get("_meta") or {}).get("invalid_discovered_topics") or [])
             except Exception as exc:
                 print(f"[WARN] failed to parse sensor probe: {exc}")
         motion_ok = state.max_speed_mps > acceptance_speed_threshold
+        require_control_log = bool(stack == "autoware")
+        require_sensor_probe = bool(stack == "autoware")
+        ros2_enable_api_available = bool(
+            hasattr(carla.Actor, "enable_for_ros")
+            or hasattr(carla.Sensor, "enable_for_ros")
+            or hasattr(carla.Vehicle, "enable_for_ros")
+        )
 
         failures = []
         if adapter_fail_reason and not adapter_started:
             failures.append(adapter_fail_reason)
-        if not control_log_ok:
+        if require_control_log and not control_log_ok:
             failures.append("NO_CONTROL_LOG")
-        if not sensor_probe_ok:
+        if require_sensor_probe and not sensor_probe_ok:
             failures.append("NO_SENSOR_DATA")
+        if ros2_mode_active and not ros2_sensor_ok:
+            if args.enable_ros2_native and not ros2_enable_api_available:
+                failures.append("ROS2_NATIVE_PY_API_UNAVAILABLE")
+            else:
+                failures.append("ROS2_PUBLISH_NO_SENSOR_MSG")
         if not motion_ok:
             failures.append("EGO_NOT_MOVING")
 
@@ -941,14 +894,24 @@ def main():
             "checks": {
                 "control_log": {
                     "ok": control_log_ok,
+                    "required": require_control_log,
                     "path": str(control_log_path),
                     "size_bytes": control_log_size,
                 },
                 "sensor_probe": {
                     "ok": sensor_probe_ok,
+                    "required": require_sensor_probe,
                     "path": str(sensor_probe_path),
                     "clock_count": clock_count,
                     "tf_count": tf_count,
+                },
+                "ros2_publish": {
+                    "ok": ros2_sensor_ok,
+                    "sensor_topic_count": ros2_sensor_topic_count,
+                    "sensor_msg_count": ros2_sensor_msgs,
+                    "invalid_discovered_topics": ros2_invalid_topics,
+                    "native_enable_api_available": ros2_enable_api_available,
+                    "topics": probe_topics_effective,
                 },
                 "ego_motion": {
                     "ok": motion_ok,
@@ -961,29 +924,32 @@ def main():
         if adapter_fail_reason:
             summary_data["adapter_fail_reason"] = adapter_fail_reason
         summary_data["acceptance"] = acceptance
-        if failures:
-            summary_data["success"] = False
-            summary_data.setdefault("fail_reason", failures[0])
+        summary_data["success"] = acceptance["success"]
+        summary_data["fail_reason"] = acceptance["fail_reason"]
         summary_path.write_text(json.dumps(summary_data, indent=2))
         print(f"[acceptance] success={acceptance['success']} fail_reason={acceptance['fail_reason']}")
     finally:
-        if 'control_logger_proc' in locals() and control_logger_proc and control_logger_proc.poll() is None:
-            control_logger_proc.terminate()
-            try:
-                control_logger_proc.wait(timeout=5)
-            except Exception:
-                control_logger_proc.kill()
-        if 'sensor_probe_proc' in locals() and sensor_probe_proc and sensor_probe_proc.poll() is None:
-            sensor_probe_proc.terminate()
-            try:
-                sensor_probe_proc.wait(timeout=5)
-            except Exception:
-                sensor_probe_proc.kill()
+        if "control_logger_proc" in locals():
+            stop_process(control_logger_proc)
+        if "sensor_probe_proc" in locals():
+            stop_process(sensor_probe_proc)
+        try:
+            if "world" in locals() and "original_settings" in locals():
+                restore_settings(world, original_settings)
+        except Exception as exc:
+            print(f"[WARN] restore settings failed: {exc}")
+        try:
+            if "actors" in locals() and actors is not None and "scenario" in locals():
+                scenario.destroy()
+        except Exception as exc:
+            print(f"[WARN] scenario destroy failed: {exc}")
         if 'carla_launcher' in locals() and carla_launcher:
             carla_launcher.stop()
-        restore_settings(world, original_settings)
-        if actors is not None:
-            scenario.destroy()
+        if carla_stop_hook is not None:
+            try:
+                atexit.unregister(carla_stop_hook)
+            except Exception:
+                pass
         print("Settings restored, exiting.")
 
 

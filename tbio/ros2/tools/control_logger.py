@@ -9,8 +9,13 @@ from typing import Any, Dict, List, Optional
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from rclpy.any_msg import AnyMsg
 from rosidl_runtime_py import message_to_ordereddict
+from rosidl_runtime_py.utilities import get_message
+
+try:
+    from rclpy.any_msg import AnyMsg
+except Exception:  # pragma: no cover - optional by distro
+    AnyMsg = None
 
 # Try common control message types
 try:
@@ -104,12 +109,24 @@ class ControlLogger(Node):
                     f"Logging {topic} as {msg_types[0].__name__} -> {out_path} "
                     f"(QoS reliability={reliability.name})"
                 )
-            else:
+            elif AnyMsg is not None:
                 subscription = self.create_subscription(AnyMsg, topic, self._cb_any, qos)
                 mode = "force AnyMsg" if force_anymsg else "fallback AnyMsg"
                 self.get_logger().warn(
                     f"{mode}; subscribing AnyMsg on {topic} (QoS reliability={reliability.name}, type={self.topic_type})"
                 )
+            else:
+                if self.topic_type:
+                    try:
+                        dynamic_type = self.topic_type.split(",")[0].strip()
+                        msg_cls = get_message(dynamic_type)
+                        subscription = self.create_subscription(msg_cls, topic, self._cb, qos)
+                        self.get_logger().warn(
+                            f"AnyMsg unavailable; dynamic subscribe {topic} as {dynamic_type} "
+                            f"(QoS reliability={reliability.name})"
+                        )
+                    except Exception as exc:
+                        self.get_logger().error(f"Dynamic subscription failed on {topic} type={self.topic_type}: {exc}")
         except Exception as exc:  # pragma: no cover - defensive
             self.get_logger().error(f"Failed to create subscription on {topic}: {exc}")
             subscription = None

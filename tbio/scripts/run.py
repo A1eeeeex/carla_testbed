@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict
 
 import yaml
 
 from tbio.contract.generate_artifacts import generate_all
+from tbio.carla.launch_policy import append_followstop_launch_args, resolve_carla_launch_policy
 from tbio.scripts.healthcheck_ros2 import healthcheck
 from algo.registry import get_adapter
 from algo.adapters.autoware import AutowareAdapter
 from carla_testbed.utils.env import resolve_repo_root, load_local_config
 from carla_testbed.doctor import doctor_main
+from carla_testbed.utils.run_naming import build_run_name, next_available_run_dir, update_latest_pointer
 
 DEFAULTS = {
     "io": {"ros": {"domain_id": 0, "use_sim_time": True}},
@@ -66,6 +71,42 @@ def save_effective(cfg: Dict[str, Any], run_dir: Path):
     return eff
 
 
+def _default_run_dir(cfg: Dict[str, Any], ts: str) -> Path:
+    run_name = build_run_name(
+        ts,
+        [
+            (cfg.get("scenario", {}) or {}).get("driver", "scenario"),
+            (cfg.get("algo", {}) or {}).get("stack", "algo"),
+            (cfg.get("io", {}) or {}).get("mode", "io"),
+            (cfg.get("run", {}) or {}).get("map", "map"),
+        ],
+    )
+    return next_available_run_dir(Path("runs"), run_name)
+
+
+def _run_followstop_via_unified_entry(effective_config_path: Path, run_dir: Path, cfg: Dict[str, Any]) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    cmd = [
+        sys.executable,
+        "-m",
+        "examples.run_followstop",
+        "--config",
+        str(effective_config_path),
+        "--run-dir",
+        str(run_dir),
+    ]
+    policy = resolve_carla_launch_policy(cfg)
+    cmd = append_followstop_launch_args(cmd, policy)
+    print(
+        f"[run] carla launch policy: start={policy.start} host={policy.host}:{policy.port} "
+        f"town={policy.town} need_ros2_native={policy.need_ros2_native} extra_args='{policy.extra_args}'"
+    )
+    if policy.need_ros2_native and (not policy.start):
+        print("[run] ROS2 native enabled: expecting external CARLA already started with --ros2")
+    print(f"[run] dispatch followstop: {' '.join(cmd)}")
+    subprocess.check_call(cmd, cwd=repo_root)
+
+
 def main(args=None):
     ap = argparse.ArgumentParser(description="Unified IO/Algo runner")
     ap.add_argument("--config", required=True, type=Path)
@@ -86,8 +127,9 @@ def main(args=None):
         cfg.setdefault("logging", {})["level"] = args.log_level
 
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = args.run_dir or Path("runs") / ts
+    run_dir = args.run_dir or _default_run_dir(cfg, ts)
     ensure_run_dir(run_dir)
+    update_latest_pointer(run_dir)
     artifacts_dir = run_dir / "artifacts"
     doctor_main(run_dir)
 
@@ -95,9 +137,22 @@ def main(args=None):
         "run_dir": str(run_dir),
         "config": str(args.config),
         "timestamp": ts,
+        "scenario_driver": cfg.get("scenario", {}).get("driver"),
     }
+    if (cfg.get("scenario", {}) or {}).get("driver") == "carla_followstop":
+        policy = resolve_carla_launch_policy(cfg)
+        run_meta["carla_launch_policy"] = {
+            "start": policy.start,
+            "host": policy.host,
+            "port": policy.port,
+            "town": policy.town,
+            "extra_args": policy.extra_args,
+            "foreground": policy.foreground,
+            "carla_root": policy.carla_root,
+            "need_ros2_native": policy.need_ros2_native,
+        }
     (artifacts_dir).mkdir(parents=True, exist_ok=True)
-    (artifacts_dir / "run_meta.json").write_text(yaml.safe_dump(run_meta))
+    (artifacts_dir / "run_meta.json").write_text(json.dumps(run_meta, indent=2))
 
     # generate artifacts
     gen_cfg = cfg.get("io", {}).get("generate", {})
@@ -126,6 +181,11 @@ def main(args=None):
         print(eff_path.read_text())
     if args.dry_run:
         print(f"[dry-run] artifacts at {artifacts_dir}, config at {eff_path}")
+        return
+
+    driver = (cfg.get("scenario", {}) or {}).get("driver")
+    if driver == "carla_followstop":
+        _run_followstop_via_unified_entry(eff_path, run_dir, cfg)
         return
 
     adapter = get_adapter(cfg.get("algo", {}).get("stack"))

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import math
 from dataclasses import dataclass
@@ -30,23 +29,7 @@ from carla_testbed.record.fail_capture import FailFrameCapture
 from carla_testbed.schemas import ControlCommand, Event, FramePacket, GroundTruthPacket, ObjectTruth
 from carla_testbed.sensors import CollisionEventSource, LaneInvasionEventSource, SensorRig
 from carla_testbed.sim import tick_world
-
-
-def _load_ros2_native_publisher():
-    """Lazy-load Ros2NativePublisher from the new top-level io/backends location."""
-    io_root = Path(__file__).resolve().parents[2] / "io"
-    module_path = io_root / "backends" / "ros2_native.py"
-    if not module_path.exists():
-        return None
-    try:
-        spec = importlib.util.spec_from_file_location("io_backends_ros2_native", module_path)
-        if spec and spec.loader:
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return getattr(module, "Ros2NativePublisher", None)
-    except Exception as exc:
-        print(f"[WARN] failed to load Ros2NativePublisher from io/: {exc}")
-    return None
+from tbio.backends.ros2_native import Ros2NativePublisher
 
 
 @dataclass
@@ -292,23 +275,19 @@ class TestHarness:
         tm = None
         bag_recorder = None
         if self.cfg.enable_ros2_native:
-            Ros2NativePublisher = _load_ros2_native_publisher()
-            if Ros2NativePublisher is None:
-                print("[WARN] Ros2NativePublisher not available; ROS2 native enable skipped (moved to io/backends).")
-            else:
-                try:
-                    tm = world.get_trafficmanager()
-                except Exception:
-                    tm = None
-                ros_native = Ros2NativePublisher(
-                    world=world,
-                    traffic_manager=tm,
-                    ego_vehicle=ego,
-                    rig_spec=rig or sensor_specs or [],
-                    ego_id=self.cfg.ego_id,
-                    invert_tf=self.cfg.ros_invert_tf,
-                )
-                ros_native.setup_publishers()
+            try:
+                tm = world.get_trafficmanager()
+            except Exception:
+                tm = None
+            ros_native = Ros2NativePublisher(
+                world=world,
+                traffic_manager=tm,
+                ego_vehicle=ego,
+                rig_spec=rig or sensor_specs or [],
+                ego_id=self.cfg.ego_id,
+                invert_tf=self.cfg.ros_invert_tf,
+            )
+            ros_native.setup_publishers()
             if rviz_launcher is not None:
                 try:
                     rviz_launcher.start()

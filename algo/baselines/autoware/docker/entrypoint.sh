@@ -147,10 +147,10 @@ start_observability() {
   probe_max=${PROBE_MAX_MSGS:-5}
   mkdir -p "${RUN_ARTIFACT_DIR}"
 
-  nohup python /work/io/ros2/tools/control_logger.py --topic "$ctrl_topic" --out "$ctrl_out" --force-anymsg >/tmp/control_logger.out 2>&1 &
+  nohup python /work/tbio/ros2/tools/control_logger.py --topic "$ctrl_topic" --out "$ctrl_out" --force-anymsg >/tmp/control_logger.out 2>&1 &
   log "control_logger started for $ctrl_topic -> $ctrl_out (pid $!)"
 
-  nohup python /work/io/ros2/tools/topic_probe.py --topics $probe_list --max-msgs "$probe_max" --out "$probe_out" >/tmp/topic_probe.out 2>&1 &
+  nohup python /work/tbio/ros2/tools/topic_probe.py --topics $probe_list --max-msgs "$probe_max" --out "$probe_out" >/tmp/topic_probe.out 2>&1 &
   log "topic_probe started for [$probe_list] -> $probe_out (pid $!)"
 }
 start_observability

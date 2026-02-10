@@ -124,3 +124,10 @@ logging:
   level: INFO                # 日志级别
 acceptance:
   min_speed_mps: 5.0         # 闭环判定阈值（最大速度需超过该值）
+runtime:
+  carla:
+    start: false
+    host: localhost
+    port: 2000
+    extra_args: ""
+    foreground: false

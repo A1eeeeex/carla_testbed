@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -8,7 +9,32 @@ from tbio.scripts.run import main as run_main
 from tbio.scripts.smoke_test import main as smoke_main
 from carla_testbed.doctor import doctor_main
 from carla_testbed.utils.env import resolve_repo_root
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv as _load_dotenv
+except Exception:  # python-dotenv is optional
+    _load_dotenv = None
+
+
+def _load_env_file(env_path: Path) -> None:
+    if not env_path.exists():
+        return
+    if _load_dotenv is not None:
+        _load_dotenv(env_path)
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,8 +63,7 @@ def main(argv=None):
     # load .env if present
     repo_root = resolve_repo_root()
     env_path = repo_root / ".env"
-    if env_path.exists():
-        load_dotenv(env_path)
+    _load_env_file(env_path)
     argv = argv or sys.argv[1:]
     ap = build_parser()
     args = ap.parse_args(argv)

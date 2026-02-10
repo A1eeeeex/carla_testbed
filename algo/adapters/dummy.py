@@ -11,6 +11,7 @@ class DummyAdapter(Adapter):
 
     def start(self, profile: Dict[str, Any], run_dir):
         print("[dummy] no algorithm started")
+        return True
 
     def healthcheck(self, profile: Dict[str, Any], run_dir) -> bool:
         return True

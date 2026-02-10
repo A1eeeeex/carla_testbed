@@ -1,7 +1,7 @@
 run:
   seed: 1
   ticks: 200
-  ego_id: ego
+  ego_id: hero
   map: Town01
   weather: ClearNoon
   traffic:
@@ -9,9 +9,9 @@ run:
     density: 0.0
 scenario:
   driver: carla_followstop
-  publish_ros2_native: false
+  publish_ros2_native: true
 io:
-  mode: autoware_direct
+  mode: ros2_native
   ros:
     domain_id: 0
     use_sim_time: true
@@ -29,5 +29,17 @@ record:
   rosbag:
     enable: false
     topics: []
+  probe:
+    enable: true
+    max_msgs: 5
+  control_log:
+    enable: false
 logging:
   level: INFO
+runtime:
+  carla:
+    start: false
+    host: localhost
+    port: 2000
+    extra_args: ""
+    foreground: false
