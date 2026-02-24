@@ -26,6 +26,7 @@ from carla_testbed.record import SummaryRecorder, TimeseriesRecorder
 from carla_testbed.record.monitor import SignalMonitor
 from carla_testbed.record.manager import RecordManager, RecordOptions
 from carla_testbed.record.fail_capture import FailFrameCapture
+from carla_testbed.ros2 import GroundTruthRos2Publisher
 from carla_testbed.schemas import ControlCommand, Event, FramePacket, GroundTruthPacket, ObjectTruth
 from carla_testbed.sensors import CollisionEventSource, LaneInvasionEventSource, SensorRig
 from carla_testbed.sim import tick_world
@@ -272,8 +273,33 @@ class TestHarness:
                 "time_sync": cfg_dir_final / "time_sync.json",
             }
         ros_native = None
+        gt_pub = None
         tm = None
         bag_recorder = None
+        if self.cfg.enable_ros2_gt:
+            try:
+                gt_pub = GroundTruthRos2Publisher(
+                    ego_id=self.cfg.ego_id,
+                    namespace=self.cfg.ros2_namespace,
+                    invert_tf=self.cfg.ros_invert_tf,
+                    calibration_path=cfg_dir_final / "calibration.json",
+                    publish_tf=self.cfg.ros2_gt_publish_tf,
+                    publish_odom=self.cfg.ros2_gt_publish_odom,
+                    publish_objects3d=self.cfg.ros2_gt_publish_objects3d,
+                    publish_markers=self.cfg.ros2_gt_publish_markers,
+                    objects_radius_m=self.cfg.ros2_gt_objects_radius_m,
+                    max_objects=self.cfg.ros2_gt_max_objects,
+                    odom_hz=self.cfg.ros2_gt_odom_hz,
+                    tf_hz=self.cfg.ros2_gt_tf_hz,
+                    objects_hz=self.cfg.ros2_gt_objects_hz,
+                    markers_hz=self.cfg.ros2_gt_markers_hz,
+                    qos_reliability=self.cfg.ros2_gt_qos_reliability,
+                    qos_depth=self.cfg.ros2_gt_qos_depth,
+                )
+                gt_pub.publish_static_tf_from_calibration()
+            except Exception as exc:
+                print(f"[WARN] failed to initialize ROS2 GT publisher: {exc}")
+                gt_pub = None
         if self.cfg.enable_ros2_native:
             try:
                 tm = world.get_trafficmanager()
@@ -360,6 +386,21 @@ class TestHarness:
                         monitor.record_sensor("rig_capture", timestamp)
                 if monitor:
                     monitor.maybe_snapshot(step, timestamp, ctrl={"throttle": cmd.throttle, "brake": cmd.brake, "steer": cmd.steer})
+                if gt_pub is not None:
+                    try:
+                        extra_actors = []
+                        try:
+                            extra_actors.extend(list(world.get_actors().filter("vehicle.*")))
+                        except Exception:
+                            pass
+                        try:
+                            extra_actors.extend(list(world.get_actors().filter("walker.*")))
+                        except Exception:
+                            pass
+                        gt_pub.publish_tick(world, ego, extra_actors)
+                    except Exception as exc:
+                        print(f"[WARN] GT publish tick failed: {exc}")
+                        gt_pub = None
 
                 last_debug = cmd.meta.get("last_debug", {}) if cmd.meta else {}
                 row = {
@@ -431,6 +472,8 @@ class TestHarness:
                 rig.stop()
             if ros_native:
                 ros_native.teardown()
+            if gt_pub:
+                gt_pub.close()
             if rviz_launcher:
                 try:
                     rviz_launcher.stop()
@@ -474,6 +517,8 @@ class TestHarness:
             "record_modes": self.cfg.record_modes if hasattr(self.cfg, "record_modes") else [],
             "rig_name": rig_name,
             "ros2_native_enabled": self.cfg.enable_ros2_native,
+            "ros2_gt_enabled": self.cfg.enable_ros2_gt,
+            "ros2_gt": gt_pub.get_stats() if gt_pub is not None else None,
             "ros2_bag_enabled": self.cfg.enable_ros2_bag if hasattr(self.cfg, "enable_ros2_bag") else False,
         }
         if bag_recorder_cfg:

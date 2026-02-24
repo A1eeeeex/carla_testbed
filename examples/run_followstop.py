@@ -14,6 +14,7 @@ import os
 import math
 import socket
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -93,6 +94,34 @@ def _quaternion_from_yaw(yaw_deg: float):
     return 0.0, 0.0, math.sin(half), math.cos(half)
 
 
+def _normalize_ros_namespace(namespace: str) -> str:
+    ns = (namespace or "/carla").strip()
+    if not ns.startswith("/"):
+        ns = "/" + ns
+    ns = ns.rstrip("/")
+    return ns or "/carla"
+
+
+def _run_cleanup_with_timeout(label: str, fn, timeout_s: float = 8.0) -> None:
+    err_holder: Dict[str, Exception] = {}
+
+    def _worker():
+        try:
+            fn()
+        except Exception as exc:
+            err_holder["exc"] = exc
+
+    t = threading.Thread(target=_worker, name=f"cleanup_{label}", daemon=True)
+    t.start()
+    t.join(timeout=timeout_s)
+    if t.is_alive():
+        print(f"[WARN] cleanup '{label}' timed out after {timeout_s:.1f}s, continuing")
+        return
+    exc = err_holder.get("exc")
+    if exc is not None:
+        print(f"[WARN] cleanup '{label}' failed: {exc}")
+
+
 def _build_ros2_runner(effective_cfg: Dict[str, Any], adapter_started: bool):
     stack = effective_cfg.get("algo", {}).get("stack")
     if stack == "autoware" and adapter_started:
@@ -126,6 +155,7 @@ def _default_followstop_run_dir(
 def build_ros2_bag_topics(
     rig_final: dict,
     ego_id: str,
+    namespace: str = "/carla",
     camera_suffix: str = "image",
     lidar_suffix: str = "point_cloud",
     radar_suffix: str = "point_cloud",
@@ -135,6 +165,7 @@ def build_ros2_bag_topics(
     explicit_topics: Optional[List[str]] = None,
     extra_topics: Optional[List[str]] = None,
 ) -> List[str]:
+    ns = _normalize_ros_namespace(namespace)
     topics = []
     if auto_topics and rig_final:
         for sensor in rig_final.get("sensors", []) or []:
@@ -142,7 +173,7 @@ def build_ros2_bag_topics(
                 continue
             sid = sensor.get("id")
             bp = sensor.get("blueprint", "")
-            prefix = f"/carla/{ego_id}/{sid}"
+            prefix = f"{ns}/{ego_id}/{sid}"
             if bp.startswith("sensor.camera"):
                 topics.append(f"{prefix}/{camera_suffix}")
                 topics.append(f"{prefix}/camera_info")
@@ -155,8 +186,11 @@ def build_ros2_bag_topics(
             elif "sensor.other.radar" in bp:
                 topics.append(f"{prefix}/{radar_suffix}")
         # 安全兜底：即便 rig 未声明，也默认尝试录 imu/gnss 话题（原生接口常见命名）
-        topics.append(f"/carla/{ego_id}/imu")
-        topics.append(f"/carla/{ego_id}/gnss")
+        topics.append(f"{ns}/{ego_id}/imu")
+        topics.append(f"{ns}/{ego_id}/gnss")
+        topics.append(f"{ns}/{ego_id}/odom")
+        topics.append(f"{ns}/{ego_id}/objects3d")
+        topics.append(f"{ns}/{ego_id}/objects_markers")
     if explicit_topics:
         topics.extend([t.strip() for t in explicit_topics if t.strip()])
     if extra_topics:
@@ -225,7 +259,21 @@ def main():
     # defaults for ROS2/rviz/rosbag even if CLI flags未声明
     _defaults = {
         "enable_ros2_native": False,
+        "ros2_namespace": "/carla",
         "ros_invert_tf": True,
+        "enable_ros2_gt": False,
+        "ros2_gt_publish_tf": True,
+        "ros2_gt_publish_odom": True,
+        "ros2_gt_publish_objects3d": True,
+        "ros2_gt_publish_markers": True,
+        "ros2_gt_objects_radius_m": 120.0,
+        "ros2_gt_max_objects": 64,
+        "ros2_gt_odom_hz": 20.0,
+        "ros2_gt_tf_hz": 20.0,
+        "ros2_gt_objects_hz": 10.0,
+        "ros2_gt_markers_hz": 10.0,
+        "ros2_gt_qos_reliability": "best_effort",
+        "ros2_gt_qos_depth": 10,
         "enable_rviz": False,
         "rviz_mode": "docker",
         "rviz_domain": 0,
@@ -285,7 +333,23 @@ def main():
         scenario_cfg = cfg.get("scenario", {})
         args.front_idx = scenario_cfg.get("front_idx", args.front_idx)
         args.ego_idx = scenario_cfg.get("ego_idx", args.ego_idx)
+        io_ros_cfg = ((cfg.get("io", {}) or {}).get("ros", {}) or {})
+        args.ros2_namespace = io_ros_cfg.get("namespace", args.ros2_namespace)
         args.enable_ros2_native = scenario_cfg.get("publish_ros2_native", args.enable_ros2_native)
+        args.enable_ros2_gt = scenario_cfg.get("publish_ros2_gt", args.enable_ros2_native)
+        gt_cfg = scenario_cfg.get("gt", {}) or {}
+        args.ros2_gt_publish_tf = gt_cfg.get("publish_tf", args.ros2_gt_publish_tf)
+        args.ros2_gt_publish_odom = gt_cfg.get("publish_odom", args.ros2_gt_publish_odom)
+        args.ros2_gt_publish_objects3d = gt_cfg.get("publish_objects3d", args.ros2_gt_publish_objects3d)
+        args.ros2_gt_publish_markers = gt_cfg.get("publish_markers", args.ros2_gt_publish_markers)
+        args.ros2_gt_objects_radius_m = gt_cfg.get("objects_radius_m", args.ros2_gt_objects_radius_m)
+        args.ros2_gt_max_objects = gt_cfg.get("max_objects", args.ros2_gt_max_objects)
+        args.ros2_gt_odom_hz = gt_cfg.get("odom_hz", args.ros2_gt_odom_hz)
+        args.ros2_gt_tf_hz = gt_cfg.get("tf_hz", args.ros2_gt_tf_hz)
+        args.ros2_gt_objects_hz = gt_cfg.get("objects_hz", args.ros2_gt_objects_hz)
+        args.ros2_gt_markers_hz = gt_cfg.get("markers_hz", args.ros2_gt_markers_hz)
+        args.ros2_gt_qos_reliability = gt_cfg.get("qos_reliability", args.ros2_gt_qos_reliability)
+        args.ros2_gt_qos_depth = gt_cfg.get("qos_depth", args.ros2_gt_qos_depth)
         # rig
         io_contract = cfg.get("io", {}).get("contract", {}) if cfg.get("io") else {}
         rig_path = io_contract.get("sensor_minimal")
@@ -385,6 +449,7 @@ def main():
     effective_cfg.setdefault("run", {})["ticks"] = args.ticks
     effective_cfg.setdefault("run", {})["map"] = args.town
     effective_cfg.setdefault("run", {})["ego_id"] = args.ego_id
+    effective_cfg.setdefault("io", {}).setdefault("ros", {})["namespace"] = _normalize_ros_namespace(args.ros2_namespace)
     effective_cfg.setdefault("scenario", {})["front_idx"] = args.front_idx
     effective_cfg.setdefault("scenario", {})["ego_idx"] = args.ego_idx
     eff_path.write_text(yaml.safe_dump(effective_cfg, sort_keys=False))
@@ -397,6 +462,7 @@ def main():
     if args.enable_ros2_bag and not args.enable_ros2_native:
         print("[ERROR] --enable-ros2-bag 仅支持原生 ROS2 发布模式，请先加 --enable-ros2-native")
         sys.exit(1)
+    args.ros2_namespace = _normalize_ros_namespace(args.ros2_namespace)
     rviz_ego = args.rviz_ego or args.ego_id
 
     default_out = out_run_dir
@@ -432,7 +498,21 @@ def main():
         max_steps=args.ticks,
         out_dir=default_out,
         enable_ros2_native=args.enable_ros2_native,
+        ros2_namespace=args.ros2_namespace,
         ros_invert_tf=args.ros_invert_tf,
+        enable_ros2_gt=args.enable_ros2_gt,
+        ros2_gt_publish_tf=args.ros2_gt_publish_tf,
+        ros2_gt_publish_odom=args.ros2_gt_publish_odom,
+        ros2_gt_publish_objects3d=args.ros2_gt_publish_objects3d,
+        ros2_gt_publish_markers=args.ros2_gt_publish_markers,
+        ros2_gt_objects_radius_m=args.ros2_gt_objects_radius_m,
+        ros2_gt_max_objects=args.ros2_gt_max_objects,
+        ros2_gt_odom_hz=args.ros2_gt_odom_hz,
+        ros2_gt_tf_hz=args.ros2_gt_tf_hz,
+        ros2_gt_objects_hz=args.ros2_gt_objects_hz,
+        ros2_gt_markers_hz=args.ros2_gt_markers_hz,
+        ros2_gt_qos_reliability=args.ros2_gt_qos_reliability,
+        ros2_gt_qos_depth=args.ros2_gt_qos_depth,
         ego_id=args.ego_id,
         record_modes=record_modes,
         record_output=args.record_output,
@@ -675,6 +755,7 @@ def main():
             topics = build_ros2_bag_topics(
                 rig_final=rig_final,
                 ego_id=args.ego_id,
+                namespace=args.ros2_namespace,
                 camera_suffix=args.ros2_bag_camera_image_suffix,
                 lidar_suffix=args.ros2_bag_lidar_cloud_suffix,
                 radar_suffix=args.ros2_bag_radar_cloud_suffix,
@@ -770,6 +851,7 @@ def main():
                 ego_id=args.ego_id,
                 rig_final=rig_final,
                 control_topic=control_topic_default,
+                namespace=args.ros2_namespace,
             )
             probe_topics_effective = probe_topics
             if probe_topics:
@@ -785,7 +867,7 @@ def main():
                         out_json=out_probe,
                         out_log=out_probe_log,
                         max_msgs=max_msgs,
-                        discover_prefixes=["/carla"] if args.enable_ros2_native else None,
+                        discover_prefixes=[args.ros2_namespace] if args.enable_ros2_native else None,
                         typed_topics=typed_topics,
                     )
                     print(f"[monitor] sensor probe started for {len(probe_topics)} topics, writing to {out_probe}")
@@ -853,7 +935,12 @@ def main():
         ros2_invalid_topics: List[str] = []
         if sensor_probe_path.exists():
             try:
-                probe_assess = assess_probe_results(sensor_probe_path, probe_topics_effective, args.ego_id)
+                probe_assess = assess_probe_results(
+                    sensor_probe_path,
+                    probe_topics_effective,
+                    args.ego_id,
+                    namespace=args.ros2_namespace,
+                )
                 sensor_probe_ok = probe_assess.sensor_probe_ok
                 clock_count = probe_assess.clock_count
                 tf_count = probe_assess.tf_count
@@ -933,18 +1020,16 @@ def main():
             stop_process(control_logger_proc)
         if "sensor_probe_proc" in locals():
             stop_process(sensor_probe_proc)
-        try:
-            if "world" in locals() and "original_settings" in locals():
-                restore_settings(world, original_settings)
-        except Exception as exc:
-            print(f"[WARN] restore settings failed: {exc}")
-        try:
-            if "actors" in locals() and actors is not None and "scenario" in locals():
-                scenario.destroy()
-        except Exception as exc:
-            print(f"[WARN] scenario destroy failed: {exc}")
-        if 'carla_launcher' in locals() and carla_launcher:
-            carla_launcher.stop()
+        if "world" in locals() and "original_settings" in locals():
+            _run_cleanup_with_timeout(
+                "restore_settings",
+                lambda: restore_settings(world, original_settings),
+                timeout_s=6.0,
+            )
+        if "actors" in locals() and actors is not None and "scenario" in locals():
+            _run_cleanup_with_timeout("scenario_destroy", scenario.destroy, timeout_s=8.0)
+        if "carla_launcher" in locals() and carla_launcher:
+            _run_cleanup_with_timeout("carla_stop", carla_launcher.stop, timeout_s=8.0)
         if carla_stop_hook is not None:
             try:
                 atexit.unregister(carla_stop_hook)

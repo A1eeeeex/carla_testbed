@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import subprocess
 import sys
+import os
 from pathlib import Path
 from typing import List
 
@@ -50,11 +51,24 @@ def check_carla_server(host="127.0.0.1", port=2000):
 
 
 def check_ros2():
+    info = {
+        "RMW_IMPLEMENTATION": os.environ.get("RMW_IMPLEMENTATION", ""),
+        "ROS_DOMAIN_ID": os.environ.get("ROS_DOMAIN_ID", ""),
+    }
     try:
         out = subprocess.check_output(["which", "ros2"], text=True).strip()
-        return {"ros2": out}
+        info["ros2"] = out
     except Exception as exc:
-        return {"ros2_error": str(exc)}
+        info["ros2_error"] = str(exc)
+        return info
+    try:
+        import rclpy  # type: ignore
+
+        info["rclpy"] = str(getattr(rclpy, "__file__", "ok"))
+    except Exception as exc:
+        info["rclpy_error"] = str(exc)
+        info["rclpy_hint"] = "source /opt/ros/humble/setup.bash && python -c 'import rclpy'"
+    return info
 
 
 def render_report(items: dict) -> str:

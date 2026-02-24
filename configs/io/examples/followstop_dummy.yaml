@@ -10,11 +10,26 @@ run:
 scenario:
   driver: carla_followstop
   publish_ros2_native: true
+  publish_ros2_gt: true
+  gt:
+    publish_tf: true
+    publish_odom: true
+    publish_objects3d: true
+    publish_markers: true
+    objects_radius_m: 120.0
+    max_objects: 64
+    odom_hz: 20.0
+    tf_hz: 20.0
+    objects_hz: 10.0
+    markers_hz: 10.0
+    qos_reliability: best_effort
+    qos_depth: 10
 io:
   mode: ros2_native
   ros:
     domain_id: 0
     use_sim_time: true
+    namespace: /carla
   contract:
     sensor_minimal: configs/rigs/minimal.yaml
     canon_ros2: io/contract/canon_ros2.yaml

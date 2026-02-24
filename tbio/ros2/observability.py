@@ -96,10 +96,15 @@ def infer_ros2_sensor_topics_from_rig(
     rig_final: Optional[Dict],
     ego_id: str,
     *,
+    namespace: str = "/carla",
     camera_suffix: str = "image",
     lidar_suffix: str = "point_cloud",
     radar_suffix: str = "point_cloud",
 ) -> List[str]:
+    ns = (namespace or "/carla").strip()
+    if not ns.startswith("/"):
+        ns = "/" + ns
+    ns = ns.rstrip("/") or "/carla"
     topics: List[str] = []
     rig = rig_final or {}
     for sensor in rig.get("sensors", []) or []:
@@ -109,7 +114,7 @@ def infer_ros2_sensor_topics_from_rig(
         if not sid:
             continue
         bp = sensor.get("blueprint", "")
-        prefixes = [f"/carla/{ego_id}/{sid}", f"/carla/{sid}"]
+        prefixes = [f"{ns}/{ego_id}/{sid}", f"{ns}/{sid}"]
         if bp.startswith("sensor.camera"):
             for prefix in prefixes:
                 topics.extend([f"{prefix}/{camera_suffix}", f"{prefix}/camera_info"])
@@ -125,7 +130,18 @@ def infer_ros2_sensor_topics_from_rig(
         elif "sensor.other.radar" in bp:
             for prefix in prefixes:
                 topics.append(f"{prefix}/{radar_suffix}")
-    topics.extend([f"/carla/{ego_id}/imu", f"/carla/{ego_id}/gnss", "/carla/imu", "/carla/gnss"])
+    topics.extend(
+        [
+            f"{ns}/{ego_id}/imu",
+            f"{ns}/{ego_id}/gnss",
+            f"{ns}/{ego_id}/odom",
+            f"{ns}/{ego_id}/objects3d",
+            f"{ns}/{ego_id}/objects_markers",
+            f"{ns}/{ego_id}/objects_gt_json",
+            f"{ns}/imu",
+            f"{ns}/gnss",
+        ]
+    )
     # de-dup while preserving order
     out: List[str] = []
     seen = set()
@@ -152,6 +168,14 @@ def infer_topic_types(topics: Iterable[str]) -> Dict[str, str]:
             typed[topic] = "sensor_msgs/msg/NavSatFix"
         elif topic.endswith("/points") or topic.endswith("/point_cloud"):
             typed[topic] = "sensor_msgs/msg/PointCloud2"
+        elif topic.endswith("/odom"):
+            typed[topic] = "nav_msgs/msg/Odometry"
+        elif topic.endswith("/objects3d"):
+            typed[topic] = "vision_msgs/msg/Detection3DArray"
+        elif topic.endswith("/objects_markers"):
+            typed[topic] = "visualization_msgs/msg/MarkerArray"
+        elif topic.endswith("/objects_gt_json"):
+            typed[topic] = "std_msgs/msg/String"
         elif topic == "/clock":
             typed[topic] = "rosgraph_msgs/msg/Clock"
         elif topic == "/tf":
@@ -165,13 +189,18 @@ def default_probe_topics(
     ego_id: str,
     rig_final: Optional[Dict],
     control_topic: str,
+    namespace: str = "/carla",
     max_sensor_topics: int = 8,
 ) -> List[str]:
     base = ["/clock", "/tf", control_topic]
     if stack == "autoware":
         return base
-    sensor_topics = infer_ros2_sensor_topics_from_rig(rig_final, ego_id)
-    picked = [t for t in sensor_topics if t.startswith("/carla/")][:max_sensor_topics]
+    ns = (namespace or "/carla").strip()
+    if not ns.startswith("/"):
+        ns = "/" + ns
+    ns = ns.rstrip("/") or "/carla"
+    sensor_topics = infer_ros2_sensor_topics_from_rig(rig_final, ego_id, namespace=ns)
+    picked = [t for t in sensor_topics if t.startswith(f"{ns}/")][:max_sensor_topics]
     out: List[str] = []
     seen = set()
     for t in base + picked:
@@ -192,7 +221,12 @@ class ProbeAssessment:
     ros2_sensor_ok: bool
 
 
-def assess_probe_results(probe_path: Path, probe_topics: List[str], ego_id: str) -> ProbeAssessment:
+def assess_probe_results(
+    probe_path: Path,
+    probe_topics: List[str],
+    ego_id: str,
+    namespace: str = "/carla",
+) -> ProbeAssessment:
     sensor_probe_ok = False
     clock_count = 0
     tf_count: Optional[int] = None
@@ -206,9 +240,13 @@ def assess_probe_results(probe_path: Path, probe_topics: List[str], ego_id: str)
         tf_entry = probe_data.get("/tf")
         tf_count = None if tf_entry is None else int(tf_entry.get("count", 0))
         sensor_probe_ok = clock_count >= 2 and (tf_count is None or tf_count >= 1)
-        sensor_topics = sorted({t for t in probe_data.keys() if t.startswith("/carla/") and "//" not in t})
+        ns = (namespace or "/carla").strip()
+        if not ns.startswith("/"):
+            ns = "/" + ns
+        ns = ns.rstrip("/") or "/carla"
+        sensor_topics = sorted({t for t in probe_data.keys() if t.startswith(f"{ns}/") and "//" not in t})
         if not sensor_topics:
-            sensor_topics = [t for t in probe_topics if t.startswith("/carla/") and "//" not in t]
+            sensor_topics = [t for t in probe_topics if t.startswith(f"{ns}/") and "//" not in t]
         ros2_sensor_topic_count = len(sensor_topics)
         ros2_sensor_msgs = sum(int((probe_data.get(t) or {}).get("count", 0)) for t in sensor_topics)
         ros2_sensor_ok = (ros2_sensor_topic_count == 0) or ros2_sensor_msgs > 0

@@ -51,7 +51,8 @@ def _check_topics(node: Node, contract: Dict) -> List[str]:
     for slot, spec in (contract.get("slots", {}) or {}).items():
         topic = spec.get("topic")
         direction = spec.get("direction", "publish")
-        if not topic or direction == "internal":
+        optional = bool(spec.get("optional", False))
+        if not topic or direction == "internal" or optional:
             continue
         if topic not in topics:
             missing.append(f"{slot}:{topic}")
