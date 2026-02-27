@@ -19,11 +19,14 @@ def _is_port_open(host: str, port: int) -> bool:
         return sock.connect_ex((host, port)) == 0
 
 
-def _client_ok(host: str, port: int, timeout: float = 1.0) -> bool:
+def _client_ok(host: str, port: int, timeout: float = 1.0, require_world: bool = False) -> bool:
     try:
         client = carla.Client(host, port)
         client.set_timeout(timeout)
         client.get_server_version()
+        if require_world:
+            world = client.get_world()
+            _ = world.get_map().name
         return True
     except Exception:
         return False
@@ -190,7 +193,8 @@ class CarlaLauncher:
                 print(f"[carla][ERROR] process exited early code={self.proc.returncode}")
                 print(self.diagnose_tail())
                 return False
-            if _client_ok(self.host, self.port, timeout=1.0):
+            # Require world/map query success to avoid false positive readiness.
+            if _client_ok(self.host, self.port, timeout=2.0, require_world=True):
                 return True
             time.sleep(poll_s)
         print(self.diagnose_tail())
@@ -225,6 +229,14 @@ class CarlaLauncher:
             return
 
         if not self.proc:
+            target_pid = _carla_pid_on_port(self.port)
+            if target_pid:
+                try:
+                    os.kill(target_pid, signal.SIGTERM)
+                    time.sleep(0.2)
+                    os.kill(target_pid, signal.SIGKILL)
+                except Exception:
+                    pass
             return
         if self.proc.poll() is None:
             try:
@@ -252,6 +264,15 @@ class CarlaLauncher:
                     self.proc.wait(timeout=grace_s)
                 except Exception:
                     self.proc.kill()
+        # CarlaUE4.sh may leave the actual CarlaUE4 process behind; force-close by port owner.
+        leftover_pid = _carla_pid_on_port(self.port)
+        if leftover_pid:
+            try:
+                os.kill(leftover_pid, signal.SIGTERM)
+                time.sleep(0.2)
+                os.kill(leftover_pid, signal.SIGKILL)
+            except Exception:
+                pass
         if hasattr(self, "_log_handle") and getattr(self, "_log_handle", None):
             try:
                 self._log_handle.close()

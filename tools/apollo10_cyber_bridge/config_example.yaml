@@ -1,0 +1,43 @@
+ros2:
+  ego_id: hero
+  odom_topic: ""
+  objects3d_topic: ""
+  objects_markers_topic: ""
+  objects_json_topic: ""
+  control_out_topic: /tb/ego/control_cmd
+  control_out_type: twist
+cyber:
+  localization_channel: /apollo/localization/pose
+  chassis_channel: /apollo/canbus/chassis
+  obstacles_channel: /apollo/perception/obstacles
+  control_channel: /apollo/control
+  routing_request_channel: /apollo/raw_routing_request
+  action_channel: /apollo/external_command/action
+  lane_follow_channel: /apollo/external_command/lane_follow
+  routing_response_channel: /apollo/routing_response
+bridge:
+  publish_rate_hz: 20.0
+  max_obstacles: 64
+  radius_m: 120.0
+  auto_routing:
+    enabled: false
+    end_ahead_m: 80.0
+    resend_sec: 1.5
+    max_attempts: 5
+    target_speed_mps: 8.0
+    freeze_after_success: true
+    use_seed_heading: true
+    clamp_to_map_bounds: true
+    map_bounds_margin_m: 2.0
+  carla_to_apollo:
+    tx: 0.0
+    ty: 0.0
+    tz: 0.0
+    yaw_deg: 0.0
+  control_mapping:
+    max_steer_angle: 0.6
+    speed_gain: 10.0
+    brake_gain: 5.0
+    throttle_scale: 1.0
+    brake_scale: 1.0
+    brake_deadzone: 0.01

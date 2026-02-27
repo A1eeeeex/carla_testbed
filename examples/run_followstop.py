@@ -331,12 +331,14 @@ def main():
         args.ticks = run_cfg.get("ticks", args.ticks)
         args.ego_id = run_cfg.get("ego_id", args.ego_id)
         scenario_cfg = cfg.get("scenario", {})
+        stack_cfg = (cfg.get("algo", {}) or {}).get("stack")
         args.front_idx = scenario_cfg.get("front_idx", args.front_idx)
         args.ego_idx = scenario_cfg.get("ego_idx", args.ego_idx)
         io_ros_cfg = ((cfg.get("io", {}) or {}).get("ros", {}) or {})
         args.ros2_namespace = io_ros_cfg.get("namespace", args.ros2_namespace)
         args.enable_ros2_native = scenario_cfg.get("publish_ros2_native", args.enable_ros2_native)
-        args.enable_ros2_gt = scenario_cfg.get("publish_ros2_gt", args.enable_ros2_native)
+        default_gt = True if stack_cfg == "apollo" else args.enable_ros2_native
+        args.enable_ros2_gt = scenario_cfg.get("publish_ros2_gt", default_gt)
         gt_cfg = scenario_cfg.get("gt", {}) or {}
         args.ros2_gt_publish_tf = gt_cfg.get("publish_tf", args.ros2_gt_publish_tf)
         args.ros2_gt_publish_odom = gt_cfg.get("publish_odom", args.ros2_gt_publish_odom)
@@ -545,6 +547,16 @@ def main():
         ros2_bag_lidar_cloud_suffix=args.ros2_bag_lidar_cloud_suffix,
         ros2_bag_radar_cloud_suffix=args.ros2_bag_radar_cloud_suffix,
     )
+    run_cfg = effective_cfg.get("run", {}) if effective_cfg else {}
+    fail_strategy = str(run_cfg.get("fail_strategy", "")).strip().lower()
+    if fail_strategy in {"fail_fast", "log_and_continue"}:
+        cfg.fail_strategy = fail_strategy
+    post_fail_steps = run_cfg.get("post_fail_steps")
+    if post_fail_steps is not None:
+        try:
+            cfg.post_fail_steps = max(1, int(post_fail_steps))
+        except Exception:
+            pass
     # Prepare Autoware/dummy via adapter when stack 指定
     adapter = None
     adapter_profile = None
@@ -596,9 +608,15 @@ def main():
         try:
             carla_launcher.start()
             if not carla_launcher.wait_ready(timeout_s=180.0, poll_s=1.0):
-                print("[ERROR] CARLA 未在超时时间内就绪")
-                print(carla_launcher.diagnose_tail())
-                sys.exit(1)
+                if not carla_launcher.reused:
+                    print("[WARN] CARLA 首次启动未就绪，尝试自动重启一次")
+                    carla_launcher.stop()
+                    time.sleep(2.0)
+                    carla_launcher.start()
+                if not carla_launcher.wait_ready(timeout_s=180.0, poll_s=1.0):
+                    print("[ERROR] CARLA 未在超时时间内就绪")
+                    print(carla_launcher.diagnose_tail())
+                    sys.exit(1)
         except Exception as exc:
             print(f"[ERROR] CARLA 启动失败: {exc}")
             if carla_launcher:
@@ -614,14 +632,26 @@ def main():
             adapter.prepare(adapter_profile, out_run_dir)
             started_result = adapter.start(adapter_profile, out_run_dir)
             adapter_started = True if started_result is None else bool(started_result)
-            if stack == "autoware" and not adapter_started:
-                adapter_fail_reason = "AUTOWARE_CONTAINER_EXIT"
+            if stack in {"autoware", "apollo"} and not adapter_started:
+                adapter_fail_reason = (
+                    "AUTOWARE_CONTAINER_EXIT" if stack == "autoware" else "APOLLO_BRIDGE_EXIT"
+                )
             else:
-                ok = healthcheck(eff_path, timeout=5.0)
-                if not ok:
-                    print("[WARN] ROS2 healthcheck failed (non-fatal); see messages above")
+                if stack == "apollo":
+                    ok = adapter.healthcheck(adapter_profile, out_run_dir)
+                    if not ok:
+                        print("[WARN] Apollo backend healthcheck failed (non-fatal); see artifacts")
+                else:
+                    ok = healthcheck(eff_path, timeout=5.0)
+                    if not ok:
+                        print("[WARN] ROS2 healthcheck failed (non-fatal); see messages above")
         except Exception as exc:
-            adapter_fail_reason = "AUTOWARE_START_FAIL"
+            if stack == "autoware":
+                adapter_fail_reason = "AUTOWARE_START_FAIL"
+            elif stack == "apollo":
+                adapter_fail_reason = "APOLLO_START_FAIL"
+            else:
+                adapter_fail_reason = "ADAPTER_START_FAIL"
             print(f"[WARN] adapter start failed: {exc}")
 
     client_mgr = CarlaClientManager(host=args.host, port=args.port, timeout=30.0, root=args.carla_root)
@@ -803,14 +833,15 @@ def main():
         sensor_capture_enabled = True
         if effective_cfg.get("record", {}).get("sensors", {}).get("enable") is False:
             sensor_capture_enabled = False
-        disable_control = bool(effective_cfg.get("algo", {}).get("stack") == "autoware")
-        ros2_mode_active = bool(args.enable_ros2_native or (stack == "autoware" and adapter_started))
+        external_stack = stack in {"autoware", "apollo"}
+        disable_control = bool(external_stack)
+        ros2_mode_active = bool(args.enable_ros2_native or args.enable_ros2_gt or (external_stack and adapter_started))
 
         # optional: start control logger via shared ROS2 runner
         control_log_cfg = effective_cfg.get("record", {}).get("control_log", {}) if effective_cfg else {}
         control_logger_proc = None
         default_control_topic = "/control/command/control_cmd" if stack == "autoware" else "/tb/ego/control_cmd"
-        control_log_enable_default = bool(stack == "autoware")
+        control_log_enable_default = bool(stack in {"autoware", "apollo"})
         if ros2_mode_active and control_log_cfg.get("enable", control_log_enable_default):
             topic = control_log_cfg.get("topic", default_control_topic)
             max_msgs = control_log_cfg.get("max_msgs")
@@ -919,6 +950,10 @@ def main():
                     except Exception:
                         continue
                     raw_len = rec.get("raw_len", 0)
+                    # control_logger may dump parsed ROS2 messages without raw_len.
+                    if isinstance(rec, dict) and rec and "raw_len" not in rec:
+                        control_log_ok = True
+                        break
                     if isinstance(raw_len, (int, float)) and raw_len > 0:
                         control_log_ok = True
                         break
@@ -952,8 +987,8 @@ def main():
             except Exception as exc:
                 print(f"[WARN] failed to parse sensor probe: {exc}")
         motion_ok = state.max_speed_mps > acceptance_speed_threshold
-        require_control_log = bool(stack == "autoware")
-        require_sensor_probe = bool(stack == "autoware")
+        require_control_log = bool(stack in {"autoware", "apollo"})
+        require_sensor_probe = bool(stack in {"autoware", "apollo"})
         ros2_enable_api_available = bool(
             hasattr(carla.Actor, "enable_for_ros")
             or hasattr(carla.Sensor, "enable_for_ros")
@@ -1016,6 +1051,11 @@ def main():
         summary_path.write_text(json.dumps(summary_data, indent=2))
         print(f"[acceptance] success={acceptance['success']} fail_reason={acceptance['fail_reason']}")
     finally:
+        if adapter and adapter_profile and adapter_started:
+            try:
+                adapter.stop(adapter_profile, out_run_dir)
+            except Exception as exc:
+                print(f"[WARN] adapter stop failed: {exc}")
         if "control_logger_proc" in locals():
             stop_process(control_logger_proc)
         if "sensor_probe_proc" in locals():

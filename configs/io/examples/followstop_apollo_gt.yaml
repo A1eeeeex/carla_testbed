@@ -1,0 +1,116 @@
+run:
+  seed: 1
+  ticks: 500
+  fail_strategy: log_and_continue
+  post_fail_steps: 500
+  ego_id: hero
+  map: Town01
+  weather: ClearNoon
+scenario:
+  driver: carla_followstop
+  publish_ros2_native: false
+  publish_ros2_gt: true
+  gt:
+    publish_tf: true
+    publish_odom: true
+    publish_objects3d: true
+    publish_markers: true
+    objects_radius_m: 120.0
+    max_objects: 64
+    odom_hz: 20.0
+    tf_hz: 20.0
+    objects_hz: 10.0
+    markers_hz: 10.0
+io:
+  mode: ros2_native
+  ros:
+    domain_id: 0
+    use_sim_time: true
+    namespace: /carla
+  contract:
+    sensor_minimal: configs/rigs/minimal.yaml
+    canon_ros2: io/contract/canon_ros2.yaml
+algo:
+  stack: apollo
+  apollo:
+    # Set via env APOLLO_ROOT or fill absolute path.
+    apollo_root: ""
+    # Host ROS2 setup script for bridge/control processes (leave empty to auto-detect /opt/ros/<distro>/setup.bash).
+    ros2_setup_script: ""
+    # Keep host bridge and container modules in same CyberRT domain.
+    cyber_domain_id: 80
+    # Optional: set a non-loopback IP when host<->container CyberRT discovery fails.
+    cyber_ip: ""
+    docker:
+      enabled: true
+      # Export APOLLO_DOCKER_CONTAINER to override, e.g. apollo_dev_x86_64
+      container: ""
+      # ROS2 is on host; run bridge on host by default.
+      bridge_in_container: false
+      # If container is stopped, backend will run docker start automatically.
+      auto_start_container: true
+      # Ensure missing runtime libs in Apollo container (bvar/gperftools) are auto-installed.
+      auto_install_runtime_deps: true
+      # Run Apollo modules as uid:gid matching host ubuntu user to avoid CyberRT shm permission denial.
+      module_exec_user: "1000:1000"
+      # Fail fast when host-bridge mode cannot communicate with container CyberRT.
+      require_network_host: true
+      require_ipc_host: true
+      # Start Apollo modules inside container before launching bridge.
+      # Leave commands empty to use backend auto-start (routing/prediction/planning/control).
+      start_modules: true
+      start_modules_cmd: ""
+      modules_status_cmd: ""
+      apollo_root_in_container: /apollo
+      apollo_distribution_home: /opt/apollo/neo
+      python_exec: python3
+    bridge_template: tools/apollo10_cyber_bridge/config_example.yaml
+    carla_to_apollo:
+      tx: 0.0
+      ty: 0.0
+      tz: 0.0
+      yaw_deg: 0.0
+    bridge:
+      publish_rate_hz: 20.0
+      max_obstacles: 64
+      radius_m: 120.0
+    routing:
+      enable: true
+      end_ahead_m: 80.0
+      resend_sec: 1.5
+      max_attempts: 12
+      freeze_after_success: true
+      use_seed_heading: true
+      clamp_to_map_bounds: true
+      map_bounds_margin_m: 2.0
+    control_mapping:
+      max_steer_angle: 0.6
+      speed_gain: 20.0
+      brake_gain: 3.0
+      throttle_scale: 1.5
+      brake_scale: 0.6
+      brake_deadzone: 0.2
+    carla_control_bridge:
+      enabled: true
+      control_topic: /tb/ego/control_cmd
+      timeout_sec: 0.8
+      max_steer_angle: 0.6
+      speed_gain: 10.0
+      brake_gain: 5.0
+record:
+  probe:
+    enable: true
+    max_msgs: 5
+  control_log:
+    enable: true
+    topic: /tb/ego/control_cmd
+    max_msgs: 100000
+logging:
+  level: INFO
+runtime:
+  carla:
+    start: true
+    host: localhost
+    port: 2000
+    extra_args: "--ros2"
+    foreground: false

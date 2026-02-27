@@ -283,15 +283,18 @@ class GroundTruthRos2Publisher:
             if self._stats["objects_mode"] == "disabled":
                 self._stats["objects_mode"] = "objects_markers"
 
-        # JSON fallback when typed object messages are unavailable.
-        if self.publish_objects3d and self._objects3d_pub is None and self._markers_pub is None:
+        # JSON fallback when Detection3D is unavailable; keep it even if markers are enabled.
+        if self.publish_objects3d and self._objects3d_pub is None:
             self._objects_json_pub = self._node.create_publisher(
                 self._String,
                 f"{self.topic_prefix}/objects_gt_json",
                 qos_dyn,
             )
             self._stats["publishers"]["objects_json"] = True
-            self._stats["objects_mode"] = "objects_json"
+            if self._stats["objects_mode"] == "objects_markers":
+                self._stats["objects_mode"] = "objects_markers+json"
+            else:
+                self._stats["objects_mode"] = "objects_json"
 
         if self.publish_objects3d and self._stats["objects_mode"] == "disabled":
             self._stats["objects_mode"] = "none"

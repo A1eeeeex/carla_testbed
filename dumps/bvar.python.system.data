@@ -1,0 +1,44 @@
+python_kernel_version : "Linux ubuntu-GeekPro-17IRR 6.8.0-101-generic #101~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Wed Feb 11 13:19:54 UTC  x86_64 x86_64 x86_64 GNU/Linux
+"
+python_process_cmdline : "/home/ubuntu/miniconda3/envs/carla16/bin/python
+/home/ubuntu/carla_testbed/tools/apollo10_cyber_bridge/bridge.py
+--config
+/home/ubuntu/carla_testbed/runs/followstop_apollo_hostros2_final36/artifacts/apollo_bridge_effective.yaml
+--stats-path
+/home/ubuntu/carla_testbed/runs/followstop_apollo_hostros2_final36/artifacts/cyber_bridge_stats.json
+--apollo-root
+/home/ubuntu/Apollo10.0/application-core/.aem/envroot/opt/apollo/neo/src
+--pb-root
+/home/ubuntu/carla_testbed/tools/apollo10_cyber_bridge/pb
+--ego-id
+hero
+--namespace
+/carla
+"
+python_process_context_switches_involuntary_second : 5
+python_process_context_switches_voluntary_second : 11552
+python_process_cpu_usage : 0.032
+python_process_cpu_usage_system : 0.017
+python_process_cpu_usage_user : 0.014
+python_process_disk_read_bytes_second : 0
+python_process_disk_write_bytes_second : 5325
+python_process_faults_major : 153
+python_process_faults_minor_second : 0
+python_process_fd_count : 120
+python_process_inblocks_second : 0
+python_process_io_read_bytes_second : 831
+python_process_io_read_second : 6
+python_process_io_write_bytes_second : 1132
+python_process_io_write_second : 1
+python_process_memory_data_and_stack : 1304190976
+python_process_memory_resident : 112652288
+python_process_memory_shared : 64069632
+python_process_memory_text : 2097152
+python_process_memory_virtual : 4280000512
+python_process_nice : 0
+python_process_outblocks_second : 10
+python_process_priority : 20
+python_process_thread_count : 61
+python_process_uptime : 191.906530
+python_process_username : "ubuntu"
+python_process_work_dir : "/home/ubuntu/carla_testbed"

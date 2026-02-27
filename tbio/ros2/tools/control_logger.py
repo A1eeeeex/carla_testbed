@@ -30,6 +30,10 @@ try:
     from autoware_control_msgs.msg import Control  # legacy type
 except ImportError:  # pragma: no cover - optional
     Control = None
+try:
+    from geometry_msgs.msg import Twist
+except ImportError:  # pragma: no cover - optional
+    Twist = None
 
 
 def msg_to_dict(msg: Any) -> Dict[str, Any]:
@@ -100,7 +104,9 @@ class ControlLogger(Node):
         self.max_msgs = max_msgs
         self.topic_type = self._resolve_topic_type(topic)
 
-        msg_types: List[Any] = [t for t in [AckermannDriveStamped, AckermannControlCommand, Control] if t is not None]
+        msg_types: List[Any] = [
+            t for t in [AckermannDriveStamped, AckermannControlCommand, Control, Twist] if t is not None
+        ]
         subscription = None
         try:
             if not force_anymsg and msg_types:
