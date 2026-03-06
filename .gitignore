@@ -12,3 +12,5 @@ carla_testbed_src.tar.gz
 configs/local.yaml
 configs/local.*.yaml
 examples/carla_examples/
+
+dist/*.tar.gz
