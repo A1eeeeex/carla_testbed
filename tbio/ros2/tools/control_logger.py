@@ -4,7 +4,7 @@ import argparse
 import base64
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import rclpy
 from rclpy.node import Node
@@ -87,6 +87,7 @@ class ControlLogger(Node):
         out_path: Path,
         max_msgs: int | None,
         *,
+        explicit_topic_type: Optional[str] = None,
         force_anymsg: bool = False,
         reliability: ReliabilityPolicy = ReliabilityPolicy.BEST_EFFORT,
     ):
@@ -102,46 +103,59 @@ class ControlLogger(Node):
         )
         self.count = 0
         self.max_msgs = max_msgs
-        self.topic_type = self._resolve_topic_type(topic)
+        self.topic_type = explicit_topic_type.strip() if explicit_topic_type else None
+        self.subscription = None
+        self._retry_timer = None
+        self._force_anymsg = force_anymsg
+        self._qos = qos
+        self._reliability = reliability
+        if not self._ensure_subscription(initial=True):
+            self._retry_timer = self.create_timer(0.5, self._retry_subscribe)
 
-        msg_types: List[Any] = [
-            t for t in [AckermannDriveStamped, AckermannControlCommand, Control, Twist] if t is not None
-        ]
-        subscription = None
+    def _ensure_subscription(self, *, initial: bool) -> bool:
+        if self.subscription is not None:
+            return True
+        discovered_type = self._resolve_topic_type(self.topic)
+        if discovered_type:
+            self.topic_type = discovered_type
         try:
-            if not force_anymsg and msg_types:
-                subscription = self.create_subscription(msg_types[0], topic, self._cb, qos)
+            if self.topic_type:
+                dynamic_type = self.topic_type.split(",")[0].strip()
+                msg_cls = get_message(dynamic_type)
+                self.subscription = self.create_subscription(msg_cls, self.topic, self._cb, self._qos)
                 self.get_logger().info(
-                    f"Logging {topic} as {msg_types[0].__name__} -> {out_path} "
-                    f"(QoS reliability={reliability.name})"
+                    f"Logging {self.topic} as {dynamic_type} -> {self.out} "
+                    f"(QoS reliability={self._reliability.name})"
                 )
-            elif AnyMsg is not None:
-                subscription = self.create_subscription(AnyMsg, topic, self._cb_any, qos)
-                mode = "force AnyMsg" if force_anymsg else "fallback AnyMsg"
+                return True
+            if self._force_anymsg and AnyMsg is not None:
+                self.subscription = self.create_subscription(AnyMsg, self.topic, self._cb_any, self._qos)
                 self.get_logger().warn(
-                    f"{mode}; subscribing AnyMsg on {topic} (QoS reliability={reliability.name}, type={self.topic_type})"
+                    f"force AnyMsg; subscribing AnyMsg on {self.topic} "
+                    f"(QoS reliability={self._reliability.name}, type={self.topic_type})"
                 )
-            else:
-                if self.topic_type:
-                    try:
-                        dynamic_type = self.topic_type.split(",")[0].strip()
-                        msg_cls = get_message(dynamic_type)
-                        subscription = self.create_subscription(msg_cls, topic, self._cb, qos)
-                        self.get_logger().warn(
-                            f"AnyMsg unavailable; dynamic subscribe {topic} as {dynamic_type} "
-                            f"(QoS reliability={reliability.name})"
-                        )
-                    except Exception as exc:
-                        self.get_logger().error(f"Dynamic subscription failed on {topic} type={self.topic_type}: {exc}")
+                return True
+            if initial and AnyMsg is not None:
+                self.subscription = self.create_subscription(AnyMsg, self.topic, self._cb_any, self._qos)
+                self.get_logger().warn(
+                    f"fallback AnyMsg; subscribing AnyMsg on {self.topic} "
+                    f"(QoS reliability={self._reliability.name}, type={self.topic_type})"
+                )
+                return True
         except Exception as exc:  # pragma: no cover - defensive
-            self.get_logger().error(f"Failed to create subscription on {topic}: {exc}")
-            subscription = None
+            self.get_logger().error(f"Failed to create subscription on {self.topic}: {exc}")
+            return False
+        if initial:
+            self.get_logger().warn(
+                f"Topic type for {self.topic} not discovered yet; waiting before creating subscription "
+                f"(QoS reliability={self._reliability.name})"
+            )
+        return False
 
-        if subscription is None:
-            self.get_logger().error("Subscription creation failed; exiting so adapter can surface the error")
-            raise SystemExit(1)
-
-        self.subscription = subscription
+    def _retry_subscribe(self) -> None:
+        if self._ensure_subscription(initial=False) and self._retry_timer is not None:
+            self._retry_timer.cancel()
+            self._retry_timer = None
 
     def _write(self, data: Dict[str, Any]):
         if self.topic_type and "type" not in data:
@@ -183,6 +197,7 @@ def main():
     ap = argparse.ArgumentParser(description="Log control topic to JSONL")
     ap.add_argument("--topic", default="/control/command/control_cmd")
     ap.add_argument("--out", type=Path, required=True, help="output jsonl path")
+    ap.add_argument("--topic-type", default="", help="explicit ROS2 message type, e.g. std_msgs/msg/Float32MultiArray")
     ap.add_argument("--max-msgs", type=int, default=None, help="stop after N messages")
     ap.add_argument("--force-anymsg", action="store_true", help="always subscribe with AnyMsg")
     ap.add_argument(
@@ -200,6 +215,7 @@ def main():
             args.topic,
             args.out,
             args.max_msgs,
+            explicit_topic_type=args.topic_type or None,
             force_anymsg=args.force_anymsg,
             reliability=reliability,
         )

@@ -4,7 +4,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import carla
 
@@ -218,6 +218,7 @@ class TestHarness:
         monitor: Optional[SignalMonitor] = None,
         disable_control: bool = False,
         sensor_capture_enabled: bool = True,
+        tick_callbacks: Optional[List[Callable[..., None]]] = None,
     ) -> Tuple[HarnessState, dict]:
         out_dir.mkdir(parents=True, exist_ok=True)
         ts_rec = TimeseriesRecorder(out_dir / "timeseries.csv")
@@ -334,6 +335,7 @@ class TestHarness:
         stopped_counter = 0
         hold_steps = max(1, int(1.0 / self.cfg.dt)) if self.cfg.dt > 0 else 20
         progress_interval = max(1, self.cfg.max_steps // 20)  # print ~20 updates
+        tick_callback_failures: Dict[int, int] = {}
 
         try:
             for step in range(self.cfg.max_steps):
@@ -341,6 +343,19 @@ class TestHarness:
                 self.state.step = step
                 self.state.frame_id = frame_id
                 self.state.timestamp = timestamp
+                if tick_callbacks:
+                    for idx, cb in enumerate(tick_callbacks):
+                        if cb is None:
+                            continue
+                        try:
+                            cb(frame_id=frame_id, timestamp=timestamp, step=step)
+                        except TypeError:
+                            cb(frame_id, timestamp)
+                        except Exception as exc:
+                            count = tick_callback_failures.get(idx, 0) + 1
+                            tick_callback_failures[idx] = count
+                            if count <= 3:
+                                print(f"[WARN] tick callback #{idx} failed at step={step}: {exc}")
 
                 cmd: ControlCommand = controller.step(
                     t=step * self.cfg.dt,
@@ -362,6 +377,7 @@ class TestHarness:
                             gear=cmd.gear,
                         )
                     )
+                applied_ctrl = ego.get_control()
                 if monitor and not disable_control:
                     monitor.record_control(
                         "carla_control_applied",
@@ -385,7 +401,18 @@ class TestHarness:
                     if monitor:
                         monitor.record_sensor("rig_capture", timestamp)
                 if monitor:
-                    monitor.maybe_snapshot(step, timestamp, ctrl={"throttle": cmd.throttle, "brake": cmd.brake, "steer": cmd.steer})
+                    snap_ctrl = {
+                        "throttle": float(getattr(applied_ctrl, "throttle", 0.0))
+                        if disable_control
+                        else cmd.throttle,
+                        "brake": float(getattr(applied_ctrl, "brake", 0.0))
+                        if disable_control
+                        else cmd.brake,
+                        "steer": float(getattr(applied_ctrl, "steer", 0.0))
+                        if disable_control
+                        else cmd.steer,
+                    }
+                    monitor.maybe_snapshot(step, timestamp, ctrl=snap_ctrl)
                 if gt_pub is not None:
                     try:
                         extra_actors = []
@@ -403,14 +430,26 @@ class TestHarness:
                         gt_pub = None
 
                 last_debug = cmd.meta.get("last_debug", {}) if cmd.meta else {}
+                applied_throttle = float(getattr(applied_ctrl, "throttle", 0.0))
+                applied_brake = float(getattr(applied_ctrl, "brake", 0.0))
+                applied_steer = float(getattr(applied_ctrl, "steer", 0.0))
                 row = {
                     "frame": frame_id,
                     "t": timestamp,
                     "step": step,
                     "v_mps": v,
-                    "throttle": cmd.throttle,
-                    "brake": cmd.brake,
-                    "steer": cmd.steer,
+                    # Keep throttle/brake/steer as effective control seen by CARLA
+                    # so external-stack runs don't look like a second internal controller.
+                    "throttle": applied_throttle if disable_control else cmd.throttle,
+                    "brake": applied_brake if disable_control else cmd.brake,
+                    "steer": applied_steer if disable_control else cmd.steer,
+                    "cmd_throttle": cmd.throttle,
+                    "cmd_brake": cmd.brake,
+                    "cmd_steer": cmd.steer,
+                    "applied_throttle": applied_throttle,
+                    "applied_brake": applied_brake,
+                    "applied_steer": applied_steer,
+                    "control_source": "external_stack" if disable_control else "harness_controller",
                     "collision_count": self.state.collision_count,
                     "lane_invasion_count": self.state.lane_invasion_count,
                 }

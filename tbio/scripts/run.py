@@ -4,8 +4,10 @@ import argparse
 import datetime
 import json
 import os
+import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict
 
@@ -84,7 +86,9 @@ def _default_run_dir(cfg: Dict[str, Any], ts: str) -> Path:
     return next_available_run_dir(Path("runs"), run_name)
 
 
-def _run_followstop_via_unified_entry(effective_config_path: Path, run_dir: Path, cfg: Dict[str, Any]) -> None:
+def _start_followstop_via_unified_entry(
+    effective_config_path: Path, run_dir: Path, cfg: Dict[str, Any]
+) -> subprocess.Popen:
     repo_root = Path(__file__).resolve().parents[2]
     cmd = [
         sys.executable,
@@ -104,7 +108,7 @@ def _run_followstop_via_unified_entry(effective_config_path: Path, run_dir: Path
     if policy.need_ros2_native and (not policy.start):
         print("[run] ROS2 native enabled: expecting external CARLA already started with --ros2")
     print(f"[run] dispatch followstop: {' '.join(cmd)}")
-    subprocess.check_call(cmd, cwd=repo_root)
+    return subprocess.Popen(cmd, cwd=repo_root, start_new_session=True)
 
 
 def main(args=None):
@@ -177,31 +181,125 @@ def main(args=None):
     cfg.setdefault("runtime", {})["compose_clean"] = args.compose_clean
     eff_path = save_effective(cfg, run_dir)
 
-    if args.print_effective_config:
-        print(eff_path.read_text())
-    if args.dry_run:
-        print(f"[dry-run] artifacts at {artifacts_dir}, config at {eff_path}")
-        return
+    cleanup_state: Dict[str, Any] = {
+        "done": False,
+        "child_proc": None,
+        "adapter": None,
+        "adapter_started": False,
+        "normal_exit": False,
+    }
+    cleanup_lock = threading.Lock()
+    signal_state = {"handling": False}
 
-    driver = (cfg.get("scenario", {}) or {}).get("driver")
-    if driver == "carla_followstop":
-        _run_followstop_via_unified_entry(eff_path, run_dir, cfg)
-        return
+    def _stop_child(proc: subprocess.Popen) -> None:
+        if proc.poll() is not None:
+            return
+        try:
+            pgid = os.getpgid(proc.pid)
+        except Exception:
+            pgid = None
+        try:
+            if pgid is not None:
+                os.killpg(pgid, signal.SIGINT)
+            else:
+                proc.send_signal(signal.SIGINT)
+            proc.wait(timeout=10.0)
+            return
+        except Exception:
+            pass
+        try:
+            if pgid is not None:
+                os.killpg(pgid, signal.SIGTERM)
+            else:
+                proc.terminate()
+            proc.wait(timeout=3.0)
+            return
+        except Exception:
+            pass
+        try:
+            if pgid is not None:
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except Exception:
+            pass
 
-    adapter = get_adapter(cfg.get("algo", {}).get("stack"))
-    adapter.prepare(cfg, run_dir)
-    adapter.start(cfg, run_dir)
+    def _cleanup_once(reason: str) -> None:
+        with cleanup_lock:
+            if cleanup_state["done"]:
+                return
+            cleanup_state["done"] = True
+        print(f"[run] cleanup begin ({reason})")
+        proc = cleanup_state.get("child_proc")
+        if proc is not None:
+            _stop_child(proc)
+        adapter = cleanup_state.get("adapter")
+        if adapter is not None and cleanup_state.get("adapter_started"):
+            try:
+                adapter.stop(cfg, run_dir)
+            except Exception as exc:
+                print(f"[run][WARN] adapter stop failed: {exc}")
+        print(f"[run] cleanup end ({reason})")
 
-    if not args.no_healthcheck:
-        ok = healthcheck(eff_path, timeout=5.0)
-        if not ok:
-            adapter.stop(cfg, run_dir)
-            raise SystemExit("healthcheck failed")
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
 
-    if args.follow_logs and isinstance(adapter, AutowareAdapter):
-        compose = cfg.get("algo", {}).get("autoware", {}).get("compose")
-        if compose:
-            os.execvp("docker", ["docker", "compose", "-f", str(Path(compose).resolve()), "logs", "-f"])
+    def _handle_interrupt(signum, _frame):
+        if signal_state["handling"]:
+            os._exit(128 + signum)
+        signal_state["handling"] = True
+        try:
+            print(f"[run][WARN] received signal {signum}, cleaning up")
+            _cleanup_once(f"signal_{signum}")
+        finally:
+            signal_state["handling"] = False
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGINT, _handle_interrupt)
+    signal.signal(signal.SIGTERM, _handle_interrupt)
+
+    try:
+        if args.print_effective_config:
+            print(eff_path.read_text())
+        if args.dry_run:
+            cleanup_state["normal_exit"] = True
+            print(f"[dry-run] artifacts at {artifacts_dir}, config at {eff_path}")
+            return
+
+        driver = (cfg.get("scenario", {}) or {}).get("driver")
+        if driver == "carla_followstop":
+            proc = _start_followstop_via_unified_entry(eff_path, run_dir, cfg)
+            cleanup_state["child_proc"] = proc
+            rc = proc.wait()
+            cleanup_state["child_proc"] = None
+            if rc != 0:
+                raise subprocess.CalledProcessError(rc, proc.args)
+            cleanup_state["normal_exit"] = True
+            return
+
+        adapter = get_adapter(cfg.get("algo", {}).get("stack"))
+        cleanup_state["adapter"] = adapter
+        adapter.prepare(cfg, run_dir)
+        started_result = adapter.start(cfg, run_dir)
+        cleanup_state["adapter_started"] = True if started_result is None else bool(started_result)
+
+        if not args.no_healthcheck:
+            ok = healthcheck(eff_path, timeout=5.0)
+            if not ok:
+                raise SystemExit("healthcheck failed")
+
+        if args.follow_logs and isinstance(adapter, AutowareAdapter):
+            compose = cfg.get("algo", {}).get("autoware", {}).get("compose")
+            if compose:
+                os.execvp("docker", ["docker", "compose", "-f", str(Path(compose).resolve()), "logs", "-f"])
+        cleanup_state["normal_exit"] = True
+    finally:
+        if not cleanup_state.get("normal_exit"):
+            _cleanup_once("finally")
+        signal.signal(signal.SIGINT, prev_sigint)
+        signal.signal(signal.SIGTERM, prev_sigterm)
 
 
 if __name__ == "__main__":

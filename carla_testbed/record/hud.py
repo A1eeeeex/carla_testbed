@@ -41,12 +41,32 @@ class HudRenderer:
         fps = self.opts.fps or (1.0 / dt if dt > 0 else 20.0)
         raw_in = self.base_dir / "raw_in"
         raw_tp = self.base_dir / "raw_tp"
-        if not raw_in.exists() or not raw_tp.exists():
+        if not raw_in.exists() and not raw_tp.exists():
             print("[HUD] dual_cam frames not found, skip HUD rendering")
             return
         overlay_in = self.base_dir / "overlay_in"
         overlay_tp = self.base_dir / "overlay_tp"
-        overlay_in.mkdir(parents=True, exist_ok=True)
-        overlay_tp.mkdir(parents=True, exist_ok=True)
-        render_overlay(raw_in, timeseries_path, overlay_in, self.base_dir / "demo_in_car_hud.mp4", fps=fps, frame_dt=dt)
-        render_overlay(raw_tp, timeseries_path, overlay_tp, self.base_dir / "demo_third_person_hud.mp4", fps=fps, frame_dt=dt)
+        if raw_in.exists():
+            overlay_in.mkdir(parents=True, exist_ok=True)
+            render_overlay(
+                raw_in,
+                timeseries_path,
+                overlay_in,
+                self.base_dir / "demo_in_car_hud.mp4",
+                fps=fps,
+                frame_dt=dt,
+                hud_mode=str(getattr(self.opts, "hud_mode", "driving") or "driving"),
+                hud_col_width=int(getattr(self.opts, "hud_col_width", 360) or 360),
+            )
+        if raw_tp.exists():
+            overlay_tp.mkdir(parents=True, exist_ok=True)
+            render_overlay(
+                raw_tp,
+                timeseries_path,
+                overlay_tp,
+                self.base_dir / "demo_third_person_hud.mp4",
+                fps=fps,
+                frame_dt=dt,
+                hud_mode=str(getattr(self.opts, "hud_mode", "driving") or "driving"),
+                hud_col_width=int(getattr(self.opts, "hud_col_width", 360) or 360),
+            )

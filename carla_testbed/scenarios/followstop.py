@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Optional
 
 import carla
@@ -12,10 +13,15 @@ from .base import ActorRefs, Scenario
 @dataclass
 class FollowStopConfig:
     front_idx: int = 210
-    ego_idx: int = 120
+    ego_idx: int = 208
     stop_brake: float = 1.0
     ego_id: str = "hero"
     front_id: str = "front"
+    auto_align_front_spawn: bool = True
+    front_min_ahead_m: float = 20.0
+    front_max_ahead_m: float = 80.0
+    front_max_lateral_m: float = 3.0
+    front_max_heading_diff_deg: float = 25.0
 
 
 class FollowStopScenario(Scenario):
@@ -25,9 +31,77 @@ class FollowStopScenario(Scenario):
         self.cfg = cfg
         self.actors: Optional[ActorRefs] = None
 
+    def _clear_dynamic_actors(self, world: carla.World) -> None:
+        removed = 0
+        for actor in world.get_actors():
+            type_id = getattr(actor, "type_id", "") or ""
+            if not (
+                type_id.startswith("vehicle.")
+                or type_id.startswith("walker.")
+                or type_id.startswith("controller.ai.walker")
+            ):
+                continue
+            try:
+                actor.destroy()
+                removed += 1
+            except Exception:
+                continue
+        if removed:
+            print(f"[followstop] cleared {removed} pre-existing dynamic actors before spawning scene")
+
+    @staticmethod
+    def _wrap_deg(delta_deg: float) -> float:
+        v = (delta_deg + 180.0) % 360.0 - 180.0
+        return v
+
+    def _pick_front_spawn_idx(self, spawns: list[carla.Transform]) -> int:
+        if not spawns:
+            return self.cfg.front_idx
+        ego_idx = self.cfg.ego_idx
+        ego_tf = spawns[ego_idx]
+        yaw = math.radians(float(ego_tf.rotation.yaw))
+        hx = math.cos(yaw)
+        hy = math.sin(yaw)
+        best_idx = self.cfg.front_idx
+        best_score = float("inf")
+        for idx, tf in enumerate(spawns):
+            if idx == ego_idx:
+                continue
+            dx = float(tf.location.x - ego_tf.location.x)
+            dy = float(tf.location.y - ego_tf.location.y)
+            lon = (dx * hx) + (dy * hy)
+            lat = (-dx * hy) + (dy * hx)
+            if lon < self.cfg.front_min_ahead_m or lon > self.cfg.front_max_ahead_m:
+                continue
+            if abs(lat) > self.cfg.front_max_lateral_m:
+                continue
+            yaw_diff = abs(self._wrap_deg(float(tf.rotation.yaw - ego_tf.rotation.yaw)))
+            if yaw_diff > self.cfg.front_max_heading_diff_deg:
+                continue
+            # Prefer the nearest valid front spawn to keep follow-stop behavior stable.
+            score = lon + (abs(lat) * 5.0) + yaw_diff
+            if score < best_score:
+                best_score = score
+                best_idx = idx
+        return best_idx
+
     def build(self, world: carla.World, carla_map: carla.Map, bp_lib: carla.BlueprintLibrary):
+        self._clear_dynamic_actors(world)
         spawns = carla_map.get_spawn_points()
-        veh_bp = bp_lib.filter("vehicle.tesla.model3")[0]
+        veh_bp = None
+        for pattern in [
+            "vehicle.lincoln.mkz_2020",
+            "vehicle.lincoln.mkz_2017",
+            "vehicle.lincoln.mkz*",
+            "vehicle.tesla.model3",
+        ]:
+            cands = bp_lib.filter(pattern)
+            if cands:
+                veh_bp = cands[0]
+                print(f"[followstop] selected vehicle blueprint: {veh_bp.id}")
+                break
+        if veh_bp is None:
+            raise RuntimeError("No suitable vehicle blueprint found (MKZ/Model3)")
 
         def _safe_idx(idx: int) -> int:
             if not spawns:
@@ -39,6 +113,13 @@ class FollowStopScenario(Scenario):
 
         self.cfg.front_idx = _safe_idx(self.cfg.front_idx)
         self.cfg.ego_idx = _safe_idx(self.cfg.ego_idx)
+        if self.cfg.auto_align_front_spawn:
+            aligned_front_idx = self._pick_front_spawn_idx(spawns)
+            if aligned_front_idx != self.cfg.front_idx:
+                print(
+                    f"[followstop] auto-aligned front spawn: requested={self.cfg.front_idx} -> aligned={aligned_front_idx}"
+                )
+            self.cfg.front_idx = aligned_front_idx
 
         try:
             veh_bp.set_attribute("role_name", self.cfg.front_id)

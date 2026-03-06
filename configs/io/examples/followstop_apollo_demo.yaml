@@ -40,32 +40,20 @@ io:
 algo:
   stack: apollo
   apollo:
-    # Set via env APOLLO_ROOT or fill absolute path.
     apollo_root: ""
     control_out_type: direct
-    # Host ROS2 setup script for bridge/control processes (leave empty to auto-detect /opt/ros/<distro>/setup.bash).
     ros2_setup_script: ""
-    # Keep host bridge and container modules in same CyberRT domain.
     cyber_domain_id: 80
-    # Optional: set a non-loopback IP when host<->container CyberRT discovery fails.
     cyber_ip: ""
     docker:
       enabled: true
-      # Export APOLLO_DOCKER_CONTAINER to override, e.g. apollo_dev_x86_64
       container: ""
-      # ROS2 is on host; run bridge on host by default.
       bridge_in_container: false
-      # If container is stopped, backend will run docker start automatically.
       auto_start_container: true
-      # Ensure missing runtime libs in Apollo container (bvar/gperftools) are auto-installed.
       auto_install_runtime_deps: true
-      # Run Apollo modules as uid:gid matching host ubuntu user to avoid CyberRT shm permission denial.
       module_exec_user: "1000:1000"
-      # Fail fast when host-bridge mode cannot communicate with container CyberRT.
       require_network_host: true
       require_ipc_host: true
-      # Start Apollo modules inside container before launching bridge.
-      # Leave commands empty to use backend auto-start (routing/prediction/planning/control).
       start_modules: true
       start_modules_cmd: ""
       modules_status_cmd: ""
@@ -109,7 +97,7 @@ algo:
       debug_dump_control_raw: true
       front_obstacle_behavior:
         mode: cruise_then_stop
-        activate_distance_m: 50.0
+        activate_distance_m: 100.0
         release_distance_m: 120.0
         min_longitudinal_m: 2.0
         max_lateral_m: 3.5

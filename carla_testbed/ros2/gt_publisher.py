@@ -139,6 +139,7 @@ class GroundTruthRos2Publisher:
                 "objects_json": False,
             },
             "last_elapsed": None,
+            "last_objects_count": 0,
             "last_error": None,
         }
 
@@ -544,6 +545,7 @@ class GroundTruthRos2Publisher:
         arr = self._Detection3DArray()
         arr.header.stamp = self._stamp_from_elapsed(elapsed_seconds)
         arr.header.frame_id = "odom"
+        object_count = 0
         for actor in actors:
             try:
                 tr = actor.get_transform()
@@ -571,7 +573,9 @@ class GroundTruthRos2Publisher:
             hyp.hypothesis.score = 1.0
             det.results.append(hyp)
             arr.detections.append(det)
+            object_count += 1
         self._objects3d_pub.publish(arr)
+        self._stats["last_objects_count"] = object_count
         self._mark_publish("objects3d")
 
     def _publish_markers(self, elapsed_seconds: float, actors: Sequence[carla.Actor]) -> None:
@@ -584,6 +588,7 @@ class GroundTruthRos2Publisher:
         delete_all.ns = "gt_objects"
         delete_all.action = self._Marker.DELETEALL
         marker_array.markers.append(delete_all)
+        object_count = 0
         for actor in actors:
             try:
                 tr = actor.get_transform()
@@ -620,26 +625,32 @@ class GroundTruthRos2Publisher:
             marker.lifetime.sec = 0
             marker.lifetime.nanosec = int(0.2 * 1e9)
             marker_array.markers.append(marker)
+            object_count += 1
         self._markers_pub.publish(marker_array)
+        self._stats["last_objects_count"] = object_count
         self._mark_publish("objects_markers")
 
     def _publish_objects_json(self, elapsed_seconds: float, actors: Sequence[carla.Actor]) -> None:
         if self._objects_json_pub is None:
             return
         payload = {"stamp": elapsed_seconds, "frame_id": "odom", "objects": []}
+        object_count = 0
         for actor in actors:
             try:
                 tr = actor.get_transform()
                 extent = actor.bounding_box.extent
+                vel = actor.get_velocity()
             except Exception:
                 continue
             x, y, z = self._loc_xyz(tr.location)
             roll, pitch, yaw = self._rot_rpy(tr.rotation)
+            vx, vy, vz = self._vec_xyz(vel)
             payload["objects"].append(
                 {
                     "id": str(actor.id),
                     "class": self._class_name(actor),
                     "pose": {"x": x, "y": y, "z": z, "roll": roll, "pitch": pitch, "yaw": yaw},
+                    "velocity": {"x": vx, "y": vy, "z": vz},
                     "size": {
                         "x": float(extent.x) * 2.0,
                         "y": float(extent.y) * 2.0,
@@ -647,9 +658,11 @@ class GroundTruthRos2Publisher:
                     },
                 }
             )
+            object_count += 1
         msg = self._String()
         msg.data = json.dumps(payload, separators=(",", ":"))
         self._objects_json_pub.publish(msg)
+        self._stats["last_objects_count"] = object_count
         self._mark_publish("objects_json")
 
     def publish_tick(

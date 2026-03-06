@@ -23,6 +23,7 @@ def start_control_logger(
     repo_root: Path,
     *,
     topic: str,
+    topic_type: Optional[str],
     out_jsonl: Path,
     out_log: Path,
     max_msgs: Optional[int],
@@ -34,6 +35,8 @@ def start_control_logger(
     runner_out = runner.runtime_path(out_jsonl)
     script_cmd = _script_cmd(runner, repo_root / "tbio/ros2/tools/control_logger.py", "/work/tbio/ros2/tools/control_logger.py")
     cmd = f"{script_cmd} --topic {shlex.quote(topic)} --out {shlex.quote(runner_out)}"
+    if topic_type:
+        cmd += f" --topic-type {shlex.quote(topic_type)}"
     if max_msgs is not None:
         cmd += f" --max-msgs {int(max_msgs)}"
     if force_anymsg:
@@ -42,7 +45,11 @@ def start_control_logger(
         cmd += f" --reliability {reliability}"
     cmd = f"{ros_env_setup_snippet()} {cmd}"
     log_fp = out_log.open("w")
-    return runner.popen_bash(cmd, stdout=log_fp, stderr=subprocess.STDOUT)
+    try:
+        proc = runner.popen_bash(cmd, stdout=log_fp, stderr=subprocess.STDOUT)
+    finally:
+        log_fp.close()
+    return proc
 
 
 def start_topic_probe(
@@ -73,7 +80,11 @@ def start_topic_probe(
             cmd += f" --typed-topic {shlex.quote(f'{topic}::{msg_type}')}"
     cmd = f"{ros_env_setup_snippet()} {cmd}"
     log_fp = out_log.open("w")
-    return runner.popen_bash(cmd, stdout=log_fp, stderr=subprocess.STDOUT)
+    try:
+        proc = runner.popen_bash(cmd, stdout=log_fp, stderr=subprocess.STDOUT)
+    finally:
+        log_fp.close()
+    return proc
 
 
 def stop_process(proc: Optional[subprocess.Popen], timeout_s: float = 5.0) -> None:

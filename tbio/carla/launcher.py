@@ -201,83 +201,94 @@ class CarlaLauncher:
         return False
 
     def stop(self, grace_s: float = 5.0):
-        if self.reused:
-            if not self.stop_reused_on_exit:
-                return
-            pid = self._reused_pid or _carla_pid_on_port(self.port)
-            if not pid:
-                print("[carla][WARN] reused instance detected but PID is unknown; skip stop")
-                return
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except Exception as exc:
-                print(f"[carla][WARN] failed to SIGTERM reused CARLA pid={pid}: {exc}")
-                return
-            deadline = time.time() + grace_s
-            while time.time() < deadline:
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
+        try:
+            if self.reused:
+                if not self.stop_reused_on_exit:
                     return
-                except Exception:
-                    break
-                time.sleep(0.1)
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except Exception:
-                pass
-            return
-
-        if not self.proc:
-            target_pid = _carla_pid_on_port(self.port)
-            if target_pid:
+                pid = self._reused_pid or _carla_pid_on_port(self.port)
+                if not pid:
+                    print("[carla][WARN] reused instance detected but PID is unknown; skip stop")
+                    return
                 try:
-                    os.kill(target_pid, signal.SIGTERM)
-                    time.sleep(0.2)
-                    os.kill(target_pid, signal.SIGKILL)
-                except Exception:
-                    pass
-            return
-        if self.proc.poll() is None:
-            try:
-                pgid = os.getpgid(self.proc.pid)
-            except Exception:
-                pgid = None
-            if pgid is not None:
-                try:
-                    os.killpg(pgid, signal.SIGTERM)
-                except Exception:
-                    pass
+                    os.kill(pid, signal.SIGTERM)
+                except Exception as exc:
+                    print(f"[carla][WARN] failed to SIGTERM reused CARLA pid={pid}: {exc}")
+                    return
                 deadline = time.time() + grace_s
                 while time.time() < deadline:
-                    if self.proc.poll() is not None:
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        return
+                    except Exception:
                         break
                     time.sleep(0.1)
-                if self.proc.poll() is None:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
+                return
+
+            if not self.proc:
+                target_pid = _carla_pid_on_port(self.port)
+                if target_pid:
                     try:
-                        os.killpg(pgid, signal.SIGKILL)
+                        os.kill(target_pid, signal.SIGTERM)
+                        time.sleep(0.2)
+                        os.kill(target_pid, signal.SIGKILL)
                     except Exception:
                         pass
-            else:
-                self.proc.terminate()
+                return
+            if self.proc.poll() is None:
                 try:
-                    self.proc.wait(timeout=grace_s)
+                    pgid = os.getpgid(self.proc.pid)
                 except Exception:
-                    self.proc.kill()
-        # CarlaUE4.sh may leave the actual CarlaUE4 process behind; force-close by port owner.
-        leftover_pid = _carla_pid_on_port(self.port)
-        if leftover_pid:
-            try:
-                os.kill(leftover_pid, signal.SIGTERM)
-                time.sleep(0.2)
-                os.kill(leftover_pid, signal.SIGKILL)
-            except Exception:
-                pass
-        if hasattr(self, "_log_handle") and getattr(self, "_log_handle", None):
-            try:
-                self._log_handle.close()
-            except Exception:
-                pass
+                    pgid = None
+                if pgid is not None:
+                    try:
+                        os.killpg(pgid, signal.SIGTERM)
+                    except Exception:
+                        pass
+                    deadline = time.time() + grace_s
+                    while time.time() < deadline:
+                        if self.proc.poll() is not None:
+                            break
+                        time.sleep(0.1)
+                    if self.proc.poll() is None:
+                        try:
+                            os.killpg(pgid, signal.SIGKILL)
+                        except Exception:
+                            pass
+                else:
+                    self.proc.terminate()
+                    try:
+                        self.proc.wait(timeout=grace_s)
+                    except Exception:
+                        self.proc.kill()
+            # CarlaUE4.sh may leave the actual CarlaUE4 process behind; force-close by port owner.
+            leftover_pid = _carla_pid_on_port(self.port)
+            if leftover_pid:
+                try:
+                    os.kill(leftover_pid, signal.SIGTERM)
+                    time.sleep(0.2)
+                    os.kill(leftover_pid, signal.SIGKILL)
+                except Exception:
+                    pass
+        finally:
+            if self.proc is not None:
+                try:
+                    self.proc.wait(timeout=0.5)
+                except Exception:
+                    pass
+            self.proc = None
+            self.reused = False
+            self._reused_pid = None
+            if hasattr(self, "_log_handle") and getattr(self, "_log_handle", None):
+                try:
+                    self._log_handle.close()
+                except Exception:
+                    pass
+                self._log_handle = None
 
     def _print_port_diag(self):
         try:

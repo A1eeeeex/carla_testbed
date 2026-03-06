@@ -1,125 +1,77 @@
 from __future__ import annotations
 
+from typing import Any, Dict, MutableMapping, Optional
+
 try:
     import cv2
 except ImportError:  # pragma: no cover
     cv2 = None
 
-
-def _fmt_vec(vec):
-    if not isinstance(vec, dict):
-        return ""
-    return f"x={vec.get('x', 0):.2f} y={vec.get('y', 0):.2f} z={vec.get('z', 0):.2f}"
+from carla_testbed.record.sensor_demo.hud_renderer import HUDRenderer
 
 
-def draw_hud(img, frame_id=None, timestamp=None, imu=None, gnss=None, events=None, stats=None):
-    """Lightweight HUD overlay: frame info + optional IMU/GNSS + events."""
+def _build_renderer_cfg(hud_ctx: Optional[MutableMapping[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(hud_ctx, MutableMapping):
+        return {}
+    cfg: Dict[str, Any] = {}
+    if hud_ctx.get("hud_mode") is not None:
+        cfg["hud_mode"] = hud_ctx.get("hud_mode")
+    if hud_ctx.get("hud_col_w") is not None:
+        cfg["col_w"] = hud_ctx.get("hud_col_w")
+    if hud_ctx.get("hud_margin_l") is not None:
+        cfg["margin_l"] = hud_ctx.get("hud_margin_l")
+    if hud_ctx.get("hud_margin_b") is not None:
+        cfg["margin_b"] = hud_ctx.get("hud_margin_b")
+    if hud_ctx.get("hud_gap_y") is not None:
+        cfg["gap_y"] = hud_ctx.get("hud_gap_y")
+    if hud_ctx.get("hud_blur_ksize") is not None:
+        cfg["blur_ksize"] = hud_ctx.get("hud_blur_ksize")
+    if hud_ctx.get("hud_radius") is not None:
+        cfg["radius"] = hud_ctx.get("hud_radius")
+    return cfg
+
+
+def _ensure_renderer(hud_ctx: Optional[MutableMapping[str, Any]]) -> HUDRenderer:
+    if isinstance(hud_ctx, MutableMapping):
+        renderer = hud_ctx.get("_hud_renderer")
+        if isinstance(renderer, HUDRenderer):
+            mode = hud_ctx.get("hud_mode")
+            if mode:
+                renderer.set_mode(str(mode))
+            return renderer
+        renderer = HUDRenderer(_build_renderer_cfg(hud_ctx))
+        hud_ctx["_hud_renderer"] = renderer
+        return renderer
+    return HUDRenderer({})
+
+
+def draw_hud(
+    img,
+    frame_id=None,
+    timestamp=None,
+    imu=None,
+    gnss=None,
+    events=None,
+    stats=None,
+    metrics: Optional[Dict[str, Any]] = None,
+    hud_ctx: Optional[MutableMapping[str, Any]] = None,
+):
+    """Render professional left-stack HUD overlay on BGR frame."""
     if cv2 is None:
         return img
-    h, w = img.shape[:2]
-    pad = 14
-    y = pad + 10
-    bar_h = 120
-    cv2.rectangle(img, (pad, pad), (w - pad, pad + bar_h), (0, 0, 0), thickness=-1)
-    cv2.rectangle(img, (pad, pad), (w - pad, pad + bar_h), (80, 80, 80), thickness=1)
-    cv2.putText(img, "sensor_demo", (pad + 12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-    y += 26
-    header = []
-    if frame_id is not None:
-        header.append(f"frame {frame_id}")
-    if timestamp is not None:
-        header.append(f"t={timestamp:.3f}s")
-    if header:
-        cv2.putText(img, " | ".join(header), (pad + 12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA)
-        y += 22
-    if imu:
-        cv2.putText(
-            img,
-            f"IMU ang {_fmt_vec(imu.get('gyroscope', {}))} lin {_fmt_vec(imu.get('accelerometer', {}))}",
-            (pad + 12, y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (200, 200, 255),
-            1,
-            cv2.LINE_AA,
-        )
-        y += 20
-    if gnss:
-        cv2.putText(
-            img,
-            f"GNSS lat {gnss.get('latitude', 0):.6f} lon {gnss.get('longitude', 0):.6f} alt {gnss.get('altitude', 0):.1f}",
-            (pad + 12, y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (200, 255, 200),
-            1,
-            cv2.LINE_AA,
-        )
-        y += 20
-    if stats:
-        lidar_stat = stats.get("lidar")
-        radar_stat = stats.get("radar")
-        missing = stats.get("missing")
-        if lidar_stat:
-            cv2.putText(
-                img,
-                f"LiDAR {lidar_stat}",
-                (pad + 12, y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (0, 255, 0),
-                1,
-                cv2.LINE_AA,
-            )
-            y += 20
-        if radar_stat:
-            cv2.putText(
-                img,
-                f"Radar {radar_stat}",
-                (pad + 12, y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (255, 200, 0),
-                1,
-                cv2.LINE_AA,
-            )
-            y += 20
-        radar_dbg = stats.get("radar_debug")
-        if radar_dbg:
-            cv2.putText(
-                img,
-                radar_dbg,
-                (pad + 12, y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (180, 180, 180),
-                1,
-                cv2.LINE_AA,
-            )
-            y += 18
-        if missing:
-            cv2.putText(
-                img,
-                f"Missing: {','.join(missing)}",
-                (pad + 12, y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (200, 150, 150),
-                1,
-                cv2.LINE_AA,
-            )
-            y += 18
-    if events:
-        for evt in events:
-            cv2.putText(
-                img,
-                f"EVENT: {evt}",
-                (pad + 12, y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 0, 255),
-                2,
-                cv2.LINE_AA,
-            )
-            y += 22
-    return img
+    renderer = _ensure_renderer(hud_ctx)
+    merged: Dict[str, Any] = dict(metrics or {})
+    if timestamp is not None and merged.get("timestamp") is None:
+        merged["timestamp"] = timestamp
+    if frame_id is not None and merged.get("frame") is None:
+        merged["frame"] = frame_id
+    if isinstance(stats, dict):
+        if "fps" in stats and merged.get("fps") is None:
+            merged["fps"] = stats.get("fps")
+        if "loc_ok" in stats and merged.get("loc_ok") is None:
+            merged["loc_ok"] = stats.get("loc_ok")
+        if "plan_ok" in stats and merged.get("plan_ok") is None:
+            merged["plan_ok"] = stats.get("plan_ok")
+        if "ctrl_ok" in stats and merged.get("ctrl_ok") is None:
+            merged["ctrl_ok"] = stats.get("ctrl_ok")
+    return renderer.render(img, merged)

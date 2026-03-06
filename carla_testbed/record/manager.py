@@ -31,6 +31,9 @@ class RecordOptions:
     skip_lidar: bool
     skip_radar: bool
     skip_hud: bool
+    hud_mode: str = "driving"
+    hud_col_width: int = 360
+    dual_cam_third_person_only: bool = False
 
 
 class RecordManager:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from typing import Dict, Optional
@@ -158,6 +159,27 @@ class SensorDemoRecorder:
                 continue
         return events
 
+    def _load_timeseries_by_frame(self) -> Dict[int, Dict[str, str]]:
+        path = self.run_dir / "timeseries.csv"
+        out: Dict[int, Dict[str, str]] = {}
+        if not path.exists():
+            return out
+        try:
+            with path.open("r", newline="") as fp:
+                reader = csv.DictReader(fp)
+                for row in reader:
+                    fid_raw = row.get("frame")
+                    if fid_raw in (None, ""):
+                        continue
+                    try:
+                        fid = int(float(fid_raw))
+                    except Exception:
+                        continue
+                    out[fid] = row
+        except Exception as exc:
+            print(f"[sensor_demo] failed to read timeseries.csv: {exc}")
+        return out
+
     def render_demo(self):
         if cv2 is None:
             print("[sensor_demo] OpenCV not installed, skip rendering.")
@@ -173,6 +195,7 @@ class SensorDemoRecorder:
         sensors_meta = self._load_sensors()
         mats = self._frame_matrices(calib)
         events_by_frame = self._load_events()
+        timeseries_by_frame = self._load_timeseries_by_frame()
         cam_id = None
         # pick a camera as base
         for sid, meta in sensors_meta.items():
@@ -194,6 +217,11 @@ class SensorDemoRecorder:
         radar_v_deadband = getattr(self.opts, "radar_v_deadband", 0.3)
         self.video_dir.mkdir(parents=True, exist_ok=True)
         fps = self.opts.fps or (1.0 / self.dt if self.dt > 0 else 20.0)
+        hud_ctx = {
+            "history_maxlen": int(max(120, round(fps * 12.0))),
+            "hud_mode": str(getattr(self.opts, "hud_mode", "driving") or "driving").lower(),
+            "hud_col_w": int(getattr(self.opts, "hud_col_width", 360) or 360),
+        }
 
         # Build frame lookup
         per_frame = {}
@@ -365,7 +393,19 @@ class SensorDemoRecorder:
                     ts_val = imu_data.get("timestamp")
                 elif gnss_data and "timestamp" in gnss_data:
                     ts_val = gnss_data.get("timestamp")
-                frame = draw_hud(frame, frame_id=fid, timestamp=ts_val, imu=imu_data, gnss=gnss_data, events=evts, stats=stats)
+                metrics_payload = dict(timeseries_by_frame.get(fid) or {})
+                metrics_payload.setdefault("fps", fps)
+                frame = draw_hud(
+                    frame,
+                    frame_id=fid,
+                    timestamp=ts_val,
+                    imu=imu_data,
+                    gnss=gnss_data,
+                    events=evts,
+                    stats=stats,
+                    metrics=metrics_payload,
+                    hud_ctx=hud_ctx,
+                )
             if self.opts.keep_frames:
                 frames_dir = self.video_dir / "frames"
                 frames_dir.mkdir(parents=True, exist_ok=True)

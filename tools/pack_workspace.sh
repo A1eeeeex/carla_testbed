@@ -1,6 +1,3 @@
-# 1) 在仓库根目录创建脚本文件
-mkdir -p tools
-cat > tools/pack_workspace.sh <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -31,10 +28,3 @@ tar -czf "${OUT_DIR}/${NAME}.tar.gz" \
 
 sha256sum "${OUT_DIR}/${NAME}.tar.gz" > "${OUT_DIR}/${NAME}.tar.gz.sha256"
 echo "${OUT_DIR}/${NAME}.tar.gz"
-SH
-
-# 2) 赋予可执行权限
-chmod +x tools/pack_workspace.sh
-
-# 3) 运行（可选传输出目录）
-./tools/pack_workspace.sh ../dist

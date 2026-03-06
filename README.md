@@ -1,245 +1,767 @@
-CARLA 算法测试平台（仓库使用手册）
-==============================
+# CARLA Testbed
 
-Quickstart（全新主机）
-1) `bash tools/bootstrap_native.sh`
-2) 在 shell 设置 `CARLA_ROOT=/path/to/CARLA_0.9.16`（必填，未设置会直接报错）
-3) `python -m carla_testbed doctor`
-4) 运行最小闭环（dummy）：`python -m carla_testbed run --config configs/io/examples/followstop_dummy.yaml`
+本仓库是一个基于 CARLA 的仿真测试平台。当前主线能力是：
 
-兼容入口（旧脚本）
-- 保留 `io/scripts/run.py` 等，但仅作包装，建议统一使用 `python -m carla_testbed ...`
+- 用统一 CLI 启动一次仿真 run
+- 运行 `followstop` 场景
+- 记录运行产物到 `runs/<run>/`
+- 按配置选择算法栈：
+  - `dummy`
+  - `apollo`
+  - `autoware`
+  - `e2e`（占位，未实现）
 
-Autoware 容器说明
-- 镜像：`ghcr.io/autowarefoundation/autoware:universe-devel-cuda`
-- Compose 启动后默认尝试 source `/opt/Autoware/install/setup.bash`，若不存在则回退到 `/autoware/install/setup.bash` 并给出提示。
-- 宿主未装 ROS2 时 healthcheck 会被跳过（WARN）；可在容器内 `source /opt/ros/humble/setup.bash && source /opt/Autoware/install/setup.bash` 再运行 `ros2 topic list` 进行自检。
-- IO 相关逻辑已抽离到顶层 `io/`（contract/backends/tools）。`carla_testbed` 内部仅提供最小 hook，原 `carla_testbed/io` 已移除。
+这份 README 只写代码里当前已经存在的命令、路径和行为。
 
-配置驱动（推荐）
-- 入口：`python io/scripts/run.py --config <yaml> [--override key=val ...] [--dry-run]`
-- 示例：`configs/io/examples/followstop_autoware.yaml`（选择算法 stack=autoware），`configs/io/examples/followstop_dummy.yaml`（不跑算法仅驱动场景）
-- 每次运行都会写 `runs/<timestamp>/effective.yaml` 和 `runs/<timestamp>/artifacts/`（mapping/calibration/qos/frames），可用来完全复现。
+## 1. 当前可用能力
 
-> 目标：基于 CARLA 搭建可复现的**算法测试平台**，聚合场景复现、传感器采集、真值输出、控制闭环、录制与评测。当前实现以本仓库内的跟停（follow-stop）控制器为核心，支持开启 CARLA 原生 ROS2 发布（`--enable-ros2-native`），CyberRT 适配尚未实现（占位接口已在蓝图与 schemas 中，扩展方式见“如何扩展”）。
+### 统一入口
 
-------------------------------------------------------------
-快速开始（5–10 分钟跑通）
-------------------------------------------------------------
-环境要求
-- 已安装 CARLA 0.9.16（请设置环境变量 `CARLA_ROOT=/path/to/CARLA_0.9.16`）。
-- Python 3.10（推荐在虚拟环境中运行）。
-- 启动 CARLA 服务器：在 `${CARLA_ROOT}` 目录执行 `./CarlaUE4.sh`（确保 2000 端口空闲）。
+推荐入口：
 
-运行最小示例（生成 runs/…/summary.json）
 ```bash
-# 启动服务器后在仓库根运行：
-python -m carla_testbed run --config configs/io/examples/followstop_dummy.yaml
-  --controller composite \
-  --lateral-mode dummy \
-  --policy-mode acc \
-  --ticks 500 \
-  --rig fullstack \
-  --record sensor_demo
+python -m carla_testbed <subcommand>
 ```
-预期产物：`runs/followstop_<timestamp>/timeseries.csv` 与 `summary.json`。此示例场景为直线跟停（front_idx=210, ego_idx=120），并生成 sensor_demo 视频。
 
-若需要混合 Agent 控制纵向接管，可选参数：
+当前 CLI 子命令来自 `carla_testbed/cli.py`：
+
+- `python -m carla_testbed doctor`
+- `python -m carla_testbed run --config <yaml> [--override k=v ...]`
+- `python -m carla_testbed smoke --config <yaml>`
+
+注意：
+
+- `python -m carla_testbed smoke` 目前 **Not implemented yet**（`carla_testbed/cli.py` 调用方式与 `tbio/scripts/smoke_test.py` 的参数签名不一致）。
+- 当前可用替代命令是：
+
 ```bash
-python examples/run_followstop.py --controller hybrid_agent_acc --agent-type basic
+python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout 5
 ```
 
-单独启动/诊断 CARLA（可复用 launcher 逻辑）
+### 兼容入口
+
+旧入口仍在，但只是 wrapper：
+
+- `io/scripts/run.py`
+- `io/scripts/smoke_test.py`
+
+代码里已经明确给出弃用提示，推荐继续使用 `python -m carla_testbed ...`。
+
+### 算法栈状态
+
+来自 `algo/registry.py` 和各 adapter：
+
+- `dummy`
+  - 已实现
+  - `algo/adapters/dummy.py`
+  - 不启动外部算法，只运行场景
+- `apollo`
+  - 已实现
+  - `algo/adapters/apollo.py` + `tbio/backends/cyberrt.py`
+- `autoware`
+  - 已实现
+  - `algo/adapters/autoware.py`
+- `e2e`
+  - **Not implemented yet**
+  - `algo/adapters/e2e.py`
+  - 当前仅打印 TODO，`healthcheck()` 固定返回 `False`
+
+## 2. 目录结构（按当前仓库）
+
+下面是当前仓库顶层到两层目录的结构说明（手写，等价于 `tree -L 2`）：
+
+```text
+.
+├── README.md
+├── algo/
+│   ├── adapters/          # 算法栈 adapter（dummy / apollo / autoware / e2e）
+│   ├── baselines/         # 外部栈相关资源（如 autoware docker）
+│   ├── controllers/       # 控制相关辅助模块
+│   ├── nodes/             # 运行时节点（如 CARLA control bridge）
+│   └── plugins/           # 预留插件位
+├── carla_testbed/
+│   ├── config/            # HarnessConfig、rig 加载、配置输出
+│   ├── control/           # 本地控制器包装
+│   ├── record/            # timeseries、summary、视频、monitor
+│   ├── ros2/              # GT ROS2 发布
+│   ├── runner/            # TestHarness 主循环
+│   ├── scenarios/         # 场景（当前主用 followstop）
+│   ├── schemas/           # FramePacket / GroundTruthPacket / ControlCommand
+│   ├── sensors/           # 传感器规格与采集
+│   ├── sim/               # CARLA client、tick、spawn、world settings
+│   └── utils/             # 路径、环境、run 命名
+├── configs/
+│   ├── io/                # 示例配置（dummy / apollo / autoware）
+│   └── rigs/              # 传感器 rig 预设
+├── docs/                  # 详细设计文档（含 GT->Apollo 链路说明）
+├── dumps/                 # 调试转储（运行时可能写入）
+├── examples/
+│   ├── carla_examples/    # CARLA 官方/示例脚本
+│   └── run_followstop.py  # followstop 场景运行入口
+├── io/
+│   ├── backends/          # IO 后端（保留代码）
+│   ├── contract/          # ROS2 合约与 profiles
+│   ├── scripts/           # 兼容 wrapper 脚本
+│   └── tools/             # IO 相关工具
+├── runs/                  # 每次运行输出目录
+├── tbio/
+│   ├── backends/          # 后端实现（如 CyberRT backend）
+│   ├── carla/             # CARLA 启动策略与 launcher
+│   ├── contract/          # 产物生成器
+│   ├── ros2/              # ROS2 工具（probe / control logger / goal_engage）
+│   └── scripts/           # 统一 run / healthcheck / smoke 等
+└── tools/
+    ├── apollo10_cyber_bridge/   # Apollo bridge 与相关工具
+    └── bootstrap_native.sh      # 本机初始化脚本
+```
+
+## 3. 数据如何在模块间流动
+
+### 代码里定义的标准数据结构
+
+在 `carla_testbed/schemas/` 里，当前定义了这些核心结构：
+
+- `FramePacket`（`carla_testbed/schemas/frame_packet.py`）
+  - 表示一帧传感器数据
+- `GroundTruthPacket`（`carla_testbed/schemas/truth_packet.py`）
+  - 表示一帧真值（ego、actors、events）
+- `ControlCommand`（`carla_testbed/schemas/algo_io.py`）
+  - 表示控制输出
+- `AlgoInput` / `AlgoOutput`
+  - 表示算法输入输出封装
+
+### 当前主运行链路里哪些是“定义了但未完全接通”
+
+当前 `examples/run_followstop.py` + `carla_testbed/runner/harness.py` 的主路径里：
+
+- `ControlCommand` 是实际在用的
+- `FramePacket` / `GroundTruthPacket` 是 schema 层已定义的数据边界
+- 但当前 harness 主路径没有把它们作为统一对象完整传递给控制器
+
+也就是说：
+
+- 这两类 packet 当前更像“数据模型定义”
+- 当前运行主线仍然是：
+  - 直接从 CARLA 取状态
+  - 直接调用控制器
+  - 直接写 `timeseries.csv` / `summary.json`
+
+### 当前实际运行时的数据流
+
+当前 `followstop` 主路径的数据流是：
+
+```text
+CARLA world
+  -> Scenario build（生成 ego / front）
+  -> TestHarness tick（world.tick）
+  -> 本地控制器 or 外部算法栈
+  -> ControlCommand
+  -> ego.apply_control(...)
+  -> 记录 timeseries / summary / monitor / 可选视频 / 可选 ROS2
+```
+
+如果启用 Apollo GT 栈（`configs/io/examples/followstop_apollo_gt.yaml`），实际链路是：
+
+```text
+CARLA
+  -> GroundTruthRos2Publisher（/carla/<ego>/odom, /tf, /tf_static, objects）
+  -> tools/apollo10_cyber_bridge/bridge.py
+  -> Apollo CyberRT channels
+  -> /apollo/control
+  -> ROS2 /tb/ego/control_cmd
+  -> algo/nodes/control/carla_control_bridge/ros2_autoware_to_carla.py
+  -> CARLA ego.apply_control(...)
+```
+
+详细版本可看：
+
+- `docs/gt_truth_simulation_pipeline.md`
+
+### KPI 当前在哪一层
+
+当前没有独立的 `kpi/` 包。
+
+当前 KPI / 回归结果是分散在下面几个位置生成的：
+
+- `carla_testbed/runner/harness.py`
+  - 计算成功/失败、最大速度、碰撞数、侵线数
+- `carla_testbed/record/timeseries_recorder.py`
+  - 写逐帧 CSV
+- `carla_testbed/record/summary_recorder.py`
+  - 写 `summary.json`
+
+也就是说，当前 KPI 是：
+
+- `timeseries.csv` 中的逐帧指标
+- `summary.json` 中的汇总指标
+
+## 4. 环境准备
+
+### 4.1 最小依赖
+
+当前 `pyproject.toml` 中声明的运行依赖：
+
+- `PyYAML`
+- `numpy`
+- `opencv-python`
+- `networkx`
+- `shapely`
+- `python-dotenv`
+
+开发依赖（可选）：
+
+- `ruff`
+- `pytest`
+- `pre-commit`
+
+### 4.2 CARLA 路径解析（当前代码行为）
+
+`carla_testbed/utils/env.py` 当前的 CARLA 根目录解析顺序是：
+
+1. 显式 override
+2. 环境变量 `CARLA_ROOT`
+3. `configs/local.yaml` 的 `carla.root`
+4. 默认值：`/home/ubuntu/CARLA_0.9.16`
+
+也就是说：
+
+- 当前代码 **仍然保留** 默认 CARLA 路径
+- 如果你不设置，代码会尝试用 `/home/ubuntu/CARLA_0.9.16`
+
+可用的本地配置模板：
+
+- `.env.example`
+- `configs/local.example.yaml`
+
+### 4.3 本机初始化
+
+当前仓库内置脚本：
+
 ```bash
-python io/scripts/start_carla.py --start-carla --town Town01 --host localhost --port 2000 --carla-foreground
+bash tools/bootstrap_native.sh
 ```
-失败时会自动打印 `CarlaUE4.log` 尾部到终端，并写入 `runs/<ts>/logs/carlaue4_tail.log`。
 
-传感器 rig（预设/自定义/覆盖）示例：
+它会做：
+
+1. 创建 `.venv`（如果不存在）
+2. `pip install -U pip`
+3. 安装项目本身（优先 `pip install -e ".[dev]"`）
+4. 如果 `CARLA_ROOT` 指向有效目录，自动安装最新 `carla-*.whl`
+5. 运行：
+   - `python -m carla_testbed doctor`
+
+## 5. 最小可运行示例（MVP）
+
+### 5.1 目标
+
+下面这组命令使用当前最简单、最稳定的 `dummy` 栈，跑一轮 `followstop`，并生成：
+
+- `runs/readme_mvp/summary.json`
+
+注意：
+
+- 当前代码写的是 `runs/<run>/summary.json`
+- **不存在** `runs/<run>/results/summary.json`
+
+### 5.2 命令
+
+先准备环境：
+
 ```bash
-# 使用内置预设（minimal/apollo_like/perception_lidar/perception_camera/fullstack/sample_rig/sample_rig2）
-python examples/run_followstop.py --rig apollo_like
-# 自定义 rig 文件 + 覆盖某字段
-python examples/run_followstop.py --rig-file myrig.yaml --rig-override camera_front.attributes.image_size_x=1024
-# 开启失败窗口 HUD 录制
-python examples/run_followstop.py --rig fullstack --enable-fail-capture
-# 录制/渲染示例：dual_cam + HUD + sensor_demo
-python examples/run_followstop.py --rig fullstack --record dual_cam --record hud --record sensor_demo
+export CARLA_ROOT=/path/to/CARLA_0.9.16
+bash tools/bootstrap_native.sh
+source .venv/bin/activate
 ```
 
-------------------------------------------------------------
-核心概念与数据流
-------------------------------------------------------------
-ASCII 流程图（每 tick）：
-```
-CARLA World --(tick_world)-> frame_id, timestamp
-    |                  |
-    |            Scenario actors (ego/front)
-    |                  |
-Sensors (collision/lane invasion, optional cam/lidar/radar)
-    | events           |
-    v                  v
-FramePacket (schemas/frame_packet.py)        GroundTruthPacket (schemas/truth_packet.py)
-    \_____________________ joint into Harness _______________________/
-                                |
-                                v
-Controller (control/legacy_controller.py -> legacy_followstop/controllers.py)
-    | outputs ControlCommand (schemas/algo_io.py)
-    v
-Apply to ego vehicle; record timeseries; evaluate fail/success; write summary
-```
-- `FramePacket` / `SensorSample`：帧级传感器数据容器（可选 camera/lidar/radar/imu/gnss，默认至少事件传感器）。
-- `GroundTruthPacket`：ego/front 真值与事件列表（碰撞/车道侵入）。
-- `ControlCommand`：控制器输出油门/刹车/转向，包含 `last_debug` 元信息。
-- `Evaluator`：尚未独立模块化；当前 Harness 内部使用基础规则（碰撞/侵线/停稳）决定成功与否。
-- `Recorder`：timeseries CSV、summary JSON、可选视频。
-- `Harness`：驱动 tick、调用控制器、采集事件/可选传感器、执行失败策略并落盘；可选启用 ROS2 原生发布。
+然后执行：
 
-------------------------------------------------------------
-目录结构导览（核心模块）
-------------------------------------------------------------
-```
-repo_root/
-  carla_testbed/                  # 仿真/场景/录制核心（保持原目录层级）
-    schemas/ config/ sim/ scenarios/ control/ sensors/ runner/ record/ utils/
-  io/                             # 新：I/O 契约、profiles、backends、工具与脚本
-    contract/ backends/ ros2/ scripts/
-  algo/                           # 新：算法/栈承载（Autoware baseline、控制桥、插件占位）
-    baselines/autoware/ ... , nodes/control/carla_control_bridge/, plugins/
-  configs/rigs/                   # rig 预设
-  examples/run_followstop.py      # 示例入口
+```bash
+python -m carla_testbed run \
+  --config configs/io/examples/followstop_dummy.yaml \
+  --run-dir runs/readme_mvp \
+  --override runtime.carla.start=true
 ```
 
-模块职责（数据如何流动）
-- sim：`carla_client.py` 建立 client 并确保 PythonAPI 在 sys.path；`tick.py` 开启同步 + tick；`actors.py` 提供 spawn_with_retry。
-- scenarios：`followstop.py` 生成 ego/front，并让 front 刹停；返回 ActorRefs。
-- control：`legacy_controller.py` 用本地 `legacy_followstop/controllers.py` 生成控制器，包装成 ControlCommand（附带 last_debug）。
-- sensors：`events.py` 监听碰撞/侵线；`rigs.py::SensorRig` 按 rig specs 采集并落盘。
-- runner：`harness.py` 调用 tick_world、控制器 step、应用 ControlCommand；根据 fail_strategy 决定退出；写 timeseries/summary；可选调用 SensorRig、FailFrameCapture、RecordManager。
-- record：TimeseriesRecorder/SummaryRecorder 写文件；FailFrameCapture 失败单帧抓取；RecordManager 调度 dual_cam/hud/sensor_demo。
-- io：`Ros2NativePublisher` 对已挂载传感器调用 `enable_for_ros()`，并协助 Traffic Manager 同步模式。
-- schemas：定义 FramePacket/GroundTruthPacket/AlgoIO，供上述模块共享。
+为什么这里要加 `--override runtime.carla.start=true`：
 
-------------------------------------------------------------
-运行方式详解
-------------------------------------------------------------
-示例脚本：`examples/run_followstop.py`
-- 关键参数：
-  - `--town`：CARLA 地图名，默认 Town01
-  - `--ticks`：最大步数（同步 tick 次数）
-  - `--controller`：`composite`（默认，使用 controllers.py 的 CompositeController）或 `hybrid_agent_acc`
-  - `--lateral-mode`：`pure_pursuit` | `stanley` | `dummy`
-  - `--policy-mode`：`acc`
-  - `--agent-type`：hybrid 时 `basic` 或 `behavior`
-  - `--takeover-dist`/`--blend-time`：hybrid 接管距离/平滑时间
-  - `--front-idx` / `--ego-idx`：spawn 点索引（默认 210/120）
-  - 传感器 rig 配置：
-    - `--rig`：内置预设（minimal/apollo_like/perception_lidar/perception_camera/fullstack/sample_rig/sample_rig2），默认 minimal
-    - `--rig-file`：自定义 rig yaml/json
-    - `--rig-override`：点路径覆盖，可多次使用（如 camera_front.attributes.image_size_x=1024）
-  - `--enable-fail-capture`：失败窗口 HUD 录制（run_dir/fail_window）
-  - ROS2 原生发布：
-    - `--enable-ros2-native`：调用 CARLA 原生接口在 `/carla/<ego>/<sensor>/...` 发布话题（需服务器 `--ros2`）
-    - `--ros-invert-tf` / `--ros-keep-tf`：是否对 rig 的 y/pitch/yaw 取反（默认取反以匹配官方示例）
-    - `--ego-id`：ego role_name/ros_name，默认 `hero`
-    - `--enable-rviz`：在 ROS2 模式下自动启动 RViz（默认 docker，可用 `--rviz-mode local` 直接调用本机 rviz2），可配合 `--rviz-domain/--rviz-docker-image/--rviz-camera-image-suffix/--rviz-lidar-cloud-suffix`
-    - `--enable-ros2-bag`：开启 rosbag2 录制，可配合 `--ros2-bag-out/--ros2-bag-storage/--ros2-bag-compress/--ros2-bag-max-size-mb/--ros2-bag-max-duration-s/--ros2-bag-topics/--ros2-bag-extra-topics/--ros2-bag-camera-image-suffix/--ros2-bag-lidar-cloud-suffix`
-  - 录制/渲染（采集与合成分离）：
-    - `--record dual_cam`：车内+第三人称原始视频（mp4；可选 `--record-keep-frames` 保留 png）
-    - `--record hud`：基于 dual_cam 帧与 timeseries 渲染 HUD mp4
-    - `--record sensor_demo`：回放 recorder.log + sensors raw，叠加 lidar 投影/雷达/IMU/事件，输出 demo.mp4
-    - 公共参数：`--record-output`（默认 run_dir/video）、`--record-fps`、`--record-resolution 1920x1080`、`--record-max-lidar-points`、`--record-no-lidar`、`--record-no-radar`、`--record-no-hud`
-    - 兼容旧旗标：`--record-demo`≈dual_cam，`--make-hud`≈hud（已弃用）
-  - 失败策略（在 `carla_testbed/config/defaults.py` 配置）：`fail_strategy`=`fail_fast` 或 `log_and_continue`，`post_fail_steps` 控制失败后继续步数
-  - 产物默认写入：`runs/followstop_<timestamp>/`
+- `configs/io/examples/followstop_dummy.yaml` 当前默认是：
+  - `runtime.carla.start: false`
+- 这个 override 会让 `tbio/scripts/run.py` 把 `--start-carla` 透传给 `examples.run_followstop`
+- 当前配置又启用了 `scenario.publish_ros2_native: true`
+- `tbio/carla/launch_policy.py` 会自动把 `--ros2` 加到 CARLA 启动参数里
 
-ROS2 原生发布
-- 提示：原 `carla_testbed/io` 已抽离；现在由 `io/backends/ros2_native.py` 和 `io/scripts/run.py` 统一入口管理。
-- 启动 CARLA：`./CarlaUE4.sh --ros2` 或 `CarlaUnreal.sh --ros2`（订阅端建议 `use_sim_time=true`）。
-- 运行：`python examples/run_followstop.py --rig fullstack --enable-ros2-native [--ego-id hero --ros-invert-tf]`。
-- 主题约定：`/carla/<ego_id>/<sensor_id>/...`，如 `/carla/hero/camera_front/image`、`/carla/hero/lidar_top/points`、`/carla/hero/imu`。事件传感器同样调用 `enable_for_ros()`，实际发布取决于 CARLA 版本，评测仍以 runs/summary/timeseries 为准。
-- 验证：`ros2 topic list | grep /carla/hero`、`ros2 topic info /carla/hero/camera_front/image`、`ros2 topic hz /carla/hero/imu`、`rviz2` 订阅 Image/PointCloud2。
-- 录包示例：`ros2 bag record /carla/hero/camera_front/image /carla/hero/lidar_top/points /carla/hero/imu /carla/hero/gnss`。
-- 迁移提示：旧的 `/sim/ego/...` 话题与 QoS 契约已移除，订阅端需改为 `/carla/...`。
-- RViz 可选启用：`python examples/run_followstop.py --enable-ros2-native --enable-rviz --rig fullstack`（或 `--rig-file configs/rigs/<rig>.yaml`）。默认使用 docker（镜像 `carla_testbed_rviz:humble`，自动 build），根据 rig 自动订阅首个 camera/lidar，生成 `record/rviz/rviz/native_<rig>.rviz`。若无 DISPLAY 或 Wayland 会跳过且不影响主线；可自备本机 RViz。DDS 配置 `record/rviz/config/fastrtps-profile.xml` 提升 docker/多网卡场景稳定性。
-- ROS2 bag 录制（原生话题）：`python examples/run_followstop.py --enable-ros2-native --enable-ros2-bag --rig configs/rigs/<any>.yaml`。输出默认写入 `runs/<run>/ros2_bag/`，topics 自动根据 rig 生成（可用 `--ros2-bag-topics` 指定，`--ros2-bag-extra-topics` 追加，suffix 可调）。自检：`ros2 bag info <bag>`、`ros2 bag play <bag>`，确保 ROS_DOMAIN_ID 与录制时一致。
+### 5.3 预期产物
 
-录制/渲染模式对比（record 模块）：
+跑完后至少会有：
 
-| MODE        | 产生素材                               | 产生 mp4 | 依赖                      | 说明 |
-|-------------|----------------------------------------|----------|---------------------------|------|
-| dual_cam    | 车内/第三人称 png 序列                 | 是       | ffmpeg(可选)              | 原 dual_cam 录制功能 |
-| hud         | 依赖 dual_cam png + timeseries.csv     | 是       | pillow + ffmpeg(可选)     | 基于 dual_cam 叠加 HUD |
-| sensor_demo | recorder.log + sensors raw + frames.jsonl | 是    | OpenCV(+open3d 可选)      | 解释性传感器可视化（LiDAR+Radar+HUD） |
+- `runs/readme_mvp/effective.yaml`
+- `runs/readme_mvp/summary.json`
+- `runs/readme_mvp/timeseries.csv`
+- `runs/readme_mvp/artifacts/doctor.txt`
 
-常见问题（Mode-2）
-- 话题可见但无数据：检查 `runs/<ts>/artifacts/qos_overrides.yaml` 是否被 Autoware 读取；必要时将 QoS 设为 best_effort/volatile。
-- 时间不同步：确保 `use_sim_time=true`（配置文件 io.ros.use_sim_time），并在 Autoware/自建节点都开启。
-- ROS 域不一致：`ROS_DOMAIN_ID` 需与配置 `io.ros.domain_id` 相同；容器通过 env 注入。
-- TF 异常：确认 artifacts 中 frames/static_tf 是否加载；健康检查脚本 `python io/scripts/healthcheck_ros2.py --config runs/<ts>/effective.yaml` 可快速定位。
-- 健康检查失败自动退出：run.py 默认在启动后调用 healthcheck，必要时可加 `--no-healthcheck` 或延长 timeout（修改脚本）。
-- 记录 Autoware 控制话题：在容器内可运行 `python /work/io/ros2/tools/control_logger.py --topic /control/command/control_cmd --out /work/runs/<ts>/artifacts/autoware_control.jsonl`（需先 source ROS2/Autoware 环境），用于确认算法有输出控制指令。
+快速验证：
 
-高级选项（尚未完全模块化）：
-- 传感器硬同步、完整评测/KPI 仍在旧脚本 `code/followstop/test_followstop_policy.py` 与 `step1_record_demo.py` 中，未移植到新框架；如需这些功能，暂用旧脚本运行。
-
-------------------------------------------------------------
-输出与回归
-------------------------------------------------------------
-`runs/followstop_<timestamp>/`
-- `timeseries.csv`：每帧记录 frame,t,step,v_mps,throttle,brake,steer,collision_count,lane_invasion_count,dbg_*（控制器 last_debug）。
-- `summary.json`：汇总 success/fail_reason/collision_count/lane_invasion_count/max_speed_mps/first_failure_step/continued_steps_after_failure/controller 配置/fail_strategy/sensor_frames_saved/dropped。
-- `config/`：sensors_expanded.json、calibration.json、time_sync.json、noise_model.json、data_format.json。
-- `sensors/`：原始数据（camera png；lidar ply/bin；radar bin；imu/gnss json）。
-- `video/`：录制产物（dual_cam/hud/sensor_demo mp4，frames/ 可选保留）。
-- `frames.jsonl`：sensor_demo 索引；`replay/recording.log`：CARLA recorder。
-- `fail_window/`：启用 fail_capture 时的抓帧/HUD。
-
-回归对比：尚未提供自动 baseline gate，可手工比对 summary/timeseries 或视频。
-
-------------------------------------------------------------
-扩展指南（入口与示例）
-------------------------------------------------------------
-新增 Scenario：
-```python
-# carla_testbed/scenarios/my_scene.py
-from carla_testbed.scenarios.base import Scenario, ActorRefs
-class MyScenario(Scenario):
-    def __init__(self, cfg): self.cfg = cfg
-    def build(self, world, carla_map, bp_lib):
-        # spawn 车辆/行人...
-        self.actors = ActorRefs(ego=ego, front=front)
-        return self.actors
-    def destroy(self): ...
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+p = Path("runs/readme_mvp/summary.json")
+print("exists:", p.exists())
+if p.exists():
+    data = json.loads(p.read_text())
+    print("success:", data.get("success"))
+    print("fail_reason:", data.get("fail_reason"))
+    print("max_speed_mps:", data.get("max_speed_mps"))
+PY
 ```
-新增 Sensor 预设：
-- 在 `configs/rigs/` 增加 YAML（参考 `sample_rig.yaml`），或用 `--rig-override` 动态覆盖；加载逻辑在 `config/rig_loader.py::rig_to_specs`。
 
-新增 KPI/Evaluator：
-- 评测逻辑当前嵌在 `runner/harness.py`（碰撞/侵线/停稳）。可在其中添加指标写入 timeseries/summary，或新建 `eval/` 模块并从 Harness 调用。
+## 6. 其他常用运行命令
 
-新增 I/O Adapter：
-- ROS2 已通过 CARLA 原生接口发布；如需其他中间件，可在 `io/` 下新建适配层，自行管理发布/订阅生命周期，并在 Harness 中挂载。
+### 6.1 环境检查
 
-------------------------------------------------------------
-常见问题与排错
-------------------------------------------------------------
-1) **无法连接 CARLA / tick 卡死**：确认服务器运行且端口 2000 空闲；同步模式下所有传感器需 listen 成功，否则 tick_world 可能超时。
-2) **同步模式未恢复**：异常退出后 world 卡顿，可重启 CARLA 或调用 `restore_settings`（示例脚本 finally 已恢复）。
-3) **传感器缺帧/丢帧**：SensorRig 按“取最新”策略，未实现硬同步；缺失会计入 dropped；可降低 sensor_tick 或 ticks。
-4) **LiDAR 投影全 0**：检查 calibration.json 是否与 rig/FOV/分辨率匹配；HUD 会打印 front/inimg；确保未缩放 png。
-5) **Radar 左右颠倒或全静止**：可调整 `radar_az_sign`、`radar_v_deadband`（sensor_demo opts）；raw bin 解析假设 vel/alt/az/depth 或 depth/az/alt/vel。
-6) **ROS2 无 topic**：确认 CARLA 服务器以 `--ros2` 启动且示例传入 `--enable-ros2-native`；查看日志中的传感器 Transform；尝试 `--ros-keep-tf` 或检查 ros_name/role_name 是否与预期一致。
-7) **视频生成失败**：确保 opencv/pillow/ffmpeg 可用；若缺失会提示并跳过；可用 `--record-keep-frames` 检查中间 png。
-8) **性能/RTF 低**：减少 `--ticks`、降低分辨率/点数（`--record-max-lidar-points`）、关闭不必要记录；RenderOffScreen 可提速。
-9) **坐标系混淆**：默认 CARLA 世界/ego（x 前 y 右 z 上）；相机 optical 投影用 x 右 y 下 z 前；TF 由 calibration.json 提供。
-10) **路径/权限问题**：在仓库根运行，确保 `runs/` 可写；不要提交 `__pycache__`。
+```bash
+python -m carla_testbed doctor
+```
 
-------------------------------------------------------------
-Roadmap
-------------------------------------------------------------
-- CyberRT 适配（占位待实现）。
-- 传感器硬同步/插值，完善雷达解析。
-- 评测/KPI 模块化与 baseline 回归门槛。
-- 录制/回放增强：追踪相机、雷达目标聚类。
-- 故障注入与性能监控（RTF/资源占用）。
+输出位置：
+
+- 默认：`runs/doctor_<ts>/artifacts/doctor.txt`
+- 如果由 `run` 调用：写到当前 run 的 `artifacts/doctor.txt`
+
+### 6.2 直接运行 followstop（不经过统一 CLI）
+
+当前直接入口仍然可用：
+
+```bash
+python -m examples.run_followstop --config configs/io/examples/followstop_dummy.yaml
+```
+
+但不推荐作为日常入口，因为：
+
+- `python -m carla_testbed run` 会先做：
+  - `.env` 加载
+  - `doctor`
+  - `effective.yaml`
+  - `run_meta.json`
+  - `runs/latest` 更新
+
+### 6.3 Apollo GT 闭环
+
+当前有可用配置：
+
+```bash
+python -m carla_testbed run \
+  --config configs/io/examples/followstop_apollo_gt.yaml \
+  --run-dir runs/apollo_gt_demo
+```
+
+前提来自当前代码：
+
+- `APOLLO_ROOT` 需要可解析（来自 `algo/adapters/apollo.py`）
+- 若启用 Docker 模式：
+  - `APOLLO_DOCKER_CONTAINER` 需要可解析
+
+详细链路说明见：
+
+- `docs/gt_truth_simulation_pipeline.md`
+
+### 6.4 Autoware 栈
+
+当前有配置文件：
+
+```bash
+python -m carla_testbed run \
+  --config configs/io/examples/followstop_autoware.yaml \
+  --run-dir runs/autoware_demo
+```
+
+前提是当前配置里引用的 compose / map / docker 环境可用。具体依赖由：
+
+- `algo/adapters/autoware.py`
+
+在启动前检查。
+
+## 7. 每次 run 会产出什么
+
+### 7.1 run 根目录
+
+当前每次 `python -m carla_testbed run ...` 会创建：
+
+- `runs/<run_name>/`
+
+并更新：
+
+- `runs/latest`（优先作为最新 run 的 symlink）
+- `runs/LATEST.txt`
+
+### 7.2 顶层文件
+
+当前 run 根目录常见文件：
+
+- `effective.yaml`
+  - 这次运行真正生效的配置
+- `summary.json`
+  - 当前 run 的汇总结果
+- `timeseries.csv`
+  - 当前 run 的逐帧时间序列
+
+注意：
+
+- 当前没有 `results/` 子目录
+- 结果文件直接写在 run 根目录
+
+### 7.3 `artifacts/`
+
+`artifacts/` 是跨模块的调试与回归目录。
+
+当前常见文件包括：
+
+- `doctor.txt`
+  - 环境检查结果
+- `run_meta.json`
+  - 本轮运行的入口信息（config、run_dir、CARLA 启动策略）
+- `sensor_mapping.yaml`
+- `sensor_kit_calibration.yaml`
+- `qos_overrides.yaml`
+- `frames.yaml`
+  - 以上四个来自 `tbio/contract/generate_artifacts.py`
+  - 只有在配置里 `io.generate.*` 开启时会生成
+
+如果 ROS2 / 外部栈相关功能开启，还会出现：
+
+- `autoware_control.jsonl`
+  - 控制话题抓取结果（Apollo / Autoware 也复用这个文件名）
+- `autoware_control.log`
+- `sensor_probe.json`
+- `sensor_probe.log`
+- `monitor.json`
+
+如果使用 Apollo 栈，还会出现：
+
+- `apollo_bridge_effective.yaml`
+- `apollo_adapter_meta.json`
+- `cyber_bridge.out.log`
+- `cyber_bridge.err.log`
+- `cyber_control_bridge.out.log`
+- `cyber_control_bridge.err.log`
+- `cyber_bridge_stats.json`
+- `apollo_planning.INFO`
+- `apollo_control.INFO`
+- `apollo_routing.INFO`
+- `apollo_external_command.INFO`
+
+如果启用 Dreamview 相关功能，还可能出现：
+
+- `dreamview_launch.log`
+- `dreamview_open.log`
+- `dreamview_url.txt`
+- `dreamview_capture.mp4`
+- `dreamview_record.log`
+- `dreamview_record.out.log`
+- `dreamview_record.err.log`
+
+### 7.4 `config/`
+
+当前 `run_followstop` / harness 会生成配置落盘：
+
+- `config/sensors_rig_raw.yaml`
+- `config/sensors_rig_final.yaml`
+- `config/sensors_expanded.json`
+- `config/calibration.json`
+- `config/time_sync.json`
+- `config/noise_model.json`
+- `config/data_format.json`
+- `config/manifest.json`
+
+作用：
+
+- 调试传感器 rig
+- 复现实验
+- 给录像和 GT 发布提供外参
+
+### 7.5 `sensors/`
+
+只有启用传感器采集时才会写。
+
+当前由 `carla_testbed/sensors/` 模块负责，按传感器类型写原始文件。
+
+### 7.6 `video/`
+
+只有启用录制模式时才会写。
+
+当前可由 `RecordManager` 生成：
+
+- `dual_cam`
+- `hud`
+- `sensor_demo`
+
+## 8. 回归测试（当前能直接用的做法）
+
+### 8.1 最基本回归：比较 `summary.json`
+
+同一配置反复运行时，先比较：
+
+- `success`
+- `fail_reason`
+- `collision_count`
+- `lane_invasion_count`
+- `max_speed_mps`
+
+文件：
+
+- `runs/<run>/summary.json`
+
+### 8.2 帧级回归：比较 `timeseries.csv`
+
+当前最直接的帧级回归入口是：
+
+- `runs/<run>/timeseries.csv`
+
+它来自 `carla_testbed/record/timeseries_recorder.py`，首行表头按首次写入的字段确定。
+
+### 8.3 ROS2 topic 自检
+
+当前可用命令：
+
+```bash
+python tbio/scripts/healthcheck_ros2.py --config runs/readme_mvp/effective.yaml
+```
+
+说明：
+
+- `tbio/scripts/healthcheck_ros2.py` 当前明确支持：
+  - 输入配置文件路径（原始 config 或 `effective.yaml`）
+
+### 8.4 smoke test（当前替代方案）
+
+因为 `python -m carla_testbed smoke` 当前不可直接用，现阶段建议用：
+
+```bash
+python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout 5
+```
+
+它会检查：
+
+- `/clock` 是否存在且递增
+- 合约中非 `internal`、非 `optional` 的 topic 是否存在
+
+## 9. 常见问题 / 排错
+
+### 9.1 同步 tick 卡住
+
+当前主循环用的是同步模式（默认 `synchronous_mode=True`）。
+
+排查点：
+
+- 看 `carla_testbed/config/defaults.py`
+- 看 `carla_testbed/sim/tick.py`
+- 看 `timeseries.csv` 是否持续增长
+
+如果 `timeseries.csv` 不增长，通常说明：
+
+- CARLA 未正常推进
+- 或主循环提前退出
+
+### 9.2 CARLA settings 恢复
+
+`examples/run_followstop.py` 在 `finally` 里会执行清理。
+
+正常退出或 `Ctrl+C` 时，当前代码会尝试：
+
+- 停 adapter
+- 停 logger / probe
+- 恢复 CARLA settings
+- 销毁场景 actor
+- 停 CARLA launcher
+
+如果你怀疑 CARLA 卡在异常状态，优先检查：
+
+- 终端是否打印 `Settings restored, exiting.`
+
+### 9.3 传感器缺帧 / dropped
+
+当前可从两处看：
+
+- `summary.json`
+  - `sensor_frames_saved`
+  - `sensor_dropped`
+- `artifacts/monitor.json`
+
+相关实现：
+
+- `carla_testbed/sensors/`
+- `carla_testbed/record/monitor.py`
+
+### 9.4 坐标系不一致
+
+当前 GT 发布器默认会做：
+
+- `y` 取反
+- `pitch` 取反
+- `yaw` 取反
+
+代码：
+
+- `carla_testbed/ros2/gt_publisher.py`
+
+如果你在 ROS2 / Apollo 中看到朝向或左右颠倒，先核对：
+
+- `ros_invert_tf`
+- `calibration.json`
+- `tf / tf_static`
+
+### 9.5 车不动，但控制看起来在发
+
+先看三层：
+
+1. `summary.json`
+   - `fail_reason`
+   - `max_speed_mps`
+2. `artifacts/autoware_control.jsonl`
+   - 控制话题是否真的有消息
+3. Apollo 栈时再看：
+   - `artifacts/cyber_bridge_stats.json`
+   - `artifacts/apollo_control.INFO`
+   - `artifacts/apollo_planning.INFO`
+
+当前代码里，外部栈控制最终都需要落到：
+
+- `/tb/ego/control_cmd`
+
+### 9.6 性能 / RTF
+
+当前代码没有单独的 RTF 统计模块。
+
+也就是说：
+
+- **RTF 统计 Not implemented yet**
+
+当前替代观察方式：
+
+- 看 `timeseries.csv` 是否稳定增长
+- 看 `progress` 日志是否长时间停住
+- 看视频/ROS2/外部栈是否全部同时开启（这些都会明显增加负载）
+
+### 9.7 磁盘占用
+
+当前每轮 run 主要写到：
+
+- `runs/<run>/`
+
+但 Apollo 栈还会额外在宿主机保留自己的原生日志目录（由 Apollo 本身写），本仓库当前只会把本轮新增部分切片复制到 `runs/<run>/artifacts/`。
+
+## 10. 如何扩展
+
+### 10.1 新增场景
+
+入口接口：
+
+- `carla_testbed/scenarios/base.py`
+
+当前约定是实现一个符合 `Scenario` Protocol 的类，至少提供：
+
+- `build(world, carla_map, bp_lib)`
+- `reset()`
+- `destroy()`
+
+返回对象通常是：
+
+- `ActorRefs`
+
+当前参考实现：
+
+- `carla_testbed/scenarios/followstop.py`
+
+### 10.2 新增传感器
+
+分两层：
+
+1. 配置层
+   - `configs/rigs/*.yaml`
+2. 运行层
+   - `carla_testbed/sensors/specs.py`
+   - `carla_testbed/sensors/rigs.py`
+   - `carla_testbed/config/rig_loader.py`
+
+当前实际入口：
+
+- 在 rig YAML 里增加新的 `sensors[]`
+- `rig_loader.rig_to_specs()` 会把 YAML 转成 `SensorSpec`
+
+### 10.3 新增 KPI
+
+当前没有独立 KPI 框架，所以新增 KPI 的实际入口是：
+
+- `carla_testbed/runner/harness.py`
+  - 采样和计算
+- `carla_testbed/record/timeseries_recorder.py`
+  - 如果要逐帧落盘
+- `carla_testbed/record/summary_recorder.py`
+  - 如果要汇总落盘
+
+也就是说：
+
+- 新 KPI 目前是“直接加到 harness 和 recorder”
+- 独立 KPI 插件化 **Not implemented yet**
+
+### 10.4 新增 I/O adapter（ROS2 / CyberRT / 其他）
+
+当前 adapter 接口：
+
+- `algo/adapters/base.py`
+
+必须实现：
+
+- `prepare(profile, run_dir)`
+- `start(profile, run_dir)`
+- `healthcheck(profile, run_dir)`
+- `stop(profile, run_dir)`
+
+注册入口：
+
+- `algo/registry.py`
+
+当前已有参考：
+
+- `algo/adapters/dummy.py`
+- `algo/adapters/apollo.py`
+- `algo/adapters/autoware.py`
+
+如果要做外部 runtime backend，当前参考：
+
+- `tbio/backends/cyberrt.py`
+
+### 10.5 扩展 Apollo GT 链路
+
+当前最直接的入口文件：
+
+- `carla_testbed/ros2/gt_publisher.py`
+- `tools/apollo10_cyber_bridge/bridge.py`
+- `algo/nodes/control/carla_control_bridge/ros2_autoware_to_carla.py`
+
+详细链路说明：
+
+- `docs/gt_truth_simulation_pipeline.md`
+
+## 11. 已知限制（按当前代码）
+
+- `python -m carla_testbed smoke`：**Not implemented yet**
+  - 当前替代：`python io/scripts/smoke_test.py --contract ...`
+- `algo=e2e`：**Not implemented yet**
+  - 当前是 adapter 占位
+- 独立 KPI 模块：**Not implemented yet**
+  - 当前 KPI 直接写在 harness / recorder 里
+- `runs/<run>/results/summary.json`：**Not implemented yet**
+  - 当前实际路径是 `runs/<run>/summary.json`
+- 统一 RTF 指标：**Not implemented yet**
+
+## 12. 相关文档
+
+- Apollo GT 闭环链路：
+  - `docs/gt_truth_simulation_pipeline.md`
+- 运行器补充说明：
+  - `carla_testbed/runner/README.md`
+- 录制模块补充说明：
+  - `carla_testbed/record/README.md`
+- 传感器补充说明：
+  - `carla_testbed/sensors/README.md`
