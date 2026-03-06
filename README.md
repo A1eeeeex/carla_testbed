@@ -19,6 +19,60 @@
 - `tbio/README.md`
 - `tools/apollo10_cyber_bridge/README.md`
 
+## 0. 协作开发与推送（2026-03）
+
+推送到 GitHub 前，建议固定执行这组检查：
+
+```bash
+git status -sb
+git remote -v
+git ls-files | rg '__pycache__|\.pyc$|^dist/.*\.sha256$|^io/tools/.*\.so($|\.)|^runs/'
+```
+
+判定标准：
+
+- `git status -sb` 应该是干净工作区。
+- `git remote -v` 需要有 `origin`（为空时先 `git remote add origin <repo-url>`）。
+- 第三个命令应无输出；这些文件属于本地运行产物或宿主机二进制，不应进入仓库。
+
+本仓库当前已在 `.gitignore` 中屏蔽以下常见误提交项：
+
+- `runs/`
+- `__pycache__/`、`*.pyc`
+- `dist/*.tar.gz`、`dist/*.sha256`
+- `io/tools/*.so`、`io/tools/*.so.*`
+
+如果历史上误提交过这些文件，需要先取消跟踪再提交：
+
+```bash
+git ls-files | rg '__pycache__|\.pyc$' > /tmp/tracked_pyc_list.txt
+git ls-files | rg '^dist/.*\.sha256$' > /tmp/tracked_sha_list.txt
+git ls-files | rg '^io/tools/.*\.so($|\.)' > /tmp/tracked_so_list.txt
+
+xargs -a /tmp/tracked_pyc_list.txt git rm --cached
+xargs -a /tmp/tracked_sha_list.txt git rm --cached
+xargs -a /tmp/tracked_so_list.txt git rm --cached
+
+git commit -m "chore: untrack generated artifacts"
+```
+
+常用推送命令：
+
+```bash
+git push -u origin main
+```
+
+## 0.1 文档索引（按模块）
+
+新同事优先阅读这些 README：
+
+- `docs/README.md`（文档入口）
+- `configs/README.md`、`configs/io/examples/README.md`（配置与 profile）
+- `examples/README.md`（运行入口）
+- `carla_testbed/README.md`（核心 runtime 包）
+- `tbio/README.md`（桥接与运行脚本）
+- `tools/apollo10_cyber_bridge/README.md`（Apollo Cyber bridge）
+
 ## 1. 当前可用能力
 
 ### 统一入口
