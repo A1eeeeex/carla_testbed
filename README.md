@@ -13,6 +13,12 @@
 
 这份 README 只写代码里当前已经存在的命令、路径和行为。
 
+迁移与协作开发建议先看：
+
+- `docs/migration_followstop_playbook.md`
+- `tbio/README.md`
+- `tools/apollo10_cyber_bridge/README.md`
+
 ## 1. 当前可用能力
 
 ### 统一入口
