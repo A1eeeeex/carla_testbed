@@ -14,3 +14,6 @@ configs/local.*.yaml
 examples/carla_examples/
 
 dist/*.tar.gz
+dist/*.sha256
+io/tools/*.so
+io/tools/*.so.*
