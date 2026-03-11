@@ -1,7 +1,7 @@
-# Control Topics Contract
+# 控制话题契约
 
-- Command: `ackermann_msgs/msg/AckermannDriveStamped`
-- Default topic: `/tb/ego/control_cmd`
-- Frames/units: steering_angle in rad, speed in m/s, acceleration in m/s^2.
-- Bridge behaviour: maps steering_angle to CARLA VehicleControl steer after clamping by max_steer_angle; positive steer => left turn.
-- Safety: if no command is received within timeout (default 0.8s), bridge applies brake and zero throttle.
+- 控制消息：`ackermann_msgs/msg/AckermannDriveStamped`
+- 默认话题：`/tb/ego/control_cmd`
+- 坐标/单位：`steering_angle` 单位为 rad，`speed` 单位为 m/s，`acceleration` 单位为 m/s^2
+- 桥接行为：将 `steering_angle` 映射为 CARLA `VehicleControl.steer`，并按 `max_steer_angle` 限幅；正值表示左转
+- 安全机制：若超时未收到控制（默认 `0.8s`），桥会施加刹车并清零油门

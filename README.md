@@ -15,6 +15,7 @@
 
 迁移与协作开发建议先看：
 
+- `docs/dual_machine_workflow.md`
 - `docs/migration_followstop_playbook.md`
 - `tbio/README.md`
 - `tools/apollo10_cyber_bridge/README.md`
@@ -60,6 +61,13 @@ git commit -m "chore: untrack generated artifacts"
 
 ```bash
 git push -u origin main
+```
+
+新机器初始化建议：
+
+```bash
+bash scripts/setup_dev_env.sh
+python3 scripts/check_local_config.py --strict
 ```
 
 ## 0.1 文档索引（按模块）
@@ -281,12 +289,14 @@ CARLA
 1. 显式 override
 2. 环境变量 `CARLA_ROOT`
 3. `configs/local.yaml` 的 `carla.root`
-4. 默认值：`/home/ubuntu/CARLA_0.9.16`
+4. `configs/local.yaml` 的 `paths.carla_root`
+5. `configs/local.*.yaml`（按文件名排序自动叠加）
+6. `CARLA_TESTBED_LOCAL_CONFIGS` 指向的附加配置文件（逗号分隔）
 
 也就是说：
 
-- 当前代码 **仍然保留** 默认 CARLA 路径
-- 如果你不设置，代码会尝试用 `/home/ubuntu/CARLA_0.9.16`
+- 当前代码不再依赖单机硬编码默认路径
+- 如果没有任何本地配置，会给出清晰提示并指出可用配置来源
 
 可用的本地配置模板：
 

@@ -1,14 +1,13 @@
 # configs/io/
 
-Runtime profiles used by `python -m carla_testbed run --config ...`.
+`python -m carla_testbed run --config ...` 使用的运行 profile 目录。
 
-Layout:
+结构：
 
-- `examples/`: ready-to-run profiles (`followstop_*`).
-- `maps/`: map-specific config fragments and assets.
+- `examples/`：可直接运行的 profile（`followstop_*`）。
+- `maps/`：地图相关配置片段与资源。
 
-Design:
+设计原则：
 
-- Profiles are declarative; runtime behavior is implemented in `tbio/` and `algo/`.
-- Keep profile intent explicit: stack type, routing policy, planning toggles, recording mode.
-
+- profile 只描述意图；实际运行逻辑在 `tbio/` 与 `algo/` 中实现。
+- profile 应清晰表达算法栈类型、routing 策略、规划开关、录制模式等关键意图。

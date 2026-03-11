@@ -1,16 +1,15 @@
 # tbio/contract/
 
-Run artifact generation utilities from IO contract definitions.
+基于 IO 契约定义生成运行产物的工具目录。
 
-Main file:
+核心文件：
 
 - `generate_artifacts.py`
 
-Purpose:
+用途：
 
-- Normalize and export run metadata/artifacts for downstream analysis and sharing.
+- 标准化并导出运行元数据/产物，便于后续分析与共享。
 
-Typical usage:
+典型调用方式：
 
-- Called by run pipeline rather than manual direct execution.
-
+- 通常由 run 主流程自动调用，不建议手工直接执行。

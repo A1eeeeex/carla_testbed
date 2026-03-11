@@ -1,17 +1,16 @@
 # tbio/scripts/
 
-Script entrypoints used by the unified CLI.
+统一 CLI 调用的脚本入口目录。
 
-Primary scripts:
+主要脚本：
 
-- `run.py`: main run orchestration for `python -m carla_testbed run`.
-- `start_carla.py`: CARLA launcher helper.
-- `stop.py`: shutdown helper.
-- `healthcheck_ros2.py`: ROS2 health checks.
-- `smoke_test.py`: smoke test flow.
+- `run.py`：`python -m carla_testbed run` 的核心编排逻辑。
+- `start_carla.py`：CARLA 启动辅助。
+- `stop.py`：资源停止辅助。
+- `healthcheck_ros2.py`：ROS2 健康检查。
+- `smoke_test.py`：smoke 流程。
 
-Recommended invocation:
+调用建议：
 
-- Prefer `python -m carla_testbed <subcommand>`.
-- Keep direct script calls for debugging only.
-
+- 优先使用 `python -m carla_testbed <subcommand>`。
+- 直接调用脚本主要用于调试场景。

@@ -1,0 +1,32 @@
+# 项目级默认配置（进入 Git）
+# 目标：定义可覆盖的键位，不写死任何机器路径。
+
+paths:
+  # 每台机器可在 configs/local*.yaml 覆盖这些路径
+  carla_root: ""
+  apollo_root: ""
+  ros_workspace: ""
+  data_root: ""
+  log_root: ""
+  map_root: ""
+  model_root: ""
+  output_root: "runs"
+
+# 兼容已有配置读取路径（如 carla.root / algo.apollo.apollo_root）
+carla:
+  root: ""
+
+algo:
+  apollo:
+    apollo_root: ""
+  autoware:
+    map_root: ""
+    data_path: ""
+
+run:
+  # 默认运行输出目录；可在 local 配置或 --override 中改为绝对路径。
+  output_root: "runs"
+
+logging:
+  # 留空表示使用模块默认行为；可在 local 配置里指定日志根目录。
+  dir: ""

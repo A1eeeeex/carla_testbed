@@ -1,24 +1,24 @@
-# Apollo 10.0 GT Simulation (ROS2 -> CyberRT -> CARLA control)
+# Apollo 10.0 GT 仿真闭环（ROS2 -> CyberRT -> CARLA 控制）
 
-This document describes the minimum closed loop:
+本文说明最小闭环链路：
 
-1. testbed publishes GT on ROS2 (`/carla/<ego>/odom`, objects, tf)
-2. `tools/apollo10_cyber_bridge/bridge.py` converts ROS2 GT to Apollo Cyber channels
-3. Apollo modules output `/apollo/control`
-4. bridge maps ControlCommand to ROS2 control topic (`/tb/ego/control_cmd`)
-5. `ros2_autoware_to_carla.py` applies ROS2 control to CARLA ego
+1. testbed 在 ROS2 发布 GT（`/carla/<ego>/odom`、objects、tf）
+2. `tools/apollo10_cyber_bridge/bridge.py` 将 ROS2 GT 转换为 Apollo Cyber 话题
+3. Apollo 模块输出 `/apollo/control`
+4. bridge 将 `ControlCommand` 映射为 ROS2 控制话题（`/tb/ego/control_cmd`）
+5. `ros2_autoware_to_carla.py` 把 ROS2 控制应用到 CARLA 自车
 
-## 1) Prerequisites
+## 1) 前置条件
 
-- Apollo 10.0 source tree is available and built.
-- `APOLLO_ROOT` points to Apollo 10.0 root.
-- ROS2 Humble and CARLA Python API are available in the same shell.
-- If Apollo runs in Docker (recommended for 10.0 runtime libs), keep the container running with host network and host IPC:
+- 已有可用的 Apollo 10.0 源码并完成构建。
+- `APOLLO_ROOT` 指向 Apollo 10.0 根目录。
+- 同一 shell 下可用 ROS2 Humble 与 CARLA Python API。
+- 若 Apollo 运行在 Docker（10.0 运行库通常建议这样做），容器建议使用 host network + host IPC：
   - `--network host`
   - `--ipc host`
-  - same `ROS_DOMAIN_ID` as host testbed shell
+  - 与宿主 testbed shell 使用相同 `ROS_DOMAIN_ID`
 
-Example:
+示例：
 
 ```bash
 export APOLLO_ROOT=/path/to/apollo
@@ -26,23 +26,23 @@ export APOLLO_DOCKER_CONTAINER=apollo_dev_x86_64
 source /opt/ros/humble/setup.bash
 ```
 
-If needed, also source Apollo cyber env:
+如需手动加载 Apollo Cyber 环境：
 
 ```bash
 source "$APOLLO_ROOT/cyber/setup.bash"
 ```
 
-## 2) Generate Apollo pb2 from local Apollo 10.0 tree
+## 2) 基于本地 Apollo 10.0 生成 pb2
 
 ```bash
 bash tools/apollo10_cyber_bridge/gen_pb2.sh
 ```
 
-Generated files are placed at:
+生成文件路径：
 
 - `tools/apollo10_cyber_bridge/pb/modules/common_msgs/.../*_pb2.py`
 
-## 3) Run followstop with Apollo adapter (GT mode)
+## 3) 运行 followstop + Apollo 适配器（GT 模式）
 
 ```bash
 python -m carla_testbed run \
@@ -52,26 +52,24 @@ python -m carla_testbed run \
   --override algo.apollo.apollo_root="$APOLLO_ROOT"
 ```
 
-Notes:
+说明：
 
-- `algo.apollo.docker.enabled=true` enables Apollo-container orchestration (auto start container/modules).
-- `algo.apollo.docker.bridge_in_container=true` runs `bridge.py` inside container via `docker exec`.
-- Recommended in this repo: keep `algo.apollo.docker.bridge_in_container=false` so bridge runs on host (host has ROS2/rclpy).
-- If ROS2 is on host, set `algo.apollo.ros2_setup_script` (or leave empty to auto-detect `/opt/ros/<ROS_DISTRO>/setup.bash`).
-- Set `algo.apollo.cyber_domain_id` (default `80`) to match Apollo Docker runtime domain.
-- If host bridge and container channels are isolated, set non-loopback `algo.apollo.cyber_ip`.
-- If container is stopped, backend can auto-start it (`algo.apollo.docker.auto_start_container=true`).
-- Backend checks runtime mode at startup and writes `runs/<run>/artifacts/apollo_container_runtime_check.txt`.
-- Backend can auto-install missing runtime libs in container (`algo.apollo.docker.auto_install_runtime_deps=true`),
-  and writes `apollo_mainboard_runtime_check.log` / `apollo_runtime_deps_install.log`.
-- Apollo modules can be auto-started by run script (`algo.apollo.docker.start_modules=true`).
-  If `start_modules_cmd` is empty, backend uses a safer default: link packaged `.so` files from `/opt/apollo/neo/lib/modules` into `/apollo/modules`, then start routing/prediction/planning/control launch files directly.
-- Optional auto-routing request is supported via config:
-  `algo.apollo.routing.enable=true` with `end_ahead_m/resend_sec/max_attempts`.
-- Backend stages `bridge.py`, bridge config, and generated pb2 into container under `/tmp/carla_testbed_apollo_bridge/<run>/`.
-- `carla_control_bridge` still runs on host and listens ROS2 control topic (`/tb/ego/control_cmd`) to apply CARLA control.
+- `algo.apollo.docker.enabled=true` 会启用 Apollo 容器编排（自动拉起容器/模块）。
+- `algo.apollo.docker.bridge_in_container=true` 会通过 `docker exec` 在容器内运行 `bridge.py`。
+- 本仓库推荐：`algo.apollo.docker.bridge_in_container=false`，让 bridge 在宿主运行（宿主有 ROS2/rclpy）。
+- 若 ROS2 在宿主机，设置 `algo.apollo.ros2_setup_script`（留空则自动探测 `/opt/ros/<ROS_DISTRO>/setup.bash`）。
+- 设置 `algo.apollo.cyber_domain_id`（默认 `80`）以匹配 Apollo Docker 运行域。
+- 若宿主 bridge 与容器 Cyber 通道隔离，可设置非回环 `algo.apollo.cyber_ip`。
+- 容器未运行时，后端可自动启动（`algo.apollo.docker.auto_start_container=true`）。
+- 后端启动时会检查运行模式，输出到 `runs/<run>/artifacts/apollo_container_runtime_check.txt`。
+- 后端可自动安装缺失运行库（`algo.apollo.docker.auto_install_runtime_deps=true`），并输出 `apollo_mainboard_runtime_check.log` / `apollo_runtime_deps_install.log`。
+- 可由 run 脚本自动启动 Apollo 模块（`algo.apollo.docker.start_modules=true`）。
+  当 `start_modules_cmd` 为空时，后端使用更稳妥默认流程：链接 `/opt/apollo/neo/lib/modules` 下的 `.so` 到 `/apollo/modules`，再直接启动 routing/prediction/planning/control 的 launch 文件。
+- 支持自动 routing：`algo.apollo.routing.enable=true`，并可配置 `end_ahead_m/resend_sec/max_attempts`。
+- 后端会把 `bridge.py`、bridge 配置、pb2 文件打包到容器：`/tmp/carla_testbed_apollo_bridge/<run>/`。
+- `carla_control_bridge` 仍在宿主运行，订阅 ROS2 控制话题（`/tb/ego/control_cmd`）并回写 CARLA。
 
-Artifacts:
+关键产物：
 
 - `runs/<run>/artifacts/cyber_bridge.out.log`
 - `runs/<run>/artifacts/cyber_bridge.err.log`
@@ -80,27 +78,27 @@ Artifacts:
 - `runs/<run>/artifacts/cyber_control_bridge.out.log`
 - `runs/<run>/artifacts/cyber_control_bridge.err.log`
 
-## 4) Verify channels and recording
+## 4) 检查通道与录制
 
-Open monitor:
+查看 monitor：
 
 ```bash
 bash tools/apollo10_cyber_bridge/monitor.sh
 ```
 
-Expected active channels:
+预期活跃通道：
 
 - `/apollo/localization/pose`
 - `/apollo/canbus/chassis`
 - `/apollo/perception/obstacles`
 
-Record all Cyber channels:
+录制全部 Cyber 通道：
 
 ```bash
 bash tools/apollo10_cyber_bridge/record_all.sh runs/followstop_apollo_gt 60
 ```
 
-## 5) Send routing request (optional helper)
+## 5) 发送 routing 请求（可选）
 
 ```bash
 python tools/apollo10_cyber_bridge/send_routing_request.py \
@@ -109,11 +107,11 @@ python tools/apollo10_cyber_bridge/send_routing_request.py \
   --end "30,0,0"
 ```
 
-## 6) Map and routing notes
+## 6) 地图与 routing 说明
 
-Apollo planning/control requires Apollo HDMap assets under:
+Apollo planning/control 需要 Apollo HDMap 资产，例如：
 
-- `modules/map/data/<map_name>/base_map.bin` / `base_map.xml`
-- routing graph assets for that map
+- `modules/map/data/<map_name>/base_map.bin` 或 `base_map.xml`
+- 该地图对应的 routing graph 产物
 
-For quick validation, use an existing CARLA-to-Apollo map asset repository (for example `Carla_apollo_maps`) and follow that repository's routing graph generation steps before enabling planning/control.
+若只做快速验证，可使用已有的 CARLA -> Apollo 地图资产仓库（例如 `Carla_apollo_maps`），并按其文档先完成 routing graph 生成，再启用 planning/control。

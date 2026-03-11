@@ -1,14 +1,13 @@
 # tools/
 
-Project utility scripts and integration helpers.
+项目工具脚本与集成辅助目录。
 
-Important subdirectories:
+关键内容：
 
-- `apollo10_cyber_bridge/`: ROS2 <-> Apollo CyberRT bridge and support tools.
-- `bootstrap_native.sh`: native host bootstrap helper.
+- `apollo10_cyber_bridge/`：ROS2 <-> Apollo CyberRT 桥及配套工具。
+- `bootstrap_native.sh`：本机环境初始化脚本。
 
-Guideline:
+约定：
 
-- Treat this folder as operational tooling, not business logic.
-- Keep long-running runtime code inside `algo/` or `tbio/`.
-
+- 该目录主要放运维/集成工具，不放核心业务逻辑。
+- 长驻运行逻辑优先放在 `algo/` 或 `tbio/`。

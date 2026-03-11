@@ -18,7 +18,12 @@ from tbio.carla.launch_policy import append_followstop_launch_args, resolve_carl
 from tbio.scripts.healthcheck_ros2 import healthcheck
 from algo.registry import get_adapter
 from algo.adapters.autoware import AutowareAdapter
-from carla_testbed.utils.env import resolve_repo_root, load_local_config
+from carla_testbed.utils.env import (
+    list_local_config_files,
+    load_local_config,
+    load_project_config,
+    resolve_repo_root,
+)
 from carla_testbed.doctor import doctor_main
 from carla_testbed.utils.run_naming import build_run_name, next_available_run_dir, update_latest_pointer
 
@@ -51,14 +56,80 @@ def parse_overrides(pairs):
     return out
 
 
+def _to_path_str(repo_root: Path, raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    p = Path(text).expanduser()
+    if not p.is_absolute():
+        p = (repo_root / p).resolve()
+    return str(p)
+
+
+def _apply_host_path_defaults(cfg: Dict[str, Any], repo_root: Path) -> Dict[str, Any]:
+    paths = (cfg.get("paths", {}) or {}) if isinstance(cfg.get("paths"), dict) else {}
+    if not isinstance(paths, dict):
+        return cfg
+
+    normalized_paths: Dict[str, Any] = dict(paths)
+    for key in [
+        "carla_root",
+        "apollo_root",
+        "ros_workspace",
+        "data_root",
+        "log_root",
+        "map_root",
+        "model_root",
+        "output_root",
+    ]:
+        if key in normalized_paths and str(normalized_paths.get(key, "")).strip():
+            normalized_paths[key] = _to_path_str(repo_root, normalized_paths[key])
+    cfg["paths"] = normalized_paths
+
+    carla_root = str(normalized_paths.get("carla_root") or "").strip()
+    if carla_root:
+        cfg.setdefault("carla", {}).setdefault("root", carla_root)
+        cfg.setdefault("runtime", {}).setdefault("carla", {}).setdefault("root", carla_root)
+
+    apollo_root = str(normalized_paths.get("apollo_root") or "").strip()
+    if apollo_root:
+        cfg.setdefault("algo", {}).setdefault("apollo", {}).setdefault("apollo_root", apollo_root)
+
+    map_root = str(normalized_paths.get("map_root") or "").strip()
+    if map_root:
+        cfg.setdefault("algo", {}).setdefault("autoware", {}).setdefault("map_root", map_root)
+
+    data_root = str(normalized_paths.get("data_root") or "").strip()
+    if data_root:
+        cfg.setdefault("algo", {}).setdefault("autoware", {}).setdefault("data_path", data_root)
+
+    log_root = str(normalized_paths.get("log_root") or "").strip()
+    if log_root:
+        cfg.setdefault("logging", {}).setdefault("dir", log_root)
+
+    output_root = str(normalized_paths.get("output_root") or "").strip()
+    if output_root:
+        cfg.setdefault("run", {}).setdefault("output_root", output_root)
+
+    ros_workspace = str(normalized_paths.get("ros_workspace") or "").strip()
+    if ros_workspace:
+        cfg.setdefault("io", {}).setdefault("ros", {}).setdefault("workspace", ros_workspace)
+
+    return cfg
+
+
 def load_config(cfg_path: Path, overrides: Dict[str, Any]) -> Dict[str, Any]:
     repo_root = resolve_repo_root()
     with open(cfg_path, "r") as f:
         cfg = yaml.safe_load(f) or {}
+    project_cfg = load_project_config(repo_root)
     local_cfg = load_local_config(repo_root)
-    merged = deep_update(DEFAULTS.copy(), cfg)
+    merged = deep_update(DEFAULTS.copy(), project_cfg)
+    merged = deep_update(merged, cfg)
     merged = deep_update(merged, local_cfg)
+    merged = _apply_host_path_defaults(merged, repo_root)
     merged = deep_update(merged, overrides)
+    merged = _apply_host_path_defaults(merged, repo_root)
     return merged
 
 
@@ -73,7 +144,17 @@ def save_effective(cfg: Dict[str, Any], run_dir: Path):
     return eff
 
 
-def _default_run_dir(cfg: Dict[str, Any], ts: str) -> Path:
+def _resolve_runs_root(cfg: Dict[str, Any], repo_root: Path) -> Path:
+    run_cfg = (cfg.get("run", {}) or {}) if isinstance(cfg.get("run"), dict) else {}
+    paths_cfg = (cfg.get("paths", {}) or {}) if isinstance(cfg.get("paths"), dict) else {}
+    raw = str(run_cfg.get("output_root") or paths_cfg.get("output_root") or "runs").strip()
+    root = Path(raw).expanduser()
+    if not root.is_absolute():
+        root = (repo_root / root).resolve()
+    return root
+
+
+def _default_run_dir(cfg: Dict[str, Any], ts: str, repo_root: Path) -> Path:
     run_name = build_run_name(
         ts,
         [
@@ -83,7 +164,8 @@ def _default_run_dir(cfg: Dict[str, Any], ts: str) -> Path:
             (cfg.get("run", {}) or {}).get("map", "map"),
         ],
     )
-    return next_available_run_dir(Path("runs"), run_name)
+    runs_root = _resolve_runs_root(cfg, repo_root)
+    return next_available_run_dir(runs_root, run_name)
 
 
 def _start_followstop_via_unified_entry(
@@ -125,13 +207,14 @@ def main(args=None):
     if args is None:
         args = ap.parse_args()
 
+    repo_root = resolve_repo_root()
     overrides = parse_overrides(args.override)
     cfg = load_config(args.config, overrides)
     if args.log_level:
         cfg.setdefault("logging", {})["level"] = args.log_level
 
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = args.run_dir or _default_run_dir(cfg, ts)
+    run_dir = args.run_dir or _default_run_dir(cfg, ts, repo_root)
     ensure_run_dir(run_dir)
     update_latest_pointer(run_dir)
     artifacts_dir = run_dir / "artifacts"
@@ -142,6 +225,8 @@ def main(args=None):
         "config": str(args.config),
         "timestamp": ts,
         "scenario_driver": cfg.get("scenario", {}).get("driver"),
+        "local_config_files": [str(p) for p in list_local_config_files(repo_root)],
+        "paths": cfg.get("paths", {}),
     }
     if (cfg.get("scenario", {}) or {}).get("driver") == "carla_followstop":
         policy = resolve_carla_launch_policy(cfg)

@@ -1,12 +1,11 @@
 # io/scripts/
 
-Compatibility wrapper scripts.
+兼容层脚本目录。
 
-Current recommendation:
+当前建议：
 
-- Use `python -m carla_testbed run` instead of calling wrappers directly.
+- 优先使用 `python -m carla_testbed run`，而不是直接调用此目录脚本。
 
-Why this folder still exists:
+保留本目录的原因：
 
-- Keeps backward compatibility with older automation that calls `io/scripts/*`.
-
+- 兼容历史自动化流程中对 `io/scripts/*` 的直接调用。

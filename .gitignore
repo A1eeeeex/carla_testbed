@@ -1,19 +1,69 @@
 .venv/
+venv/
+.conda/
+env/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Runtime outputs
 runs/
 logs/
+dumps/
+artifacts/
+output/
+outputs/
+cache/
+.cache/
+tmp/
+temp/
+*.log
+
+# Media and heavy simulation artifacts
 *.mp4
 *.png
+*.jpg
+*.jpeg
+*.gif
 *.pcd
 *.bag
+*.db3
+*.bin
+*.onnx
+*.pt
+*.pth
+
+# Project packaging
 carla_testbed_src.tar.gz
+*.tar
+*.tar.gz
+*.zip
+
+# Host-local configs
 .env
+.env.*
+!.env.example
 configs/local.yaml
 configs/local.*.yaml
+!configs/local.example.yaml
+configs/**/*.local.yaml
 examples/carla_examples/
 
 dist/*.tar.gz
 dist/*.sha256
 io/tools/*.so
 io/tools/*.so.*
+
+# OS metadata
+.DS_Store
+Thumbs.db

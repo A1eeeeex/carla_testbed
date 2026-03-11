@@ -1,1 +1,3 @@
-# planning plugin placeholder
+# 规划插件占位目录
+
+当前目录仅作为规划插件预留位，尚未接入实际实现。

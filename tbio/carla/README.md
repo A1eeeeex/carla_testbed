@@ -1,18 +1,17 @@
 # tbio/carla/
 
-CARLA process startup and launch policy helpers.
+CARLA 进程启动与策略辅助模块。
 
-Main files:
+主要文件：
 
-- `launcher.py`: starts/stops CARLA server process.
-- `launch_policy.py`: startup policy options (reuse existing server or spawn new).
+- `launcher.py`：启动/停止 CARLA 服务进程。
+- `launch_policy.py`：启动策略解析（复用已有服务或新起进程）。
 
-Used by:
+调用位置：
 
-- `tbio/scripts/run.py` before harness start.
+- `tbio/scripts/run.py` 在启动 harness 前会先处理该层逻辑。
 
-Typical migration concern:
+迁移时重点检查：
 
-- Ensure host CARLA binary path is valid (`CARLA_ROOT` or config override).
-- Match launch args with your environment (`--ros2`, offscreen, GPU).
-
+- 宿主机 CARLA 路径是否有效（`CARLA_ROOT` 或配置覆盖）。
+- 启动参数是否匹配当前环境（`--ros2`、offscreen、GPU 相关设置）。

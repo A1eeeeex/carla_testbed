@@ -1,0 +1,33 @@
+# 本机私有配置样板（不要提交为 local.yaml 以外名字）
+#
+# 使用建议：
+# 1) 复制为 configs/local.yaml（单机）；
+# 2) 或复制为 configs/local.<hostname>.yaml（双机/多机）。
+# 运行时加载顺序：
+#   project.yaml -> local.yaml -> local.*.yaml -> --override
+
+paths:
+  # 机器相关路径（示例占位，按你的机器填写）
+  carla_root: "/path/to/CARLA_0.9.16"
+  apollo_root: "/path/to/apollo"
+  ros_workspace: "/path/to/ros2_ws"
+  data_root: "/path/to/data"
+  log_root: "/path/to/logs"
+  map_root: "/path/to/maps"
+  model_root: "/path/to/models"
+  output_root: "/path/to/carla_testbed_runs"
+
+# 兼容旧键位：如果你已有旧配置，只填这一项也可生效
+carla:
+  root: "/path/to/CARLA_0.9.16"
+
+algo:
+  apollo:
+    apollo_root: "/path/to/apollo"
+  autoware:
+    map_root: "/path/to/maps"
+    data_path: "/path/to/data"
+
+run:
+  # 可选：统一输出到本机磁盘（避免仓库目录膨胀）
+  output_root: "/path/to/carla_testbed_runs"

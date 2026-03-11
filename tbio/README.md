@@ -1,24 +1,23 @@
 # tbio/
 
-`tbio` is the runtime integration layer between the simulator harness and external stacks.
+`tbio` 是仿真 harness 与外部算法栈之间的运行时集成层。
 
-What lives here:
+主要内容：
 
-- `backends/`: stack adapters used by `carla_testbed run` (`ros2_native`, `autoware_direct`, `cyberrt`).
-- `carla/`: CARLA process launch policy and lifecycle helpers.
-- `contract/`: run artifact generation from IO contract schema.
-- `ros2/`: ROS2 publishers, probes, topic tools, and control logging.
-- `scripts/`: command entrypoints used by `carla_testbed.cli`.
+- `backends/`：`carla_testbed run` 使用的后端实现（`ros2_native`、`autoware_direct`、`cyberrt`）。
+- `carla/`：CARLA 进程启动策略与生命周期管理。
+- `contract/`：基于 IO 契约生成运行期产物。
+- `ros2/`：ROS2 发布、探针、话题工具与控制日志。
+- `scripts/`：供 `carla_testbed.cli` 调用的脚本入口。
 
-How it fits:
+在主链路中的位置：
 
-1. `carla_testbed/runner` drives world ticks.
-2. A backend from `tbio/backends` is started.
-3. Backend bridges runtime data to the selected stack.
-4. `tbio/contract` and `carla_testbed/record` write artifacts under `runs/<run>/`.
+1. `carla_testbed/runner` 驱动世界 tick。
+2. 启动 `tbio/backends` 中选定后端。
+3. 后端把运行时数据桥接到目标算法栈。
+4. `tbio/contract` 与 `carla_testbed/record` 把产物写入 `runs/<run>/`。
 
-Start here for stack bring-up:
+栈集成建议从以下文件入手：
 
 - `tbio/scripts/run.py`
 - `tbio/backends/base.py`
-

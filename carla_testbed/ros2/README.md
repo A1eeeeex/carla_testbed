@@ -1,18 +1,17 @@
 # carla_testbed/ros2/
 
-ROS2 publishing path for simulator ground-truth data.
+仿真真值数据的 ROS2 发布层。
 
-Purpose:
+用途：
 
-- Publish CARLA truth streams (ego odom, objects, markers, tf) for external stacks.
+- 向外部算法栈发布 CARLA 真值流（自车里程计、障碍物、markers、tf）。
 
-Used by:
+主要被以下链路使用：
 
-- Apollo GT flow via `tools/apollo10_cyber_bridge`.
-- ROS-native observability and debugging flows.
+- 通过 `tools/apollo10_cyber_bridge` 的 Apollo GT 链路。
+- 原生 ROS2 的可观测性与调试链路。
 
-Keep this layer simulator-focused:
+设计边界：
 
-- World-to-message conversion lives here.
-- Stack-specific translation should stay in `tbio/` or `tools/apollo10_cyber_bridge/`.
-
+- 世界坐标到 ROS 消息的转换放在此目录。
+- 算法栈相关的专用转换应放在 `tbio/` 或 `tools/apollo10_cyber_bridge/`。

@@ -30,7 +30,7 @@ python examples/run_followstop.py --controller hybrid_agent_acc --lateral-mode p
 # 配置（Config）
 - CLI：`--controller`、`--lateral-mode`、`--policy-mode`、`--agent-type`、`--takeover-dist`、`--blend-time`。
 - 环境变量：`CARLA_ROOT`（可选，定位 PythonAPI/agents）。
-- 默认 root：`/home/ubuntu/CARLA_0.9.16`。
+- 推荐通过 `.env` / `configs/local*.yaml` 配置 `CARLA_ROOT`，避免机器绑定路径。
 
 # 常见问题与排错
 - 找不到 controllers.py：检查 `carla_testbed/control/legacy_followstop` 是否存在，或环境变量 `CARLA_ROOT` 是否指向旧路径（已不再依赖外部 code/followstop）。

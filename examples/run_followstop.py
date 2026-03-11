@@ -50,7 +50,11 @@ from tbio.scripts.healthcheck_ros2 import healthcheck
 
 
 TESTBED_ROOT = resolve_repo_root()
-DEFAULT_CARLA_ROOT = resolve_carla_root(os.environ.get("CARLA_ROOT"))
+try:
+    DEFAULT_CARLA_ROOT = resolve_carla_root(os.environ.get("CARLA_ROOT"), strict=False)
+except Exception:
+    # Keep CLI importable even when local CARLA path is not configured yet.
+    DEFAULT_CARLA_ROOT = Path("/path/to/CARLA_0.9.16")
 _ACTIVE_CLEANUPS: Dict[str, threading.Thread] = {}
 
 

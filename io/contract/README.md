@@ -1,13 +1,12 @@
 # io/contract/
 
-Legacy IO contract files and profile data.
+遗留 IO 契约与 profile 数据目录。
 
-Current status:
+当前状态：
 
-- New runtime entry uses `carla_testbed` + `tbio`.
-- This folder remains for compatibility and contract references used by legacy tooling.
+- 新的运行入口已切换到 `carla_testbed` + `tbio`。
+- 本目录保留用于兼容旧工具链与历史契约引用。
 
-If starting new work:
+新开发建议：
 
-- Prefer `configs/io/examples/` and `tbio/contract/`.
-
+- 优先使用 `configs/io/examples/` 与 `tbio/contract/`。

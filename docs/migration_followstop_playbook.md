@@ -1,22 +1,22 @@
-# Followstop Migration Playbook
+# Followstop 迁移与恢复手册
 
-This playbook is for moving the repository to a new host and quickly restoring the followstop Apollo flow.
+本文用于把仓库迁移到新主机，并尽快恢复 followstop + Apollo 运行链路。
 
-## 1. Current repository risks to address
+## 1. 当前仓库的迁移风险
 
-- Runtime output directories (`runs/`) are large and host-specific. Do not migrate old run artifacts by default.
-- The repo has both modern and compatibility entrypoints (`carla_testbed` vs `io/scripts`). Use the modern entrypoint to avoid confusion.
-- Apollo runtime depends on external assets not stored in git:
-  - CARLA binary/runtime
-  - Apollo environment/container
-  - Apollo map files (for current profiles)
+- `runs/` 运行目录体积大且强依赖宿主环境，默认不要迁移历史产物。
+- 仓库同时存在新入口与兼容入口（`carla_testbed` 与 `io/scripts`），建议统一用新入口避免混淆。
+- Apollo 运行依赖不在 Git 中：
+  - CARLA 二进制与运行时
+  - Apollo 环境/容器
+  - Apollo 地图资产
 
-## 2. Pre-migration checklist
+## 2. 迁移前检查清单
 
-### 2.1 Code and configuration
+### 2.1 代码与配置
 
-- Ensure branch is clean and pushed.
-- Preserve these directories:
+- 确认分支干净并已 push。
+- 迁移时保留这些目录：
   - `algo/`
   - `carla_testbed/`
   - `tbio/`
@@ -24,70 +24,82 @@ This playbook is for moving the repository to a new host and quickly restoring t
   - `tools/apollo10_cyber_bridge/`
   - `examples/`
   - `docs/`
-- Exclude by default:
+- 默认排除：
   - `runs/`
   - `.venv/`
   - `dist/`
   - `dumps/`
 
-### 2.2 Host dependencies
+### 2.2 主机依赖
 
 - Python `>=3.9`
 - `ffmpeg`
-- `docker` (for Apollo mode used in current setup)
-- CARLA runtime (current team baseline is 0.9.16)
+- `docker`（当前 Apollo 模式依赖）
+- CARLA 运行时（团队当前基线：0.9.16）
 
-### 2.3 External assets and env
+### 2.3 外部资源与本地环境
 
-- Apollo map referenced by profile (`configs/io/examples/followstop_apollo_gt.yaml`):
+- 检查 profile 引用的 Apollo 地图配置（`configs/io/examples/followstop_apollo_gt.yaml`）：
   - `algo.apollo.bridge.map_file`
-- Host local env:
-  - `.env` (not committed)
-  - optional `configs/local.yaml` (not committed)
+- 本地私有配置：
+  - `.env`（不提交）
+  - `configs/local.yaml` / `configs/local.*.yaml`（不提交）
 
-## 3. Migration package preparation
+## 3. 迁移包准备
 
-Use tracked source files only:
+仅打包被 Git 跟踪的源码：
 
 ```bash
 bash tools/prepare_migration_bundle.sh
 ```
 
-The script writes a `.tar.gz` under `dist/` by default.
+默认会在 `dist/` 下生成 `.tar.gz` 包。
 
-Alternative (full git clone) is preferred for collaboration:
+协作场景更推荐直接 clone：
 
 ```bash
 git clone <repo-url>
 ```
 
-## 4. Post-migration setup on new host
+## 4. 新主机迁移后初始化
 
-### 4.1 Bootstrap
+### 4.1 基础初始化
 
 ```bash
 bash tools/bootstrap_native.sh
 python -m carla_testbed doctor
 ```
 
-If using conda workflow, create/activate your team env first, then run the same commands.
+若使用 conda，请先创建并激活环境，再执行上述命令。
 
-### 4.2 Local env file
+### 4.2 本机配置
 
-Create `.env` with host-specific values (example):
+创建 `.env`（示例）：
 
 ```dotenv
 CARLA_ROOT=/path/to/CARLA_0.9.16
 ```
 
-### 4.3 Apollo prerequisites
+从模板生成本地配置：
 
-- Verify Docker can start Apollo runtime used by your profile.
-- Verify map file path in profile exists on new host.
+```bash
+cp configs/local.example.yaml configs/local.yaml
+```
 
-## 5. Fast validation sequence
+校验路径有效性：
 
-### Step A: simulator sanity
+```bash
+python3 scripts/check_local_config.py --strict
+```
+
+### 4.3 Apollo 前置
+
+- 确认 Docker 能启动你当前 profile 依赖的 Apollo 运行环境。
+- 确认 profile 内地图路径在新机器真实存在。
+
+## 5. 快速验收流程
+
+### 步骤 A：仿真基础自检
 
 ```bash
 python -m carla_testbed run \
@@ -95,12 +107,12 @@ python -m carla_testbed run \
   --override run.ticks=120
 ```
 
-Expect:
+预期：
 
-- run completes
-- `runs/<run>/summary.json` exists
+- run 正常结束
+- `runs/<run>/summary.json` 存在
 
-### Step B: followstop Apollo flow
+### 步骤 B：followstop Apollo 闭环
 
 ```bash
 python -m carla_testbed run \
@@ -109,23 +121,23 @@ python -m carla_testbed run \
   --override runtime.carla.start=true
 ```
 
-Expect key artifacts:
+预期关键产物：
 
 - `runs/<run>/artifacts/cyber_bridge_stats.json`
 - `runs/<run>/artifacts/bridge_health_summary.json`
 - `runs/<run>/timeseries.csv`
 
-## 6. Quick acceptance criteria after migration
+## 6. 迁移后的快速验收指标
 
 - `routing_request_count >= 1`
-- `loc_count > 0` and `chassis_count > 0`
-- `video/dual_cam/demo_third_person.mp4` generated if recording is enabled
-- vehicle speed rises above zero in `timeseries.csv`
+- `loc_count > 0` 且 `chassis_count > 0`
+- 若启用录制，存在 `video/dual_cam/demo_third_person.mp4`
+- `timeseries.csv` 中车速能上升到大于 0
 
-## 7. Collaboration baseline after migration
+## 7. 迁移后的协作基线
 
-- Use feature branches; avoid direct edits on shared long-running branch.
-- Keep host-specific values out of git (`.env`, `configs/local.yaml`).
-- Prefer `--override` for experiment changes, then backport stable settings to profile files.
-- Attach `runs/<run>/artifacts/*` in review discussions for behavior regressions.
-
+- 使用功能分支，避免直接在共享长生命周期分支上改动。
+- 保持本机私有配置不入库（`.env`、`configs/local.yaml`）。
+- 实验参数优先用 `--override`，稳定后再回写 profile。
+- 评审回归时附带 `runs/<run>/artifacts/*` 便于定位差异。
+- 双机轮换开发流程见：`docs/dual_machine_workflow.md`。

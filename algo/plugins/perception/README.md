@@ -1,1 +1,3 @@
-# perception plugin placeholder
+# 感知插件占位目录
+
+当前目录仅作为感知插件预留位，尚未接入实际实现。

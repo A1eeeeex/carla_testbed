@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -16,11 +17,11 @@ except Exception:  # python-dotenv is optional
     _load_dotenv = None
 
 
-def _load_env_file(env_path: Path) -> None:
+def _load_env_file(env_path: Path, *, protected_keys: set[str], override_loaded: bool = False) -> None:
     if not env_path.exists():
         return
     if _load_dotenv is not None:
-        _load_dotenv(env_path)
+        _load_dotenv(env_path, override=override_loaded)
         return
     for raw in env_path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
@@ -33,8 +34,13 @@ def _load_env_file(env_path: Path) -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
+        if not key:
+            continue
+        if key in protected_keys:
+            continue
+        if (not override_loaded) and key in os.environ:
+            continue
+        os.environ[key] = value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,10 +66,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None):
-    # load .env if present
+    # load env files with a clear priority:
+    # process env > .env.<hostname> > .env.local > .env
     repo_root = resolve_repo_root()
-    env_path = repo_root / ".env"
-    _load_env_file(env_path)
+    protected = set(os.environ.keys())
+    hostname = socket.gethostname().strip()
+    candidates = [
+        (repo_root / ".env", False),
+        (repo_root / ".env.local", True),
+    ]
+    if hostname:
+        candidates.append((repo_root / f".env.{hostname}", True))
+    for path, override_loaded in candidates:
+        _load_env_file(path, protected_keys=protected, override_loaded=override_loaded)
     argv = argv or sys.argv[1:]
     ap = build_parser()
     args = ap.parse_args(argv)

@@ -1,27 +1,32 @@
-# 模块定位
-存放通用工具（当前为空壳/内聚性低）。若后续添加日志、数学、文件操作等通用函数，可集中于此。
+# carla_testbed/utils
 
-# 目录与关键文件
-- `__init__.py`：占位，目前不导出具体函数。
+通用运行工具模块，当前主要提供两类能力：
 
-# 对外接口（Public API）
-- 当前无公开函数/类。
+- 环境与本机配置加载（`env.py`）
+- run 目录命名与 `runs/latest` 指针维护（`run_naming.py`）
 
-# 数据契约
-- 无输入输出契约。
+## 关键文件
 
-# 用法
-- 暂无；请直接使用其他模块内的工具函数。
+- `env.py`
+  - `resolve_repo_root()`：定位仓库根目录
+  - `load_project_config()`：加载 `configs/project.yaml`
+  - `load_local_config()`：加载 `configs/local.yaml` + `configs/local.*.yaml`
+  - `load_host_config()`：项目默认 + 本地覆盖后的合并结果
+  - `resolve_carla_root()`：按优先级解析 CARLA 根目录
+- `run_naming.py`
+  - 生成规范 run 名称
+  - 处理重名后缀
+  - 更新 `runs/latest` 与 `runs/LATEST.txt`
 
-# 配置
-- 无。
+## 配置优先级（与 `tbio/scripts/run.py` 一致）
 
-# 常见问题与排错
-- 无内容可用：本目录目前为空；请查看其他模块。
-- 循环依赖：添加工具时注意不要引入对上层模块的依赖。
-- 命名冲突：避免与标准库/第三方同名。
-- 不可导入：确保新增文件在 __init__.py 中导出。
-- 规范：仅放置跨模块可复用的纯工具。
+1. `configs/project.yaml`
+2. profile（`--config` 指定）
+3. `configs/local.yaml`
+4. `configs/local.*.yaml`（文件名字典序）
+5. CLI `--override`
 
-# 与其他模块的关系
-- 尚未被引用；未来可作为公共工具库。 
+## 说明
+
+- `configs/local.example.yaml` 仅作为样板，不会被自动加载。
+- 机器私有路径（CARLA/Apollo/maps/output）应放在 local 层，不要写入 profile。
