@@ -1,6 +1,6 @@
 # CARLA -> ROS2 GT -> Apollo 10.0 -> ROS2 -> CARLA 当前链路说明
 
-本文只描述仓库当前代码里已经存在的事实，范围限定为当前 GT 闭环主路径：`configs/io/examples/followstop_apollo_gt.yaml` 对应的 `carla_followstop + Apollo` 运行方式。
+本文只描述仓库当前代码里已经存在的事实，范围限定为当前 GT 闭环主路径：`configs/io/examples/followstop_apollo_gt_baseline.yaml` 对应的 `carla_followstop + Apollo` 运行方式。
 
 本文不包含任何“应该如何改”的推测，只描述代码现在做了什么、数据如何流动、每一步由哪个文件负责。
 
@@ -9,8 +9,18 @@
 当前推荐入口是：
 
 ```bash
-python -m carla_testbed run --config configs/io/examples/followstop_apollo_gt.yaml
+python -m carla_testbed run --config configs/io/examples/followstop_apollo_gt_baseline.yaml
 ```
+
+补充入口：
+
+- 冻结基线说明书：`docs/gt_followstop_apollo_baseline.md`
+- 三档 profile 差异矩阵：`docs/gt_profile_matrix.md`
+- reference line 失效排查：`docs/gt_reference_line_rootcause.md`
+- 基线评估工具：`tools/evaluate_gt_baseline.py`
+- profile 对比工具：`tools/compare_gt_profiles.py`
+- 起点对齐诊断工具：`tools/diagnose_startup_lane_alignment.py`
+- reference line 失败诊断工具：`tools/diagnose_reference_line_failure.py`
 
 这条命令实际走的是下面这条调用链：
 
@@ -39,7 +49,7 @@ python -m carla_testbed run --config configs/io/examples/followstop_apollo_gt.ya
 
 ## 2. 当前这份 Apollo GT 配置实际打开了什么
 
-`configs/io/examples/followstop_apollo_gt.yaml` 当前关键开关如下：
+`configs/io/examples/followstop_apollo_gt_baseline.yaml` 当前关键开关如下：
 
 - `scenario.driver: carla_followstop`
 - `scenario.publish_ros2_native: false`
@@ -58,7 +68,7 @@ python -m carla_testbed run --config configs/io/examples/followstop_apollo_gt.ya
 
 关键文件：
 
-- `configs/io/examples/followstop_apollo_gt.yaml`
+- `configs/io/examples/followstop_apollo_gt_baseline.yaml`
 
 ## 3. 场景里 GT 的原始来源是什么
 
@@ -76,7 +86,7 @@ python -m carla_testbed run --config configs/io/examples/followstop_apollo_gt.ya
 3. 生成前车
 4. 生成自车
 
-当前默认配置（来自 `configs/io/examples/followstop_apollo_gt.yaml`）：
+当前默认配置（来自 `configs/io/examples/followstop_apollo_gt_baseline.yaml`）：
 
 - `ego_idx: 120`
 - `front_idx: 210`
@@ -936,3 +946,53 @@ bridge 对它的处理函数是：
 8. CARLA ego 执行控制，进入下一帧
 
 这就是当前代码里真实存在的整条数据链。
+
+## 18. 基线指标评估入口
+
+运行完成后，可直接对单次 run 目录做基线指标提取：
+
+```bash
+python tools/evaluate_gt_baseline.py --run-dir runs/<run_name>
+```
+
+输出文件：
+
+- `runs/<run_name>/artifacts/gt_baseline_metrics.json`
+- `runs/<run_name>/artifacts/gt_baseline_metrics.md`
+
+## 19. 三档 profile 对比入口（含 startalign）
+
+在 `minimal/relaxed/strict` 三次 run 完成后，可直接做汇总对比：
+
+```bash
+python tools/compare_gt_profiles.py \
+  --run-dir runs/gt_minimal_01 \
+  --run-dir runs/gt_startalign_01 \
+  --run-dir runs/gt_relaxed_01 \
+  --run-dir runs/gt_strict_01
+```
+
+## 20. Reference Line 失败诊断入口
+
+当 run 出现：
+
+- `Reference lane is empty`
+- `Cannot find waypoint ... s < 0`
+- `planning has no trajectory point`
+
+优先执行：
+
+```bash
+python tools/diagnose_startup_lane_alignment.py --run-dir runs/<run_name>
+python tools/diagnose_reference_line_failure.py --run-dir runs/<run_name>
+```
+
+输出：
+
+- `runs/<run>/artifacts/startup_lane_alignment_summary.json`
+- `runs/<run>/artifacts/reference_line_rootcause_summary.json`
+
+输出文件：
+
+- `runs/artifacts/gt_profile_compare.json`
+- `runs/artifacts/gt_profile_compare.md`

@@ -45,9 +45,13 @@ bridge:
     startup_delay_sec: 3.0
     lane_follow_refresh_sec: 1.0
     use_long_goal_after_move: true
+    snap_start_to_lane: true
+    snap_goal_to_lane: true
+    start_nudge_use_lane_heading: true
     scenario_goal_path: scenario_goal.json
     send_action: false
     send_lane_follow: false
+    auto_enable_lane_follow_fallback: true
     disable_lane_follow_on_no_response: true
     send_routing_request: true
     freeze_after_success: true

@@ -1051,12 +1051,20 @@ class ApolloGtBridge:
         )
         self.auto_routing_send_action = bool(auto_routing_cfg.get("send_action", False))
         self.auto_routing_send_lane_follow = bool(auto_routing_cfg.get("send_lane_follow", False))
+        self.auto_routing_auto_enable_lane_follow_fallback = bool(
+            auto_routing_cfg.get("auto_enable_lane_follow_fallback", True)
+        )
         self.auto_routing_disable_lane_follow_on_no_response = bool(
             auto_routing_cfg.get("disable_lane_follow_on_no_response", True)
         )
         # Apollo planning requires an external command (lane_follow/action). If both are off,
         # planning stays in "planning_command not ready"; keep lane_follow on as a safe fallback.
-        if self.auto_routing_enabled and (not self.auto_routing_send_action) and (not self.auto_routing_send_lane_follow):
+        if (
+            self.auto_routing_enabled
+            and self.auto_routing_auto_enable_lane_follow_fallback
+            and (not self.auto_routing_send_action)
+            and (not self.auto_routing_send_lane_follow)
+        ):
             self.auto_routing_send_lane_follow = True
             print(
                 "[bridge][routing][warn] send_action=false and send_lane_follow=false; "
@@ -1067,6 +1075,13 @@ class ApolloGtBridge:
         self.auto_routing_use_seed_heading = bool(auto_routing_cfg.get("use_seed_heading", True))
         self.auto_routing_use_long_goal_after_move = bool(
             auto_routing_cfg.get("use_long_goal_after_move", True)
+        )
+        # These lane-snap helpers rely on geometric nearest-segment heuristics from map text.
+        # Keep them configurable so users can disable them when heading/lane projection is suspicious.
+        self.auto_routing_snap_start_to_lane = bool(auto_routing_cfg.get("snap_start_to_lane", True))
+        self.auto_routing_snap_goal_to_lane = bool(auto_routing_cfg.get("snap_goal_to_lane", True))
+        self.auto_routing_start_nudge_use_lane_heading = bool(
+            auto_routing_cfg.get("start_nudge_use_lane_heading", True)
         )
         self.auto_routing_clamp_to_map_bounds = bool(auto_routing_cfg.get("clamp_to_map_bounds", True))
         self.auto_routing_map_bounds_margin_m = float(auto_routing_cfg.get("map_bounds_margin_m", 2.0))
@@ -1493,6 +1508,10 @@ class ApolloGtBridge:
             "traffic_light_ignore_roll_route_count": self._ignore_roll_route_count,
             "lane_follow_no_response_count": self.stats.get("lane_follow_no_response_count", 0),
             "lane_follow_disabled_on_no_response": self.stats.get("lane_follow_disabled_on_no_response", False),
+            "auto_enable_lane_follow_fallback": self.auto_routing_auto_enable_lane_follow_fallback,
+            "routing_snap_start_to_lane": self.auto_routing_snap_start_to_lane,
+            "routing_snap_goal_to_lane": self.auto_routing_snap_goal_to_lane,
+            "routing_start_nudge_use_lane_heading": self.auto_routing_start_nudge_use_lane_heading,
             "carla_vehicle_detected": bool(self.stats.get("carla_vehicle")),
             "carla_feedback_source": (self.stats.get("last_measured_control", {}) or {}).get("source"),
             "front_obstacle_behavior_mode": front_status.get("mode"),
@@ -3372,7 +3391,10 @@ class ApolloGtBridge:
         z0 = float(pose_info["map_z"])
         yaw0 = float(pose_info["map_yaw"])
         x0, y0 = self._clamp_xy_to_bounds(x0, y0)
-        x0, y0, start_proj = self._snap_xy_to_lane(x0, y0)
+        if self.auto_routing_snap_start_to_lane:
+            x0, y0, start_proj = self._snap_xy_to_lane(x0, y0)
+        else:
+            start_proj = {"available": False, "applied": False, "reason": "disabled_by_config"}
         start_raw_xy = (x0, y0)
         start_nudge_applied = False
         start_nudge_effective = 0.0
@@ -3387,7 +3409,7 @@ class ApolloGtBridge:
             if self.auto_routing_start_nudge_max_m > 0.0:
                 start_nudge_effective = min(self.auto_routing_start_nudge_max_m, start_nudge_effective)
             nudge_heading = yaw0
-            if bool(start_proj.get("available", False)):
+            if self.auto_routing_start_nudge_use_lane_heading and bool(start_proj.get("available", False)):
                 lane_yaw_deg = self._coerce_float(
                     start_proj.get("lane_yaw_deg", math.degrees(yaw0)),
                     math.degrees(yaw0),
@@ -3398,7 +3420,11 @@ class ApolloGtBridge:
             nudged_x = x0 + start_nudge_effective * math.cos(nudge_heading)
             nudged_y = y0 + start_nudge_effective * math.sin(nudge_heading)
             nudged_x, nudged_y = self._clamp_xy_to_bounds(nudged_x, nudged_y)
-            x0, y0, start_proj = self._snap_xy_to_lane(nudged_x, nudged_y)
+            if self.auto_routing_snap_start_to_lane:
+                x0, y0, start_proj = self._snap_xy_to_lane(nudged_x, nudged_y)
+            else:
+                x0, y0 = nudged_x, nudged_y
+                start_proj = {"available": False, "applied": False, "reason": "disabled_by_config"}
             start_nudge_applied = True
             start_nudge_heading_deg = math.degrees(nudge_heading)
         ignore_roll_active = self._ignore_roll_active(x0, y0)
@@ -3444,7 +3470,10 @@ class ApolloGtBridge:
             phase=phase,
             ignore_roll_active=ignore_roll_active,
         )
-        x1, y1, goal_proj = self._snap_xy_to_lane(x1, y1)
+        if self.auto_routing_snap_goal_to_lane:
+            x1, y1, goal_proj = self._snap_xy_to_lane(x1, y1)
+        else:
+            goal_proj = {"available": False, "applied": False, "reason": "disabled_by_config"}
         goal_dist_m = math.hypot(x1 - x0, y1 - y0)
         self.stats["last_routing_goal"] = {
             "start": {"x": x0, "y": y0, "z": z0},
@@ -3823,9 +3852,13 @@ def _default_config() -> Dict[str, Any]:
                 "target_speed_mps": 8.0,
                 "startup_delay_sec": 3.0,
                 "use_long_goal_after_move": True,
+                "snap_start_to_lane": True,
+                "snap_goal_to_lane": True,
+                "start_nudge_use_lane_heading": True,
                 "scenario_goal_path": "scenario_goal.json",
                 "send_action": False,
                 "send_lane_follow": False,
+                "auto_enable_lane_follow_fallback": True,
                 "disable_lane_follow_on_no_response": True,
                 "send_routing_request": True,
             },

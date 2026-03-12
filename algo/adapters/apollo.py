@@ -243,7 +243,15 @@ class ApolloAdapter(Adapter):
             routing_cfg.get("scenario_goal_path") or (artifacts / "scenario_goal.json")
         )
         auto_routing["send_lane_follow"] = bool(auto_routing.get("send_lane_follow", False))
-        for key in ("send_action", "send_lane_follow", "send_routing_request"):
+        for key in (
+            "send_action",
+            "send_lane_follow",
+            "send_routing_request",
+            "auto_enable_lane_follow_fallback",
+            "snap_start_to_lane",
+            "snap_goal_to_lane",
+            "start_nudge_use_lane_heading",
+        ):
             if key in routing_cfg:
                 auto_routing[key] = bool(routing_cfg[key])
         if "disable_lane_follow_on_no_response" in routing_cfg:

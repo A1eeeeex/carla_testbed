@@ -22,6 +22,8 @@ class FollowStopConfig:
     front_max_ahead_m: float = 80.0
     front_max_lateral_m: float = 3.0
     front_max_heading_diff_deg: float = 25.0
+    force_green_traffic_lights: bool = False
+    freeze_traffic_lights: bool = True
 
 
 class FollowStopScenario(Scenario):
@@ -85,8 +87,28 @@ class FollowStopScenario(Scenario):
                 best_idx = idx
         return best_idx
 
+    def _apply_traffic_light_policy(self, world: carla.World) -> None:
+        if not self.cfg.force_green_traffic_lights:
+            return
+        changed = 0
+        for actor in world.get_actors().filter("traffic.traffic_light*"):
+            try:
+                if hasattr(actor, "set_state"):
+                    actor.set_state(carla.TrafficLightState.Green)
+                if self.cfg.freeze_traffic_lights and hasattr(actor, "freeze"):
+                    actor.freeze(True)
+                changed += 1
+            except Exception:
+                continue
+        print(
+            "[followstop] traffic lights override: "
+            f"force_green={self.cfg.force_green_traffic_lights} "
+            f"freeze={self.cfg.freeze_traffic_lights} affected={changed}"
+        )
+
     def build(self, world: carla.World, carla_map: carla.Map, bp_lib: carla.BlueprintLibrary):
         self._clear_dynamic_actors(world)
+        self._apply_traffic_light_policy(world)
         spawns = carla_map.get_spawn_points()
         veh_bp = None
         for pattern in [
@@ -130,9 +152,14 @@ class FollowStopScenario(Scenario):
         except Exception:
             pass
 
-        front, front_idx = spawn_with_retry(world, veh_bp, spawns, preferred_idx=self.cfg.front_idx)
+        requested_front_idx = self.cfg.front_idx
+        front, front_idx = spawn_with_retry(world, veh_bp, spawns, preferred_idx=requested_front_idx)
         if front is None:
             raise RuntimeError("Failed to spawn front vehicle")
+        if front_idx != requested_front_idx:
+            print(
+                f"[followstop][warn] front spawn fallback: requested={requested_front_idx} used={front_idx}"
+            )
         front.set_simulate_physics(True)
         front.apply_control(carla.VehicleControl(throttle=0.0, brake=self.cfg.stop_brake, hand_brake=True))
 
@@ -145,11 +172,18 @@ class FollowStopScenario(Scenario):
         except Exception:
             pass
 
-        ego, ego_idx = spawn_with_retry(world, veh_bp, spawns, preferred_idx=self.cfg.ego_idx)
+        requested_ego_idx = self.cfg.ego_idx
+        ego, ego_idx = spawn_with_retry(world, veh_bp, spawns, preferred_idx=requested_ego_idx)
         if ego is None:
             front.destroy()
             raise RuntimeError("Failed to spawn ego vehicle")
+        if ego_idx != requested_ego_idx:
+            print(
+                f"[followstop][warn] ego spawn fallback: requested={requested_ego_idx} used={ego_idx}"
+            )
         ego.set_simulate_physics(True)
+        # Re-apply once after actor spawn to reduce race with map controller updates.
+        self._apply_traffic_light_policy(world)
 
         self.cfg.front_idx = front_idx
         self.cfg.ego_idx = ego_idx

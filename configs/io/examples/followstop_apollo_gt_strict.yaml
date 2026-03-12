@@ -1,4 +1,10 @@
+# -----------------------------------------------------------------------------
+# GT profile: strict
+# - 在 GT 输入前提下，尽量减少 bridge/control 层“人为修平”
+# - 目标：更接近 Apollo 原生行为，同时保留底线安全保护（watchdog）
+# -----------------------------------------------------------------------------
 run:
+  profile_name: gt_strict
   seed: 1
   ticks: 500
   fail_strategy: log_and_continue
@@ -19,6 +25,7 @@ scenario:
   traffic_lights:
     force_green: false
     freeze: true
+  # [感知层] 原生 ROS2 传感器链路关闭；GT 真值发布开启。
   publish_ros2_native: false
   publish_ros2_gt: true
   gt:
@@ -43,6 +50,7 @@ io:
     canon_ros2: io/contract/canon_ros2.yaml
 algo:
   stack: apollo
+  disable_legacy_harness_control_for_external_stack: true
   apollo:
     # Set via env APOLLO_ROOT or fill absolute path.
     apollo_root: ""
@@ -127,16 +135,17 @@ algo:
       # Raise lane speed limit in Apollo Town01 map to bypass 40kph map cap.
       override_mps: 23.61
       restore_original: false
+    # [规划层] GT baseline 的 planning/task 裁剪与规则开关。
     planning:
-      acc_only_mode: true
-      longitudinal_only_pipeline: true
+      acc_only_mode: false
+      longitudinal_only_pipeline: false
       longitudinal_only_keep_lane_follow_path: true
-      disable_lane_change_path: true
-      disable_lane_borrow_path: true
-      disable_rule_based_stop_decider: true
-      disable_destination_rule: true
-      disable_traffic_light_rule: true
-      lane_follow_only_scenario: true
+      disable_lane_change_path: false
+      disable_lane_borrow_path: false
+      disable_rule_based_stop_decider: false
+      disable_destination_rule: false
+      disable_traffic_light_rule: false
+      lane_follow_only_scenario: false
       enable_reference_line_stitching: true
       default_cruise_speed_mps: 16.67
       speed_bounds_decider_lowest_speed_mps: 23.61
@@ -147,6 +156,7 @@ algo:
       speed_decider_follow_min_time_sec: 0.5
       speed_decider_stop_follow_distance_m: 1.0
       speed_decider_follow_distance_scale: 0.5
+    # [routing 层] 自动 routing 的 startup/long 双阶段行为。
     routing:
       enable: true
       goal_mode: scenario_xy
@@ -173,19 +183,22 @@ algo:
       start_nudge_use_lane_heading: true
       send_action: false
       send_lane_follow: true
+      auto_enable_lane_follow_fallback: false
       disable_lane_follow_on_no_response: false
       send_routing_request: true
-      freeze_after_success: true
+      freeze_after_success: false
       use_seed_heading: true
       use_long_goal_after_move: true
       clamp_to_map_bounds: true
       map_bounds_margin_m: 2.0
+    # [traffic light 策略] strict 不再使用 ignore，改为显式 force_green。
     traffic_light:
-      policy: ignore
+      policy: force_green
       force_ids:
         - TL_signal14
       publish_hz: 10.0
       ignore_roll_enabled: false
+    # [control guard 层] Apollo Control -> CARLA 的映射与保护链。
     control_mapping:
       max_steer_angle: 0.6
       speed_gain: 10.0
@@ -196,10 +209,10 @@ algo:
       steer_scale: 0.25
       brake_deadzone: 0.05
       zero_hold_sec: 0.0
-      startup_throttle_boost_enabled: true
+      startup_throttle_boost_enabled: false
       startup_throttle_boost_add: 0.08
       startup_throttle_boost_cap: 0.45
-      straight_lane_zero_steer_enabled: true
+      straight_lane_zero_steer_enabled: false
       straight_lane_zero_steer_max_speed_mps: 8.0
       straight_lane_zero_steer_max_e_y_m: 0.15
       straight_lane_zero_steer_max_e_psi_deg: 3.0
@@ -208,12 +221,12 @@ algo:
       straight_lane_zero_steer_release_max_e_y_m: 0.6
       straight_lane_zero_steer_release_max_e_psi_deg: 12.0
       straight_lane_zero_steer_release_ignore_e_psi_below_speed_mps: 2.0
-      low_speed_steer_guard_enabled: true
+      low_speed_steer_guard_enabled: false
       low_speed_steer_guard_speed_mps: 0.2
       low_speed_steer_guard_max_abs_steer: 0.05
       low_speed_steer_guard_max_e_y_m: 0.2
       low_speed_steer_guard_max_e_psi_deg: 2.0
-      force_zero_steer_output: true
+      force_zero_steer_output: false
       straight_acc_override:
         enabled: false
         mode: cruise_then_stop
@@ -258,7 +271,7 @@ algo:
       connect_timeout_sec: 6.0
       watchdog_wait_for_first_msg: true
       watchdog_arm_delay_sec: 1.5
-      startup_brake_suppression_enabled: true
+      startup_brake_suppression_enabled: false
       startup_brake_suppression_speed_mps: 1.0
       startup_brake_suppression_max_brake: 0.2
       startup_brake_suppression_min_throttle: 0.3

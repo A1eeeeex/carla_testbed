@@ -535,6 +535,8 @@ def main():
         "front_max_ahead_m": 80.0,
         "front_max_lateral_m": 3.0,
         "front_max_heading_diff_deg": 25.0,
+        "force_green_traffic_lights": False,
+        "freeze_traffic_lights": True,
     }
     for k, v in _defaults.items():
         if not hasattr(args, k):
@@ -584,6 +586,13 @@ def main():
         )
         args.front_max_heading_diff_deg = float(
             scenario_cfg.get("front_max_heading_diff_deg", args.front_max_heading_diff_deg)
+        )
+        tl_cfg = scenario_cfg.get("traffic_lights", {}) or {}
+        args.force_green_traffic_lights = bool(
+            tl_cfg.get("force_green", args.force_green_traffic_lights)
+        )
+        args.freeze_traffic_lights = bool(
+            tl_cfg.get("freeze", args.freeze_traffic_lights)
         )
         io_ros_cfg = ((cfg.get("io", {}) or {}).get("ros", {}) or {})
         args.ros2_namespace = io_ros_cfg.get("namespace", args.ros2_namespace)
@@ -1081,6 +1090,8 @@ def main():
             front_max_ahead_m=float(args.front_max_ahead_m),
             front_max_lateral_m=float(args.front_max_lateral_m),
             front_max_heading_diff_deg=float(args.front_max_heading_diff_deg),
+            force_green_traffic_lights=bool(args.force_green_traffic_lights),
+            freeze_traffic_lights=bool(args.freeze_traffic_lights),
         )
     )
     cleanup_state["scenario"] = scenario
@@ -1230,7 +1241,13 @@ def main():
         if effective_cfg.get("record", {}).get("sensors", {}).get("enable") is False:
             sensor_capture_enabled = False
         external_stack = stack in {"autoware", "apollo"}
-        disable_control = bool(external_stack)
+        # External stacks (Apollo/Autoware) should usually own control output.
+        # Keep this behavior explicit and configurable for ablation experiments.
+        disable_control_cfg = ((effective_cfg.get("algo", {}) or {}).get(
+            "disable_legacy_harness_control_for_external_stack"
+        ))
+        disable_control_cfg_effective = bool(external_stack) if disable_control_cfg is None else bool(disable_control_cfg)
+        disable_control = disable_control_cfg_effective
         ros2_mode_active = bool(args.enable_ros2_native or args.enable_ros2_gt or (external_stack and adapter_started))
         tick_callbacks = []
         if stack == "apollo" and adapter_started and adapter is not None:
@@ -1460,6 +1477,23 @@ def main():
                 },
             },
         }
+        profile_config_path = str(args.config.resolve()) if args.config else ""
+        profile_name = str(
+            ((effective_cfg.get("run", {}) or {}).get("profile_name") or "").strip()
+            or (Path(profile_config_path).stem if profile_config_path else "unknown")
+        )
+        profile_info = {
+            "profile_name": profile_name,
+            "profile_config_path": profile_config_path,
+            "effective_yaml_path": str(eff_path.resolve()),
+            "disable_legacy_harness_control_for_external_stack": disable_control_cfg_effective,
+            "disable_legacy_harness_control_for_external_stack_raw": disable_control_cfg,
+            "harness_disable_control_effective": bool(disable_control),
+            "external_stack": bool(external_stack),
+        }
+        summary_data["profile_name"] = profile_name
+        summary_data["profile_config_path"] = profile_config_path
+        summary_data["profile"] = profile_info
         summary_data["adapter_started"] = adapter_started
         if adapter_fail_reason:
             summary_data["adapter_fail_reason"] = adapter_fail_reason
@@ -1467,6 +1501,7 @@ def main():
         summary_data["success"] = acceptance["success"]
         summary_data["fail_reason"] = acceptance["fail_reason"]
         summary_path.write_text(json.dumps(summary_data, indent=2))
+        (out_run_dir / "artifacts" / "profile_info.json").write_text(json.dumps(profile_info, indent=2))
         print(f"[acceptance] success={acceptance['success']} fail_reason={acceptance['fail_reason']}")
     finally:
         _cleanup_once("finally")

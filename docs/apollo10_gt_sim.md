@@ -8,6 +8,13 @@
 4. bridge 将 `ControlCommand` 映射为 ROS2 控制话题（`/tb/ego/control_cmd`）
 5. `ros2_autoware_to_carla.py` 把 ROS2 控制应用到 CARLA 自车
 
+Profile 参考：
+
+- 冻结基线说明：`docs/gt_followstop_apollo_baseline.md`
+- 三档差异矩阵：`docs/gt_profile_matrix.md`
+- 起点投影修复档：`configs/io/examples/followstop_apollo_gt_startalign.yaml`
+- reference line 失效排查：`docs/gt_reference_line_rootcause.md`
+
 ## 1) 前置条件
 
 - 已有可用的 Apollo 10.0 源码并完成构建。
@@ -46,8 +53,8 @@ bash tools/apollo10_cyber_bridge/gen_pb2.sh
 
 ```bash
 python -m carla_testbed run \
-  --config configs/io/examples/followstop_apollo_gt.yaml \
-  --run-dir runs/followstop_apollo_gt \
+  --config configs/io/examples/followstop_apollo_gt_baseline.yaml \
+  --run-dir runs/followstop_apollo_gt_baseline \
   --override algo.apollo.docker.container="$APOLLO_DOCKER_CONTAINER" \
   --override algo.apollo.apollo_root="$APOLLO_ROOT"
 ```
@@ -68,6 +75,7 @@ python -m carla_testbed run \
 - 支持自动 routing：`algo.apollo.routing.enable=true`，并可配置 `end_ahead_m/resend_sec/max_attempts`。
 - 后端会把 `bridge.py`、bridge 配置、pb2 文件打包到容器：`/tmp/carla_testbed_apollo_bridge/<run>/`。
 - `carla_control_bridge` 仍在宿主运行，订阅 ROS2 控制话题（`/tb/ego/control_cmd`）并回写 CARLA。
+- 冻结基线说明文档：`docs/gt_followstop_apollo_baseline.md`。
 
 关键产物：
 
@@ -95,7 +103,7 @@ bash tools/apollo10_cyber_bridge/monitor.sh
 录制全部 Cyber 通道：
 
 ```bash
-bash tools/apollo10_cyber_bridge/record_all.sh runs/followstop_apollo_gt 60
+bash tools/apollo10_cyber_bridge/record_all.sh runs/followstop_apollo_gt_baseline 60
 ```
 
 ## 5) 发送 routing 请求（可选）
@@ -115,3 +123,60 @@ Apollo planning/control 需要 Apollo HDMap 资产，例如：
 - 该地图对应的 routing graph 产物
 
 若只做快速验证，可使用已有的 CARLA -> Apollo 地图资产仓库（例如 `Carla_apollo_maps`），并按其文档先完成 routing graph 生成，再启用 planning/control。
+
+## 7) 基线评估
+
+运行结束后可用基线评估工具生成统一指标：
+
+```bash
+python tools/evaluate_gt_baseline.py --run-dir runs/followstop_apollo_gt_baseline
+```
+
+输出：
+
+- `runs/<run>/artifacts/gt_baseline_metrics.json`
+- `runs/<run>/artifacts/gt_baseline_metrics.md`
+
+## 8) 三档 Profile Ablation（minimal / relaxed / strict）
+
+推荐顺序：
+
+1. `configs/io/examples/followstop_apollo_gt_minimal.yaml`
+2. `configs/io/examples/followstop_apollo_gt_startalign.yaml`
+3. `configs/io/examples/followstop_apollo_gt_relaxed.yaml`
+4. `configs/io/examples/followstop_apollo_gt_strict.yaml`
+
+示例：
+
+```bash
+python -m carla_testbed run --config configs/io/examples/followstop_apollo_gt_minimal.yaml --run-dir runs/gt_minimal_01
+python -m carla_testbed run --config configs/io/examples/followstop_apollo_gt_startalign.yaml --run-dir runs/gt_startalign_01
+python -m carla_testbed run --config configs/io/examples/followstop_apollo_gt_relaxed.yaml --run-dir runs/gt_relaxed_01
+python -m carla_testbed run --config configs/io/examples/followstop_apollo_gt_strict.yaml --run-dir runs/gt_strict_01
+
+python tools/compare_gt_profiles.py \
+  --run-dir runs/gt_minimal_01 \
+  --run-dir runs/gt_startalign_01 \
+  --run-dir runs/gt_relaxed_01 \
+  --run-dir runs/gt_strict_01
+```
+
+输出：
+
+- `runs/<run>/artifacts/gt_baseline_metrics.json`
+- `runs/artifacts/gt_profile_compare.json`
+- `runs/artifacts/gt_profile_compare.md`
+
+## 9) Reference Line 失败快速诊断
+
+当出现 `Reference lane is empty` / `Cannot find waypoint ... s<0` 时，优先跑：
+
+```bash
+python tools/diagnose_startup_lane_alignment.py --run-dir runs/<run_name>
+python tools/diagnose_reference_line_failure.py --run-dir runs/<run_name>
+```
+
+输出：
+
+- `runs/<run>/artifacts/startup_lane_alignment_summary.json`
+- `runs/<run>/artifacts/reference_line_rootcause_summary.json`

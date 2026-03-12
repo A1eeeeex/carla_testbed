@@ -1,4 +1,10 @@
+# -----------------------------------------------------------------------------
+# GT profile: startalign
+# - 在 minimal 基础上，仅针对 routing/lane projection/reference-point 失败做最小修复
+# - 用于排查 `Reference lane is empty` / `Cannot find waypoint ... s<0` 问题
+# -----------------------------------------------------------------------------
 run:
+  profile_name: gt_startalign
   seed: 1
   ticks: 500
   fail_strategy: log_and_continue
@@ -19,6 +25,7 @@ scenario:
   traffic_lights:
     force_green: false
     freeze: true
+  # [感知层] 原生 ROS2 传感器链路关闭；GT 真值发布开启。
   publish_ros2_native: false
   publish_ros2_gt: true
   gt:
@@ -43,6 +50,8 @@ io:
     canon_ros2: io/contract/canon_ros2.yaml
 algo:
   stack: apollo
+  # 外部栈时默认禁用 harness 内置 legacy 控制，避免双控制器抢占。
+  disable_legacy_harness_control_for_external_stack: true
   apollo:
     # Set via env APOLLO_ROOT or fill absolute path.
     apollo_root: ""
@@ -108,7 +117,8 @@ algo:
       publish_rate_hz: 20.0
       max_obstacles: 64
       radius_m: 120.0
-      localization_back_offset_m: 1.4375
+      # __04 复验中出现 s<0（-0.026）时，先用 0.0 规避 reference point 偏置风险。
+      localization_back_offset_m: 0.0
       map_file: /home/ubuntu/Carla_apollo_maps/carla_town01/base_map.txt
       debug_dump_control_raw: true
       front_obstacle_behavior:
@@ -127,6 +137,7 @@ algo:
       # Raise lane speed limit in Apollo Town01 map to bypass 40kph map cap.
       override_mps: 23.61
       restore_original: false
+    # [规划层] GT baseline 的 planning/task 裁剪与规则开关。
     planning:
       acc_only_mode: true
       longitudinal_only_pipeline: true
@@ -147,6 +158,7 @@ algo:
       speed_decider_follow_min_time_sec: 0.5
       speed_decider_stop_follow_distance_m: 1.0
       speed_decider_follow_distance_scale: 0.5
+    # [routing 层] 自动 routing 的 startup/long 双阶段行为。
     routing:
       enable: true
       goal_mode: scenario_xy
@@ -155,10 +167,11 @@ algo:
       startup_end_ahead_m: 6.0
       startup_speed_threshold_mps: 0.5
       startup_hold_sec: 3.0
-      start_nudge_m: 2.0
-      start_nudge_retry_step_m: 1.5
-      start_nudge_min_safe_m: 1.5
-      start_nudge_max_m: 6.0
+      # 避免 startup route 起点被前推到 ego 前方，导致定位点落在 route 起点之前（s<0）。
+      start_nudge_m: 0.0
+      start_nudge_retry_step_m: 0.0
+      start_nudge_min_safe_m: 0.0
+      start_nudge_max_m: 0.0
       scenario_goal_ahead_m: 300.0
       scenario_goal_force_beyond_front: true
       scenario_goal_min_front_margin_m: 40.0
@@ -167,12 +180,14 @@ algo:
       target_speed_mps: 16.67
       startup_delay_sec: 8.0
       lane_follow_refresh_sec: 3.0
-      # 若 map 文本几何投影误配导致 lane heading 异常，可临时关闭 lane snap/nudge heading。
+      # 起点投影相关开关：保留开启，优先让 routing 起点落在 lane center。
       snap_start_to_lane: true
       snap_goal_to_lane: true
       start_nudge_use_lane_heading: true
       send_action: false
       send_lane_follow: true
+      # 当 send_action/send_lane_follow 都关闭时，是否自动兜底开启 lane_follow。
+      auto_enable_lane_follow_fallback: true
       disable_lane_follow_on_no_response: false
       send_routing_request: true
       freeze_after_success: true
@@ -180,12 +195,14 @@ algo:
       use_long_goal_after_move: true
       clamp_to_map_bounds: true
       map_bounds_margin_m: 2.0
+    # [traffic light 策略] 当前基线使用 ignore。
     traffic_light:
       policy: ignore
       force_ids:
         - TL_signal14
       publish_hz: 10.0
       ignore_roll_enabled: false
+    # [control guard 层] Apollo Control -> CARLA 的映射与保护链。
     control_mapping:
       max_steer_angle: 0.6
       speed_gain: 10.0

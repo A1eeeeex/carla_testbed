@@ -15,6 +15,17 @@
 - [sim](../carla_testbed/sim/README.md)
 - [utils](../carla_testbed/utils/README.md)
 
+## GT/Apollo 文档入口
+- [Apollo GT 闭环运行说明](./apollo10_gt_sim.md)
+- [GT 真值链路事实说明](./gt_truth_simulation_pipeline.md)
+- [GT Follow-Stop 冻结基线说明（v1）](./gt_followstop_apollo_baseline.md)
+- [GT Profile 差异矩阵（minimal/relaxed/strict）](./gt_profile_matrix.md)
+- [GT Reference Line 失效排查](./gt_reference_line_rootcause.md)
+- 基线评估工具：`tools/evaluate_gt_baseline.py`
+- Profile 对比工具：`tools/compare_gt_profiles.py`
+- 起点对齐诊断工具：`tools/diagnose_startup_lane_alignment.py`
+- reference line 失败诊断工具：`tools/diagnose_reference_line_failure.py`
+
 ## 模块依赖与数据流（ASCII）
 ```
 scenario -> sim(world/tick) -> sensors(capture) -> runner(config/record) -> record(mp4/csv/json)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 from typing import Iterable, Optional, Tuple
 
 import carla
@@ -14,7 +13,7 @@ def spawn_with_retry(
     max_tries: int = 5,
 ) -> Tuple[Optional[carla.Actor], int]:
     """
-    Try spawning with a preferred index first; fall back to random choices.
+    Try spawning with a preferred index first; then probe nearby spawn points.
     Returns (actor, used_index_or_-1_on_failure).
     """
     points = list(spawn_points)
@@ -23,15 +22,23 @@ def spawn_with_retry(
 
     # clamp preferred index into valid range
     preferred_idx = max(0, min(preferred_idx, len(points) - 1))
-    indices = list(range(len(points)))
-
-    tried = 0
-    indices.insert(0, indices.pop(preferred_idx))
-
-    for idx in indices:
-        if tried >= max_tries:
+    total = len(points)
+    # Try around preferred index first (preferred,+1,-1,+2,-2,...) to keep
+    # fallback behavior spatially close to scenario intent.
+    indices: list[int] = [preferred_idx]
+    for step in range(1, total):
+        right = preferred_idx + step
+        left = preferred_idx - step
+        if right < total:
+            indices.append(right)
+        if left >= 0:
+            indices.append(left)
+        if len(indices) >= total:
             break
-        tried += 1
+
+    for tried, idx in enumerate(indices):
+        if max_tries > 0 and tried >= max_tries:
+            break
         try:
             actor = world.spawn_actor(blueprint, points[idx])
             if actor is not None:
