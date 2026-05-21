@@ -1,0 +1,76 @@
+{
+  "map": "Town01",
+  "asset_type": "random_regression_pool",
+  "asset_version": 1,
+  "pool_name": "random_regression_pool_20260416",
+  "selection_seed": 20260416,
+  "selection_rule": "exclude canonical five; sample 2 lane_keep + 2 junction_traverse + 2 curve_lane_follow from route corpus recommended_uses",
+  "routes": [
+    {
+      "comparison_key": "lane183",
+      "display_name": "lane_keep 183",
+      "capability_profile": "lane_keep",
+      "candidate_subset": "lane_keep_candidate",
+      "route_id": "town01_rh_spawn183_goal044",
+      "role": "random_lane_keep_probe",
+      "geometry_class": "straight_lane_keep",
+      "direction_class": "right_hand_forward",
+      "expectation_level": "regression_probe"
+    },
+    {
+      "comparison_key": "lane213_alt",
+      "display_name": "lane_keep 213 alt",
+      "capability_profile": "lane_keep",
+      "candidate_subset": "lane_keep_candidate",
+      "route_id": "town01_rh_spawn213_goal048",
+      "role": "random_lane_keep_probe",
+      "geometry_class": "straight_lane_keep",
+      "direction_class": "right_hand_forward",
+      "expectation_level": "regression_probe"
+    },
+    {
+      "comparison_key": "junction144",
+      "display_name": "junction 144",
+      "capability_profile": "junction_traverse",
+      "candidate_subset": "junction_traverse_candidate",
+      "route_id": "town01_rh_spawn144_goal082",
+      "role": "random_junction_probe",
+      "geometry_class": "junction_traverse",
+      "direction_class": "right_turn_entry",
+      "expectation_level": "regression_probe"
+    },
+    {
+      "comparison_key": "junction178",
+      "display_name": "junction 178",
+      "capability_profile": "junction_traverse",
+      "candidate_subset": "junction_traverse_candidate",
+      "route_id": "town01_rh_spawn178_goal077",
+      "role": "random_junction_probe",
+      "geometry_class": "junction_traverse",
+      "direction_class": "right_turn_entry",
+      "expectation_level": "regression_probe"
+    },
+    {
+      "comparison_key": "curve176",
+      "display_name": "curve 176",
+      "capability_profile": "curve_lane_follow",
+      "candidate_subset": "curve_lane_follow_candidate",
+      "route_id": "town01_rh_spawn176_goal061",
+      "role": "random_curve_probe",
+      "geometry_class": "curve_lane_follow",
+      "direction_class": "right_hand_forward",
+      "expectation_level": "regression_probe"
+    },
+    {
+      "comparison_key": "curve177",
+      "display_name": "curve 177",
+      "capability_profile": "curve_lane_follow",
+      "candidate_subset": "curve_lane_follow_candidate",
+      "route_id": "town01_rh_spawn177_goal052",
+      "role": "random_curve_probe",
+      "geometry_class": "curve_lane_follow",
+      "direction_class": "right_hand_forward",
+      "expectation_level": "regression_probe"
+    }
+  ]
+}

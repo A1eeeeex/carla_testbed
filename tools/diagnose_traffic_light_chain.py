@@ -67,15 +67,18 @@ def diagnose(run_dir: Path) -> Dict[str, Any]:
     publish_count = int(stats_tl.get("publish_count", bridge_health.get("traffic_light_force_green_publish_count", 0)) or 0)
     proto_error = str(stats_tl.get("proto_error", "") or "")
     runtime_force_ids = [str(x) for x in (stats_tl.get("force_ids") or cfg_force_ids)]
+    runtime_stream_active = bool(
+        runtime_policy in {"force_green", "carla_actual"} and writer_enabled and publish_count > 0
+    )
 
     causes: List[Dict[str, Any]] = []
-    if cfg_policy != "force_green":
+    if cfg_policy not in {"force_green", "carla_actual"}:
         causes.append(
             {
                 "rank": 1,
                 "severity": "high",
-                "code": "config_not_force_green",
-                "message": "配置层 traffic_light.policy 不是 force_green，桥接层不会走绿灯发布分支。",
+                "code": "config_not_enabled_for_runtime_tl_feed",
+                "message": "配置层 traffic_light.policy 既不是 force_green 也不是 carla_actual，桥接层不会走交通灯发布分支。",
                 "evidence": {"configured_policy": cfg_policy or "<empty>"},
             }
         )
@@ -89,8 +92,8 @@ def diagnose(run_dir: Path) -> Dict[str, Any]:
                 "evidence": {"disable_traffic_light_rule": True},
             }
         )
-    if cfg_policy == "force_green" and runtime_policy == "ignore":
-        msg = "运行时 traffic_light.policy 从 force_green 退化到 ignore。"
+    if cfg_policy in {"force_green", "carla_actual"} and runtime_policy == "ignore":
+        msg = f"运行时 traffic_light.policy 从 {cfg_policy} 退化到 ignore。"
         if proto_error:
             msg += "存在 proto_error，疑似 traffic_light protobuf 不可用。"
         causes.append(
@@ -102,17 +105,23 @@ def diagnose(run_dir: Path) -> Dict[str, Any]:
                 "evidence": {"runtime_policy": runtime_policy, "proto_error": proto_error},
             }
         )
-    if runtime_policy == "force_green" and publish_count <= 0:
+    if runtime_policy in {"force_green", "carla_actual"} and publish_count <= 0:
         causes.append(
             {
                 "rank": 4,
                 "severity": "medium",
-                "code": "no_force_green_publish",
-                "message": "运行时虽然是 force_green，但 publish_count=0，未形成有效绿灯流。",
-                "evidence": {"writer_enabled": writer_enabled, "publish_count": publish_count},
+                "code": "no_runtime_traffic_light_publish",
+                "message": (
+                    "运行时虽然进入交通灯发布分支，但 publish_count=0，未形成有效交通灯流。"
+                ),
+                "evidence": {
+                    "runtime_policy": runtime_policy,
+                    "writer_enabled": writer_enabled,
+                    "publish_count": publish_count,
+                },
             }
         )
-    if runtime_policy in {"force_green", "ignore"} and len(runtime_force_ids) <= 1:
+    if runtime_policy == "force_green" and len(runtime_force_ids) <= 1:
         causes.append(
             {
                 "rank": 5,
@@ -133,12 +142,20 @@ def diagnose(run_dir: Path) -> Dict[str, Any]:
             }
         )
 
-    if cfg_policy != "force_green":
-        conclusion = "当前 run 未启用 force_green（配置即 ignore），所以“始终发绿灯”根本没有进入执行分支。"
+    if cfg_policy not in {"force_green", "carla_actual"}:
+        conclusion = "当前 run 没有启用交通灯 runtime feed；配置层既不是 force_green，也不是 carla_actual。"
     elif runtime_policy == "ignore":
-        conclusion = "配置要求 force_green，但运行时退化为 ignore（通常与 proto 不可用或分支降级有关）。"
+        conclusion = (
+            f"配置要求 {cfg_policy}，但运行时退化为 ignore（通常与 protobuf 不可用或桥接分支降级有关）。"
+        )
     elif publish_count <= 0:
-        conclusion = "配置和运行时都在 force_green 分支，但没有实际发布流，绿灯链路未生效。"
+        conclusion = (
+            f"配置和运行时都在 {runtime_policy} 分支，但没有形成实际发布流，交通灯链路仍未生效。"
+        )
+    elif runtime_policy == "carla_actual":
+        conclusion = (
+            "carla_actual 运行时流已经存在，交通灯输入来自 CARLA 真值；后续应重点验证 signal-id 映射覆盖率和规划层是否真的消费该流。"
+        )
     else:
         conclusion = "force_green 在运行，但它只对 force_ids 生效，不能代表全局交通灯真值同步。"
 
@@ -156,12 +173,16 @@ def diagnose(run_dir: Path) -> Dict[str, Any]:
             "runtime_force_ids": runtime_force_ids,
             "debug_timeseries_policy_values": debug_policy_values,
             "force_green_branch_entered": runtime_policy == "force_green",
-            "force_green_stream_active": runtime_policy == "force_green" and writer_enabled and publish_count > 0,
+            "force_green_stream_active": runtime_policy == "force_green" and runtime_stream_active,
+            "carla_actual_branch_entered": runtime_policy == "carla_actual",
+            "carla_actual_stream_active": runtime_policy == "carla_actual" and runtime_stream_active,
+            "runtime_stream_active": runtime_stream_active,
         },
         "root_causes": causes,
         "conclusion": conclusion,
         "notes": [
             "force_green 为固定 signal id 注入，不等同于 CARLA 世界交通灯状态同步。",
+            "carla_actual 依赖 CARLA actor 到 Apollo signal id 的映射，publish_count>0 只代表桥接流存在，不代表映射完整。",
             "若 planning 侧 traffic light rule 被关闭，交通灯输入对规划行为影响会弱化或无效。",
         ],
     }
@@ -181,6 +202,8 @@ def _render_markdown(payload: Dict[str, Any]) -> str:
     lines.append(f"- runtime_publish_count: `{tl.get('runtime_publish_count')}`")
     lines.append(f"- configured_disable_traffic_light_rule: `{tl.get('configured_disable_traffic_light_rule')}`")
     lines.append(f"- debug_policy_values: `{tl.get('debug_timeseries_policy_values')}`")
+    lines.append(f"- runtime_stream_active: `{tl.get('runtime_stream_active')}`")
+    lines.append(f"- carla_actual_stream_active: `{tl.get('carla_actual_stream_active')}`")
     lines.append("")
     lines.append("## Conclusion")
     lines.append("")

@@ -4,6 +4,7 @@ import ctypes
 import json
 import math
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -107,6 +108,11 @@ class GroundTruthRos2Publisher:
             "namespace": self.namespace,
             "ego_id": self.ego_id,
             "topic_prefix": self.topic_prefix,
+            "reference": {
+                "pose_source": "ego_transform_origin",
+                "localization_reference_mode": "vehicle_origin",
+                "apollo_control_state_reference": "rear_axle_input_com_internal",
+            },
             "counts": {
                 "odom": 0,
                 "tf": 0,
@@ -146,6 +152,7 @@ class GroundTruthRos2Publisher:
         self._rclpy = None
         self._node = None
         self._clock = None
+        self._preloaded_shared_libs: List[Any] = []
         self._Parameter = None
         self._QoSProfile = None
         self._ReliabilityPolicy = None
@@ -321,6 +328,10 @@ class GroundTruthRos2Publisher:
 
         if not os.environ.get("ROS_LOG_DIR"):
             os.environ["ROS_LOG_DIR"] = "/tmp/ros_logs"
+        os.environ.setdefault("AMENT_PREFIX_PATH", str(ros_prefix))
+        os.environ.setdefault("COLCON_PREFIX_PATH", str(ros_prefix))
+        os.environ.setdefault("CMAKE_PREFIX_PATH", str(ros_prefix))
+        os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
         try:
             Path(os.environ["ROS_LOG_DIR"]).mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -331,30 +342,99 @@ class GroundTruthRos2Publisher:
             ros_prefix / "local" / "lib",
             ros_prefix / "lib" / "x86_64-linux-gnu",
         ]
-        lib_paths = [str(path) for path in lib_candidates if path.exists()]
-        if lib_paths:
-            old = os.environ.get("LD_LIBRARY_PATH", "")
-            pieces = [p for p in old.split(":") if p]
-            for path in reversed(lib_paths):
-                if path not in pieces:
-                    pieces.insert(0, path)
-            os.environ["LD_LIBRARY_PATH"] = ":".join(pieces)
+        self._preload_ros_dependency_chain(ros_prefix, pyver)
 
-        preload = [
-            ros_prefix / "lib" / "librcl_action.so",
-            ros_prefix / "lib" / "librcl.so",
-            ros_prefix / "lib" / "librmw.so",
-            ros_prefix / "lib" / "librcutils.so",
-            ros_prefix / "lib" / "librcl_yaml_param_parser.so",
-            ros_prefix / "lib" / "librosidl_runtime_c.so",
+    def _preload_ros_dependency_chain(self, ros_prefix: Path, pyver: str) -> None:
+        lib_dirs = [
+            ros_prefix / "lib",
+            ros_prefix / "local" / "lib",
+            ros_prefix / "lib" / "x86_64-linux-gnu",
         ]
-        for lib in preload:
-            if not lib.exists():
-                continue
+        lib_dirs = [path for path in lib_dirs if path.exists()]
+        if not lib_dirs:
+            return
+
+        target_candidates = [
+            ros_prefix
+            / "local"
+            / "lib"
+            / pyver
+            / "dist-packages"
+            / "rclpy"
+            / f"_rclpy_pybind11.cpython-{sys.version_info.major}{sys.version_info.minor}-x86_64-linux-gnu.so",
+            ros_prefix / "lib" / pyver / "site-packages" / "rclpy" / "_rclpy_pybind11*.so",
+        ]
+        targets: List[Path] = []
+        for candidate in target_candidates:
+            if "*" in str(candidate):
+                targets.extend(sorted(candidate.parent.glob(candidate.name)))
+            elif candidate.exists():
+                targets.append(candidate)
+        if not targets:
+            return
+
+        preload_order: List[Path] = []
+        visited = set()
+        for target in targets:
+            self._collect_missing_ros_libs(target, lib_dirs, preload_order, visited, set())
+        for lib in preload_order:
             try:
-                ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
+                handle = ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
+                self._preloaded_shared_libs.append(handle)
             except Exception:
-                pass
+                continue
+
+    def _collect_missing_ros_libs(
+        self,
+        current: Path,
+        lib_dirs: Sequence[Path],
+        preload_order: List[Path],
+        visited: set[str],
+        visiting: set[str],
+    ) -> None:
+        current_key = str(current)
+        if current_key in visited or current_key in visiting or not current.exists():
+            return
+        visiting.add(current_key)
+        for lib_name in self._iter_missing_shared_lib_names(current):
+            resolved = self._resolve_ros_shared_lib(lib_name, lib_dirs)
+            if resolved is None:
+                continue
+            self._collect_missing_ros_libs(resolved, lib_dirs, preload_order, visited, visiting)
+            resolved_key = str(resolved)
+            if resolved_key not in visited:
+                preload_order.append(resolved)
+                visited.add(resolved_key)
+        visiting.remove(current_key)
+
+    def _iter_missing_shared_lib_names(self, binary_path: Path) -> List[str]:
+        try:
+            proc = subprocess.run(
+                ["ldd", str(binary_path)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            return []
+        if proc.returncode != 0:
+            return []
+        missing: List[str] = []
+        for raw_line in proc.stdout.splitlines():
+            line = raw_line.strip()
+            if "=> not found" not in line:
+                continue
+            lib_name = line.split("=>", 1)[0].strip()
+            if lib_name:
+                missing.append(lib_name)
+        return missing
+
+    def _resolve_ros_shared_lib(self, lib_name: str, lib_dirs: Sequence[Path]) -> Optional[Path]:
+        for lib_dir in lib_dirs:
+            candidate = lib_dir / lib_name
+            if candidate.exists():
+                return candidate
+        return None
 
     def _stamp_from_elapsed(self, elapsed_seconds: float):
         sec = int(math.floor(elapsed_seconds))

@@ -112,7 +112,7 @@ class ControlState:
     t: float
     dt: float
     ego: carla.Vehicle
-    front: carla.Vehicle
+    front: Optional[carla.Vehicle]
     world: carla.World
     carla_map: carla.Map
     v: float
@@ -123,7 +123,7 @@ class EgoLeadState:
     t: float
     dt: float
     ego: carla.Vehicle
-    front: carla.Vehicle
+    front: Optional[carla.Vehicle]
     carla_map: carla.Map
     v: float
     v_front: float
@@ -264,8 +264,12 @@ def gap_s_along_reachable_lane(
     return best["s"], True, best["fwd"], info
 
 
-def closing_speed_along_lane(carla_map: carla.Map, ego: carla.Vehicle, front: carla.Vehicle) -> float:
+def closing_speed_along_lane(carla_map: carla.Map, ego: carla.Vehicle, front: Optional[carla.Vehicle]) -> float:
+    if front is None:
+        return 0.0
     ego_wp = carla_map.get_waypoint(ego.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
+    if ego_wp is None:
+        return 0.0
     fwd = ego_wp.transform.get_forward_vector()
     hx, hy = fwd.x, fwd.y
     norm = math.hypot(hx, hy)
@@ -301,21 +305,28 @@ class TruthEstimator:
         front = raw.front
         carla_map = raw.carla_map
         ref_wp = self._ref_wp(carla_map, ego)
-        front_wp = carla_map.get_waypoint(front.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
 
         v = raw.v
-        v_front = speed_mps(front)
-        gap_euclid = ego.get_location().distance(front.get_location())
-
-        if front_wp is None or ref_wp is None:
+        if front is None:
+            v_front = 0.0
+            gap_euclid = math.inf
             gap_s = math.inf
             gap_valid = False
             fwd_dir = None
-            meta = {"reason": "NO_WP"}
+            meta = {"reason": "NO_FRONT"}
         else:
-            gap_s, gap_valid, fwd_dir, meta = gap_s_along_reachable_lane(
-                carla_map, ref_wp, front.get_location(), front_wp
-            )
+            front_wp = carla_map.get_waypoint(front.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
+            v_front = speed_mps(front)
+            gap_euclid = ego.get_location().distance(front.get_location())
+            if front_wp is None or ref_wp is None:
+                gap_s = math.inf
+                gap_valid = False
+                fwd_dir = None
+                meta = {"reason": "NO_WP"}
+            else:
+                gap_s, gap_valid, fwd_dir, meta = gap_s_along_reachable_lane(
+                    carla_map, ref_wp, front.get_location(), front_wp
+                )
         if gap_valid and gap_s < 0.3 * max(gap_euclid, 1e-3):
             gap_valid = False
             gap_s = math.inf
@@ -780,7 +791,7 @@ class HybridAgentLongitudinalController:
         carla_world: carla.World,
         carla_map: carla.Map,
         ego_vehicle: carla.Vehicle,
-        front_vehicle: carla.Vehicle,
+        front_vehicle: Optional[carla.Vehicle],
         agent_type: str = "basic",
         takeover_dist_m: float = 200.0,
         blend_time_s: float = 1.5,
@@ -842,15 +853,17 @@ class HybridAgentLongitudinalController:
         self._set_destination_to_front()
 
     def _set_destination_to_front(self, gap_hint: Optional[float] = None):
-        """动态更新目标点：远距离时沿 ego 车道向前引导，靠近时沿前车车道前方目标。"""
+        """动态更新目标点：无前车时沿 ego 车道向前巡航，有前车时再切到前车引导。"""
         try:
             ego_wp = self.map.get_waypoint(self.ego.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
-            front_wp = self.map.get_waypoint(self.front.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
-            if ego_wp is None or front_wp is None:
+            if ego_wp is None:
                 return
+            front_wp = None
+            if self.front is not None:
+                front_wp = self.map.get_waypoint(self.front.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
             step = 3.0
-            # 远距离：沿 ego 车道向前引导，避免掉头
-            if gap_hint is None or not math.isfinite(gap_hint) or gap_hint > self.takeover_dist * 1.2:
+            # 无前车或远距离：沿 ego 车道向前引导，避免掉头。
+            if front_wp is None or gap_hint is None or not math.isfinite(gap_hint) or gap_hint > self.takeover_dist * 1.2:
                 dest_wp = ego_wp
                 ahead = 60.0
                 moved = 0.0
@@ -880,7 +893,8 @@ class HybridAgentLongitudinalController:
                             break
                         dest_wp = prevs[0]
                         moved += step
-            dest_loc = dest_wp.transform.location if dest_wp is not None else self.front.get_location()
+            fallback_loc = ego_wp.transform.location if self.front is None else self.front.get_location()
+            dest_loc = dest_wp.transform.location if dest_wp is not None else fallback_loc
             self.agent.set_destination(dest_loc)
         except Exception:
             pass
@@ -1082,7 +1096,9 @@ class FollowStopPIDController(CompositeController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-def longitudinal_route_distance(carla_map: carla.Map, ego: carla.Vehicle, front: carla.Vehicle) -> float:
+def longitudinal_route_distance(carla_map: carla.Map, ego: carla.Vehicle, front: Optional[carla.Vehicle]) -> float:
+    if front is None:
+        return math.inf
     ego_wp = carla_map.get_waypoint(ego.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
     front_wp = carla_map.get_waypoint(front.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
     if ego_wp is None or front_wp is None:

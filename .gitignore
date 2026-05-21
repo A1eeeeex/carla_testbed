@@ -9,7 +9,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-
+.tmp
 # IDE / editor
 .idea/
 .vscode/
@@ -28,7 +28,9 @@ cache/
 tmp/
 temp/
 *.log
-
+docs/prompt_usually_used.md
+.runtime_cache/
+reference_pack/
 # Media and heavy simulation artifacts
 *.mp4
 *.png
@@ -58,7 +60,6 @@ configs/local.*.yaml
 !configs/local.example.yaml
 configs/**/*.local.yaml
 examples/carla_examples/
-
 dist/*.tar.gz
 dist/*.sha256
 io/tools/*.so

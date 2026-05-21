@@ -110,15 +110,23 @@ for name in \
   debug_timeseries.csv \
   dreamview_launch.log \
   dreamview_open.log \
+  dreamview_capture_manifest.json \
+  dreamview_capture_manifest.md \
+  dreamview_capture_region_cache.json \
   dreamview_record.log \
   dreamview_record.out.log \
   dreamview_record.err.log \
+  dreamview_recording_status.json \
+  dreamview_recording_status.md \
+  dreamview_runtime_config_snapshot.json \
   dreamview_runtime_deps.log \
   dreamview_stop.log \
   dreamview_url.txt
 do
   copy_if_exists "$ART_SRC/$name" "$ART_DST/$name"
 done
+
+copy_if_exists "$RUN_DIR/video/dreamview" "$STAGE_ROOT/video/dreamview"
 
 copy_if_exists "$ART_SRC/apollo_docker_libs" "$ART_DST/apollo_docker_libs"
 

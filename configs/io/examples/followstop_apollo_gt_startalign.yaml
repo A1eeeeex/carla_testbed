@@ -1,7 +1,6 @@
 # -----------------------------------------------------------------------------
-# GT profile: startalign
-# - 在 minimal 基础上，仅针对 routing/lane projection/reference-point 失败做最小修复
-# - 用于排查 `Reference lane is empty` / `Cannot find waypoint ... s<0` 问题
+# Deprecated troubleshooting profile.
+# 仅保留给历史 startup/reference-line 排障，不再作为主链推荐入口。
 # -----------------------------------------------------------------------------
 run:
   profile_name: gt_startalign
@@ -21,11 +20,9 @@ scenario:
   front_max_ahead_m: 120.0
   front_max_lateral_m: 3.0
   front_max_heading_diff_deg: 25.0
-  # 可选短期 workaround：在 CARLA world 层直接设绿灯并冻结（默认关闭，不改变现有行为）。
   traffic_lights:
     force_green: false
     freeze: true
-  # [感知层] 原生 ROS2 传感器链路关闭；GT 真值发布开启。
   publish_ros2_native: false
   publish_ros2_gt: true
   gt:
@@ -50,38 +47,25 @@ io:
     canon_ros2: io/contract/canon_ros2.yaml
 algo:
   stack: apollo
-  # 外部栈时默认禁用 harness 内置 legacy 控制，避免双控制器抢占。
   disable_legacy_harness_control_for_external_stack: true
   apollo:
-    # Set via env APOLLO_ROOT or fill absolute path.
-    apollo_root: ""
+    apollo_root: ''
     control_out_type: direct
-    # Host ROS2 setup script for bridge/control processes (leave empty to auto-detect /opt/ros/<distro>/setup.bash).
-    ros2_setup_script: ""
-    # Keep host bridge and container modules in same CyberRT domain.
+    ros2_setup_script: ''
     cyber_domain_id: 80
-    # Optional: set a non-loopback IP when host<->container CyberRT discovery fails.
-    cyber_ip: ""
+    cyber_ip: ''
     docker:
       enabled: true
-      # Export APOLLO_DOCKER_CONTAINER to override, e.g. apollo_dev_x86_64
-      container: ""
-      # ROS2 is on host; run bridge on host by default.
+      container: ''
       bridge_in_container: false
-      # If container is stopped, backend will run docker start automatically.
       auto_start_container: true
-      # Ensure missing runtime libs in Apollo container (bvar/gperftools) are auto-installed.
       auto_install_runtime_deps: true
-      # Run Apollo modules as uid:gid matching host ubuntu user to avoid CyberRT shm permission denial.
-      module_exec_user: "1000:1000"
-      # Fail fast when host-bridge mode cannot communicate with container CyberRT.
+      module_exec_user: 1000:1000
       require_network_host: true
       require_ipc_host: true
-      # Start Apollo modules inside container before launching bridge.
-      # Leave commands empty to use backend auto-start (routing/prediction/planning/control).
       start_modules: true
-      start_modules_cmd: ""
-      modules_status_cmd: ""
+      start_modules_cmd: ''
+      modules_status_cmd: ''
       apollo_root_in_container: /apollo
       apollo_distribution_home: /opt/apollo/neo
       python_exec: python3
@@ -117,7 +101,6 @@ algo:
       publish_rate_hz: 20.0
       max_obstacles: 64
       radius_m: 120.0
-      # __04 复验中出现 s<0（-0.026）时，先用 0.0 规避 reference point 偏置风险。
       localization_back_offset_m: 0.0
       map_file: /home/ubuntu/Carla_apollo_maps/carla_town01/base_map.txt
       debug_dump_control_raw: true
@@ -131,13 +114,11 @@ algo:
         cache_enabled: true
         cache_ttl_sec: 0.5
         role_names:
-          - front
+        - front
     map_speed_limit:
       enabled: false
-      # Raise lane speed limit in Apollo Town01 map to bypass 40kph map cap.
       override_mps: 23.61
       restore_original: false
-    # [规划层] GT baseline 的 planning/task 裁剪与规则开关。
     planning:
       acc_only_mode: true
       longitudinal_only_pipeline: true
@@ -158,7 +139,6 @@ algo:
       speed_decider_follow_min_time_sec: 0.5
       speed_decider_stop_follow_distance_m: 1.0
       speed_decider_follow_distance_scale: 0.5
-    # [routing 层] 自动 routing 的 startup/long 双阶段行为。
     routing:
       enable: true
       goal_mode: scenario_xy
@@ -167,7 +147,6 @@ algo:
       startup_end_ahead_m: 6.0
       startup_speed_threshold_mps: 0.5
       startup_hold_sec: 3.0
-      # 避免 startup route 起点被前推到 ego 前方，导致定位点落在 route 起点之前（s<0）。
       start_nudge_m: 0.0
       start_nudge_retry_step_m: 0.0
       start_nudge_min_safe_m: 0.0
@@ -180,13 +159,11 @@ algo:
       target_speed_mps: 16.67
       startup_delay_sec: 8.0
       lane_follow_refresh_sec: 3.0
-      # 起点投影相关开关：保留开启，优先让 routing 起点落在 lane center。
       snap_start_to_lane: true
       snap_goal_to_lane: true
       start_nudge_use_lane_heading: true
       send_action: false
       send_lane_follow: true
-      # 当 send_action/send_lane_follow 都关闭时，是否自动兜底开启 lane_follow。
       auto_enable_lane_follow_fallback: true
       disable_lane_follow_on_no_response: false
       send_routing_request: true
@@ -195,14 +172,12 @@ algo:
       use_long_goal_after_move: true
       clamp_to_map_bounds: true
       map_bounds_margin_m: 2.0
-    # [traffic light 策略] 当前基线使用 ignore。
     traffic_light:
       policy: ignore
       force_ids:
-        - TL_signal14
+      - TL_signal14
       publish_hz: 10.0
       ignore_roll_enabled: false
-    # [control guard 层] Apollo Control -> CARLA 的映射与保护链。
     control_mapping:
       max_steer_angle: 0.6
       speed_gain: 10.0
@@ -212,6 +187,12 @@ algo:
       brake_scale: 1.0
       steer_scale: 0.25
       brake_deadzone: 0.05
+      actuator_mapping_mode: legacy
+      physical:
+        calibration_file: artifacts/carla_actuator_calibration.json
+        allow_legacy_fallback: true
+        use_top_level_acceleration: true
+        use_lon_debug: true
       zero_hold_sec: 0.0
       startup_throttle_boost_enabled: true
       startup_throttle_boost_add: 0.08
@@ -302,5 +283,5 @@ runtime:
     start: true
     host: localhost
     port: 2000
-    extra_args: "--ros2"
+    extra_args: --ros2
     foreground: false

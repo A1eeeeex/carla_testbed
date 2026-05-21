@@ -1,57 +1,9 @@
-# 模块 README 索引
-面向首次上手的开发/算法同学，按模块查看使用说明与排错指南。所有路径相对仓库根。坐标系统一：CARLA world/ego(base_link) x 前、y 右、z 上；相机 optical x 右、y 下、z 前；run 产物写入 `runs/<run_id>/`。
+# Docs Index Redirect
 
-## 模块列表
-- [config](../carla_testbed/config/README.md)
-- [control](../carla_testbed/control/README.md)
-- [control/legacy_followstop](../carla_testbed/control/legacy_followstop/README.md)
-- [io](../carla_testbed/io/README.md)
-- [record](../carla_testbed/record/README.md)
-- [record/sensor_demo](../carla_testbed/record/sensor_demo/README.md)
-- [runner](../carla_testbed/runner/README.md)
-- [scenarios](../carla_testbed/scenarios/README.md)
-- [schemas](../carla_testbed/schemas/README.md)
-- [sensors](../carla_testbed/sensors/README.md)
-- [sim](../carla_testbed/sim/README.md)
-- [utils](../carla_testbed/utils/README.md)
+`docs/README.md` is now the only authoritative index for tracked docs in this repo.
 
-## GT/Apollo 文档入口
-- [Apollo GT 闭环运行说明](./apollo10_gt_sim.md)
-- [GT 真值链路事实说明](./gt_truth_simulation_pipeline.md)
-- [GT Follow-Stop 冻结基线说明（v1）](./gt_followstop_apollo_baseline.md)
-- [GT Profile 差异矩阵（minimal/relaxed/strict）](./gt_profile_matrix.md)
-- [GT Reference Line 失效排查](./gt_reference_line_rootcause.md)
-- 基线评估工具：`tools/evaluate_gt_baseline.py`
-- Profile 对比工具：`tools/compare_gt_profiles.py`
-- 起点对齐诊断工具：`tools/diagnose_startup_lane_alignment.py`
-- reference line 失败诊断工具：`tools/diagnose_reference_line_failure.py`
+请改看：
 
-## 模块依赖与数据流（ASCII）
-```
-scenario -> sim(world/tick) -> sensors(capture) -> runner(config/record) -> record(mp4/csv/json)
-                                     \-> control(step -> ControlCommand) -> sim.apply_control
-                                     \-> io(ROS2 native enable_for_ros) -> external nodes/ros2 subscribers
-schemas 提供数据结构，config 提供 rig/calibration/meta
-```
-
-## 三条快速上手路径
-1) **只跑仿真并导出原始传感器文件**
-```bash
-python examples/run_followstop.py --rig fullstack --ticks 500 --record-keep-frames
-# 产物：runs/followstop_<ts>/sensors/<id>/，config/calibration.json 等
-```
-2) **生成传感器 demo mp4（LiDAR+Radar+HUD）**
-```bash
-python examples/run_followstop.py --rig fullstack --ticks 1000 --record sensor_demo --record-keep-frames
-# 产物：runs/followstop_<ts>/video/demo.mp4（frames/ 可选保留）
-```
-3) **启用 CARLA 原生 ROS2 发布**
-```bash
-python examples/run_followstop.py --rig fullstack --enable-ros2-native --ticks 500
-# 可选：再加 --enable-rviz 自动启动 RViz（需 X11/docker）
-# 另一个终端（已 source ROS2，服务器以 --ros2 启动）：
-ros2 topic list | grep /carla/hero
-ros2 topic hz /carla/hero/imu
-```
-
-如需更多细节，请进入对应模块 README。★ 如果遇到坐标系/时间戳问题，优先检查 config/calibration.json 与 time_sync.json 是否匹配当前 run。 
+- [docs/README.md](./README.md)
+- [AGENTS.md](../AGENTS.md)
+- [reference_pack_carla_ros2_apollo/reference/00_index.md](../reference_pack_carla_ros2_apollo/reference/00_index.md)

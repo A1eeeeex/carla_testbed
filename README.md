@@ -9,12 +9,31 @@
   - `dummy`
   - `apollo`
   - `autoware`
-  - `e2e`（占位，未实现）
+  - `e2e`（接口已预留，当前未实现）
 
 这份 README 只写代码里当前已经存在的命令、路径和行为。
 
+## Documentation Map
+
+本仓库现在有 4 层文档边界：
+
+- `AGENTS.md`
+  - 仓库级执行手册与协作规则。
+- `reference_pack_carla_ros2_apollo/reference/00_index.md`
+  - 规范化知识库入口；truths、contracts、playbooks、decision log 都以这里为准。
+- `docs/README.md`
+  - 运行、上手、迁移、workflow 类文档入口。
+- `docs/project_showcase.md`
+  - 面向技术展示的总览页；适合快速介绍架构、功能进度、示例命令与可见产出。
+- `artifacts/` / `runs/`
+  - 运行证据与分析输入，不是长期规范源。
+
 迁移与协作开发建议先看：
 
+- `AGENTS.md`
+- `reference_pack_carla_ros2_apollo/reference/00_index.md`
+- `docs/README.md`
+- `docs/project_showcase.md`
 - `docs/dual_machine_workflow.md`
 - `docs/migration_followstop_playbook.md`
 - `tbio/README.md`
@@ -70,16 +89,20 @@ bash scripts/setup_dev_env.sh
 python3 scripts/check_local_config.py --strict
 ```
 
-## 0.1 文档索引（按模块）
+## 0.1 文档索引（按角色）
 
-新同事优先阅读这些 README：
-
-- `docs/README.md`（文档入口）
-- `configs/README.md`、`configs/io/examples/README.md`（配置与 profile）
-- `examples/README.md`（运行入口）
-- `carla_testbed/README.md`（核心 runtime 包）
-- `tbio/README.md`（桥接与运行脚本）
-- `tools/apollo10_cyber_bridge/README.md`（Apollo Cyber bridge）
+- 首先看：
+  - `AGENTS.md`
+  - `reference_pack_carla_ros2_apollo/reference/00_index.md`
+  - `docs/README.md`
+- 配置与 profile：
+  - `configs/README.md`
+  - `configs/io/examples/README.md`
+- 运行入口与 runtime：
+  - `examples/README.md`
+  - `carla_testbed/README.md`
+  - `tbio/README.md`
+  - `tools/apollo10_cyber_bridge/README.md`
 
 ## 1. 当前可用能力
 
@@ -115,6 +138,27 @@ python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout
 
 代码里已经明确给出弃用提示，推荐继续使用 `python -m carla_testbed ...`。
 
+### 当前 canonical 入口家族
+
+第一波结构收敛后，建议把下面这些入口当作主线：
+
+- `python -m carla_testbed run`
+  - 通用单次 run 入口
+- `tools/run_apollo_mainline.py`
+  - Apollo GT / followstop 主线入口
+- `tools/run_town01_capability_online_chain.py`
+  - Town01 capability / route-health 主线入口
+- `tools/run_unified_calibration_pipeline.py`
+  - 标定闭环入口
+- `tools/run_town01_demo_showcase.py`
+  - Town01 展示录制入口
+
+其余 `tools/run_*.py` 如果没有在 README、`docs/project_showcase.md` 或 `configs/io/examples/README.md` 明确列为主线入口，默认按下面理解：
+
+- `internal`
+- `regression-only`
+- `historical`
+
 ### 算法栈状态
 
 来自 `algo/registry.py` 和各 adapter：
@@ -132,7 +176,7 @@ python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout
 - `e2e`
   - **Not implemented yet**
   - `algo/adapters/e2e.py`
-  - 当前仅打印 TODO，`healthcheck()` 固定返回 `False`
+  - 当前仅输出未实现提示，`healthcheck()` 固定返回 `False`
 
 ## 2. 目录结构（按当前仓库）
 
@@ -161,7 +205,7 @@ python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout
 ├── configs/
 │   ├── io/                # 示例配置（dummy / apollo / autoware）
 │   └── rigs/              # 传感器 rig 预设
-├── docs/                  # 详细设计文档（含 GT->Apollo 链路说明）
+├── docs/                  # 跟踪的运行/上手/设计文档，不放一次性分析报告
 ├── dumps/                 # 调试转储（运行时可能写入）
 ├── examples/
 │   ├── carla_examples/    # CARLA 官方/示例脚本
@@ -172,6 +216,8 @@ python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout
 │   ├── scripts/           # 兼容 wrapper 脚本
 │   └── tools/             # IO 相关工具
 ├── runs/                  # 每次运行输出目录
+├── reference_pack_carla_ros2_apollo/
+│   └── reference/         # 规范化知识库（truths / contracts / playbooks / decisions）
 ├── tbio/
 │   ├── backends/          # 后端实现（如 CyberRT backend）
 │   ├── carla/             # CARLA 启动策略与 launcher
@@ -818,7 +864,7 @@ python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout
 - `python -m carla_testbed smoke`：**Not implemented yet**
   - 当前替代：`python io/scripts/smoke_test.py --contract ...`
 - `algo=e2e`：**Not implemented yet**
-  - 当前是 adapter 占位
+  - 当前仅保留 adapter 骨架
 - 独立 KPI 模块：**Not implemented yet**
   - 当前 KPI 直接写在 harness / recorder 里
 - `runs/<run>/results/summary.json`：**Not implemented yet**

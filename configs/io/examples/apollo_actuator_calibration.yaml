@@ -1,0 +1,32 @@
+suite:
+  base_config: configs/io/examples/followstop_dummy.yaml
+  purpose: carla_open_loop_actuator_calibration
+
+run:
+  profile_name: apollo_actuator_calibration
+  ticks: 5000
+  external_probe_hold: true
+  external_probe_timeout_sec: 1800
+  external_probe_heartbeat_sec: 15
+  external_probe_warmup_ticks: 8
+
+scenario:
+  driver: carla_actuator_calibration
+  publish_ros2_native: false
+  publish_ros2_gt: false
+  ego_idx: 120
+  calibration_only:
+    spawn_idx: 120
+    strict_spawn: true
+    force_green_traffic_lights: false
+    freeze_traffic_lights: true
+
+algo:
+  stack: dummy
+  disable_legacy_harness_control_for_external_stack: true
+
+record:
+  probe:
+    enable: false
+  control_log:
+    enable: false

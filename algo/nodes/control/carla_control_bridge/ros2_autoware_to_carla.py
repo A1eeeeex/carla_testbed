@@ -81,6 +81,7 @@ class CarlaControlBridge(Node):
         self.last_msg_time = self.get_clock().now()
         self._warned_no_ego = False
         self._warned_fallback_role = False
+        self._warned_duplicate_role = False
         self._last_discovery_sec = 0.0
         self._last_discovery_warn_sec = 0.0
         self._last_apply_log_sec = 0.0
@@ -145,16 +146,33 @@ class CarlaControlBridge(Node):
             if world is None:
                 return None
             vehicles = list(world.get_actors().filter("vehicle.*"))
+            exact_matches = []
+            alias_matches = []
             for v in vehicles:
-                role = (v.attributes or {}).get("role_name")
-                if role == self.ego_role_name or role in ["ego", "hero", "tb_ego"]:
-                    if self._bound_actor_id != int(v.id):
-                        self._bound_actor_id = int(v.id)
-                        self._ego_bound_monotonic = time.monotonic()
-                        self.get_logger().info(
-                            f"control target bound actor_id={v.id} role={role or '<empty>'}"
-                        )
-                    return v
+                role = ((v.attributes or {}).get("role_name") or "").strip()
+                if role == self.ego_role_name:
+                    exact_matches.append(v)
+                elif role in ["ego", "hero", "tb_ego"]:
+                    alias_matches.append(v)
+            matched = exact_matches or alias_matches
+            if matched:
+                candidate = max(matched, key=lambda v: int(v.id))
+                if len(matched) > 1 and not self._warned_duplicate_role:
+                    ids = [int(v.id) for v in matched]
+                    roles = [str((v.attributes or {}).get("role_name", "")) for v in matched]
+                    self.get_logger().warning(
+                        f"multiple ego-role candidates found for '{self.ego_role_name}'; "
+                        f"choose newest actor_id={candidate.id}, candidates={ids}, roles={roles}"
+                    )
+                    self._warned_duplicate_role = True
+                if self._bound_actor_id != int(candidate.id):
+                    self._bound_actor_id = int(candidate.id)
+                    self._ego_bound_monotonic = time.monotonic()
+                    role = (candidate.attributes or {}).get("role_name")
+                    self.get_logger().info(
+                        f"control target bound actor_id={candidate.id} role={role or '<empty>'}"
+                    )
+                return candidate
             if not vehicles:
                 return None
             non_front = [v for v in vehicles if "front" not in ((v.attributes or {}).get("role_name", "").lower())]
@@ -192,10 +210,12 @@ class CarlaControlBridge(Node):
     def _ensure_ego(self) -> bool:
         if self.world is None:
             self._connect_carla()
-        if self.ego is None:
-            now_sec = time.monotonic()
-            force_refresh = (now_sec - self._last_discovery_sec) > 0.5
-            self.ego = self._discover_ego(force_world_refresh=force_refresh)
+        now_sec = time.monotonic()
+        force_refresh = (now_sec - self._last_discovery_sec) > 0.5
+        if self.ego is None or force_refresh:
+            discovered = self._discover_ego(force_world_refresh=force_refresh)
+            if discovered is not None:
+                self.ego = discovered
             if force_refresh:
                 self._last_discovery_sec = now_sec
         if self.ego is None:

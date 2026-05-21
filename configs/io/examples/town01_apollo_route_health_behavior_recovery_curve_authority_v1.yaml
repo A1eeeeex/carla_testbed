@@ -1,0 +1,226 @@
+# -----------------------------------------------------------------------------
+# Apollo Town01 Route Health: behavior_recovery_curve_authority_v1
+# 用途：在 `stitcher_v1` 已经恢复 lane/junction/curve 全链闭环的前提下，
+#      仅增加 CARLA 侧可用转向 authority，验证 curve late-stage fallback
+#      是否主要由 steering authority 不足触发。
+# 说明：
+# - 保持 Dreamview-on + planning_ready + dag + legacy control runtime overlay；
+# - 不改横向增益、不改 routing / planning 速度；
+# - 默认仍保留 700 ticks，在线短 probe 通过 CLI 覆盖到 420 ticks。
+# -----------------------------------------------------------------------------
+run:
+  seed: 1
+  ticks: 700
+  fail_strategy: log_and_continue
+  post_fail_steps: 300
+  ego_id: hero
+  map: Town01
+  weather: ClearNoon
+  profile_name: town01_apollo_route_health_behavior_recovery_curve_authority_v1
+scenario:
+  driver: carla_town01_route_health
+  traffic_lights:
+    force_green: false
+    freeze: true
+  publish_ros2_native: false
+  publish_ros2_gt: true
+  gt:
+    publish_tf: true
+    publish_odom: true
+    publish_objects3d: true
+    publish_markers: true
+    objects_radius_m: 180.0
+    max_objects: 64
+    odom_hz: 20.0
+    tf_hz: 20.0
+    objects_hz: 10.0
+    markers_hz: 10.0
+  route_health:
+    random_seed: 1
+    strict_spawn: false
+    spawn_min_forward_length_m: 160.0
+    spawn_min_backward_length_m: 25.0
+    spawn_reject_junction: true
+    spawn_junction_window_m: 12.0
+    goal_min_route_length_m: 220.0
+    goal_max_route_length_m: 360.0
+    goal_min_end_margin_m: 25.0
+    goal_reject_junction: true
+    max_spawn_candidates: 80
+    max_goal_attempts: 6
+io:
+  mode: ros2_native
+  ros:
+    domain_id: 0
+    use_sim_time: true
+    namespace: /carla
+algo:
+  stack: apollo
+  apollo:
+    apollo_root: ""
+    control_out_type: direct
+    cyber_domain_id: 80
+    docker:
+      enabled: true
+      container: ""
+      bridge_in_container: false
+      auto_start_container: true
+      control_launch_delay_sec: 5.0
+      auto_install_runtime_deps: true
+      module_exec_user: 1000:1000
+      require_network_host: true
+      require_ipc_host: true
+      start_modules: true
+      defer_control_until_planning_ready: true
+      control_start_gate: planning_ready
+      deferred_control_start_mode: dag
+      deferred_control_disable_bvar_dump: false
+      control_runtime_overlay_source_dirs:
+        - /opt/apollo/neo/.codex_backup/20260331_004431/control_runtime_refresh/control_component
+        - /opt/apollo/neo/.codex_backup/20260331_004431/control_runtime_refresh/submodules
+        - /opt/apollo/neo/.codex_backup/20260330_170640/control_runtime
+        - /opt/apollo/neo/.codex_backup/20260330_170358/common_msgs/control_msgs
+      control_planning_ready_min_nonempty_count: 1
+      control_planning_ready_min_sequence_num: 5
+      control_planning_ready_timeout_sec: 60.0
+      control_planning_ready_poll_sec: 0.5
+      apollo_root_in_container: /apollo
+      apollo_distribution_home: /opt/apollo/neo
+      python_exec: python3
+      host_python_exec: /home/ubuntu/miniconda3/envs/carla16/bin/python3
+    dreamview:
+      enabled: true
+      auto_start: true
+      auto_open: false
+      record:
+        enabled: false
+    map_contract:
+      align_bridge_map_to_runtime_map: true
+      fail_fast_on_high_risk_mismatch: false
+    bridge_template: tools/apollo10_cyber_bridge/config_example.yaml
+    healthcheck:
+      probe_channels: true
+    carla_to_apollo:
+      tx: 0.0
+      ty: 0.0
+      tz: 0.0
+      yaw_deg: 0.0
+      auto_calib: false
+    bridge:
+      publish_rate_hz: 20.0
+      max_obstacles: 64
+      radius_m: 120.0
+      localization_back_offset_m: 1.4235
+      map_file: /home/ubuntu/Carla_apollo_maps/carla_town01/base_map.txt
+      debug_dump_control_raw: true
+    planning:
+      acc_only_mode: false
+      longitudinal_only_pipeline: false
+      longitudinal_only_keep_lane_follow_path: false
+      disable_lane_change_path: true
+      disable_lane_borrow_path: true
+      disable_rule_based_stop_decider: true
+      disable_destination_rule: true
+      disable_traffic_light_rule: true
+      lane_follow_only_scenario: true
+      enable_reference_line_stitching: true
+      enable_trajectory_stitcher: true
+      default_cruise_speed_mps: 16.67
+    routing:
+      enable: true
+      goal_mode: scenario_xy
+      target_speed_mps: 8.0
+      startup_delay_sec: 3.0
+      startup_apollo_warmup_sec: 30.0
+      startup_end_ahead_m: 30.0
+      startup_speed_threshold_mps: 0.5
+      startup_hold_sec: 3.0
+      lane_follow_refresh_sec: 1.0
+      lane_follow_no_response_grace_sec: 40.0
+      start_nudge_m: 0.0
+      start_nudge_retry_step_m: 0.0
+      snap_start_to_lane: true
+      snap_goal_to_lane: true
+      start_nudge_use_lane_heading: false
+      snap_source_mode: lane_centerline_only
+      snap_allow_untrusted_source: false
+      snap_heading_diff_max_deg: 30.0
+      snap_heading_diff_hard_reject_deg: 45.0
+      lane_heading_nudge_max_heading_diff_deg: 20.0
+      disable_nudge_when_snap_rejected: true
+      send_action: false
+      send_lane_follow: true
+      send_routing_request: true
+      wait_for_obstacle_gt_before_initial_routing: false
+      skip_invalid_long_route: true
+      suppress_long_phase_reroute_on_unstable_reference_line: true
+      freeze_after_success: true
+      freeze_after_long_route_success_only: true
+      use_seed_heading: true
+      use_long_goal_after_move: true
+      defer_long_goal_until_planning_ready: true
+      long_goal_planning_ready_min_nonempty_count: 5
+      defer_long_goal_max_wait_sec: 6.0
+      defer_long_goal_until_route_debug_ready: false
+      clamp_to_map_bounds: true
+      map_bounds_margin_m: 2.0
+    traffic_light:
+      policy: ignore
+      publish_hz: 10.0
+      ignore_roll_enabled: false
+    control_mapping:
+      max_steer_angle: 0.6
+      speed_gain: 10.0
+      brake_gain: 5.0
+      steer_sign: 1.0
+      throttle_scale: 1.5
+      brake_scale: 1.0
+      steer_scale: 0.30
+      brake_deadzone: 0.05
+      actuator_mapping_mode: legacy
+      straight_lane_zero_steer_enabled: false
+      straight_lane_zero_steer_max_speed_mps: 8.0
+      straight_lane_zero_steer_max_e_y_m: 0.15
+      straight_lane_zero_steer_max_e_psi_deg: 3.0
+      straight_lane_zero_steer_max_curvature: 0.001
+      straight_lane_zero_steer_latch_enabled: true
+      straight_lane_zero_steer_release_max_e_y_m: 0.6
+      straight_lane_zero_steer_release_max_e_psi_deg: 12.0
+      straight_lane_zero_steer_release_ignore_e_psi_below_speed_mps: 2.0
+      low_speed_steer_guard_enabled: true
+      low_speed_steer_guard_speed_mps: 0.35
+      low_speed_steer_guard_max_abs_steer: 0.08
+      low_speed_steer_guard_max_e_y_m: 0.25
+      low_speed_steer_guard_max_e_psi_deg: 3.0
+      low_speed_sustained_saturation_guard_enabled: true
+      low_speed_sustained_saturation_guard_speed_mps: 0.6
+      low_speed_sustained_saturation_guard_raw_threshold: 0.99
+      low_speed_sustained_saturation_guard_trigger_frames: 20
+      low_speed_sustained_saturation_guard_release_frames: 12
+      low_speed_sustained_saturation_guard_max_abs_steer: 0.08
+      low_speed_sustained_saturation_guard_max_curvature: 0.001
+      low_speed_sustained_saturation_guard_max_e_y_m: 0.35
+      low_speed_sustained_saturation_guard_max_e_psi_deg: 6.0
+      low_speed_sustained_saturation_guard_require_lane_inside: true
+      sustained_lateral_guard_enabled: true
+      sustained_lateral_guard_raw_threshold: 0.99
+      sustained_lateral_guard_trigger_frames: 20
+      sustained_lateral_guard_release_frames: 12
+      sustained_lateral_guard_max_abs_steer: 0.35
+      sustained_lateral_guard_max_e_y_m: 0.8
+      sustained_lateral_guard_max_e_psi_deg: 15.0
+      sustained_lateral_guard_max_curvature: 0.01
+      sustained_lateral_guard_min_speed_mps: 0.0
+      sustained_lateral_guard_max_speed_mps: 18.0
+      trajectory_contract_lateral_guard_enabled: true
+      trajectory_contract_lateral_guard_max_abs_steer: 0.05
+      trajectory_contract_lateral_guard_max_speed_mps: 3.0
+      trajectory_contract_lateral_guard_raw_threshold: 0.95
+      trajectory_contract_lateral_guard_max_planning_age_ms: 300.0
+      force_zero_steer_output: false
+    carla_control_bridge:
+      enabled: true
+      control_topic: /tb/ego/control_cmd
+      timeout_sec: 2.5
+      apply_hz: 20.0
+      sync_to_world_tick: true

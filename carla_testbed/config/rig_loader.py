@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Tuple
 
 import yaml
 
-from carla_testbed.sensors.specs import SensorSpec
+if TYPE_CHECKING:
+    from carla_testbed.sensors.specs import SensorSpec
 
 
 def _load_yaml_or_json(path: Path) -> Dict:
@@ -59,7 +60,11 @@ def apply_overrides(rig: Dict, overrides: List[str]) -> Dict:
     return out
 
 
-def rig_to_specs(rig: Dict) -> Tuple[List[SensorSpec], Dict]:
+def rig_to_specs(rig: Dict) -> Tuple[List["SensorSpec"], Dict]:
+    # Delay the SensorSpec import so config-only tooling does not require the
+    # CARLA Python package at import time.
+    from carla_testbed.sensors.specs import SensorSpec
+
     sensors = []
     for s in rig.get("sensors", []):
         if not s.get("enabled", True):
@@ -81,7 +86,7 @@ def rig_to_specs(rig: Dict) -> Tuple[List[SensorSpec], Dict]:
     return sensors, events
 
 
-def dump_rig(run_dir: Path, rig_raw: Dict, rig_final: Dict, specs: List[SensorSpec], meta_path: Path = None) -> None:
+def dump_rig(run_dir: Path, rig_raw: Dict, rig_final: Dict, specs: List["SensorSpec"], meta_path: Path = None) -> None:
     cfg_dir = run_dir / "config"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     # rig raw: only keep rig info + reference to legacy meta

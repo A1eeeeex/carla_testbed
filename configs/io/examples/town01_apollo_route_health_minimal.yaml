@@ -1,0 +1,205 @@
+# -----------------------------------------------------------------------------
+# Apollo Town01 Route Health: minimal
+# 用途：最保守的随机起点单车巡航 smoke / 链路存活验证。
+# -----------------------------------------------------------------------------
+run:
+  seed: 1
+  ticks: 500
+  fail_strategy: log_and_continue
+  post_fail_steps: 200
+  ego_id: hero
+  map: Town01
+  weather: ClearNoon
+  profile_name: town01_apollo_route_health_minimal
+scenario:
+  driver: carla_town01_route_health
+  traffic_lights:
+    force_green: false
+    freeze: true
+  publish_ros2_native: false
+  publish_ros2_gt: true
+  gt:
+    publish_tf: true
+    publish_odom: true
+    publish_objects3d: true
+    publish_markers: true
+    objects_radius_m: 120.0
+    max_objects: 32
+    odom_hz: 20.0
+    tf_hz: 20.0
+    objects_hz: 10.0
+    markers_hz: 10.0
+  route_health:
+    random_seed: 1
+    strict_spawn: false
+    spawn_min_forward_length_m: 120.0
+    spawn_min_backward_length_m: 20.0
+    spawn_reject_junction: true
+    spawn_junction_window_m: 10.0
+    goal_min_route_length_m: 160.0
+    goal_max_route_length_m: 260.0
+    goal_min_end_margin_m: 18.0
+    goal_reject_junction: true
+    max_spawn_candidates: 60
+    max_goal_attempts: 4
+io:
+  mode: ros2_native
+  ros:
+    domain_id: 0
+    use_sim_time: true
+    namespace: /carla
+algo:
+  stack: apollo
+  apollo:
+    apollo_root: ""
+    control_out_type: direct
+    cyber_domain_id: 80
+    docker:
+      enabled: true
+      container: ""
+      bridge_in_container: false
+      auto_start_container: true
+      control_launch_delay_sec: 5.0
+      auto_install_runtime_deps: true
+      module_exec_user: 1000:1000
+      require_network_host: true
+      require_ipc_host: true
+      start_modules: true
+      apollo_root_in_container: /apollo
+      apollo_distribution_home: /opt/apollo/neo
+      python_exec: python3
+    dreamview:
+      enabled: false
+      auto_start: false
+      auto_open: false
+      record:
+        enabled: false
+    map_contract:
+      align_bridge_map_to_runtime_map: true
+      fail_fast_on_high_risk_mismatch: false
+    bridge_template: tools/apollo10_cyber_bridge/config_example.yaml
+    carla_to_apollo:
+      tx: 0.0
+      ty: 0.0
+      tz: 0.0
+      yaw_deg: 0.0
+      auto_calib: false
+    bridge:
+      publish_rate_hz: 20.0
+      max_obstacles: 32
+      radius_m: 120.0
+      localization_back_offset_m: 1.4235
+      map_file: /home/ubuntu/Carla_apollo_maps/carla_town01/base_map.txt
+      debug_dump_control_raw: false
+    planning:
+      acc_only_mode: true
+      longitudinal_only_pipeline: true
+      longitudinal_only_keep_lane_follow_path: true
+      disable_lane_change_path: true
+      disable_lane_borrow_path: true
+      disable_rule_based_stop_decider: true
+      disable_destination_rule: true
+      disable_traffic_light_rule: true
+      lane_follow_only_scenario: true
+      enable_reference_line_stitching: true
+      default_cruise_speed_mps: 12.0
+    routing:
+      enable: true
+      goal_mode: scenario_xy
+      startup_end_ahead_m: 24.0
+      startup_speed_threshold_mps: 0.5
+      startup_hold_sec: 3.0
+      start_nudge_m: 0.0
+      start_nudge_retry_step_m: 0.0
+      snap_start_to_lane: true
+      snap_goal_to_lane: true
+      start_nudge_use_lane_heading: false
+      snap_source_mode: lane_centerline_only
+      snap_allow_untrusted_source: false
+      snap_heading_diff_max_deg: 30.0
+      snap_heading_diff_hard_reject_deg: 45.0
+      lane_heading_nudge_max_heading_diff_deg: 20.0
+      disable_nudge_when_snap_rejected: true
+      send_action: false
+      send_lane_follow: true
+      send_routing_request: true
+      wait_for_obstacle_gt_before_initial_routing: false
+      skip_invalid_long_route: true
+      suppress_long_phase_reroute_on_unstable_reference_line: true
+      freeze_after_success: true
+      freeze_after_long_route_success_only: true
+      use_seed_heading: true
+      use_long_goal_after_move: true
+      defer_long_goal_until_planning_ready: true
+      long_goal_planning_ready_min_nonempty_count: 3
+      defer_long_goal_until_route_debug_ready: true
+      clamp_to_map_bounds: true
+      map_bounds_margin_m: 2.0
+    traffic_light:
+      policy: ignore
+      publish_hz: 10.0
+      ignore_roll_enabled: false
+    control_mapping:
+      max_steer_angle: 0.6
+      speed_gain: 10.0
+      brake_gain: 5.0
+      steer_sign: 1.0
+      throttle_scale: 1.5
+      brake_scale: 1.0
+      steer_scale: 0.25
+      brake_deadzone: 0.05
+      actuator_mapping_mode: legacy
+      straight_lane_zero_steer_enabled: true
+      low_speed_steer_guard_enabled: true
+      low_speed_steer_guard_speed_mps: 0.2
+      low_speed_steer_guard_max_abs_steer: 0.05
+      low_speed_steer_guard_max_e_y_m: 0.2
+      low_speed_steer_guard_max_e_psi_deg: 2.0
+      force_zero_steer_output: true
+    carla_control_bridge:
+      enabled: true
+      control_topic: /tb/ego/control_cmd
+      timeout_sec: 2.5
+      apply_hz: 20.0
+      sync_to_world_tick: true
+      dryrun: false
+    vehicle_param:
+      enabled: true
+      auto_from_carla: false
+record:
+  probe:
+    enable: true
+    max_msgs: 5
+  control_log:
+    enable: true
+    topic: /tb/ego/control_cmd
+    max_msgs: 100000
+logging:
+  level: INFO
+acceptance:
+  min_speed_mps: 4.0
+  require_apollo_health_artifacts: true
+  min_planning_nonempty_trajectory_count: 1000
+  min_planning_nonzero_ratio: 0.60
+  max_invalid_goal_count: 1
+  max_routing_skipped_due_to_invalid_goal_count: 1
+  low_speed_creep:
+    enabled: true
+    start_after_sec: 20.0
+    speed_below_mps: 1.0
+    front_gap_above_m: 20.0
+    require_routing_established: true
+    ignore_when_terminal_stop_hold_active: true
+    max_duration_sec: 3.0
+  route_health:
+    min_completion_ratio: 0.35
+    min_distance_achieved_m: 80.0
+    max_raw_steer_saturated_ratio: 0.20
+    max_longest_saturation_sec: 20.0
+runtime:
+  carla:
+    start: true
+    host: localhost
+    port: 2000
+    extra_args: --ros2
+    foreground: false

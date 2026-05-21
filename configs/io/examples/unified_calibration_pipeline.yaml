@@ -1,0 +1,54 @@
+pipeline:
+  suite:
+    apollo_profile: configs/io/examples/apollo_semantic_suite_base.yaml
+    vehicle_profile: ""
+    map: Town01
+    carla_host: 127.0.0.1
+    carla_port: 2000
+    heartbeat_sec: 20.0
+    cleanup_port_on_failure: false
+    cleanup_port_before_start: false
+    calibration_detail: exhaustive
+    calibration_library_dir: artifacts/actuator_calibration_library
+    force_recalibration: false
+  replay_validation:
+    capture_configs:
+      - configs/io/examples/apollo_semantic_capture_longitudinal.yaml
+      - configs/io/examples/apollo_semantic_capture_lateral.yaml
+    validation_config: configs/io/examples/apollo_actuator_tracking_validation.yaml
+    output_subdir_candidate: replay_validation_candidate
+    output_subdir_baseline: replay_validation_baseline
+  tracking_validation:
+    config: configs/io/examples/apollo_actuator_tracking_validation.yaml
+    output_subdir_candidate: tracking_validation_candidate
+    output_subdir_baseline: tracking_validation_baseline
+  baseline:
+    library_dir: artifacts/actuator_calibration_library
+    library_entry_id: e969a34a5f43fd25
+  compatibility:
+    protected_configs:
+      - configs/io/examples/followstop_apollo_gt_case2_locked.yaml
+      - configs/io/examples/followstop_apollo_gt_case3_locked.yaml
+      - configs/io/examples/followstop_apollo_gt_validation.yaml
+
+capture_validity_policy:
+  min_jsonl_records: 20
+  min_capture_samples: 20
+  min_capture_duration_sec: 3.0
+  min_nonzero_steer_samples: 10
+  min_positive_accel_samples: 10
+  min_decel_samples: 10
+  max_dead_sequence_ratio: 0.9
+  require_summary: false
+
+comparison_policy:
+  replay_max_mean_abs_steer_error_deg: 1.5
+  replay_max_mean_abs_accel_error_mps2: 0.8
+  replay_max_mean_abs_decel_error_mps2: 1.0
+  tracking_max_steering_mae_deg: 1.2
+  tracking_max_throttle_mae_mps2: 0.8
+  tracking_max_brake_mae_mps2: 1.0
+  improvement_epsilon_deg: 0.05
+  improvement_epsilon_mps2: 0.05
+  saturation_ratio_tolerance: 0.02
+  weird_output_ratio_tolerance: 0.01

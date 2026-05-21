@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+from typing import Any, Dict
+
+
+def build_ingress_egress_summary(
+    *,
+    transport_mode: str = "ros2_gt",
+    gt_source: str = "ros2_gt",
+    control_apply_path: str = "ros2_control_bridge",
+    tick_owner: str = "runner_harness_world_tick",
+    ros_ego_id: str,
+    odom_topic: str,
+    objects3d_topic: str,
+    objects_markers_topic: str,
+    objects_json_topic: str,
+    control_out_topic: str,
+    control_out_type: str,
+    localization_channel: str,
+    chassis_channel: str,
+    obstacles_channel: str,
+    control_channel: str,
+    planning_channel: str,
+    routing_request_channel: str,
+    routing_response_channel: str,
+    lane_follow_channel: str,
+    action_channel: str,
+    traffic_light_channel: str,
+) -> Dict[str, Any]:
+    return {
+        "source": "ingress_egress",
+        "transport_mode": str(transport_mode or "ros2_gt"),
+        "gt_source": str(gt_source or ""),
+        "control_apply_path": str(control_apply_path or ""),
+        "tick_owner": str(tick_owner or ""),
+        "ros2": {
+            "ego_id": str(ros_ego_id or ""),
+            "odom_topic": str(odom_topic or ""),
+            "objects3d_topic": str(objects3d_topic or ""),
+            "objects_markers_topic": str(objects_markers_topic or ""),
+            "objects_json_topic": str(objects_json_topic or ""),
+            "control_out_topic": str(control_out_topic or ""),
+            "control_out_type": str(control_out_type or ""),
+        },
+        "cyber": {
+            "localization_channel": str(localization_channel or ""),
+            "chassis_channel": str(chassis_channel or ""),
+            "obstacles_channel": str(obstacles_channel or ""),
+            "control_channel": str(control_channel or ""),
+            "planning_channel": str(planning_channel or ""),
+            "routing_request_channel": str(routing_request_channel or ""),
+            "routing_response_channel": str(routing_response_channel or ""),
+            "lane_follow_channel": str(lane_follow_channel or ""),
+            "action_channel": str(action_channel or ""),
+            "traffic_light_channel": str(traffic_light_channel or ""),
+        },
+    }
+
+
+def build_bridge_transport_summary(
+    *,
+    transport_mode: str,
+    gt_source: str,
+    control_apply_path: str,
+    tick_owner: str,
+    bridge_is_tick_owner: bool,
+    ros2_gt_enabled: bool,
+    uses_ros2_gt: bool,
+    uses_ros2_control_bridge: bool,
+    requires_ros2_reexec: bool,
+    route_command_mode: str,
+    route_command_path: str,
+    control_out_type: str,
+    direct_bridge: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    return {
+        "source": "bridge_transport",
+        "transport_mode": str(transport_mode or "ros2_gt"),
+        "gt_source": str(gt_source or ""),
+        "control_apply_path": str(control_apply_path or ""),
+        "tick_owner": str(tick_owner or ""),
+        "bridge_is_tick_owner": bool(bridge_is_tick_owner),
+        "ros2_gt_enabled": bool(ros2_gt_enabled),
+        "uses_ros2_gt": bool(uses_ros2_gt),
+        "uses_ros2_control_bridge": bool(uses_ros2_control_bridge),
+        "requires_ros2_reexec": bool(requires_ros2_reexec),
+        "route_command_mode": str(route_command_mode or "cyber_direct"),
+        "route_command_path": str(route_command_path or ""),
+        "control_out_type": str(control_out_type or ""),
+        "direct_bridge": dict(direct_bridge or {}),
+    }

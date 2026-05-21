@@ -27,6 +27,11 @@ def _ensure_ros2_arg(extra_args: str, need_ros2: bool) -> str:
     return " ".join(args)
 
 
+def _strip_ros2_arg(extra_args: str) -> str:
+    args: List[str] = [item for item in shlex.split(extra_args or "") if item != "--ros2"]
+    return " ".join(args)
+
+
 @dataclass
 class CarlaLaunchPolicy:
     start: bool
@@ -48,15 +53,25 @@ def resolve_carla_launch_policy(cfg: Dict[str, Any]) -> CarlaLaunchPolicy:
     io_cfg = cfg.get("io", {}) or {}
     autoware_cfg = cfg.get("algo", {}).get("autoware", {}) if isinstance(cfg.get("algo"), dict) else {}
 
-    need_ros2_native = bool(scenario_cfg.get("publish_ros2_native")) or str(io_cfg.get("mode", "")).lower() == "ros2_native"
+    disable_native_ros2_arg = _as_bool(
+        runtime_carla.get("disable_native_ros2_arg", carla_cfg.get("disable_native_ros2_arg")),
+        default=False,
+    )
+    need_ros2_native = (
+        bool(scenario_cfg.get("publish_ros2_native")) or str(io_cfg.get("mode", "")).lower() == "ros2_native"
+    ) and not disable_native_ros2_arg
     start = _as_bool(runtime_carla.get("start", runtime_cfg.get("start_carla")), default=False)
     host = str(runtime_carla.get("host") or carla_cfg.get("host") or autoware_cfg.get("carla_host") or "localhost")
     port = int(runtime_carla.get("port") or carla_cfg.get("port") or autoware_cfg.get("carla_port") or 2000)
     town = str(runtime_carla.get("town") or run_cfg.get("map") or "Town01")
     foreground = _as_bool(runtime_carla.get("foreground"), default=False)
     root = runtime_carla.get("root") or carla_cfg.get("root")
-    extra_args = str(runtime_carla.get("extra_args") or carla_cfg.get("extra_args") or "")
-    extra_args = _ensure_ros2_arg(extra_args, need_ros2_native)
+    raw_extra_args = runtime_carla["extra_args"] if "extra_args" in runtime_carla else carla_cfg.get("extra_args")
+    extra_args = str(raw_extra_args or "")
+    if disable_native_ros2_arg:
+        extra_args = _strip_ros2_arg(extra_args)
+    else:
+        extra_args = _ensure_ros2_arg(extra_args, need_ros2_native)
 
     return CarlaLaunchPolicy(
         start=start,

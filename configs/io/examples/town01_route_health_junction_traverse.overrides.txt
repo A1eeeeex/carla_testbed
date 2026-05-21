@@ -1,0 +1,9 @@
+scenario.route_health.spawn_reject_junction=false
+scenario.route_health.spawn_junction_window_m=0.0
+scenario.route_health.goal_reject_junction=false
+algo.apollo.planning.disable_traffic_light_rule=true
+algo.apollo.planning.lane_follow_only_scenario=false
+algo.apollo.traffic_light.policy=ignore
+scenario.traffic_lights.freeze=true
+algo.apollo.routing.freeze_after_success=false
+algo.apollo.routing.freeze_after_long_route_success_only=false

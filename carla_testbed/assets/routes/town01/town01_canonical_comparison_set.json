@@ -1,0 +1,72 @@
+{
+  "map": "Town01",
+  "asset_type": "canonical_comparison_set",
+  "asset_version": 1,
+  "routes": [
+    {
+      "comparison_key": "lane097",
+      "display_name": "lane_keep 097",
+      "capability_profile": "lane_keep",
+      "candidate_subset": "lane_keep_candidate",
+      "route_id": "town01_rh_spawn097_goal046",
+      "role": "validated_anchor",
+      "geometry_class": "straight_lane_keep",
+      "direction_class": "right_hand_forward",
+      "expectation_level": "validated",
+      "showcase_group": "core",
+      "showcase_enabled": true
+    },
+    {
+      "comparison_key": "lane217",
+      "display_name": "lane_keep 217",
+      "capability_profile": "lane_keep",
+      "candidate_subset": "lane_keep_candidate",
+      "route_id": "town01_rh_spawn217_goal046",
+      "role": "secondary_lane_keep_sentinel",
+      "geometry_class": "straight_lane_keep",
+      "direction_class": "right_hand_forward",
+      "expectation_level": "capability_evidence",
+      "showcase_group": "core",
+      "showcase_enabled": true
+    },
+    {
+      "comparison_key": "junction031",
+      "display_name": "junction 031",
+      "capability_profile": "junction_traverse",
+      "candidate_subset": "junction_traverse_candidate",
+      "route_id": "town01_rh_spawn031_goal056",
+      "role": "junction_sentinel",
+      "geometry_class": "junction_traverse",
+      "direction_class": "right_turn_entry",
+      "expectation_level": "capability_evidence",
+      "showcase_group": "core",
+      "showcase_enabled": true
+    },
+    {
+      "comparison_key": "curve217",
+      "display_name": "curve 217",
+      "capability_profile": "curve_lane_follow",
+      "candidate_subset": "curve_lane_follow_candidate",
+      "route_id": "town01_rh_spawn217_goal048",
+      "role": "curve_onset_probe",
+      "geometry_class": "curve_lane_follow",
+      "direction_class": "right_hand_forward",
+      "expectation_level": "diagnostic",
+      "showcase_group": "curve_diagnostic",
+      "showcase_enabled": false
+    },
+    {
+      "comparison_key": "curve213",
+      "display_name": "curve 213",
+      "capability_profile": "curve_lane_follow",
+      "candidate_subset": "curve_lane_follow_candidate",
+      "route_id": "town01_rh_spawn213_goal059",
+      "role": "curve_semantic_probe",
+      "geometry_class": "curve_lane_follow",
+      "direction_class": "right_hand_forward",
+      "expectation_level": "diagnostic",
+      "showcase_group": "curve_diagnostic",
+      "showcase_enabled": false
+    }
+  ]
+}

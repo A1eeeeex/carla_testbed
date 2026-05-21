@@ -175,6 +175,12 @@ algo:
       brake_scale: 1.0
       steer_scale: 0.25
       brake_deadzone: 0.05
+      actuator_mapping_mode: legacy
+      physical:
+        calibration_file: artifacts/carla_actuator_calibration.json
+        allow_legacy_fallback: true
+        use_top_level_acceleration: true
+        use_lon_debug: true
       zero_hold_sec: 0.0
       startup_throttle_boost_enabled: true
       startup_throttle_boost_add: 0.08

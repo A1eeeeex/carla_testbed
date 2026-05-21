@@ -4,6 +4,7 @@ import argparse
 import datetime
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -31,6 +32,8 @@ DEFAULTS = {
     "io": {"ros": {"domain_id": 0, "use_sim_time": True}},
     "logging": {"level": "INFO"},
 }
+
+_ROS_SOURCED_ENV: Dict[str, str] | None = None
 
 
 def deep_update(base: Dict[str, Any], patch: Dict[str, Any]):
@@ -172,8 +175,13 @@ def _start_followstop_via_unified_entry(
     effective_config_path: Path, run_dir: Path, cfg: Dict[str, Any]
 ) -> subprocess.Popen:
     repo_root = Path(__file__).resolve().parents[2]
+    artifacts_dir = run_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    child_stdout = artifacts_dir / "followstop_child.stdout.log"
+    child_stderr = artifacts_dir / "followstop_child.stderr.log"
     cmd = [
         sys.executable,
+        "-u",
         "-m",
         "examples.run_followstop",
         "--config",
@@ -190,7 +198,58 @@ def _start_followstop_via_unified_entry(
     if policy.need_ros2_native and (not policy.start):
         print("[run] ROS2 native enabled: expecting external CARLA already started with --ros2")
     print(f"[run] dispatch followstop: {' '.join(cmd)}")
-    return subprocess.Popen(cmd, cwd=repo_root, start_new_session=True)
+    stdout_fp = child_stdout.open("a", encoding="utf-8")
+    stderr_fp = child_stderr.open("a", encoding="utf-8")
+    proc = subprocess.Popen(
+        cmd,
+        cwd=repo_root,
+        env={**_ros_sourced_env(os.environ.copy()), "PYTHONUNBUFFERED": "1"},
+        start_new_session=True,
+        stdout=stdout_fp,
+        stderr=stderr_fp,
+        text=True,
+    )
+    proc._tb_stdout_fp = stdout_fp  # type: ignore[attr-defined]
+    proc._tb_stderr_fp = stderr_fp  # type: ignore[attr-defined]
+    return proc
+
+
+def _ros_sourced_env(base_env: Dict[str, str]) -> Dict[str, str]:
+    global _ROS_SOURCED_ENV
+    if _ROS_SOURCED_ENV is not None:
+        env = base_env.copy()
+        env.update(_ROS_SOURCED_ENV)
+        return env
+    ros_setup = Path("/opt/ros/humble/setup.bash")
+    if not ros_setup.exists():
+        return base_env.copy()
+    probe = subprocess.run(
+        [
+            "bash",
+            "-lc",
+            f"source {shlex.quote(str(ros_setup))} >/dev/null 2>&1 && env -0",
+        ],
+        cwd=str(Path(__file__).resolve().parents[2]),
+        env=base_env.copy(),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if probe.returncode != 0:
+        return base_env.copy()
+    sourced: Dict[str, str] = {}
+    for item in probe.stdout.split(b"\0"):
+        if not item or b"=" not in item:
+            continue
+        key, value = item.split(b"=", 1)
+        try:
+            sourced[key.decode("utf-8")] = value.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+    _ROS_SOURCED_ENV = sourced
+    env = base_env.copy()
+    env.update(sourced)
+    return env
 
 
 def main(args=None):
@@ -228,7 +287,12 @@ def main(args=None):
         "local_config_files": [str(p) for p in list_local_config_files(repo_root)],
         "paths": cfg.get("paths", {}),
     }
-    if (cfg.get("scenario", {}) or {}).get("driver") == "carla_followstop":
+    if (cfg.get("scenario", {}) or {}).get("driver") in {
+        "carla_followstop",
+        "carla_apollo_semantic_suite",
+        "carla_actuator_calibration",
+        "carla_town01_route_health",
+    }:
         policy = resolve_carla_launch_policy(cfg)
         run_meta["carla_launch_policy"] = {
             "start": policy.start,
@@ -318,6 +382,13 @@ def main(args=None):
         proc = cleanup_state.get("child_proc")
         if proc is not None:
             _stop_child(proc)
+            for attr in ("_tb_stdout_fp", "_tb_stderr_fp"):
+                fp = getattr(proc, attr, None)
+                if fp is not None:
+                    try:
+                        fp.close()
+                    except Exception:
+                        pass
         adapter = cleanup_state.get("adapter")
         if adapter is not None and cleanup_state.get("adapter_started"):
             try:
@@ -354,7 +425,12 @@ def main(args=None):
             return
 
         driver = (cfg.get("scenario", {}) or {}).get("driver")
-        if driver == "carla_followstop":
+        if driver in {
+            "carla_followstop",
+            "carla_apollo_semantic_suite",
+            "carla_actuator_calibration",
+            "carla_town01_route_health",
+        }:
             proc = _start_followstop_via_unified_entry(eff_path, run_dir, cfg)
             cleanup_state["child_proc"] = proc
             rc = proc.wait()

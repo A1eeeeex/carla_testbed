@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import csv
 import json
 import os
 import math
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -31,8 +33,18 @@ from carla_testbed.record import RecordManager, RecordOptions
 from carla_testbed.record.monitor import SignalMonitor
 from carla_testbed.record.rviz.launcher import RvizLauncher
 from carla_testbed.runner import TestHarness
-from carla_testbed.scenarios import FollowStopConfig, FollowStopScenario
-from carla_testbed.sim import CarlaClientManager, configure_synchronous_mode, restore_settings
+from carla_testbed.scenarios import (
+    ApolloSemanticSuiteConfig,
+    ApolloSemanticSuiteScenario,
+    CalibrationOnlyConfig,
+    CalibrationOnlyScenario,
+    FollowStopConfig,
+    FollowStopScenario,
+    Town01RouteHealthConfig,
+    Town01RouteHealthScenario,
+)
+from carla_testbed.scenarios.apollo_semantic_suite import SemanticLeadProfile
+from carla_testbed.sim import configure_synchronous_mode, connect_world_with_retry, restore_settings
 from carla_testbed.utils.env import resolve_carla_root, resolve_repo_root
 from carla_testbed.utils.run_naming import build_run_name, next_available_run_dir, update_latest_pointer
 from tbio.carla.launcher import CarlaLauncher
@@ -56,6 +68,74 @@ except Exception:
     # Keep CLI importable even when local CARLA path is not configured yet.
     DEFAULT_CARLA_ROOT = Path("/path/to/CARLA_0.9.16")
 _ACTIVE_CLEANUPS: Dict[str, threading.Thread] = {}
+_ROS2_REEXEC_FLAG = "TESTBED_ROS2_ENV_BOOTSTRAPPED"
+_ROS_HUMBLE_PREFIX = Path("/opt/ros/humble")
+
+
+def _prepend_env_paths(env: Dict[str, str], key: str, values: List[Path | str]) -> None:
+    current = [item for item in str(env.get(key, "")).split(":") if item]
+    for value in reversed([str(item) for item in values if item]):
+        if value not in current:
+            current.insert(0, value)
+    if current:
+        env[key] = ":".join(current)
+
+
+def _maybe_reexec_with_ros2_runtime(args: argparse.Namespace) -> None:
+    if not bool(getattr(args, "enable_ros2_gt", False)):
+        return
+    if os.environ.get(_ROS2_REEXEC_FLAG) == "1":
+        return
+    if not _ROS_HUMBLE_PREFIX.exists():
+        return
+
+    env = os.environ.copy()
+    env[_ROS2_REEXEC_FLAG] = "1"
+    pyver = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    _prepend_env_paths(env, "AMENT_PREFIX_PATH", [_ROS_HUMBLE_PREFIX])
+    _prepend_env_paths(env, "COLCON_PREFIX_PATH", [_ROS_HUMBLE_PREFIX])
+    _prepend_env_paths(env, "CMAKE_PREFIX_PATH", [_ROS_HUMBLE_PREFIX])
+    _prepend_env_paths(
+        env,
+        "LD_LIBRARY_PATH",
+        [
+            _ROS_HUMBLE_PREFIX / "lib",
+            _ROS_HUMBLE_PREFIX / "local" / "lib",
+            _ROS_HUMBLE_PREFIX / "lib" / "x86_64-linux-gnu",
+        ],
+    )
+    _prepend_env_paths(
+        env,
+        "PYTHONPATH",
+        [
+            _ROS_HUMBLE_PREFIX / "local" / "lib" / pyver / "dist-packages",
+            _ROS_HUMBLE_PREFIX / "lib" / pyver / "site-packages",
+        ],
+    )
+    env.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
+    print("[ros2-env] re-exec with /opt/ros/humble runtime for in-process GT publisher")
+    os.execvpe(sys.executable, [sys.executable, "-m", "examples.run_followstop", *sys.argv[1:]], env)
+
+
+def _cleanup_stale_apollo_runtime_processes() -> None:
+    patterns = [
+        "tools/apollo10_cyber_bridge/bridge.py",
+        "algo/nodes/control/carla_control_bridge/ros2_autoware_to_carla.py",
+        "modules/routing/dag/routing.dag",
+        "modules/prediction/dag/prediction.dag",
+        "modules/external_command/process_component/dag/external_command_process.dag",
+        "modules/planning/planning_component/dag/planning.dag",
+        "modules/control/control_component/dag/control.dag",
+    ]
+    for pattern in patterns:
+        try:
+            subprocess.run(
+                ["bash", "-lc", f"pkill -f {pattern!r} >/dev/null 2>&1 || true"],
+                cwd=str(TESTBED_ROOT),
+                check=False,
+            )
+        except Exception:
+            pass
 
 
 def _is_port_open(host: str, port: int) -> bool:
@@ -92,6 +172,304 @@ def _dedup(seq):
         seen.add(x)
         out.append(x)
     return out
+
+
+def _load_json_if_exists(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None or value == "":
+            return None
+        out = float(value)
+        if math.isnan(out) or math.isinf(out):
+            return None
+        return out
+    except Exception:
+        return None
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _safe_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y", "on"}:
+        return True
+    if text in {"false", "0", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _safe_int_list(value: Any) -> List[int]:
+    if value is None or value == "":
+        return []
+    items = value if isinstance(value, (list, tuple, set)) else [value]
+    out: List[int] = []
+    seen = set()
+    for item in items:
+        parsed = _safe_int(item)
+        if parsed is None or parsed in seen:
+            continue
+        seen.add(parsed)
+        out.append(parsed)
+    return out
+
+
+def _compute_low_speed_creep_metrics(
+    debug_timeseries_path: Path,
+    *,
+    start_after_sec: float,
+    speed_below_mps: float,
+    front_gap_above_m: float,
+    require_routing_established: bool,
+    ignore_when_terminal_stop_hold_active: bool,
+) -> Dict[str, Any]:
+    metrics: Dict[str, Any] = {
+        "available": False,
+        "path": str(debug_timeseries_path),
+        "start_after_sec": float(start_after_sec),
+        "speed_below_mps": float(speed_below_mps),
+        "front_gap_above_m": float(front_gap_above_m),
+        "require_routing_established": bool(require_routing_established),
+        "ignore_when_terminal_stop_hold_active": bool(ignore_when_terminal_stop_hold_active),
+        "sample_count": 0,
+        "matched_sample_count": 0,
+        "longest_streak_frames": 0,
+        "longest_streak_duration_sec": 0.0,
+        "first_match_ts_sec": None,
+        "longest_streak_start_ts_sec": None,
+        "longest_streak_end_ts_sec": None,
+    }
+    if not debug_timeseries_path.exists():
+        return metrics
+    try:
+        with debug_timeseries_path.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+    except Exception:
+        return metrics
+    if not rows:
+        metrics["available"] = True
+        return metrics
+
+    metrics["available"] = True
+    metrics["sample_count"] = len(rows)
+    first_ts = _safe_float(rows[0].get("ts_sec"))
+    if first_ts is None:
+        return metrics
+
+    current_frames = 0
+    current_start_ts: Optional[float] = None
+    prev_ts: Optional[float] = None
+    best_end_ts: Optional[float] = None
+    best_duration = 0.0
+
+    def _close_streak(end_ts: Optional[float]) -> None:
+        nonlocal current_frames, current_start_ts, best_duration, best_end_ts
+        if current_frames <= 0 or current_start_ts is None or end_ts is None:
+            current_frames = 0
+            current_start_ts = None
+            return
+        duration = max(0.0, float(end_ts) - float(current_start_ts))
+        if current_frames > int(metrics["longest_streak_frames"]) or (
+            current_frames == int(metrics["longest_streak_frames"]) and duration > best_duration
+        ):
+            metrics["longest_streak_frames"] = int(current_frames)
+            metrics["longest_streak_start_ts_sec"] = float(current_start_ts)
+            metrics["longest_streak_end_ts_sec"] = float(end_ts)
+            best_duration = float(duration)
+            best_end_ts = float(end_ts)
+            metrics["longest_streak_duration_sec"] = float(duration)
+        current_frames = 0
+        current_start_ts = None
+
+    for row in rows:
+        ts_sec = _safe_float(row.get("ts_sec"))
+        speed_mps = _safe_float(row.get("speed_mps"))
+        front_gap_lon_m = _safe_float(row.get("front_obstacle_gap_lon_m"))
+        routing_established = _safe_bool(row.get("routing_established"))
+        terminal_stop_hold_active = _safe_bool(row.get("terminal_stop_hold_active"))
+        prev_ts = ts_sec if ts_sec is not None else prev_ts
+        if ts_sec is None or speed_mps is None or front_gap_lon_m is None:
+            _close_streak(prev_ts)
+            continue
+        cond = ts_sec >= (first_ts + float(start_after_sec))
+        cond = cond and speed_mps < float(speed_below_mps)
+        cond = cond and front_gap_lon_m > float(front_gap_above_m)
+        if require_routing_established:
+            cond = cond and bool(routing_established)
+        if ignore_when_terminal_stop_hold_active:
+            cond = cond and not bool(terminal_stop_hold_active)
+        if cond:
+            metrics["matched_sample_count"] = int(metrics["matched_sample_count"]) + 1
+            if metrics["first_match_ts_sec"] is None:
+                metrics["first_match_ts_sec"] = float(ts_sec)
+            if current_frames == 0:
+                current_start_ts = float(ts_sec)
+            current_frames += 1
+        else:
+            _close_streak(ts_sec)
+        prev_ts = ts_sec
+    _close_streak(prev_ts)
+    if best_end_ts is not None:
+        metrics["longest_streak_end_ts_sec"] = best_end_ts
+    return metrics
+
+
+def _compute_basic_lateral_metrics(control_decode_path: Path) -> Dict[str, Any]:
+    metrics: Dict[str, Any] = {
+        "available": False,
+        "path": str(control_decode_path),
+        "sample_count": 0,
+        "raw_steer_nonzero_count": 0,
+        "raw_steer_nonzero_ratio": 0.0,
+        "raw_steer_saturated_count": 0,
+        "raw_steer_saturated_ratio": 0.0,
+        "longest_continuous_saturation_frames": 0,
+        "longest_continuous_saturation_sec": 0.0,
+        "commanded_steer_nonzero_count": 0,
+        "commanded_steer_nonzero_ratio": 0.0,
+        "force_zero_steer_applied_count": 0,
+        "guard_trigger_count": 0,
+        "guard_trigger_reason_top1": None,
+    }
+    if not control_decode_path.exists():
+        return metrics
+    try:
+        lines = control_decode_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return metrics
+    rows: List[Dict[str, Any]] = []
+    for line in lines:
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    if not rows:
+        return metrics
+    metrics["available"] = True
+    metrics["sample_count"] = len(rows)
+    current_sat_frames = 0
+    current_sat_start_ts: Optional[float] = None
+    best_sat_duration = 0.0
+    guard_reasons: Dict[str, int] = {}
+
+    def _close_sat(ts_sec: Optional[float]) -> None:
+        nonlocal current_sat_frames, current_sat_start_ts, best_sat_duration
+        if current_sat_frames <= 0 or current_sat_start_ts is None or ts_sec is None:
+            current_sat_frames = 0
+            current_sat_start_ts = None
+            return
+        duration = max(0.0, float(ts_sec) - float(current_sat_start_ts))
+        if current_sat_frames > int(metrics["longest_continuous_saturation_frames"]) or (
+            current_sat_frames == int(metrics["longest_continuous_saturation_frames"]) and duration > best_sat_duration
+        ):
+            metrics["longest_continuous_saturation_frames"] = int(current_sat_frames)
+            metrics["longest_continuous_saturation_sec"] = float(duration)
+            best_sat_duration = float(duration)
+        current_sat_frames = 0
+        current_sat_start_ts = None
+
+    prev_ts: Optional[float] = None
+    for row in rows:
+        ts_sec = _safe_float(row.get("ts_sec"))
+        raw_steer = _safe_float(row.get("raw_steer"))
+        commanded_steer = _safe_float(row.get("commanded_steer"))
+        if raw_steer is not None and abs(raw_steer) > 1e-6:
+            metrics["raw_steer_nonzero_count"] = int(metrics["raw_steer_nonzero_count"]) + 1
+        if raw_steer is not None and abs(raw_steer) >= 0.99:
+            metrics["raw_steer_saturated_count"] = int(metrics["raw_steer_saturated_count"]) + 1
+            if current_sat_frames == 0:
+                current_sat_start_ts = ts_sec if ts_sec is not None else prev_ts
+            current_sat_frames += 1
+        else:
+            _close_sat(ts_sec if ts_sec is not None else prev_ts)
+        if commanded_steer is not None and abs(commanded_steer) > 1e-6:
+            metrics["commanded_steer_nonzero_count"] = int(metrics["commanded_steer_nonzero_count"]) + 1
+        if bool(row.get("force_zero_steer_applied")):
+            metrics["force_zero_steer_applied_count"] = int(metrics["force_zero_steer_applied_count"]) + 1
+        guard_reasons_in_row = []
+        if bool(row.get("low_speed_steer_guard_applied")):
+            guard_reasons_in_row.append("low_speed_steer_guard")
+        if bool(row.get("low_speed_sustained_guard_applied")):
+            guard_reasons_in_row.append("low_speed_sustained_guard")
+        if bool(row.get("sustained_saturation_guard_applied")):
+            guard_reasons_in_row.append("sustained_saturation_guard")
+        if guard_reasons_in_row:
+            metrics["guard_trigger_count"] = int(metrics["guard_trigger_count"]) + 1
+            for reason in guard_reasons_in_row:
+                guard_reasons[reason] = int(guard_reasons.get(reason, 0)) + 1
+        prev_ts = ts_sec if ts_sec is not None else prev_ts
+    _close_sat(prev_ts)
+    sample_count = int(metrics["sample_count"]) or 1
+    metrics["raw_steer_nonzero_ratio"] = float(metrics["raw_steer_nonzero_count"]) / float(sample_count)
+    metrics["raw_steer_saturated_ratio"] = float(metrics["raw_steer_saturated_count"]) / float(sample_count)
+    metrics["commanded_steer_nonzero_ratio"] = float(metrics["commanded_steer_nonzero_count"]) / float(sample_count)
+    if guard_reasons:
+        metrics["guard_trigger_reason_top1"] = max(guard_reasons.items(), key=lambda item: item[1])[0]
+    return metrics
+
+
+def _compute_route_health_metrics(
+    scenario_meta: Dict[str, Any],
+    ego: Optional[carla.Actor],
+    *,
+    routing_success_count: Optional[int],
+) -> Dict[str, Any]:
+    metrics: Dict[str, Any] = {
+        "available": False,
+        "route_established": bool((routing_success_count or 0) > 0),
+        "route_length_target_m": _safe_float(scenario_meta.get("route_length_m")),
+        "start_goal_distance_m": None,
+        "final_goal_distance_m": None,
+        "route_distance_achieved_m": None,
+        "route_completion_percentage": None,
+        "spawn_lane": scenario_meta.get("spawn_lane"),
+        "goal_lane": scenario_meta.get("goal_lane"),
+        "goal_selection_attempt_count": len((scenario_meta.get("goal_selection_attempts") or [])),
+    }
+    spawn = scenario_meta.get("spawn") or {}
+    goal = scenario_meta.get("goal") or {}
+    sx = _safe_float(spawn.get("x"))
+    sy = _safe_float(spawn.get("y"))
+    gx = _safe_float(goal.get("x"))
+    gy = _safe_float(goal.get("y"))
+    if sx is None or sy is None or gx is None or gy is None:
+        return metrics
+    start_goal_distance = math.sqrt(((gx - sx) ** 2) + ((gy - sy) ** 2))
+    metrics["start_goal_distance_m"] = float(start_goal_distance)
+    try:
+        if ego is not None:
+            ego_loc = ego.get_location()
+            final_goal_distance = math.sqrt(((gx - float(ego_loc.x)) ** 2) + ((gy - float(ego_loc.y)) ** 2))
+            metrics["final_goal_distance_m"] = float(final_goal_distance)
+            if start_goal_distance > 1e-3:
+                completion = max(0.0, min(1.0, 1.0 - (final_goal_distance / start_goal_distance)))
+                metrics["route_completion_percentage"] = float(completion)
+                metrics["route_distance_achieved_m"] = float(start_goal_distance - final_goal_distance)
+            metrics["available"] = True
+    except Exception:
+        pass
+    return metrics
 
 
 def _quaternion_from_yaw(yaw_deg: float):
@@ -156,6 +534,7 @@ def _write_apollo_scenario_goal(
     ego: carla.Actor,
     front: Optional[carla.Actor],
     args: argparse.Namespace,
+    scenario: Optional[Any] = None,
 ) -> Optional[Path]:
     stack = ((effective_cfg.get("algo", {}) or {}).get("stack") or "").strip().lower()
     if stack != "apollo":
@@ -174,17 +553,39 @@ def _write_apollo_scenario_goal(
     except Exception:
         world = None
 
-    ego_fallback = None
-    front_fallback = None
+    def _tf_from_meta(payload: Any) -> Optional[carla.Transform]:
+        if not isinstance(payload, dict):
+            return None
+        if "x" not in payload or "y" not in payload:
+            return None
+        return carla.Transform(
+            carla.Location(
+                x=float(payload.get("x", 0.0)),
+                y=float(payload.get("y", 0.0)),
+                z=float(payload.get("z", 0.0)),
+            ),
+            carla.Rotation(yaw=float(payload.get("yaw_deg", 0.0))),
+        )
+
+    def _apollo_map_xyz_from_carla_raw(x: float, y: float, z: float) -> tuple[float, float, float]:
+        yy = -float(y) if bool(getattr(args, "ros_invert_tf", False)) else float(y)
+        return _transform_xy_with_cfg(float(x), yy, float(z), tf_cfg)
+
+    scenario_meta = scenario.metadata() if scenario is not None and hasattr(scenario, "metadata") else {}
+    if not isinstance(scenario_meta, dict):
+        scenario_meta = {}
+
+    ego_fallback = _tf_from_meta(scenario_meta.get("spawn"))
+    front_fallback = _tf_from_meta(scenario_meta.get("front_spawn"))
     if world is not None:
         try:
             spawn_points = world.get_map().get_spawn_points()
             ego_idx = int(getattr(args, "ego_idx", -1))
-            if 0 <= ego_idx < len(spawn_points):
+            if ego_fallback is None and 0 <= ego_idx < len(spawn_points):
                 ego_fallback = spawn_points[ego_idx]
             if front is not None:
                 front_idx = int(getattr(args, "front_idx", -1))
-                if 0 <= front_idx < len(spawn_points):
+                if front_fallback is None and 0 <= front_idx < len(spawn_points):
                     front_fallback = spawn_points[front_idx]
         except Exception:
             pass
@@ -229,8 +630,51 @@ def _write_apollo_scenario_goal(
             front_gap = None
     goal_source = "ego_heading_ahead"
     goal_raw: Dict[str, float]
+    goal_raw_carla: Optional[Dict[str, float]] = None
     payload: Dict[str, Any]
-    if args.scenario_goal_x is not None and args.scenario_goal_y is not None:
+    scenario_driver = str(
+        (((effective_cfg.get("scenario", {}) or {}).get("driver")) or scenario_meta.get("scenario_driver") or "")
+    ).strip().lower()
+    scenario_goal_raw = scenario_meta.get("scenario_goal_raw_carla") if isinstance(scenario_meta, dict) else None
+    if isinstance(scenario_goal_raw, dict) and "x" in scenario_goal_raw and "y" in scenario_goal_raw:
+        goal_raw_carla = {
+            "x": float(scenario_goal_raw["x"]),
+            "y": float(scenario_goal_raw["y"]),
+            "z": float(scenario_goal_raw.get("z", ego_loc.z)),
+        }
+        if scenario_driver == "carla_apollo_semantic_suite":
+            gx, gy, gz = _apollo_map_xyz_from_carla_raw(
+                goal_raw_carla["x"], goal_raw_carla["y"], goal_raw_carla["z"]
+            )
+            goal_source = "scenario_metadata_apollo_map_xy"
+            goal_raw = {"x": float(gx), "y": float(gy), "z": float(gz)}
+            payload = {
+                "frame": "apollo_map",
+                "source": goal_source,
+                "goal": goal_raw,
+                "goal_raw_carla": dict(goal_raw_carla),
+                "route_health_metadata": {
+                    "route_length_m": scenario_meta.get("route_length_m"),
+                    "remain_length_after_goal_m": scenario_meta.get("remain_length_after_goal_m"),
+                    "spawn_lane": scenario_meta.get("spawn_lane"),
+                    "goal_lane": scenario_meta.get("goal_lane"),
+                },
+            }
+        else:
+            goal_source = "scenario_metadata_xy"
+            goal_raw = dict(goal_raw_carla)
+            payload = {
+                "frame": "carla_raw",
+                "source": goal_source,
+                "goal": goal_raw,
+                "route_health_metadata": {
+                    "route_length_m": scenario_meta.get("route_length_m"),
+                    "remain_length_after_goal_m": scenario_meta.get("remain_length_after_goal_m"),
+                    "spawn_lane": scenario_meta.get("spawn_lane"),
+                    "goal_lane": scenario_meta.get("goal_lane"),
+                },
+            }
+    elif args.scenario_goal_x is not None and args.scenario_goal_y is not None:
         goal_source = "cli_xy"
         goal_raw = {
             "x": float(args.scenario_goal_x),
@@ -290,12 +734,14 @@ def _write_apollo_scenario_goal(
                 "goal": goal_raw,
             }
 
-    start_x, start_y, start_z = _transform_xy_with_cfg(float(ego_loc.x), float(ego_loc.y), float(ego_loc.z), tf_cfg)
+    start_x, start_y, start_z = _apollo_map_xyz_from_carla_raw(
+        float(ego_loc.x), float(ego_loc.y), float(ego_loc.z)
+    )
     payload.update(
         {
             "generated_at_unix_sec": time.time(),
             "requested_goal_mode": str(routing_cfg.get("goal_mode", "scenario_xy") or "scenario_xy"),
-            "goal_raw_carla": goal_raw,
+            "goal_raw_carla": goal_raw_carla or goal_raw,
             "front_gap": front_gap,
             "fallback_spawn_used": {
                 "ego": ego_used_fallback,
@@ -537,6 +983,45 @@ def main():
         "front_max_heading_diff_deg": 25.0,
         "force_green_traffic_lights": False,
         "freeze_traffic_lights": True,
+        "vehicle_blueprint_id": "",
+        "vehicle_blueprint_patterns": [
+            "vehicle.lincoln.mkz_2020",
+            "vehicle.lincoln.mkz_2017",
+            "vehicle.lincoln.mkz*",
+            "vehicle.tesla.model3",
+        ],
+        "ego_offset_x_m": 0.0,
+        "ego_offset_y_m": 0.0,
+        "ego_offset_z_m": 0.0,
+        "ego_yaw_offset_deg": 0.0,
+        "front_offset_x_m": 0.0,
+        "front_offset_y_m": 0.0,
+        "front_offset_z_m": 0.0,
+        "front_yaw_offset_deg": 0.0,
+        "semantic_scene_type": "lateral_straight_track",
+        "semantic_waypoint_spacing_m": 3.0,
+        "semantic_preview_distance_m": 40.0,
+        "semantic_curve_min_yaw_delta_deg": 12.0,
+        "semantic_straight_max_yaw_delta_deg": 4.0,
+        "semantic_ego_front_gap_m": 38.0,
+        "semantic_far_front_gap_m": 120.0,
+        "semantic_scene_length_ahead_m": 120.0,
+        "semantic_allow_junction": False,
+        "semantic_preferred_road_ids": [],
+        "semantic_preferred_section_ids": [],
+        "semantic_preferred_lane_ids": [],
+        "semantic_min_start_y": None,
+        "semantic_max_start_y": None,
+        "semantic_candidate_sorted_index": None,
+        "semantic_lead_profile_mode": "static_stop",
+        "semantic_lead_static_brake": 1.0,
+        "semantic_lead_hand_brake": True,
+        "semantic_lead_cruise_speed_mps": 6.0,
+        "semantic_lead_hold_before_move_sec": 2.0,
+        "semantic_lead_cruise_hold_sec": 3.0,
+        "semantic_lead_stop_hold_sec": 2.0,
+        "semantic_lead_throttle_cap": 0.55,
+        "semantic_lead_brake_cap": 0.65,
     }
     for k, v in _defaults.items():
         if not hasattr(args, k):
@@ -586,6 +1071,116 @@ def main():
         )
         args.front_max_heading_diff_deg = float(
             scenario_cfg.get("front_max_heading_diff_deg", args.front_max_heading_diff_deg)
+        )
+        args.vehicle_blueprint_id = str(
+            scenario_cfg.get("vehicle_blueprint_id", args.vehicle_blueprint_id) or ""
+        )
+        patterns = scenario_cfg.get("vehicle_blueprint_patterns", args.vehicle_blueprint_patterns)
+        if isinstance(patterns, list) and patterns:
+            args.vehicle_blueprint_patterns = [str(item) for item in patterns]
+        ego_pose_offset = scenario_cfg.get("ego_pose_offset", {}) or {}
+        front_pose_offset = scenario_cfg.get("front_pose_offset", {}) or {}
+        args.ego_offset_x_m = float(
+            ego_pose_offset.get("x_m", scenario_cfg.get("ego_offset_x_m", args.ego_offset_x_m))
+        )
+        args.ego_offset_y_m = float(
+            ego_pose_offset.get("y_m", scenario_cfg.get("ego_offset_y_m", args.ego_offset_y_m))
+        )
+        args.ego_offset_z_m = float(
+            ego_pose_offset.get("z_m", scenario_cfg.get("ego_offset_z_m", args.ego_offset_z_m))
+        )
+        args.ego_yaw_offset_deg = float(
+            ego_pose_offset.get(
+                "yaw_deg", scenario_cfg.get("ego_yaw_offset_deg", args.ego_yaw_offset_deg)
+            )
+        )
+        args.front_offset_x_m = float(
+            front_pose_offset.get("x_m", scenario_cfg.get("front_offset_x_m", args.front_offset_x_m))
+        )
+        args.front_offset_y_m = float(
+            front_pose_offset.get("y_m", scenario_cfg.get("front_offset_y_m", args.front_offset_y_m))
+        )
+        args.front_offset_z_m = float(
+            front_pose_offset.get("z_m", scenario_cfg.get("front_offset_z_m", args.front_offset_z_m))
+        )
+        args.front_yaw_offset_deg = float(
+            front_pose_offset.get(
+                "yaw_deg", scenario_cfg.get("front_yaw_offset_deg", args.front_yaw_offset_deg)
+            )
+        )
+        semantic_cfg = scenario_cfg.get("semantic_suite", {}) or {}
+        args.semantic_scene_type = str(
+            semantic_cfg.get("scene_type", scenario_cfg.get("scene_type", args.semantic_scene_type)) or ""
+        )
+        args.semantic_waypoint_spacing_m = float(
+            semantic_cfg.get("waypoint_spacing_m", args.semantic_waypoint_spacing_m)
+        )
+        args.semantic_preview_distance_m = float(
+            semantic_cfg.get("preview_distance_m", args.semantic_preview_distance_m)
+        )
+        args.semantic_curve_min_yaw_delta_deg = float(
+            semantic_cfg.get("curve_min_yaw_delta_deg", args.semantic_curve_min_yaw_delta_deg)
+        )
+        args.semantic_straight_max_yaw_delta_deg = float(
+            semantic_cfg.get("straight_max_yaw_delta_deg", args.semantic_straight_max_yaw_delta_deg)
+        )
+        args.semantic_ego_front_gap_m = float(
+            semantic_cfg.get("ego_front_gap_m", args.semantic_ego_front_gap_m)
+        )
+        args.semantic_far_front_gap_m = float(
+            semantic_cfg.get("far_front_gap_m", args.semantic_far_front_gap_m)
+        )
+        args.semantic_scene_length_ahead_m = float(
+            semantic_cfg.get("scene_length_ahead_m", args.semantic_scene_length_ahead_m)
+        )
+        args.semantic_allow_junction = bool(
+            semantic_cfg.get("allow_junction", args.semantic_allow_junction)
+        )
+        args.semantic_preferred_road_ids = _safe_int_list(
+            semantic_cfg.get("preferred_road_ids", args.semantic_preferred_road_ids)
+        )
+        args.semantic_preferred_section_ids = _safe_int_list(
+            semantic_cfg.get("preferred_section_ids", args.semantic_preferred_section_ids)
+        )
+        args.semantic_preferred_lane_ids = _safe_int_list(
+            semantic_cfg.get("preferred_lane_ids", args.semantic_preferred_lane_ids)
+        )
+        args.semantic_min_start_y = _safe_float(
+            semantic_cfg.get("min_start_y", args.semantic_min_start_y)
+        )
+        args.semantic_max_start_y = _safe_float(
+            semantic_cfg.get("max_start_y", args.semantic_max_start_y)
+        )
+        args.semantic_candidate_sorted_index = _safe_int(
+            semantic_cfg.get("candidate_sorted_index", args.semantic_candidate_sorted_index)
+        )
+        lead_profile_cfg = semantic_cfg.get("lead_profile", {}) or {}
+        args.semantic_lead_profile_mode = str(
+            lead_profile_cfg.get("mode", args.semantic_lead_profile_mode) or ""
+        )
+        args.semantic_lead_static_brake = float(
+            lead_profile_cfg.get("static_brake", args.semantic_lead_static_brake)
+        )
+        args.semantic_lead_hand_brake = bool(
+            lead_profile_cfg.get("hand_brake", args.semantic_lead_hand_brake)
+        )
+        args.semantic_lead_cruise_speed_mps = float(
+            lead_profile_cfg.get("cruise_speed_mps", args.semantic_lead_cruise_speed_mps)
+        )
+        args.semantic_lead_hold_before_move_sec = float(
+            lead_profile_cfg.get("hold_before_move_sec", args.semantic_lead_hold_before_move_sec)
+        )
+        args.semantic_lead_cruise_hold_sec = float(
+            lead_profile_cfg.get("cruise_hold_sec", args.semantic_lead_cruise_hold_sec)
+        )
+        args.semantic_lead_stop_hold_sec = float(
+            lead_profile_cfg.get("stop_hold_sec", args.semantic_lead_stop_hold_sec)
+        )
+        args.semantic_lead_throttle_cap = float(
+            lead_profile_cfg.get("throttle_cap", args.semantic_lead_throttle_cap)
+        )
+        args.semantic_lead_brake_cap = float(
+            lead_profile_cfg.get("brake_cap", args.semantic_lead_brake_cap)
         )
         tl_cfg = scenario_cfg.get("traffic_lights", {}) or {}
         args.force_green_traffic_lights = bool(
@@ -706,6 +1301,8 @@ def main():
     else:
         cfg = {}
 
+    _maybe_reexec_with_ros2_runtime(args)
+
     # run_dir and effective config
     ts = int(time.time())
     repo_root = Path(__file__).resolve().parents[1]
@@ -728,12 +1325,67 @@ def main():
                 alt = next_available_run_dir(out_run_dir.parent, out_run_dir.name)
                 print(f"[run] requested run dir is non-empty, redirecting to: {alt}")
                 out_run_dir = alt
+                try:
+                    args.run_dir.mkdir(parents=True, exist_ok=True)
+                    (args.run_dir / "RUN_DIR_REDIRECT.txt").write_text(str(out_run_dir))
+                except Exception:
+                    pass
         except Exception as exc:
             print(f"[WARN] failed to check run dir reuse for {out_run_dir}: {exc}")
     out_run_dir.mkdir(parents=True, exist_ok=True)
     update_latest_pointer(out_run_dir)
     log_dir = out_run_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    startup_stage_path = out_run_dir / "artifacts" / "startup_stage.json"
+    startup_timeline_path = out_run_dir / "artifacts" / "startup_stage_timeline.jsonl"
+    carla_world_ready_trace_path = out_run_dir / "artifacts" / "carla_world_ready_trace.jsonl"
+    carla_world_ready_summary_path = out_run_dir / "artifacts" / "carla_world_ready_summary.json"
+    startup_stage_path.parent.mkdir(parents=True, exist_ok=True)
+    carla_world_ready_summary: Dict[str, Any] = {
+        "target_town": str(args.town),
+        "start_carla": bool(args.start_carla),
+        "status": "initialized",
+        "client_connect_attempts": [],
+        "wait_ready_attempts": [],
+        "get_world_attempts": [],
+        "load_world_attempts": [],
+        "current_town_before_load": None,
+        "final_town": None,
+    }
+
+    def _write_startup_stage(stage: str, **payload: Any) -> None:
+        try:
+            data: Dict[str, Any] = {"stage": stage, "ts_sec": time.time()}
+            data.update(payload)
+            startup_stage_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+            with startup_timeline_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(data, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _write_carla_world_ready_summary(**updates: Any) -> None:
+        try:
+            carla_world_ready_summary.update(updates)
+            payload = dict(carla_world_ready_summary)
+            payload["last_updated_ts_sec"] = time.time()
+            carla_world_ready_summary_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False)
+            )
+        except Exception:
+            pass
+
+    def _write_carla_world_ready_event(event: str, **payload: Any) -> None:
+        try:
+            data: Dict[str, Any] = {"event": event, "ts_sec": time.time()}
+            data.update(payload)
+            with carla_world_ready_trace_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(data, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    _write_startup_stage("run_initialized")
+    _write_carla_world_ready_summary(status="run_initialized")
+    _write_carla_world_ready_event("run_initialized")
     cleanup_state: Dict[str, Any] = {
         "done": False,
         "adapter": None,
@@ -769,6 +1421,11 @@ def main():
                 )
             except Exception as exc:
                 print(f"[WARN] adapter stop failed: {exc}")
+        _run_cleanup_with_timeout(
+            "apollo_runtime_process_cleanup",
+            _cleanup_stale_apollo_runtime_processes,
+            timeout_s=6.0,
+        )
         stop_process(cleanup_state.get("control_logger_proc"))
         stop_process(cleanup_state.get("sensor_probe_proc"))
         world_obj = cleanup_state.get("world")
@@ -815,15 +1472,107 @@ def main():
     signal.signal(signal.SIGINT, _handle_interrupt)
     signal.signal(signal.SIGTERM, _handle_interrupt)
     eff_path = out_run_dir / "effective.yaml"
+    if args.config:
+        effective_cfg["_profile_config_path"] = str(args.config.resolve())
     effective_cfg.setdefault("run", {})["ticks"] = args.ticks
     effective_cfg.setdefault("run", {})["map"] = args.town
     effective_cfg.setdefault("run", {})["ego_id"] = args.ego_id
     effective_cfg.setdefault("io", {}).setdefault("ros", {})["namespace"] = _normalize_ros_namespace(args.ros2_namespace)
     effective_cfg.setdefault("scenario", {})["front_idx"] = args.front_idx
     effective_cfg.setdefault("scenario", {})["ego_idx"] = args.ego_idx
+    effective_cfg.setdefault("scenario", {})["vehicle_blueprint_id"] = args.vehicle_blueprint_id
+    effective_cfg.setdefault("scenario", {})["vehicle_blueprint_patterns"] = list(
+        args.vehicle_blueprint_patterns
+    )
+    effective_cfg.setdefault("scenario", {})["ego_pose_offset"] = {
+        "x_m": float(args.ego_offset_x_m),
+        "y_m": float(args.ego_offset_y_m),
+        "z_m": float(args.ego_offset_z_m),
+        "yaw_deg": float(args.ego_yaw_offset_deg),
+    }
+    effective_cfg.setdefault("scenario", {})["front_pose_offset"] = {
+        "x_m": float(args.front_offset_x_m),
+        "y_m": float(args.front_offset_y_m),
+        "z_m": float(args.front_offset_z_m),
+        "yaw_deg": float(args.front_yaw_offset_deg),
+    }
+    effective_cfg.setdefault("scenario", {})["semantic_suite"] = {
+        "scene_type": str(args.semantic_scene_type),
+        "waypoint_spacing_m": float(args.semantic_waypoint_spacing_m),
+        "preview_distance_m": float(args.semantic_preview_distance_m),
+        "curve_min_yaw_delta_deg": float(args.semantic_curve_min_yaw_delta_deg),
+        "straight_max_yaw_delta_deg": float(args.semantic_straight_max_yaw_delta_deg),
+        "ego_front_gap_m": float(args.semantic_ego_front_gap_m),
+        "far_front_gap_m": float(args.semantic_far_front_gap_m),
+        "scene_length_ahead_m": float(args.semantic_scene_length_ahead_m),
+        "allow_junction": bool(args.semantic_allow_junction),
+        "preferred_road_ids": [int(item) for item in args.semantic_preferred_road_ids],
+        "preferred_section_ids": [int(item) for item in args.semantic_preferred_section_ids],
+        "preferred_lane_ids": [int(item) for item in args.semantic_preferred_lane_ids],
+        "min_start_y": _safe_float(args.semantic_min_start_y),
+        "max_start_y": _safe_float(args.semantic_max_start_y),
+        "candidate_sorted_index": _safe_int(args.semantic_candidate_sorted_index),
+        "lead_profile": {
+            "mode": str(args.semantic_lead_profile_mode),
+            "static_brake": float(args.semantic_lead_static_brake),
+            "hand_brake": bool(args.semantic_lead_hand_brake),
+            "cruise_speed_mps": float(args.semantic_lead_cruise_speed_mps),
+            "hold_before_move_sec": float(args.semantic_lead_hold_before_move_sec),
+            "cruise_hold_sec": float(args.semantic_lead_cruise_hold_sec),
+            "stop_hold_sec": float(args.semantic_lead_stop_hold_sec),
+            "throttle_cap": float(args.semantic_lead_throttle_cap),
+            "brake_cap": float(args.semantic_lead_brake_cap),
+        },
+    }
     eff_path.write_text(yaml.safe_dump(effective_cfg, sort_keys=False))
     acceptance_cfg = effective_cfg.get("acceptance", {}) if effective_cfg else {}
-    acceptance_speed_threshold = acceptance_cfg.get("min_speed_mps", 5.0)
+    acceptance_speed_threshold = float(acceptance_cfg.get("min_speed_mps", 5.0) or 5.0)
+    acceptance_require_apollo_health_artifacts = bool(
+        acceptance_cfg.get("require_apollo_health_artifacts", False)
+    )
+    acceptance_min_planning_nonempty = _safe_int(
+        acceptance_cfg.get("min_planning_nonempty_trajectory_count")
+    )
+    acceptance_min_planning_nonzero_ratio = _safe_float(
+        acceptance_cfg.get("min_planning_nonzero_ratio")
+    )
+    acceptance_max_invalid_goal_count = _safe_int(acceptance_cfg.get("max_invalid_goal_count"))
+    acceptance_max_routing_invalid_goal_skip_count = _safe_int(
+        acceptance_cfg.get("max_routing_skipped_due_to_invalid_goal_count")
+    )
+    low_speed_creep_cfg = acceptance_cfg.get("low_speed_creep", {}) or {}
+    acceptance_low_speed_creep_enabled = bool(low_speed_creep_cfg.get("enabled", False))
+    acceptance_low_speed_creep_start_after_sec = float(
+        low_speed_creep_cfg.get("start_after_sec", 15.0) or 15.0
+    )
+    acceptance_low_speed_creep_speed_below_mps = float(
+        low_speed_creep_cfg.get("speed_below_mps", 1.0) or 1.0
+    )
+    acceptance_low_speed_creep_front_gap_above_m = float(
+        low_speed_creep_cfg.get("front_gap_above_m", 20.0) or 20.0
+    )
+    acceptance_low_speed_creep_require_routing_established = bool(
+        low_speed_creep_cfg.get("require_routing_established", True)
+    )
+    acceptance_low_speed_creep_ignore_terminal_hold = bool(
+        low_speed_creep_cfg.get("ignore_when_terminal_stop_hold_active", True)
+    )
+    acceptance_low_speed_creep_max_duration_sec = _safe_float(
+        low_speed_creep_cfg.get("max_duration_sec")
+    )
+    route_health_acceptance_cfg = acceptance_cfg.get("route_health", {}) or {}
+    route_health_min_completion_ratio = _safe_float(
+        route_health_acceptance_cfg.get("min_completion_ratio")
+    )
+    route_health_min_distance_achieved_m = _safe_float(
+        route_health_acceptance_cfg.get("min_distance_achieved_m")
+    )
+    route_health_max_raw_steer_saturated_ratio = _safe_float(
+        route_health_acceptance_cfg.get("max_raw_steer_saturated_ratio")
+    )
+    route_health_max_longest_saturation_sec = _safe_float(
+        route_health_acceptance_cfg.get("max_longest_saturation_sec")
+    )
 
     if args.enable_rviz and not args.enable_ros2_native:
         print("[ERROR] --enable-rviz 仅在 --enable-ros2-native 模式下可用")
@@ -968,6 +1717,14 @@ def main():
     carla_stop_hook = None
     runtime_carla_cfg = ((effective_cfg.get("runtime", {}) or {}).get("carla", {}) or {}) if effective_cfg else {}
     stop_reused_on_exit = bool(runtime_carla_cfg.get("stop_reused_on_exit", True))
+    carla_ready_timeout_sec = float(runtime_carla_cfg.get("ready_timeout_sec", 180.0) or 180.0)
+    carla_ready_poll_sec = float(runtime_carla_cfg.get("ready_poll_sec", 1.0) or 1.0)
+    carla_post_ready_settle_sec = float(runtime_carla_cfg.get("post_ready_settle_sec", 0.0) or 0.0)
+    carla_get_world_attempts = int(runtime_carla_cfg.get("get_world_attempts", 3) or 3)
+    carla_get_world_delay_sec = float(runtime_carla_cfg.get("get_world_delay_sec", 3.0) or 3.0)
+    carla_load_world_attempts = int(runtime_carla_cfg.get("load_world_attempts", 3) or 3)
+    carla_load_world_delay_sec = float(runtime_carla_cfg.get("load_world_delay_sec", 3.0) or 3.0)
+    carla_load_world_timeout_sec = float(runtime_carla_cfg.get("load_world_timeout_sec", 60.0) or 60.0)
     if args.start_carla:
         carla_launcher = CarlaLauncher(
             carla_root=args.carla_root,
@@ -984,34 +1741,234 @@ def main():
         cleanup_state["carla_stop_hook"] = carla_stop_hook
         atexit.register(carla_stop_hook)
         try:
+            _write_startup_stage("carla_launch_start")
+            _write_carla_world_ready_event("carla_launch_start")
             carla_launcher.start()
-            if not carla_launcher.wait_ready(timeout_s=180.0, poll_s=1.0):
+            wait_ready_attempt = 1
+            wait_ready_started = time.time()
+            _write_carla_world_ready_event(
+                "carla_wait_ready_attempt_start",
+                attempt=wait_ready_attempt,
+                timeout_sec=carla_ready_timeout_sec,
+                poll_sec=carla_ready_poll_sec,
+            )
+            wait_ready_ok = carla_launcher.wait_ready(
+                timeout_s=carla_ready_timeout_sec,
+                poll_s=carla_ready_poll_sec,
+            )
+            wait_ready_row = {
+                "attempt": wait_ready_attempt,
+                "elapsed_sec": time.time() - wait_ready_started,
+                "reused": bool(carla_launcher.reused),
+                "result": "ok" if wait_ready_ok else "failed",
+            }
+            carla_world_ready_summary["wait_ready_attempts"].append(wait_ready_row)
+            _write_carla_world_ready_summary(status="waiting_carla_ready")
+            _write_carla_world_ready_event("carla_wait_ready_attempt_done", **wait_ready_row)
+            if not wait_ready_ok:
                 if not carla_launcher.reused:
                     print("[WARN] CARLA 首次启动未就绪，尝试自动重启一次")
+                    _write_startup_stage("carla_wait_ready_retry")
+                    _write_carla_world_ready_event("carla_wait_ready_retry")
                     carla_launcher.stop()
                     time.sleep(2.0)
                     carla_launcher.start()
-                if not carla_launcher.wait_ready(timeout_s=180.0, poll_s=1.0):
+                wait_ready_attempt = 2
+                wait_ready_started = time.time()
+                _write_carla_world_ready_event(
+                    "carla_wait_ready_attempt_start",
+                    attempt=wait_ready_attempt,
+                    timeout_sec=carla_ready_timeout_sec,
+                    poll_sec=carla_ready_poll_sec,
+                )
+                wait_ready_ok = carla_launcher.wait_ready(
+                    timeout_s=carla_ready_timeout_sec,
+                    poll_s=carla_ready_poll_sec,
+                )
+                wait_ready_row = {
+                    "attempt": wait_ready_attempt,
+                    "elapsed_sec": time.time() - wait_ready_started,
+                    "reused": bool(carla_launcher.reused),
+                    "result": "ok" if wait_ready_ok else "failed",
+                }
+                carla_world_ready_summary["wait_ready_attempts"].append(wait_ready_row)
+                _write_carla_world_ready_summary(status="waiting_carla_ready")
+                _write_carla_world_ready_event("carla_wait_ready_attempt_done", **wait_ready_row)
+                if not wait_ready_ok:
                     print("[ERROR] CARLA 未在超时时间内就绪")
                     print(carla_launcher.diagnose_tail())
+                    _write_startup_stage("carla_wait_ready_failed")
+                    _write_carla_world_ready_summary(status="carla_wait_ready_failed")
+                    _write_carla_world_ready_event("carla_wait_ready_failed")
                     sys.exit(1)
+            _write_startup_stage("carla_wait_ready_ok", reused=bool(carla_launcher.reused))
+            _write_carla_world_ready_summary(status="carla_wait_ready_ok")
+            _write_carla_world_ready_event(
+                "carla_wait_ready_ok",
+                reused=bool(carla_launcher.reused),
+            )
+            if carla_post_ready_settle_sec > 0.0:
+                print(f"[carla] ready, settling for {carla_post_ready_settle_sec:.1f}s")
+                time.sleep(carla_post_ready_settle_sec)
         except Exception as exc:
             print(f"[ERROR] CARLA 启动失败: {exc}")
             if carla_launcher:
                 print(carla_launcher.diagnose_tail())
+            _write_startup_stage("carla_launch_exception", error=str(exc))
+            _write_carla_world_ready_summary(status="carla_launch_exception", error=repr(exc))
+            _write_carla_world_ready_event("carla_launch_exception", error=repr(exc))
             sys.exit(1)
     else:
         if not _wait_for_carla(args.host, args.port, timeout=10.0):
+            _write_carla_world_ready_summary(status="external_carla_missing")
+            _write_carla_world_ready_event("external_carla_missing")
             print("[ERROR] 未检测到运行中的 CARLA，请先启动或使用 --start-carla")
             sys.exit(1)
 
+    def _record_bringup_phase(phase: str, payload: Dict[str, Any]) -> None:
+        row = {k: v for k, v in dict(payload).items() if k not in {"attempts", "delay_sec", "timeout_sec"}}
+        if phase == "client_connect_attempt_start":
+            _write_carla_world_ready_event(
+                "carla_client_connect_attempt_start",
+                **payload,
+            )
+            return
+        if phase == "client_connect_attempt_ok":
+            row["success"] = True
+            carla_world_ready_summary["client_connect_attempts"].append(row)
+            _write_carla_world_ready_summary(status="carla_client_connect_ok")
+            _write_carla_world_ready_event("carla_client_connect_attempt_ok", **row)
+            return
+        if phase == "client_connect_attempt_failed":
+            row["success"] = False
+            carla_world_ready_summary["client_connect_attempts"].append(row)
+            _write_carla_world_ready_summary(status="carla_client_connect_retrying")
+            _write_carla_world_ready_event("carla_client_connect_attempt_failed", **row)
+            print(
+                f"[carla][WARN] client connect attempt {payload.get('attempt')}/{payload.get('attempts')} "
+                f"failed: {payload.get('error')}",
+                flush=True,
+            )
+            return
+        if phase == "get_world_attempt_start":
+            _write_carla_world_ready_event("carla_get_world_attempt_start", **payload)
+            return
+        if phase == "get_world_attempt_ok":
+            row["success"] = True
+            carla_world_ready_summary["get_world_attempts"].append(row)
+            _write_carla_world_ready_summary(
+                status="carla_get_world_ok",
+                current_town_before_load=row.get("current_town"),
+            )
+            _write_carla_world_ready_event("carla_get_world_attempt_ok", **row)
+            return
+        if phase == "get_world_attempt_failed":
+            row["success"] = False
+            carla_world_ready_summary["get_world_attempts"].append(row)
+            _write_carla_world_ready_summary(status="carla_get_world_retrying")
+            _write_carla_world_ready_event("carla_get_world_attempt_failed", **row)
+            print(
+                f"[carla][WARN] get_world attempt {payload.get('attempt')}/{payload.get('attempts')} "
+                f"failed: {payload.get('error')}",
+                flush=True,
+            )
+            return
+        if phase == "get_world_failed":
+            _write_carla_world_ready_summary(status="carla_get_world_failed", error=payload.get("error"))
+            _write_carla_world_ready_event("carla_get_world_failed", **payload)
+            return
+        if phase == "load_world_attempt_start":
+            if int(payload.get("attempt") or 0) == 1:
+                current_town_before_load = str(carla_world_ready_summary.get("current_town_before_load") or "")
+                _write_startup_stage(
+                    "carla_load_world_start",
+                    current_town=current_town_before_load,
+                    target_town=args.town,
+                )
+                _write_carla_world_ready_summary(status="carla_load_world_start")
+                _write_carla_world_ready_event(
+                    "carla_load_world_start",
+                    current_town=current_town_before_load,
+                    target_town=args.town,
+                )
+            _write_carla_world_ready_event("carla_load_world_attempt_start", **payload)
+            return
+        if phase == "load_world_attempt_ok":
+            row["success"] = True
+            carla_world_ready_summary["load_world_attempts"].append(row)
+            _write_carla_world_ready_summary(
+                status="carla_load_world_ok",
+                final_town=row.get("loaded_town") or payload.get("target_town"),
+            )
+            _write_carla_world_ready_event("carla_load_world_attempt_ok", **row)
+            return
+        if phase == "load_world_attempt_failed":
+            row["success"] = False
+            carla_world_ready_summary["load_world_attempts"].append(row)
+            _write_carla_world_ready_summary(status="carla_load_world_retrying")
+            _write_carla_world_ready_event("carla_load_world_attempt_failed", **row)
+            print(
+                f"[carla][WARN] load_world attempt {payload.get('attempt')}/{payload.get('attempts')} "
+                f"failed: {payload.get('error')}",
+                flush=True,
+            )
+            return
+        if phase == "load_world_failed":
+            _write_carla_world_ready_summary(status="carla_load_world_failed", error=payload.get("error"))
+            _write_carla_world_ready_event("carla_load_world_failed", **payload)
+
+    _write_startup_stage("carla_get_world_start")
+    bringup_result = connect_world_with_retry(
+        host=args.host,
+        port=int(args.port),
+        target_town=str(args.town),
+        client_timeout_s=30.0,
+        client_attempts=3,
+        client_delay_s=2.0,
+        get_world_attempts=carla_get_world_attempts,
+        get_world_delay_s=carla_get_world_delay_sec,
+        load_world_attempts=carla_load_world_attempts,
+        load_world_delay_s=carla_load_world_delay_sec,
+        load_world_timeout_s=carla_load_world_timeout_sec,
+        root=args.carla_root,
+        attempt_callback=_record_bringup_phase,
+    )
+    client = bringup_result.client
+    world = bringup_result.world
+    current_town = str(bringup_result.current_town_before_load or "")
+    _write_startup_stage("carla_get_world_ok", current_town=current_town)
+    _write_carla_world_ready_summary(
+        status="carla_get_world_ok",
+        current_town_before_load=current_town,
+    )
+    _write_carla_world_ready_event("carla_get_world_ok", current_town=current_town)
+    if current_town != args.town:
+        loaded_town = str(bringup_result.final_town or "")
+        _write_startup_stage("carla_load_world_ok", current_town=loaded_town)
+        _write_carla_world_ready_summary(status="world_ready", final_town=loaded_town)
+        _write_carla_world_ready_event("carla_load_world_ok", current_town=loaded_town)
+    else:
+        _write_carla_world_ready_summary(status="world_ready", final_town=current_town)
+        _write_carla_world_ready_event("carla_load_world_skipped", current_town=current_town)
+
+    # Start external stacks only after CARLA has settled on the target town.
+    # Loading a different world under a live Apollo/Autoware bridge can leave
+    # calibration scenes hanging in map-switch recovery instead of entering
+    # scenario setup.
     if adapter and adapter_profile:
         try:
+            _write_startup_stage("adapter_prepare_start", stack=str(stack or ""))
             adapter_start_attempted = True
             cleanup_state["adapter_start_attempted"] = True
             adapter.prepare(adapter_profile, out_run_dir)
+            _write_startup_stage("adapter_prepare_done", stack=str(stack or ""))
             started_result = adapter.start(adapter_profile, out_run_dir)
             adapter_started = True if started_result is None else bool(started_result)
+            _write_startup_stage(
+                "adapter_start_done",
+                stack=str(stack or ""),
+                adapter_started=adapter_started,
+            )
             if stack in {"autoware", "apollo"} and not adapter_started:
                 adapter_fail_reason = (
                     "AUTOWARE_CONTAINER_EXIT" if stack == "autoware" else "APOLLO_BRIDGE_EXIT"
@@ -1033,44 +1990,7 @@ def main():
             else:
                 adapter_fail_reason = "ADAPTER_START_FAIL"
             print(f"[WARN] adapter start failed: {exc}")
-
-    client_mgr = CarlaClientManager(host=args.host, port=args.port, timeout=30.0, root=args.carla_root)
-    client = client_mgr.create_client()
-    # 有些情况下 CARLA 已启动但地图加载较慢，增加 get_world 重试以避免 30s 超时
-    def _get_world_retry(cli, attempts=3, delay=3.0):
-        last_exc = None
-        for i in range(1, attempts + 1):
-            try:
-                return cli.get_world()
-            except Exception as exc:
-                last_exc = exc
-                print(f"[carla][WARN] get_world attempt {i} failed: {exc}")
-                time.sleep(delay)
-        raise last_exc or RuntimeError("get_world failed")
-
-    world = _get_world_retry(client, attempts=3, delay=3.0)
-    try:
-        current_town = world.get_map().name.split("/")[-1]
-    except Exception:
-        current_town = ""
-    if current_town != args.town:
-        def _load_world_retry(cli, town: str, attempts: int = 3, delay: float = 3.0, timeout: float = 60.0):
-            last_exc = None
-            for i in range(1, attempts + 1):
-                try:
-                    # temporarily extend timeout for loading heavy maps
-                    cli.set_timeout(timeout)
-                    w = cli.load_world(town)
-                    return w
-                except Exception as exc:
-                    last_exc = exc
-                    print(f"[carla][WARN] load_world attempt {i} failed: {exc}")
-                    time.sleep(delay)
-            raise last_exc or RuntimeError("load_world failed")
-
-        world = _load_world_retry(client, args.town, attempts=3, delay=3.0, timeout=60.0)
-        client.set_timeout(client_mgr.timeout)
-        time.sleep(1.0)
+            _write_startup_stage("adapter_start_exception", stack=str(stack or ""), error=str(exc))
 
     original_settings = world.get_settings()
     cleanup_state["world"] = world
@@ -1080,31 +2000,195 @@ def main():
         cleanup_state["original_settings"] = original_settings
     bp_lib = world.get_blueprint_library()
 
-    scenario = FollowStopScenario(
-        FollowStopConfig(
-            front_idx=args.front_idx,
-            ego_idx=args.ego_idx,
-            ego_id=args.ego_id,
-            auto_align_front_spawn=bool(args.auto_align_front_spawn),
-            front_min_ahead_m=float(args.front_min_ahead_m),
-            front_max_ahead_m=float(args.front_max_ahead_m),
-            front_max_lateral_m=float(args.front_max_lateral_m),
-            front_max_heading_diff_deg=float(args.front_max_heading_diff_deg),
-            force_green_traffic_lights=bool(args.force_green_traffic_lights),
-            freeze_traffic_lights=bool(args.freeze_traffic_lights),
+    scenario_driver = ((effective_cfg.get("scenario", {}) or {}).get("driver") or "").strip().lower()
+    _write_startup_stage("scenario_prepare", scenario_driver=scenario_driver)
+    if scenario_driver == "carla_apollo_semantic_suite":
+        scenario = ApolloSemanticSuiteScenario(
+            ApolloSemanticSuiteConfig(
+                scene_type=str(args.semantic_scene_type or "lateral_straight_track"),
+                role_ego=args.ego_id,
+                role_front="front",
+                vehicle_blueprint_id=str(args.vehicle_blueprint_id or ""),
+                vehicle_blueprint_patterns=tuple(str(item) for item in args.vehicle_blueprint_patterns),
+                waypoint_spacing_m=float(args.semantic_waypoint_spacing_m),
+                preview_distance_m=float(args.semantic_preview_distance_m),
+                curve_min_yaw_delta_deg=float(args.semantic_curve_min_yaw_delta_deg),
+                straight_max_yaw_delta_deg=float(args.semantic_straight_max_yaw_delta_deg),
+                ego_front_gap_m=float(args.semantic_ego_front_gap_m),
+                far_front_gap_m=float(args.semantic_far_front_gap_m),
+                scene_length_ahead_m=float(args.semantic_scene_length_ahead_m),
+                allow_junction=bool(args.semantic_allow_junction),
+                preferred_road_ids=tuple(int(item) for item in args.semantic_preferred_road_ids),
+                preferred_section_ids=tuple(int(item) for item in args.semantic_preferred_section_ids),
+                preferred_lane_ids=tuple(int(item) for item in args.semantic_preferred_lane_ids),
+                min_start_y=_safe_float(args.semantic_min_start_y),
+                max_start_y=_safe_float(args.semantic_max_start_y),
+                candidate_sorted_index=_safe_int(args.semantic_candidate_sorted_index),
+                ego_offset_x_m=float(args.ego_offset_x_m),
+                ego_offset_y_m=float(args.ego_offset_y_m),
+                ego_offset_z_m=float(args.ego_offset_z_m),
+                ego_yaw_offset_deg=float(args.ego_yaw_offset_deg),
+                front_offset_x_m=float(args.front_offset_x_m),
+                front_offset_y_m=float(args.front_offset_y_m),
+                front_offset_z_m=float(args.front_offset_z_m),
+                front_yaw_offset_deg=float(args.front_yaw_offset_deg),
+                lead_profile=SemanticLeadProfile(
+                    mode=str(args.semantic_lead_profile_mode or "static_stop"),
+                    static_brake=float(args.semantic_lead_static_brake),
+                    hand_brake=bool(args.semantic_lead_hand_brake),
+                    cruise_speed_mps=float(args.semantic_lead_cruise_speed_mps),
+                    hold_before_move_sec=float(args.semantic_lead_hold_before_move_sec),
+                    cruise_hold_sec=float(args.semantic_lead_cruise_hold_sec),
+                    stop_hold_sec=float(args.semantic_lead_stop_hold_sec),
+                    throttle_cap=float(args.semantic_lead_throttle_cap),
+                    brake_cap=float(args.semantic_lead_brake_cap),
+                ),
+            )
         )
-    )
+    elif scenario_driver == "carla_actuator_calibration":
+        calibration_cfg = ((effective_cfg.get("scenario", {}) or {}).get("calibration_only", {}) or {})
+        scenario = CalibrationOnlyScenario(
+            CalibrationOnlyConfig(
+                spawn_idx=int(calibration_cfg.get("spawn_idx", args.ego_idx)),
+                strict_spawn=bool(calibration_cfg.get("strict_spawn", True)),
+                ego_id=args.ego_id,
+                vehicle_blueprint_id=str(
+                    calibration_cfg.get("vehicle_blueprint_id", args.vehicle_blueprint_id) or ""
+                ),
+                vehicle_blueprint_patterns=tuple(
+                    str(item)
+                    for item in calibration_cfg.get(
+                        "vehicle_blueprint_patterns",
+                        args.vehicle_blueprint_patterns,
+                    )
+                ),
+                force_green_traffic_lights=bool(
+                    calibration_cfg.get("force_green_traffic_lights", args.force_green_traffic_lights)
+                ),
+                freeze_traffic_lights=bool(
+                    calibration_cfg.get("freeze_traffic_lights", args.freeze_traffic_lights)
+                ),
+                ego_offset_x_m=float(calibration_cfg.get("ego_offset_x_m", args.ego_offset_x_m)),
+                ego_offset_y_m=float(calibration_cfg.get("ego_offset_y_m", args.ego_offset_y_m)),
+                ego_offset_z_m=float(calibration_cfg.get("ego_offset_z_m", args.ego_offset_z_m)),
+                ego_yaw_offset_deg=float(
+                    calibration_cfg.get("ego_yaw_offset_deg", args.ego_yaw_offset_deg)
+                ),
+            )
+        )
+    elif scenario_driver == "carla_town01_route_health":
+        route_health_cfg = ((effective_cfg.get("scenario", {}) or {}).get("route_health", {}) or {})
+        scenario = Town01RouteHealthScenario(
+            Town01RouteHealthConfig(
+                random_seed=int(
+                    route_health_cfg.get("random_seed", ((effective_cfg.get("run", {}) or {}).get("seed", 1)))
+                ),
+                ego_id=args.ego_id,
+                vehicle_blueprint_id=str(route_health_cfg.get("vehicle_blueprint_id", args.vehicle_blueprint_id) or ""),
+                vehicle_blueprint_patterns=tuple(
+                    str(item)
+                    for item in route_health_cfg.get(
+                        "vehicle_blueprint_patterns",
+                        args.vehicle_blueprint_patterns,
+                    )
+                ),
+                strict_spawn=bool(route_health_cfg.get("strict_spawn", False)),
+                preferred_spawn_idx=int(route_health_cfg.get("preferred_spawn_idx", -1) or -1),
+                force_green_traffic_lights=bool(
+                    route_health_cfg.get("force_green_traffic_lights", args.force_green_traffic_lights)
+                ),
+                freeze_traffic_lights=bool(
+                    route_health_cfg.get("freeze_traffic_lights", args.freeze_traffic_lights)
+                ),
+                route_step_m=float(route_health_cfg.get("route_step_m", 5.0) or 5.0),
+                spawn_min_forward_length_m=float(
+                    route_health_cfg.get("spawn_min_forward_length_m", 120.0) or 120.0
+                ),
+                spawn_min_backward_length_m=float(
+                    route_health_cfg.get("spawn_min_backward_length_m", 25.0) or 25.0
+                ),
+                spawn_reject_junction=bool(route_health_cfg.get("spawn_reject_junction", True)),
+                spawn_junction_window_m=float(route_health_cfg.get("spawn_junction_window_m", 12.0) or 12.0),
+                spawn_min_successor_count=int(route_health_cfg.get("spawn_min_successor_count", 1) or 1),
+                goal_min_route_length_m=float(route_health_cfg.get("goal_min_route_length_m", 180.0) or 180.0),
+                goal_max_route_length_m=float(route_health_cfg.get("goal_max_route_length_m", 360.0) or 360.0),
+                goal_min_end_margin_m=float(route_health_cfg.get("goal_min_end_margin_m", 20.0) or 20.0),
+                goal_reject_junction=bool(route_health_cfg.get("goal_reject_junction", True)),
+                max_spawn_candidates=int(route_health_cfg.get("max_spawn_candidates", 80) or 80),
+                max_goal_attempts=int(route_health_cfg.get("max_goal_attempts", 5) or 5),
+                route_id=str(route_health_cfg.get("route_id", "") or ""),
+                route_corpus_path=str(route_health_cfg.get("route_corpus_path", "") or ""),
+                ego_offset_x_m=float(route_health_cfg.get("ego_offset_x_m", args.ego_offset_x_m)),
+                ego_offset_y_m=float(route_health_cfg.get("ego_offset_y_m", args.ego_offset_y_m)),
+                ego_offset_z_m=float(route_health_cfg.get("ego_offset_z_m", args.ego_offset_z_m)),
+                ego_yaw_offset_deg=float(route_health_cfg.get("ego_yaw_offset_deg", args.ego_yaw_offset_deg)),
+            )
+        )
+    else:
+        scenario = FollowStopScenario(
+            FollowStopConfig(
+                front_idx=args.front_idx,
+                ego_idx=args.ego_idx,
+                ego_id=args.ego_id,
+                vehicle_blueprint_id=str(args.vehicle_blueprint_id or ""),
+                vehicle_blueprint_patterns=tuple(str(item) for item in args.vehicle_blueprint_patterns),
+                auto_align_front_spawn=bool(args.auto_align_front_spawn),
+                front_min_ahead_m=float(args.front_min_ahead_m),
+                front_max_ahead_m=float(args.front_max_ahead_m),
+                front_max_lateral_m=float(args.front_max_lateral_m),
+                front_max_heading_diff_deg=float(args.front_max_heading_diff_deg),
+                force_green_traffic_lights=bool(args.force_green_traffic_lights),
+                freeze_traffic_lights=bool(args.freeze_traffic_lights),
+                ego_offset_x_m=float(args.ego_offset_x_m),
+                ego_offset_y_m=float(args.ego_offset_y_m),
+                ego_offset_z_m=float(args.ego_offset_z_m),
+                ego_yaw_offset_deg=float(args.ego_yaw_offset_deg),
+                front_offset_x_m=float(args.front_offset_x_m),
+                front_offset_y_m=float(args.front_offset_y_m),
+                front_offset_z_m=float(args.front_offset_z_m),
+                front_yaw_offset_deg=float(args.front_yaw_offset_deg),
+            )
+        )
     cleanup_state["scenario"] = scenario
     actors = None
 
     try:
+        _write_startup_stage("scenario_build_start", scenario_type=type(scenario).__name__)
         actors = scenario.build(world, world.get_map(), bp_lib)
+        _write_startup_stage("scenario_build_done", scenario_type=type(scenario).__name__)
         cleanup_state["actors"] = actors
         ego = actors.ego
         front = actors.front
-        print(f"Spawned ego at idx={scenario.cfg.ego_idx}, front at idx={scenario.cfg.front_idx}")
+        scenario_meta_path = out_run_dir / "artifacts" / "scenario_metadata.json"
         try:
-            scenario_goal_path = _write_apollo_scenario_goal(effective_cfg, out_run_dir, ego, front, args)
+            scenario_meta = scenario.metadata() if hasattr(scenario, "metadata") else {}
+            if not isinstance(scenario_meta, dict):
+                scenario_meta = {}
+            scenario_meta.update(
+                {
+                    "scenario_driver": scenario_driver,
+                    "ego_role": args.ego_id,
+                    "front_role": "front",
+                    "ego_actor_id": int(getattr(ego, "id", 0) or 0),
+                    "front_actor_id": int(getattr(front, "id", 0) or 0) if front is not None else 0,
+                }
+            )
+            scenario_meta_path.parent.mkdir(parents=True, exist_ok=True)
+            scenario_meta_path.write_text(json.dumps(scenario_meta, indent=2))
+        except Exception as exc:
+            print(f"[WARN] failed to write scenario metadata: {exc}")
+        if scenario_driver == "carla_apollo_semantic_suite":
+            print(f"Spawned semantic suite scene: {json.dumps(scenario.metadata(), ensure_ascii=True)}")
+        elif scenario_driver == "carla_actuator_calibration":
+            print(f"Spawned calibration-only scene: {json.dumps(scenario.metadata(), ensure_ascii=True)}")
+        elif scenario_driver == "carla_town01_route_health":
+            print(f"Spawned town01 route health scene: {json.dumps(scenario.metadata(), ensure_ascii=True)}")
+        else:
+            print(f"Spawned ego at idx={scenario.cfg.ego_idx}, front at idx={scenario.cfg.front_idx}")
+        try:
+            scenario_goal_path = _write_apollo_scenario_goal(
+                effective_cfg, out_run_dir, ego, front, args, scenario=scenario
+            )
             if scenario_goal_path is not None:
                 print(f"[apollo] scenario goal written: {scenario_goal_path}")
         except Exception as exc:
@@ -1149,6 +2233,55 @@ def main():
                     result.engage_succeeded,
                 )
             )
+
+        run_mode_cfg = effective_cfg.get("run", {}) if effective_cfg else {}
+        external_probe_hold = bool(run_mode_cfg.get("external_probe_hold", False))
+        external_probe_timeout_sec = float(run_mode_cfg.get("external_probe_timeout_sec", 1800.0) or 1800.0)
+        external_probe_heartbeat_sec = float(run_mode_cfg.get("external_probe_heartbeat_sec", 15.0) or 15.0)
+        external_probe_warmup_ticks = int(run_mode_cfg.get("external_probe_warmup_ticks", 5) or 5)
+        if external_probe_hold:
+            if cfg.synchronous_mode:
+                for _ in range(max(1, external_probe_warmup_ticks)):
+                    try:
+                        world.tick()
+                    except Exception as exc:
+                        print(f"[WARN] external probe warmup tick failed: {exc}")
+                        break
+            summary_path = out_run_dir / "summary.json"
+            hold_summary = {
+                "success": True,
+                "fail_reason": None,
+                "mode": "external_probe_hold",
+                "timeout_sec": external_probe_timeout_sec,
+                "scenario_driver": scenario_driver,
+                "ego_actor_id": int(getattr(ego, "id", 0) or 0),
+                "front_actor_id": int(getattr(front, "id", 0) or 0) if front is not None else 0,
+            }
+            summary_path.write_text(json.dumps(hold_summary, indent=2))
+            print(
+                "[external_probe_hold] ready "
+                f"ego_actor_id={hold_summary['ego_actor_id']} timeout_sec={external_probe_timeout_sec:.1f}"
+            )
+            deadline = time.time() + max(1.0, external_probe_timeout_sec)
+            next_heartbeat = time.time() + max(5.0, external_probe_heartbeat_sec)
+            while time.time() < deadline:
+                if time.time() >= next_heartbeat:
+                    remain = max(0.0, deadline - time.time())
+                    print(
+                        "[external_probe_hold] waiting "
+                        f"remain={remain:.0f}s run_dir={out_run_dir}"
+                    )
+                    next_heartbeat = time.time() + max(5.0, external_probe_heartbeat_sec)
+                if cfg.synchronous_mode:
+                    try:
+                        world.tick()
+                    except Exception as exc:
+                        print(f"[WARN] external probe hold tick failed: {exc}")
+                        time.sleep(1.0)
+                else:
+                    time.sleep(1.0)
+            print("[external_probe_hold] timeout reached, exiting")
+            return
 
         ctrl_cfg = LegacyControllerConfig(
             lateral_mode=args.lateral_mode,
@@ -1250,6 +2383,10 @@ def main():
         disable_control = disable_control_cfg_effective
         ros2_mode_active = bool(args.enable_ros2_native or args.enable_ros2_gt or (external_stack and adapter_started))
         tick_callbacks = []
+        scenario_tick_hook = getattr(scenario, "on_sim_tick", None)
+        if callable(scenario_tick_hook):
+            tick_callbacks.append(scenario_tick_hook)
+            print(f"[scenario] tick hook enabled for driver={scenario_driver}")
         if stack == "apollo" and adapter_started and adapter is not None:
             backend_obj = getattr(adapter, "backend", None)
             tick_hook = getattr(backend_obj, "on_sim_tick", None) if backend_obj is not None else None
@@ -1367,6 +2504,7 @@ def main():
         )
 
         summary_path = out_run_dir / "summary.json"
+        provisional_summary_path = out_run_dir / "summary.provisional.json"
         summary_data = summary
         try:
             if summary_path.exists():
@@ -1431,23 +2569,281 @@ def main():
         )
 
         failures = []
+        failure_details: List[Dict[str, Any]] = []
         if adapter_fail_reason and not adapter_started:
             failures.append(adapter_fail_reason)
+            failure_details.append({"code": adapter_fail_reason, "scope": "adapter"})
         if require_control_log and not control_log_ok:
             failures.append("NO_CONTROL_LOG")
+            failure_details.append({"code": "NO_CONTROL_LOG", "scope": "transport"})
         if require_sensor_probe and not sensor_probe_ok:
             failures.append("NO_SENSOR_DATA")
+            failure_details.append({"code": "NO_SENSOR_DATA", "scope": "transport"})
         if ros2_mode_active and not ros2_sensor_ok:
             if args.enable_ros2_native and not ros2_enable_api_available:
                 failures.append("ROS2_NATIVE_PY_API_UNAVAILABLE")
+                failure_details.append(
+                    {"code": "ROS2_NATIVE_PY_API_UNAVAILABLE", "scope": "transport"}
+                )
             else:
                 failures.append("ROS2_PUBLISH_NO_SENSOR_MSG")
+                failure_details.append({"code": "ROS2_PUBLISH_NO_SENSOR_MSG", "scope": "transport"})
         if not motion_ok:
             failures.append("EGO_NOT_MOVING")
+            failure_details.append({"code": "EGO_NOT_MOVING", "scope": "motion"})
+
+        apollo_bridge_health_path = out_run_dir / "artifacts" / "bridge_health_summary.json"
+        apollo_planning_summary_path = out_run_dir / "artifacts" / "planning_topic_debug_summary.json"
+        apollo_cyber_bridge_stats_path = out_run_dir / "artifacts" / "cyber_bridge_stats.json"
+        apollo_debug_timeseries_path = out_run_dir / "artifacts" / "debug_timeseries.csv"
+
+        apollo_bridge_health = _load_json_if_exists(apollo_bridge_health_path)
+        apollo_planning_summary = _load_json_if_exists(apollo_planning_summary_path)
+        apollo_cyber_bridge_stats = _load_json_if_exists(apollo_cyber_bridge_stats_path)
+
+        apollo_health_artifacts_ok = all(
+            path.exists()
+            for path in (
+                apollo_bridge_health_path,
+                apollo_planning_summary_path,
+                apollo_cyber_bridge_stats_path,
+            )
+        )
+        planning_nonempty_count = _safe_int(
+            apollo_bridge_health.get("planning_nonempty_trajectory_count")
+        )
+        if planning_nonempty_count is None:
+            planning_nonempty_count = _safe_int(
+                apollo_planning_summary.get("messages_with_nonzero_trajectory_points")
+            )
+        planning_total_messages = _safe_int(apollo_planning_summary.get("total_messages_received")) or 0
+        planning_nonzero_ratio: Optional[float] = None
+        if planning_total_messages > 0 and planning_nonempty_count is not None:
+            planning_nonzero_ratio = float(planning_nonempty_count) / float(planning_total_messages)
+        invalid_goal_count = _safe_int(apollo_bridge_health.get("invalid_goal_count"))
+        if invalid_goal_count is None:
+            invalid_goal_count = _safe_int(apollo_cyber_bridge_stats.get("invalid_goal_count"))
+        routing_invalid_goal_skip_count = _safe_int(
+            apollo_cyber_bridge_stats.get("routing_skipped_due_to_invalid_goal_count")
+        )
+        routing_success_count = _safe_int(apollo_cyber_bridge_stats.get("routing_success_count"))
+        last_goal_validity = apollo_bridge_health.get("goal_validity_last") or {}
+        low_speed_creep_metrics = (
+            _compute_low_speed_creep_metrics(
+                apollo_debug_timeseries_path,
+                start_after_sec=acceptance_low_speed_creep_start_after_sec,
+                speed_below_mps=acceptance_low_speed_creep_speed_below_mps,
+                front_gap_above_m=acceptance_low_speed_creep_front_gap_above_m,
+                require_routing_established=acceptance_low_speed_creep_require_routing_established,
+                ignore_when_terminal_stop_hold_active=acceptance_low_speed_creep_ignore_terminal_hold,
+            )
+            if acceptance_low_speed_creep_enabled
+            else {
+                "available": apollo_debug_timeseries_path.exists(),
+                "path": str(apollo_debug_timeseries_path),
+                "enabled": False,
+            }
+        )
+        lateral_metrics = _compute_basic_lateral_metrics(
+            out_run_dir / "artifacts" / "bridge_control_decode.jsonl"
+        )
+        scenario_meta = {}
+        try:
+            scenario_meta_path = out_run_dir / "artifacts" / "scenario_metadata.json"
+            if scenario_meta_path.exists():
+                scenario_meta = json.loads(scenario_meta_path.read_text(encoding="utf-8"))
+                if not isinstance(scenario_meta, dict):
+                    scenario_meta = {}
+        except Exception:
+            scenario_meta = {}
+        route_health_metrics = (
+            _compute_route_health_metrics(
+                scenario_meta,
+                ego,
+                routing_success_count=routing_success_count,
+            )
+            if scenario_driver == "carla_town01_route_health"
+            else {"available": False}
+        )
+
+        if stack == "apollo":
+            if acceptance_require_apollo_health_artifacts and not apollo_health_artifacts_ok:
+                failures.append("MISSING_APOLLO_HEALTH_ARTIFACTS")
+                failure_details.append(
+                    {
+                        "code": "MISSING_APOLLO_HEALTH_ARTIFACTS",
+                        "scope": "apollo_health",
+                        "path": str(apollo_bridge_health_path.parent),
+                    }
+                )
+            if (
+                acceptance_min_planning_nonempty is not None
+                and planning_nonempty_count is not None
+                and planning_nonempty_count < acceptance_min_planning_nonempty
+            ):
+                failures.append("APOLLO_PLANNING_NONEMPTY_TOO_LOW")
+                failure_details.append(
+                    {
+                        "code": "APOLLO_PLANNING_NONEMPTY_TOO_LOW",
+                        "scope": "apollo_health",
+                        "actual": planning_nonempty_count,
+                        "threshold": acceptance_min_planning_nonempty,
+                    }
+                )
+            if (
+                acceptance_min_planning_nonzero_ratio is not None
+                and planning_nonzero_ratio is not None
+                and planning_nonzero_ratio < acceptance_min_planning_nonzero_ratio
+            ):
+                failures.append("APOLLO_PLANNING_NONZERO_RATIO_TOO_LOW")
+                failure_details.append(
+                    {
+                        "code": "APOLLO_PLANNING_NONZERO_RATIO_TOO_LOW",
+                        "scope": "apollo_health",
+                        "actual": planning_nonzero_ratio,
+                        "threshold": acceptance_min_planning_nonzero_ratio,
+                    }
+                )
+            if (
+                acceptance_max_invalid_goal_count is not None
+                and invalid_goal_count is not None
+                and invalid_goal_count > acceptance_max_invalid_goal_count
+            ):
+                failures.append("APOLLO_INVALID_GOAL_EXCESSIVE")
+                failure_details.append(
+                    {
+                        "code": "APOLLO_INVALID_GOAL_EXCESSIVE",
+                        "scope": "apollo_routing",
+                        "actual": invalid_goal_count,
+                        "threshold": acceptance_max_invalid_goal_count,
+                        "last_invalid_goal_reason": last_goal_validity.get("invalid_goal_reason"),
+                    }
+                )
+            if (
+                acceptance_max_routing_invalid_goal_skip_count is not None
+                and routing_invalid_goal_skip_count is not None
+                and routing_invalid_goal_skip_count > acceptance_max_routing_invalid_goal_skip_count
+            ):
+                failures.append("APOLLO_INVALID_LONG_ROUTE_SKIP_EXCESSIVE")
+                failure_details.append(
+                    {
+                        "code": "APOLLO_INVALID_LONG_ROUTE_SKIP_EXCESSIVE",
+                        "scope": "apollo_routing",
+                        "actual": routing_invalid_goal_skip_count,
+                        "threshold": acceptance_max_routing_invalid_goal_skip_count,
+                    }
+                )
+            if (
+                acceptance_low_speed_creep_enabled
+                and acceptance_low_speed_creep_max_duration_sec is not None
+                and float(low_speed_creep_metrics.get("longest_streak_duration_sec", 0.0) or 0.0)
+                > acceptance_low_speed_creep_max_duration_sec
+            ):
+                failures.append("SCENARIO_LOW_SPEED_CREEP")
+                failure_details.append(
+                    {
+                        "code": "SCENARIO_LOW_SPEED_CREEP",
+                        "scope": "scenario_behavior",
+                        "actual_sec": float(
+                            low_speed_creep_metrics.get("longest_streak_duration_sec", 0.0) or 0.0
+                        ),
+                        "threshold_sec": acceptance_low_speed_creep_max_duration_sec,
+                        "first_match_ts_sec": low_speed_creep_metrics.get("first_match_ts_sec"),
+                    }
+                )
+            if scenario_driver == "carla_town01_route_health":
+                route_established = bool(route_health_metrics.get("route_established"))
+                if not route_established:
+                    failures.append("ROUTE_NOT_ESTABLISHED")
+                    failure_details.append(
+                        {
+                            "code": "ROUTE_NOT_ESTABLISHED",
+                            "scope": "route_health",
+                            "routing_success_count": routing_success_count,
+                        }
+                    )
+                route_completion_ratio = _safe_float(route_health_metrics.get("route_completion_percentage"))
+                if (
+                    route_health_min_completion_ratio is not None
+                    and route_completion_ratio is not None
+                    and route_completion_ratio < route_health_min_completion_ratio
+                ):
+                    failures.append("ROUTE_COMPLETION_TOO_LOW")
+                    failure_details.append(
+                        {
+                            "code": "ROUTE_COMPLETION_TOO_LOW",
+                            "scope": "route_health",
+                            "actual": route_completion_ratio,
+                            "threshold": route_health_min_completion_ratio,
+                        }
+                    )
+                route_distance_achieved_m = _safe_float(route_health_metrics.get("route_distance_achieved_m"))
+                if (
+                    route_health_min_distance_achieved_m is not None
+                    and route_distance_achieved_m is not None
+                    and route_distance_achieved_m < route_health_min_distance_achieved_m
+                ):
+                    failures.append("ROUTE_DISTANCE_ACHIEVED_TOO_LOW")
+                    failure_details.append(
+                        {
+                            "code": "ROUTE_DISTANCE_ACHIEVED_TOO_LOW",
+                            "scope": "route_health",
+                            "actual": route_distance_achieved_m,
+                            "threshold": route_health_min_distance_achieved_m,
+                        }
+                    )
+                raw_steer_saturated_ratio = _safe_float(lateral_metrics.get("raw_steer_saturated_ratio"))
+                if (
+                    route_health_max_raw_steer_saturated_ratio is not None
+                    and raw_steer_saturated_ratio is not None
+                    and raw_steer_saturated_ratio > route_health_max_raw_steer_saturated_ratio
+                ):
+                    failures.append("ROUTE_HEALTH_LATERAL_SATURATION_EXCESSIVE")
+                    failure_details.append(
+                        {
+                            "code": "ROUTE_HEALTH_LATERAL_SATURATION_EXCESSIVE",
+                            "scope": "route_health",
+                            "actual": raw_steer_saturated_ratio,
+                            "threshold": route_health_max_raw_steer_saturated_ratio,
+                        }
+                    )
+                longest_sat_sec = _safe_float(lateral_metrics.get("longest_continuous_saturation_sec"))
+                if (
+                    route_health_max_longest_saturation_sec is not None
+                    and longest_sat_sec is not None
+                    and longest_sat_sec > route_health_max_longest_saturation_sec
+                ):
+                    failures.append("ROUTE_HEALTH_LATERAL_SATURATION_TOO_LONG")
+                    failure_details.append(
+                        {
+                            "code": "ROUTE_HEALTH_LATERAL_SATURATION_TOO_LONG",
+                            "scope": "route_health",
+                            "actual_sec": longest_sat_sec,
+                            "threshold_sec": route_health_max_longest_saturation_sec,
+                        }
+                    )
+
+        route_health_label = None
+        if scenario_driver == "carla_town01_route_health":
+            route_established = bool(route_health_metrics.get("route_established"))
+            if any(code in failures for code in ["NO_CONTROL_LOG", "NO_SENSOR_DATA", "ROS2_PUBLISH_NO_SENSOR_MSG"]):
+                route_health_label = "chain_not_alive"
+            elif not route_established:
+                route_health_label = "route_not_established"
+            elif failures:
+                route_health_label = "route_established_but_behavior_unhealthy"
+            else:
+                completion = _safe_float(route_health_metrics.get("route_completion_percentage")) or 0.0
+                if completion >= 0.75:
+                    route_health_label = "route_health_pass"
+                else:
+                    route_health_label = "route_health_candidate"
 
         acceptance = {
             "success": len(failures) == 0,
             "fail_reason": failures[0] if failures else None,
+            "failure_codes": failures,
+            "failure_details": failure_details,
             "checks": {
                 "control_log": {
                     "ok": control_log_ok,
@@ -1475,6 +2871,72 @@ def main():
                     "max_speed_mps": state.max_speed_mps,
                     "threshold": acceptance_speed_threshold,
                 },
+                "apollo_health_artifacts": {
+                    "ok": apollo_health_artifacts_ok,
+                    "required": acceptance_require_apollo_health_artifacts,
+                    "bridge_health_summary_path": str(apollo_bridge_health_path),
+                    "planning_topic_debug_summary_path": str(apollo_planning_summary_path),
+                    "cyber_bridge_stats_path": str(apollo_cyber_bridge_stats_path),
+                },
+                "apollo_planning_nonempty": {
+                    "ok": (
+                        acceptance_min_planning_nonempty is None
+                        or planning_nonempty_count is None
+                        or planning_nonempty_count >= acceptance_min_planning_nonempty
+                    ),
+                    "actual": planning_nonempty_count,
+                    "threshold": acceptance_min_planning_nonempty,
+                    "planning_total_messages": planning_total_messages,
+                },
+                "apollo_planning_nonzero_ratio": {
+                    "ok": (
+                        acceptance_min_planning_nonzero_ratio is None
+                        or planning_nonzero_ratio is None
+                        or planning_nonzero_ratio >= acceptance_min_planning_nonzero_ratio
+                    ),
+                    "actual": planning_nonzero_ratio,
+                    "threshold": acceptance_min_planning_nonzero_ratio,
+                },
+                "apollo_invalid_goal": {
+                    "ok": (
+                        acceptance_max_invalid_goal_count is None
+                        or invalid_goal_count is None
+                        or invalid_goal_count <= acceptance_max_invalid_goal_count
+                    ),
+                    "actual": invalid_goal_count,
+                    "threshold": acceptance_max_invalid_goal_count,
+                    "last_invalid_goal_reason": last_goal_validity.get("invalid_goal_reason"),
+                },
+                "apollo_invalid_long_route_skip": {
+                    "ok": (
+                        acceptance_max_routing_invalid_goal_skip_count is None
+                        or routing_invalid_goal_skip_count is None
+                        or routing_invalid_goal_skip_count <= acceptance_max_routing_invalid_goal_skip_count
+                    ),
+                    "actual": routing_invalid_goal_skip_count,
+                    "threshold": acceptance_max_routing_invalid_goal_skip_count,
+                    "routing_success_count": routing_success_count,
+                },
+                "scenario_low_speed_creep": {
+                    "enabled": acceptance_low_speed_creep_enabled,
+                    "ok": (
+                        (not acceptance_low_speed_creep_enabled)
+                        or acceptance_low_speed_creep_max_duration_sec is None
+                        or float(low_speed_creep_metrics.get("longest_streak_duration_sec", 0.0) or 0.0)
+                        <= acceptance_low_speed_creep_max_duration_sec
+                    ),
+                    "threshold_sec": acceptance_low_speed_creep_max_duration_sec,
+                    **low_speed_creep_metrics,
+                },
+                "lateral_metrics": lateral_metrics,
+                "route_health": {
+                    "label": route_health_label,
+                    "min_completion_ratio": route_health_min_completion_ratio,
+                    "min_distance_achieved_m": route_health_min_distance_achieved_m,
+                    "max_raw_steer_saturated_ratio": route_health_max_raw_steer_saturated_ratio,
+                    "max_longest_saturation_sec": route_health_max_longest_saturation_sec,
+                    **route_health_metrics,
+                },
             },
         }
         profile_config_path = str(args.config.resolve()) if args.config else ""
@@ -1494,12 +2956,19 @@ def main():
         summary_data["profile_name"] = profile_name
         summary_data["profile_config_path"] = profile_config_path
         summary_data["profile"] = profile_info
+        summary_data["comparison_label"] = str((run_mode_cfg.get("comparison_label") or "")).strip()
         summary_data["adapter_started"] = adapter_started
         if adapter_fail_reason:
             summary_data["adapter_fail_reason"] = adapter_fail_reason
         summary_data["acceptance"] = acceptance
         summary_data["success"] = acceptance["success"]
         summary_data["fail_reason"] = acceptance["fail_reason"]
+        summary_data["summary_status"] = "provisional"
+        summary_data["finalized_from_event_stream"] = False
+        if scenario_driver == "carla_town01_route_health":
+            summary_data["route_health"] = acceptance["checks"].get("route_health", {})
+            summary_data["route_health_label"] = acceptance["checks"].get("route_health", {}).get("label")
+        provisional_summary_path.write_text(json.dumps(summary_data, indent=2))
         summary_path.write_text(json.dumps(summary_data, indent=2))
         (out_run_dir / "artifacts" / "profile_info.json").write_text(json.dumps(profile_info, indent=2))
         print(f"[acceptance] success={acceptance['success']} fail_reason={acceptance['fail_reason']}")

@@ -275,8 +275,19 @@ class TestHarness:
             }
         ros_native = None
         gt_pub = None
+        gt_stats_path = out_dir / "artifacts" / "ros2_gt_live_stats.json"
         tm = None
         bag_recorder = None
+
+        def _persist_gt_stats() -> None:
+            if gt_pub is None:
+                return
+            try:
+                gt_stats_path.parent.mkdir(parents=True, exist_ok=True)
+                gt_stats_path.write_text(json.dumps(gt_pub.get_stats(), indent=2))
+            except Exception:
+                pass
+
         if self.cfg.enable_ros2_gt:
             try:
                 gt_pub = GroundTruthRos2Publisher(
@@ -298,6 +309,7 @@ class TestHarness:
                     qos_depth=self.cfg.ros2_gt_qos_depth,
                 )
                 gt_pub.publish_static_tf_from_calibration()
+                _persist_gt_stats()
             except Exception as exc:
                 print(f"[WARN] failed to initialize ROS2 GT publisher: {exc}")
                 gt_pub = None
@@ -425,6 +437,8 @@ class TestHarness:
                         except Exception:
                             pass
                         gt_pub.publish_tick(world, ego, extra_actors)
+                        if step < 3 or step % progress_interval == 0:
+                            _persist_gt_stats()
                     except Exception as exc:
                         print(f"[WARN] GT publish tick failed: {exc}")
                         gt_pub = None
@@ -501,8 +515,10 @@ class TestHarness:
                     remaining = (self.cfg.max_steps - step - 1) * self.cfg.dt
                     pct = step / float(self.cfg.max_steps) * 100.0
                     print(f"[progress] {step}/{self.cfg.max_steps} ({pct:.0f}%), est remaining {remaining:.1f}s")
+                    _persist_gt_stats()
                     self._spectator_follow(world, ego)
         finally:
+            _persist_gt_stats()
             if col_src:
                 col_src.stop()
             if inv_src:
@@ -512,6 +528,7 @@ class TestHarness:
             if ros_native:
                 ros_native.teardown()
             if gt_pub:
+                _persist_gt_stats()
                 gt_pub.close()
             if rviz_launcher:
                 try:

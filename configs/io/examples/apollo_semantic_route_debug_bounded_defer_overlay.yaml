@@ -1,0 +1,12 @@
+# Experimental semantic-suite overlay for truthful calibration live closure.
+# Leaves the default semantic suite base unchanged and only tightens the
+# long-phase refresh contract so we can observe whether short truthful runs
+# simply need bounded time to receive a fresh route-debug snapshot.
+
+algo:
+  apollo:
+    routing:
+      defer_long_goal_until_route_debug_ready: true
+      defer_long_goal_max_wait_sec: 4.0
+      goal_validity_reference_line_stale_sec: 1.0
+

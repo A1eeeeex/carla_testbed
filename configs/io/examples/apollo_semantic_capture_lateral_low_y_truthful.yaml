@@ -1,0 +1,52 @@
+run:
+  profile_name: apollo_semantic_capture_lateral_low_y_truthful
+  ticks: 520
+
+scenario:
+  driver: carla_apollo_semantic_suite
+  ego_pose_offset:
+    x_m: 0.0
+    y_m: 0.25
+    z_m: 0.0
+    yaw_deg: 1.5
+  semantic_suite:
+    scene_type: lateral_straight_track
+    waypoint_spacing_m: 3.0
+    preview_distance_m: 42.0
+    curve_min_yaw_delta_deg: 14.0
+    straight_max_yaw_delta_deg: 4.0
+    far_front_gap_m: 110.0
+    ego_front_gap_m: 36.0
+    scene_length_ahead_m: 120.0
+    allow_junction: false
+    preferred_road_ids:
+      - 15
+    preferred_lane_ids:
+      - -1
+    min_start_y: 0.0
+    max_start_y: 10.0
+    lead_profile:
+      mode: static_stop
+      static_brake: 1.0
+      hand_brake: true
+
+algo:
+  disable_legacy_harness_control_for_external_stack: true
+  apollo:
+    bridge:
+      debug_dump_control_raw: true
+      front_obstacle_behavior:
+        mode: normal
+      control_mapping:
+        actuator_mapping_mode: legacy
+        startup_throttle_boost_enabled: false
+        straight_lane_zero_steer_enabled: false
+        low_speed_steer_guard_enabled: false
+        force_zero_steer_output: false
+        straight_acc_override:
+          enabled: false
+        terminal_stop_hold:
+          enabled: false
+    routing:
+      target_speed_mps: 9.0
+      startup_delay_sec: 6.0
