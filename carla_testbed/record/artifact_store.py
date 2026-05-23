@@ -1,0 +1,163 @@
+from __future__ import annotations
+
+import dataclasses
+import json
+import time
+from pathlib import Path
+from typing import Any, Mapping
+
+import yaml
+
+
+def _json_safe(value: Any) -> Any:
+    if dataclasses.is_dataclass(value):
+        return _json_safe(dataclasses.asdict(value))
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.write_text(text)
+    tmp_path.replace(path)
+
+
+def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    _atomic_write_text(path, json.dumps(_json_safe(payload), indent=2, sort_keys=True))
+
+
+class JsonlWriter:
+    def __init__(self, path: Path, *, append: bool = True):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._f = self.path.open("a" if append else "w", encoding="utf-8")
+        self._closed = False
+
+    def append(self, payload: Mapping[str, Any]) -> None:
+        if self._closed:
+            raise RuntimeError(f"{self.__class__.__name__} is closed: {self.path}")
+        self._f.write(json.dumps(_json_safe(payload), sort_keys=True) + "\n")
+        self._f.flush()
+
+    def close(self) -> None:
+        if not self._closed:
+            self._f.flush()
+            self._f.close()
+            self._closed = True
+
+
+class EventsWriter(JsonlWriter):
+    pass
+
+
+class TimeseriesJsonlWriter(JsonlWriter):
+    pass
+
+
+class RunArtifactStore:
+    """Standard run-output writer for manifest/config/summary/events/timeseries."""
+
+    def __init__(self, run_dir: str | Path):
+        self.run_dir = Path(run_dir)
+        self.manifest_path = self.run_dir / "manifest.json"
+        self.resolved_config_path = self.run_dir / "config.resolved.yaml"
+        self.summary_path = self.run_dir / "summary.json"
+        self.events_path = self.run_dir / "events.jsonl"
+        self.timeseries_jsonl_path = self.run_dir / "timeseries.jsonl"
+        self.timeseries_csv_path = self.run_dir / "timeseries.csv"
+        self.logs_dir = self.run_dir / "logs"
+
+    def ensure(self) -> "RunArtifactStore":
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        if not self.events_path.exists():
+            self.events_path.touch()
+        return self
+
+    def write_manifest(self, manifest: Mapping[str, Any]) -> None:
+        _write_json(self.manifest_path, manifest)
+
+    def update_manifest(self, updates: Mapping[str, Any]) -> dict:
+        current: dict[str, Any] = {}
+        if self.manifest_path.exists():
+            try:
+                current = json.loads(self.manifest_path.read_text() or "{}")
+            except json.JSONDecodeError:
+                current = {}
+        current.update(_json_safe(updates))
+        self.write_manifest(current)
+        return current
+
+    def write_resolved_config(self, config: Mapping[str, Any] | Any) -> None:
+        self.resolved_config_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = _json_safe(config)
+        text = yaml.safe_dump(payload, sort_keys=True, allow_unicode=False)
+        _atomic_write_text(self.resolved_config_path, text)
+
+    def write_summary(self, summary: Mapping[str, Any]) -> None:
+        _write_json(self.summary_path, summary)
+
+    def open_events(self, *, append: bool = False) -> EventsWriter:
+        return EventsWriter(self.events_path, append=append)
+
+    def open_timeseries_jsonl(self, *, append: bool = False) -> TimeseriesJsonlWriter:
+        return TimeseriesJsonlWriter(self.timeseries_jsonl_path, append=append)
+
+
+def build_manifest(
+    *,
+    run_id: str,
+    start_time_wall_s: float | None = None,
+    config_path: str | Path | None = None,
+    git_sha: str | None = None,
+    carla_host: str | None = None,
+    carla_port: int | None = None,
+    carla_town: str | None = None,
+    scenario_name: str | None = None,
+    backend_name: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict:
+    return {
+        "run_id": run_id,
+        "start_time_wall_s": time.time() if start_time_wall_s is None else float(start_time_wall_s),
+        "end_time_wall_s": None,
+        "config_path": None if config_path is None else str(config_path),
+        "git_sha": git_sha,
+        "carla": {
+            "host": carla_host,
+            "port": None if carla_port is None else int(carla_port),
+            "town": carla_town,
+        },
+        "scenario_name": scenario_name,
+        "backend_name": backend_name,
+        "metadata": dict(metadata or {}),
+    }
+
+
+def build_summary(
+    *,
+    success: bool,
+    exit_reason: str | None,
+    frames: int,
+    sim_duration_s: float | None,
+    wall_duration_s: float | None,
+    cleanup_errors_count: int = 0,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict:
+    return {
+        "success": bool(success),
+        "exit_reason": exit_reason,
+        "frames": int(frames),
+        "sim_duration_s": None if sim_duration_s is None else float(sim_duration_s),
+        "wall_duration_s": None if wall_duration_s is None else float(wall_duration_s),
+        "cleanup_errors_count": int(cleanup_errors_count),
+        "metadata": dict(metadata or {}),
+    }

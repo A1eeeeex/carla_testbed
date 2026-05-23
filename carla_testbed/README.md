@@ -1,16 +1,34 @@
 # carla_testbed/ — Simulator & Harness Layer
 
-- 只负责 CARLA 连接、场景、传感器挂载、记录与评测。
-- 所有外部交互（ROS2/CyberRT）已抽离到顶层 `tbio/`；统一入口使用 `python -m carla_testbed run ...`。
-- 现有示例保持不变：`python examples/run_followstop.py --rig fullstack --ticks 200` 等。开启原生 ROS2 时直接使用 `tbio/backends/ros2_native.py` 的 `Ros2NativePublisher`。
+`carla_testbed/` 是 core platform 包：CARLA 连接、场景构建、harness tick、传感器、记录、summary 与基础评测都应该收敛在这里。
+
+当前项目优先目标是 CARLA + Apollo ground-truth MVP closed loop。`carla_testbed/` 不应该直接承载 Apollo/CyberRT 细节；外部栈集成应通过 adapter/backend contract 接入。
+
+边界说明：
+
+- Core platform logic belongs here when it is independent of a specific external stack.
+- ROS2 / CyberRT / Apollo launch and bridge details belong in `tbio/`, `algo/adapters/`, or `tools/apollo10_cyber_bridge/`.
+- `examples/run_followstop.py` is a legacy/demo runner, not the place for new platform architecture.
 
 目录速览
 - `sim/`：CARLA client、tick、spawn 辅助。
-- `scenarios/`：场景构建（follow-stop）。
+- `scenarios/`：场景构建；当前 follow-stop 是 legacy baseline/demo 场景。
 - `runner/`：Harness 与录制逻辑。
 - `schemas/`：FramePacket / GroundTruthPacket / ControlCommand。
 - `sensors/`：事件传感器、rig 挂载与录制。
 
-新入口（推荐）
-- Mode-1：`python -m carla_testbed run --config configs/io/examples/followstop_dummy.yaml`
-- Mode-2：`python -m carla_testbed run --config configs/io/examples/followstop_autoware.yaml`
+推荐入口
+
+Planned canonical command:
+
+```bash
+python -m carla_testbed run --config configs/examples/follow_stop.yaml
+```
+
+Current compatible command:
+
+```bash
+python -m carla_testbed run --config configs/io/examples/followstop_dummy.yaml
+```
+
+Autoware configs remain legacy experimental compatibility and are not the current priority path.

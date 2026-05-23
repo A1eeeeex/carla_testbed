@@ -2,24 +2,14 @@ from __future__ import annotations
 
 from typing import Protocol
 
-import carla
-
-from carla_testbed.schemas import ControlCommand
+from carla_testbed.contracts import ControlCommand, EgoState, FrameStamp, SceneTruth
 
 
 class Controller(Protocol):
     name: str
 
-    def reset(self):
+    def reset(self) -> None:
         ...
 
-    def step(
-        self,
-        t: float,
-        dt: float,
-        world: carla.World,
-        carla_map: carla.Map,
-        ego: carla.Vehicle,
-        front: carla.Vehicle,
-    ) -> ControlCommand:
+    def step(self, frame: FrameStamp, ego: EgoState, scene: SceneTruth) -> ControlCommand:
         ...

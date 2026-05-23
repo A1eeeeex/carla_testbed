@@ -4924,6 +4924,123 @@ def _extract_command_materialization_summary(artifacts_dir: Path) -> Dict[str, A
     }
 
 
+def _compute_direct_control_apply_summary(
+    artifacts_dir: Path,
+    direct_bridge_stats: Dict[str, Any],
+) -> Dict[str, Any]:
+    rows = load_jsonl(artifacts_dir / "direct_bridge_control_apply.jsonl")
+    frames: List[int] = []
+    first_ts: Optional[float] = None
+    last_ts: Optional[float] = None
+    max_throttle = 0.0
+    max_brake = 0.0
+    max_speed = 0.0
+    source_counts: Dict[str, int] = {}
+    for row in rows:
+        ts = safe_float(row.get("ts_sec"))
+        if ts is not None:
+            if first_ts is None:
+                first_ts = ts
+            last_ts = ts
+        frame = safe_int(row.get("frame_id"))
+        if frame is not None:
+            frames.append(frame)
+        source = str(row.get("source") or "unknown").strip() or "unknown"
+        source_counts[source] = source_counts.get(source, 0) + 1
+        max_throttle = max(max_throttle, safe_float(row.get("throttle")) or 0.0)
+        max_brake = max(max_brake, safe_float(row.get("brake")) or 0.0)
+        max_speed = max(max_speed, safe_float(row.get("speed_mps")) or 0.0)
+
+    stats_count = safe_int(direct_bridge_stats.get("control_apply_count")) or 0
+    apply_count = max(stats_count, len(rows))
+    first_frame = min(frames) if frames else safe_int(direct_bridge_stats.get("control_apply_first_frame"))
+    last_frame = max(frames) if frames else safe_int(direct_bridge_stats.get("control_apply_last_frame"))
+    frame_span: Optional[int]
+    if first_frame is not None and last_frame is not None:
+        frame_span = int(last_frame) - int(first_frame) + 1
+    else:
+        frame_span = safe_int(direct_bridge_stats.get("control_apply_frame_span"))
+    if first_ts is None:
+        first_ts = safe_float(direct_bridge_stats.get("control_apply_first_ts_sec"))
+    if last_ts is None:
+        last_ts = safe_float(direct_bridge_stats.get("control_apply_last_ts_sec"))
+    duration_sec = (last_ts - first_ts) if first_ts is not None and last_ts is not None else None
+    max_throttle = max(max_throttle, safe_float(direct_bridge_stats.get("control_apply_max_throttle")) or 0.0)
+    max_brake = max(max_brake, safe_float(direct_bridge_stats.get("control_apply_max_brake")) or 0.0)
+    max_speed = max(max_speed, safe_float(direct_bridge_stats.get("control_apply_max_speed_mps")) or 0.0)
+
+    if apply_count <= 0:
+        window_status = "no_direct_apply"
+    elif frame_span is None:
+        window_status = "unknown_apply_window"
+    elif frame_span is not None and frame_span < 20:
+        window_status = "short_apply_window"
+    else:
+        window_status = "observable_apply_window"
+
+    return {
+        "apply_count": int(apply_count),
+        "apply_fail_count": safe_int(direct_bridge_stats.get("control_apply_fail_count")) or 0,
+        "first_apply_frame": first_frame,
+        "last_apply_frame": last_frame,
+        "apply_frame_span": frame_span,
+        "first_apply_ts_sec": first_ts,
+        "last_apply_ts_sec": last_ts,
+        "apply_duration_sec": duration_sec,
+        "max_throttle": max_throttle,
+        "max_brake": max_brake,
+        "max_speed_mps": max_speed,
+        "source_counts": source_counts,
+        "window_status": window_status,
+    }
+
+
+def _compute_direct_metric_consistency(
+    bridge_transport_summary: Dict[str, Any],
+    route_metrics: Dict[str, Any],
+    max_speed_mps: float,
+    direct_control_apply_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    transport_mode = str(bridge_transport_summary.get("transport_mode") or "").strip()
+    route_distance = safe_float(route_metrics.get("route_distance_achieved_m"))
+    route_completion = safe_float(route_metrics.get("route_completion_ratio"))
+    direct_max_speed = safe_float(direct_control_apply_summary.get("max_speed_mps")) or 0.0
+    apply_count = safe_int(direct_control_apply_summary.get("apply_count")) or 0
+    apply_span = safe_int(direct_control_apply_summary.get("apply_frame_span"))
+    window_status = str(direct_control_apply_summary.get("window_status") or "").strip()
+    summary_max_speed = safe_float(max_speed_mps) or 0.0
+    reasons: List[str] = []
+
+    if transport_mode != "carla_direct":
+        status = "not_applicable"
+    elif apply_count <= 0:
+        status = "no_direct_apply"
+    elif window_status == "short_apply_window":
+        if summary_max_speed - direct_max_speed >= 2.0:
+            reasons.append("summary_speed_exceeds_direct_apply_speed")
+        if route_distance is not None and abs(route_distance) >= 20.0:
+            reasons.append("route_distance_too_large_for_short_direct_apply_window")
+        status = "short_apply_metric_mismatch" if reasons else "short_apply_insufficient_window"
+    else:
+        if summary_max_speed - direct_max_speed >= 5.0 and direct_max_speed < 1.0:
+            reasons.append("summary_speed_not_supported_by_direct_apply_speed")
+        status = "metric_mismatch" if reasons else "consistent"
+
+    return {
+        "status": status,
+        "reasons": reasons,
+        "transport_mode": transport_mode,
+        "route_distance_achieved_m": route_distance,
+        "route_completion_ratio": route_completion,
+        "summary_max_speed_mps": summary_max_speed,
+        "direct_apply_count": apply_count,
+        "direct_apply_window_status": window_status,
+        "direct_apply_frame_span": apply_span,
+        "direct_apply_max_speed_mps": direct_max_speed,
+        "direct_apply_max_throttle": safe_float(direct_control_apply_summary.get("max_throttle")),
+    }
+
+
 def _control_process_alive_from_status_logs(artifacts_dir: Path) -> bool:
     control_pattern = "modules/control/control_component/dag/control.dag"
     for name in (
@@ -6038,6 +6155,7 @@ def finalize_town01_run(run_dir: Path, *, flags: Optional[Dict[str, Any]] = None
     bridge_transport_summary = _extract_bridge_transport_summary(artifacts_dir)
     command_materialization_summary = _extract_command_materialization_summary(artifacts_dir)
     cyber_stats = load_json(artifacts_dir / "cyber_bridge_stats.json")
+    direct_bridge_stats = load_json(artifacts_dir / "direct_bridge_stats.json")
     planning_rows = _normalize_planning_rows(load_jsonl(artifacts_dir / "planning_topic_debug.jsonl"))
     route_debug_rows = load_jsonl(artifacts_dir / "stage5_apollo_reference_line_debug.jsonl")
     routing_rows = load_jsonl(artifacts_dir / "routing_event_debug.jsonl")
@@ -6107,6 +6225,15 @@ def finalize_town01_run(run_dir: Path, *, flags: Optional[Dict[str, Any]] = None
         sum(1 for row in routing_rows if bool(row.get("routing_request_sent"))),
     )
     routing_success_count = safe_int(cyber_stats.get("routing_success_count")) or 0
+    direct_control_apply_count = safe_int(direct_bridge_stats.get("control_apply_count")) or 0
+    direct_control_apply_fail_count = safe_int(direct_bridge_stats.get("control_apply_fail_count")) or 0
+    direct_control_apply_summary = _compute_direct_control_apply_summary(artifacts_dir, direct_bridge_stats)
+    direct_control_apply_count = int(direct_control_apply_summary["apply_count"])
+    direct_control_apply_fail_count = int(direct_control_apply_summary["apply_fail_count"])
+    write_json(
+        artifacts_dir / "direct_control_apply_summary.finalized.json",
+        direct_control_apply_summary,
+    )
     bridge_runtime_preflight_status = str(
         bridge_runtime_summary.get("bridge_runtime_preflight_status") or "unknown"
     )
@@ -6150,6 +6277,16 @@ def finalize_town01_run(run_dir: Path, *, flags: Optional[Dict[str, Any]] = None
         materialization_status = "planning_control_materialized"
     route_metrics["route_established"] = routing_success_count > 0
     max_speed_mps = _run_max_speed(summary_data, debug_rows)
+    direct_metric_consistency = _compute_direct_metric_consistency(
+        bridge_transport_summary,
+        route_metrics,
+        max_speed_mps,
+        direct_control_apply_summary,
+    )
+    write_json(
+        artifacts_dir / "direct_metric_consistency.finalized.json",
+        direct_metric_consistency,
+    )
     low_speed_creep = _compute_low_speed_creep_metrics(
         artifacts_dir / "debug_timeseries.csv",
         start_after_sec=20.0,
@@ -6731,6 +6868,18 @@ def finalize_town01_run(run_dir: Path, *, flags: Optional[Dict[str, Any]] = None
     final_summary["materialization_status"] = materialization_status
     final_summary["routing_request_count"] = routing_request_count
     final_summary["routing_success_count"] = routing_success_count
+    final_summary["direct_control_apply_count"] = direct_control_apply_count
+    final_summary["direct_control_apply_fail_count"] = direct_control_apply_fail_count
+    final_summary["direct_control_apply_summary"] = direct_control_apply_summary
+    final_summary["direct_control_apply_window_status"] = direct_control_apply_summary["window_status"]
+    final_summary["direct_control_first_apply_frame"] = direct_control_apply_summary["first_apply_frame"]
+    final_summary["direct_control_last_apply_frame"] = direct_control_apply_summary["last_apply_frame"]
+    final_summary["direct_control_apply_frame_span"] = direct_control_apply_summary["apply_frame_span"]
+    final_summary["direct_control_apply_max_throttle"] = direct_control_apply_summary["max_throttle"]
+    final_summary["direct_control_apply_max_speed_mps"] = direct_control_apply_summary["max_speed_mps"]
+    final_summary["direct_metric_consistency"] = direct_metric_consistency
+    final_summary["direct_metric_consistency_status"] = direct_metric_consistency["status"]
+    final_summary["direct_metric_consistency_reasons"] = direct_metric_consistency["reasons"]
     final_summary["route_establishment_latency_sec"] = route_establishment_latency_sec
     final_summary["planning_nonzero_ratio"] = checks["planning_nonzero_ratio"]["actual"]
     final_summary["control_used_planning_ratio"] = control_used_planning_ratio

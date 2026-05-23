@@ -88,7 +88,7 @@ algo:
       apollo_root_in_container: /apollo
       apollo_distribution_home: /opt/apollo/neo
       python_exec: python3
-      host_python_exec: /home/ubuntu/miniconda3/envs/carla16/bin/python3
+      host_python_exec: ${CARLA16_PYTHON}
     dreamview:
       enabled: true
       auto_start: true
@@ -112,7 +112,7 @@ algo:
       max_obstacles: 64
       radius_m: 120.0
       localization_back_offset_m: 1.4235
-      map_file: /home/ubuntu/Carla_apollo_maps/carla_town01/base_map.txt
+      map_file: ${APOLLO_MAP_ROOT}/carla_town01/base_map.txt
       debug_dump_control_raw: true
     planning:
       acc_only_mode: false

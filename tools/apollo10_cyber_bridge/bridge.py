@@ -1249,6 +1249,8 @@ class ApolloGtBridge:
             "straight_lane_zero_steer_apply_count": 0,
             "low_speed_steer_guard_apply_count": 0,
             "force_zero_steer_apply_count": 0,
+            "direct_stale_world_frame_skip_count": 0,
+            "direct_stale_world_frame_republish_count": 0,
         }
 
         bridge_cfg = (cfg.get("bridge", {}) or {})
@@ -2092,6 +2094,7 @@ class ApolloGtBridge:
                 ),
                 route_command_mode=self.route_command_mode,
                 require_no_ros2_runtime=self.require_no_ros2_runtime,
+                client_timeout_sec=float(self.direct_bridge_cfg.get("client_timeout_sec", 5.0)),
             )
             self.executor = NoopExecutor()
             self.ros_thread = threading.Thread(target=lambda: None, name="carla_direct_transport", daemon=True)
@@ -2504,6 +2507,7 @@ class ApolloGtBridge:
         control_rx_count = int(self.stats.get("control_rx_count", 0) or 0)
         control_tx_count = int(self.stats.get("control_tx_count", 0) or 0)
         direct_control_apply_count = int(direct_stats.get("control_apply_count", 0) or 0)
+        direct_control_apply_frame_span = _finite_or_none(direct_stats.get("control_apply_frame_span"))
         speed_mps = _finite_or_none(self._latest_speed_mps)
         gate_reason = str(gate.get("last_blocking_reason") or "").strip()
         direct_last_error = str(direct_stats.get("last_error", "") or "").strip()
@@ -2556,6 +2560,15 @@ class ApolloGtBridge:
             stage = "control_tx_no_direct_apply"
             layer = "actuation"
             reason = reason or direct_last_error or "direct_apply_pending"
+        elif (
+            self.transport_mode == "carla_direct"
+            and direct_control_apply_count > 0
+            and direct_control_apply_frame_span is not None
+            and direct_control_apply_frame_span < 20
+        ):
+            stage = "control_applied_short_window"
+            layer = "actuation_window"
+            reason = reason or "direct_apply_window_too_short_for_behavior_judgment"
         elif speed_mps is not None and speed_mps <= 0.5:
             stage = "control_applied_no_motion"
             layer = "actuation"
@@ -2614,8 +2627,18 @@ class ApolloGtBridge:
                 "world_frame_repeat_count": int(direct_stats.get("world_frame_repeat_count", 0) or 0),
                 "control_apply_count": direct_control_apply_count,
                 "control_apply_fail_count": int(direct_stats.get("control_apply_fail_count", 0) or 0),
+                "control_apply_first_frame": direct_stats.get("control_apply_first_frame"),
+                "control_apply_last_frame": direct_stats.get("control_apply_last_frame"),
+                "control_apply_frame_span": direct_stats.get("control_apply_frame_span"),
+                "control_apply_max_throttle": _finite_or_none(direct_stats.get("control_apply_max_throttle")),
+                "control_apply_max_speed_mps": _finite_or_none(
+                    direct_stats.get("control_apply_max_speed_mps")
+                ),
                 "stale_world_frame_skip_count": int(
                     self.stats.get("direct_stale_world_frame_skip_count", 0) or 0
+                ),
+                "stale_world_frame_republish_count": int(
+                    self.stats.get("direct_stale_world_frame_republish_count", 0) or 0
                 ),
                 "last_speed_mps": _finite_or_none(direct_stats.get("last_speed_mps")),
                 "last_error": str(direct_stats.get("last_error", "") or ""),
@@ -8428,15 +8451,26 @@ class ApolloGtBridge:
                     and odom is not None
                     and not bool(snapshot.get("world_frame_advanced", False))
                 ):
-                    self.stats["direct_stale_world_frame_skip_count"] = int(
-                        self.stats.get("direct_stale_world_frame_skip_count", 0) or 0
-                    ) + 1
-                    now = time.time()
-                    if (now - last_stats_flush) >= 1.0:
-                        self._write_stats()
-                        last_stats_flush = now
-                    time.sleep(period)
-                    continue
+                    if int(self.stats.get("control_tx_count", 0) or 0) <= 0:
+                        # Direct transport must not tick CARLA, but Apollo
+                        # control still expects current localization/chassis
+                        # messages while the harness is in setup/probe waits.
+                        # Re-publish cached GT only until control first outputs;
+                        # after that, repeated stale pose messages can make
+                        # Apollo perceive poor vehicle response and brake early.
+                        self.stats["direct_stale_world_frame_republish_count"] = int(
+                            self.stats.get("direct_stale_world_frame_republish_count", 0) or 0
+                        ) + 1
+                    else:
+                        self.stats["direct_stale_world_frame_skip_count"] = int(
+                            self.stats.get("direct_stale_world_frame_skip_count", 0) or 0
+                        ) + 1
+                        now = time.time()
+                        if (now - last_stats_flush) >= 1.0:
+                            self._write_stats()
+                            last_stats_flush = now
+                        time.sleep(period)
+                        continue
                 if odom is not None:
                     direct_world_frame = snapshot.get("world_frame")
                     loc, ts_sec, vel_xyz, pose_debug, pose_info = self._odom_to_loc(

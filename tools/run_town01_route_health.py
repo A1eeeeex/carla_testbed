@@ -1397,6 +1397,7 @@ def _preview_runtime_contract(
     ticks: int,
     comparison_label: str,
     capability_profile: str = "",
+    final_overrides: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     preview_cfg = apply_overrides(
         load_rig_file(str(config_path)),
@@ -1409,7 +1410,8 @@ def _preview_runtime_contract(
             comparison_label=comparison_label,
             capability_profile=capability_profile,
         )
-        + [f"run.profile_name=town01_route_health_{comparison_label}_{route_id}"],
+        + [f"run.profile_name=town01_route_health_{comparison_label}_{route_id}"]
+        + list(final_overrides or []),
     )
     runtime_mode = _runtime_mode_snapshot(flags, preview_cfg)
     runtime_contract = evaluate_runtime_contract(capability_profile, runtime_mode)
@@ -1432,6 +1434,7 @@ def _invoke_run(
     base_overrides: List[str],
     capability_profile: str = "",
     run_overrides: Optional[List[str]] = None,
+    final_overrides: Optional[List[str]] = None,
 ) -> int:
     _cleanup_runtime_processes()
     cmd = [
@@ -1456,7 +1459,8 @@ def _invoke_run(
         )
     profile_name = f"town01_route_health_{comparison_label}_{route_id}"
     resolved_run_overrides.append(f"run.profile_name={profile_name}")
-    for item in [*base_overrides, *resolved_run_overrides]:
+    # CLI --override is user intent and must win over capability/runtime defaults.
+    for item in [*base_overrides, *resolved_run_overrides, *list(final_overrides or [])]:
         cmd.extend(["--override", item])
     env = _ros_sourced_env(os.environ.copy())
     print(f"[town01-route-health] run route_id={route_id} label={comparison_label} -> {run_dir}")
@@ -1824,6 +1828,7 @@ def _run_mainline(args: argparse.Namespace) -> None:
                 ticks=int(args.ticks),
                 comparison_label=comparison_label,
                 capability_profile=str(args.capability_profile or ""),
+                final_overrides=list(args.override or []),
             )
             runtime_contract = contract_preview["runtime_contract"]
             item = {
@@ -1861,6 +1866,7 @@ def _run_mainline(args: argparse.Namespace) -> None:
                 base_overrides=base_overrides,
                 capability_profile=str(args.capability_profile or ""),
                 run_overrides=run_overrides,
+                final_overrides=list(args.override or []),
             )
             item["effective_run_dir"] = str(_resolve_run_dir(run_dir))
             item["returncode"] = rc

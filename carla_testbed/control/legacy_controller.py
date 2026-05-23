@@ -7,7 +7,6 @@ from typing import Optional
 import carla
 
 from carla_testbed.schemas import ControlCommand
-from .base import Controller
 from algo.controllers.legacy_followstop import controllers as legacy_ctrl
 
 
@@ -21,7 +20,7 @@ class LegacyControllerConfig:
     blend_time_s: float = 1.5
 
 
-class LegacyFollowStopController(Controller):
+class LegacyFollowStopController:
     """Adapter around existing code/followstop/controllers.py build_default_controller."""
 
     def __init__(
@@ -87,3 +86,7 @@ class LegacyFollowStopController(Controller):
             meta={"last_debug": getattr(self.ctrl, "last_debug", {}), "name": self.name},
         )
         return cmd
+
+
+class CarlaLegacyControllerAdapter(LegacyFollowStopController):
+    """Compatibility name for CARLA-object based legacy controller path."""

@@ -6,9 +6,10 @@ import json
 import shlex
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence
 
 import yaml
 
@@ -31,6 +32,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from carla_testbed.utils.town01_route_health import canonical_demo_steps, random_regression_steps
+from tools.analyze_town01_transport_ab import build_rows, summarize_rows, write_csv, write_markdown
 
 
 def _default_python_exec() -> str:
@@ -104,8 +106,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--startup-profile",
+        default=None,
+        help=(
+            "Legacy compatibility override: startup profile forwarded to both chains. "
+            "For fair transport A/B, prefer the per-chain defaults or explicit "
+            "--baseline-startup-profile/--candidate-startup-profile."
+        ),
+    )
+    parser.add_argument(
+        "--baseline-startup-profile",
+        default="render_offscreen",
+        help="Startup profile for the ros2_gt baseline chain; default keeps native CARLA ROS2 enabled.",
+    )
+    parser.add_argument(
+        "--candidate-startup-profile",
         default="render_offscreen_no_ros2",
-        help="Startup profile forwarded to the online chain.",
+        help="Startup profile for the carla_direct candidate chain; default avoids native CARLA ROS2.",
     )
     parser.add_argument("--carla-world-ready-timeout-sec", type=float, default=180.0)
     parser.add_argument("--carla-launch-attempts", type=int, default=1)
@@ -115,7 +131,26 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-root-parent", type=Path, default=None)
     parser.add_argument("--progress-update-sec", type=float, default=3.0)
     parser.add_argument("--continue-on-failure", action="store_true")
+    parser.add_argument(
+        "--enable-guard",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Forward the current Town01 route-health guard flag to both baseline and candidate chains.",
+    )
+    parser.add_argument(
+        "--stop-on-first-route-failure",
+        action="store_true",
+        help=(
+            "Do not forward online-chain's continue-initial-step-on-failure flag. "
+            "By default A/B batches keep collecting later routes when --continue-on-failure is set."
+        ),
+    )
     parser.add_argument("--keep-carla-alive-at-end", action="store_true")
+    parser.add_argument(
+        "--no-cleanup-between-chains",
+        action="store_true",
+        help="Skip the default CARLA process cleanup between baseline and candidate chains.",
+    )
     parser.add_argument("--no-prewarm-carla", action="store_true")
     parser.add_argument(
         "--carla-ignore-memory-preflight",
@@ -138,6 +173,13 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_startup_profiles(args: argparse.Namespace) -> tuple[str, str]:
+    if args.startup_profile:
+        profile = str(args.startup_profile)
+        return profile, profile
+    return str(args.baseline_startup_profile), str(args.candidate_startup_profile)
+
+
 def _append_steps(cmd: List[str], steps: Iterable[str]) -> None:
     for item in steps:
         cmd.extend(["--step", item])
@@ -158,9 +200,11 @@ def _build_command(
     no_prewarm_carla: bool,
     keep_carla_alive_at_end: bool,
     continue_on_failure: bool,
+    continue_initial_step_on_failure: bool,
     comparison_label_suffix: str,
     extra_overrides: Sequence[str],
     carla_ignore_memory_preflight: bool,
+    enable_guard: bool,
     dry_run: bool,
 ) -> List[str]:
     cmd: List[str] = [
@@ -184,6 +228,8 @@ def _build_command(
         "--comparison-label-suffix",
         comparison_label_suffix,
     ]
+    if enable_guard:
+        cmd.append("--enable-guard")
     if batch_root_parent is not None:
         cmd.extend(["--batch-root-parent", str(batch_root_parent.expanduser().resolve())])
     if no_prewarm_carla:
@@ -194,6 +240,8 @@ def _build_command(
         cmd.append("--keep-carla-alive-at-end")
     if continue_on_failure:
         cmd.append("--continue-on-failure")
+    if continue_initial_step_on_failure:
+        cmd.append("--continue-initial-step-on-failure")
     for override in extra_overrides:
         text = str(override or "").strip()
         if text:
@@ -209,53 +257,119 @@ def _default_manifest_out() -> Path:
     return REPO_ROOT / "artifacts" / f"town01_transport_ab_manifest_{ts}.json"
 
 
+def _default_ab_batch_root() -> Path:
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return REPO_ROOT / "runs" / f"town01_transport_ab_{ts}"
+
+
+def _ab_batch_roots(root: Path) -> tuple[Path, Path]:
+    resolved = root.expanduser().resolve()
+    return resolved / "baseline", resolved / "candidate"
+
+
 def _write_manifest(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _run_chain(cmd: Sequence[str], *, allow_failure: bool) -> subprocess.CompletedProcess:
+    result = subprocess.run(list(cmd), check=False, cwd=str(REPO_ROOT))
+    if result.returncode != 0 and not allow_failure:
+        raise subprocess.CalledProcessError(result.returncode, result.args)
+    return result
+
+
+def _cleanup_between_chains(*, enabled: bool) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "enabled": bool(enabled),
+        "status": "skipped",
+        "started_at": None,
+        "duration_sec": 0.0,
+        "error": "",
+    }
+    if not enabled:
+        return result
+    started = time.monotonic()
+    result["started_at"] = datetime.now().isoformat(timespec="seconds")
+    try:
+        from tools.run_town01_route_health import _cleanup_carla_processes
+
+        _cleanup_carla_processes()
+    except Exception as exc:
+        result["status"] = "failed"
+        result["error"] = repr(exc)
+    else:
+        result["status"] = "completed"
+    finally:
+        result["duration_sec"] = round(time.monotonic() - started, 3)
+    return result
+
+
+def _write_ab_report(
+    *,
+    baseline_root: Path,
+    candidate_root: Path,
+    csv_out: Path,
+    md_out: Path,
+) -> Dict[str, object]:
+    rows = build_rows([baseline_root], [candidate_root])
+    summary = summarize_rows(rows)
+    write_csv(csv_out, rows)
+    write_markdown(md_out, rows, summary)
+    return summary
 
 
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
     steps = _selected_steps(args.route_set)
+    baseline_startup_profile, candidate_startup_profile = _resolve_startup_profiles(args)
     manifest_out = args.manifest_out.expanduser().resolve() if args.manifest_out else _default_manifest_out()
+    ab_batch_root = (args.batch_root_parent.expanduser().resolve() if args.batch_root_parent else _default_ab_batch_root())
+    baseline_batch_root, candidate_batch_root = _ab_batch_roots(ab_batch_root)
+    report_csv = ab_batch_root / "transport_ab_summary.csv"
+    report_md = ab_batch_root / "transport_ab_summary.md"
 
     baseline_cmd = _build_command(
         python_exec=args.python_exec,
         config_path=args.baseline_config,
         steps=steps,
-        startup_profile=args.startup_profile,
+        startup_profile=baseline_startup_profile,
         world_ready_timeout_sec=args.carla_world_ready_timeout_sec,
         launch_attempts=args.carla_launch_attempts,
         ticks=args.ticks,
         post_fail_steps=args.post_fail_steps,
         progress_update_sec=args.progress_update_sec,
-        batch_root_parent=args.batch_root_parent,
+        batch_root_parent=baseline_batch_root,
         no_prewarm_carla=args.no_prewarm_carla,
         keep_carla_alive_at_end=args.keep_carla_alive_at_end,
         continue_on_failure=args.continue_on_failure,
+        continue_initial_step_on_failure=bool(args.continue_on_failure and not args.stop_on_first_route_failure),
         comparison_label_suffix="transport_ab_baseline",
         extra_overrides=list(args.override or []),
         carla_ignore_memory_preflight=bool(args.carla_ignore_memory_preflight),
+        enable_guard=bool(args.enable_guard),
         dry_run=args.dry_run,
     )
     candidate_cmd = _build_command(
         python_exec=args.python_exec,
         config_path=args.candidate_config,
         steps=steps,
-        startup_profile=args.startup_profile,
+        startup_profile=candidate_startup_profile,
         world_ready_timeout_sec=args.carla_world_ready_timeout_sec,
         launch_attempts=args.carla_launch_attempts,
         ticks=args.ticks,
         post_fail_steps=args.post_fail_steps,
         progress_update_sec=args.progress_update_sec,
-        batch_root_parent=args.batch_root_parent,
+        batch_root_parent=candidate_batch_root,
         no_prewarm_carla=args.no_prewarm_carla,
         keep_carla_alive_at_end=args.keep_carla_alive_at_end,
         continue_on_failure=args.continue_on_failure,
+        continue_initial_step_on_failure=bool(args.continue_on_failure and not args.stop_on_first_route_failure),
         comparison_label_suffix="transport_ab_direct_candidate",
         extra_overrides=list(args.override or []),
         carla_ignore_memory_preflight=bool(args.carla_ignore_memory_preflight),
+        enable_guard=bool(args.enable_guard),
         dry_run=args.dry_run,
     )
     payload = {
@@ -265,16 +379,27 @@ def main() -> None:
         "candidate_config": str(args.candidate_config.expanduser().resolve()),
         "baseline_runtime_scope": _load_runtime_scope(args.baseline_config.expanduser().resolve()),
         "candidate_runtime_scope": _load_runtime_scope(args.candidate_config.expanduser().resolve()),
+        "ab_batch_root": str(ab_batch_root),
+        "baseline_batch_root": str(baseline_batch_root),
+        "candidate_batch_root": str(candidate_batch_root),
+        "report_csv": str(report_csv),
+        "report_md": str(report_md),
         "startup_profile": args.startup_profile,
+        "baseline_startup_profile": baseline_startup_profile,
+        "candidate_startup_profile": candidate_startup_profile,
         "ticks": int(args.ticks),
         "post_fail_steps": int(args.post_fail_steps),
         "carla_world_ready_timeout_sec": float(args.carla_world_ready_timeout_sec),
         "carla_launch_attempts": int(args.carla_launch_attempts),
         "carla_ignore_memory_preflight": bool(args.carla_ignore_memory_preflight),
+        "enable_guard": bool(args.enable_guard),
+        "cleanup_between_chains": not bool(args.no_cleanup_between_chains),
+        "stop_on_first_route_failure": bool(args.stop_on_first_route_failure),
         "overrides": [str(item) for item in list(args.override or []) if str(item).strip()],
         "probe_only_overrides": [str(item) for item in list(args.override or []) if str(item).strip()],
         "baseline_command": baseline_cmd,
         "candidate_command": candidate_cmd,
+        "results": {},
     }
     _write_manifest(manifest_out, payload)
 
@@ -293,8 +418,38 @@ def main() -> None:
         subprocess.run(candidate_cmd, check=True, cwd=str(REPO_ROOT))
         return
 
-    subprocess.run(baseline_cmd, check=True, cwd=str(REPO_ROOT))
-    subprocess.run(candidate_cmd, check=True, cwd=str(REPO_ROOT))
+    baseline_result = _run_chain(
+        baseline_cmd,
+        allow_failure=bool(args.continue_on_failure),
+    )
+    payload["results"]["baseline"] = {
+        "returncode": int(baseline_result.returncode),
+        "status": "completed" if baseline_result.returncode == 0 else "failed",
+    }
+    _write_manifest(manifest_out, payload)
+
+    payload["results"]["between_chain_cleanup"] = _cleanup_between_chains(
+        enabled=not bool(args.no_cleanup_between_chains)
+    )
+    _write_manifest(manifest_out, payload)
+
+    candidate_result = _run_chain(
+        candidate_cmd,
+        allow_failure=bool(args.continue_on_failure),
+    )
+    payload["results"]["candidate"] = {
+        "returncode": int(candidate_result.returncode),
+        "status": "completed" if candidate_result.returncode == 0 else "failed",
+    }
+    payload["analysis_summary"] = _write_ab_report(
+        baseline_root=baseline_batch_root,
+        candidate_root=candidate_batch_root,
+        csv_out=report_csv,
+        md_out=report_md,
+    )
+    _write_manifest(manifest_out, payload)
+    print(f"[town01-transport-ab] report_csv: {report_csv}")
+    print(f"[town01-transport-ab] report_md: {report_md}")
 
 
 if __name__ == "__main__":

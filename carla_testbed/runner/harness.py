@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import carla
 
 from carla_testbed.config import HarnessConfig
+from carla_testbed.contracts import FrameStamp as ControlFrameStamp
+from carla_testbed.core.lifecycle import CleanupError, LifecycleManager, cleanup_methods
 from carla_testbed.control import LegacyControllerConfig, LegacyFollowStopController
+from carla_testbed.control.applicator import apply_control_to_vehicle, read_vehicle_control
+from carla_testbed.evaluation import MetricsAccumulator
 from carla_testbed.config.rig_loader import dump_rig
 from carla_testbed.config.rig_postprocess import (
     load_meta_typed,
@@ -22,7 +27,7 @@ from carla_testbed.config.rig_postprocess import (
     save_json,
     hash_file,
 )
-from carla_testbed.record import SummaryRecorder, TimeseriesRecorder
+from carla_testbed.record import RunArtifactStore, TimeseriesRecorder, build_manifest
 from carla_testbed.record.monitor import SignalMonitor
 from carla_testbed.record.manager import RecordManager, RecordOptions
 from carla_testbed.record.fail_capture import FailFrameCapture
@@ -30,6 +35,8 @@ from carla_testbed.ros2 import GroundTruthRos2Publisher
 from carla_testbed.schemas import ControlCommand, Event, FramePacket, GroundTruthPacket, ObjectTruth
 from carla_testbed.sensors import CollisionEventSource, LaneInvasionEventSource, SensorRig
 from carla_testbed.sim import tick_world
+from carla_testbed.runner.hooks import FrameContext, RunHook
+from carla_testbed.runner.tick_loop import HookDispatcher, adapt_tick_callbacks, hook_error_summaries
 from tbio.backends.ros2_native import Ros2NativePublisher
 
 
@@ -45,6 +52,67 @@ class HarnessState:
     collision_count: int = 0
     lane_invasion_count: int = 0
     max_speed_mps: float = 0.0
+
+
+def _cleanup_error_summaries(errors: Tuple[CleanupError, ...]) -> List[dict]:
+    return [
+        {
+            "name": err.name,
+            "error_type": type(err.error).__name__,
+            "message": str(err.error),
+        }
+        for err in errors
+    ]
+
+
+def _register_harness_cleanup_resources(
+    lifecycle: LifecycleManager,
+    *,
+    col_src=None,
+    inv_src=None,
+    rig=None,
+    ros_native=None,
+    gt_pub=None,
+    rviz_launcher=None,
+    bag_recorder=None,
+    fail_cap=None,
+    record_mgr=None,
+    monitor=None,
+    ts_rec=None,
+    persist_gt_stats: Optional[Callable[[], None]] = None,
+) -> None:
+    """Register run resources so lifecycle reverse cleanup preserves legacy order."""
+    if ts_rec is not None:
+        lifecycle.register_methods("timeseries_recorder", ts_rec, "close")
+    if monitor is not None and (hasattr(monitor, "close") or hasattr(monitor, "stop")):
+        lifecycle.register("monitor", monitor, cleanup_methods("close", "stop"))
+    if record_mgr is not None:
+        lifecycle.register_methods("record_manager", record_mgr, "stop")
+    if fail_cap is not None:
+        lifecycle.register_methods("fail_capture", fail_cap, "stop")
+    if bag_recorder is not None:
+        lifecycle.register_methods("bag_recorder", bag_recorder, "stop")
+    if rviz_launcher is not None:
+        lifecycle.register_methods("rviz_launcher", rviz_launcher, "stop")
+    if gt_pub is not None:
+        def _close_gt_pub(pub) -> None:
+            if persist_gt_stats is not None:
+                persist_gt_stats()
+            close = getattr(pub, "close", None)
+            if close is not None:
+                close()
+
+        lifecycle.register("ros2_gt_publisher", gt_pub, _close_gt_pub)
+    if ros_native is not None:
+        lifecycle.register_methods("ros2_native_publisher", ros_native, "teardown")
+    if rig is not None:
+        # SensorRig.stop owns its CARLA sensor stop/destroy sequence.
+        lifecycle.register_methods("sensor_rig", rig, "stop")
+    if inv_src is not None:
+        # Event source stop owns its CARLA sensor stop/destroy sequence.
+        lifecycle.register_methods("lane_invasion_sensor", inv_src, "stop")
+    if col_src is not None:
+        lifecycle.register_methods("collision_sensor", col_src, "stop")
 
 
 class TestHarness:
@@ -219,10 +287,39 @@ class TestHarness:
         disable_control: bool = False,
         sensor_capture_enabled: bool = True,
         tick_callbacks: Optional[List[Callable[..., None]]] = None,
+        hooks: Optional[List[RunHook]] = None,
     ) -> Tuple[HarnessState, dict]:
+        run_start_wall_time_s = time.time()
         out_dir.mkdir(parents=True, exist_ok=True)
-        ts_rec = TimeseriesRecorder(out_dir / "timeseries.csv")
-        summary_rec = SummaryRecorder(out_dir / "summary.json")
+        artifact_store = RunArtifactStore(out_dir).ensure()
+        artifact_store.write_manifest(
+            build_manifest(
+                run_id=out_dir.name,
+                start_time_wall_s=run_start_wall_time_s,
+                config_path=None,
+                carla_town=self.cfg.town,
+                scenario_name="legacy_follow_stop",
+                backend_name="harness",
+                metadata={
+                    "output_dir": str(out_dir),
+                    "record_modes": list(self.cfg.record_modes) if hasattr(self.cfg, "record_modes") else [],
+                    "ros2_native_enabled": bool(self.cfg.enable_ros2_native),
+                    "ros2_gt_enabled": bool(self.cfg.enable_ros2_gt),
+                },
+            )
+        )
+        artifact_store.write_resolved_config({"harness": self.cfg})
+        artifact_events = artifact_store.open_events()
+        artifact_events.append(
+            {
+                "event_type": "run_start",
+                "wall_time_s": run_start_wall_time_s,
+                "run_id": out_dir.name,
+                "scenario_name": "legacy_follow_stop",
+                "backend_name": "harness",
+            }
+        )
+        ts_rec = TimeseriesRecorder(artifact_store.timeseries_csv_path)
         sensor_out = out_dir / "sensors"
         cfg_dir = out_dir / "config"
         controller = LegacyFollowStopController(
@@ -278,6 +375,7 @@ class TestHarness:
         gt_stats_path = out_dir / "artifacts" / "ros2_gt_live_stats.json"
         tm = None
         bag_recorder = None
+        cleanup_errors: Tuple[CleanupError, ...] = ()
 
         def _persist_gt_stats() -> None:
             if gt_pub is None:
@@ -285,8 +383,8 @@ class TestHarness:
             try:
                 gt_stats_path.parent.mkdir(parents=True, exist_ok=True)
                 gt_stats_path.write_text(json.dumps(gt_pub.get_stats(), indent=2))
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"[WARN] ROS2 GT stats persist failed: {exc}")
 
         if self.cfg.enable_ros2_gt:
             try:
@@ -316,7 +414,8 @@ class TestHarness:
         if self.cfg.enable_ros2_native:
             try:
                 tm = world.get_trafficmanager()
-            except Exception:
+            except Exception as exc:
+                print(f"[WARN] traffic manager lookup failed: {exc}")
                 tm = None
             ros_native = Ros2NativePublisher(
                 world=world,
@@ -347,28 +446,122 @@ class TestHarness:
         stopped_counter = 0
         hold_steps = max(1, int(1.0 / self.cfg.dt)) if self.cfg.dt > 0 else 20
         progress_interval = max(1, self.cfg.max_steps // 20)  # print ~20 updates
-        tick_callback_failures: Dict[int, int] = {}
+        actor_filter_failures: Dict[str, int] = {}
+        metrics = MetricsAccumulator()
+        hook_dispatcher = HookDispatcher(list(hooks or []) + adapt_tick_callbacks(tick_callbacks), warn=print)
+        run_hook_context: dict[str, Any] = {
+            "out_dir": out_dir,
+            "state": self.state,
+            "metadata": {
+                "disable_control": disable_control,
+                "sensor_capture_enabled": sensor_capture_enabled,
+            },
+        }
+        lifecycle = LifecycleManager()
+        _register_harness_cleanup_resources(
+            lifecycle,
+            col_src=col_src,
+            inv_src=inv_src,
+            rig=rig,
+            ros_native=ros_native,
+            gt_pub=gt_pub,
+            rviz_launcher=rviz_launcher,
+            bag_recorder=bag_recorder,
+            fail_cap=fail_cap,
+            record_mgr=record_mgr,
+            monitor=monitor,
+            ts_rec=ts_rec,
+            persist_gt_stats=_persist_gt_stats,
+        )
+        lifecycle.register_methods("run_hooks", hook_dispatcher, "close")
+        lifecycle.register_methods("artifact_events", artifact_events, "close")
 
         try:
+            hook_dispatcher.notify("on_run_start", run_hook_context)
             for step in range(self.cfg.max_steps):
+                frame_ctx = FrameContext(step=step, metadata={"progress_interval": progress_interval})
+
+                # Stage 1: advance CARLA exactly once through the harness tick owner.
+                hook_dispatcher.notify("before_tick", frame_ctx)
                 frame_id, timestamp, _ = tick_world(world)
                 self.state.step = step
                 self.state.frame_id = frame_id
                 self.state.timestamp = timestamp
-                if tick_callbacks:
-                    for idx, cb in enumerate(tick_callbacks):
-                        if cb is None:
-                            continue
-                        try:
-                            cb(frame_id=frame_id, timestamp=timestamp, step=step)
-                        except TypeError:
-                            cb(frame_id, timestamp)
-                        except Exception as exc:
-                            count = tick_callback_failures.get(idx, 0) + 1
-                            tick_callback_failures[idx] = count
-                            if count <= 3:
-                                print(f"[WARN] tick callback #{idx} failed at step={step}: {exc}")
+                frame_ctx.frame_id = frame_id
+                frame_ctx.sim_time_s = timestamp
+                hook_dispatcher.notify("after_world_tick", frame_ctx)
 
+                # Stage 2: collect simulation state for this frame.
+                v = (ego.get_velocity().length())
+                self.state.max_speed_mps = max(self.state.max_speed_mps, v)
+                collisions = col_src.fetch_and_clear() if col_src else []
+                invasions = inv_src.fetch_and_clear() if inv_src else []
+                self.state.collision_count += len(collisions)
+                self.state.lane_invasion_count += len(invasions)
+                for _ in collisions or []:
+                    artifact_events.append(
+                        {
+                            "event_type": "collision",
+                            "frame": frame_id,
+                            "t": timestamp,
+                            "step": step,
+                            "collision_count": self.state.collision_count,
+                        }
+                    )
+                for _ in invasions or []:
+                    artifact_events.append(
+                        {
+                            "event_type": "lane_invasion",
+                            "frame": frame_id,
+                            "t": timestamp,
+                            "step": step,
+                            "lane_invasion_count": self.state.lane_invasion_count,
+                        }
+                    )
+                frame_ctx.ego_state = {"speed_mps": v}
+                frame_ctx.scene_state = {
+                    "collision_count": self.state.collision_count,
+                    "lane_invasion_count": self.state.lane_invasion_count,
+                    "new_collisions": len(collisions),
+                    "new_lane_invasions": len(invasions),
+                }
+
+                # Stage 3: capture configured sensors for the current frame.
+                if rig and sensor_capture_enabled:
+                    rig.capture(frame_id, timestamp=timestamp, return_samples=False)
+                    frame_ctx.metadata["rig_capture"] = True
+                    if monitor:
+                        monitor.record_sensor("rig_capture", timestamp)
+                else:
+                    frame_ctx.metadata["rig_capture"] = False
+
+                # Stage 4: publish ground truth and notify integrations.
+                hook_dispatcher.notify("after_state_collect", frame_ctx)
+                if gt_pub is not None:
+                    try:
+                        extra_actors = []
+                        try:
+                            extra_actors.extend(list(world.get_actors().filter("vehicle.*")))
+                        except Exception as exc:
+                            count = actor_filter_failures.get("vehicle", 0) + 1
+                            actor_filter_failures["vehicle"] = count
+                            if count <= 3:
+                                print(f"[WARN] GT actor filter failed kind=vehicle step={step}: {exc}")
+                        try:
+                            extra_actors.extend(list(world.get_actors().filter("walker.*")))
+                        except Exception as exc:
+                            count = actor_filter_failures.get("walker", 0) + 1
+                            actor_filter_failures["walker"] = count
+                            if count <= 3:
+                                print(f"[WARN] GT actor filter failed kind=walker step={step}: {exc}")
+                        gt_pub.publish_tick(world, ego, extra_actors)
+                        if step < 3 or step % progress_interval == 0:
+                            _persist_gt_stats()
+                    except Exception as exc:
+                        print(f"[WARN] GT publish tick failed: {exc}")
+                        gt_pub = None
+
+                # Stage 5: compute or poll control.
                 cmd: ControlCommand = controller.step(
                     t=step * self.cfg.dt,
                     dt=self.cfg.dt,
@@ -377,76 +570,77 @@ class TestHarness:
                     ego=ego,
                     front=front,
                 )
+                frame_ctx.control_command = cmd
+                hook_dispatcher.notify("before_control_apply", frame_ctx)
+
+                # Stage 6: apply control to CARLA, unless an external stack owns actuation.
+                control_apply_result = None
                 if not disable_control:
-                    ego.apply_control(
-                        carla.VehicleControl(
-                            throttle=cmd.throttle,
-                            brake=cmd.brake,
-                            steer=cmd.steer,
-                            reverse=cmd.reverse,
-                            hand_brake=cmd.hand_brake,
-                            manual_gear_shift=cmd.manual_gear_shift,
-                            gear=cmd.gear,
-                        )
+                    control_apply_result = apply_control_to_vehicle(
+                        ego,
+                        cmd,
+                        stamp=ControlFrameStamp(frame_id=frame_id, sim_time_s=timestamp),
                     )
-                applied_ctrl = ego.get_control()
+                    if not control_apply_result.applied_ok:
+                        print(
+                            "[WARN] control apply failed "
+                            f"actor_id={control_apply_result.actor_id}: {control_apply_result.error}"
+                        )
+                applied_snapshot = (
+                    control_apply_result.applied_control if control_apply_result is not None else read_vehicle_control(ego)
+                )
+                frame_ctx.metadata["applied_control"] = dict(applied_snapshot)
+                if control_apply_result is not None:
+                    frame_ctx.metadata["control_apply"] = control_apply_result.to_dict()
                 if monitor and not disable_control:
+                    clamped_monitor_ctrl = control_apply_result.clamped_command if control_apply_result is not None else {}
                     monitor.record_control(
                         "carla_control_applied",
                         timestamp,
                         ctrl={
-                            "throttle": cmd.throttle,
-                            "brake": cmd.brake,
-                            "steer": cmd.steer,
-                            "reverse": cmd.reverse,
+                            "throttle": clamped_monitor_ctrl.get("throttle", cmd.throttle),
+                            "brake": clamped_monitor_ctrl.get("brake", cmd.brake),
+                            "steer": clamped_monitor_ctrl.get("steer", cmd.steer),
+                            "reverse": clamped_monitor_ctrl.get("reverse", cmd.reverse),
+                            "requested_throttle": cmd.throttle,
+                            "requested_brake": cmd.brake,
+                            "requested_steer": cmd.steer,
+                            "applied_ok": control_apply_result.applied_ok if control_apply_result is not None else None,
                         },
                     )
+                hook_dispatcher.notify("after_control_apply", frame_ctx)
 
-                v = (ego.get_velocity().length())
-                self.state.max_speed_mps = max(self.state.max_speed_mps, v)
-                collisions = col_src.fetch_and_clear() if col_src else []
-                invasions = inv_src.fetch_and_clear() if inv_src else []
-                self.state.collision_count += len(collisions)
-                self.state.lane_invasion_count += len(invasions)
-                if rig and sensor_capture_enabled:
-                    rig.capture(frame_id, timestamp=timestamp, return_samples=False)
-                    if monitor:
-                        monitor.record_sensor("rig_capture", timestamp)
+                # Stage 7: record artifacts and evaluate run termination.
+                applied_throttle = float(applied_snapshot.get("throttle", 0.0))
+                applied_brake = float(applied_snapshot.get("brake", 0.0))
+                applied_steer = float(applied_snapshot.get("steer", 0.0))
+                clamped_command = control_apply_result.clamped_command if control_apply_result is not None else {}
+                clamped_throttle = float(clamped_command.get("throttle", cmd.throttle))
+                clamped_brake = float(clamped_command.get("brake", cmd.brake))
+                clamped_steer = float(clamped_command.get("steer", cmd.steer))
                 if monitor:
                     snap_ctrl = {
-                        "throttle": float(getattr(applied_ctrl, "throttle", 0.0))
-                        if disable_control
-                        else cmd.throttle,
-                        "brake": float(getattr(applied_ctrl, "brake", 0.0))
-                        if disable_control
-                        else cmd.brake,
-                        "steer": float(getattr(applied_ctrl, "steer", 0.0))
-                        if disable_control
-                        else cmd.steer,
+                        "throttle": applied_throttle,
+                        "brake": applied_brake,
+                        "steer": applied_steer,
                     }
                     monitor.maybe_snapshot(step, timestamp, ctrl=snap_ctrl)
-                if gt_pub is not None:
-                    try:
-                        extra_actors = []
-                        try:
-                            extra_actors.extend(list(world.get_actors().filter("vehicle.*")))
-                        except Exception:
-                            pass
-                        try:
-                            extra_actors.extend(list(world.get_actors().filter("walker.*")))
-                        except Exception:
-                            pass
-                        gt_pub.publish_tick(world, ego, extra_actors)
-                        if step < 3 or step % progress_interval == 0:
-                            _persist_gt_stats()
-                    except Exception as exc:
-                        print(f"[WARN] GT publish tick failed: {exc}")
-                        gt_pub = None
 
                 last_debug = cmd.meta.get("last_debug", {}) if cmd.meta else {}
-                applied_throttle = float(getattr(applied_ctrl, "throttle", 0.0))
-                applied_brake = float(getattr(applied_ctrl, "brake", 0.0))
-                applied_steer = float(getattr(applied_ctrl, "steer", 0.0))
+                lead_distance_m = last_debug.get("gap_euclid")
+                metrics.update(
+                    frame_id=frame_id,
+                    sim_time_s=timestamp,
+                    ego_speed_mps=v,
+                    lead_distance_m=lead_distance_m if isinstance(lead_distance_m, (int, float)) else None,
+                    collision_events_count=len(collisions),
+                    lane_invasion_events_count=len(invasions),
+                    applied_control=(
+                        None
+                        if control_apply_result is None
+                        else {"applied_ok": control_apply_result.applied_ok, **control_apply_result.applied_control}
+                    ),
+                )
                 row = {
                     "frame": frame_id,
                     "t": timestamp,
@@ -454,15 +648,21 @@ class TestHarness:
                     "v_mps": v,
                     # Keep throttle/brake/steer as effective control seen by CARLA
                     # so external-stack runs don't look like a second internal controller.
-                    "throttle": applied_throttle if disable_control else cmd.throttle,
-                    "brake": applied_brake if disable_control else cmd.brake,
-                    "steer": applied_steer if disable_control else cmd.steer,
+                    "throttle": applied_throttle,
+                    "brake": applied_brake,
+                    "steer": applied_steer,
                     "cmd_throttle": cmd.throttle,
                     "cmd_brake": cmd.brake,
                     "cmd_steer": cmd.steer,
+                    "clamped_throttle": clamped_throttle,
+                    "clamped_brake": clamped_brake,
+                    "clamped_steer": clamped_steer,
                     "applied_throttle": applied_throttle,
                     "applied_brake": applied_brake,
                     "applied_steer": applied_steer,
+                    "control_applied_ok": "" if control_apply_result is None else control_apply_result.applied_ok,
+                    "control_apply_error": "" if control_apply_result is None else control_apply_result.error or "",
+                    "control_actor_id": "" if control_apply_result is None else control_apply_result.actor_id,
                     "control_source": "external_stack" if disable_control else "harness_controller",
                     "collision_count": self.state.collision_count,
                     "lane_invasion_count": self.state.lane_invasion_count,
@@ -479,6 +679,15 @@ class TestHarness:
                 if fail_now and self.state.fail_reason is None:
                     self.state.fail_reason = fail_now
                     self.state.first_failure_step = step
+                    artifact_events.append(
+                        {
+                            "event_type": "failure",
+                            "frame": frame_id,
+                            "t": timestamp,
+                            "step": step,
+                            "reason": fail_now,
+                        }
+                    )
                     if fail_cap:
                         fail_cap.save(frame_id=frame_id, timestamp=timestamp, ts_csv_path=ts_rec.path)
 
@@ -518,33 +727,26 @@ class TestHarness:
                     _persist_gt_stats()
                     self._spectator_follow(world, ego)
         finally:
+            run_hook_context["state"] = self.state
+            hook_dispatcher.notify("on_run_end", run_hook_context)
+            artifact_events.append(
+                {
+                    "event_type": "run_end",
+                    "wall_time_s": time.time(),
+                    "frame": self.state.frame_id,
+                    "t": self.state.timestamp,
+                    "step": self.state.step,
+                    "success": self.state.success and self.state.fail_reason is None,
+                    "fail_reason": self.state.fail_reason,
+                }
+            )
             _persist_gt_stats()
-            if col_src:
-                col_src.stop()
-            if inv_src:
-                inv_src.stop()
-            if rig:
-                rig.stop()
-            if ros_native:
-                ros_native.teardown()
-            if gt_pub:
-                _persist_gt_stats()
-                gt_pub.close()
-            if rviz_launcher:
-                try:
-                    rviz_launcher.stop()
-                except Exception as exc:
-                    print(f"[WARN] RViz launcher stop failed: {exc}")
-            if bag_recorder:
-                try:
-                    bag_recorder.stop()
-                except Exception as exc:
-                    print(f"[WARN] rosbag2 recorder stop failed: {exc}")
-            if fail_cap:
-                fail_cap.stop()
-            if record_mgr:
-                record_mgr.stop()
-            ts_rec.close()
+            cleanup_errors = lifecycle.cleanup_all()
+            for err in cleanup_errors:
+                print(
+                    f"[WARN] harness cleanup failed "
+                    f"component={err.name}: {type(err.error).__name__}: {err.error}"
+                )
 
         if record_mgr:
             try:
@@ -553,8 +755,22 @@ class TestHarness:
             except Exception as exc:
                 print(f"[WARN] record manager finalize failed: {exc}")
 
+        run_end_wall_time_s = time.time()
+        frames = max(0, int(self.state.step) + 1) if self.state.frame_id is not None else 0
+        sim_duration_s = self.state.timestamp
+        success = self.state.success and self.state.fail_reason is None
+        exit_reason = (
+            "success"
+            if success
+            else self.state.fail_reason
+            or ("max_steps_reached" if frames >= self.cfg.max_steps else "stopped")
+        )
         summary = {
-            "success": self.state.success and self.state.fail_reason is None,
+            "success": success,
+            "exit_reason": exit_reason,
+            "frames": frames,
+            "sim_duration_s": sim_duration_s,
+            "wall_duration_s": run_end_wall_time_s - run_start_wall_time_s,
             "fail_reason": self.state.fail_reason,
             "collision_count": self.state.collision_count,
             "lane_invasion_count": self.state.lane_invasion_count,
@@ -570,17 +786,28 @@ class TestHarness:
             "sensors_enabled": sensor_specs is not None,
             "sensor_frames_saved": None if rig is None else rig.stats.frames_saved,
             "sensor_dropped": None if rig is None else rig.stats.dropped,
+            "sensor_stats": None if rig is None else rig.stats.to_dict(),
             "record_modes": self.cfg.record_modes if hasattr(self.cfg, "record_modes") else [],
             "rig_name": rig_name,
             "ros2_native_enabled": self.cfg.enable_ros2_native,
             "ros2_gt_enabled": self.cfg.enable_ros2_gt,
             "ros2_gt": gt_pub.get_stats() if gt_pub is not None else None,
             "ros2_bag_enabled": self.cfg.enable_ros2_bag if hasattr(self.cfg, "enable_ros2_bag") else False,
+            "cleanup_error_count": len(cleanup_errors),
+            "cleanup_errors_count": len(cleanup_errors),
+            "cleanup_errors": _cleanup_error_summaries(cleanup_errors),
+            "hook_error_count": len(hook_dispatcher.errors),
+            "hook_errors": hook_error_summaries(hook_dispatcher.errors),
         }
+        summary["metrics"] = metrics.finalize(
+            wall_duration_s=summary["wall_duration_s"],
+            exit_reason=exit_reason,
+        ).to_dict()
         if bag_recorder_cfg:
             summary["ros2_bag_out"] = str(bag_recorder_cfg.get("out_path"))
             summary["ros2_bag_topics"] = bag_recorder_cfg.get("topics", [])
-        summary_rec.write(summary)
+        artifact_store.update_manifest({"end_time_wall_s": run_end_wall_time_s})
+        artifact_store.write_summary(summary)
         if monitor:
             monitor.persist(out_dir / "artifacts" / "monitor.json")
         if rig_raw is not None and rig_final is not None:

@@ -20,5 +20,39 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["ruff", "pytest", "pre-commit"]
 
-[tool.setuptools]
-packages = ["carla_testbed", "tbio", "algo"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["carla_testbed*", "tbio*", "algo*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+addopts = [
+    "-p", "no:ament_copyright",
+    "-p", "no:ament_flake8",
+    "-p", "no:ament_lint",
+    "-p", "no:ament_pep257",
+    "-p", "no:ament_xmllint",
+    "-p", "no:launch_ros",
+    "-p", "no:launch_testing",
+    "-p", "no:launch_testing_ros",
+]
+markers = [
+    "unit: fast tests that do not require live CARLA/Apollo services",
+    "carla: requires a live CARLA simulator or CARLA Python wheel",
+    "apollo: requires Apollo/CyberRT runtime",
+    "integration: requires external simulator/runtime services",
+    "smoke: lightweight executable smoke checks",
+]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+extend-exclude = [
+    "artifacts",
+    "runs",
+    "reference_pack*/reference/06_open_source_and_official_refs/open_source_repos/local_repos",
+]
+
+[tool.ruff.lint]
+select = ["E", "F"]

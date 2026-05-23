@@ -10,6 +10,7 @@
 - `run_apollo_mainline.py`：Apollo GT / followstop 主线入口。
 - `run_town01_capability_online_chain.py`：Town01 capability 主线入口。
 - `run_town01_transport_ab.py`：Town01 `ros2_gt` vs `carla_direct` A/B 入口。
+- `analyze_town01_transport_ab.py`：消费已完成的 `summary.json`，生成 Town01 transport A/B CSV/Markdown 判读报告。
 - `run_unified_calibration_pipeline.py`：统一标定闭环入口。
 - `run_town01_demo_showcase.py`：Town01 录制展示入口。
 - `evaluate_gt_baseline.py`：单次 run 指标评估。

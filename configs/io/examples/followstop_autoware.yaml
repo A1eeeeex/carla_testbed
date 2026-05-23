@@ -47,8 +47,8 @@ algo:                        # 算法栈选择
       launch_control:=true
       launch_map:=true
       launch_vehicle:=true
-    map_root: /home/ubuntu/autoware-contents/maps           # 推荐：maps 根目录（含 point_cloud_maps / vector_maps）
-    map_path: /home/ubuntu/autoware-contents/maps           # 兼容旧字段；若指向 Town 子目录会自动推断
+    map_root: ${AUTOWARE_MAP_ROOT}           # 推荐：maps 根目录（含 point_cloud_maps / vector_maps）
+    map_path: ${AUTOWARE_MAP_ROOT}           # 兼容旧字段；若指向 Town 子目录会自动推断
     carla_map: Town01
     carla_host: 127.0.0.1
     carla_port: 2000

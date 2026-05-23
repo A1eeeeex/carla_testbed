@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import time
+import html
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -189,7 +190,18 @@ class CyberRTBackend(Backend):
         raw = str(cfg.get("host_python_exec") or "").strip()
         if not raw:
             return sys.executable
-        expanded = os.path.expanduser(raw)
+        if raw.startswith("${") and raw.endswith("}") and len(raw) > 3:
+            env_name = raw[2:-1]
+            env_value = os.environ.get(env_name, "").strip()
+            if env_value:
+                raw = env_value
+            elif env_name == "CARLA16_PYTHON":
+                return sys.executable
+            else:
+                raise RuntimeError(f"host_python_exec environment placeholder is not set: {raw}")
+        expanded = os.path.expandvars(os.path.expanduser(raw))
+        if expanded.startswith("${"):
+            raise RuntimeError(f"host_python_exec environment placeholder is not resolved: {raw}")
         if os.path.sep in raw or expanded != raw:
             path = Path(expanded)
             if not path.exists():
@@ -426,8 +438,10 @@ class CyberRTBackend(Backend):
         try:
             width = int(payload.get("width"))
             height = int(payload.get("height"))
-            offset_x = int(payload.get("x"))
-            offset_y = int(payload.get("y"))
+            raw_x = payload.get("x") if "x" in payload else payload.get("offset_x")
+            raw_y = payload.get("y") if "y" in payload else payload.get("offset_y")
+            offset_x = int(raw_x)
+            offset_y = int(raw_y)
         except Exception:
             return None
         if width <= 0 or height <= 0:
@@ -1753,13 +1767,24 @@ class CyberRTBackend(Backend):
                 f"see {log_path}"
             )
 
-    def _open_url(self, url: str, artifacts: Path) -> None:
-        url_file = artifacts / "dreamview_url.txt"
+    def _open_url(
+        self,
+        url: str,
+        artifacts: Path,
+        *,
+        url_file_name: str = "dreamview_url.txt",
+        log_name: str = "dreamview_open.log",
+        label: str = "Dreamview Plus URL",
+    ) -> None:
+        url_file = artifacts / url_file_name
         url_file.write_text(url + "\n")
         candidates = []
         browser_cmd = str(self._dreamview_cfg().get("browser_cmd") or "").strip()
         if browser_cmd:
-            candidates.append(shlex.split(browser_cmd) + [url])
+            if "{url}" in browser_cmd:
+                candidates.append(shlex.split(browser_cmd.replace("{url}", url)))
+            else:
+                candidates.append(shlex.split(browser_cmd) + [url])
         if shutil.which("xdg-open"):
             candidates.append(["xdg-open", url])
         if shutil.which("gio"):
@@ -1772,16 +1797,66 @@ class CyberRTBackend(Backend):
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
-                (artifacts / "dreamview_open.log").write_text(
+                (artifacts / log_name).write_text(
                     f"opened via: {' '.join(shlex.quote(x) for x in cmd)}\nurl={url}\n"
                 )
-                print(f"[cyberrt] Dreamview Plus URL opened: {url}")
+                print(f"[cyberrt] {label} opened: {url}")
                 return
             except Exception as exc:
-                (artifacts / "dreamview_open.log").write_text(
+                (artifacts / log_name).write_text(
                     f"open failed via {' '.join(shlex.quote(x) for x in cmd)}: {exc}\nurl={url}\n"
                 )
-        print(f"[cyberrt] Dreamview Plus URL: {url}")
+        print(f"[cyberrt] {label}: {url}")
+
+    def _open_dreamview_wait_page(self, url: str, artifacts: Path, *, reason: str) -> None:
+        """Open a local auto-refresh page when Dreamview is still booting.
+
+        This keeps demo recording closer to unattended operation: the browser can
+        be opened once, before Dreamview is reachable, and the page keeps trying
+        to load the real Dreamview URL.
+        """
+        safe_url = html.escape(url, quote=True)
+        safe_reason = html.escape(reason, quote=True)
+        page = artifacts / "dreamview_wait_page.html"
+        page.write_text(
+            "\n".join(
+                [
+                    "<!doctype html>",
+                    "<html>",
+                    "<head>",
+                    "  <meta charset=\"utf-8\">",
+                    "  <meta http-equiv=\"refresh\" content=\"3\">",
+                    "  <title>Waiting for Apollo Dreamview</title>",
+                    "  <style>",
+                    "    body { margin: 0; font-family: sans-serif; background: #111; color: #eee; }",
+                    "    header { padding: 12px 16px; background: #1e2a32; }",
+                    "    iframe { width: 100vw; height: calc(100vh - 72px); border: 0; background: #222; }",
+                    "    a { color: #8bd3ff; }",
+                    "  </style>",
+                    "</head>",
+                    "<body>",
+                    "  <header>",
+                    "    <strong>Waiting for Apollo Dreamview</strong><br>",
+                    f"    <span>{safe_reason}</span><br>",
+                    f"    <a href=\"{safe_url}\">{safe_url}</a>",
+                    "  </header>",
+                    f"  <iframe src=\"{safe_url}\" title=\"Apollo Dreamview\"></iframe>",
+                    "</body>",
+                    "</html>",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (artifacts / "dreamview_url.txt").write_text(url + "\n")
+        (artifacts / "dreamview_wait_page_target.txt").write_text(url + "\n")
+        self._open_url(
+            page.resolve().as_uri(),
+            artifacts,
+            url_file_name="dreamview_wait_page_url.txt",
+            log_name="dreamview_wait_page_open.log",
+            label="Dreamview wait page",
+        )
 
     def _maybe_start_dreamview(self, artifacts: Path) -> None:
         if not self._dreamview_enabled():
@@ -1870,10 +1945,14 @@ class CyberRTBackend(Backend):
                 self._open_url(url, artifacts)
             else:
                 (artifacts / "dreamview_url.txt").write_text(url + "\n")
-                (artifacts / "dreamview_open.log").write_text(
-                    f"skip auto-open: Dreamview not reachable on {host}:{port} after {ready_timeout:.1f}s\n"
-                    f"url={url}\n"
-                )
+                reason = f"Dreamview not reachable on {host}:{port} after {ready_timeout:.1f}s"
+                if bool(cfg.get("open_wait_page_on_unreachable", False)):
+                    self._open_dreamview_wait_page(url, artifacts, reason=reason)
+                else:
+                    (artifacts / "dreamview_open.log").write_text(
+                        f"skip auto-open: {reason}\n"
+                        f"url={url}\n"
+                    )
                 print(
                     f"[cyberrt] Dreamview did not become reachable on {host}:{port}; "
                     f"see {log_path}"

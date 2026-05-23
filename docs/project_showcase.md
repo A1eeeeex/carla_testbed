@@ -98,10 +98,10 @@ conda run -n carla16 python tools/run_apollo_mainline.py --profile relaxed
 - 推荐命令：
 
 ```bash
-/home/ubuntu/miniconda3/envs/carla16/bin/python3 \
-  /home/ubuntu/carla_testbed/tools/run_town01_capability_online_chain.py \
+conda run -n carla16 python \
+  tools/run_town01_capability_online_chain.py \
   --enable-lateral \
-  --config /home/ubuntu/carla_testbed/configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml \
+  --config configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml \
   --startup-profile render_offscreen_no_ros2 \
   --carla-world-ready-timeout-sec 180 \
   --carla-launch-attempts 1 \
@@ -114,10 +114,10 @@ conda run -n carla16 python tools/run_apollo_mainline.py --profile relaxed
 如果你想把这个 strongest 样本直接录成 CARLA 本地 demo，而不是只保留 summary / artifacts，可以改用专门的 demo 派生配置：
 
 ```bash
-/home/ubuntu/miniconda3/envs/carla16/bin/python3 \
-  /home/ubuntu/carla_testbed/tools/run_town01_capability_online_chain.py \
+conda run -n carla16 python \
+  tools/run_town01_capability_online_chain.py \
   --enable-lateral \
-  --config /home/ubuntu/carla_testbed/configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1_demo.yaml \
+  --config configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1_demo.yaml \
   --startup-profile render_offscreen_no_ros2 \
   --carla-world-ready-timeout-sec 180 \
   --carla-launch-attempts 1 \
@@ -155,10 +155,10 @@ python3 tools/run_town01_demo_showcase.py --include-curve-diagnostic
 - 推荐命令：
 
 ```bash
-/home/ubuntu/miniconda3/envs/carla16/bin/python3 \
-  /home/ubuntu/carla_testbed/tools/run_town01_capability_online_chain.py \
+conda run -n carla16 python \
+  tools/run_town01_capability_online_chain.py \
   --enable-lateral \
-  --config /home/ubuntu/carla_testbed/configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml \
+  --config configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml \
   --ticks 420 \
   --post-fail-steps 120 \
   --startup-profile render_offscreen_no_ros2 \

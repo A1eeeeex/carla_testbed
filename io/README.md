@@ -1,18 +1,27 @@
-# io/ —— 契约与编排层
+# io/ —— Deprecated Legacy Compatibility Wrapper
 
-目标：集中维护仿真与算法共享的外部接口（ROS2/CyberRT 占位）。
+`io/` is a deprecated compatibility layer kept for older scripts, contracts, and smoke tests. Do not add new platform architecture here.
+
+Current project direction:
+
+- Core platform logic goes under `carla_testbed/`.
+- Canonical backend/adapter contracts start under `carla_testbed/adapters/`.
+- Transition backend runtime integration goes under `tbio/`.
+- Apollo/CyberRT MVP work should use the adapter/backend boundary and `tools/apollo10_cyber_bridge/`.
+- New canonical config layout is planned to move away from `configs/io/examples/...` toward clearer platform config paths.
 
 目录内容：
 
-- `contract/`：标准 slot->topic/type 映射（`canon_ros2.yaml`）、TF 布局（`frames.yaml`）、单位定义与可运行 profile。
-- `backends/`：Mode-1 `ros2_native`、Mode-2 `autoware_direct`、`cyberrt` 占位的生命周期封装。
+- `contract/`：legacy 标准 slot->topic/type 映射（`canon_ros2.yaml`）、TF 布局（`frames.yaml`）、单位定义与可运行 profile。
+- `backends/`：legacy backend wrapper surface. Current runtime backends are routed through `tbio/`.
 - `ros2/`：健康检查工具（`inspect_topics.py`、`time_sync_check.py`）、TF 自检与控制话题说明。
-- `scripts/`：`run.py`、`stop.py`、`smoke_test.py`、`env_check.sh` 入口脚本。
+- `scripts/`：deprecated legacy wrappers around current CLI / `tbio` scripts. They should not receive new business logic.
 
 使用方式：
 
-- Mode-1：`python io/scripts/run.py --profile io/contract/profiles/ros2_native_any_algo.yaml`
-- Mode-2：`python io/scripts/run.py --profile io/contract/profiles/autoware_direct.yaml`
+- Preferred current entry: `python -m carla_testbed run --config <config.yaml>`
+- Legacy Mode-1：`python io/scripts/run.py --profile io/contract/profiles/ros2_native_any_algo.yaml`
+- Legacy Mode-2：`python io/scripts/run.py --profile io/contract/profiles/autoware_direct.yaml`
 - 停止资源：`python io/scripts/stop.py --profile <profile>`
 
 契约约束：
@@ -25,4 +34,10 @@
 
 - `ros2_native`：启用 CARLA 原生 ROS2 发布并拉起控制桥。
 - `autoware_direct`：从 rig+contract 生成 Autoware 接口配置并启动 docker compose。
-- `cyberrt`：未来 CyberRT 适配器占位。
+- `cyberrt`：legacy placeholder; Apollo/CyberRT MVP bridge work should not be implemented by expanding this directory as the canonical runtime layer.
+
+Migration target:
+
+- use `carla_testbed/adapters/base.py` for the backend contract;
+- keep transition runtime implementation in `tbio/` until migrated;
+- treat `io/` as read-only compatibility unless a legacy workflow needs a small fix.

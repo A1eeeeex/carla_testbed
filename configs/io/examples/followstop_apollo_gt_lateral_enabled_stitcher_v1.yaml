@@ -90,7 +90,7 @@ algo:
       apollo_root_in_container: /apollo
       apollo_distribution_home: /opt/apollo/neo
       python_exec: python3
-      host_python_exec: /home/ubuntu/miniconda3/envs/carla16/bin/python3
+      host_python_exec: ${CARLA16_PYTHON}
     dreamview:
       enabled: true
       auto_start: true
@@ -129,7 +129,7 @@ algo:
       max_obstacles: 64
       radius_m: 120.0
       localization_back_offset_m: 1.4235
-      map_file: /home/ubuntu/Carla_apollo_maps/carla_town01/base_map.txt
+      map_file: ${APOLLO_MAP_ROOT}/carla_town01/base_map.txt
       debug_dump_control_raw: true
       front_obstacle_behavior:
         mode: cruise_then_stop
@@ -352,8 +352,15 @@ runtime:
     host: localhost
     port: 2000
     disable_native_ros2_arg: true
-    extra_args: -windowed -ResX=960 -ResY=540 -quality-level=Low
+    extra_args: -RenderOffScreen -ResX=960 -ResY=540 -quality-level=Low
     foreground: false
+    launch_with_map: false
+    force_headless_env: true
+    use_systemd_scope_memory_guard: true
+    bootstrap_stability_window_s: 60.0
+    memory_high: 9G
+    memory_max: 10G
+    oom_policy: kill
     ready_timeout_sec: 360.0
     ready_poll_sec: 1.0
     post_ready_settle_sec: 8.0

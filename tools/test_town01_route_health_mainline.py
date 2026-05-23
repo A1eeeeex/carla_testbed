@@ -36,6 +36,7 @@ from tbio.backends.cyberrt import CyberRTBackend
 from carla_testbed.utils.town01_route_health import (
     _compute_curve_semantic_window,
     _compute_curve_tracking_health_summary,
+    _compute_direct_metric_consistency,
     _compute_longitudinal_tracking_health_summary,
     _compute_planning_trajectory_type_summary,
     _compute_route_metrics,
@@ -64,6 +65,7 @@ from tools.run_town01_route_health import (
     _connect_world,
     _display_probe_monitor_count,
     _flags_for_run,
+    _invoke_run,
     _load_overrides_file,
     _load_route_ids_file,
     _memory_preflight_snapshot,
@@ -248,6 +250,13 @@ def _load_bridge_unit_test_module_without_ros2():
 
 
 class Town01RouteHealthMainlineTests(unittest.TestCase):
+    def assertHostPythonExecIsPortable(self, value: str, msg: str | None = None) -> None:
+        self.assertIn(
+            value,
+            {"${CARLA16_PYTHON}", "/home/ubuntu/miniconda3/envs/carla16/bin/python3"},
+            msg,
+        )
+
     def test_town01_route_health_profiles_use_rear_axle_localization_back_offset(self) -> None:
         for rel_path in (
             "configs/io/examples/town01_apollo_route_health.yaml",
@@ -276,11 +285,7 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
             self.assertFalse(docker_cfg["deferred_control_disable_bvar_dump"], rel_path)
             self.assertEqual(docker_cfg["control_planning_ready_min_nonempty_count"], 1, rel_path)
             self.assertEqual(docker_cfg["control_planning_ready_min_sequence_num"], 5, rel_path)
-            self.assertEqual(
-                docker_cfg["host_python_exec"],
-                "/home/ubuntu/miniconda3/envs/carla16/bin/python3",
-                rel_path,
-            )
+            self.assertHostPythonExecIsPortable(docker_cfg["host_python_exec"], rel_path)
         probe_cfg = yaml.safe_load(
             (Path.cwd() / "configs/io/examples/town01_apollo_route_health_relaxed_probe.yaml").read_text(
                 encoding="utf-8"
@@ -292,10 +297,7 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
         self.assertTrue(probe_cfg["algo"]["apollo"]["docker"]["deferred_control_disable_bvar_dump"])
         self.assertTrue(probe_cfg["algo"]["apollo"]["docker"]["control_require_chassis_ready"])
         self.assertEqual(probe_cfg["algo"]["apollo"]["docker"]["control_chassis_ready_min_count"], 20)
-        self.assertEqual(
-            probe_cfg["algo"]["apollo"]["docker"]["host_python_exec"],
-            "/home/ubuntu/miniconda3/envs/carla16/bin/python3",
-        )
+        self.assertHostPythonExecIsPortable(probe_cfg["algo"]["apollo"]["docker"]["host_python_exec"])
         self.assertEqual(probe_cfg["run"]["ticks"], 320)
         self.assertEqual(probe_cfg["run"]["post_fail_steps"], 120)
 
@@ -337,14 +339,28 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
                 "/opt/apollo/neo/.codex_backup/20260330_170358/common_msgs/control_msgs",
             ],
         )
-        self.assertEqual(
-            docker_cfg["host_python_exec"],
-            "/home/ubuntu/miniconda3/envs/carla16/bin/python3",
-        )
+        self.assertHostPythonExecIsPortable(docker_cfg["host_python_exec"])
         self.assertFalse(routing_cfg["defer_long_goal_until_route_debug_ready"])
         self.assertFalse(planning_cfg["acc_only_mode"])
         self.assertFalse(planning_cfg["longitudinal_only_pipeline"])
         self.assertFalse(planning_cfg["longitudinal_only_keep_lane_follow_path"])
+
+    def test_host_bridge_python_exec_resolves_env_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            python_path = Path(tmpdir) / "python"
+            python_path.write_text("", encoding="utf-8")
+            backend = CyberRTBackend(
+                {"algo": {"apollo": {"docker": {"host_python_exec": "${CARLA16_PYTHON}"}}}}
+            )
+            with mock.patch.dict("os.environ", {"CARLA16_PYTHON": str(python_path)}):
+                self.assertEqual(backend._host_bridge_python_exec(), str(python_path))
+
+    def test_host_bridge_python_exec_defaults_carla16_placeholder_to_current_python(self) -> None:
+        backend = CyberRTBackend(
+            {"algo": {"apollo": {"docker": {"host_python_exec": "${CARLA16_PYTHON}"}}}}
+        )
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(backend._host_bridge_python_exec(), sys.executable)
 
     def test_behavior_recovery_config_extends_baseline_recovery_for_long_behavior_eval(self) -> None:
         cfg = yaml.safe_load(
@@ -825,6 +841,20 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
             self.assertTrue(snapshot["enabled"])
             self.assertTrue(snapshot["auto_start"])
             self.assertFalse(snapshot["record_enabled"])
+
+    def test_dreamview_region_from_dict_accepts_offset_field_names(self) -> None:
+        backend = CyberRTBackend({})
+
+        self.assertEqual(
+            backend._dreamview_region_from_dict(
+                {"width": 1280, "height": 720, "offset_x": 10, "offset_y": 20}
+            ),
+            (1280, 720, 10, 20),
+        )
+        self.assertEqual(
+            backend._dreamview_region_from_dict({"width": 640, "height": 360, "x": 0, "y": 0}),
+            (640, 360, 0, 0),
+        )
 
     def test_stop_dreamview_recording_disabled_marks_disabled_without_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1331,6 +1361,32 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
             self.assertIn("algo.apollo.planning.lane_follow_only_scenario=false", overrides)
             self.assertIn("algo.apollo.traffic_light.policy=carla_actual", overrides)
             self.assertNotIn("algo.apollo.planning.disable_traffic_light_rule=true", overrides)
+
+    def test_invoke_run_applies_cli_overrides_after_capability_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            completed = subprocess.CompletedProcess(args=[], returncode=0)
+            with mock.patch("tools.run_town01_route_health._cleanup_runtime_processes"), mock.patch(
+                "tools.run_town01_route_health._ros_sourced_env", side_effect=lambda env: env
+            ), mock.patch("tools.run_town01_route_health.subprocess.run", return_value=completed) as run_mock:
+                rc = _invoke_run(
+                    run_dir=root / "run",
+                    route_id="town01_rh_spawn097_goal046",
+                    corpus_path=root / "corpus.json",
+                    config_path=root / "config.yaml",
+                    flags={},
+                    comparison_label="demo_showcase",
+                    ticks=420,
+                    base_overrides=[],
+                    run_overrides=["algo.apollo.dreamview.record.enabled=false"],
+                    final_overrides=["algo.apollo.dreamview.record.enabled=true"],
+                )
+
+            self.assertEqual(rc, 0)
+            cmd = list(run_mock.call_args.args[0])
+            override_values = [cmd[index + 1] for index, item in enumerate(cmd[:-1]) if item == "--override"]
+            self.assertIn("algo.apollo.dreamview.record.enabled=false", override_values)
+            self.assertEqual(override_values[-1], "algo.apollo.dreamview.record.enabled=true")
 
     def test_resolve_route_ids_prefers_route_ids_file_before_subset_sampling(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2653,6 +2709,19 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
         )
         self.assertEqual(phase, "control_pending")
 
+    def test_online_chain_derive_live_phase_treats_direct_apply_as_control_output(self) -> None:
+        phase = capability_online_chain._derive_live_phase(
+            {
+                "routing_request_count": 1,
+                "planning_nonempty_trajectory_count": 12,
+                "control_tx_count": 0,
+                "direct_control_apply_count": 3,
+                "deferred_control_pending": True,
+                "control_running": False,
+            }
+        )
+        self.assertEqual(phase, "control_output")
+
     def test_online_chain_derive_live_phase_surfaces_startup_failure_family_before_routing_wait(self) -> None:
         phase = capability_online_chain._derive_live_phase(
             {
@@ -2694,6 +2763,63 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
         self.assertIn("eta_scene=00:08", line)
         self.assertIn("routing=1", line)
         self.assertIn("planning=8", line)
+
+    def test_online_chain_render_progress_line_prefers_control_output_for_direct_apply(self) -> None:
+        line = capability_online_chain._render_progress_line(
+            item={"step_index": 1, "chain_step_count": 1},
+            step_elapsed_sec=15.0,
+            chain_elapsed_sec=15.0,
+            step_budget_sec=60.0,
+            chain_budget_sec=60.0,
+            snapshot={
+                "phase": "control_output",
+                "manifest_status": "running",
+                "routing_request_count": 1,
+                "planning_nonempty_trajectory_count": 8,
+                "control_tx_count": 0,
+                "direct_control_apply_count": 4,
+                "deferred_control_pending": True,
+                "speed_mps": 1.2,
+            },
+        )
+        self.assertIn("control=output", line)
+        self.assertIn("direct_apply=4", line)
+        self.assertNotIn("control=pending", line)
+
+    def test_direct_metric_consistency_flags_short_apply_metric_mismatch(self) -> None:
+        consistency = _compute_direct_metric_consistency(
+            {"transport_mode": "carla_direct"},
+            {"route_distance_achieved_m": 185.0, "route_completion_ratio": 0.84},
+            27.7,
+            {
+                "apply_count": 14,
+                "window_status": "short_apply_window",
+                "apply_frame_span": 14,
+                "max_speed_mps": 0.59,
+                "max_throttle": 1.0,
+            },
+        )
+
+        self.assertEqual(consistency["status"], "short_apply_metric_mismatch")
+        self.assertIn("summary_speed_exceeds_direct_apply_speed", consistency["reasons"])
+        self.assertIn("route_distance_too_large_for_short_direct_apply_window", consistency["reasons"])
+
+    def test_direct_metric_consistency_keeps_long_apply_low_speed_consistent(self) -> None:
+        consistency = _compute_direct_metric_consistency(
+            {"transport_mode": "carla_direct"},
+            {"route_distance_achieved_m": 33.8, "route_completion_ratio": 0.14},
+            3.67,
+            {
+                "apply_count": 311,
+                "window_status": "observable_apply_window",
+                "apply_frame_span": 311,
+                "max_speed_mps": 3.67,
+                "max_throttle": 1.0,
+            },
+        )
+
+        self.assertEqual(consistency["status"], "consistent")
+        self.assertEqual(consistency["reasons"], [])
 
     def test_online_chain_extract_followstop_progress_reads_last_progress_line(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -9070,6 +9196,31 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
             )
             _write_json(artifacts / "bridge_health_summary.json", {})
             _write_json(artifacts / "cyber_bridge_stats.json", {"routing_request_count": 1, "routing_success_count": 1})
+            _write_json(
+                artifacts / "direct_bridge_stats.json",
+                {"control_apply_count": 7, "control_apply_fail_count": 1},
+            )
+            _write_jsonl(
+                artifacts / "direct_bridge_control_apply.jsonl",
+                [
+                    {
+                        "ts_sec": 201.0,
+                        "frame_id": 38395,
+                        "source": "pending",
+                        "throttle": 0.45,
+                        "brake": 0.0,
+                        "speed_mps": 0.0,
+                    },
+                    {
+                        "ts_sec": 201.2,
+                        "frame_id": 38396,
+                        "source": "pending",
+                        "throttle": 0.94,
+                        "brake": 0.0,
+                        "speed_mps": 0.01,
+                    },
+                ],
+            )
             _write_jsonl(
                 artifacts / "routing_event_debug.jsonl",
                 [{"timestamp": 100.0, "routing_request_sent": True}],
@@ -9823,6 +9974,31 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
                 },
             )
             _write_json(artifacts / "cyber_bridge_stats.json", {"routing_request_count": 1, "routing_success_count": 1})
+            _write_json(
+                artifacts / "direct_bridge_stats.json",
+                {"control_apply_count": 7, "control_apply_fail_count": 1},
+            )
+            _write_jsonl(
+                artifacts / "direct_bridge_control_apply.jsonl",
+                [
+                    {
+                        "ts_sec": 201.0,
+                        "frame_id": 38395,
+                        "source": "pending",
+                        "throttle": 0.45,
+                        "brake": 0.0,
+                        "speed_mps": 0.0,
+                    },
+                    {
+                        "ts_sec": 201.2,
+                        "frame_id": 38396,
+                        "source": "pending",
+                        "throttle": 0.94,
+                        "brake": 0.0,
+                        "speed_mps": 0.01,
+                    },
+                ],
+            )
             _write_jsonl(
                 artifacts / "routing_event_debug.jsonl",
                 [{"timestamp": 101.0, "routing_request_sent": True}],
@@ -9907,6 +10083,16 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
             self.assertIsNone(finalized["control_output_zero_hold_ratio"])
             self.assertFalse(finalized["control_final_process_alive"])
             self.assertFalse(finalized["control_final_modules_status"]["control_present"])
+            self.assertEqual(finalized["direct_control_apply_count"], 7)
+            self.assertEqual(finalized["direct_control_apply_fail_count"], 1)
+            self.assertEqual(finalized["direct_control_apply_window_status"], "short_apply_window")
+            self.assertEqual(finalized["direct_control_first_apply_frame"], 38395)
+            self.assertEqual(finalized["direct_control_last_apply_frame"], 38396)
+            self.assertEqual(finalized["direct_control_apply_frame_span"], 2)
+            self.assertEqual(finalized["direct_control_apply_max_throttle"], 0.94)
+            self.assertEqual(finalized["direct_metric_consistency_status"], "not_applicable")
+            self.assertTrue((artifacts / "direct_control_apply_summary.finalized.json").exists())
+            self.assertTrue((artifacts / "direct_metric_consistency.finalized.json").exists())
 
     def test_finalize_town01_run_classifies_control_output_stopped_before_nonzero_planning(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -10852,6 +11038,7 @@ class CarlaLauncherTests(unittest.TestCase):
             with (
                 mock.patch.object(launcher, "start", side_effect=fake_start) as start_mock,
                 mock.patch("tbio.carla.launcher._client_ok", return_value=True),
+                mock.patch("tbio.carla.launcher._is_port_open", return_value=True),
                 mock.patch("tbio.carla.launcher.time.sleep"),
             ):
                 self.assertTrue(launcher.wait_ready(timeout_s=1.0, poll_s=0.0))
@@ -10889,6 +11076,7 @@ class CarlaLauncherTests(unittest.TestCase):
                     side_effect=[["Out of memory on Vulkan; MemoryTypeIndex=2, AllocSize=512.000MB"], []],
                 ),
                 mock.patch("tbio.carla.launcher._client_ok", return_value=True),
+                mock.patch("tbio.carla.launcher._is_port_open", return_value=True),
                 mock.patch("tbio.carla.launcher.time.sleep"),
             ):
                 self.assertTrue(launcher.wait_ready(timeout_s=1.0, poll_s=0.0))

@@ -1,17 +1,82 @@
 # CARLA Testbed
 
-本仓库是一个基于 CARLA 的仿真测试平台。当前主线能力是：
+CARLA-based simulation testbed for autonomous driving experiments, currently prioritizing CARLA + Apollo ground-truth MVP closed loop.
 
-- 用统一 CLI 启动一次仿真 run
-- 运行 `followstop` 场景
-- 记录运行产物到 `runs/<run>/`
-- 按配置选择算法栈：
-  - `dummy`
-  - `apollo`
-  - `autoware`
-  - `e2e`（接口已预留，当前未实现）
+This repository is not just a follow-stop demo. The intended project boundary is:
 
-这份 README 只写代码里当前已经存在的命令、路径和行为。
+- Core platform: CARLA config, runner/harness, simulation utilities, sensors, contracts, recording, and run artifacts.
+- Baseline/demo: the historical follow-stop baseline used for smoke tests, demos, and compatibility checks.
+- External backend contract: ROS2 / `tbio` as a transition backend layer, plus an Apollo/CyberRT MVP adapter that is planned or experimental depending on the branch/config.
+
+Current priority is CARLA + Apollo ground-truth closed-loop work. Autoware remains legacy experimental support and is not the equal-priority target for new platform work.
+
+## Current Status
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| CARLA harness | experimental / supported | Main platform surface: config, run loop, CARLA lifecycle, recording, summaries. |
+| Follow-stop baseline | legacy baseline | Useful for smoke/demo/regression, but not the future platform architecture. |
+| ROS2 native backend | transitional | Still used by existing GT/control paths; keep compatible while Apollo MVP matures. |
+| Apollo/CyberRT bridge | MVP planned / experimental | Current priority for CARLA + Apollo GT closed loop; do not overstate as fully complete. |
+| Autoware | legacy experimental | Existing adapter/configs remain, but new work should not assume equal priority. |
+
+## Recommended Entry Points
+
+Config validation:
+
+```bash
+python -m carla_testbed config-validate configs/examples/smoke.yaml
+```
+
+CI-friendly smoke check. This does not start CARLA or Apollo:
+
+```bash
+python -m carla_testbed smoke --config configs/examples/smoke.yaml
+```
+
+Typed run dry-run:
+
+```bash
+python -m carla_testbed run --config configs/examples/smoke.yaml --dry-run
+```
+
+Inspect a run directory:
+
+```bash
+python -m carla_testbed inspect-run runs/smoke
+```
+
+Lightweight examples:
+
+```bash
+python examples/run_smoke.py --config configs/examples/smoke.yaml
+python examples/run_follow_stop_baseline.py --config configs/examples/smoke.yaml
+```
+
+For Apollo follow-stop compatibility demos, use:
+
+```bash
+python -m carla_testbed run \
+  --config configs/io/examples/followstop_apollo_gt.yaml \
+  --run-dir runs/apollo_gt_demo
+```
+
+`examples/run_followstop.py` is a legacy/demo entrypoint. It remains runnable for compatibility and focused debugging, but new platform architecture should be added under `carla_testbed/`, `tbio/`, configs, or a backend/adapter layer as appropriate.
+
+## Do Not Add New Platform Logic Here
+
+These surfaces exist for compatibility, debugging, or regression workflows. They should not become the home for new platform architecture:
+
+- `examples/run_followstop.py`
+  - legacy/demo runner for the follow-stop baseline.
+- `examples/legacy/`
+  - documentation for legacy examples and migration notes.
+- `io/`
+  - deprecated compatibility layer and old contract wrapper surface.
+- `tools/run_*.py`
+  - task-specific launchers, regressions, analysis, or operational helpers.
+
+New core behavior should be shaped around the harness, config schema, backend contract, adapter boundary, and run artifact model.
 
 ## Documentation Map
 
@@ -19,10 +84,22 @@
 
 - `AGENTS.md`
   - 仓库级执行手册与协作规则。
-- `reference_pack_carla_ros2_apollo/reference/00_index.md`
+- `reference_pack/reference/00_index.md`
   - 规范化知识库入口；truths、contracts、playbooks、decision log 都以这里为准。
 - `docs/README.md`
   - 运行、上手、迁移、workflow 类文档入口。
+- `docs/backends.md`
+  - backend/adapter 边界说明；区分 canonical adapter contract、transition backend、legacy IO。
+- `docs/architecture.md`
+  - 当前目录职责、依赖方向、runner/scenario/backend 边界。
+- `docs/configuration.md`
+  - typed config v0、配置优先级、local override 和 env placeholder 规则。
+- `docs/apollo_mvp_bridge.md`
+  - Apollo MVP bridge 边界；GT localization/chassis/obstacles/routing/control，不跑真实感知。
+- `docs/run_artifacts.md`
+  - run output 目录、manifest、resolved config、summary、events、timeseries。
+- `docs/testing.md`
+  - CI-friendly 单测、mock CARLA、CARLA smoke、Apollo contract、本地集成测试。
 - `docs/project_showcase.md`
   - 面向技术展示的总览页；适合快速介绍架构、功能进度、示例命令与可见产出。
 - `artifacts/` / `runs/`
@@ -31,9 +108,16 @@
 迁移与协作开发建议先看：
 
 - `AGENTS.md`
-- `reference_pack_carla_ros2_apollo/reference/00_index.md`
+- `reference_pack/reference/00_index.md`
 - `docs/README.md`
+- `docs/architecture.md`
+- `docs/configuration.md`
+- `docs/backends.md`
+- `docs/apollo_mvp_bridge.md`
+- `docs/run_artifacts.md`
+- `docs/testing.md`
 - `docs/project_showcase.md`
+- `docs/legacy.md`
 - `docs/dual_machine_workflow.md`
 - `docs/migration_followstop_playbook.md`
 - `tbio/README.md`
@@ -93,8 +177,10 @@ python3 scripts/check_local_config.py --strict
 
 - 首先看：
   - `AGENTS.md`
-  - `reference_pack_carla_ros2_apollo/reference/00_index.md`
+  - `reference_pack/reference/00_index.md`
   - `docs/README.md`
+- legacy/demo 边界：
+  - `docs/legacy.md`
 - 配置与 profile：
   - `configs/README.md`
   - `configs/io/examples/README.md`
@@ -119,11 +205,14 @@ python -m carla_testbed <subcommand>
 - `python -m carla_testbed doctor`
 - `python -m carla_testbed run --config <yaml> [--override k=v ...]`
 - `python -m carla_testbed smoke --config <yaml>`
+- `python -m carla_testbed config-validate <yaml>`
+- `python -m carla_testbed inspect-run <run_dir>`
 
 注意：
 
-- `python -m carla_testbed smoke` 目前 **Not implemented yet**（`carla_testbed/cli.py` 调用方式与 `tbio/scripts/smoke_test.py` 的参数签名不一致）。
-- 当前可用替代命令是：
+- `smoke` 是 CI-friendly config smoke，默认不启动 CARLA、Apollo、CyberRT 或 ROS2。
+- `run --config configs/examples/smoke.yaml --dry-run` 当前可用于 typed config 路径验证。
+- 旧 ROS2 topic smoke 仍可通过 legacy wrapper 调用：
 
 ```bash
 python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout 5
@@ -138,20 +227,20 @@ python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout
 
 代码里已经明确给出弃用提示，推荐继续使用 `python -m carla_testbed ...`。
 
-### 当前 canonical 入口家族
+### 当前兼容与运维入口家族
 
-第一波结构收敛后，建议把下面这些入口当作主线：
+当前仍有多条可运行入口，主要用于兼容、运维、回归或专题分析。它们不是新的平台架构承载点：
 
 - `python -m carla_testbed run`
-  - 通用单次 run 入口
+  - 推荐的通用单次 run 入口
 - `tools/run_apollo_mainline.py`
-  - Apollo GT / followstop 主线入口
+  - Apollo GT / follow-stop compatibility/demo launcher
 - `tools/run_town01_capability_online_chain.py`
-  - Town01 capability / route-health 主线入口
+  - Town01 capability / route-health operational helper
 - `tools/run_unified_calibration_pipeline.py`
-  - 标定闭环入口
+  - calibration workflow helper
 - `tools/run_town01_demo_showcase.py`
-  - Town01 展示录制入口
+  - Town01 showcase recording helper
 
 其余 `tools/run_*.py` 如果没有在 README、`docs/project_showcase.md` 或 `configs/io/examples/README.md` 明确列为主线入口，默认按下面理解：
 
@@ -168,10 +257,11 @@ python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout
   - `algo/adapters/dummy.py`
   - 不启动外部算法，只运行场景
 - `apollo`
-  - 已实现
+  - adapter / MVP bridge path experimental
   - `algo/adapters/apollo.py` + `tbio/backends/cyberrt.py`
+  - 当前不要解读为 Apollo 已完整跑通所有 CARLA 场景
 - `autoware`
-  - 已实现
+  - legacy experimental compatibility
   - `algo/adapters/autoware.py`
 - `e2e`
   - **Not implemented yet**
@@ -197,7 +287,7 @@ python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout
 │   ├── record/            # timeseries、summary、视频、monitor
 │   ├── ros2/              # GT ROS2 发布
 │   ├── runner/            # TestHarness 主循环
-│   ├── scenarios/         # 场景（当前主用 followstop）
+│   ├── scenarios/         # 场景构建；follow-stop 当前为 legacy baseline
 │   ├── schemas/           # FramePacket / GroundTruthPacket / ControlCommand
 │   ├── sensors/           # 传感器规格与采集
 │   ├── sim/               # CARLA client、tick、spawn、world settings
@@ -209,14 +299,16 @@ python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout
 ├── dumps/                 # 调试转储（运行时可能写入）
 ├── examples/
 │   ├── carla_examples/    # CARLA 官方/示例脚本
-│   └── run_followstop.py  # followstop 场景运行入口
+│   ├── run_smoke.py       # lightweight no-runtime smoke wrapper
+│   ├── run_follow_stop_baseline.py # lightweight baseline CLI wrapper
+│   └── run_followstop.py  # legacy/demo follow-stop entrypoint
 ├── io/
 │   ├── backends/          # IO 后端（保留代码）
 │   ├── contract/          # ROS2 合约与 profiles
 │   ├── scripts/           # 兼容 wrapper 脚本
 │   └── tools/             # IO 相关工具
 ├── runs/                  # 每次运行输出目录
-├── reference_pack_carla_ros2_apollo/
+├── reference_pack/
 │   └── reference/         # 规范化知识库（truths / contracts / playbooks / decisions）
 ├── tbio/
 │   ├── backends/          # 后端实现（如 CyberRT backend）
@@ -461,7 +553,7 @@ python -m examples.run_followstop --config configs/io/examples/followstop_dummy.
   - `run_meta.json`
   - `runs/latest` 更新
 
-### 6.3 Apollo GT 闭环
+### 6.3 Apollo GT MVP / compatibility path
 
 当前有可用配置：
 
@@ -476,12 +568,13 @@ python -m carla_testbed run \
 - `APOLLO_ROOT` 需要可解析（来自 `algo/adapters/apollo.py`）
 - 若启用 Docker 模式：
   - `APOLLO_DOCKER_CONTAINER` 需要可解析
+- 该路径当前用于 MVP、诊断和 compatibility demos；不要把它描述成 Apollo 已完整完成 CARLA 全场景闭环。
 
 详细链路说明见：
 
 - `docs/gt_truth_simulation_pipeline.md`
 
-### 6.4 Autoware 栈
+### 6.4 Autoware legacy experimental path
 
 当前有配置文件：
 
@@ -496,6 +589,8 @@ python -m carla_testbed run \
 - `algo/adapters/autoware.py`
 
 在启动前检查。
+
+Autoware 保留为 legacy experimental compatibility，不是当前阶段与 Apollo 同等优先的主线。
 
 ## 7. 每次 run 会产出什么
 
@@ -648,15 +743,21 @@ python tbio/scripts/healthcheck_ros2.py --config runs/readme_mvp/effective.yaml
 - `tbio/scripts/healthcheck_ros2.py` 当前明确支持：
   - 输入配置文件路径（原始 config 或 `effective.yaml`）
 
-### 8.4 smoke test（当前替代方案）
+### 8.4 smoke test
 
-因为 `python -m carla_testbed smoke` 当前不可直接用，现阶段建议用：
+默认 smoke 是 config/API 级检查，不启动外部 runtime：
+
+```bash
+python -m carla_testbed smoke --config configs/examples/smoke.yaml
+```
+
+历史 ROS2 topic smoke 仍可用 legacy wrapper：
 
 ```bash
 python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout 5
 ```
 
-它会检查：
+legacy ROS2 smoke 会检查：
 
 - `/clock` 是否存在且递增
 - 合约中非 `internal`、非 `optional` 的 topic 是否存在
@@ -861,8 +962,9 @@ python io/scripts/smoke_test.py --contract io/contract/canon_ros2.yaml --timeout
 
 ## 11. 已知限制（按当前代码）
 
-- `python -m carla_testbed smoke`：**Not implemented yet**
-  - 当前替代：`python io/scripts/smoke_test.py --contract ...`
+- `python -m carla_testbed run --config configs/examples/smoke.yaml`
+  - typed config runner 尚未接入真实 CARLA loop；当前可用 `--dry-run` 或 `smoke`
+  - 旧 runnable configs 仍通过 legacy runner fallback 支持
 - `algo=e2e`：**Not implemented yet**
   - 当前仅保留 adapter 骨架
 - 独立 KPI 模块：**Not implemented yet**

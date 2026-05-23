@@ -1,0 +1,25 @@
+# Local override template. Copy to a private local file before editing.
+
+sim:
+  host: localhost
+  port: 2000
+
+paths:
+  carla_root: "<CARLA_ROOT>"
+  apollo_root: "<APOLLO_ROOT>"
+  apollo_map_root: "<APOLLO_MAP_ROOT>"
+  autoware_map_root: "<AUTOWARE_MAP_ROOT>"
+  output_root: "<TESTBED_OUTPUT_ROOT>"
+
+apollo:
+  root: "<APOLLO_ROOT>"
+  map_root: "<APOLLO_MAP_ROOT>"
+  docker:
+    container: "<APOLLO_DOCKER_CONTAINER>"
+
+autoware:
+  map_root: "<AUTOWARE_MAP_ROOT>"
+
+runtime:
+  python:
+    carla16: "<CARLA16_PYTHON>"

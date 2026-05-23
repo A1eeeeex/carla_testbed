@@ -114,6 +114,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keep-carla-alive-at-end", action="store_true")
     parser.add_argument("--continue-on-failure", action="store_true")
     parser.add_argument(
+        "--continue-initial-step-on-failure",
+        action="store_true",
+        help=(
+            "With --continue-on-failure, continue collecting later steps even if the first "
+            "route fails. Intended for A/B batches where invalid samples must be classified "
+            "instead of aborting the whole route set."
+        ),
+    )
+    parser.add_argument(
         "--progress",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -446,11 +455,12 @@ def _derive_live_phase(snapshot: Dict[str, Any]) -> str:
     routing_request_count = int(snapshot.get("routing_request_count") or 0)
     planning_nonempty = int(snapshot.get("planning_nonempty_trajectory_count") or 0)
     control_tx_count = int(snapshot.get("control_tx_count") or 0)
+    direct_control_apply_count = int(snapshot.get("direct_control_apply_count") or 0)
     if routing_request_count <= 0:
         return "routing_wait"
     if planning_nonempty <= 0:
         return "planning_wait"
-    if control_tx_count > 0:
+    if control_tx_count > 0 or direct_control_apply_count > 0:
         return "control_output"
     if snapshot.get("deferred_control_pending"):
         return "control_pending"
@@ -549,6 +559,7 @@ def _collect_step_live_snapshot(item: Dict[str, Any]) -> Dict[str, Any]:
     bridge_stats = _load_json_if_exists(effective_run_dir / "artifacts" / "cyber_bridge_stats.json")
     bridge_healthcheck = _load_json_if_exists(effective_run_dir / "artifacts" / "cyber_bridge_healthcheck.json")
     bridge_preflight = _load_json_if_exists(effective_run_dir / "artifacts" / "bridge_runtime_preflight.json")
+    direct_bridge_stats = _load_json_if_exists(effective_run_dir / "artifacts" / "direct_bridge_stats.json")
 
     planning_stats = bridge_stats.get("planning") if isinstance(bridge_stats.get("planning"), dict) else {}
     last_measured_control = (
@@ -588,10 +599,12 @@ def _collect_step_live_snapshot(item: Dict[str, Any]) -> Dict[str, Any]:
             ),
             "control_tx_count": int(bridge_stats.get("control_tx_count") or 0),
             "control_rx_count": int(bridge_stats.get("control_rx_count") or 0),
+            "direct_control_apply_count": int(direct_bridge_stats.get("control_apply_count") or 0),
+            "direct_control_apply_fail_count": int(direct_bridge_stats.get("control_apply_fail_count") or 0),
             "control_running": bool(bridge_healthcheck.get("control_running")),
             "deferred_control_pending": bool(bridge_healthcheck.get("deferred_control_pending")),
             "deferred_control_started": bool(bridge_healthcheck.get("deferred_control_started")),
-            "speed_mps": last_measured_control.get("speed_mps"),
+            "speed_mps": last_measured_control.get("speed_mps") or direct_bridge_stats.get("last_speed_mps"),
             "distance_to_destination": bridge_stats.get("distance_to_destination")
             or planning_stats.get("last_distance_to_destination"),
             "command_materialization_stage": str(command_materialization.get("command_path_stage") or ""),
@@ -726,10 +739,14 @@ def _render_progress_line(
         parts.append(f"planning={int(snapshot.get('planning_nonempty_trajectory_count') or 0)}")
     if snapshot.get("control_tx_count") is not None:
         parts.append(f"control_tx={int(snapshot.get('control_tx_count') or 0)}")
-    if snapshot.get("control_running"):
+    if int(snapshot.get("control_tx_count") or 0) > 0 or int(snapshot.get("direct_control_apply_count") or 0) > 0:
+        parts.append("control=output")
+    elif snapshot.get("control_running"):
         parts.append("control=running")
     elif snapshot.get("deferred_control_pending"):
         parts.append("control=pending")
+    if snapshot.get("direct_control_apply_count") is not None and int(snapshot.get("direct_control_apply_count") or 0) > 0:
+        parts.append(f"direct_apply={int(snapshot.get('direct_control_apply_count') or 0)}")
     speed = snapshot.get("speed_mps")
     if isinstance(speed, (int, float)):
         parts.append(f"speed={float(speed):.1f}mps")
@@ -1024,7 +1041,14 @@ def main() -> int:
                                 f"startup_profile={startup_profile} returncode={step_returncode}",
                                 flush=True,
                             )
-                            if failed_step_index == 1 or not args.continue_on_failure:
+                            initial_step_may_continue = (
+                                failed_step_index == 1
+                                and bool(args.continue_on_failure)
+                                and bool(args.continue_initial_step_on_failure)
+                            )
+                            if not initial_step_may_continue and (
+                                failed_step_index == 1 or not args.continue_on_failure
+                            ):
                                 break
             finally:
                 if prewarm_launcher is not None and not args.keep_carla_alive_at_end:
@@ -1035,7 +1059,11 @@ def main() -> int:
             last_exit_code = exit_code
             if exit_code == 0:
                 return 0
-            if failed_step_index == 1 and startup_attempt_index < len(startup_profiles):
+            if (
+                failed_step_index == 1
+                and not bool(args.continue_initial_step_on_failure)
+                and startup_attempt_index < len(startup_profiles)
+            ):
                 print(
                     "[online-chain][WARN] initial startup attempt failed before chain reuse became useful; "
                     "retrying the chain with the next startup profile",

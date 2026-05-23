@@ -1,6 +1,10 @@
-# configs/io/examples/
+# configs/io/examples/ — Transitional Profiles
 
-可直接运行的 profile 预设目录。
+This directory contains transitional / legacy runnable profiles.
+
+These files are kept for reproducibility, demos, Town01 evidence, calibration workflows, and ongoing Apollo experiments. They should not be treated as the target location for new platform configuration. New small canonical examples should start in `configs/examples/`; reusable future profiles should move toward `configs/profiles/`.
+
+Known limitation: many historical profiles in this directory still require machine-local values such as Apollo map roots, Docker container names, and host Python executables. Tracked profiles must use env placeholders such as `${APOLLO_MAP_ROOT}` or `${CARLA16_PYTHON}`; provide real values through `configs/local/`, environment variables, or CLI overrides.
 
 ## Apollo 主链
 

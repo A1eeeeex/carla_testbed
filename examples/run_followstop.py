@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""
+"""LEGACY demo entry: follow-stop harness.
+
+Kept for compatibility, demos, and regression checks. Do not add new platform
+logic here. New platform logic should go to:
+
+- `carla_testbed/runner`
+- `carla_testbed/scenarios`
+- `carla_testbed/adapters`
+- `carla_testbed/record`
+- `carla_testbed/evaluation`
+
 Mode-2 (Autoware container direct CARLA) follow-stop harness.
 需提前准备 Town01 地图（点云+lanelet2），放在宿主机路径如 /home/ubuntu/autoware-contents/maps/Town01，并通过 AUTOWARE_MAP_PATH 挂载进 Autoware 容器（默认已指向该路径）。
 一条命令跑通：
@@ -70,6 +80,48 @@ except Exception:
 _ACTIVE_CLEANUPS: Dict[str, threading.Thread] = {}
 _ROS2_REEXEC_FLAG = "TESTBED_ROS2_ENV_BOOTSTRAPPED"
 _ROS_HUMBLE_PREFIX = Path("/opt/ros/humble")
+
+
+def _config_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def _followstop_carla_env_overrides(runtime_carla_cfg: Dict[str, Any]) -> Dict[str, str]:
+    env_overrides: Dict[str, str] = {}
+    if _config_bool(runtime_carla_cfg.get("force_headless_env"), default=False):
+        # Match the route-health prewarm discipline: keep offscreen CARLA
+        # independent of stale desktop/X11 state on overnight validation hosts.
+        env_overrides.update(
+            {
+                "DISPLAY": "",
+                "WAYLAND_DISPLAY": "",
+                "XAUTHORITY": "",
+                "SDL_AUDIODRIVER": "dummy",
+                "MALLOC_ARENA_MAX": "2",
+            }
+        )
+    display_override = str(runtime_carla_cfg.get("display_override") or "").strip()
+    if display_override:
+        env_overrides["DISPLAY"] = display_override
+    xauthority_override = str(runtime_carla_cfg.get("xauthority_override") or "").strip()
+    if xauthority_override:
+        env_overrides["XAUTHORITY"] = xauthority_override
+    if _config_bool(runtime_carla_cfg.get("force_sdl_x11_no_xrandr"), default=False):
+        env_overrides["SDL_VIDEODRIVER"] = "x11"
+        env_overrides["SDL_VIDEO_X11_REQUIRE_XRANDR"] = "0"
+    env_overrides.setdefault("MALLOC_ARENA_MAX", "2")
+    return env_overrides
 
 
 def _prepend_env_paths(env: Dict[str, str], key: str, values: List[Path | str]) -> None:
@@ -1725,16 +1777,45 @@ def main():
     carla_load_world_attempts = int(runtime_carla_cfg.get("load_world_attempts", 3) or 3)
     carla_load_world_delay_sec = float(runtime_carla_cfg.get("load_world_delay_sec", 3.0) or 3.0)
     carla_load_world_timeout_sec = float(runtime_carla_cfg.get("load_world_timeout_sec", 60.0) or 60.0)
+    carla_launch_with_map = _config_bool(runtime_carla_cfg.get("launch_with_map"), default=True)
+    carla_env_overrides = _followstop_carla_env_overrides(runtime_carla_cfg)
+    carla_bootstrap_stability_window_s = float(
+        runtime_carla_cfg.get("bootstrap_stability_window_s", 0.0) or 0.0
+    )
+    carla_use_memory_guard = _config_bool(
+        runtime_carla_cfg.get("use_systemd_scope_memory_guard"),
+        default=False,
+    )
+    carla_enable_auto_recovery = _config_bool(
+        runtime_carla_cfg.get("launcher_auto_recovery"),
+        default=False,
+    )
+    carla_world_ready_summary.update(
+        {
+            "launch_with_map": bool(carla_launch_with_map),
+            "launch_town": str(args.town if carla_launch_with_map else ""),
+            "force_headless_env": bool(_config_bool(runtime_carla_cfg.get("force_headless_env"), default=False)),
+            "use_systemd_scope_memory_guard": bool(carla_use_memory_guard),
+            "bootstrap_stability_window_s": carla_bootstrap_stability_window_s,
+        }
+    )
     if args.start_carla:
         carla_launcher = CarlaLauncher(
             carla_root=args.carla_root,
             host=args.host,
             port=args.port,
-            town=args.town,
+            town=args.town if carla_launch_with_map else "",
             extra_args=args.carla_extra_args,
             foreground=args.carla_foreground,
             run_dir=out_run_dir,
             stop_reused_on_exit=stop_reused_on_exit,
+            env_overrides=carla_env_overrides,
+            enable_auto_recovery=carla_enable_auto_recovery,
+            bootstrap_stability_window_s=carla_bootstrap_stability_window_s,
+            use_systemd_scope_memory_guard=carla_use_memory_guard,
+            memory_high=str(runtime_carla_cfg.get("memory_high") or "9G"),
+            memory_max=str(runtime_carla_cfg.get("memory_max") or "10G"),
+            oom_policy=str(runtime_carla_cfg.get("oom_policy") or "kill"),
         )
         cleanup_state["carla_launcher"] = carla_launcher
         carla_stop_hook = lambda: carla_launcher.stop()

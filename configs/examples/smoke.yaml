@@ -1,0 +1,18 @@
+run:
+  id: smoke
+  max_ticks: 200
+
+sim:
+  host: localhost
+  port: 2000
+  town: Town01
+  fixed_dt_s: 0.05
+
+scenario:
+  name: follow_stop
+
+output:
+  root: runs
+
+backend:
+  name: dummy

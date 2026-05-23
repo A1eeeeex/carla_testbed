@@ -1,6 +1,12 @@
 # tbio/
 
-`tbio` 是仿真 harness 与外部算法栈之间的运行时集成层。
+`tbio` 是仿真 harness 与外部算法栈之间的 transition backend implementation layer。
+
+It is still important to the current runnable system, but it should be treated as a transition/runtime integration boundary rather than the long-term home for every platform concept.
+
+Canonical backend contracts now start at `carla_testbed/adapters/base.py`.
+`tbio/` remains the implementation layer that existing commands use while the
+adapter boundary is migrated gradually.
 
 主要内容：
 
@@ -16,6 +22,14 @@
 2. 启动 `tbio/backends` 中选定后端。
 3. 后端把运行时数据桥接到目标算法栈。
 4. `tbio/contract` 与 `carla_testbed/record` 把产物写入 `runs/<run>/`。
+
+边界说明：
+
+- Keep backend glue, launch policy, ROS2 probes, and generated runtime artifacts here.
+- Do not put scenario logic, harness behavior, or sensor model ownership here.
+- Do not use `tbio/` to hide Apollo/CyberRT bridge semantics; keep those in the adapter/backend contract and `tools/apollo10_cyber_bridge/` until the MVP boundary is promoted.
+- `io/` is deprecated compatibility; new transition backend work should prefer `tbio/` over expanding `io/`.
+- New canonical backend interfaces should be expressed in `carla_testbed/adapters/base.py`; `tbio/backends/base.py` is legacy/transition scaffolding.
 
 栈集成建议从以下文件入手：
 

@@ -120,6 +120,7 @@ class CarlaDirectTransport:
         startup_brake_recent_throttle_window_sec: float,
         route_command_mode: str = "cyber_direct",
         require_no_ros2_runtime: bool = False,
+        client_timeout_sec: float = 5.0,
         invert_tf: bool = True,
     ) -> None:
         self.artifacts_dir = Path(artifacts_dir)
@@ -147,6 +148,7 @@ class CarlaDirectTransport:
         )
         self.route_command_mode = str(route_command_mode or "cyber_direct").strip().lower() or "cyber_direct"
         self.require_no_ros2_runtime = bool(require_no_ros2_runtime)
+        self.client_timeout_sec = max(float(client_timeout_sec), 0.5)
         self.invert_tf = bool(invert_tf)
 
         self.client: Optional[carla.Client] = None
@@ -183,11 +185,22 @@ class CarlaDirectTransport:
             "using_ros2_message_runtime": ROS2_MESSAGE_RUNTIME_AVAILABLE,
             "connect_ok": False,
             "connect_count": 0,
+            "client_timeout_sec": self.client_timeout_sec,
+            "ego_discovery_attempt_count": 0,
+            "ego_discovery_fail_count": 0,
             "snapshot_count": 0,
             "world_frame_repeat_count": 0,
             "control_apply_count": 0,
             "control_apply_watchdog_count": 0,
             "control_apply_fail_count": 0,
+            "control_apply_first_frame": None,
+            "control_apply_last_frame": None,
+            "control_apply_frame_span": None,
+            "control_apply_first_ts_sec": None,
+            "control_apply_last_ts_sec": None,
+            "control_apply_max_throttle": 0.0,
+            "control_apply_max_brake": 0.0,
+            "control_apply_max_speed_mps": 0.0,
             "startup_brake_suppressed_count": 0,
             "world_map": "",
             "ego_actor_id": None,
@@ -247,7 +260,7 @@ class CarlaDirectTransport:
     def _connect(self) -> None:
         try:
             self.client = carla.Client(self.carla_host, self.carla_port)
-            self.client.set_timeout(2.0)
+            self.client.set_timeout(self.client_timeout_sec)
             self.world = self.client.get_world()
             self.stats["connect_count"] = int(self.stats.get("connect_count", 0)) + 1
             self.stats["connect_ok"] = True
@@ -264,6 +277,9 @@ class CarlaDirectTransport:
     def _discover_ego(self, *, force_world_refresh: bool) -> Optional[carla.Vehicle]:
         if self.client is None:
             return None
+        self.stats["ego_discovery_attempt_count"] = int(
+            self.stats.get("ego_discovery_attempt_count", 0)
+        ) + 1
         try:
             if force_world_refresh or self.world is None:
                 self.world = self.client.get_world()
@@ -289,6 +305,11 @@ class CarlaDirectTransport:
                 self.stats["ego_actor_id"] = int(candidate.id)
             return candidate
         except Exception as exc:
+            self.world = None
+            self.ego = None
+            self.stats["ego_discovery_fail_count"] = int(
+                self.stats.get("ego_discovery_fail_count", 0)
+            ) + 1
             now = time.monotonic()
             if now - self._last_discovery_warn_sec > 2.0:
                 self._last_discovery_warn_sec = now
@@ -466,7 +487,30 @@ class CarlaDirectTransport:
             self.ego.apply_control(ctrl)
             if frame_id is not None:
                 self._last_applied_frame = frame_id
+                if self.stats.get("control_apply_first_frame") is None:
+                    self.stats["control_apply_first_frame"] = int(frame_id)
+                self.stats["control_apply_last_frame"] = int(frame_id)
+                first_frame = self.stats.get("control_apply_first_frame")
+                if first_frame is not None:
+                    self.stats["control_apply_frame_span"] = int(frame_id) - int(first_frame) + 1
+            now_ts = time.time()
+            speed_mps = float(self._current_speed_mps())
             self.stats["control_apply_count"] = int(self.stats.get("control_apply_count", 0)) + 1
+            if self.stats.get("control_apply_first_ts_sec") is None:
+                self.stats["control_apply_first_ts_sec"] = float(now_ts)
+            self.stats["control_apply_last_ts_sec"] = float(now_ts)
+            self.stats["control_apply_max_throttle"] = max(
+                float(self.stats.get("control_apply_max_throttle", 0.0) or 0.0),
+                float(ctrl.throttle),
+            )
+            self.stats["control_apply_max_brake"] = max(
+                float(self.stats.get("control_apply_max_brake", 0.0) or 0.0),
+                float(ctrl.brake),
+            )
+            self.stats["control_apply_max_speed_mps"] = max(
+                float(self.stats.get("control_apply_max_speed_mps", 0.0) or 0.0),
+                speed_mps,
+            )
             if source == "watchdog":
                 self.stats["control_apply_watchdog_count"] = int(
                     self.stats.get("control_apply_watchdog_count", 0)
@@ -482,7 +526,7 @@ class CarlaDirectTransport:
                 "throttle": float(ctrl.throttle),
                 "brake": float(ctrl.brake),
                 "steer": float(ctrl.steer),
-                "speed_mps": float(self._current_speed_mps()),
+                "speed_mps": speed_mps,
             }
             self._append_jsonl(self.control_apply_path, payload)
         except Exception as exc:

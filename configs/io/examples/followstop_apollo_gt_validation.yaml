@@ -102,7 +102,7 @@ algo:
       max_obstacles: 64
       radius_m: 120.0
       localization_back_offset_m: 1.4375
-      map_file: /home/ubuntu/Carla_apollo_maps/carla_town01/base_map.txt
+      map_file: ${APOLLO_MAP_ROOT}/carla_town01/base_map.txt
       debug_dump_control_raw: true
       front_obstacle_behavior:
         mode: cruise_then_stop

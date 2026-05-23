@@ -1,27 +1,80 @@
 # configs/
 
-运行配置根目录，包含 profile 与传感器 rig。
+Configuration root for the CARLA testbed.
 
-子目录：
+This directory is being cleaned up in stages. New configuration work should use the lightweight layout below, while the older `configs/io/examples/` profiles remain available as transitional compatibility profiles.
 
-- `io/`：端到端运行 profile（算法栈、桥接、routing、录制等）。
-- `rigs/`：传感器 rig 预设。
+## Intended Layout
 
-推荐使用流程：
+| Path | Role | Status |
+| --- | --- | --- |
+| `project.yaml` | Project-wide defaults that are safe to commit. | Supported |
+| `examples/` | Small canonical examples for smoke tests and docs. | Supported |
+| `profiles/` | Reusable scenario/backend profiles. | Planned / supported as it fills in |
+| `rigs/` | Sensor rig presets. | Supported |
+| `local/` | Machine-local override templates. | Supported, placeholders only |
+| `io/` | Older run profiles, contracts, and maps. | Transitional / legacy compatibility |
 
-1. 从 `configs/io/examples/*.yaml` 选择基线 profile。
-2. 使用 `--override key=value` 做本轮实验覆盖。
-3. 机器私有配置放在 `.env` 或 `configs/local*.yaml`（已被 Git 忽略）。
+## Config Precedence
 
-配置加载层级（从低到高）：
+When the typed config loader is introduced, the intended precedence is:
 
-1. `configs/project.yaml`（项目默认，进入 Git）
-2. 通过 `--config` 指定的 profile
-3. `configs/local.yaml`（可选，本机私有）
-4. `configs/local.*.yaml`（可选，本机私有，按文件名字典序叠加）
-5. CLI `--override key=value`（最高优先级）
+1. Built-in defaults in code.
+2. Project config, for example `configs/project.yaml`.
+3. Profile config, for example `configs/profiles/*.yaml`.
+4. Rig config, for example `configs/rigs/*.yaml`.
+5. Local override, for example `configs/local/*.yaml` or environment variables.
+6. CLI overrides, for example `--override key=value`.
 
-说明：
+Current legacy runners may still load some paths differently. Treat this list as the target contract for new code and docs.
 
-- `configs/local.example.yaml` 仅为样板，不会被自动加载。
-- `paths.*` 支持每台机器各自配置 CARLA/Apollo/map/output 等根路径。
+## Machine-Local Values
+
+Tracked config files must not contain machine-bound absolute paths such as Linux home directories, macOS user directories, or Windows user directories. Keep real local paths out of Git.
+
+Use local overrides for:
+
+- CARLA host and port.
+- `CARLA_ROOT`.
+- `APOLLO_ROOT`.
+- `APOLLO_MAP_ROOT`.
+- `AUTOWARE_MAP_ROOT`.
+- `CARLA16_PYTHON` or another local Python executable path used by compatibility launchers.
+- Docker container name.
+- Local output root.
+
+Start from:
+
+```text
+configs/local/local.example.yaml
+```
+
+Copy it to a private filename such as `configs/local/local.yaml` or `configs/local/<hostname>.yaml`, then fill in real paths locally. Do not commit real machine paths.
+
+Tracked YAML may use environment placeholders such as:
+
+```text
+${CARLA_ROOT}
+${APOLLO_ROOT}
+${APOLLO_MAP_ROOT}
+${APOLLO_DOCKER_CONTAINER}
+${AUTOWARE_MAP_ROOT}
+${CARLA16_PYTHON}
+${TESTBED_OUTPUT_ROOT}
+```
+
+These placeholders must be resolved by the typed config loader, shell environment, local override, or a CLI override before a runtime path is used. If a legacy profile has a field whose path semantics are unclear, keep the field but move any real machine value to local override rather than committing it.
+
+## Canonical Examples
+
+The new example surface is intentionally small:
+
+- `configs/examples/smoke.yaml`
+
+It is a shape example for future canonical configs. It does not replace the older Apollo or follow-stop profiles yet.
+
+## Transitional Profiles
+
+`configs/io/examples/` contains many historical follow-stop, Apollo, Town01, calibration, and demo profiles. They are kept for reproducibility and ongoing experiments, but they are not the target location for new platform configuration.
+
+Transitional profiles may still contain env placeholders for local paths. Do not replace those placeholders with real personal home-directory paths, mounted data roots, or long-lived temporary-directory roots in tracked config.

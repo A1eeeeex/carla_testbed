@@ -1,6 +1,8 @@
-# io/scripts/
+# io/scripts/ —— Deprecated Legacy Wrappers
 
-兼容层脚本目录。
+Deprecated compatibility script directory. These scripts are kept so historical
+automation can still call `io/scripts/*`, but they should not receive new
+platform logic.
 
 当前建议：
 

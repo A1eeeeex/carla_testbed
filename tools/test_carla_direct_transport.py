@@ -281,6 +281,35 @@ class CarlaDirectTransportTests(unittest.TestCase):
             self.assertEqual(summary["route_command_path"], "cyber_direct_bridge_command_path")
             self.assertTrue(summary["require_no_ros2_runtime"])
 
+    def test_configured_client_timeout_is_used_for_carla_attach(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            transport = self.mod.CarlaDirectTransport(
+                artifacts_dir=Path(tmpdir),
+                carla_host="127.0.0.1",
+                carla_port=2000,
+                ego_role_name="hero",
+                control_out_type="direct",
+                radius_m=50.0,
+                max_obstacles=8,
+                publish_rate_hz=20.0,
+                sync_to_world_tick=True,
+                timeout_sec=0.8,
+                max_steer_angle=0.6,
+                speed_gain=10.0,
+                brake_gain=5.0,
+                watchdog_wait_for_first_msg=True,
+                watchdog_arm_delay_sec=1.5,
+                startup_brake_suppression_enabled=True,
+                startup_brake_suppression_speed_mps=1.0,
+                startup_brake_suppression_max_brake=0.2,
+                startup_brake_suppression_min_throttle=0.3,
+                startup_brake_suppression_hold_sec=3.0,
+                startup_brake_recent_throttle_window_sec=1.0,
+                client_timeout_sec=7.5,
+            )
+            self.assertAlmostEqual(transport.client.timeout, 7.5)
+            self.assertAlmostEqual(transport.stats["client_timeout_sec"], 7.5)
+
     def test_publish_control_applies_vehicle_control_and_writes_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             transport = self.mod.CarlaDirectTransport(
@@ -312,6 +341,14 @@ class CarlaDirectTransportTests(unittest.TestCase):
             self.assertAlmostEqual(ego._last_control.throttle, 0.4)
             self.assertAlmostEqual(ego._last_control.brake, 0.0)
             self.assertAlmostEqual(ego._last_control.steer, 0.2)
+            self.assertEqual(transport.stats["control_apply_count"], 1)
+            self.assertIsInstance(transport.stats["control_apply_first_frame"], int)
+            self.assertEqual(
+                transport.stats["control_apply_last_frame"],
+                transport.stats["control_apply_first_frame"],
+            )
+            self.assertEqual(transport.stats["control_apply_frame_span"], 1)
+            self.assertAlmostEqual(transport.stats["control_apply_max_throttle"], 0.4)
             transport.write_artifacts()
             self.assertTrue((Path(tmpdir) / "direct_bridge_stats.json").exists())
             self.assertTrue((Path(tmpdir) / "direct_bridge_actor_snapshot.json").exists())
