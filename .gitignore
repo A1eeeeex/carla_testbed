@@ -10,6 +10,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .tmp
+.tmp*.py
+.playwright-cli/
 # IDE / editor
 .idea/
 .vscode/
