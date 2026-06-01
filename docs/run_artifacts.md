@@ -31,6 +31,10 @@ The legacy harness still writes CSV-oriented frame data.
 - `config_path`
 - `git_sha`, when available
 - CARLA `host`, `port`, and `town`, when known
+- `carla_world`, when runtime CARLA was available. This records
+  `configured_town`, the observed `loaded_map_name`, short-name match status,
+  and spawn-point count so evidence can distinguish requested map identity from
+  the world actually loaded by CARLA.
 - `scenario_name`
 - `backend_name`
 - non-critical metadata such as smoke mode or runtime notes
@@ -111,6 +115,34 @@ Both forms should stay run-local.
 
 `logs/` is optional. It may contain captured simulator, backend, bridge, or
 adapter logs. For no-runtime smoke runs it may be empty.
+
+## Town01 Truth-Input Diagnostics
+
+Town01 Apollo truth-input runs that are used for natural-driving or curve
+diagnosis need richer evidence than the base artifact surface. Expected
+run-local diagnostics include:
+
+- `analysis/route_health/route_health.json`
+- `analysis/route_health/route_health.csv`
+- `analysis/route_health/curve_segments.csv`
+- `analysis/route_health/route_health_summary.md`
+- `analysis/apollo_channel_health/apollo_channel_health_report.json`
+- `analysis/control_health/control_health_report.json`
+- `analysis/failure_timeline/failure_timeline_report.json`
+- `analysis/route_start_alignment/route_start_alignment_report.json`
+- `analysis/artifact_completeness/artifact_completeness_report.json`
+- `analysis/traffic_light/traffic_light_contract_report.json` for traffic-light scenarios
+- `analysis/traffic_light/traffic_light_behavior_report.json` for traffic-light scenarios
+
+`natural_driving_report.json` must treat a missing
+`artifact_completeness_report.json` as `insufficient_data`. This keeps the
+evidence chain persisted in the run directory instead of relying on an in-memory
+check or visual observation.
+
+`artifact_completeness_report.json` also treats missing or mismatched
+`manifest.json.carla_world` identity as `insufficient_data`. A run may request
+`Town01` in config, but capability evidence should separately record the CARLA
+map that was actually loaded.
 
 ## Current Implementation
 

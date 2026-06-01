@@ -20,6 +20,9 @@
   - 这类内容放到 `../reference_pack/reference/`
 - 每轮一次性的 narrative 分析报告
   - 这类内容保留在 `../artifacts/` 或 `../runs/`
+- 当前诊断快照、证据索引、本机 run 结论
+  - 这类内容不要作为稳定 docs 推送；需要留痕时放到 ignored 的
+    `../artifacts/doc_drafts/`，或沉淀到 reference 的 `to_verify_items.md`
 - 本地 prompt/scratch note
   - `prompt_usually_used.md` 不属于跟踪文档面
 
@@ -31,13 +34,20 @@
 5. `configuration.md`
 6. `backends.md`
 7. `apollo_mvp_bridge.md`
-8. `run_artifacts.md`
-9. `testing.md`
-10. `legacy.md`
-11. `dual_machine_workflow.md`
-12. `migration_followstop_playbook.md`
-13. `apollo10_gt_sim.md`
-14. `gt_truth_simulation_pipeline.md`
+8. `apollo_current_module_logic.md`
+9. `apollo_algorithm_inventory.md`
+10. `apollo_reproduction.md`
+11. `apollo_town01_truth_natural_driving.md`
+12. `town01_route_health.md`
+13. `carla_direct_ab.md`
+14. `calibration_pipeline.md`
+15. `run_artifacts.md`
+16. `testing.md`
+17. `legacy.md`
+18. `dual_machine_workflow.md`
+19. `migration_followstop_playbook.md`
+20. `apollo10_gt_sim.md`
+21. `gt_truth_simulation_pipeline.md`
 
 ## 主要文档分组
 - 展示与总览:
@@ -63,6 +73,13 @@
   - `migration_followstop_playbook.md`
 - Apollo GT 主链:
   - `apollo_mvp_bridge.md`
+  - `apollo_current_module_logic.md`
+  - `apollo_algorithm_inventory.md`
+  - `apollo_reproduction.md`
+  - `apollo_town01_truth_natural_driving.md`
+  - `town01_route_health.md`
+  - `carla_direct_ab.md`
+  - `calibration_pipeline.md`
   - `apollo10_gt_sim.md`
   - `gt_truth_simulation_pipeline.md`
   - `gt_followstop_apollo_baseline.md`

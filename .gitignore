@@ -29,6 +29,9 @@ tmp/
 temp/
 *.log
 docs/prompt_usually_used.md
+# Local diagnosis snapshots and evidence indexes belong in artifacts/ or reference_pack/.
+docs/town01_diagnosis_plan.md
+docs/evidence_index.md
 .runtime_cache/
 reference_pack/
 # Media and heavy simulation artifacts

@@ -96,6 +96,22 @@ New core behavior should be shaped around the harness, config schema, backend co
   - typed config v0、配置优先级、local override 和 env placeholder 规则。
 - `docs/apollo_mvp_bridge.md`
   - Apollo MVP bridge 边界；GT localization/chassis/obstacles/routing/control，不跑真实感知。
+- `docs/apollo_current_module_logic.md`
+  - 面向读者的 Apollo 当前模块逻辑说明；解释哪些是真 Apollo 模块、哪些由 CARLA truth-input 替代。
+- `docs/apollo_algorithm_inventory.md`
+  - Apollo 模块化算法栈清单；区分 upstream、replayed、CARLA GT port 和 Town01 tuned variant。
+- `docs/apollo_reproduction.md`
+  - Apollo L0-L5 复现层级；冻结 environment/replay/adapter/shadow/closed-loop 证据和归因规则。
+- `docs/apollo_town01_truth_natural_driving.md`
+  - Town01 truth-input MVP natural-driving goal and gates. Claims require
+    local verification artifacts such as `natural_driving_report.json`; this is
+    not full perception reproduction.
+- `docs/town01_route_health.md`
+  - Town01 route-health schema、P0/P1/P2 recorder 字段、curve segment report 和 run artifact 接入。
+- `docs/carla_direct_ab.md`
+  - `ros2_gt` vs `carla_direct` A/B manifest、dry-run matrix、multi-metric verdict 和本地验证边界。
+- `docs/calibration_pipeline.md`
+  - control-actuation calibration profile/report；只解释 throttle/brake/steer response、latency 和 no-regression gates。
 - `docs/run_artifacts.md`
   - run output 目录、manifest、resolved config、summary、events、timeseries。
 - `docs/testing.md`
@@ -104,6 +120,8 @@ New core behavior should be shaped around the harness, config schema, backend co
   - 面向技术展示的总览页；适合快速介绍架构、功能进度、示例命令与可见产出。
 - `artifacts/` / `runs/`
   - 运行证据与分析输入，不是长期规范源。
+
+当前诊断快照、证据索引和本机 run 结论不要作为稳定 `docs/` 推送；这类内容应放在 ignored 的 `artifacts/` / `runs/`，或沉淀到 `reference_pack/reference/05_verified_findings/to_verify_items.md` 后再作为待验证事实维护。
 
 迁移与协作开发建议先看：
 
@@ -114,6 +132,13 @@ New core behavior should be shaped around the harness, config schema, backend co
 - `docs/configuration.md`
 - `docs/backends.md`
 - `docs/apollo_mvp_bridge.md`
+- `docs/apollo_current_module_logic.md`
+- `docs/apollo_algorithm_inventory.md`
+- `docs/apollo_reproduction.md`
+- `docs/apollo_town01_truth_natural_driving.md`
+- `docs/town01_route_health.md`
+- `docs/carla_direct_ab.md`
+- `docs/calibration_pipeline.md`
 - `docs/run_artifacts.md`
 - `docs/testing.md`
 - `docs/project_showcase.md`
@@ -591,6 +616,24 @@ python -m carla_testbed run \
 在启动前检查。
 
 Autoware 保留为 legacy experimental compatibility，不是当前阶段与 Apollo 同等优先的主线。
+
+Autoware 没有 Apollo Dreamview 这种内置网页控制台。本仓库的 Autoware
+demo 录制标准是 CARLA 第三人称视频 + RViz2 operator view + rosbag2
+topic 归档 + control/follow-stop diagnostics。默认
+`configs/io/examples/followstop_autoware.yaml` 会尝试生成：
+
+- `video/dual_cam/demo_third_person.mp4`
+- `video/rviz/autoware_rviz.mp4`
+- `rosbag2/autoware_demo/`
+- `artifacts/autoware_operator_view_status.json`
+- `artifacts/autoware_rosbag_status.json`
+
+RViz/rosbag 是 operator evidence，不等同于 Autoware 自然驾驶成功；行为结论仍以
+`summary.json`、`timeseries.csv` 和分析报告为准。录制后可检查：
+
+```bash
+python3 tools/inspect_autoware_demo_recording.py runs/autoware_demo
+```
 
 ## 7. 每次 run 会产出什么
 
