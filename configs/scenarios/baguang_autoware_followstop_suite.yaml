@@ -1,0 +1,151 @@
+schema_version: baguang_autoware_followstop_suite.v1
+name: baguang_autoware_followstop_300m
+map: straight_road_for_baguang
+description: >
+  Truth-input Autoware follow-stop readiness suite for the custom RoadRunner
+  straight_road_for_baguang map. This suite is a runnable contract, not proof
+  that Autoware has completed the demo.
+mode:
+  truth_input: true
+  stack: autoware
+  backend: ros2_autoware
+  carla_map: straight_road_for_baguang
+  autoware_map_required: true
+  full_sensor_perception_reproduced: false
+scenario:
+  scenario_id: baguang_followstop_300m_80kph
+  route_id: straight_road_for_baguang_mainline_followstop_300m
+  scenario_class: follow_stop_80kph
+  map: straight_road_for_baguang
+  duration_s: 90
+  target_speed_kph: 80
+  lead_distance_m: 300
+  ego:
+    role_name: hero
+    spawn_ref: carla_spawn_index_0
+  front_vehicle:
+    role_name: front
+    placement: 300m_ahead_same_lane
+    initial_state: stopped
+  route_ref: carla_waypoint_trace_from_ego_to_380m
+  required_inputs:
+    - localization
+    - chassis
+    - ground_truth_obstacles
+    - route_or_goal
+  required_channels:
+    - /clock
+    - /tf
+    - /localization/kinematic_state
+    - /vehicle/status/velocity_status
+    - /vehicle/status/steering_status
+    - /perception/object_recognition/objects
+    - /planning/trajectory
+    - /control/command/control_cmd
+  required_artifacts:
+    - manifest.json
+    - summary.json
+    - config.resolved.yaml
+    - timeseries.csv
+    - events.jsonl
+    - artifacts/autoware_control.jsonl
+    - artifacts/autoware_carla_control_bridge.log
+    - analysis/autoware_control/autoware_control_diagnostics.json
+    - analysis/autoware_followstop/autoware_followstop_diagnostics.json
+    - artifacts/autoware_operator_view_status.json
+    - artifacts/autoware_rosbag_status.json
+    - rosbag2/autoware_demo
+    - video/rviz/autoware_rviz.mp4
+    - video/screen/carla_third_person_screen.mp4
+    - video/dual_cam/demo_third_person.mp4
+    - video/dual_cam/demo_third_person_hud.mp4
+    - video/dual_cam/demo_third_person_raw.mp4
+  success_criteria:
+    link_health:
+      routing_available: true
+      planning_available: true
+      control_available: true
+      carla_actuation_available: true
+    map_health:
+      carla_visual_assets_available: true
+      autoware_lanelet2_map_available: true
+      autoware_pointcloud_map_available: true
+    behavior_health:
+      max_speed_mps_min: 20.0
+      final_speed_mps_max: 0.5
+      final_front_longitudinal_m_max: 15.0
+      collision_count_max: 0
+      lane_invasion_count_max: 0
+    control_health:
+      no_unexplained_throttle_brake_oscillation: true
+      bridge_override_or_stabilizer_declared: true
+  current_best_probe_profile:
+    status: experimental_verified_once
+    evidence_run: runs/baguang_autoware_80kph_smooth_bridge_probe_20260531_181018_goal
+    note: >
+      This profile is the current best repeatable probe for the 300m / near-80kph
+      truth-input follow-stop objective. It disables Autoware goal_planner for
+      route-follow semantics and declares explicit planning dynamics plus bridge
+      smoothing. It is not a claim that unmodified Autoware naturally completes
+      the scenario.
+    launch_extra_args_required:
+      - launch_goal_planner_module:=false
+    planning_common_overrides:
+      max_vel_mps: 22.22
+      normal_max_acc_mps2: 2.5
+      normal_min_acc_mps2: -3.0
+      limit_max_acc_mps2: 3.0
+      limit_min_acc_mps2: -4.0
+    bridge_profile:
+      longitudinal_mode: speed_feedback
+      positive_accel_overshoot_action: coast_all
+      speed_feedback_gain: 0.22
+      speed_feedback_brake_gain: 0.28
+      speed_feedback_deadband_mps: 0.5
+      speed_feedback_transition_coast_sec: 0.3
+      speed_feedback_max_throttle_step: 0.12
+      speed_feedback_max_brake_step: 0.12
+      negative_accel_brake_speed_margin_mps: 0.5
+  current_best_demo_recording_profile:
+    status: experimental_verified_once
+    evidence_run: runs/baguang_autoware_80kph_followstop_demo_20260531_190757_timeout5_no_lane
+    note: >
+      This profile produced the first successful third-person CARLA recording
+      for the 300m / near-80kph truth-input Autoware follow-stop objective.
+      It keeps the current best probe profile and adds recording-specific
+      controls: the Autoware-to-CARLA bridge freshness timeout is raised to
+      5.0s because video capture can slow wall-time between simulation ticks,
+      and the CARLA lane-invasion event is disabled for this Baguang demo after
+      a false-positive lane-invasion run showed sub-millimeter cross-track
+      error. Collision checks, route/cross-track diagnostics, summary,
+      timeseries, control diagnostics, follow-stop diagnostics, and third-person
+      video artifacts remain required. This is not proof of unmodified Autoware
+      natural driving.
+    launch_extra_args_required:
+      - launch_goal_planner_module:=false
+    recording:
+      mode: dual_cam
+      third_person_only: true
+      hud_mode: driving
+      expected_artifacts:
+        - video/dual_cam/demo_third_person.mp4
+        - video/dual_cam/demo_third_person_hud.mp4
+        - video/dual_cam/demo_third_person_raw.mp4
+        - video/rviz/autoware_rviz.mp4
+        - rosbag2/autoware_demo
+    recording_specific_overrides:
+      carla_control_bridge_timeout_sec: 5.0
+      lane_invasion_event_enabled: false
+      reason: >
+        The failed recording run
+        runs/baguang_autoware_80kph_followstop_demo_20260531_182218 showed ego
+        barely moved because the bridge watchdog repeatedly applied brake under
+        slow recording wall-time. The subsequent timeout=5.0 run moved but hit
+        a lane-invasion false positive while cross_track_error stayed below
+        0.001m, so the successful recording disables that event for this custom
+        map demo only.
+gate_role: diagnostic_gate
+claim_boundary:
+  proves_full_autoware_sensor_pipeline: false
+  proves_natural_driving: false
+  required_behavior_artifact: autoware_followstop_diagnostics.json

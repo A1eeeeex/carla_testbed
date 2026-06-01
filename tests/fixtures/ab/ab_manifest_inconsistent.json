@@ -1,0 +1,70 @@
+{
+  "schema_version": "ab_manifest.v1",
+  "batch_id": "town01_ab_inconsistent",
+  "created_at": "2026-05-23T00:00:00Z",
+  "route_set": "configs/routes/town01/canonical_five.yaml",
+  "baseline_backend": "ros2_gt",
+  "candidate_backend": "carla_direct",
+  "durations_s": [70.0],
+  "runs": [
+    {
+      "run_id": "baseline_lane097",
+      "route_id": "lane097",
+      "backend": "ros2_gt",
+      "duration_s": 70.0,
+      "run_dir": "runs/baseline_lane097",
+      "command": "python tools/run_town01_transport_ab.py --backend ros2_gt",
+      "config_path": "baseline.yaml",
+      "resolved_config_path": "effective.yaml",
+      "summary_path": "summary.json",
+      "route_health_path": "analysis/route_health/route_health.json",
+      "status": "complete"
+    },
+    {
+      "run_id": "candidate_lane097",
+      "route_id": "lane097",
+      "backend": "carla_direct",
+      "duration_s": 70.0,
+      "run_dir": "runs/candidate_lane097",
+      "command": "python tools/run_town01_transport_ab.py --backend carla_direct",
+      "config_path": "candidate.yaml",
+      "resolved_config_path": "effective.yaml",
+      "summary_path": "summary.json",
+      "route_health_path": "analysis/route_health/route_health.json",
+      "status": "complete"
+    }
+  ],
+  "fixed_variables": {
+    "carla_version": "0.9.16",
+    "apollo_version": "10.0",
+    "town_map": "Town01",
+    "map_hash": "maphash-placeholder",
+    "route_id": "lane097",
+    "route_definition_hash": "routehash-placeholder",
+    "spawn_pose": {"baseline": {"x": 0.0, "y": 0.0, "yaw": 0.0}, "candidate": {"x": 1.0, "y": 0.0, "yaw": 0.0}},
+    "ego_blueprint": "vehicle.lincoln.mkz_2020",
+    "vehicle_physics_hash": "phys-placeholder",
+    "fixed_delta_seconds": 0.05,
+    "sim_duration_s": 70.0,
+    "random_seed": 20260416,
+    "traffic_actors": [],
+    "sensor_rig": "gt_only",
+    "localization_source": "ground_truth",
+    "chassis_source": "ground_truth",
+    "routing_source": "cyber_direct",
+    "control_mode": "apollo_control",
+    "actuator_mapping_mode": "legacy",
+    "steer_scale": {"baseline": 0.25, "candidate": 0.5},
+    "guard_config_hash": "guard-placeholder",
+    "calibration_profile_id": "none",
+    "timeout_policy": "420_ticks_120_post_fail"
+  },
+  "allowed_differences": ["backend", "transport_mode"],
+  "missing_fixed_variables": [],
+  "consistency_status": "unchecked",
+  "candidate_positive_inputs": {
+    "one_metric_positive": true,
+    "route_completion": 0.8
+  },
+  "notes": "Inconsistent MUST_MATCH and one-metric-positive fixture."
+}

@@ -1320,7 +1320,6 @@ def _overrides_for_flags(
         "runtime.carla.start=false",
         "record.probe.enable=true",
         "record.control_log.enable=true",
-        "algo.apollo.bridge.debug_dump_control_raw=true",
     ]
     if capability_profile:
         overrides.append(f"run.capability_profile={capability_profile}")

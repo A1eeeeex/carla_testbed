@@ -1,0 +1,5 @@
+run:
+  id: traffic_light_red_stop
+scenario:
+  class: traffic_light_red_stop
+  route_id: traffic_light_red_stop_tbd

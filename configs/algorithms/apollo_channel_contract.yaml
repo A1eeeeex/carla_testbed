@@ -1,0 +1,79 @@
+schema_version: apollo_channel_contract.v1
+algorithm: apollo
+description: >
+  Offline Apollo channel contract used by L3 reproduction checks. It validates
+  synthetic channel_stats.json without requiring CyberRT at import or CI time.
+
+channels:
+  - name: localization
+    channel: /apollo/localization/pose
+    required_for_levels:
+      - L3
+      - L4
+      - L5
+    min_hz: 10.0
+    max_message_age_ms: 250.0
+    timestamp_required: true
+    sequence_monotonic_required: true
+    optional: false
+
+  - name: chassis
+    channel: /apollo/canbus/chassis
+    required_for_levels:
+      - L3
+      - L4
+      - L5
+    min_hz: 10.0
+    max_message_age_ms: 250.0
+    timestamp_required: true
+    sequence_monotonic_required: true
+    optional: false
+
+  - name: perception_obstacles
+    channel: /apollo/perception/obstacles
+    required_for_levels:
+      - L3
+      - L4
+      - L5
+    min_hz: 2.0
+    max_message_age_ms: 1000.0
+    timestamp_required: true
+    sequence_monotonic_required: true
+    optional: true
+    missing_policy: warn_for_gt_less_replay
+
+  - name: routing_response
+    channel: /apollo/routing_response
+    required_for_levels:
+      - L3
+      - L4
+      - L5
+    min_hz: 0.0
+    max_message_age_ms: 0.0
+    timestamp_required: true
+    sequence_monotonic_required: true
+    optional: true
+
+  - name: planning
+    channel: /apollo/planning
+    required_for_levels:
+      - L3
+      - L4
+      - L5
+    min_hz: 2.0
+    max_message_age_ms: 1000.0
+    timestamp_required: true
+    sequence_monotonic_required: true
+    optional: false
+
+  - name: control
+    channel: /apollo/control
+    required_for_levels:
+      - L3
+      - L4
+      - L5
+    min_hz: 2.0
+    max_message_age_ms: 1000.0
+    timestamp_required: true
+    sequence_monotonic_required: true
+    optional: false

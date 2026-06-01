@@ -84,7 +84,7 @@ algo:                        # 算法栈选择
     carla_map: Town01
     carla_host: 127.0.0.1
     carla_port: 2000
-    carla_wheel_dir: /home/ubuntu/CARLA_0.9.16/PythonAPI/carla/dist
+    carla_wheel_dir: ${CARLA_ROOT}/PythonAPI/carla/dist
     carla_control_bridge:
       enabled: true
       control_topic: /control/command/control_cmd

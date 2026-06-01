@@ -1,0 +1,31 @@
+{
+  "errors": [],
+  "interpretation_boundary": "Synthetic traffic-light contract evidence for unit tests only.",
+  "mapping_results": [
+    {
+      "apollo_signal_id": "signal_town01_red_stop_fixture",
+      "issues": [],
+      "lane_ids": [
+        "lane_town01_red_stop_fixture"
+      ],
+      "logical_id": "town01_tl_red_stop_fixture",
+      "status": "pass",
+      "stop_line_id": "stop_line_town01_red_stop_fixture",
+      "town01_signal_found": true,
+      "warnings": []
+    }
+  ],
+  "missing_inputs": [],
+  "schema_version": "traffic_light_contract_report.v1",
+  "scenario_class": "traffic_light_red_stop",
+  "signal_id": "signal_town01_red_stop_fixture",
+  "source": {
+    "town01_contract_path": "configs/town01/apollo_contract.example.yaml",
+    "traffic_light_mapping_path": "configs/town01/traffic_lights.example.yaml"
+  },
+  "status": "pass",
+  "stop_line_id": "stop_line_town01_red_stop_fixture",
+  "town01_contract_status": "pass",
+  "town01_signal_count": 1,
+  "warnings": []
+}

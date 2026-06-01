@@ -1,0 +1,5 @@
+sim_time,route_completion,cross_track_error,heading_error,control_latency_ms,red_stop_distance_m,apollo_steer_raw,bridge_steer_mapped,carla_steer_applied,throttle_raw,throttle_mapped,throttle_applied,brake_raw,brake_mapped,brake_applied,lateral_guard_applied,trajectory_contract_guard_applied
+0.0,0.05,0.05,0.01,80,15.0,0.01,0.003,0.003,0.25,0.25,0.25,0.00,0.00,0.00,false,false
+1.0,0.15,0.09,0.02,88,8.0,0.02,0.005,0.005,0.00,0.00,0.00,0.20,0.20,0.20,false,false
+2.0,0.28,0.10,0.02,96,3.5,0.01,0.003,0.003,0.00,0.00,0.00,0.45,0.45,0.45,false,false
+3.0,0.35,0.10,0.03,99,3.2,0.00,0.000,0.000,0.00,0.00,0.00,0.50,0.50,0.50,false,false

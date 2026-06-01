@@ -1,0 +1,11 @@
+run_id,variant_id,route_id,sim_time,frame_id,planning_available,control_available,cross_track_error,heading_error,route_curvature,curvature_at_nearest,apollo_steer_raw,throttle_raw,brake_raw,apollo_matched_point_distance,apollo_target_point_distance
+shadow_fixture,apollo_10_0_carla_gt_town01_reference,town01_rh_spawn217_goal048,0.0,0,true,true,0.10,0.02,0.010,0.010,0.05,0.20,0.00,0.20,0.30
+shadow_fixture,apollo_10_0_carla_gt_town01_reference,town01_rh_spawn217_goal048,0.1,1,true,true,0.12,0.03,0.020,0.020,0.10,0.22,0.00,0.30,0.40
+shadow_fixture,apollo_10_0_carla_gt_town01_reference,town01_rh_spawn217_goal048,0.2,2,true,true,0.08,0.02,0.030,0.030,0.12,0.24,0.00,0.20,0.30
+shadow_fixture,apollo_10_0_carla_gt_town01_reference,town01_rh_spawn217_goal048,0.3,3,true,true,0.15,0.04,0.040,0.040,0.18,0.25,0.00,0.40,0.50
+shadow_fixture,apollo_10_0_carla_gt_town01_reference,town01_rh_spawn217_goal048,0.4,4,true,true,0.18,0.05,0.050,0.050,0.25,0.23,0.00,0.30,0.40
+shadow_fixture,apollo_10_0_carla_gt_town01_reference,town01_rh_spawn217_goal048,0.5,5,true,true,0.14,0.04,0.040,0.040,0.19,0.21,0.00,0.30,0.50
+shadow_fixture,apollo_10_0_carla_gt_town01_reference,town01_rh_spawn217_goal048,0.6,6,true,true,0.11,0.03,0.030,0.030,0.12,0.22,0.00,0.20,0.30
+shadow_fixture,apollo_10_0_carla_gt_town01_reference,town01_rh_spawn217_goal048,0.7,7,true,true,0.09,0.02,0.020,0.020,0.08,0.20,0.00,0.20,0.30
+shadow_fixture,apollo_10_0_carla_gt_town01_reference,town01_rh_spawn217_goal048,0.8,8,true,true,0.10,0.03,0.010,0.010,0.04,0.19,0.00,0.20,0.20
+shadow_fixture,apollo_10_0_carla_gt_town01_reference,town01_rh_spawn217_goal048,0.9,9,true,true,0.13,0.03,0.000,0.000,0.02,0.18,0.00,0.20,0.20

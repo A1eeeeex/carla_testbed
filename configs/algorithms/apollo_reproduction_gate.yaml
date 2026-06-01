@@ -1,0 +1,32 @@
+schema_version: reproduction_gate_config.v1
+algorithm: apollo
+description: >
+  Gate connecting Apollo reproduction evidence to Town01 route-health,
+  carla_direct A/B, and control-actuation calibration claims.
+
+required_before_closed_loop_eval:
+  - L0_environment_frozen
+  - L1_upstream_demo_or_record_replay
+  - L2_module_golden_replay
+  - L3_carla_to_apollo_adapter_contract
+  - L4_shadow_mode
+
+required_for_algorithm_capability_claim:
+  - route_health_report
+  - ab_report
+  - calibration_report optional
+
+claim_rules:
+  route_health_report:
+    required_for:
+      - curve_lateral_semantics_conclusion
+      - route_health_capability_claim
+  ab_report:
+    required_for:
+      - carla_direct_improvement_claim
+      - transport_candidate_comparison
+  calibration_report:
+    optional_for_general_claims: true
+    required_for:
+      - steer_scale_change
+      - physical_mapping_promotion

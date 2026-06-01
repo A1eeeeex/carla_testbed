@@ -1,0 +1,22 @@
+{
+  "gates": {
+    "097": {
+      "status": "pass",
+      "reason": "synthetic no-regression pass",
+      "summary_path": "runs/synthetic/097/summary.json",
+      "route_health_path": "runs/synthetic/097/analysis/route_health/route_health.json"
+    },
+    "217": {
+      "status": "pass",
+      "reason": "synthetic no-regression pass",
+      "summary_path": "runs/synthetic/217/summary.json",
+      "route_health_path": "runs/synthetic/217/analysis/route_health/route_health.json"
+    },
+    "031": {
+      "status": "pass",
+      "reason": "synthetic no-regression pass",
+      "summary_path": "runs/synthetic/031/summary.json",
+      "route_health_path": "runs/synthetic/031/analysis/route_health/route_health.json"
+    }
+  }
+}

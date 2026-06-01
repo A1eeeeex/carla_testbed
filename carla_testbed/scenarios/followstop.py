@@ -8,6 +8,12 @@ import carla
 
 from carla_testbed.sim import spawn_with_retry
 from .base import ActorRefs, Scenario
+from .followstop_geometry import (
+    relative_front_alignment,
+    select_aligned_front_spawn_index,
+    select_waypoint_ahead_transform,
+    wrap_deg,
+)
 
 
 @dataclass
@@ -25,8 +31,10 @@ class FollowStopConfig:
         "vehicle.tesla.model3",
     )
     auto_align_front_spawn: bool = True
+    require_aligned_front_spawn: bool = False
     front_min_ahead_m: float = 20.0
     front_max_ahead_m: float = 80.0
+    front_target_ahead_m: float | None = None
     front_max_lateral_m: float = 3.0
     front_max_heading_diff_deg: float = 25.0
     force_green_traffic_lights: bool = False
@@ -39,6 +47,10 @@ class FollowStopConfig:
     front_offset_y_m: float = 0.0
     front_offset_z_m: float = 0.0
     front_yaw_offset_deg: float = 0.0
+    front_placement_mode: str = "spawn_index"
+    front_waypoint_ahead_m: float | None = None
+    ego_initial_brake: float = 0.0
+    ego_initial_hand_brake: bool = False
 
 
 class FollowStopScenario(Scenario):
@@ -47,6 +59,7 @@ class FollowStopScenario(Scenario):
     def __init__(self, cfg: FollowStopConfig):
         self.cfg = cfg
         self.actors: Optional[ActorRefs] = None
+        self._initial_metadata: dict | None = None
 
     def _clear_dynamic_actors(self, world: carla.World) -> None:
         removed = 0
@@ -68,39 +81,47 @@ class FollowStopScenario(Scenario):
 
     @staticmethod
     def _wrap_deg(delta_deg: float) -> float:
-        v = (delta_deg + 180.0) % 360.0 - 180.0
-        return v
+        return wrap_deg(delta_deg)
 
-    def _pick_front_spawn_idx(self, spawns: list[carla.Transform]) -> int:
-        if not spawns:
-            return self.cfg.front_idx
-        ego_idx = self.cfg.ego_idx
-        ego_tf = spawns[ego_idx]
-        yaw = math.radians(float(ego_tf.rotation.yaw))
-        hx = math.cos(yaw)
-        hy = math.sin(yaw)
-        best_idx = self.cfg.front_idx
-        best_score = float("inf")
-        for idx, tf in enumerate(spawns):
-            if idx == ego_idx:
-                continue
-            dx = float(tf.location.x - ego_tf.location.x)
-            dy = float(tf.location.y - ego_tf.location.y)
-            lon = (dx * hx) + (dy * hy)
-            lat = (-dx * hy) + (dy * hx)
-            if lon < self.cfg.front_min_ahead_m or lon > self.cfg.front_max_ahead_m:
-                continue
-            if abs(lat) > self.cfg.front_max_lateral_m:
-                continue
-            yaw_diff = abs(self._wrap_deg(float(tf.rotation.yaw - ego_tf.rotation.yaw)))
-            if yaw_diff > self.cfg.front_max_heading_diff_deg:
-                continue
-            # Prefer the nearest valid front spawn to keep follow-stop behavior stable.
-            score = lon + (abs(lat) * 5.0) + yaw_diff
-            if score < best_score:
-                best_score = score
-                best_idx = idx
-        return best_idx
+    def _select_front_spawn(self, spawns: list[carla.Transform]):
+        return select_aligned_front_spawn_index(
+            spawns,
+            ego_idx=self.cfg.ego_idx,
+            requested_front_idx=self.cfg.front_idx,
+            min_ahead_m=float(self.cfg.front_min_ahead_m),
+            max_ahead_m=float(self.cfg.front_max_ahead_m),
+            max_lateral_m=float(self.cfg.front_max_lateral_m),
+            max_heading_diff_deg=float(self.cfg.front_max_heading_diff_deg),
+            target_ahead_m=self.cfg.front_target_ahead_m,
+        )
+
+    def _validate_or_select_front_spawn(self, spawns: list[carla.Transform]) -> None:
+        selection = self._select_front_spawn(spawns)
+        if self.cfg.auto_align_front_spawn and selection.found:
+            if selection.index != self.cfg.front_idx:
+                print(
+                    f"[followstop] auto-aligned front spawn: requested={self.cfg.front_idx} -> aligned={selection.index}"
+                )
+            self.cfg.front_idx = selection.index
+            return
+
+        alignment = selection.requested_alignment
+        if self.cfg.require_aligned_front_spawn and (alignment is None or not alignment.aligned):
+            reasons = list(alignment.reasons) if alignment else ["front_alignment_unavailable"]
+            raise RuntimeError(
+                "Follow-stop front spawn is not aligned with ego: "
+                f"ego_idx={self.cfg.ego_idx} front_idx={self.cfg.front_idx} "
+                f"reasons={reasons} "
+                f"relative={{'longitudinal_m': {getattr(alignment, 'longitudinal_m', None)}, "
+                f"'lateral_m': {getattr(alignment, 'lateral_m', None)}, "
+                f"'heading_diff_deg': {getattr(alignment, 'heading_diff_deg', None)}}}"
+            )
+
+        if self.cfg.auto_align_front_spawn and not selection.found:
+            print(
+                "[followstop][warn] no aligned front spawn found; "
+                f"keeping requested={self.cfg.front_idx} candidates={selection.candidate_count}"
+            )
 
     def _apply_traffic_light_policy(self, world: carla.World) -> None:
         if not self.cfg.force_green_traffic_lights:
@@ -149,6 +170,34 @@ class FollowStopScenario(Scenario):
                 roll=float(base_tf.rotation.roll),
             ),
         )
+
+    @classmethod
+    def _offset_spawn_points(
+        cls,
+        spawns: list[carla.Transform],
+        *,
+        offset_x_m: float,
+        offset_y_m: float,
+        offset_z_m: float,
+        yaw_offset_deg: float,
+    ) -> list[carla.Transform]:
+        if (
+            abs(float(offset_x_m)) <= 1e-6
+            and abs(float(offset_y_m)) <= 1e-6
+            and abs(float(offset_z_m)) <= 1e-6
+            and abs(float(yaw_offset_deg)) <= 1e-6
+        ):
+            return spawns
+        return [
+            cls._offset_transform(
+                tf,
+                offset_x_m=offset_x_m,
+                offset_y_m=offset_y_m,
+                offset_z_m=offset_z_m,
+                yaw_offset_deg=yaw_offset_deg,
+            )
+            for tf in spawns
+        ]
 
     def _maybe_apply_actor_offset(
         self,
@@ -215,13 +264,11 @@ class FollowStopScenario(Scenario):
 
         self.cfg.front_idx = _safe_idx(self.cfg.front_idx)
         self.cfg.ego_idx = _safe_idx(self.cfg.ego_idx)
-        if self.cfg.auto_align_front_spawn:
-            aligned_front_idx = self._pick_front_spawn_idx(spawns)
-            if aligned_front_idx != self.cfg.front_idx:
-                print(
-                    f"[followstop] auto-aligned front spawn: requested={self.cfg.front_idx} -> aligned={aligned_front_idx}"
-                )
-            self.cfg.front_idx = aligned_front_idx
+        front_placement_mode = str(self.cfg.front_placement_mode or "spawn_index").strip()
+        if front_placement_mode == "spawn_index":
+            self._validate_or_select_front_spawn(spawns)
+        elif front_placement_mode != "waypoint_ahead":
+            raise RuntimeError(f"Unsupported follow-stop front_placement_mode={front_placement_mode!r}")
 
         try:
             veh_bp.set_attribute("role_name", self.cfg.front_id)
@@ -233,21 +280,48 @@ class FollowStopScenario(Scenario):
             pass
 
         requested_front_idx = self.cfg.front_idx
-        front, front_idx = spawn_with_retry(world, veh_bp, spawns, preferred_idx=requested_front_idx)
+        if front_placement_mode == "waypoint_ahead":
+            front_spawns = [
+                self._front_waypoint_ahead_transform(
+                    carla_map,
+                    spawns[self.cfg.ego_idx],
+                    float(self.cfg.front_waypoint_ahead_m or self.cfg.front_target_ahead_m or 300.0),
+                )
+            ]
+            requested_front_idx = 0
+        else:
+            front_spawns = self._offset_spawn_points(
+                spawns,
+                offset_x_m=float(self.cfg.front_offset_x_m),
+                offset_y_m=float(self.cfg.front_offset_y_m),
+                offset_z_m=float(self.cfg.front_offset_z_m),
+                yaw_offset_deg=float(self.cfg.front_yaw_offset_deg),
+            )
+        front, front_idx = spawn_with_retry(world, veh_bp, front_spawns, preferred_idx=requested_front_idx)
         if front is None:
             raise RuntimeError("Failed to spawn front vehicle")
         if front_idx != requested_front_idx:
             print(
                 f"[followstop][warn] front spawn fallback: requested={requested_front_idx} used={front_idx}"
             )
-        self._maybe_apply_actor_offset(
-            front,
-            label="front",
-            offset_x_m=self.cfg.front_offset_x_m,
-            offset_y_m=self.cfg.front_offset_y_m,
-            offset_z_m=self.cfg.front_offset_z_m,
-            yaw_offset_deg=self.cfg.front_yaw_offset_deg,
-        )
+        if front_placement_mode == "waypoint_ahead":
+            print(
+                "[followstop] placed front by waypoint_ahead: ego_idx=%s ahead_m=%.3f"
+                % (
+                    self.cfg.ego_idx,
+                    float(self.cfg.front_waypoint_ahead_m or self.cfg.front_target_ahead_m or 300.0),
+                )
+            )
+        elif front_spawns is not spawns:
+            print(
+                "[followstop] applied front pre-spawn offset: dx=%.3f dy=%.3f dz=%.3f dyaw=%.3f"
+                % (
+                    self.cfg.front_offset_x_m,
+                    self.cfg.front_offset_y_m,
+                    self.cfg.front_offset_z_m,
+                    self.cfg.front_yaw_offset_deg,
+                )
+            )
         front.set_simulate_physics(True)
         front.apply_control(carla.VehicleControl(throttle=0.0, brake=self.cfg.stop_brake, hand_brake=True))
 
@@ -261,7 +335,14 @@ class FollowStopScenario(Scenario):
             pass
 
         requested_ego_idx = self.cfg.ego_idx
-        ego, ego_idx = spawn_with_retry(world, veh_bp, spawns, preferred_idx=requested_ego_idx)
+        ego_spawns = self._offset_spawn_points(
+            spawns,
+            offset_x_m=float(self.cfg.ego_offset_x_m),
+            offset_y_m=float(self.cfg.ego_offset_y_m),
+            offset_z_m=float(self.cfg.ego_offset_z_m),
+            yaw_offset_deg=float(self.cfg.ego_yaw_offset_deg),
+        )
+        ego, ego_idx = spawn_with_retry(world, veh_bp, ego_spawns, preferred_idx=requested_ego_idx)
         if ego is None:
             front.destroy()
             raise RuntimeError("Failed to spawn ego vehicle")
@@ -269,19 +350,34 @@ class FollowStopScenario(Scenario):
             print(
                 f"[followstop][warn] ego spawn fallback: requested={requested_ego_idx} used={ego_idx}"
             )
-        self._maybe_apply_actor_offset(
-            ego,
-            label="ego",
-            offset_x_m=self.cfg.ego_offset_x_m,
-            offset_y_m=self.cfg.ego_offset_y_m,
-            offset_z_m=self.cfg.ego_offset_z_m,
-            yaw_offset_deg=self.cfg.ego_yaw_offset_deg,
-        )
+        if ego_spawns is not spawns:
+            print(
+                "[followstop] applied ego pre-spawn offset: dx=%.3f dy=%.3f dz=%.3f dyaw=%.3f"
+                % (
+                    self.cfg.ego_offset_x_m,
+                    self.cfg.ego_offset_y_m,
+                    self.cfg.ego_offset_z_m,
+                    self.cfg.ego_yaw_offset_deg,
+                )
+            )
         ego.set_simulate_physics(True)
+        if float(self.cfg.ego_initial_brake) > 0.0 or bool(self.cfg.ego_initial_hand_brake):
+            ego.apply_control(
+                carla.VehicleControl(
+                    throttle=0.0,
+                    brake=max(0.0, min(1.0, float(self.cfg.ego_initial_brake))),
+                    steer=0.0,
+                    hand_brake=bool(self.cfg.ego_initial_hand_brake),
+                )
+            )
+            print(
+                "[followstop] applied ego initial hold: brake=%.3f hand_brake=%s"
+                % (float(self.cfg.ego_initial_brake), bool(self.cfg.ego_initial_hand_brake))
+            )
         # Re-apply once after actor spawn to reduce race with map controller updates.
         self._apply_traffic_light_policy(world)
 
-        self.cfg.front_idx = front_idx
+        self.cfg.front_idx = front_idx if front_placement_mode == "spawn_index" else self.cfg.front_idx
         self.cfg.ego_idx = ego_idx
         self.actors = ActorRefs(ego=ego, front=front)
         return self.actors
@@ -289,6 +385,139 @@ class FollowStopScenario(Scenario):
     def reset(self):
         # placeholder for future use (traffic reset, etc.)
         pass
+
+    def metadata(self):
+        if self._initial_metadata is not None:
+            return dict(self._initial_metadata)
+
+        self._initial_metadata = self._build_metadata()
+        return dict(self._initial_metadata)
+
+    def _build_metadata(self):
+        payload = {
+            "scenario_driver": "carla_followstop",
+            "front_idx": int(self.cfg.front_idx),
+            "ego_idx": int(self.cfg.ego_idx),
+            "auto_align_front_spawn": bool(self.cfg.auto_align_front_spawn),
+            "require_aligned_front_spawn": bool(self.cfg.require_aligned_front_spawn),
+            "front_alignment_thresholds": {
+                "min_ahead_m": float(self.cfg.front_min_ahead_m),
+                "max_ahead_m": float(self.cfg.front_max_ahead_m),
+                "target_ahead_m": self.cfg.front_target_ahead_m,
+                "max_lateral_m": float(self.cfg.front_max_lateral_m),
+                "max_heading_diff_deg": float(self.cfg.front_max_heading_diff_deg),
+            },
+            "front_placement_mode": str(self.cfg.front_placement_mode or "spawn_index"),
+            "front_waypoint_ahead_m": self.cfg.front_waypoint_ahead_m,
+            "ego_initial_hold": {
+                "brake": float(self.cfg.ego_initial_brake),
+                "hand_brake": bool(self.cfg.ego_initial_hand_brake),
+            },
+        }
+        if not self.actors:
+            return payload
+
+        def _tf(actor: carla.Actor):
+            try:
+                tr = actor.get_transform()
+                return {
+                    "x": float(tr.location.x),
+                    "y": float(tr.location.y),
+                    "z": float(tr.location.z),
+                    "yaw_deg": float(tr.rotation.yaw),
+                }
+            except Exception:
+                return None
+
+        ego_tf = _tf(self.actors.ego)
+        front_tf = _tf(self.actors.front)
+        if ego_tf is not None:
+            payload["spawn"] = ego_tf
+        if front_tf is not None:
+            payload["front_spawn"] = front_tf
+        if ego_tf is not None and front_tf is not None:
+            class _Location:
+                def __init__(self, data):
+                    self.x = data.get("x")
+                    self.y = data.get("y")
+
+            class _Rotation:
+                def __init__(self, data):
+                    self.yaw = data.get("yaw_deg")
+
+            class _Transform:
+                def __init__(self, data):
+                    self.location = _Location(data)
+                    self.rotation = _Rotation(data)
+
+            alignment = relative_front_alignment(
+                _Transform(ego_tf),
+                _Transform(front_tf),
+                min_ahead_m=float(self.cfg.front_min_ahead_m),
+                max_ahead_m=float(self.cfg.front_max_ahead_m),
+                max_lateral_m=float(self.cfg.front_max_lateral_m),
+                max_heading_diff_deg=float(self.cfg.front_max_heading_diff_deg),
+            )
+            payload["front_alignment"] = {
+                "aligned": alignment.aligned,
+                "reasons": list(alignment.reasons),
+                "longitudinal_m": alignment.longitudinal_m,
+                "lateral_m": alignment.lateral_m,
+                "euclidean_m": alignment.euclidean_m,
+                "heading_diff_deg": alignment.heading_diff_deg,
+            }
+        return payload
+
+    def _front_waypoint_ahead_transform(
+        self,
+        carla_map: carla.Map,
+        ego_tf: carla.Transform,
+        ahead_m: float,
+    ) -> carla.Transform:
+        try:
+            start_wp = carla_map.get_waypoint(
+                ego_tf.location,
+                project_to_road=True,
+                lane_type=carla.LaneType.Driving,
+            )
+        except TypeError:
+            start_wp = carla_map.get_waypoint(ego_tf.location)
+        selection = select_waypoint_ahead_transform(start_wp, float(ahead_m))
+        if not selection.found or selection.selected_transform is None:
+            raise RuntimeError(
+                "Failed to place front vehicle by waypoint_ahead: "
+                f"ahead_m={ahead_m} reason={selection.reason}"
+            )
+        selected_tf = selection.selected_transform
+        start_tf = getattr(start_wp, "transform", None)
+        z_lift = 0.0
+        try:
+            # Waypoint locations can sit on the road surface, while CARLA spawn
+            # points are lifted enough for vehicle collision boxes. Reuse the
+            # ego spawn lift so RoadRunner maps do not reject the front actor.
+            z_lift = float(ego_tf.location.z) - float(start_tf.location.z)
+        except Exception:
+            z_lift = 0.0
+        if abs(z_lift) > 1e-6:
+            selected_tf = carla.Transform(
+                carla.Location(
+                    x=float(selected_tf.location.x),
+                    y=float(selected_tf.location.y),
+                    z=float(selected_tf.location.z) + z_lift,
+                ),
+                carla.Rotation(
+                    pitch=float(selected_tf.rotation.pitch),
+                    yaw=float(selected_tf.rotation.yaw),
+                    roll=float(selected_tf.rotation.roll),
+                ),
+            )
+        return self._offset_transform(
+            selected_tf,
+            offset_x_m=float(self.cfg.front_offset_x_m),
+            offset_y_m=float(self.cfg.front_offset_y_m),
+            offset_z_m=float(self.cfg.front_offset_z_m),
+            yaw_offset_deg=float(self.cfg.front_yaw_offset_deg),
+        )
 
     def destroy(self):
         if self.actors:

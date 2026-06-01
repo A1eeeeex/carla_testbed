@@ -1,0 +1,34 @@
+{
+  "anchor_event": null,
+  "event_order": [],
+  "interpretation_boundary": "Fixture failure timeline evidence for offline tests only; it does not prove online Apollo behavior.",
+  "key_events": [],
+  "missing_fields": [],
+  "missing_inputs": [],
+  "ordering_findings": [],
+  "primary_failure": {
+    "failure_reason": null,
+    "source": null
+  },
+  "route_id": "traffic_light_red_stop_tbd",
+  "route_start_gate": {
+    "anchor_before_route_start": false,
+    "anchor_near_route_start": false,
+    "route_s_at_anchor": null
+  },
+  "run_id": "traffic_light_red_stop",
+  "scenario_class": "traffic_light_red_stop",
+  "schema_version": "town01_failure_timeline.v1",
+  "source": {
+    "control_health_path": "analysis/control_health/control_health_report.json",
+    "events_path": "events.jsonl",
+    "manifest_path": "manifest.json",
+    "route_health_path": "analysis/route_health/route_health.json",
+    "run_dir": ".",
+    "summary_path": "summary.json",
+    "timeseries_path": "timeseries.csv"
+  },
+  "status": "pass",
+  "warnings": [],
+  "window_summary": {}
+}

@@ -4,6 +4,8 @@ import csv
 from pathlib import Path
 from typing import Dict, Any
 
+from .route_curve_fields import ensure_route_curve_p0_fields
+
 
 class TimeseriesRecorder:
     """Minimal CSV recorder mirroring legacy fields subset."""
@@ -20,6 +22,7 @@ class TimeseriesRecorder:
             pass
 
     def write_row(self, row: Dict[str, Any]):
+        row = ensure_route_curve_p0_fields(row)
         if self.writer is None:
             headers = list(row.keys())
             self.writer = csv.DictWriter(self.f, fieldnames=headers)

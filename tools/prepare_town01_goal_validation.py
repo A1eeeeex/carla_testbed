@@ -1,0 +1,988 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import shlex
+import sys
+from datetime import datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PYTHON = Path("/home/ubuntu/miniconda3/envs/carla16/bin/python3")
+
+
+def _default_python() -> str:
+    return str(DEFAULT_PYTHON if DEFAULT_PYTHON.exists() else Path(sys.executable))
+
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _direct_ab_command(
+    *,
+    python_exec: str,
+    route_config: str = "configs/routes/town01/canonical_five.yaml",
+    routes: str,
+    durations: str,
+    run_root_var: str = "$RUN_ROOT",
+    require_hard_gate_pass: bool = False,
+    require_route_curve_p1_complete: bool = False,
+    include_diagnostic_curves: bool = False,
+    include_informational_routes: bool = False,
+) -> str:
+    parts = [
+        python_exec,
+        "tools/run_town01_direct_ab.py",
+        "--route-config",
+        route_config,
+        "--durations",
+        durations,
+        "--baseline",
+        "ros2_gt",
+        "--candidate",
+        "carla_direct",
+        "--routes",
+        routes,
+        "--continue-on-failure",
+        "--carla-ignore-memory-preflight",
+        "--analyze-after-run",
+        "--require-steering-normalization-mode",
+        "legacy_double_percent",
+        "--require-direct-control-apply-mode",
+        "frame_flush_only",
+        "--require-direct-stale-world-frame-policy",
+        "always_republish",
+        "--require-direct-transport-contract-aligned",
+        "--require-direct-bridge-cadence-ratio-min",
+        "0.8",
+        "--out",
+        run_root_var,
+    ]
+    if require_hard_gate_pass:
+        parts.insert(parts.index("--require-steering-normalization-mode"), "--require-hard-gate-pass")
+    if require_route_curve_p1_complete:
+        parts.insert(parts.index("--require-steering-normalization-mode"), "--require-route-curve-p1-complete")
+    if include_diagnostic_curves:
+        parts.insert(parts.index("--continue-on-failure"), "--include-diagnostic-curves")
+    if include_informational_routes:
+        parts.insert(parts.index("--continue-on-failure"), "--include-informational-routes")
+    return " ".join(shlex.quote(item) if item != run_root_var else item for item in parts)
+
+
+def _status_refresh_lines(
+    *,
+    python_exec: str,
+    packet_manifest: Path | None,
+    exit_code_path: Path | None = None,
+) -> list[str]:
+    if packet_manifest is None:
+        return []
+    lines = [
+        f"PACKET_PYTHON={shlex.quote(python_exec)}",
+        f"PACKET_MANIFEST={shlex.quote(str(packet_manifest))}",
+        "refresh_packet_status() {",
+        "  local status=$?",
+    ]
+    if exit_code_path is not None:
+        lines.extend(
+            [
+                f"  mkdir -p {shlex.quote(str(exit_code_path.parent))}",
+                f"  printf '%s\\n' \"$status\" > {shlex.quote(str(exit_code_path))}",
+            ]
+        )
+    lines.extend(
+        [
+            '  "$PACKET_PYTHON" tools/inspect_town01_goal_validation_packet.py "$PACKET_MANIFEST" >/dev/null || true',
+            '  return "$status"',
+            "}",
+            "trap refresh_packet_status EXIT",
+        ]
+    )
+    return lines
+
+
+def _packet_preflight_gate_lines(packet_manifest: Path | None) -> list[str]:
+    if packet_manifest is None:
+        return []
+    return [
+        "packet_preflight_gate() {",
+        '  "$PACKET_PYTHON" tools/inspect_town01_goal_validation_packet.py "$PACKET_MANIFEST" >/dev/null',
+        '  "$PACKET_PYTHON" - "$PACKET_MANIFEST" <<\'PY\'',
+        "import json",
+        "import sys",
+        "from pathlib import Path",
+        "manifest = Path(sys.argv[1]).expanduser()",
+        "status_path = manifest.parent / 'town01_goal_validation_packet_status.json'",
+        "payload = json.loads(status_path.read_text(encoding='utf-8'))",
+        "disk = payload.get('disk') or {}",
+        "preflight = payload.get('preflight') or {}",
+        "errors = []",
+        "if disk.get('status') == 'critical':",
+        "    errors.append(f\"disk critical: free_gib={disk.get('free_gib')} used_percent={disk.get('used_percent')}\")",
+        "if preflight.get('status') != 'ok':",
+        "    errors.append(f\"preflight {preflight.get('status')}: missing_count={preflight.get('missing_count')}\")",
+        "if errors:",
+        "    print('packet preflight gate failed:', '; '.join(errors), file=sys.stderr)",
+        "    sys.exit(2)",
+        "PY",
+        "}",
+        "packet_preflight_gate",
+    ]
+
+
+def _stage_dependency_gate_lines(
+    *,
+    packet_manifest: Path | None,
+    dependencies: tuple[tuple[object, ...], ...] = (),
+) -> list[str]:
+    if packet_manifest is None or not dependencies:
+        return []
+    dependency_payload = json.dumps(
+        [
+            _dependency_manifest_item(dependency)
+            for dependency in dependencies
+        ]
+    )
+    return [
+        f"PACKET_STAGE_DEPENDENCIES={shlex.quote(dependency_payload)}",
+        "packet_stage_dependency_gate() {",
+        '  "$PACKET_PYTHON" tools/inspect_town01_goal_validation_packet.py "$PACKET_MANIFEST" >/dev/null',
+        '  "$PACKET_PYTHON" - "$PACKET_MANIFEST" "$PACKET_STAGE_DEPENDENCIES" <<\'PY\'',
+        "import json",
+        "import sys",
+        "from pathlib import Path",
+        "manifest = Path(sys.argv[1]).expanduser()",
+        "dependencies = json.loads(sys.argv[2])",
+        "status_path = manifest.parent / 'town01_goal_validation_packet_status.json'",
+        "payload = json.loads(status_path.read_text(encoding='utf-8'))",
+        "stages = {stage.get('name'): stage for stage in payload.get('stages') or []}",
+        "errors = []",
+        "for dep in dependencies:",
+        "    stage = stages.get(dep.get('stage'))",
+        "    if not stage:",
+        "        errors.append(f\"missing dependency stage: {dep.get('stage')}\")",
+        "        continue",
+        "    allowed_statuses = dep.get('allowed_statuses') or ['completed']",
+        "    if stage.get('status') not in allowed_statuses:",
+        "        errors.append(f\"dependency {stage.get('name')} status={stage.get('status')}, expected one of {allowed_statuses}\")",
+        "        continue",
+        "    summary = stage.get('summary') or {}",
+        "    if dep.get('require_summary_present') and not summary:",
+        "        errors.append(f\"dependency {stage.get('name')} summary missing\")",
+        "        continue",
+        "    if dep.get('require_summary_pass') and summary.get('status') != 'passed':",
+        "        errors.append(f\"dependency {stage.get('name')} summary={summary.get('status')}, expected passed\")",
+        "if errors:",
+        "    print('packet stage dependency gate failed:', '; '.join(errors), file=sys.stderr)",
+        "    sys.exit(2)",
+        "PY",
+        "}",
+        "packet_stage_dependency_gate",
+    ]
+
+
+def _dependency_manifest_item(dependency: tuple[object, ...]) -> dict[str, object]:
+    stage_name = str(dependency[0])
+    require_summary_pass = bool(dependency[1]) if len(dependency) > 1 else False
+    allowed_statuses = tuple(str(item) for item in dependency[2]) if len(dependency) > 2 else ("completed",)
+    require_summary_present = bool(dependency[3]) if len(dependency) > 3 else require_summary_pass
+    return {
+        "stage": stage_name,
+        "require_summary_pass": require_summary_pass,
+        "allowed_statuses": list(allowed_statuses),
+        "require_summary_present": require_summary_present,
+    }
+
+
+def _dependency_manifest_items(dependencies: tuple[tuple[object, ...], ...]) -> list[dict[str, object]]:
+    return [_dependency_manifest_item(dependency) for dependency in dependencies]
+
+
+def _script(
+    run_root: Path,
+    marker: Path,
+    command: str,
+    *,
+    python_exec: str,
+    packet_manifest: Path | None = None,
+    exit_code_path: Path | None = None,
+    dependencies: tuple[tuple[object, ...], ...] = (),
+) -> str:
+    return "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            f"cd {shlex.quote(str(REPO_ROOT))}",
+            *_status_refresh_lines(
+                python_exec=python_exec,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path,
+            ),
+            *_packet_preflight_gate_lines(packet_manifest),
+            *_stage_dependency_gate_lines(packet_manifest=packet_manifest, dependencies=dependencies),
+            f"RUN_ROOT={shlex.quote(str(run_root))}",
+            f'echo "$RUN_ROOT" | tee {shlex.quote(str(marker))}',
+            command,
+            "",
+        ]
+    )
+
+
+def _audit_script(
+    *,
+    python_exec: str,
+    hard_gate_root: Path,
+    curve_root: Path,
+    random_root: Path,
+    out_dir: Path,
+    demo_marker: Path | None = None,
+    demo_recording: Path | None = None,
+    calibration_report: Path | None = None,
+    natural_driving_report: Path | None = None,
+    fail_on_status: str | None = None,
+    packet_manifest: Path | None = None,
+    exit_code_path: Path | None = None,
+    dependencies: tuple[tuple[object, ...], ...] = (),
+) -> str:
+    setup_lines = [
+        "DEMO_ARGS=()",
+        "CALIBRATION_ARGS=()",
+        "NATURAL_ARGS=()",
+    ]
+    if demo_recording is not None:
+        setup_lines.extend(
+            [
+                f"DEMO_RECORDING={shlex.quote(str(demo_recording))}",
+                'if [[ -f "$DEMO_RECORDING" ]]; then',
+                '  DEMO_ARGS=(--demo-recording "$DEMO_RECORDING")',
+                "fi",
+            ]
+        )
+    elif demo_marker is not None:
+        setup_lines.extend(
+            [
+                f"DEMO_MARKER={shlex.quote(str(demo_marker))}",
+                'if [[ -f "$DEMO_MARKER" ]]; then',
+                '  DEMO_RECORDING="$(cat "$DEMO_MARKER")"',
+                '  if [[ -f "$DEMO_RECORDING" ]]; then',
+                '    DEMO_ARGS=(--demo-recording "$DEMO_RECORDING")',
+                "  fi",
+                "fi",
+            ]
+        )
+    if calibration_report is not None:
+        setup_lines.extend(
+            [
+                f"CALIBRATION_REPORT={shlex.quote(str(calibration_report))}",
+                'if [[ -f "$CALIBRATION_REPORT" ]]; then',
+                '  CALIBRATION_ARGS=(--calibration-report "$CALIBRATION_REPORT")',
+                "fi",
+            ]
+        )
+    if natural_driving_report is not None:
+        setup_lines.extend(
+            [
+                f"NATURAL_DRIVING_REPORT={shlex.quote(str(natural_driving_report))}",
+                'if [[ -f "$NATURAL_DRIVING_REPORT" ]]; then',
+                '  NATURAL_ARGS=(--natural-driving-report "$NATURAL_DRIVING_REPORT")',
+                "fi",
+            ]
+        )
+    fail_args = ""
+    if fail_on_status:
+        fail_args = f"--fail-on-status {shlex.quote(fail_on_status)} "
+    return "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            f"cd {shlex.quote(str(REPO_ROOT))}",
+            *_status_refresh_lines(
+                python_exec=python_exec,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path,
+            ),
+            *_packet_preflight_gate_lines(packet_manifest),
+            *_stage_dependency_gate_lines(packet_manifest=packet_manifest, dependencies=dependencies),
+            *setup_lines,
+            (
+                f"{shlex.quote(python_exec)} tools/audit_town01_goal.py "
+                f"--ab-report {shlex.quote(str(hard_gate_root / 'analysis' / 'ab_report.json'))} "
+                f"--ab-report {shlex.quote(str(curve_root / 'analysis' / 'ab_report.json'))} "
+                f"--ab-report {shlex.quote(str(random_root / 'analysis' / 'ab_report.json'))} "
+                f"--out {shlex.quote(str(out_dir))} "
+                f"{fail_args}"
+                '"${DEMO_ARGS[@]}"'
+                ' "${CALIBRATION_ARGS[@]}"'
+                ' "${NATURAL_ARGS[@]}"'
+            ),
+            "",
+        ]
+    )
+
+
+def _calibration_gates_script(
+    *,
+    python_exec: str,
+    hard_gate_root: Path,
+    out_path: Path,
+    packet_manifest: Path | None = None,
+    exit_code_path: Path | None = None,
+    dependencies: tuple[tuple[object, ...], ...] = (),
+) -> str:
+    return "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            f"cd {shlex.quote(str(REPO_ROOT))}",
+            *_status_refresh_lines(
+                python_exec=python_exec,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path,
+            ),
+            *_packet_preflight_gate_lines(packet_manifest),
+            *_stage_dependency_gate_lines(packet_manifest=packet_manifest, dependencies=dependencies),
+            " ".join(
+                [
+                    shlex.quote(python_exec),
+                    "tools/build_calibration_gate_results.py",
+                    "--ab-report",
+                    shlex.quote(str(hard_gate_root / "analysis" / "ab_report.json")),
+                    "--out",
+                    shlex.quote(str(out_path)),
+                ]
+            ),
+            "",
+        ]
+    )
+
+
+def _postprocess_script(
+    *,
+    python_exec: str,
+    hard_gate_root: Path,
+    curve_root: Path,
+    random_root: Path,
+    out_dir: Path,
+    demo_marker: Path | None = None,
+    demo_recording: Path | None = None,
+    packet_manifest: Path | None = None,
+    exit_code_path: Path | None = None,
+    dependencies: tuple[tuple[object, ...], ...] = (),
+) -> str:
+    setup_lines = [
+        "DEMO_ARGS=()",
+    ]
+    if demo_recording is not None:
+        setup_lines.extend(
+            [
+                f"DEMO_RECORDING={shlex.quote(str(demo_recording))}",
+                'if [[ -f "$DEMO_RECORDING" ]]; then',
+                '  DEMO_ARGS=(--demo-recording "$DEMO_RECORDING")',
+                "fi",
+            ]
+        )
+    elif demo_marker is not None:
+        setup_lines.extend(
+            [
+                f"DEMO_MARKER={shlex.quote(str(demo_marker))}",
+                'if [[ -f "$DEMO_MARKER" ]]; then',
+                '  DEMO_RECORDING="$(cat "$DEMO_MARKER")"',
+                '  if [[ -f "$DEMO_RECORDING" ]]; then',
+                '    DEMO_ARGS=(--demo-recording "$DEMO_RECORDING")',
+                "  fi",
+                "fi",
+            ]
+        )
+    parts = [
+        shlex.quote(python_exec),
+        "tools/postprocess_town01_goal.py",
+        "--hard-gate-batch",
+        shlex.quote(str(hard_gate_root)),
+        "--curve-batch",
+        shlex.quote(str(curve_root)),
+        "--random-batch",
+        shlex.quote(str(random_root)),
+        "--out",
+        shlex.quote(str(out_dir)),
+        '"${DEMO_ARGS[@]}"',
+    ]
+    return "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            f"cd {shlex.quote(str(REPO_ROOT))}",
+            *_status_refresh_lines(
+                python_exec=python_exec,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path,
+            ),
+            *_packet_preflight_gate_lines(packet_manifest),
+            *_stage_dependency_gate_lines(packet_manifest=packet_manifest, dependencies=dependencies),
+            *setup_lines,
+            " ".join(parts),
+            "",
+        ]
+    )
+
+
+def _demo_recording_script(
+    *,
+    python_exec: str,
+    demo_parent: Path,
+    marker: Path,
+    browser_cmd: str,
+    capture_region: str,
+    mode: str,
+    packet_manifest: Path | None = None,
+    exit_code_path: Path | None = None,
+    dependencies: tuple[tuple[object, ...], ...] = (),
+) -> str:
+    command = " ".join(
+        [
+            shlex.quote(python_exec),
+            "tools/run_town01_demo_showcase.py",
+            "--mode",
+            shlex.quote(mode),
+            "--record-dreamview",
+            "--dreamview-auto-open",
+            "--dreamview-open-wait-page",
+            "--dreamview-browser-cmd",
+            shlex.quote(browser_cmd),
+            "--dreamview-capture-mode",
+            "tick_snapshot",
+            "--dreamview-capture-region",
+            shlex.quote(capture_region),
+            "--dreamview-use-fixed-region",
+            "--require-recording-ready",
+            "--batch-root-parent",
+            shlex.quote(str(demo_parent)),
+        ]
+    )
+    return "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            f"cd {shlex.quote(str(REPO_ROOT))}",
+            *_status_refresh_lines(
+                python_exec=python_exec,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path,
+            ),
+            *_packet_preflight_gate_lines(packet_manifest),
+            *_stage_dependency_gate_lines(packet_manifest=packet_manifest, dependencies=dependencies),
+            f"DEMO_PARENT={shlex.quote(str(demo_parent))}",
+            f"DEMO_MARKER={shlex.quote(str(marker))}",
+            'mkdir -p "$DEMO_PARENT"',
+            command,
+            "LATEST_DEMO_RUN=$(find \"$DEMO_PARENT\" -maxdepth 1 -type d -name 'town01_capability_online_chain_*' -printf '%T@ %p\\n' | sort -n | tail -1 | cut -d' ' -f2-)",
+            'if [[ -z "$LATEST_DEMO_RUN" ]]; then',
+            "  echo 'no Town01 demo batch found after recording' >&2",
+            "  exit 2",
+            "fi",
+            'DEMO_INSPECTION="$LATEST_DEMO_RUN/artifacts/town01_demo_recording_inspection.json"',
+            'if [[ ! -f "$DEMO_INSPECTION" ]]; then',
+            '  echo "demo inspection missing: $DEMO_INSPECTION" >&2',
+            "  exit 2",
+            "fi",
+            'echo "$DEMO_INSPECTION" | tee "$DEMO_MARKER"',
+            "",
+        ]
+    )
+
+
+def _natural_driving_suite_script(
+    *,
+    python_exec: str,
+    suite_path: Path,
+    suite_root: Path,
+    route_health_config: str,
+    startup_profile: str,
+    classes: str,
+    packet_manifest: Path | None = None,
+    exit_code_path: Path | None = None,
+    dependencies: tuple[tuple[object, ...], ...] = (),
+) -> str:
+    parts = [
+        shlex.quote(python_exec),
+        "tools/run_town01_natural_driving_suite.py",
+        "--suite",
+        shlex.quote(str(suite_path)),
+        "--out",
+        shlex.quote(str(suite_root)),
+        "--continue-on-failure",
+        "--config",
+        shlex.quote(route_health_config),
+        "--startup-profile",
+        shlex.quote(startup_profile),
+        "--carla-ignore-memory-preflight",
+    ]
+    if classes:
+        parts.extend(["--classes", shlex.quote(classes)])
+    return "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            f"cd {shlex.quote(str(REPO_ROOT))}",
+            *_status_refresh_lines(
+                python_exec=python_exec,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path,
+            ),
+            *_packet_preflight_gate_lines(packet_manifest),
+            *_stage_dependency_gate_lines(packet_manifest=packet_manifest, dependencies=dependencies),
+            " ".join(parts),
+            "",
+        ]
+    )
+
+
+def _natural_driving_postprocess_script(
+    *,
+    python_exec: str,
+    suite_path: Path,
+    suite_root: Path,
+    ab_root: Path | None = None,
+    calibration_root: Path | None = None,
+    demo_root: Path | None = None,
+    packet_manifest: Path | None = None,
+    exit_code_path: Path | None = None,
+    dependencies: tuple[tuple[object, ...], ...] = (),
+) -> str:
+    command = [
+        shlex.quote(python_exec),
+        "tools/run_town01_natural_driving_suite.py",
+        "--suite",
+        shlex.quote(str(suite_path)),
+        "--out",
+        shlex.quote(str(suite_root)),
+        "--postprocess-existing",
+        "--audit-after-postprocess",
+        "--refresh-postprocess",
+        "--require-full-target-coverage",
+        "--fail-on-postprocess-status",
+        "fail,warn,insufficient_data",
+    ]
+    if ab_root is not None:
+        command.extend(["--ab-root", shlex.quote(str(ab_root))])
+    if calibration_root is not None:
+        command.extend(["--calibration-root", shlex.quote(str(calibration_root))])
+    if demo_root is not None:
+        command.extend(["--demo-root", shlex.quote(str(demo_root))])
+    return "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            f"cd {shlex.quote(str(REPO_ROOT))}",
+            *_status_refresh_lines(
+                python_exec=python_exec,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path,
+            ),
+            *_packet_preflight_gate_lines(packet_manifest),
+            *_stage_dependency_gate_lines(packet_manifest=packet_manifest, dependencies=dependencies),
+            " ".join(command),
+            "",
+        ]
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Prepare staged manual validation scripts for the Town01 Apollo closed-loop goal."
+    )
+    parser.add_argument("--out", type=Path, default=Path("/tmp") / f"town01_goal_validation_{_timestamp()}")
+    parser.add_argument("--run-root", type=Path, default=Path("runs/ab"), help="Parent run root for generated batches.")
+    parser.add_argument("--batch-prefix", default=f"town01_goal_validation_{_timestamp()}")
+    parser.add_argument("--python", default=_default_python())
+    parser.add_argument("--lane-duration", default="30")
+    parser.add_argument("--hard-gate-durations", default="30")
+    parser.add_argument("--curve-durations", default="30")
+    parser.add_argument(
+        "--demo-recording",
+        type=Path,
+        help="Optional town01_demo_recording_inspection.json to include in final postprocess.",
+    )
+    parser.add_argument("--demo-mode", choices=("short", "full"), default="short")
+    parser.add_argument("--demo-browser-cmd", default="auto")
+    parser.add_argument("--demo-capture-region", default="1280x720+0,0")
+    parser.add_argument(
+        "--natural-suite",
+        type=Path,
+        default=Path("configs/scenarios/town01_natural_driving_suite.yaml"),
+        help="Town01 truth-input natural-driving suite YAML.",
+    )
+    parser.add_argument(
+        "--natural-classes",
+        default="",
+        help="Optional comma-separated scenario_class filter for the natural-driving suite.",
+    )
+    parser.add_argument(
+        "--natural-route-health-config",
+        default="configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml",
+        help="Route-health config forwarded to the natural-driving suite runner.",
+    )
+    parser.add_argument("--natural-startup-profile", default="render_offscreen_no_ros2")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    out_dir = args.out.expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    run_root = args.run_root.expanduser()
+    if not run_root.is_absolute():
+        run_root = REPO_ROOT / run_root
+    lane_root = run_root / f"{args.batch_prefix}_01_lane097"
+    hard_root = run_root / f"{args.batch_prefix}_02_hard_gates"
+    curve_root = run_root / f"{args.batch_prefix}_03_curves"
+    random_root = run_root / f"{args.batch_prefix}_04_random_regression"
+    natural_root = run_root / f"{args.batch_prefix}_09_natural_driving"
+    demo_parent = out_dir / "demo_runs"
+    lane_marker = out_dir / "lane097_root.path"
+    hard_marker = out_dir / "hard_gates_root.path"
+    curve_marker = out_dir / "curves_root.path"
+    random_marker = out_dir / "random_regression_root.path"
+    demo_marker = out_dir / "demo_recording_inspection.path"
+    audit_out = out_dir / "audit"
+    calibration_gates_path = out_dir / "calibration_gate_results.json"
+    postprocess_out = out_dir / "postprocess"
+    final_audit_out = out_dir / "final_audit"
+    calibration_report = postprocess_out / "calibration" / "calibration_report.json"
+    natural_driving_report = natural_root / "analysis" / "natural_driving" / "natural_driving_report.json"
+    packet_manifest = out_dir / "town01_goal_validation_packet.json"
+    exit_code_dir = out_dir / "stage_exit_codes"
+
+    def exit_code_path(stage_name: str) -> Path:
+        return exit_code_dir / f"{stage_name}.exit_code"
+
+    no_dependencies: tuple[tuple[object, ...], ...] = ()
+    hard_dependencies = (("01_lane097_canary", True),)
+    curve_dependencies = (("02_hard_gates", True),)
+    random_dependencies = (("02_hard_gates", True), ("03_curve_diagnostics", True))
+    demo_dependencies = (
+        ("02_hard_gates", True),
+        ("03_curve_diagnostics", True),
+        ("04_random_regression", True),
+    )
+    calibration_gate_dependencies = (("02_hard_gates", False, ("completed", "failed"), True),)
+    natural_suite_dependencies = (
+        ("02_hard_gates", True),
+        ("03_curve_diagnostics", False, ("completed", "failed"), True),
+    )
+    natural_postprocess_dependencies = (
+        ("09_natural_driving_suite", False, ("completed", "failed"), False),
+    )
+    final_audit_dependencies = (
+        ("08_postprocess", False, ("completed", "failed"), False),
+        ("10_natural_driving_postprocess", False, ("completed", "failed"), True),
+    )
+
+    scripts = {
+        "00_status": {
+            "path": out_dir / "00_status.sh",
+            "run_root": out_dir / "town01_goal_validation_packet_status.json",
+            "marker": None,
+            "exit_code_path": None,
+            "dependencies": no_dependencies,
+            "content": "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    f"cd {shlex.quote(str(REPO_ROOT))}",
+                    " ".join(
+                        [
+                            shlex.quote(args.python),
+                            "tools/inspect_town01_goal_validation_packet.py",
+                            shlex.quote(str(packet_manifest)),
+                        ]
+                    ),
+                    "",
+                ]
+            ),
+        },
+        "01_lane097_canary": {
+            "path": out_dir / "01_lane097_canary.sh",
+            "run_root": lane_root,
+            "marker": lane_marker,
+            "exit_code_path": exit_code_path("01_lane097_canary"),
+            "dependencies": no_dependencies,
+            "content": _script(
+                lane_root,
+                lane_marker,
+                _direct_ab_command(
+                    python_exec=args.python,
+                    routes="097",
+                    durations=args.lane_duration,
+                ),
+                python_exec=args.python,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path("01_lane097_canary"),
+            ),
+        },
+        "02_hard_gates": {
+            "path": out_dir / "02_hard_gates.sh",
+            "run_root": hard_root,
+            "marker": hard_marker,
+            "exit_code_path": exit_code_path("02_hard_gates"),
+            "dependencies": hard_dependencies,
+            "content": _script(
+                hard_root,
+                hard_marker,
+                _direct_ab_command(
+                    python_exec=args.python,
+                    routes="097,217,031",
+                    durations=args.hard_gate_durations,
+                    require_hard_gate_pass=True,
+                ),
+                python_exec=args.python,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path("02_hard_gates"),
+                dependencies=hard_dependencies,
+            ),
+        },
+        "03_curve_diagnostics": {
+            "path": out_dir / "03_curve_diagnostics.sh",
+            "run_root": curve_root,
+            "marker": curve_marker,
+            "exit_code_path": exit_code_path("03_curve_diagnostics"),
+            "dependencies": curve_dependencies,
+            "content": _script(
+                curve_root,
+                curve_marker,
+                _direct_ab_command(
+                    python_exec=args.python,
+                    routes="curve217,curve213",
+                    durations=args.curve_durations,
+                    require_route_curve_p1_complete=True,
+                    include_diagnostic_curves=True,
+                ),
+                python_exec=args.python,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path("03_curve_diagnostics"),
+                dependencies=curve_dependencies,
+            ),
+        },
+        "05_demo_recording": {
+            "path": out_dir / "05_demo_recording.sh",
+            "run_root": demo_parent,
+            "marker": demo_marker,
+            "exit_code_path": exit_code_path("05_demo_recording"),
+            "dependencies": demo_dependencies,
+            "content": _demo_recording_script(
+                python_exec=args.python,
+                demo_parent=demo_parent,
+                marker=demo_marker,
+                browser_cmd=args.demo_browser_cmd,
+                capture_region=args.demo_capture_region,
+                mode=args.demo_mode,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path("05_demo_recording"),
+                dependencies=demo_dependencies,
+            ),
+        },
+        "06_audit": {
+            "path": out_dir / "06_audit.sh",
+            "run_root": audit_out,
+            "marker": None,
+            "exit_code_path": exit_code_path("06_audit"),
+            "dependencies": no_dependencies,
+            "content": _audit_script(
+                python_exec=args.python,
+                hard_gate_root=hard_root,
+                curve_root=curve_root,
+                random_root=random_root,
+                out_dir=audit_out,
+                demo_marker=demo_marker,
+                demo_recording=args.demo_recording,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path("06_audit"),
+            ),
+        },
+        "07_calibration_gates": {
+            "path": out_dir / "07_calibration_gates.sh",
+            "run_root": calibration_gates_path,
+            "marker": None,
+            "exit_code_path": exit_code_path("07_calibration_gates"),
+            "dependencies": calibration_gate_dependencies,
+            "content": _calibration_gates_script(
+                python_exec=args.python,
+                hard_gate_root=hard_root,
+                out_path=calibration_gates_path,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path("07_calibration_gates"),
+                dependencies=calibration_gate_dependencies,
+            ),
+        },
+        "08_postprocess": {
+            "path": out_dir / "08_postprocess.sh",
+            "run_root": postprocess_out,
+            "marker": None,
+            "exit_code_path": exit_code_path("08_postprocess"),
+            "dependencies": no_dependencies,
+            "content": _postprocess_script(
+                python_exec=args.python,
+                hard_gate_root=hard_root,
+                curve_root=curve_root,
+                random_root=random_root,
+                out_dir=postprocess_out,
+                demo_marker=demo_marker,
+                demo_recording=args.demo_recording,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path("08_postprocess"),
+            ),
+        },
+        "09_natural_driving_suite": {
+            "path": out_dir / "09_natural_driving_suite.sh",
+            "run_root": natural_root,
+            "marker": None,
+            "exit_code_path": exit_code_path("09_natural_driving_suite"),
+            "dependencies": natural_suite_dependencies,
+            "content": _natural_driving_suite_script(
+                python_exec=args.python,
+                suite_path=args.natural_suite,
+                suite_root=natural_root,
+                route_health_config=args.natural_route_health_config,
+                startup_profile=args.natural_startup_profile,
+                classes=args.natural_classes,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path("09_natural_driving_suite"),
+                dependencies=natural_suite_dependencies,
+            ),
+        },
+        "10_natural_driving_postprocess": {
+            "path": out_dir / "10_natural_driving_postprocess.sh",
+            "run_root": natural_root,
+            "marker": None,
+            "exit_code_path": exit_code_path("10_natural_driving_postprocess"),
+            "dependencies": natural_postprocess_dependencies,
+            "content": _natural_driving_postprocess_script(
+                python_exec=args.python,
+                suite_path=args.natural_suite,
+                suite_root=natural_root,
+                ab_root=run_root,
+                calibration_root=postprocess_out,
+                demo_root=demo_parent,
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path("10_natural_driving_postprocess"),
+                dependencies=natural_postprocess_dependencies,
+            ),
+        },
+        "11_final_goal_audit": {
+            "path": out_dir / "11_final_goal_audit.sh",
+            "run_root": final_audit_out,
+            "marker": None,
+            "exit_code_path": exit_code_path("11_final_goal_audit"),
+            "dependencies": final_audit_dependencies,
+            "content": _audit_script(
+                python_exec=args.python,
+                hard_gate_root=hard_root,
+                curve_root=curve_root,
+                random_root=random_root,
+                out_dir=final_audit_out,
+                demo_marker=demo_marker,
+                demo_recording=args.demo_recording,
+                calibration_report=calibration_report,
+                natural_driving_report=natural_driving_report,
+                fail_on_status="incomplete",
+                packet_manifest=packet_manifest,
+                exit_code_path=exit_code_path("11_final_goal_audit"),
+                dependencies=final_audit_dependencies,
+            ),
+        },
+    }
+    scripts["04_random_regression"] = {
+        "path": out_dir / "04_random_regression.sh",
+        "run_root": random_root,
+        "marker": random_marker,
+        "exit_code_path": exit_code_path("04_random_regression"),
+        "dependencies": random_dependencies,
+        "content": _script(
+            random_root,
+            random_marker,
+            _direct_ab_command(
+                python_exec=args.python,
+                route_config="configs/routes/town01/random_regression_pool_20260416.yaml",
+                routes=(
+                    "random_lane_183_044,random_lane_213_048,"
+                    "random_junction_176_063,random_junction_071_063,"
+                    "random_curve_219_048,random_curve_177_051"
+                ),
+                durations="30",
+                include_informational_routes=True,
+            ),
+            python_exec=args.python,
+            packet_manifest=packet_manifest,
+            exit_code_path=exit_code_path("04_random_regression"),
+            dependencies=random_dependencies,
+        ),
+    }
+    scripts = dict(sorted(scripts.items(), key=lambda item: item[0]))
+    for item in scripts.values():
+        path = item["path"]
+        path.write_text(str(item["content"]), encoding="utf-8")
+        path.chmod(0o755)
+
+    readme = out_dir / "README.md"
+    readme.write_text(
+        "\n".join(
+            [
+                "# Town01 Goal Validation Packet",
+                "",
+                "Run these scripts manually after CARLA/Apollo are ready. They are intentionally staged:",
+                "",
+                "0. `bash 00_status.sh` any time to inspect packet progress and the next command",
+                "1. `bash 01_lane097_canary.sh`",
+                "2. `bash 02_hard_gates.sh`",
+                "3. `bash 03_curve_diagnostics.sh` only after hard gates do not regress",
+                "4. `bash 04_random_regression.sh` after canonical evidence is stable",
+                "5. `bash 05_demo_recording.sh` to record CARLA + Dreamview after evidence is stable",
+                "6. `bash 06_audit.sh`",
+                "7. `bash 07_calibration_gates.sh` to create calibration gate input",
+                "8. `bash 08_postprocess.sh` to regenerate the full offline evidence bundle",
+                "9. `bash 09_natural_driving_suite.sh` to run the Town01 truth-input natural-driving suite",
+                "10. `bash 10_natural_driving_postprocess.sh` to build `natural_driving_report.json`, write a local goal audit packet, and enforce the natural-driving gate",
+                "11. `bash 11_final_goal_audit.sh` to merge A/B, calibration, demo, and natural-driving evidence",
+                "",
+                "The scripts keep `carla_direct` experimental and do not change `steer_scale=0.25` or enable physical mapping.",
+                "Online-heavy stages include dependency gates, so later stages stop early if their prerequisite A/B evidence is missing or failed.",
+                "`calibration_gate_results.json` is a gate input only; it is not calibration trial evidence.",
+                "`05_demo_recording.sh` uses Dreamview auto-open plus the local wait page to avoid manual browser navigation where possible.",
+                "`08_postprocess.sh` does not start CARLA/Apollo; it reads completed run artifacts and writes A/B, route-health, curve-pair, calibration, demo, and goal-audit outputs.",
+                "`09_natural_driving_suite.sh` is the online truth-input suite for lane, curve, junction, and traffic-light scenarios.",
+                "`10_natural_driving_postprocess.sh` is offline, fails on `fail`, `warn`, or `insufficient_data` natural-driving verdicts, and also writes `analysis/goal_audit/town01_goal_audit.json` for quick inspection.",
+                "`11_final_goal_audit.sh` is offline and requires `natural_driving_report.json` for a complete goal audit.",
+                "`town01_goal_validation_packet.json` is the packet manifest used by the status script.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    payload = {
+        "schema_version": "town01_goal_validation_packet.v1",
+        "out": str(out_dir),
+        "repo_root": str(REPO_ROOT),
+        "python": str(args.python),
+        "readme": str(readme),
+        "scripts": {
+            name: {
+                "path": str(item["path"]),
+                "run_root": None if item["run_root"] is None else str(item["run_root"]),
+                "marker": None if item["marker"] is None else str(item["marker"]),
+                "exit_code_path": None
+                if item.get("exit_code_path") is None
+                else str(item["exit_code_path"]),
+                "dependencies": _dependency_manifest_items(item.get("dependencies", ())),
+            }
+            for name, item in scripts.items()
+        },
+    }
+    packet_manifest.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    payload["manifest"] = str(packet_manifest)
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

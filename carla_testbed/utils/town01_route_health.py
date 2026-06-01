@@ -4981,6 +4981,13 @@ def _compute_direct_control_apply_summary(
     return {
         "apply_count": int(apply_count),
         "apply_fail_count": safe_int(direct_bridge_stats.get("control_apply_fail_count")) or 0,
+        "apply_mode": str(direct_bridge_stats.get("control_apply_mode") or "").strip() or None,
+        "frame_flush_queue_count": safe_int(
+            direct_bridge_stats.get("control_apply_frame_flush_queue_count")
+        ),
+        "frame_flush_overwrite_count": safe_int(
+            direct_bridge_stats.get("control_apply_frame_flush_overwrite_count")
+        ),
         "first_apply_frame": first_frame,
         "last_apply_frame": last_frame,
         "apply_frame_span": frame_span,

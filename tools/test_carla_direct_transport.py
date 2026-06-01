@@ -191,6 +191,18 @@ class _RepeatingFrameWorld(_FakeWorld):
         return _FakeSnapshot(self._frame, 12.5)
 
 
+class _SequenceFrameWorld(_FakeWorld):
+    def __init__(self, actors, frames):
+        self._actors = _FakeActorList(actors)
+        self._frames = list(frames)
+        self._last_frame = int(self._frames[-1] if self._frames else 1)
+
+    def get_snapshot(self):
+        if self._frames:
+            self._last_frame = int(self._frames.pop(0))
+        return _FakeSnapshot(self._last_frame, 12.5)
+
+
 class _FakeClient:
     def __init__(self, host: str, port: int, world: _FakeWorld) -> None:
         self.host = host
@@ -280,6 +292,15 @@ class CarlaDirectTransportTests(unittest.TestCase):
             self.assertEqual(summary["route_command_mode"], "cyber_direct")
             self.assertEqual(summary["route_command_path"], "cyber_direct_bridge_command_path")
             self.assertTrue(summary["require_no_ros2_runtime"])
+            self.assertEqual(summary["stale_world_frame_policy"], "until_control")
+
+    def test_stale_world_frame_policy_helper(self) -> None:
+        helper = self.mod.should_republish_stale_world_frame
+        self.assertTrue(helper("until_control", control_tx_count=0))
+        self.assertFalse(helper("until_control", control_tx_count=1))
+        self.assertTrue(helper("always_republish", control_tx_count=10))
+        self.assertFalse(helper("skip", control_tx_count=0))
+        self.assertTrue(helper("unknown_policy", control_tx_count=0))
 
     def test_configured_client_timeout_is_used_for_carla_attach(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -309,6 +330,39 @@ class CarlaDirectTransportTests(unittest.TestCase):
             )
             self.assertAlmostEqual(transport.client.timeout, 7.5)
             self.assertAlmostEqual(transport.stats["client_timeout_sec"], 7.5)
+
+    def test_stale_world_frame_policy_is_configurable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            transport = self.mod.CarlaDirectTransport(
+                artifacts_dir=Path(tmpdir),
+                carla_host="127.0.0.1",
+                carla_port=2000,
+                ego_role_name="hero",
+                control_out_type="direct",
+                radius_m=50.0,
+                max_obstacles=8,
+                publish_rate_hz=20.0,
+                sync_to_world_tick=True,
+                timeout_sec=0.8,
+                max_steer_angle=0.6,
+                speed_gain=10.0,
+                brake_gain=5.0,
+                watchdog_wait_for_first_msg=True,
+                watchdog_arm_delay_sec=1.5,
+                startup_brake_suppression_enabled=True,
+                startup_brake_suppression_speed_mps=1.0,
+                startup_brake_suppression_max_brake=0.2,
+                startup_brake_suppression_min_throttle=0.3,
+                startup_brake_suppression_hold_sec=3.0,
+                startup_brake_recent_throttle_window_sec=1.0,
+                stale_world_frame_policy="always_republish",
+            )
+            self.assertEqual(transport.stale_world_frame_policy, "always_republish")
+            self.assertEqual(transport.stats["stale_world_frame_policy"], "always_republish")
+            self.assertEqual(
+                transport.transport_summary()["stale_world_frame_policy"],
+                "always_republish",
+            )
 
     def test_publish_control_applies_vehicle_control_and_writes_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -395,6 +449,97 @@ class CarlaDirectTransportTests(unittest.TestCase):
             self.assertEqual(second["world_frame"], 880)
             self.assertEqual(transport.stats["snapshot_count"], 1)
             self.assertEqual(transport.stats["world_frame_repeat_count"], 1)
+
+    def test_duplicate_frame_control_is_deferred_until_next_world_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            transport = self.mod.CarlaDirectTransport(
+                artifacts_dir=Path(tmpdir),
+                carla_host="127.0.0.1",
+                carla_port=2000,
+                ego_role_name="hero",
+                control_out_type="direct",
+                radius_m=50.0,
+                max_obstacles=8,
+                publish_rate_hz=20.0,
+                sync_to_world_tick=True,
+                timeout_sec=0.8,
+                max_steer_angle=0.6,
+                speed_gain=10.0,
+                brake_gain=5.0,
+                watchdog_wait_for_first_msg=True,
+                watchdog_arm_delay_sec=1.5,
+                startup_brake_suppression_enabled=True,
+                startup_brake_suppression_speed_mps=1.0,
+                startup_brake_suppression_max_brake=0.2,
+                startup_brake_suppression_min_throttle=0.3,
+                startup_brake_suppression_hold_sec=3.0,
+                startup_brake_recent_throttle_window_sec=1.0,
+            )
+            hero = transport.world.get_actors()[0]
+            transport.world = _SequenceFrameWorld([hero], frames=[900, 900, 901, 901])
+            transport.ego = hero
+            transport._last_discovery_sec = time.monotonic()
+
+            transport.publish_control(types.SimpleNamespace(data=[0.2, 0.0, 0.0]))
+            self.assertEqual(transport.stats["control_apply_count"], 1)
+            self.assertAlmostEqual(hero._last_control.throttle, 0.2)
+
+            transport.publish_control(types.SimpleNamespace(data=[0.8, 0.0, 0.1]))
+            self.assertEqual(transport.stats["control_apply_count"], 1)
+            self.assertEqual(transport.stats["control_apply_deferred_count"], 1)
+            self.assertIsNotNone(transport._pending_control)
+
+            transport.tick()
+            self.assertEqual(transport.stats["control_apply_count"], 2)
+            self.assertEqual(transport.stats["control_apply_pending_flush_count"], 1)
+            self.assertIsNone(transport._pending_control)
+            self.assertAlmostEqual(hero._last_control.throttle, 0.8)
+            self.assertAlmostEqual(hero._last_control.steer, 0.1)
+
+    def test_frame_flush_only_control_queues_until_tick(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            transport = self.mod.CarlaDirectTransport(
+                artifacts_dir=Path(tmpdir),
+                carla_host="127.0.0.1",
+                carla_port=2000,
+                ego_role_name="hero",
+                control_out_type="direct",
+                radius_m=50.0,
+                max_obstacles=8,
+                publish_rate_hz=20.0,
+                sync_to_world_tick=True,
+                timeout_sec=0.8,
+                max_steer_angle=0.6,
+                speed_gain=10.0,
+                brake_gain=5.0,
+                watchdog_wait_for_first_msg=True,
+                watchdog_arm_delay_sec=1.5,
+                startup_brake_suppression_enabled=True,
+                startup_brake_suppression_speed_mps=1.0,
+                startup_brake_suppression_max_brake=0.2,
+                startup_brake_suppression_min_throttle=0.3,
+                startup_brake_suppression_hold_sec=3.0,
+                startup_brake_recent_throttle_window_sec=1.0,
+                control_apply_mode="frame_flush_only",
+            )
+            hero = transport.world.get_actors()[0]
+            transport.world = _SequenceFrameWorld([hero], frames=[910, 911])
+            transport.ego = hero
+            transport._last_discovery_sec = time.monotonic()
+
+            transport.publish_control(types.SimpleNamespace(data=[0.4, 0.0, 0.2]))
+            self.assertEqual(transport.stats["control_apply_count"], 0)
+            self.assertEqual(transport.stats["control_apply_frame_flush_queue_count"], 1)
+            self.assertIsNotNone(transport._pending_control)
+
+            transport.tick()
+            self.assertEqual(transport.stats["control_apply_count"], 1)
+            self.assertEqual(transport.stats["control_apply_pending_flush_count"], 1)
+            self.assertIsNone(transport._pending_control)
+            self.assertAlmostEqual(hero._last_control.throttle, 0.4)
+            self.assertAlmostEqual(hero._last_control.brake, 0.0)
+            self.assertAlmostEqual(hero._last_control.steer, 0.2)
+            self.assertEqual(transport.transport_summary()["control_apply_mode"], "frame_flush_only")
 
 
 if __name__ == "__main__":

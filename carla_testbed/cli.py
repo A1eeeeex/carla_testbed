@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from carla_testbed.config import ConfigError, TestbedConfig, load_config
+from carla_testbed.analysis.artifact_completeness import check_run_artifact_completeness
+from carla_testbed.analysis.route_health_report import route_health_inspect_summary
 from carla_testbed.contracts import EgoState, FrameStamp, SceneTruth
 from carla_testbed.control import DummyController
 from carla_testbed.doctor import doctor_main
@@ -213,6 +215,57 @@ def _cmd_inspect_run(args: argparse.Namespace) -> int:
                 f"max_speed_mps={metrics.get('max_speed_mps')} "
                 f"collision_count={metrics.get('collision_count')}"
             )
+    carla_world = (manifest or {}).get("carla_world") or (summary or {}).get("carla_world")
+    if isinstance(carla_world, Mapping):
+        print(
+            "[inspect-run] carla_world "
+            f"configured_town={carla_world.get('configured_town')} "
+            f"loaded_map_name={carla_world.get('loaded_map_name')} "
+            f"matches_configured_town={carla_world.get('matches_configured_town')} "
+            f"spawn_point_count={carla_world.get('spawn_point_count')} "
+            f"source={carla_world.get('source')}"
+        )
+    route_health = route_health_inspect_summary(run_dir)
+    if route_health is not None:
+        print(
+            "[inspect-run] route_health "
+            f"status={route_health.get('status')} "
+            f"route_id={route_health.get('route_id')} "
+            f"lateral_error_max_m={route_health.get('lateral_error_max_m')} "
+            f"heading_error_max_rad={route_health.get('heading_error_max_rad')} "
+            f"curve_segments_count={route_health.get('curve_segments_count')} "
+            f"missing_inputs_count={route_health.get('missing_inputs_count')} "
+            f"missing_fields_count={route_health.get('missing_fields_count')}"
+        )
+    artifact_completeness = check_run_artifact_completeness(run_dir)
+    print(
+        "[inspect-run] artifact_completeness "
+        f"status={artifact_completeness.get('status')} "
+        f"scenario_class={artifact_completeness.get('scenario_class') or 'unknown'} "
+        f"missing_artifacts_count={len(artifact_completeness.get('missing_artifacts') or [])} "
+        f"missing_manifest_fields_count={len(artifact_completeness.get('missing_manifest_fields') or [])} "
+        f"invalid_manifest_source_fields_count="
+        f"{len(artifact_completeness.get('invalid_manifest_source_fields') or [])} "
+        f"invalid_report_source_fields_count="
+        f"{len(artifact_completeness.get('invalid_report_source_fields') or [])} "
+        f"missing_control_trace_fields_count="
+        f"{len(artifact_completeness.get('missing_control_trace_fields') or [])}"
+    )
+    missing_artifacts = artifact_completeness.get("missing_artifacts") or []
+    if missing_artifacts:
+        print(f"[inspect-run] missing_artifacts={','.join(missing_artifacts)}")
+    missing_manifest_fields = artifact_completeness.get("missing_manifest_fields") or []
+    if missing_manifest_fields:
+        print(f"[inspect-run] missing_manifest_fields={','.join(missing_manifest_fields)}")
+    invalid_manifest_source_fields = artifact_completeness.get("invalid_manifest_source_fields") or []
+    if invalid_manifest_source_fields:
+        print(f"[inspect-run] invalid_manifest_source_fields={','.join(invalid_manifest_source_fields)}")
+    invalid_report_source_fields = artifact_completeness.get("invalid_report_source_fields") or []
+    if invalid_report_source_fields:
+        print(f"[inspect-run] invalid_report_source_fields={','.join(invalid_report_source_fields)}")
+    missing_control_trace_fields = artifact_completeness.get("missing_control_trace_fields") or []
+    if missing_control_trace_fields:
+        print(f"[inspect-run] missing_control_trace_fields={','.join(missing_control_trace_fields)}")
     return 0
 
 

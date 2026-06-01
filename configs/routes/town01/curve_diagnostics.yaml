@@ -1,0 +1,53 @@
+schema_version: canonical_routes.v1
+name: town01_curve_diagnostics
+map: Town01
+description: >
+  Focused diagnostic subset for curve lateral semantics. This file is not a
+  promotion gate by itself; it exists so curve analysis can consume a tracked
+  asset instead of ad-hoc route ids.
+routes:
+  - route_id: curve217
+    stable_id: town01_rh_spawn217_goal048
+    map: Town01
+    route_class: curve
+    curve_class: sharper_curve_diagnostic
+    spawn_ref: town01_spawn217
+    goal_ref: town01_goal048
+    route_ref: placeholder:town01_route_corpus/town01_rh_spawn217_goal048
+    expected_duration_s: 100
+    success_criteria:
+      runtime_contract_status: aligned
+      diagnostic_only: true
+    no_regression_tags:
+      - curve_diagnostic
+      - curve217
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+    gate_role: diagnostic_gate
+    notes: "Use for semantics diagnosis only."
+
+  - route_id: curve213
+    stable_id: town01_rh_spawn213_goal059
+    map: Town01
+    route_class: curve
+    curve_class: gentle_or_mild_curve_diagnostic
+    spawn_ref: town01_spawn213
+    goal_ref: town01_goal059
+    route_ref: placeholder:town01_route_corpus/town01_rh_spawn213_goal059
+    expected_duration_s: 100
+    success_criteria:
+      runtime_contract_status: aligned
+      diagnostic_only: true
+    no_regression_tags:
+      - curve_diagnostic
+      - curve213
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+    gate_role: diagnostic_gate
+    notes: "Use for semantics diagnosis only."

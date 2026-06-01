@@ -1,0 +1,36 @@
+{
+  "failure_anchor_alignment": {
+    "available": false,
+    "route_s": null
+  },
+  "hypotheses": [],
+  "initial_ego_alignment": {
+    "rear_axle_offset_compatible": true,
+    "rear_axle_offset_error_m": 0.0
+  },
+  "interpretation_boundary": "Fixture route-start alignment evidence for offline tests only; it does not justify changing steer_scale or mapping mode.",
+  "missing_fields": [],
+  "missing_inputs": [],
+  "reason": null,
+  "recommendation": {
+    "available": false,
+    "recommended_ego_offset_y_delta_m": null
+  },
+  "route_id": "junction031",
+  "run_id": "junction_031",
+  "scenario_class": "junction_turn",
+  "schema_version": "route_start_alignment_report.v1",
+  "source": {
+    "failure_timeline_path": "analysis/failure_timeline/failure_timeline_report.json",
+    "manifest_path": "manifest.json",
+    "run_dir": ".",
+    "summary_path": "summary.json",
+    "timeseries_path": "timeseries.csv"
+  },
+  "static_spawn_alignment": {
+    "available": true,
+    "spawn_lateral_offset_m": 0.0
+  },
+  "status": "pass",
+  "warnings": []
+}

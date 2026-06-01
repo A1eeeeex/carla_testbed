@@ -1,0 +1,5 @@
+frame,x,y,heading,lateral_error,heading_error,ego_speed,ego_yaw_rate,throttle_raw,throttle_mapped,throttle_applied,brake_raw,brake_mapped,brake_applied,raw_steer,cmd_steer,applied_steer,lateral_guard_applied,trajectory_contract_lateral_guard_applied,matched_point_too_large,target_point_anomaly
+0,0.0,0.10,0.00,0.10,0.010,0.0,0.00,0.10,0.10,0.10,0.00,0.00,0.00,0.10,0.025,0.025,false,false,false,false
+1,10.0,-0.20,0.01,-0.20,-0.020,1.0,0.01,0.20,0.20,0.20,0.00,0.00,0.00,0.20,0.050,0.050,false,false,false,false
+2,20.0,0.30,-0.02,0.30,0.030,2.0,-0.02,0.30,0.30,0.30,0.10,0.10,0.10,0.96,0.240,0.240,false,false,true,false
+3,30.0,-0.40,0.02,-0.40,-0.040,3.0,0.04,0.00,0.00,0.00,0.40,0.40,0.40,0.30,0.075,0.075,true,false,false,true

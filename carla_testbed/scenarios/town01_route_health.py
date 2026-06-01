@@ -33,6 +33,11 @@ class Town01RouteHealthConfig:
     preferred_spawn_idx: int = -1
     force_green_traffic_lights: bool = False
     freeze_traffic_lights: bool = True
+    traffic_light_control_mode: str = ""
+    traffic_light_initial_state: str = ""
+    traffic_light_release_state: str = ""
+    traffic_light_release_after_s: float = 0.0
+    traffic_light_target_actor_ids: Sequence[int] = ()
     route_step_m: float = 5.0
     spawn_min_forward_length_m: float = 160.0
     spawn_min_backward_length_m: float = 25.0
@@ -60,9 +65,16 @@ class Town01RouteHealthScenario(Scenario):
         self.cfg = cfg
         self.actors: Optional[ActorRefs] = None
         self._selected_meta: Dict[str, Any] = {}
+        self._traffic_light_policy_meta: Dict[str, Any] = {}
+        self._traffic_light_world: Optional[carla.World] = None
+        self._traffic_light_started_ts: Optional[float] = None
+        self._traffic_light_released: bool = False
 
     def metadata(self) -> Dict[str, Any]:
-        return dict(self._selected_meta)
+        payload = dict(self._selected_meta)
+        if self._traffic_light_policy_meta:
+            payload["traffic_light_control"] = dict(self._traffic_light_policy_meta)
+        return payload
 
     def _clear_dynamic_actors(self, world: carla.World) -> None:
         removed = 0
@@ -94,7 +106,120 @@ class Town01RouteHealthScenario(Scenario):
                 return cands[0]
         raise RuntimeError("No suitable vehicle blueprint found for town01 route health scene")
 
+    @staticmethod
+    def _traffic_light_state_name(state: str) -> str:
+        return str(state or "").strip().upper()
+
+    @staticmethod
+    def _traffic_light_state_from_name(state: str):
+        normalized = Town01RouteHealthScenario._traffic_light_state_name(state)
+        mapping = {
+            "RED": getattr(carla.TrafficLightState, "Red", None),
+            "YELLOW": getattr(carla.TrafficLightState, "Yellow", None),
+            "GREEN": getattr(carla.TrafficLightState, "Green", None),
+        }
+        return mapping.get(normalized)
+
+    def _target_traffic_light_ids(self) -> set[int]:
+        ids: set[int] = set()
+        for item in self.cfg.traffic_light_target_actor_ids or ():
+            try:
+                ids.add(int(item))
+            except Exception:
+                continue
+        return ids
+
+    def _iter_target_traffic_lights(self, world: carla.World):
+        target_ids = self._target_traffic_light_ids()
+        for actor in world.get_actors().filter("traffic.traffic_light*"):
+            if target_ids and int(getattr(actor, "id", -1) or -1) not in target_ids:
+                continue
+            yield actor
+
+    def _apply_traffic_light_state(
+        self,
+        world: carla.World,
+        *,
+        state_name: str,
+        phase: str,
+        frame_id: Optional[int] = None,
+        timestamp: Optional[float] = None,
+    ) -> int:
+        state = self._traffic_light_state_from_name(state_name)
+        normalized_state = self._traffic_light_state_name(state_name)
+        if state is None:
+            warnings = list(self._traffic_light_policy_meta.get("warnings") or [])
+            warnings.append(f"unsupported_traffic_light_state:{normalized_state or '<empty>'}")
+            self._traffic_light_policy_meta["warnings"] = warnings
+            return 0
+        changed = 0
+        actor_ids: list[int] = []
+        for actor in self._iter_target_traffic_lights(world):
+            try:
+                if hasattr(actor, "set_state"):
+                    actor.set_state(state)
+                if self.cfg.freeze_traffic_lights and hasattr(actor, "freeze"):
+                    actor.freeze(True)
+                changed += 1
+                try:
+                    actor_ids.append(int(getattr(actor, "id", 0) or 0))
+                except Exception:
+                    pass
+            except Exception as exc:
+                warnings = list(self._traffic_light_policy_meta.get("warnings") or [])
+                warnings.append(f"traffic_light_apply_failed:{type(exc).__name__}:{exc}")
+                self._traffic_light_policy_meta["warnings"] = warnings
+                continue
+        event = {
+            "phase": phase,
+            "state": normalized_state,
+            "affected_count": int(changed),
+            "frame_id": frame_id,
+            "timestamp": timestamp,
+        }
+        events = list(self._traffic_light_policy_meta.get("events") or [])
+        events.append(event)
+        self._traffic_light_policy_meta.update(
+            {
+                "current_state": normalized_state,
+                "current_phase": phase,
+                "last_affected_count": int(changed),
+                "last_actor_ids": actor_ids,
+                "events": events,
+            }
+        )
+        return changed
+
+    def _deterministic_traffic_light_enabled(self) -> bool:
+        mode = str(self.cfg.traffic_light_control_mode or "").strip().lower()
+        return mode in {"deterministic_gt_control", "deterministic_all_lights"}
+
     def _apply_traffic_light_policy(self, world: carla.World) -> None:
+        self._traffic_light_world = world
+        if self._deterministic_traffic_light_enabled():
+            initial_state = self._traffic_light_state_name(self.cfg.traffic_light_initial_state or "RED")
+            self._traffic_light_policy_meta = {
+                "mode": str(self.cfg.traffic_light_control_mode or "").strip(),
+                "stimulus_mode": "deterministic_gt_control",
+                "scope": "all_traffic_lights"
+                if not self._target_traffic_light_ids()
+                else "target_actor_ids",
+                "target_actor_ids": sorted(self._target_traffic_light_ids()),
+                "initial_state": initial_state,
+                "release_state": self._traffic_light_state_name(self.cfg.traffic_light_release_state),
+                "release_after_s": float(self.cfg.traffic_light_release_after_s or 0.0),
+                "freeze": bool(self.cfg.freeze_traffic_lights),
+                "warnings": [],
+                "events": [],
+            }
+            changed = self._apply_traffic_light_state(world, state_name=initial_state, phase="initial")
+            self._traffic_light_policy_meta["initial_affected_count"] = int(changed)
+            self._traffic_light_policy_meta["claim_boundary"] = (
+                "CARLA traffic-light actors are controlled deterministically for truth-input "
+                "stimulus; behavior claims still require Apollo HDMap signal/stop-line contract "
+                "and traffic-light behavior artifacts."
+            )
+            return
         if not self.cfg.force_green_traffic_lights:
             return
         changed = 0
@@ -107,7 +232,44 @@ class Town01RouteHealthScenario(Scenario):
                 changed += 1
             except Exception:
                 continue
+        self._traffic_light_policy_meta = {
+            "mode": "force_green_legacy",
+            "stimulus_mode": "force_green",
+            "scope": "all_traffic_lights",
+            "initial_state": "GREEN",
+            "freeze": bool(self.cfg.freeze_traffic_lights),
+            "initial_affected_count": int(changed),
+        }
         self._selected_meta["traffic_lights_overridden"] = int(changed)
+
+    def on_sim_tick(self, *, frame_id: int, timestamp: float, step: int) -> None:
+        if not self._deterministic_traffic_light_enabled():
+            return
+        if self._traffic_light_world is None:
+            return
+        if self._traffic_light_started_ts is None:
+            self._traffic_light_started_ts = float(timestamp)
+            return
+        if self._traffic_light_released:
+            return
+        release_state = self._traffic_light_state_name(self.cfg.traffic_light_release_state)
+        release_after_s = float(self.cfg.traffic_light_release_after_s or 0.0)
+        if not release_state or release_after_s <= 0.0:
+            return
+        elapsed = float(timestamp) - float(self._traffic_light_started_ts)
+        self._traffic_light_policy_meta["elapsed_s"] = float(elapsed)
+        if elapsed < release_after_s:
+            return
+        self._apply_traffic_light_state(
+            self._traffic_light_world,
+            state_name=release_state,
+            phase="release",
+            frame_id=int(frame_id),
+            timestamp=float(timestamp),
+        )
+        self._traffic_light_policy_meta["release_frame_id"] = int(frame_id)
+        self._traffic_light_policy_meta["release_timestamp"] = float(timestamp)
+        self._traffic_light_released = True
 
     @staticmethod
     def _offset_transform(
@@ -187,6 +349,36 @@ class Town01RouteHealthScenario(Scenario):
             "section_id": int(wp.section_id),
             "lane_id": int(wp.lane_id),
         }
+
+    @staticmethod
+    def _route_trace_points(trace: Sequence[carla.Waypoint], *, end_index: int) -> List[Dict[str, Any]]:
+        points: List[Dict[str, Any]] = []
+        total_s = 0.0
+        previous_loc = None
+        for index, wp in enumerate(list(trace)[: max(0, int(end_index)) + 1]):
+            loc = wp.transform.location
+            if previous_loc is not None:
+                dx = float(loc.x - previous_loc.x)
+                dy = float(loc.y - previous_loc.y)
+                dz = float(loc.z - previous_loc.z)
+                total_s += math.sqrt((dx * dx) + (dy * dy) + (dz * dz))
+            tags: List[str] = []
+            if bool(getattr(wp, "is_junction", False)):
+                tags.append("junction")
+            points.append(
+                {
+                    "index": int(index),
+                    "x": float(loc.x),
+                    "y": float(loc.y),
+                    "z": float(loc.z),
+                    "s": float(total_s),
+                    "heading": math.radians(float(wp.transform.rotation.yaw)),
+                    "lane_id": f"{int(wp.road_id)}:{int(wp.section_id)}:{int(wp.lane_id)}",
+                    "tags": tags,
+                }
+            )
+            previous_loc = loc
+        return points
 
     @staticmethod
     def route_id_for(spawn_idx: int, goal_trace_index: int) -> str:
@@ -698,6 +890,7 @@ class Town01RouteHealthScenario(Scenario):
         self._selected_meta = {
             "scene_type": "town01_route_health_random_spawn_cruise",
             "route_id": route_id,
+            "map": "Town01",
             "route_selected_from_corpus": bool(selected_route_record is not None),
             "route_corpus_path": str(self.cfg.route_corpus_path or ""),
             "random_seed": int(self.cfg.random_seed),
@@ -734,6 +927,11 @@ class Town01RouteHealthScenario(Scenario):
                 "lane_id": int(goal_wp.lane_id),
             },
             "route_length_m": float(selected_goal["route_length_m"]),
+            "route_trace_source": "town01_forward_waypoint_trace",
+            "route_trace": self._route_trace_points(
+                list(selected_spawn.get("forward_trace") or []),
+                end_index=int(selected_goal["goal_trace_index"]),
+            ),
             "forward_available_length_m": float(selected_goal["forward_available_length_m"]),
             "remain_length_after_goal_m": float(selected_goal["remain_end_margin_m"]),
             "goal_trace_index": int(selected_goal["goal_trace_index"]),
@@ -754,7 +952,8 @@ class Town01RouteHealthScenario(Scenario):
         return self.actors
 
     def reset(self):
-        pass
+        self._traffic_light_started_ts = None
+        self._traffic_light_released = False
 
     def destroy(self):
         if self.actors and self.actors.ego is not None:
@@ -763,3 +962,4 @@ class Town01RouteHealthScenario(Scenario):
             except Exception:
                 pass
         self.actors = None
+        self._traffic_light_world = None

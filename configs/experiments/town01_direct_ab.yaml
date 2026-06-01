@@ -1,0 +1,42 @@
+schema_version: town01_direct_ab.v1
+description: >
+  Dry-run capable long-window A/B matrix for Town01 canonical routes. This does
+  not promote carla_direct; it only defines reproducible baseline/direct runs.
+baseline_backend: ros2_gt
+candidate_backend: carla_direct
+route_config: configs/routes/town01/canonical_five.yaml
+durations_s:
+  - 30
+  - 60
+  - 120
+fixed_delta_seconds: 0.05
+required_steering_normalization_mode: legacy_double_percent
+required_direct_control_apply_mode: frame_flush_only
+required_direct_stale_world_frame_policy: always_republish
+required_direct_bridge_cadence_ratio_min: 0.8
+output_root: runs/ab/town01_direct_ab
+required_artifacts:
+  - summary.json
+  - manifest.json
+  - timeseries.csv
+  - analysis/route_health/route_health.json
+  - analysis/apollo_channel_health/apollo_channel_health_report.json
+  - analysis/control_health/control_health_report.json
+default_routes:
+  - lane097
+  - lane217
+  - junction031
+failure_reason_taxonomy:
+  - no_control
+  - stuck
+  - off_route
+  - high_lateral_error
+  - heading_divergence
+  - collision
+  - lane_invasion
+  - timeout
+  - planning_missing
+  - control_missing
+  - bridge_drop
+  - artifact_missing
+  - unknown

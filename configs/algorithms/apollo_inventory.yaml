@@ -1,0 +1,317 @@
+schema_version: algorithm_inventory.v1
+algorithm: apollo
+description: >
+  Apollo is tracked as a modular autonomous-driving stack, not as a single
+  opaque algorithm. The current CARLA GT MVP uses selected real Apollo modules
+  together with ground-truth bridge replacements.
+
+supported_variants:
+  - name: apollo_upstream
+    upstream_compatible: true
+    reproduction_level: upstream
+    description: Official Apollo code and configuration without CARLA testbed tuning.
+  - name: apollo_replayed
+    upstream_compatible: false
+    reproduction_level: replay
+    description: Apollo behavior evaluated from recorded CyberRT or run artifacts.
+  - name: apollo_ported_carla_gt
+    upstream_compatible: false
+    reproduction_level: gt_bridge
+    description: Apollo modules driven by CARLA ground-truth localization, chassis, and obstacles.
+  - name: apollo_tuned_town01
+    upstream_compatible: false
+    reproduction_level: tuned_town01
+    description: Town01-specific bridge/config/calibration experiments; never report as upstream Apollo.
+
+mvp_context:
+  target_stack: Apollo 10.0 + CARLA 0.9.16 + Ubuntu 22.04
+  map: Town01
+  primary_goal: Town01 route-level Apollo closed-loop evidence
+  current_transport_modes:
+    - ros2_gt
+    - carla_direct
+  explicit_non_goals:
+    - full native sensor perception validation
+    - automatic promotion of tuned Town01 settings to upstream Apollo
+
+modules:
+  - name: map_hdmap
+    category: map
+    enabled_in_mvp: true
+    replaced_by_gt_in_mvp: false
+    current_mvp_implementation: Apollo HDMap/runtime map loaded for Town01-compatible routing and planning.
+    required_inputs:
+      - Apollo map directory
+      - Dreamview selected map
+      - bridge effective map root
+    expected_outputs:
+      - lane topology available to routing
+      - reference-line source available to planning
+    primary_input_channels:
+      - local map files
+    primary_output_channels:
+      - internal hdmap query APIs
+    evidence_artifacts:
+      - manifest.json
+      - config.resolved.yaml
+      - routing_event_debug.jsonl
+      - planning_topic_debug_summary.json
+    reproduction_level_required: gt_bridge
+
+  - name: routing
+    category: decision
+    enabled_in_mvp: true
+    replaced_by_gt_in_mvp: false
+    current_mvp_implementation: Real Apollo routing receives bridge-issued route requests or lane-follow commands.
+    required_inputs:
+      - /apollo/raw_routing_request
+      - /apollo/external_command/lane_follow
+      - Apollo HDMap
+      - ego localization
+    expected_outputs:
+      - /apollo/routing_response
+      - routing success or failure diagnostics
+    primary_input_channels:
+      - /apollo/raw_routing_request
+      - /apollo/external_command/lane_follow
+      - /apollo/localization/pose
+    primary_output_channels:
+      - /apollo/routing_response
+    evidence_artifacts:
+      - routing_event_debug.jsonl
+      - goal_validity_debug.jsonl
+      - route_health.json
+      - summary.json
+    reproduction_level_required: gt_bridge
+
+  - name: localization
+    category: state_estimation
+    enabled_in_mvp: true
+    replaced_by_gt_in_mvp: true
+    current_mvp_implementation: CARLA ground truth localization is published to Apollo localization channel.
+    required_inputs:
+      - CARLA ego transform
+      - CARLA ego velocity
+      - simulation timestamp
+    expected_outputs:
+      - /apollo/localization/pose
+    primary_input_channels:
+      - CARLA world snapshot
+      - CARLA ego actor state
+    primary_output_channels:
+      - /apollo/localization/pose
+    evidence_artifacts:
+      - cyber_bridge_stats.json
+      - localization_debug.jsonl
+      - timeseries.csv
+      - route_health.json
+    reproduction_level_required: gt_bridge
+
+  - name: perception
+    category: perception
+    enabled_in_mvp: true
+    replaced_by_gt_in_mvp: true
+    current_mvp_implementation: CARLA actor ground truth is converted to Apollo obstacle and traffic-light inputs where available.
+    required_inputs:
+      - CARLA actors
+      - CARLA traffic lights
+      - ego pose
+      - obstacle radius or filter policy
+    expected_outputs:
+      - /apollo/perception/obstacles
+      - /apollo/perception/traffic_light
+    primary_input_channels:
+      - CARLA world actors
+      - CARLA traffic-light state
+    primary_output_channels:
+      - /apollo/perception/obstacles
+      - /apollo/perception/traffic_light
+    evidence_artifacts:
+      - direct_bridge_actor_snapshot.json
+      - cyber_bridge_stats.json
+      - obstacle_debug.jsonl
+      - summary.json
+    reproduction_level_required: gt_bridge
+
+  - name: prediction
+    category: behavior_prediction
+    enabled_in_mvp: false
+    replaced_by_gt_in_mvp: true
+    current_mvp_implementation: Not a primary MVP capability signal; obstacle behavior is GT-driven and may bypass native prediction evidence.
+    required_inputs:
+      - /apollo/perception/obstacles
+      - /apollo/localization/pose
+      - /apollo/routing_response
+    expected_outputs:
+      - /apollo/prediction
+      - prediction availability diagnostics
+    primary_input_channels:
+      - /apollo/perception/obstacles
+      - /apollo/localization/pose
+      - /apollo/routing_response
+    primary_output_channels:
+      - /apollo/prediction
+    evidence_artifacts:
+      - cyber_channel_status.json
+      - Apollo module logs
+      - summary.json
+    reproduction_level_required: gt_bridge_declared
+
+  - name: planning
+    category: motion_planning
+    enabled_in_mvp: true
+    replaced_by_gt_in_mvp: false
+    current_mvp_implementation: Real Apollo planning consumes routing, localization, chassis, and GT obstacle channels.
+    required_inputs:
+      - /apollo/routing_response
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+      - /apollo/perception/obstacles
+    expected_outputs:
+      - /apollo/planning
+      - non-empty ADCTrajectory when route materializes
+    primary_input_channels:
+      - /apollo/routing_response
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+      - /apollo/perception/obstacles
+      - /apollo/prediction
+    primary_output_channels:
+      - /apollo/planning
+    evidence_artifacts:
+      - planning_topic_debug.jsonl
+      - planning_topic_debug_summary.json
+      - planning_trajectory_type_summary.finalized.json
+      - route_health.json
+    reproduction_level_required: gt_bridge
+
+  - name: control
+    category: vehicle_control
+    enabled_in_mvp: true
+    replaced_by_gt_in_mvp: false
+    current_mvp_implementation: Real Apollo control consumes planning and state, then bridge maps commands to CARLA actuation.
+    required_inputs:
+      - /apollo/planning
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+    expected_outputs:
+      - /apollo/control
+      - throttle/brake/steer commands for bridge mapping
+    primary_input_channels:
+      - /apollo/planning
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+    primary_output_channels:
+      - /apollo/control
+    evidence_artifacts:
+      - control_handoff_summary.json
+      - cyber_bridge_stats.json
+      - timeseries.csv
+      - direct_bridge_control_apply.jsonl
+    reproduction_level_required: gt_bridge
+
+  - name: canbus_chassis
+    category: vehicle_state
+    enabled_in_mvp: true
+    replaced_by_gt_in_mvp: true
+    current_mvp_implementation: CARLA vehicle state is converted into Apollo chassis feedback.
+    required_inputs:
+      - CARLA ego speed
+      - CARLA ego control feedback
+      - simulation timestamp
+    expected_outputs:
+      - /apollo/canbus/chassis
+    primary_input_channels:
+      - CARLA ego actor state
+      - CARLA applied control
+    primary_output_channels:
+      - /apollo/canbus/chassis
+    evidence_artifacts:
+      - cyber_bridge_stats.json
+      - timeseries.csv
+      - direct_bridge_control_apply.jsonl
+      - summary.json
+    reproduction_level_required: gt_bridge
+
+  - name: guardian_monitor
+    category: safety_monitoring
+    enabled_in_mvp: false
+    replaced_by_gt_in_mvp: false
+    current_mvp_implementation: Not a promotion signal for the CARLA GT MVP, but logs may explain Apollo-side module health.
+    required_inputs:
+      - Apollo module status
+      - /apollo/control
+      - /apollo/planning
+    expected_outputs:
+      - safety or monitor status
+      - module health diagnostics
+    primary_input_channels:
+      - Apollo monitor inputs
+      - /apollo/control
+      - /apollo/planning
+    primary_output_channels:
+      - Apollo monitor logs
+      - guardian status channels
+    evidence_artifacts:
+      - Apollo module logs
+      - monitor logs
+      - summary.json
+    reproduction_level_required: declared_if_used
+
+  - name: dreamview
+    category: operator_ui
+    enabled_in_mvp: true
+    replaced_by_gt_in_mvp: false
+    current_mvp_implementation: Dreamview is an operator and visualization surface, not evidence that planning/control are healthy by itself.
+    required_inputs:
+      - Apollo runtime status
+      - selected map and vehicle
+      - CyberRT channels
+    expected_outputs:
+      - HMI readiness state
+      - visualization of routing, planning, localization, and control
+    primary_input_channels:
+      - /apollo/localization/pose
+      - /apollo/routing_response
+      - /apollo/planning
+      - /apollo/control
+    primary_output_channels:
+      - Dreamview UI state
+      - optional external commands
+    evidence_artifacts:
+      - dreamview_launch.log
+      - Dreamview screenshot or video
+      - town01_demo_recording_inspection.json
+      - manifest.json
+    reproduction_level_required: operator_evidence
+
+  - name: cyberrt
+    category: runtime_middleware
+    enabled_in_mvp: true
+    replaced_by_gt_in_mvp: false
+    current_mvp_implementation: CyberRT transports Apollo channels and records module/runtime evidence.
+    required_inputs:
+      - Apollo runtime environment
+      - CyberRT channel writers and readers
+      - simulation time bridge policy
+    expected_outputs:
+      - Apollo channel transport
+      - CyberRT logs or records
+      - module materialization evidence
+    primary_input_channels:
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+      - /apollo/perception/obstacles
+      - /apollo/routing_response
+      - /apollo/planning
+      - /apollo/control
+    primary_output_channels:
+      - CyberRT runtime logs
+      - cyber recorder output
+      - channel debug summaries
+    evidence_artifacts:
+      - cyber_bridge_stats.json
+      - bridge_transport_summary.json
+      - Apollo planning/control logs
+      - cyber recorder files
+    reproduction_level_required: gt_bridge

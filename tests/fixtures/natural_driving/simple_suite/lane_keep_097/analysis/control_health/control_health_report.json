@@ -1,0 +1,37 @@
+{
+  "schema_version": "control_health_report.v1",
+  "run_id": "lane_keep_097",
+  "scenario_class": "lane_keep",
+  "route_id": "lane097",
+  "status": "pass",
+  "failure_reason": null,
+  "runtime_contract_status": "aligned",
+  "routing_materialized": true,
+  "planning_materialized": true,
+  "control_handoff_status": "control_consuming_with_nonzero_planning",
+  "raw_mapped_applied_control_available": true,
+  "metrics": {
+    "control_latency_p95_ms": 80.0,
+    "brake_throttle_conflict_frames": 0,
+    "mapped_applied_steer_abs_error_p95": 0.0,
+    "mapped_applied_throttle_abs_error_p95": 0.0,
+    "mapped_applied_brake_abs_error_p95": 0.0,
+    "lateral_guard_apply_count": 0,
+    "trajectory_contract_guard_apply_count": 0
+  },
+  "missing_fields": [],
+  "missing_inputs": [],
+  "warnings": [],
+  "thresholds": {
+    "max_control_latency_p95_ms": 500.0,
+    "max_brake_throttle_conflict_frames": 0,
+    "max_mapped_applied_abs_error_p95": 0.1
+  },
+  "source": {
+    "run_dir": "tests/fixtures/natural_driving/simple_suite/lane_keep_097",
+    "summary_path": "tests/fixtures/natural_driving/simple_suite/lane_keep_097/summary.json",
+    "manifest_path": "tests/fixtures/natural_driving/simple_suite/lane_keep_097/manifest.json",
+    "timeseries_path": "tests/fixtures/natural_driving/simple_suite/lane_keep_097/timeseries.csv"
+  },
+  "interpretation_boundary": "Control-health report checks handoff and raw/mapped/applied command evidence only. It does not prove Apollo planning quality or full perception/localization."
+}

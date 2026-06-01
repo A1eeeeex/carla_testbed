@@ -1,0 +1,164 @@
+schema_version: canonical_routes.v1
+name: town01_random_regression_pool_20260416
+map: Town01
+description: >
+  Fixed six-route Town01 random regression pool sampled from the tracked
+  town01_route_corpus.json with seed 20260416. This is not a promotion gate by
+  itself; it is a robustness screen after canonical hard gates do not regress.
+sampling:
+  source_corpus: carla_testbed/assets/routes/town01/town01_route_corpus.json
+  seed: 20260416
+  excluded_route_ids:
+    - town01_rh_spawn097_goal046
+    - town01_rh_spawn217_goal046
+    - town01_rh_spawn031_goal056
+    - town01_rh_spawn217_goal048
+    - town01_rh_spawn213_goal059
+  categories:
+    lane_keep_candidate: 2
+    junction_traverse_candidate: 2
+    curve_lane_follow_candidate: 2
+routes:
+  - route_id: random_lane_183_044
+    stable_id: town01_rh_spawn183_goal044
+    map: Town01
+    route_class: lane_keep
+    curve_class: straight_or_low_curvature
+    spawn_ref: town01_spawn183
+    goal_ref: town01_goal044
+    route_ref: town01_route_corpus/town01_rh_spawn183_goal044
+    expected_duration_s: 90
+    success_criteria:
+      runtime_contract_status: aligned
+      control_handoff_status: control_consuming_with_nonzero_planning
+      diagnostic_only: true
+    no_regression_tags:
+      - random_regression_pool_20260416
+      - lane_keep_candidate
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+    gate_role: informational
+    notes: "Seeded random lane-keep candidate; sampled from tracked corpus."
+
+  - route_id: random_lane_213_048
+    stable_id: town01_rh_spawn213_goal048
+    map: Town01
+    route_class: lane_keep
+    curve_class: straight_or_low_curvature
+    spawn_ref: town01_spawn213
+    goal_ref: town01_goal048
+    route_ref: town01_route_corpus/town01_rh_spawn213_goal048
+    expected_duration_s: 90
+    success_criteria:
+      runtime_contract_status: aligned
+      control_handoff_status: control_consuming_with_nonzero_planning
+      diagnostic_only: true
+    no_regression_tags:
+      - random_regression_pool_20260416
+      - lane_keep_candidate
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+    gate_role: informational
+    notes: "Seeded random lane-keep candidate; sampled from tracked corpus."
+
+  - route_id: random_junction_176_063
+    stable_id: town01_rh_spawn176_goal063
+    map: Town01
+    route_class: junction_turn
+    curve_class: turn_through_junction
+    spawn_ref: town01_spawn176
+    goal_ref: town01_goal063
+    route_ref: town01_route_corpus/town01_rh_spawn176_goal063
+    expected_duration_s: 100
+    success_criteria:
+      runtime_contract_status: aligned
+      control_handoff_status: control_consuming_with_nonzero_planning
+      diagnostic_only: true
+    no_regression_tags:
+      - random_regression_pool_20260416
+      - junction_traverse_candidate
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+    gate_role: informational
+    notes: "Seeded random junction candidate; sampled from tracked corpus."
+
+  - route_id: random_junction_071_063
+    stable_id: town01_rh_spawn071_goal063
+    map: Town01
+    route_class: junction_turn
+    curve_class: turn_through_junction
+    spawn_ref: town01_spawn071
+    goal_ref: town01_goal063
+    route_ref: town01_route_corpus/town01_rh_spawn071_goal063
+    expected_duration_s: 100
+    success_criteria:
+      runtime_contract_status: aligned
+      control_handoff_status: control_consuming_with_nonzero_planning
+      diagnostic_only: true
+    no_regression_tags:
+      - random_regression_pool_20260416
+      - junction_traverse_candidate
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+    gate_role: informational
+    notes: "Seeded random junction candidate; sampled from tracked corpus."
+
+  - route_id: random_curve_219_048
+    stable_id: town01_rh_spawn219_goal048
+    map: Town01
+    route_class: curve
+    curve_class: curve_lane_follow_candidate
+    spawn_ref: town01_spawn219
+    goal_ref: town01_goal048
+    route_ref: town01_route_corpus/town01_rh_spawn219_goal048
+    expected_duration_s: 110
+    success_criteria:
+      runtime_contract_status: aligned
+      control_handoff_status: control_consuming_with_nonzero_planning
+      diagnostic_only: true
+    no_regression_tags:
+      - random_regression_pool_20260416
+      - curve_lane_follow_candidate
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+    gate_role: informational
+    notes: "Seeded random curve candidate; sampled from tracked corpus."
+
+  - route_id: random_curve_177_051
+    stable_id: town01_rh_spawn177_goal051
+    map: Town01
+    route_class: curve
+    curve_class: curve_lane_follow_candidate
+    spawn_ref: town01_spawn177
+    goal_ref: town01_goal051
+    route_ref: town01_route_corpus/town01_rh_spawn177_goal051
+    expected_duration_s: 110
+    success_criteria:
+      runtime_contract_status: aligned
+      control_handoff_status: control_consuming_with_nonzero_planning
+      diagnostic_only: true
+    no_regression_tags:
+      - random_regression_pool_20260416
+      - curve_lane_follow_candidate
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+    gate_role: informational
+    notes: "Seeded random curve candidate; sampled from tracked corpus."

@@ -27,7 +27,15 @@ from carla_testbed.config.rig_postprocess import (
     save_json,
     hash_file,
 )
-from carla_testbed.record import RunArtifactStore, TimeseriesRecorder, build_manifest
+from carla_testbed.record import (
+    ROUTE_CURVE_FIELDS_SCHEMA_VERSION,
+    RunArtifactStore,
+    TimeseriesRecorder,
+    build_manifest,
+    build_carla_world_identity,
+    build_route_curve_row,
+    route_definition_from_metadata,
+)
 from carla_testbed.record.monitor import SignalMonitor
 from carla_testbed.record.manager import RecordManager, RecordOptions
 from carla_testbed.record.fail_capture import FailFrameCapture
@@ -63,6 +71,37 @@ def _cleanup_error_summaries(errors: Tuple[CleanupError, ...]) -> List[dict]:
         }
         for err in errors
     ]
+
+
+def _runtime_carla_world_identity(
+    world: carla.World,
+    carla_map: carla.Map,
+    *,
+    configured_town: str | None,
+) -> dict:
+    warnings: list[str] = []
+    loaded_map_name = None
+    spawn_point_count = None
+    try:
+        loaded_map_name = str(getattr(carla_map, "name", None) or "")
+    except Exception as exc:
+        warnings.append(f"map_name_unavailable:{type(exc).__name__}:{exc}")
+    if not loaded_map_name:
+        try:
+            loaded_map_name = str(getattr(world.get_map(), "name", None) or "")
+        except Exception as exc:
+            warnings.append(f"world_get_map_name_unavailable:{type(exc).__name__}:{exc}")
+    try:
+        spawn_point_count = len(carla_map.get_spawn_points())
+    except Exception as exc:
+        warnings.append(f"spawn_points_unavailable:{type(exc).__name__}:{exc}")
+    return build_carla_world_identity(
+        configured_town=configured_town,
+        loaded_map_name=loaded_map_name or None,
+        spawn_point_count=spawn_point_count,
+        source="harness.runtime",
+        warnings=warnings,
+    )
 
 
 def _register_harness_cleanup_resources(
@@ -140,6 +179,33 @@ class TestHarness:
 
     def _vec3(self, vec) -> Dict[str, float]:
         return {"x": getattr(vec, "x", 0.0), "y": getattr(vec, "y", 0.0), "z": getattr(vec, "z", 0.0)}
+
+    def _route_curve_ego_pose(self, ego) -> dict[str, float] | None:
+        try:
+            tr = ego.get_transform()
+        except Exception as exc:
+            print(f"[WARN] route-curve ego pose unavailable: {exc}")
+            return None
+        loc = tr.location
+        rot = tr.rotation
+        return {
+            "x": loc.x,
+            "y": loc.y,
+            "z": loc.z,
+            "heading": math.radians(rot.yaw or 0.0),
+        }
+
+    def _route_curve_ego_yaw_rate(self, ego) -> float | None:
+        getter = getattr(ego, "get_angular_velocity", None)
+        if getter is None:
+            return None
+        try:
+            angular = getter()
+        except Exception as exc:
+            print(f"[WARN] route-curve ego yaw-rate unavailable: {exc}")
+            return None
+        # CARLA reports angular velocity in degrees/s; route diagnostics use radians.
+        return math.radians(float(getattr(angular, "z", 0.0)))
 
     def _pose_from_actor(self, actor) -> Dict[str, float]:
         tr = actor.get_transform()
@@ -288,16 +354,23 @@ class TestHarness:
         sensor_capture_enabled: bool = True,
         tick_callbacks: Optional[List[Callable[..., None]]] = None,
         hooks: Optional[List[RunHook]] = None,
+        scenario_metadata: Optional[dict] = None,
     ) -> Tuple[HarnessState, dict]:
         run_start_wall_time_s = time.time()
         out_dir.mkdir(parents=True, exist_ok=True)
         artifact_store = RunArtifactStore(out_dir).ensure()
+        carla_world_identity = _runtime_carla_world_identity(
+            world,
+            carla_map,
+            configured_town=self.cfg.town,
+        )
         artifact_store.write_manifest(
             build_manifest(
                 run_id=out_dir.name,
                 start_time_wall_s=run_start_wall_time_s,
                 config_path=None,
                 carla_town=self.cfg.town,
+                carla_world_identity=carla_world_identity,
                 scenario_name="legacy_follow_stop",
                 backend_name="harness",
                 metadata={
@@ -305,6 +378,7 @@ class TestHarness:
                     "record_modes": list(self.cfg.record_modes) if hasattr(self.cfg, "record_modes") else [],
                     "ros2_native_enabled": bool(self.cfg.enable_ros2_native),
                     "ros2_gt_enabled": bool(self.cfg.enable_ros2_gt),
+                    "scenario_metadata": json.loads(json.dumps(scenario_metadata or {}, default=str)),
                 },
             )
         )
@@ -448,6 +522,12 @@ class TestHarness:
         progress_interval = max(1, self.cfg.max_steps // 20)  # print ~20 updates
         actor_filter_failures: Dict[str, int] = {}
         metrics = MetricsAccumulator()
+        route_curve_diagnostics: dict[str, int] = {
+            "missing_route_context": 0,
+            "missing_ego_pose": 0,
+            "external_control_trace_unavailable": 0,
+        }
+        route_curve_route = route_definition_from_metadata(scenario_metadata)
         hook_dispatcher = HookDispatcher(list(hooks or []) + adapt_tick_callbacks(tick_callbacks), warn=print)
         run_hook_context: dict[str, Any] = {
             "out_dir": out_dir,
@@ -493,6 +573,8 @@ class TestHarness:
 
                 # Stage 2: collect simulation state for this frame.
                 v = (ego.get_velocity().length())
+                route_curve_ego_pose = self._route_curve_ego_pose(ego)
+                route_curve_ego_yaw_rate = self._route_curve_ego_yaw_rate(ego)
                 self.state.max_speed_mps = max(self.state.max_speed_mps, v)
                 collisions = col_src.fetch_and_clear() if col_src else []
                 invasions = inv_src.fetch_and_clear() if inv_src else []
@@ -667,6 +749,48 @@ class TestHarness:
                     "collision_count": self.state.collision_count,
                     "lane_invasion_count": self.state.lane_invasion_count,
                 }
+                if disable_control:
+                    # An external stack owns CARLA actuation. The harness
+                    # controller command is only a compatibility placeholder
+                    # here; recording it as Apollo raw/mapped control would
+                    # create false control-mapping evidence.
+                    route_curve_raw_control = None
+                    route_curve_mapped_control = None
+                    route_curve_diagnostics["external_control_trace_unavailable"] += 1
+                else:
+                    route_curve_raw_control = {"throttle": cmd.throttle, "brake": cmd.brake, "steer": cmd.steer}
+                    route_curve_mapped_control = {
+                        "throttle": clamped_throttle,
+                        "brake": clamped_brake,
+                        "steer": clamped_steer,
+                    }
+
+                route_curve_row = build_route_curve_row(
+                    sim_time=timestamp,
+                    frame_id=frame_id,
+                    route_id=(
+                        (last_debug.get("route_id") if isinstance(last_debug, dict) else None)
+                        or (route_curve_route.route_id if route_curve_route is not None else None)
+                    ),
+                    route=route_curve_route,
+                    ego_pose=route_curve_ego_pose,
+                    ego_speed=v,
+                    ego_yaw_rate=route_curve_ego_yaw_rate,
+                    apollo_control=last_debug,
+                    raw_control=route_curve_raw_control,
+                    mapped_control=route_curve_mapped_control,
+                    applied_control={
+                        "throttle": applied_throttle,
+                        "brake": applied_brake,
+                        "steer": applied_steer,
+                    },
+                    guard_flags=last_debug,
+                )
+                if route_curve_row["route_x"] is None:
+                    route_curve_diagnostics["missing_route_context"] += 1
+                if route_curve_row["ego_x"] is None:
+                    route_curve_diagnostics["missing_ego_pose"] += 1
+                row.update(route_curve_row)
                 # append debug fields
                 for k, vdbg in last_debug.items():
                     row[f"dbg_{k}"] = vdbg
@@ -717,6 +841,10 @@ class TestHarness:
                 ):
                     self.state.success = True
                     break
+                # Keep the local CARLA UI useful for demo recording. Previously
+                # spectator updates happened only on progress logs, which made
+                # screen-captured demos stay at a stale or first-person-like view.
+                self._spectator_follow(world, ego)
                 if record_mgr:
                     record_mgr.capture(frame_id, timestamp)
 
@@ -725,7 +853,6 @@ class TestHarness:
                     pct = step / float(self.cfg.max_steps) * 100.0
                     print(f"[progress] {step}/{self.cfg.max_steps} ({pct:.0f}%), est remaining {remaining:.1f}s")
                     _persist_gt_stats()
-                    self._spectator_follow(world, ego)
         finally:
             run_hook_context["state"] = self.state
             hook_dispatcher.notify("on_run_end", run_hook_context)
@@ -793,11 +920,14 @@ class TestHarness:
             "ros2_gt_enabled": self.cfg.enable_ros2_gt,
             "ros2_gt": gt_pub.get_stats() if gt_pub is not None else None,
             "ros2_bag_enabled": self.cfg.enable_ros2_bag if hasattr(self.cfg, "enable_ros2_bag") else False,
+            "carla_world": carla_world_identity,
             "cleanup_error_count": len(cleanup_errors),
             "cleanup_errors_count": len(cleanup_errors),
             "cleanup_errors": _cleanup_error_summaries(cleanup_errors),
             "hook_error_count": len(hook_dispatcher.errors),
             "hook_errors": hook_error_summaries(hook_dispatcher.errors),
+            "route_curve_fields_schema_version": ROUTE_CURVE_FIELDS_SCHEMA_VERSION,
+            "route_curve_diagnostics": route_curve_diagnostics,
         }
         summary["metrics"] = metrics.finalize(
             wall_duration_s=summary["wall_duration_s"],

@@ -84,7 +84,22 @@ def test_inspect_run_reads_fake_manifest_and_summary(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "manifest.json").write_text(
-        json.dumps({"run_id": "fake", "scenario_name": "follow_stop", "backend_name": "dummy"})
+        json.dumps(
+            {
+                "run_id": "fake",
+                "scenario_name": "follow_stop",
+                "backend_name": "dummy",
+                "algorithm_variant_manifest_path": "missing_variant.yaml",
+                "carla_world": {
+                    "schema_version": "carla_world_identity.v1",
+                    "configured_town": "Town01",
+                    "loaded_map_name": "/Game/Carla/Maps/Town01",
+                    "matches_configured_town": True,
+                    "spawn_point_count": 255,
+                    "source": "unit",
+                },
+            }
+        )
     )
     (run_dir / "summary.json").write_text(
         json.dumps(
@@ -103,6 +118,49 @@ def test_inspect_run_reads_fake_manifest_and_summary(tmp_path: Path) -> None:
     assert "run_id=fake" in result.stdout
     assert "success=True" in result.stdout
     assert "avg_speed_mps=1.2" in result.stdout
+    assert "carla_world configured_town=Town01" in result.stdout
+    assert "loaded_map_name=/Game/Carla/Maps/Town01" in result.stdout
+    assert "matches_configured_town=True" in result.stdout
+    assert "spawn_point_count=255" in result.stdout
+    assert "artifact_completeness status=insufficient_data" in result.stdout
+    assert "missing_artifacts=" in result.stdout
+    assert "missing_manifest_fields_count=" in result.stdout
+    assert "invalid_manifest_source_fields=algorithm_variant_manifest_path" in result.stdout
+    assert "missing_control_trace_fields=" in result.stdout
+
+
+def test_inspect_run_surfaces_invalid_report_source_fields(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    route_dir = run_dir / "analysis" / "route_health"
+    route_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": "fake", "scenario_class": "lane_keep", "route_id": "lane097"})
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps({"run_id": "fake", "scenario_class": "lane_keep", "route_id": "lane097"})
+    )
+    (route_dir / "route_health.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "route_health.v1",
+                "route_id": "lane097",
+                "source": {
+                    "manifest_path": "manifest.json",
+                    "summary_path": "summary.json",
+                    "timeseries_path": "missing_timeseries.csv",
+                    "route_path": "missing_route.json",
+                },
+            }
+        )
+    )
+
+    result = _run_cli("inspect-run", str(run_dir))
+
+    assert result.returncode == 0
+    assert "invalid_report_source_fields_count=2" in result.stdout
+    assert "invalid_report_source_fields=" in result.stdout
+    assert "route_health.source.timeseries_path" in result.stdout
+    assert "route_health.source.route_path" in result.stdout
 
 
 def test_run_dry_run_loads_typed_config(tmp_path: Path) -> None:

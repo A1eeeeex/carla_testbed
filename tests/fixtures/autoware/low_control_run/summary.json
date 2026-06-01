@@ -1,0 +1,7 @@
+{
+  "success": true,
+  "fail_reason": null,
+  "max_speed_mps": 0.87,
+  "collision_count": 0,
+  "lane_invasion_count": 0
+}

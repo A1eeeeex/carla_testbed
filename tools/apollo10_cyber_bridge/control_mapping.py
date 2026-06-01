@@ -13,6 +13,15 @@ except Exception:
 FloatCoercer = Callable[[Any, float, str, str], float]
 ZeroHoldApplier = Callable[[float, float, float], float]
 
+STEERING_PERCENT_FIELDS = {"steering_target", "steering_percentage"}
+STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT = "single_percent_at_select"
+STEERING_NORMALIZATION_LEGACY_DOUBLE_PERCENT = "legacy_double_percent"
+STEERING_NORMALIZATION_FIELD_VALUE_CLAMP_ONLY = "field_value_clamp_only"
+STEERING_PERCENT_NORMALIZATION_MODES = {
+    STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT,
+    STEERING_NORMALIZATION_LEGACY_DOUBLE_PERCENT,
+}
+
 
 def _clamp(val: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, val))
@@ -53,7 +62,13 @@ def select_steering_field(
     physical_mode: bool,
     physical_steer_field_priority: Sequence[str],
     coerce_float: FloatCoercer,
+    percent_normalization_mode: str = STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT,
 ) -> Tuple[str, float]:
+    percent_mode = (
+        percent_normalization_mode
+        if percent_normalization_mode in STEERING_PERCENT_NORMALIZATION_MODES
+        else STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT
+    )
     field_order = (
         tuple(physical_steer_field_priority)
         if physical_mode
@@ -62,16 +77,31 @@ def select_steering_field(
     for key in field_order:
         if key in raw_fields:
             raw_value = coerce_float(raw_fields.get(key), 0.0, key, "apollo.control")
-            if key in {"steering_target", "steering_percentage"}:
+            if key in STEERING_PERCENT_FIELDS:
+                if percent_mode == STEERING_NORMALIZATION_LEGACY_DOUBLE_PERCENT:
+                    return key, raw_value / 10000.0
                 return key, raw_value / 100.0
             return key, raw_value
     return "missing", 0.0
 
 
+def steering_normalization_mode(
+    selected_field: str,
+    *,
+    percent_normalization_mode: str = STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT,
+) -> str:
+    if selected_field in STEERING_PERCENT_FIELDS:
+        if percent_normalization_mode in STEERING_PERCENT_NORMALIZATION_MODES:
+            return percent_normalization_mode
+        return STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT
+    return STEERING_NORMALIZATION_FIELD_VALUE_CLAMP_ONLY
+
+
 def normalize_steering_command(steer_value: float, *, physical_mode: bool) -> float:
+    # select_steering_field() applies the configured percent-normalization
+    # policy for Apollo percentage fields.  This helper is intentionally only a
+    # final safety clamp so the policy is visible in trace artifacts.
     raw_steer = float(steer_value)
-    if not physical_mode:
-        raw_steer /= 100.0
     return _clamp(raw_steer, -1.0, 1.0)
 
 

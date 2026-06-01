@@ -1,0 +1,439 @@
+schema_version: natural_driving_suite.v1
+name: town01_truth_natural_driving
+map: Town01
+description: >
+  Target suite for Apollo + CARLA Town01 truth-input natural driving. This
+  suite defines desired evidence and gates only; it does not change runtime
+  logic or claim full Apollo perception/localization reproduction.
+
+mode:
+  truth_input: true
+  algorithm_variant_id: apollo_10_0_carla_gt_town01_reference
+  algorithm_variant_manifest_path: configs/algorithms/apollo_variant.carla_gt.example.yaml
+  transport_mode: ros2_gt
+  backend: apollo_cyberrt
+  apollo_perception_reproduced: false
+  apollo_localization_reproduced: false
+  default_backend: ros2_gt
+  candidate_backends:
+    - carla_direct
+
+gates:
+  link_health:
+    required:
+      - runtime_contract.status=aligned
+      - routing_materialized
+      - planning_nonempty
+      - control_available
+  geometry_health:
+    required:
+      - route_health.json
+      - lateral_error_p95_m
+      - heading_error_p95_rad
+      - curve_segments.csv when applicable
+  behavior_health:
+    required:
+      - route_completion_ratio
+      - no_stuck
+      - no_off_route
+      - traffic_light_expected_behavior when applicable
+  control_health:
+    required:
+      - control_handoff_status=control_consuming_with_nonzero_planning
+      - raw_mapped_applied_control_timeseries
+      - no_excessive_brake_throttle_conflict
+
+scenarios:
+  - scenario_id: lane_keep_097
+    route_id: lane097
+    stable_id: town01_rh_spawn097_goal046
+    scenario_class: lane_keep
+    map: Town01
+    duration_s: 70
+    spawn_ref: town01_spawn097
+    goal_ref: town01_goal046
+    route_ref: town01_rh_spawn097_goal046
+    gate_role: hard_gate
+    required_channels:
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+      - /apollo/routing_response
+      - /apollo/planning
+      - /apollo/control
+    success_criteria:
+      link_health:
+        runtime_contract_status: aligned
+        control_handoff_status: control_consuming_with_nonzero_planning
+      geometry_health:
+        route_health_required: true
+        max_lateral_error_p95_m: 1.5
+        max_heading_error_p95_rad: 0.35
+      behavior_health:
+        min_route_distance_m: 75
+        no_collision: true
+        no_stuck: true
+      control_health:
+        no_excessive_brake_throttle_conflict: true
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - config.resolved.yaml
+      - events.jsonl
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+      - analysis/route_health/route_health.csv
+      - analysis/route_health/route_health_summary.md
+      - analysis/route_health/curve_segments.csv
+      - analysis/apollo_channel_health/apollo_channel_health_report.json
+      - analysis/control_health/control_health_report.json
+      - analysis/failure_timeline/failure_timeline_report.json
+      - analysis/route_start_alignment/route_start_alignment_report.json
+      - analysis/artifact_completeness/artifact_completeness_report.json
+    notes: "Lane-keep hard gate inherited from canonical five."
+
+  - scenario_id: lane_keep_or_mild_curve_217
+    route_id: lane217
+    stable_id: town01_rh_spawn217_goal046
+    scenario_class: lane_keep
+    map: Town01
+    duration_s: 70
+    spawn_ref: town01_spawn217
+    goal_ref: town01_goal046
+    route_ref: town01_rh_spawn217_goal046
+    gate_role: hard_gate
+    required_channels:
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+      - /apollo/routing_response
+      - /apollo/planning
+      - /apollo/control
+    success_criteria:
+      link_health:
+        runtime_contract_status: aligned
+        control_handoff_status: control_consuming_with_nonzero_planning
+      geometry_health:
+        route_health_required: true
+        max_lateral_error_p95_m: 1.5
+        max_heading_error_p95_rad: 0.35
+      behavior_health:
+        no_route_established_but_no_control_progress: true
+        no_stuck: true
+      control_health:
+        raw_mapped_applied_control_available: true
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - config.resolved.yaml
+      - events.jsonl
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+      - analysis/route_health/route_health.csv
+      - analysis/route_health/route_health_summary.md
+      - analysis/route_health/curve_segments.csv
+      - analysis/apollo_channel_health/apollo_channel_health_report.json
+      - analysis/control_health/control_health_report.json
+      - analysis/failure_timeline/failure_timeline_report.json
+      - analysis/route_start_alignment/route_start_alignment_report.json
+      - analysis/artifact_completeness/artifact_completeness_report.json
+    notes: "No-regression lane/mild-curve gate; not a curve-health substitute."
+
+  - scenario_id: junction_turn_031
+    route_id: junction031
+    stable_id: town01_rh_spawn031_goal056
+    scenario_class: junction_turn
+    map: Town01
+    duration_s: 70
+    spawn_ref: town01_spawn031
+    goal_ref: town01_goal056
+    route_ref: town01_rh_spawn031_goal056
+    gate_role: hard_gate
+    required_channels:
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+      - /apollo/routing_response
+      - /apollo/planning
+      - /apollo/control
+    success_criteria:
+      link_health:
+        runtime_contract_status: aligned
+        control_handoff_status: control_consuming_with_nonzero_planning
+      geometry_health:
+        route_health_required: true
+      behavior_health:
+        junction_traverse_expected: true
+        no_stuck: true
+      control_health:
+        no_control_drop_through_junction: true
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - config.resolved.yaml
+      - events.jsonl
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+      - analysis/route_health/route_health.csv
+      - analysis/route_health/route_health_summary.md
+      - analysis/route_health/curve_segments.csv
+      - analysis/apollo_channel_health/apollo_channel_health_report.json
+      - analysis/control_health/control_health_report.json
+      - analysis/failure_timeline/failure_timeline_report.json
+      - analysis/route_start_alignment/route_start_alignment_report.json
+      - analysis/artifact_completeness/artifact_completeness_report.json
+    notes: "Junction/turn hard gate."
+
+  - scenario_id: curve_diagnostic_217
+    route_id: curve217
+    stable_id: town01_rh_spawn217_goal048
+    scenario_class: curve_diagnostic
+    map: Town01
+    duration_s: 100
+    spawn_ref: town01_spawn217
+    goal_ref: town01_goal048
+    route_ref: town01_rh_spawn217_goal048
+    gate_role: diagnostic_gate
+    required_channels:
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+      - /apollo/routing_response
+      - /apollo/planning
+      - /apollo/control
+    success_criteria:
+      link_health:
+        runtime_contract_status: aligned
+      geometry_health:
+        route_health_required: true
+        curve_semantic_window_required: true
+      behavior_health:
+        diagnostic_only: true
+      control_health:
+        raw_mapped_applied_control_available: true
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - config.resolved.yaml
+      - events.jsonl
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+      - analysis/route_health/route_health.csv
+      - analysis/route_health/route_health_summary.md
+      - analysis/route_health/curve_segments.csv
+      - analysis/apollo_channel_health/apollo_channel_health_report.json
+      - analysis/control_health/control_health_report.json
+      - analysis/failure_timeline/failure_timeline_report.json
+      - analysis/route_start_alignment/route_start_alignment_report.json
+      - analysis/artifact_completeness/artifact_completeness_report.json
+    notes: "Curve lateral semantics diagnostic. Current target is explanation, not promotion."
+
+  - scenario_id: curve_diagnostic_213
+    route_id: curve213
+    stable_id: town01_rh_spawn213_goal059
+    scenario_class: curve_diagnostic
+    map: Town01
+    duration_s: 100
+    spawn_ref: town01_spawn213
+    goal_ref: town01_goal059
+    route_ref: town01_rh_spawn213_goal059
+    gate_role: diagnostic_gate
+    required_channels:
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+      - /apollo/routing_response
+      - /apollo/planning
+      - /apollo/control
+    success_criteria:
+      link_health:
+        runtime_contract_status: aligned
+      geometry_health:
+        route_health_required: true
+        curve_semantic_window_required: true
+      behavior_health:
+        diagnostic_only: true
+      control_health:
+        raw_mapped_applied_control_available: true
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - config.resolved.yaml
+      - events.jsonl
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+      - analysis/route_health/route_health.csv
+      - analysis/route_health/route_health_summary.md
+      - analysis/route_health/curve_segments.csv
+      - analysis/apollo_channel_health/apollo_channel_health_report.json
+      - analysis/control_health/control_health_report.json
+      - analysis/failure_timeline/failure_timeline_report.json
+      - analysis/route_start_alignment/route_start_alignment_report.json
+      - analysis/artifact_completeness/artifact_completeness_report.json
+    notes: "Second curve diagnostic route. Do not read as curve solved."
+
+  - scenario_id: traffic_light_red_stop_129051_probe
+    route_id: town01_rh_spawn129_goal051
+    stable_id: town01_rh_spawn129_goal051
+    scenario_class: traffic_light_red_stop
+    map: Town01
+    duration_s: 60
+    spawn_ref: town01_spawn129
+    goal_ref: town01_goal051
+    route_ref: town01_rh_spawn129_goal051
+    gate_role: informational
+    required_channels:
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+      - /apollo/perception/traffic_light
+      - /apollo/routing_response
+      - /apollo/planning
+      - /apollo/control
+    success_criteria:
+      link_health:
+        runtime_contract_status: aligned
+      geometry_health:
+        route_health_required: true
+      behavior_health:
+        stop_before_red_light: true
+        no_stop_line_violation: true
+      control_health:
+        brake_or_stop_control_available: true
+    traffic_light_expectation:
+      expected_behavior: red_stop
+      expected_initial_state: RED
+      stimulus_mode: deterministic_gt_control
+      claim_grade: true
+      required_report_fields:
+        - red_stop_distance_m
+        - stopped_at_red
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - config.resolved.yaml
+      - events.jsonl
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+      - analysis/route_health/route_health.csv
+      - analysis/route_health/route_health_summary.md
+      - analysis/route_health/curve_segments.csv
+      - analysis/apollo_channel_health/apollo_channel_health_report.json
+      - analysis/control_health/control_health_report.json
+      - analysis/failure_timeline/failure_timeline_report.json
+      - analysis/route_start_alignment/route_start_alignment_report.json
+      - analysis/artifact_completeness/artifact_completeness_report.json
+      - analysis/traffic_light/traffic_light_contract_report.json
+      - analysis/traffic_light/traffic_light_behavior_report.json
+    notes: >
+      Runnable signalized right-turn probe from the existing Town01 route
+      corpus. Historical evidence says this route is behavior-unhealthy and
+      lacks direct red-light proof, so it remains informational only.
+
+  - scenario_id: traffic_light_green_go_219063_probe
+    route_id: town01_rh_spawn219_goal063
+    stable_id: town01_rh_spawn219_goal063
+    scenario_class: traffic_light_green_go
+    map: Town01
+    duration_s: 60
+    spawn_ref: town01_spawn219
+    goal_ref: town01_goal063
+    route_ref: town01_rh_spawn219_goal063
+    gate_role: informational
+    required_channels:
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+      - /apollo/perception/traffic_light
+      - /apollo/routing_response
+      - /apollo/planning
+      - /apollo/control
+    success_criteria:
+      link_health:
+        runtime_contract_status: aligned
+      geometry_health:
+        route_health_required: true
+      behavior_health:
+        proceed_on_green: true
+        no_unnecessary_stop: true
+      control_health:
+        control_available_through_light: true
+    traffic_light_expectation:
+      expected_behavior: green_go
+      expected_initial_state: GREEN
+      stimulus_mode: deterministic_gt_control
+      claim_grade: true
+      required_report_fields:
+        - green_pass_time_s
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - config.resolved.yaml
+      - events.jsonl
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+      - analysis/route_health/route_health.csv
+      - analysis/route_health/route_health_summary.md
+      - analysis/route_health/curve_segments.csv
+      - analysis/apollo_channel_health/apollo_channel_health_report.json
+      - analysis/control_health/control_health_report.json
+      - analysis/failure_timeline/failure_timeline_report.json
+      - analysis/route_start_alignment/route_start_alignment_report.json
+      - analysis/artifact_completeness/artifact_completeness_report.json
+      - analysis/traffic_light/traffic_light_contract_report.json
+      - analysis/traffic_light/traffic_light_behavior_report.json
+    notes: >
+      Runnable signalized cross-left probe from the existing Town01 route
+      corpus. This is a traffic-light route probe, not proof that Apollo has
+      passed a verified green-light scenario.
+
+  - scenario_id: traffic_light_red_to_green_release_219063_probe
+    route_id: town01_rh_spawn219_goal063
+    stable_id: town01_rh_spawn219_goal063
+    scenario_class: traffic_light_red_to_green_release
+    map: Town01
+    duration_s: 90
+    spawn_ref: town01_spawn219
+    goal_ref: town01_goal063
+    route_ref: town01_rh_spawn219_goal063
+    gate_role: informational
+    required_channels:
+      - /apollo/localization/pose
+      - /apollo/canbus/chassis
+      - /apollo/perception/traffic_light
+      - /apollo/routing_response
+      - /apollo/planning
+      - /apollo/control
+    success_criteria:
+      link_health:
+        runtime_contract_status: aligned
+      geometry_health:
+        route_health_required: true
+      behavior_health:
+        stop_on_red: true
+        release_after_green: true
+      control_health:
+        brake_then_throttle_available: true
+    traffic_light_expectation:
+      expected_behavior: red_to_green_release
+      expected_initial_state: RED
+      expected_release_state: GREEN
+      release_after_s: 10.0
+      stimulus_mode: deterministic_gt_control
+      claim_grade: true
+      required_report_fields:
+        - red_to_green_release_time_s
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - config.resolved.yaml
+      - events.jsonl
+      - timeseries.csv
+      - analysis/route_health/route_health.json
+      - analysis/route_health/route_health.csv
+      - analysis/route_health/route_health_summary.md
+      - analysis/route_health/curve_segments.csv
+      - analysis/apollo_channel_health/apollo_channel_health_report.json
+      - analysis/control_health/control_health_report.json
+      - analysis/failure_timeline/failure_timeline_report.json
+      - analysis/route_start_alignment/route_start_alignment_report.json
+      - analysis/artifact_completeness/artifact_completeness_report.json
+      - analysis/traffic_light/traffic_light_contract_report.json
+      - analysis/traffic_light/traffic_light_behavior_report.json
+    notes: >
+      Runnable signalized route probe for future red-to-green release evidence.
+      It still requires verified signal id, stop-line mapping, and behavior
+      artifacts before any traffic-light interaction claim.

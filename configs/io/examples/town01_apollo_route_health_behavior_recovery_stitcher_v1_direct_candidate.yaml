@@ -7,6 +7,8 @@
 # 说明：
 # - 不改 startup profile，不改 routing/planning/control 参数；
 # - 不改 legacy/physical，不改 steer_scale / target_speed；
+# - steering_percent_normalization 与 `stitcher_v1` 主线保持一致，
+#   直连 A/B 只比较 transport/control-apply path。
 # - 作用域只限 Town01 route-health GT truth transport。
 # -----------------------------------------------------------------------------
 run:
@@ -71,6 +73,10 @@ algo:
       client_timeout_sec: 5.0
       route_command_mode: cyber_direct
       require_no_ros2_runtime: true
+      control_apply_mode: frame_flush_only
+      # Experimental direct-only knob: keep harness as tick owner while matching
+      # the ROS2 GT freshness cadence more closely for A/B diagnosis.
+      stale_world_frame_policy: always_republish
     cyber_domain_id: 80
     docker:
       enabled: true
@@ -124,7 +130,7 @@ algo:
       radius_m: 120.0
       localization_back_offset_m: 1.4235
       map_file: ${APOLLO_MAP_ROOT}/carla_town01/base_map.txt
-      debug_dump_control_raw: true
+      debug_dump_control_raw: false
     planning:
       acc_only_mode: false
       longitudinal_only_pipeline: false
@@ -143,7 +149,12 @@ algo:
       goal_mode: scenario_xy
       target_speed_mps: 8.0
       startup_delay_sec: 3.0
-      startup_apollo_warmup_sec: 30.0
+      # Direct-candidate truth-input runs disable heavyweight raw dumps and sensor
+      # frame capture. Do not add a wall-clock Apollo warmup here: short 70s
+      # simulated canaries can finish before a wall-clock gate releases. The
+      # bridge still requires startup_delay_sec plus writer readiness before
+      # sending routing.
+      startup_apollo_warmup_sec: 0.0
       startup_end_ahead_m: 30.0
       startup_speed_threshold_mps: 0.5
       startup_hold_sec: 3.0
@@ -188,6 +199,7 @@ algo:
       throttle_scale: 1.5
       brake_scale: 1.0
       steer_scale: 0.25
+      steering_percent_normalization: legacy_double_percent
       brake_deadzone: 0.05
       actuator_mapping_mode: legacy
       straight_lane_zero_steer_enabled: false
@@ -239,3 +251,9 @@ algo:
 runtime:
   carla:
     disable_native_ros2_arg: true
+record:
+  sensors:
+    # Truth-input natural-driving diagnostics do not use camera/lidar perception.
+    # Keep raw sensor frame dumps off by default to avoid hot-path PNG I/O
+    # perturbing channel timing; enable explicitly for demo/video runs.
+    enable: false

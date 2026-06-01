@@ -1,0 +1,19 @@
+schema_version: apollo_shadow_mode_check.v1
+algorithm: apollo
+description: >
+  Offline L4 shadow-mode thresholds for Apollo planning/control semantics.
+  This check reads timeseries CSV only; it does not apply control to CARLA.
+
+thresholds:
+  min_planning_hz: 2.0
+  min_control_hz: 2.0
+  max_heading_error_p95_rad: 0.35
+  max_lateral_error_p95_m: 1.5
+  max_matched_point_distance_m: 5.0
+  max_target_point_distance_m: 8.0
+  high_steer_abs_threshold: 0.85
+  max_steer_spike_count: 3
+  max_brake_throttle_conflict_count: 0
+  max_matched_point_too_large_count: 0
+  max_target_point_jump_count: 0
+  route_curvature_correlation_warn_min: 0.1

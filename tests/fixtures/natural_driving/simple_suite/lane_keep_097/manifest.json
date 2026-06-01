@@ -1,0 +1,26 @@
+{
+  "algorithm_variant_id": "apollo_10_0_carla_gt_town01_reference",
+  "algorithm_variant_manifest_path": "configs/algorithms/apollo_variant.carla_gt.example.yaml",
+  "backend": "apollo_cyberrt",
+  "duration_s": 70,
+  "fixed_delta_seconds": 0.05,
+  "carla_world": {
+    "configured_town": "Town01",
+    "loaded_map_name": "Town01",
+    "matches_configured_town": true,
+    "schema_version": "carla_world_identity.v1",
+    "source": "fixture",
+    "spawn_point_count": 255
+  },
+  "map": "Town01",
+  "online_config_path": "configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml",
+  "online_config_profile_name": "town01_apollo_route_health_behavior_recovery_stitcher_v1",
+  "route_id": "lane097",
+  "run_id": "lane_keep_097",
+  "scenario_class": "lane_keep",
+  "scenario_id": "lane_keep_097",
+  "ticks": 1400,
+  "transport_mode": "ros2_gt",
+  "transport_mode_source": "online_config.scenario.publish_ros2_gt",
+  "truth_input": true
+}

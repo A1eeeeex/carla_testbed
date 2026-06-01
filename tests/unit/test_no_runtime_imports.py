@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 import re
+import sys
 from pathlib import Path
 
 
@@ -41,3 +43,11 @@ def test_core_contracts_and_adapter_base_do_not_import_runtime_stacks() -> None:
                     violations.append(f"{path.relative_to(ROOT)} matches {pattern.pattern}")
 
     assert not violations, "runtime stack imports leaked into core boundaries:\n" + "\n".join(violations)
+
+
+def test_record_package_lightweight_import_does_not_import_carla() -> None:
+    sys.modules.pop("carla", None)
+    record = importlib.import_module("carla_testbed.record")
+
+    assert "carla" not in sys.modules
+    assert record.ROUTE_CURVE_P0_FIELDS

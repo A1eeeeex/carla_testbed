@@ -1,0 +1,32 @@
+{
+  "schema_version": "apollo_replay_digest.v1",
+  "source_record": "fixtures/apollo/candidate.record",
+  "apollo_variant_id": "apollo_10_0_carla_gt_town01_reference",
+  "planning": {
+    "message_count": 302,
+    "hz": 9.8,
+    "trajectory_point_count_mean": 82.0,
+    "trajectory_point_count_p95": 121.0,
+    "trajectory_duration_mean_s": 8.1,
+    "curvature_abs_p95": 0.052,
+    "speed_mean": 6.2,
+    "max_gap_ms": 145.0
+  },
+  "control": {
+    "message_count": 301,
+    "hz": 9.9,
+    "throttle_mean": 0.23,
+    "brake_mean": 0.02,
+    "steer_mean": 0.035,
+    "steer_abs_p95": 0.3,
+    "max_gap_ms": 152.0
+  },
+  "localization": {
+    "message_count": 600,
+    "hz": 20.0
+  },
+  "chassis": {
+    "message_count": 600,
+    "hz": 20.0
+  }
+}

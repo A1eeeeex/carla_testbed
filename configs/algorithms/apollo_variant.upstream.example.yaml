@@ -1,0 +1,49 @@
+schema_version: algorithm_variant.v1
+algorithm: apollo
+variant_id: apollo_upstream_10_0_reference
+variant_type: upstream
+
+apollo:
+  version: "10.0"
+  git_commit: null
+  docker_image: apolloauto/apollo:10.0
+  docker_image_digest: null
+  source_patch_path: null
+  source_patch_sha256: null
+  config_patch_path: null
+  config_patch_sha256: null
+
+map:
+  map_name: null
+  base_map_path: null
+  base_map_sha256: null
+  routing_map_path: null
+  routing_map_sha256: null
+
+vehicle:
+  vehicle_config_path: null
+  vehicle_config_sha256: null
+  vehicle_blueprint: null
+
+bridge:
+  backend: null
+  bridge_config_path: null
+  bridge_config_sha256: null
+
+calibration:
+  calibration_profile_id: null
+  calibration_profile_path: null
+  calibration_profile_sha256: null
+
+allowed_changes:
+  - none
+forbidden_changes:
+  - source_patch
+  - config_patch
+  - planning_algorithm_code
+  - control_algorithm_code
+  - bridge_semantics
+  - calibration_profile
+notes: >
+  Example upstream manifest. Fill git_commit, image digest, map, and vehicle
+  evidence before using it as an experiment input.

@@ -1,0 +1,127 @@
+schema_version: algorithm_reproduction.v1
+algorithm: apollo
+variant_id: apollo_10_0_carla_gt_town01_reference
+variant_type: ported_carla_gt
+created_at: "2026-05-24T00:00:00Z"
+overall_status: warn
+missing_artifacts: []
+blocking_failures: []
+notes: >
+  Example report showing the artifact contract for each reproduction level.
+  This is not evidence that the current CARLA direct chain has passed all
+  levels; real runs must replace these placeholder artifact paths.
+
+levels:
+  L0_environment_frozen:
+    status: pass
+    required_artifacts:
+      - algorithm_variant_manifest.yaml
+      - environment_manifest.json
+      - explicit_no_patch.marker
+    observed_artifacts:
+      - algorithm_variant_manifest.yaml
+      - environment_manifest.json
+      - explicit_no_patch.marker
+    checks:
+      - variant_id recorded
+      - Docker image recorded
+      - config patch state explicit
+    failure_reason: null
+    next_action: Fill all SHA-256 hashes before promotion evidence.
+
+  L1_upstream_demo_or_record_replay:
+    status: pass
+    required_artifacts:
+      - record_info.txt
+      - dreamview_screenshot.png
+      - cyber_channel_stats.json
+    observed_artifacts:
+      - record_info.txt
+      - dreamview_screenshot.png
+      - cyber_channel_stats.json
+    checks:
+      - Dreamview evidence exists
+      - Cyber channel stats exist
+      - upstream or replay baseline is inspectable
+    failure_reason: null
+    next_action: Keep replay artifact immutable for comparisons.
+
+  L2_module_golden_replay:
+    status: pass
+    required_artifacts:
+      - apollo_output.record
+      - planning_digest.json
+      - control_digest.json
+      - replay_report.json
+    observed_artifacts:
+      - apollo_output.record
+      - planning_digest.json
+      - control_digest.json
+      - replay_report.json
+    checks:
+      - planning digest generated
+      - control digest generated
+      - replay report generated
+    failure_reason: null
+    next_action: Compare future module changes against golden digest.
+
+  L3_carla_to_apollo_adapter_contract:
+    status: pass
+    required_artifacts:
+      - adapter_contract_report.json
+      - frame_transform_report.json
+      - routing_contract_report.json
+      - channel_stats.json
+    observed_artifacts:
+      - adapter_contract_report.json
+      - frame_transform_report.json
+      - routing_contract_report.json
+      - channel_stats.json
+    checks:
+      - localization/chassis contract checked
+      - frame transform contract checked
+      - routing contract checked
+      - channel rates observed
+    failure_reason: null
+    next_action: Keep adapter reports attached to every closed-loop batch.
+
+  L4_shadow_mode:
+    status: pass
+    required_artifacts:
+      - shadow_mode_report.json
+      - planning_vs_route.csv
+      - control_shadow_timeseries.csv
+      - route_health.json
+    observed_artifacts:
+      - shadow_mode_report.json
+      - planning_vs_route.csv
+      - control_shadow_timeseries.csv
+      - route_health.json
+    checks:
+      - route alignment observed without actuation dependency
+      - planning trajectory compared with route geometry
+      - control shadow timeseries exists
+    failure_reason: null
+    next_action: If this fails, diagnose input contract or planning semantics before actuation.
+
+  L5_closed_loop:
+    status: pass
+    required_artifacts:
+      - summary.json
+      - manifest.json
+      - timeseries.csv
+      - route_health.json
+      - control_actuation_report.json
+    observed_artifacts:
+      - summary.json
+      - manifest.json
+      - timeseries.csv
+      - route_health.json
+    checks:
+      - closed-loop summary exists
+      - manifest exists
+      - route health exists
+      - timeseries exists
+      - optional control actuation report may be attached
+    failure_reason: null
+    next_action: Do not treat L5 pass as full native Apollo perception reproduction.

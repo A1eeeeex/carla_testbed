@@ -1,0 +1,2 @@
+{"event":"run_start","sim_time":0.0}
+{"event":"traffic_light_red_stop_observed","sim_time":3.0,"red_stop_distance_m":3.2}

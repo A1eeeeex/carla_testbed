@@ -1,0 +1,7 @@
+trial_id,command_type,command_value,start_time_s,duration_s,speed_initial_mps,speed_final_mps,accel_mean_mps2,decel_mean_mps2,yaw_rate_mean_rad_s,yaw_rate_p95_rad_s,latency_ms,route_id,backend,notes
+thr_001,throttle,0.20,0.0,2.0,1.0,1.8,0.40,,0.00,0.00,80,097,carla_direct,synthetic throttle response
+thr_002,throttle,0.40,3.0,2.0,1.0,2.6,0.80,,0.00,0.00,95,217,carla_direct,synthetic throttle response
+brk_001,brake,0.20,6.0,2.0,3.0,2.2,,0.40,0.00,0.00,70,031,carla_direct,synthetic brake response
+brk_002,brake,0.50,9.0,2.0,4.0,2.0,,1.00,0.00,0.00,90,097,carla_direct,synthetic brake response
+str_001,steer,0.20,12.0,2.0,2.0,2.0,,,0.04,0.05,60,217,carla_direct,synthetic steer response
+str_002,steer,0.40,15.0,2.0,2.0,2.0,,,0.08,0.10,75,031,carla_direct,synthetic steer response

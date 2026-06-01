@@ -11633,13 +11633,36 @@ class ApolloBridgeSteeringFieldTests(unittest.TestCase):
         self.assertEqual(field, "steering_percentage")
         self.assertAlmostEqual(value, -0.25)
 
-    def test_normalize_steering_command_keeps_physical_mode_single_normalized(self) -> None:
+    def test_select_steering_field_can_pin_legacy_double_percent_policy(self) -> None:
+        module = _load_bridge_unit_test_module()
+        bridge_cls = module.ApolloGtBridge
+
+        class _FakeBridge:
+            physical_steer_field_priority = ["steering_target", "steering_percentage", "steering", "steering_rate"]
+            steering_percent_normalization = "legacy_double_percent"
+
+            @staticmethod
+            def _coerce_float(value, default, field, source):
+                try:
+                    return float(value)
+                except Exception:
+                    return float(default)
+
+        field, value = bridge_cls._select_steering_field(
+            _FakeBridge(),
+            {"steering_target": 10.0},
+            physical_mode=False,
+        )
+        self.assertEqual(field, "steering_target")
+        self.assertAlmostEqual(value, 0.001)
+
+    def test_normalize_steering_command_only_clamps_selected_normalized_value(self) -> None:
         module = _load_bridge_unit_test_module()
         bridge_cls = module.ApolloGtBridge
 
         self.assertAlmostEqual(
             bridge_cls._normalize_steering_command(1.0, physical_mode=False),
-            0.01,
+            1.0,
         )
         self.assertAlmostEqual(
             bridge_cls._normalize_steering_command(1.0, physical_mode=True),
@@ -11649,6 +11672,100 @@ class ApolloBridgeSteeringFieldTests(unittest.TestCase):
             bridge_cls._normalize_steering_command(-0.25, physical_mode=True),
             -0.25,
         )
+        self.assertAlmostEqual(
+            bridge_cls._normalize_steering_command(2.0, physical_mode=False),
+            1.0,
+        )
+
+    def test_steering_normalization_mode_is_self_describing(self) -> None:
+        module = _load_bridge_unit_test_module()
+
+        self.assertEqual(
+            module.steering_normalization_mode_impl("steering_target"),
+            "single_percent_at_select",
+        )
+        self.assertEqual(
+            module.steering_normalization_mode_impl(
+                "steering_target",
+                percent_normalization_mode="legacy_double_percent",
+            ),
+            "legacy_double_percent",
+        )
+        self.assertEqual(
+            module.steering_normalization_mode_impl("steering_percentage"),
+            "single_percent_at_select",
+        )
+        self.assertEqual(
+            module.steering_normalization_mode_impl("steering"),
+            "field_value_clamp_only",
+        )
+
+    def test_legacy_steering_target_is_normalized_once_before_scale(self) -> None:
+        module = _load_bridge_unit_test_module()
+        bridge_cls = module.ApolloGtBridge
+
+        class _FakeBridge:
+            physical_steer_field_priority = ["steering_target", "steering_percentage", "steering", "steering_rate"]
+
+            throttle_scale = 1.0
+            brake_scale = 1.0
+            steer_scale = 0.25
+            steer_sign = 1.0
+            brake_deadzone = 0.0
+            physical_allow_legacy_fallback = True
+            physical_apollo_max_steer_angle_deg = 8.203
+            physical_apollo_max_accel_mps2 = 3.0
+            physical_apollo_max_decel_mps2 = 8.0
+            physical_use_top_level_acceleration = False
+            physical_use_lon_debug = False
+            physical_steer_field_priority = ["steering_target", "steering_percentage", "steering", "steering_rate"]
+            physical_acceleration_field_priority = []
+
+            @staticmethod
+            def _coerce_float(value, default, field, source):
+                try:
+                    return float(value)
+                except Exception:
+                    return float(default)
+
+            @staticmethod
+            def _apply_zero_hold(throttle_cmd, brake_cmd, now_sec):
+                return throttle_cmd
+
+        fake = _FakeBridge()
+        field, selected = bridge_cls._select_steering_field(
+            fake,
+            {"steering_target": 10.0},
+            physical_mode=False,
+        )
+        raw_steer = bridge_cls._normalize_steering_command(selected, physical_mode=False)
+        mapped = module.legacy_map_base_controls_impl(
+            raw_throttle=0.0,
+            raw_brake=0.0,
+            raw_steer=raw_steer,
+            now_sec=1.0,
+            config=module.ControlMappingConfig(
+                throttle_scale=1.0,
+                brake_scale=1.0,
+                steer_scale=0.25,
+                steer_sign=1.0,
+                brake_deadzone=0.0,
+                physical_allow_legacy_fallback=True,
+                physical_apollo_max_steer_angle_deg=8.203,
+                physical_apollo_max_accel_mps2=3.0,
+                physical_apollo_max_decel_mps2=8.0,
+                physical_use_top_level_acceleration=False,
+                physical_use_lon_debug=False,
+                physical_steer_field_priority=tuple(fake.physical_steer_field_priority),
+                physical_acceleration_field_priority=(),
+            ),
+            apply_zero_hold=fake._apply_zero_hold,
+        )
+
+        self.assertEqual(field, "steering_target")
+        self.assertAlmostEqual(selected, 0.10)
+        self.assertAlmostEqual(raw_steer, 0.10)
+        self.assertAlmostEqual(mapped["mapped_carla_steer_cmd"], 0.025)
 
     def test_extract_road_section_lane_metadata_tracks_junction_membership(self) -> None:
         module = _load_bridge_unit_test_module()

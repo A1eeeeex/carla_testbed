@@ -1,0 +1,54 @@
+schema_version: algorithm_variant.v1
+algorithm: apollo
+variant_id: apollo_10_0_carla_gt_town01_reference
+variant_type: ported_carla_gt
+
+apollo:
+  version: "10.0"
+  git_commit: null
+  docker_image: apolloauto/apollo:10.0
+  docker_image_digest: null
+  source_patch_path: null
+  source_patch_sha256: null
+  config_patch_path: null
+  config_patch_sha256: null
+
+map:
+  map_name: Town01
+  base_map_path: ${APOLLO_MAP_ROOT}/Town01/base_map.bin
+  base_map_sha256: null
+  routing_map_path: ${APOLLO_MAP_ROOT}/Town01/routing_map.bin
+  routing_map_sha256: null
+
+vehicle:
+  vehicle_config_path: configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml
+  vehicle_config_sha256: null
+  vehicle_blueprint: vehicle.lincoln.mkz_2020
+
+bridge:
+  backend: carla_direct
+  bridge_config_path: configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml
+  bridge_config_sha256: null
+
+calibration:
+  calibration_profile_id: control_actuation_legacy_steer_scale_025_draft
+  calibration_profile_path: configs/calibration/control_actuation.yaml
+  calibration_profile_sha256: null
+
+allowed_changes:
+  - map_derivation
+  - frame_conversion
+  - time_synchronization
+  - bridge_transport
+  - vehicle_config_binding
+  - calibration_profile_reference
+forbidden_changes:
+  - planning_algorithm_code
+  - control_algorithm_code
+  - native_perception_claim
+  - untracked_steer_scale_change
+  - default_physical_mapping_enablement
+notes: >
+  Example CARLA GT port manifest. This variant may adapt map, frame/time,
+  bridge transport, vehicle binding, and calibration references. It must not
+  tune Apollo planning/control algorithm code or be reported as upstream Apollo.

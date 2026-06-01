@@ -1,0 +1,21 @@
+{
+  "run_id": "traffic_light_red_stop",
+  "scenario_id": "traffic_light_red_stop_placeholder",
+  "scenario_class": "traffic_light_red_stop",
+  "route_id": "traffic_light_red_stop_tbd",
+  "runtime_contract": {
+    "status": "aligned"
+  },
+  "routing_materialized": true,
+  "planning_materialized": true,
+  "control_handoff_status": "control_consuming_with_nonzero_planning",
+  "materialization_status": "planning_control_materialized",
+  "metrics": {
+    "route_completion": 0.35,
+    "collision_count": 0,
+    "lane_invasion_count": 0,
+    "red_stop_distance_m": 3.2,
+    "stopped_at_red": true,
+    "control_latency_p95_ms": 95.0
+  }
+}

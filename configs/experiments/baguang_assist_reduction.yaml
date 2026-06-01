@@ -1,0 +1,151 @@
+schema_version: baguang_assist_reduction.v1
+name: baguang_apollo_autoware_assist_reduction
+comparison_suite: configs/scenarios/baguang_stack_comparison_suite.yaml
+output_root: runs/assist_reduction/baguang
+fixed_delta_seconds: 0.05
+continue_on_failure: true
+
+stacks:
+  apollo:
+    base_command: tools/run_baguang_apollo_followstop_80kph_demo.sh
+    run_id_prefix: baguang_apollo_assist_reduction
+    profiles:
+      - profile_id: apollo_assisted_baseline
+        description: Current assisted Apollo Baguang profile.
+        expected_assists:
+          - carla_direct_transport
+          - straight_lane_lateral_stabilizer
+          - straight_acc_override
+          - terminal_stop_hold
+          - lane_invasion_event_disabled
+        env:
+          START_CARLA: "1"
+          UNSET_SDL_VIDEODRIVER: "1"
+          RECORD_DEMO: "1"
+          APOLLO_ENABLE_LATERAL_STABILIZER: "1"
+          APOLLO_ENABLE_STRAIGHT_ACC_OVERRIDE: "1"
+          APOLLO_ENABLE_TERMINAL_STOP_HOLD: "1"
+          APOLLO_DISABLE_LANE_INVASION: "1"
+      - profile_id: apollo_no_lateral_stabilizer
+        description: Remove straight-lane lateral stabilizer; keep longitudinal override.
+        expected_assists:
+          - carla_direct_transport
+          - straight_acc_override
+          - terminal_stop_hold
+          - lane_invasion_event_disabled
+        env:
+          START_CARLA: "1"
+          UNSET_SDL_VIDEODRIVER: "1"
+          RECORD_DEMO: "1"
+          APOLLO_ENABLE_LATERAL_STABILIZER: "0"
+          APOLLO_ENABLE_STRAIGHT_ACC_OVERRIDE: "1"
+          APOLLO_ENABLE_TERMINAL_STOP_HOLD: "1"
+          APOLLO_DISABLE_LANE_INVASION: "1"
+      - profile_id: apollo_no_straight_acc_override
+        description: Remove straight-line longitudinal override; keep lateral stabilizer.
+        expected_assists:
+          - carla_direct_transport
+          - straight_lane_lateral_stabilizer
+          - terminal_stop_hold
+          - lane_invasion_event_disabled
+        env:
+          START_CARLA: "1"
+          UNSET_SDL_VIDEODRIVER: "1"
+          RECORD_DEMO: "1"
+          APOLLO_ENABLE_LATERAL_STABILIZER: "1"
+          APOLLO_ENABLE_STRAIGHT_ACC_OVERRIDE: "0"
+          APOLLO_ENABLE_TERMINAL_STOP_HOLD: "1"
+          APOLLO_DISABLE_LANE_INVASION: "1"
+      - profile_id: apollo_no_terminal_stop_hold
+        description: Remove bridge terminal stop hold; keep acceleration override.
+        expected_assists:
+          - carla_direct_transport
+          - straight_lane_lateral_stabilizer
+          - straight_acc_override
+          - lane_invasion_event_disabled
+        env:
+          START_CARLA: "1"
+          UNSET_SDL_VIDEODRIVER: "1"
+          RECORD_DEMO: "1"
+          APOLLO_ENABLE_LATERAL_STABILIZER: "1"
+          APOLLO_ENABLE_STRAIGHT_ACC_OVERRIDE: "1"
+          APOLLO_ENABLE_TERMINAL_STOP_HOLD: "0"
+          APOLLO_DISABLE_LANE_INVASION: "1"
+      - profile_id: apollo_lane_invasion_enabled_probe
+        description: Re-enable CARLA lane invasion event to validate Baguang false-positive hypothesis.
+        expected_assists:
+          - carla_direct_transport
+          - straight_lane_lateral_stabilizer
+          - straight_acc_override
+          - terminal_stop_hold
+        env:
+          START_CARLA: "1"
+          UNSET_SDL_VIDEODRIVER: "1"
+          RECORD_DEMO: "1"
+          APOLLO_ENABLE_LATERAL_STABILIZER: "1"
+          APOLLO_ENABLE_STRAIGHT_ACC_OVERRIDE: "1"
+          APOLLO_ENABLE_TERMINAL_STOP_HOLD: "1"
+          APOLLO_DISABLE_LANE_INVASION: "0"
+
+  autoware:
+    command_source: carla_testbed.autoware.baguang_readiness:online_autoware_followstop_demo_recording
+    run_id_prefix: baguang_autoware_assist_reduction
+    profiles:
+      - profile_id: autoware_assisted_baseline
+        description: Current assisted Autoware Baguang profile.
+        expected_assists:
+          - goal_planner_module_disabled
+          - planning_common_dynamics_override
+          - speed_feedback_bridge_profile
+          - bridge_smoothing
+          - recording_timeout_sec_5
+          - lane_invasion_event_disabled
+        extra_args: []
+      - profile_id: autoware_default_timeout_probe
+        description: Restore bridge freshness timeout to the default value while keeping recording enabled.
+        expected_assists:
+          - goal_planner_module_disabled
+          - planning_common_dynamics_override
+          - speed_feedback_bridge_profile
+          - bridge_smoothing
+          - lane_invasion_event_disabled
+        extra_args:
+          - --override algo.autoware.carla_control_bridge.timeout_sec=0.8
+      - profile_id: autoware_no_bridge_smoothing_probe
+        description: Remove throttle/brake smoothing step limits.
+        expected_assists:
+          - goal_planner_module_disabled
+          - planning_common_dynamics_override
+          - speed_feedback_bridge_profile
+          - recording_timeout_sec_5
+          - lane_invasion_event_disabled
+        extra_args:
+          - --override algo.autoware.carla_control_bridge.speed_feedback_max_throttle_step=1.0
+          - --override algo.autoware.carla_control_bridge.speed_feedback_max_brake_step=1.0
+          - --override algo.autoware.carla_control_bridge.speed_feedback_transition_coast_sec=0.0
+      - profile_id: autoware_lane_invasion_enabled_probe
+        description: Re-enable CARLA lane invasion event to validate Baguang false-positive hypothesis.
+        expected_assists:
+          - goal_planner_module_disabled
+          - planning_common_dynamics_override
+          - speed_feedback_bridge_profile
+          - bridge_smoothing
+          - recording_timeout_sec_5
+        extra_args:
+          - --rig-override events.lane_invasion=true
+
+required_artifacts:
+  - manifest.json
+  - summary.json
+  - config.resolved.yaml
+  - timeseries.csv
+  - events.jsonl
+  - video/dual_cam/demo_third_person.mp4
+
+claim_boundary:
+  assist_reduction_probe_proves_unassisted_natural_driving: false
+  promotion_requires:
+    - passing comparison report
+    - declared assists removed or justified
+    - repeated run
+    - route/cross-track evidence

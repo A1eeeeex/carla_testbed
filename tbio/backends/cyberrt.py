@@ -2310,6 +2310,56 @@ class CyberRTBackend(Backend):
     def _apollo_planning_cfg(self) -> Dict[str, Any]:
         return (self._apollo_cfg().get("planning", {}) or {})
 
+    def _global_flagfile_map_overlay_shell(self) -> str:
+        """Point Apollo modules at the CARLA run map before launch.
+
+        Apollo modules read `--map_dir` from `modules/common/data/global_flagfile.txt`.
+        The bridge can use an explicit map file, but routing/planning/control still
+        follow the module flagfile. Keep this as a runtime overlay so custom maps
+        can be selected without editing the Apollo install permanently.
+        """
+        map_name = str(self._run_cfg().get("map") or "").strip()
+        if not map_name:
+            return ""
+        overlay_path = "/apollo_workspace/conf_overlay/modules/common/data/global_flagfile.txt"
+        target_path = "/apollo/modules/common/data/global_flagfile.txt"
+        # Keep this shell-only: _docker_start_modules_cmd() deliberately collapses
+        # whitespace, which breaks multi-line `python -c` scripts with blocks.
+        quoted_map = shlex.quote(map_name)
+        script = (
+            f"map_name={quoted_map}; "
+            "lower=$(printf '%s' \"$map_name\" | tr '[:upper:]' '[:lower:]'); "
+            "selected_token=''; "
+            "for token in \"$map_name\" \"$lower\" \"carla_$lower\"; do "
+            "[ -n \"$token\" ] && [ -d \"/apollo/modules/map/data/$token\" ] && "
+            "{ selected_token=\"$token\"; break; }; "
+            "done; "
+            f"overlay={shlex.quote(overlay_path)}; "
+            f"target={shlex.quote(target_path)}; "
+            "if [ -n \"$selected_token\" ]; then "
+            "mkdir -p \"$(dirname \"$overlay\")\" >/dev/null 2>&1 || true; "
+            "src=''; "
+            "for cand in "
+            "\"$target.carla_testbed.bak\" "
+            "\"$target\" "
+            "\"/opt/apollo/neo/share/modules/common/data/global_flagfile.txt\" "
+            "\"/opt/apollo/neo/src/modules/common/data/global_flagfile.txt\"; do "
+            "[ -f \"$cand\" ] && [ ! -L \"$cand\" ] && { src=\"$cand\"; break; }; "
+            "done; "
+            "tmp=\"$overlay.tmp.$$\"; "
+            "if [ -n \"$src\" ]; then "
+            "grep -vE '^\\s*--map_dir=' \"$src\" > \"$tmp\" || true; "
+            "else "
+            ": > \"$tmp\"; "
+            "fi; "
+            "printf '%s\\n' \"--map_dir=modules/map/data/$selected_token\" >> \"$tmp\"; "
+            "mv -f \"$tmp\" \"$overlay\"; "
+            "else "
+            "rm -f \"$overlay\" >/dev/null 2>&1 || true; "
+            "fi; "
+        )
+        return script + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)
+
     @staticmethod
     def _managed_overlay_link_shell(overlay_path: str, target_path: str, *, enabled: bool) -> str:
         backup_path = f"{target_path}.carla_testbed.bak"
@@ -2740,6 +2790,8 @@ class CyberRTBackend(Backend):
                 "rm -f /apollo_workspace/dumps/control.data >/dev/null 2>&1 || true; ",
                 "chown -R ubuntu:ubuntu /apollo_workspace/dumps >/dev/null 2>&1 || true; ",
                 "chmod 0777 /apollo_workspace/dumps >/dev/null 2>&1 || true; ",
+                self._global_flagfile_map_overlay_shell(),
+                " ",
                 self._docker_sim_vehicle_param_shell(),
                 " ",
                 self._lane_follow_overlay_shell(),

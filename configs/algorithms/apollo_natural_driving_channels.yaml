@@ -1,0 +1,76 @@
+schema_version: apollo_natural_driving_channels.v1
+algorithm: apollo
+description: >
+  Town01 truth-input natural driving channel health contract. This checks
+  channel availability, frequency, timestamp monotonicity, sequence monotonicity,
+  stale messages, and message gaps from an exported channel_stats.json. It does
+  not prove planning behavior correctness.
+
+traffic_light_required_scenario_classes:
+  - traffic_light_red_stop
+  - traffic_light_green_go
+  - traffic_light_red_to_green_release
+
+channels:
+  - name: localization
+    channel: /apollo/localization/pose
+    required: true
+    min_hz: 10.0
+    max_gap_ms: 250.0
+    timestamp_monotonic_required: true
+    sequence_monotonic_required: true
+    max_stale_count: 0
+
+  - name: chassis
+    channel: /apollo/canbus/chassis
+    required: true
+    min_hz: 10.0
+    max_gap_ms: 250.0
+    timestamp_monotonic_required: true
+    sequence_monotonic_required: true
+    max_stale_count: 0
+
+  - name: obstacles
+    channel: /apollo/perception/obstacles
+    required: false
+    requirement_note: >
+      Required only for scenarios that intentionally include dynamic obstacle
+      interaction. Lane-keep and current traffic-light probes may have no
+      non-ego actors, so zero obstacle messages are warning-level transport
+      evidence rather than a hard channel failure.
+    min_hz: 2.0
+    max_gap_ms: 1000.0
+    timestamp_monotonic_required: true
+    sequence_monotonic_required: true
+    max_stale_count: 0
+
+  - name: traffic_light
+    channel: /apollo/perception/traffic_light
+    required: false
+    required_for_scenario_classes:
+      - traffic_light_red_stop
+      - traffic_light_green_go
+      - traffic_light_red_to_green_release
+    min_hz: 2.0
+    max_gap_ms: 1000.0
+    timestamp_monotonic_required: true
+    sequence_monotonic_required: true
+    max_stale_count: 0
+
+  - name: planning
+    channel: /apollo/planning
+    required: true
+    min_hz: 2.0
+    max_gap_ms: 1000.0
+    timestamp_monotonic_required: true
+    sequence_monotonic_required: true
+    max_stale_count: 0
+
+  - name: control
+    channel: /apollo/control
+    required: true
+    min_hz: 2.0
+    max_gap_ms: 1000.0
+    timestamp_monotonic_required: true
+    sequence_monotonic_required: true
+    max_stale_count: 0

@@ -123,6 +123,9 @@ try:
         normalize_steering_command as normalize_steering_command_impl,
         physical_map_base_controls as physical_map_base_controls_impl,
         select_steering_field as select_steering_field_impl,
+        STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT,
+        STEERING_PERCENT_NORMALIZATION_MODES,
+        steering_normalization_mode as steering_normalization_mode_impl,
     )
 except Exception:
     from tools.apollo10_cyber_bridge.control_mapping import (  # type: ignore
@@ -132,6 +135,9 @@ except Exception:
         normalize_steering_command as normalize_steering_command_impl,
         physical_map_base_controls as physical_map_base_controls_impl,
         select_steering_field as select_steering_field_impl,
+        STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT,
+        STEERING_PERCENT_NORMALIZATION_MODES,
+        steering_normalization_mode as steering_normalization_mode_impl,
     )
 
 try:
@@ -167,6 +173,13 @@ except Exception:
     )
 
 try:
+    from planning_debug import build_trajectory_shape_debug as build_trajectory_shape_debug_impl
+except Exception:
+    from tools.apollo10_cyber_bridge.planning_debug import (  # type: ignore
+        build_trajectory_shape_debug as build_trajectory_shape_debug_impl,
+    )
+
+try:
     from ingress_egress import build_ingress_egress_summary as build_ingress_egress_summary_impl
     from ingress_egress import build_bridge_transport_summary as build_bridge_transport_summary_impl
 except Exception:
@@ -176,11 +189,16 @@ except Exception:
     )
 
 try:
-    from carla_direct_transport import CarlaDirectTransport, NoopExecutor
+    from carla_direct_transport import (
+        CarlaDirectTransport,
+        NoopExecutor,
+        should_republish_stale_world_frame,
+    )
 except Exception:
     from tools.apollo10_cyber_bridge.carla_direct_transport import (  # type: ignore
         CarlaDirectTransport,
         NoopExecutor,
+        should_republish_stale_world_frame,
     )
 
 
@@ -1187,13 +1205,20 @@ class ApolloGtBridge:
         self.seq = 0
         self.last_control = {"throttle": 0.0, "brake": 0.0, "steer_pct": 0.0}
         self.stats = {
+            "first_publish_ts_sec": 0.0,
             "last_publish_ts_sec": 0.0,
+            "first_publish_wall_ts_sec": 0.0,
+            "last_publish_wall_ts_sec": 0.0,
+            "publish_elapsed_sim_sec": 0.0,
+            "publish_elapsed_wall_sec": 0.0,
             "loc_count": 0,
             "chassis_count": 0,
             "obstacles_count": 0,
             "publish_errors": 0,
             "control_rx_count": 0,
             "control_tx_count": 0,
+            "control_publish_exception_count": 0,
+            "last_control_publish_error": "",
             "routing_request_count": 0,
             "routing_response_count": 0,
             "routing_success_count": 0,
@@ -1251,6 +1276,7 @@ class ApolloGtBridge:
             "force_zero_steer_apply_count": 0,
             "direct_stale_world_frame_skip_count": 0,
             "direct_stale_world_frame_republish_count": 0,
+            "direct_stale_world_frame_policy": "",
         }
 
         bridge_cfg = (cfg.get("bridge", {}) or {})
@@ -1322,6 +1348,7 @@ class ApolloGtBridge:
         self.control_trajectory_consume_live_path = (
             self.artifacts_dir / "control_trajectory_consume_debug_live.jsonl"
         )
+        self.control_publish_error_path = self.artifacts_dir / "control_publish_errors.jsonl"
         self.routing_event_debug_path = self.artifacts_dir / "routing_event_debug.jsonl"
         self.reroute_decision_debug_path = self.artifacts_dir / "reroute_decision_debug.jsonl"
         self.stage5_reroute_decision_debug_path = (
@@ -1408,6 +1435,12 @@ class ApolloGtBridge:
         self.throttle_scale = float(ctrl_map.get("throttle_scale", 1.0))
         self.brake_scale = float(ctrl_map.get("brake_scale", 1.0))
         self.steer_scale = float(ctrl_map.get("steer_scale", 1.0))
+        self.steering_percent_normalization = str(
+            ctrl_map.get("steering_percent_normalization", STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT)
+            or STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT
+        ).strip().lower()
+        if self.steering_percent_normalization not in STEERING_PERCENT_NORMALIZATION_MODES:
+            self.steering_percent_normalization = STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT
         self.brake_deadzone = float(ctrl_map.get("brake_deadzone", 0.05))
         self.actuator_mapping_mode = str(ctrl_map.get("actuator_mapping_mode", "legacy") or "legacy").strip().lower()
         if self.actuator_mapping_mode not in {"legacy", "physical"}:
@@ -1464,6 +1497,7 @@ class ApolloGtBridge:
             "apollo_max_accel_mps2": self.physical_apollo_max_accel_mps2,
             "apollo_max_decel_mps2": self.physical_apollo_max_decel_mps2,
             "steering_field_priority": list(self.physical_steer_field_priority),
+            "steering_percent_normalization": self.steering_percent_normalization,
             "acceleration_field_priority": list(self.physical_acceleration_field_priority),
             "calibration": self._actuator_calibration.status(),
         }
@@ -2063,6 +2097,12 @@ class ApolloGtBridge:
                 carla_host=direct_host,
                 carla_port=direct_port,
                 ego_role_name=direct_role,
+                invert_tf=bool(
+                    self.direct_bridge_cfg.get(
+                        "invert_tf",
+                        ((apollo_cfg.get("carla_to_apollo", {}) or {}).get("invert_tf", True)),
+                    )
+                ),
                 control_out_type=self.control_out_type,
                 radius_m=direct_radius_m,
                 max_obstacles=direct_max_obstacles,
@@ -2095,6 +2135,33 @@ class ApolloGtBridge:
                 route_command_mode=self.route_command_mode,
                 require_no_ros2_runtime=self.require_no_ros2_runtime,
                 client_timeout_sec=float(self.direct_bridge_cfg.get("client_timeout_sec", 5.0)),
+                control_apply_mode=str(
+                    self.direct_bridge_cfg.get("control_apply_mode", "immediate_or_defer")
+                ),
+                stale_world_frame_policy=str(
+                    self.direct_bridge_cfg.get("stale_world_frame_policy", "until_control")
+                ),
+                straight_lane_lateral_stabilizer_enabled=bool(
+                    self.direct_bridge_cfg.get("straight_lane_lateral_stabilizer_enabled", False)
+                ),
+                straight_lane_lateral_stabilizer_max_abs_steer=float(
+                    self.direct_bridge_cfg.get("straight_lane_lateral_stabilizer_max_abs_steer", 0.04)
+                ),
+                straight_lane_lateral_stabilizer_k_cte=float(
+                    self.direct_bridge_cfg.get("straight_lane_lateral_stabilizer_k_cte", 0.015)
+                ),
+                straight_lane_lateral_stabilizer_k_heading=float(
+                    self.direct_bridge_cfg.get("straight_lane_lateral_stabilizer_k_heading", 0.25)
+                ),
+                straight_lane_lateral_stabilizer_max_cte_m=float(
+                    self.direct_bridge_cfg.get("straight_lane_lateral_stabilizer_max_cte_m", 4.0)
+                ),
+                straight_lane_lateral_stabilizer_max_heading_error_deg=float(
+                    self.direct_bridge_cfg.get("straight_lane_lateral_stabilizer_max_heading_error_deg", 20.0)
+                ),
+                straight_lane_lateral_stabilizer_max_speed_mps=float(
+                    self.direct_bridge_cfg.get("straight_lane_lateral_stabilizer_max_speed_mps", 30.0)
+                ),
             )
             self.executor = NoopExecutor()
             self.ros_thread = threading.Thread(target=lambda: None, name="carla_direct_transport", daemon=True)
@@ -2509,6 +2576,7 @@ class ApolloGtBridge:
         direct_control_apply_count = int(direct_stats.get("control_apply_count", 0) or 0)
         direct_control_apply_frame_span = _finite_or_none(direct_stats.get("control_apply_frame_span"))
         speed_mps = _finite_or_none(self._latest_speed_mps)
+        max_speed_mps = _finite_or_none(direct_stats.get("control_apply_max_speed_mps"))
         gate_reason = str(gate.get("last_blocking_reason") or "").strip()
         direct_last_error = str(direct_stats.get("last_error", "") or "").strip()
         stage = "unknown"
@@ -2569,7 +2637,11 @@ class ApolloGtBridge:
             stage = "control_applied_short_window"
             layer = "actuation_window"
             reason = reason or "direct_apply_window_too_short_for_behavior_judgment"
-        elif speed_mps is not None and speed_mps <= 0.5:
+        elif (
+            speed_mps is not None
+            and speed_mps <= 0.5
+            and (max_speed_mps is None or max_speed_mps <= 0.5)
+        ):
             stage = "control_applied_no_motion"
             layer = "actuation"
             reason = reason or "vehicle_speed_not_rising"
@@ -2619,6 +2691,7 @@ class ApolloGtBridge:
                 "first_nonempty_planning_ts_sec": _finite_or_none(self._planning_first_nonempty_ts_sec),
             },
             "speed_mps_last": speed_mps,
+            "speed_mps_max": max_speed_mps,
             "last_error": str(self.stats.get("last_error", "") or ""),
             "direct_transport": {
                 "ego_actor_id": direct_stats.get("ego_actor_id"),
@@ -2639,6 +2712,11 @@ class ApolloGtBridge:
                 ),
                 "stale_world_frame_republish_count": int(
                     self.stats.get("direct_stale_world_frame_republish_count", 0) or 0
+                ),
+                "stale_world_frame_policy": str(
+                    direct_stats.get("stale_world_frame_policy")
+                    or self.stats.get("direct_stale_world_frame_policy")
+                    or ""
                 ),
                 "last_speed_mps": _finite_or_none(direct_stats.get("last_speed_mps")),
                 "last_error": str(direct_stats.get("last_error", "") or ""),
@@ -4139,6 +4217,14 @@ class ApolloGtBridge:
             "trajectory_total_time": None,
             "trajectory_relative_time_min_sec": None,
             "trajectory_relative_time_max_sec": None,
+            "trajectory_kappa": {"count": 0, "min": None, "max": None, "max_abs": None, "p95_abs": None},
+            "trajectory_theta_delta_abs": {"count": 0, "min": None, "max": None, "max_abs": None, "p95_abs": None},
+            "trajectory_xy_step_m": {"count": 0, "min": None, "max": None, "max_abs": None, "p95_abs": None},
+            "trajectory_kappa_spike_count_abs_ge_0_05": 0,
+            "trajectory_kappa_spike_count_abs_ge_0_10": 0,
+            "trajectory_first_segment_heading": None,
+            "trajectory_first_theta_minus_first_segment_heading_rad": None,
+            "trajectory_sample_points": [],
             "is_replan": None,
             "replan_reason": None,
             "lane_id_first": None,
@@ -4294,6 +4380,7 @@ class ApolloGtBridge:
                 first_kappa = self._resolve_nested_float(pts[0], (("path_point", "kappa"),))
                 first_v = self._resolve_nested_float(pts[0], (("v",),))
                 first_relative_time = self._resolve_nested_float(pts[0], (("relative_time",),))
+            trajectory_shape_debug = build_trajectory_shape_debug_impl(pts)
             debug_row.update(
                 {
                     "trajectory_point_count": int(pt_count),
@@ -4323,6 +4410,7 @@ class ApolloGtBridge:
                     ),
                     "trajectory_relative_time_min_sec": rel_time_min,
                     "trajectory_relative_time_max_sec": rel_time_max,
+                    **trajectory_shape_debug,
                     "is_replan": self._proto_scalar(self._resolve_nested_value(msg, (("is_replan",),))),
                     "replan_reason": self._proto_scalar(self._resolve_nested_value(msg, (("replan_reason",),))),
                     "lane_id_first": lane_id_first,
@@ -4698,6 +4786,25 @@ class ApolloGtBridge:
         raw: Dict[str, Any] = {}
         raw["control_header_timestamp_sec"] = self._header_timestamp_sec(cmd)
         raw["control_header_sequence_num"] = self._header_sequence_num(cmd)
+
+        def capture_trajectory_point(prefix: str, point: Any) -> None:
+            path_point = getattr(point, "path_point", None) if point is not None else None
+            if point is not None:
+                raw[f"{prefix}_relative_time"] = self._resolve_nested_float(
+                    point,
+                    (("relative_time",),),
+                )
+                raw[f"{prefix}_v"] = self._resolve_nested_float(
+                    point,
+                    (("v",),),
+                )
+            if path_point is not None:
+                for suffix in ("x", "y", "theta", "kappa", "dkappa", "s"):
+                    raw[f"{prefix}_{suffix}"] = self._resolve_nested_float(
+                        path_point,
+                        ((suffix,),),
+                    )
+
         for key in (
             "throttle",
             "brake",
@@ -4749,6 +4856,12 @@ class ApolloGtBridge:
                         raw[f"debug_simple_lon_{key}"] = getattr(lon_debug, key)
                     except Exception:
                         raw[f"debug_simple_lon_{key}"] = "<unreadable>"
+            for prefix, field in (
+                ("debug_simple_lon_current_matched_point", "current_matched_point"),
+                ("debug_simple_lon_current_reference_point", "current_reference_point"),
+                ("debug_simple_lon_preview_reference_point", "preview_reference_point"),
+            ):
+                capture_trajectory_point(prefix, getattr(lon_debug, field, None))
         lat_debug = getattr(debug_msg, "simple_lat_debug", None) if debug_msg is not None else None
         if lat_debug is not None:
             for key in (
@@ -4781,23 +4894,15 @@ class ApolloGtBridge:
                 ("debug_simple_lat_current_reference_point", "current_reference_point"),
                 ("debug_simple_lat_preview_reference_point", "preview_reference_point"),
             ):
-                point = getattr(lat_debug, field, None)
-                path_point = getattr(point, "path_point", None) if point is not None else None
-                if point is not None:
-                    raw[f"{prefix}_relative_time"] = self._resolve_nested_float(
-                        point,
-                        (("relative_time",),),
-                    )
-                    raw[f"{prefix}_v"] = self._resolve_nested_float(
-                        point,
-                        (("v",),),
-                    )
-                if path_point is not None:
-                    for suffix in ("x", "y", "theta", "kappa", "dkappa", "s"):
-                        raw[f"{prefix}_{suffix}"] = self._resolve_nested_float(
-                            path_point,
-                            ((suffix,),),
-                        )
+                capture_trajectory_point(prefix, getattr(lat_debug, field, None))
+        mpc_debug = getattr(debug_msg, "simple_mpc_debug", None) if debug_msg is not None else None
+        if mpc_debug is not None:
+            for prefix, field in (
+                ("debug_simple_mpc_current_matched_point", "current_matched_point"),
+                ("debug_simple_mpc_current_reference_point", "current_reference_point"),
+                ("debug_simple_mpc_preview_reference_point", "preview_reference_point"),
+            ):
+                capture_trajectory_point(prefix, getattr(mpc_debug, field, None))
         raw["engage_advice"] = self._proto_scalar(self._resolve_nested_value(cmd, (("engage_advice", "advice"), ("engage_advice",))))
         input_debug = getattr(debug_msg, "input_debug", None) if debug_msg is not None else None
         if input_debug is not None:
@@ -4828,6 +4933,11 @@ class ApolloGtBridge:
             physical_mode=physical_mode,
             physical_steer_field_priority=self.physical_steer_field_priority,
             coerce_float=self._coerce_float,
+            percent_normalization_mode=getattr(
+                self,
+                "steering_percent_normalization",
+                STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT,
+            ),
         )
 
     @staticmethod
@@ -5932,7 +6042,9 @@ class ApolloGtBridge:
         return msg, count
 
     def _on_control_cmd(self, cmd: Any) -> None:
+        control_rx_ts = self._command_now_sec()
         self.stats["control_rx_count"] += 1
+        self.stats["last_control_rx_ts_sec"] = control_rx_ts
         raw_fields = self._extract_raw_control_fields(cmd)
         physical_mode = self.actuator_mapping_mode == "physical"
         throttle_pct = self._coerce_float(raw_fields.get("throttle", 0.0), 0.0, "throttle", "apollo.control")
@@ -5940,6 +6052,10 @@ class ApolloGtBridge:
         steer_source, steer_pct = self._select_steering_field(
             raw_fields,
             physical_mode=physical_mode,
+        )
+        steer_normalization_mode = steering_normalization_mode_impl(
+            steer_source,
+            percent_normalization_mode=self.steering_percent_normalization,
         )
         raw_throttle = _clamp(throttle_pct / 100.0, 0.0, 1.0)
         raw_brake = _clamp(brake_pct / 100.0, 0.0, 1.0)
@@ -5953,6 +6069,9 @@ class ApolloGtBridge:
         mode = str(raw_fields.get("driving_mode", ""))
         gear = str(raw_fields.get("gear_location", ""))
         self.stats["last_control_in"] = {
+            "control_rx_timestamp": control_rx_ts,
+            "control_header_timestamp_sec": raw_fields.get("control_header_timestamp_sec"),
+            "control_header_sequence_num": raw_fields.get("control_header_sequence_num"),
             "throttle": raw_throttle,
             "brake": raw_brake,
             "steer": raw_steer,
@@ -5966,6 +6085,10 @@ class ApolloGtBridge:
                 else ["steering_target", "steering_percentage", "steering", "steering_rate"]
             ),
             "raw_steer_value": steer_pct,
+            "steering_percent_normalization": self.steering_percent_normalization,
+            "steering_normalization_mode": steer_normalization_mode,
+            "steering_selected_normalized": steer_pct,
+            "steering_normalized_for_mapping": raw_steer,
             "acceleration_mps2": _safe_float(raw_fields.get("acceleration"), float("nan")),
             "speed_mps": _safe_float(raw_fields.get("speed"), float("nan")),
             "debug_simple_lon_acceleration_cmd_mps2": _safe_float(
@@ -6016,6 +6139,12 @@ class ApolloGtBridge:
             "debug_simple_lat_target_point_s": _safe_float(
                 raw_fields.get("debug_simple_lat_current_target_point_s"), float("nan")
             ),
+            "debug_simple_lat_target_point_x": _safe_float(
+                raw_fields.get("debug_simple_lat_current_target_point_x"), float("nan")
+            ),
+            "debug_simple_lat_target_point_y": _safe_float(
+                raw_fields.get("debug_simple_lat_current_target_point_y"), float("nan")
+            ),
             "debug_simple_lat_target_point_relative_time_sec": _safe_float(
                 raw_fields.get("debug_simple_lat_current_target_point_relative_time"), float("nan")
             ),
@@ -6028,8 +6157,44 @@ class ApolloGtBridge:
             "debug_simple_lat_current_reference_point_s": _safe_float(
                 raw_fields.get("debug_simple_lat_current_reference_point_s"), float("nan")
             ),
+            "debug_simple_lat_current_reference_point_x": _safe_float(
+                raw_fields.get("debug_simple_lat_current_reference_point_x"), float("nan")
+            ),
+            "debug_simple_lat_current_reference_point_y": _safe_float(
+                raw_fields.get("debug_simple_lat_current_reference_point_y"), float("nan")
+            ),
             "debug_simple_lat_preview_reference_point_s": _safe_float(
                 raw_fields.get("debug_simple_lat_preview_reference_point_s"), float("nan")
+            ),
+            "debug_simple_lon_matched_point_s": _safe_float(
+                raw_fields.get("debug_simple_lon_current_matched_point_s"), float("nan")
+            ),
+            "debug_simple_lon_matched_point_x": _safe_float(
+                raw_fields.get("debug_simple_lon_current_matched_point_x"), float("nan")
+            ),
+            "debug_simple_lon_matched_point_y": _safe_float(
+                raw_fields.get("debug_simple_lon_current_matched_point_y"), float("nan")
+            ),
+            "debug_simple_lon_matched_point_theta_rad": _safe_float(
+                raw_fields.get("debug_simple_lon_current_matched_point_theta"), float("nan")
+            ),
+            "debug_simple_lon_matched_point_kappa": _safe_float(
+                raw_fields.get("debug_simple_lon_current_matched_point_kappa"), float("nan")
+            ),
+            "debug_simple_mpc_matched_point_s": _safe_float(
+                raw_fields.get("debug_simple_mpc_current_matched_point_s"), float("nan")
+            ),
+            "debug_simple_mpc_matched_point_x": _safe_float(
+                raw_fields.get("debug_simple_mpc_current_matched_point_x"), float("nan")
+            ),
+            "debug_simple_mpc_matched_point_y": _safe_float(
+                raw_fields.get("debug_simple_mpc_current_matched_point_y"), float("nan")
+            ),
+            "debug_simple_mpc_matched_point_theta_rad": _safe_float(
+                raw_fields.get("debug_simple_mpc_current_matched_point_theta"), float("nan")
+            ),
+            "debug_simple_mpc_matched_point_kappa": _safe_float(
+                raw_fields.get("debug_simple_mpc_current_matched_point_kappa"), float("nan")
             ),
         }
         def _nonzero_int_or_none(value: Any) -> Optional[int]:
@@ -6415,6 +6580,9 @@ class ApolloGtBridge:
             "steer": steer,
             "steer_before_lateral_guards": steer_before_lateral_guards,
             "actuator_mapping_mode": self.actuator_mapping_mode,
+            "steering_normalization_mode": steer_normalization_mode,
+            "steering_selected_normalized": steer_pct,
+            "steering_normalized_for_mapping": raw_steer,
             "type": self.node.control_out_type,
             "steer_pre_clamp": steer_pre,
             "steer_clamped": bool(base_mapping.get("steer_clamped", abs(steer_pre) > 1.0)),
@@ -6490,6 +6658,34 @@ class ApolloGtBridge:
             ),
         }
         control_ts = self._command_now_sec()
+        control_latency_ms = (
+            max(0.0, (control_ts - control_rx_ts) * 1000.0)
+            if _finite_or_none(control_rx_ts) is not None and _finite_or_none(control_ts) is not None
+            else None
+        )
+        control_header_ts = _finite_or_none(raw_fields.get("control_header_timestamp_sec"))
+        control_message_age_ms = (
+            max(0.0, (control_ts - control_header_ts) * 1000.0)
+            if control_header_ts is not None
+            else None
+        )
+        self.stats["last_control_in"].update(
+            {
+                "control_timestamp": control_ts,
+                "control_latency_ms": control_latency_ms,
+                "control_message_age_ms": control_message_age_ms,
+            }
+        )
+        self.stats["last_control_out"].update(
+            {
+                "control_rx_timestamp": control_rx_ts,
+                "control_timestamp": control_ts,
+                "control_latency_ms": control_latency_ms,
+                "control_message_age_ms": control_message_age_ms,
+                "planning_timestamp": latest_planning_header_ts if latest_planning_header_ts is not None else latest_planning_ts,
+                "planning_message_age_ms": latest_planning_age_ms,
+            }
+        )
         raw_dump = {
             "ts_sec": control_ts,
             "raw_control_msg_dump": raw_fields,
@@ -6601,6 +6797,9 @@ class ApolloGtBridge:
         control_consume_live = {
             "event_type": "control_success",
             "timestamp": control_ts,
+            "control_rx_timestamp": control_rx_ts,
+            "control_latency_ms": control_latency_ms,
+            "control_message_age_ms": control_message_age_ms,
             "wall_time_sec": timing.get("wall_time_sec"),
             "sim_time_sec": timing.get("sim_time_sec"),
             "world_frame": timing.get("world_frame"),
@@ -6668,6 +6867,9 @@ class ApolloGtBridge:
                     "mapping_mode": self.actuator_mapping_mode,
                     "selected_steering_field": steer_source,
                     "steering_field_priority": self.stats["last_control_in"].get("steering_field_priority", []),
+                    "steering_normalization_mode": steer_normalization_mode,
+                    "steering_selected_normalized": steer_pct,
+                    "steering_normalized_for_mapping": raw_steer,
                     "raw_throttle": raw_throttle,
                     "raw_brake": raw_brake,
                     "raw_steer": raw_steer,
@@ -6796,7 +6998,12 @@ class ApolloGtBridge:
             msg.drive.acceleration = 0.0
             msg.drive.steering_angle = steer * self.max_steer_angle
         elif self.node.control_out_type == "direct":
-            msg = Float32MultiArray()
+            if Float32MultiArray is not None:
+                msg = Float32MultiArray()
+            else:
+                # carla_direct should not require ROS2 std_msgs at runtime. The
+                # direct transport only consumes a `.data` sequence.
+                msg = types.SimpleNamespace(data=[])
             msg.data = [float(throttle_after_boost), float(brake_cmd), float(steer)]
         else:
             speed_cmd = (
@@ -6807,7 +7014,27 @@ class ApolloGtBridge:
             msg = Twist()
             msg.linear.x = speed_cmd
             msg.angular.z = steer
-        self.node.publish_control(msg)
+        try:
+            self.node.publish_control(msg)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            self.stats["control_publish_exception_count"] = int(
+                self.stats.get("control_publish_exception_count", 0) or 0
+            ) + 1
+            self.stats["last_control_publish_error"] = error
+            self.stats["last_error"] = f"control_publish_failed:{error}"
+            self._append_jsonl(
+                self.control_publish_error_path,
+                {
+                    "ts_sec": control_ts,
+                    "control_out_type": self.node.control_out_type,
+                    "error": error,
+                    "output_to_carla": dict(self.stats.get("last_control_out", {}) or {}),
+                },
+            )
+            print(f"[bridge][warning] control_publish_failed: {error}", file=sys.stderr)
+            return
+        self.stats["last_control_publish_error"] = ""
         self.stats["control_tx_count"] += 1
 
     def _on_routing_response(self, msg: Any) -> None:
@@ -8451,13 +8678,18 @@ class ApolloGtBridge:
                     and odom is not None
                     and not bool(snapshot.get("world_frame_advanced", False))
                 ):
-                    if int(self.stats.get("control_tx_count", 0) or 0) <= 0:
-                        # Direct transport must not tick CARLA, but Apollo
-                        # control still expects current localization/chassis
-                        # messages while the harness is in setup/probe waits.
-                        # Re-publish cached GT only until control first outputs;
-                        # after that, repeated stale pose messages can make
-                        # Apollo perceive poor vehicle response and brake early.
+                    stale_policy = str(
+                        getattr(self.node, "stale_world_frame_policy", "until_control")
+                        or "until_control"
+                    )
+                    self.stats["direct_stale_world_frame_policy"] = stale_policy
+                    if should_republish_stale_world_frame(
+                        stale_policy,
+                        control_tx_count=int(self.stats.get("control_tx_count", 0) or 0),
+                    ):
+                        # Direct transport must not tick CARLA. This policy only
+                        # controls whether the bridge republishes the latest cached
+                        # GT sample when the harness has not advanced the world yet.
                         self.stats["direct_stale_world_frame_republish_count"] = int(
                             self.stats.get("direct_stale_world_frame_republish_count", 0) or 0
                         ) + 1
@@ -8532,6 +8764,17 @@ class ApolloGtBridge:
                             )
                         except Exception:
                             front_actor_speed_mps = None
+                    def desired_point_distance(prefix: str) -> Optional[float]:
+                        px = _finite_or_none(desired_in.get(f"{prefix}_x"))
+                        py = _finite_or_none(desired_in.get(f"{prefix}_y"))
+                        if px is None or py is None:
+                            return None
+                        return float(math.hypot(float(px) - ex, float(py) - ey))
+
+                    matched_point_distance = desired_point_distance("debug_simple_lon_matched_point")
+                    if matched_point_distance is None:
+                        matched_point_distance = desired_point_distance("debug_simple_mpc_matched_point")
+                    target_point_distance = desired_point_distance("debug_simple_lat_target_point")
                     row = {
                         "ts_sec": ts_sec,
                         "map_x": self._coerce_float(pose_debug.get("map_x"), float("nan"), "pose_debug.map_x", "publish_row"),
@@ -8612,6 +8855,18 @@ class ApolloGtBridge:
                             "desired_in.debug_simple_lat_target_point_s",
                             "publish_row",
                         ),
+                        "apollo_debug_simple_lat_target_point_x": self._coerce_float(
+                            desired_in.get("debug_simple_lat_target_point_x"),
+                            float("nan"),
+                            "desired_in.debug_simple_lat_target_point_x",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lat_target_point_y": self._coerce_float(
+                            desired_in.get("debug_simple_lat_target_point_y"),
+                            float("nan"),
+                            "desired_in.debug_simple_lat_target_point_y",
+                            "publish_row",
+                        ),
                         "apollo_debug_simple_lat_target_point_relative_time_sec": self._coerce_float(
                             desired_in.get("debug_simple_lat_target_point_relative_time_sec"),
                             float("nan"),
@@ -8630,9 +8885,89 @@ class ApolloGtBridge:
                             "desired_in.debug_simple_lat_target_point_kappa",
                             "publish_row",
                         ),
+                        "apollo_debug_simple_lon_matched_point_s": self._coerce_float(
+                            desired_in.get("debug_simple_lon_matched_point_s"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_matched_point_s",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_matched_point_x": self._coerce_float(
+                            desired_in.get("debug_simple_lon_matched_point_x"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_matched_point_x",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_matched_point_y": self._coerce_float(
+                            desired_in.get("debug_simple_lon_matched_point_y"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_matched_point_y",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_mpc_matched_point_s": self._coerce_float(
+                            desired_in.get("debug_simple_mpc_matched_point_s"),
+                            float("nan"),
+                            "desired_in.debug_simple_mpc_matched_point_s",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_mpc_matched_point_x": self._coerce_float(
+                            desired_in.get("debug_simple_mpc_matched_point_x"),
+                            float("nan"),
+                            "desired_in.debug_simple_mpc_matched_point_x",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_mpc_matched_point_y": self._coerce_float(
+                            desired_in.get("debug_simple_mpc_matched_point_y"),
+                            float("nan"),
+                            "desired_in.debug_simple_mpc_matched_point_y",
+                            "publish_row",
+                        ),
+                        "apollo_matched_point_distance": matched_point_distance
+                        if matched_point_distance is not None
+                        else float("nan"),
+                        "apollo_target_point_distance": target_point_distance
+                        if target_point_distance is not None
+                        else float("nan"),
                         "apollo_mode": desired_in.get("mode", ""),
                         "apollo_gear": desired_in.get("gear", ""),
                         "apollo_estop": desired_in.get("estop", False),
+                        "localization_timestamp": ts_sec,
+                        "chassis_timestamp": ts_sec,
+                        "planning_timestamp": self._coerce_float(
+                            desired_out.get("planning_timestamp"),
+                            float("nan"),
+                            "desired_out.planning_timestamp",
+                            "publish_row",
+                        ),
+                        "control_rx_timestamp": self._coerce_float(
+                            desired_out.get("control_rx_timestamp"),
+                            float("nan"),
+                            "desired_out.control_rx_timestamp",
+                            "publish_row",
+                        ),
+                        "control_timestamp": self._coerce_float(
+                            desired_out.get("control_timestamp"),
+                            float("nan"),
+                            "desired_out.control_timestamp",
+                            "publish_row",
+                        ),
+                        "control_latency_ms": self._coerce_float(
+                            desired_out.get("control_latency_ms"),
+                            float("nan"),
+                            "desired_out.control_latency_ms",
+                            "publish_row",
+                        ),
+                        "planning_message_age_ms": self._coerce_float(
+                            desired_out.get("planning_message_age_ms"),
+                            float("nan"),
+                            "desired_out.planning_message_age_ms",
+                            "publish_row",
+                        ),
+                        "control_message_age_ms": self._coerce_float(
+                            desired_out.get("control_message_age_ms"),
+                            float("nan"),
+                            "desired_out.control_message_age_ms",
+                            "publish_row",
+                        ),
                         "actuator_mapping_mode": desired_out.get("actuator_mapping_mode", self.actuator_mapping_mode),
                         "commanded_throttle": self._coerce_float(desired_out.get("throttle"), float("nan"), "desired_out.throttle", "publish_row"),
                         "throttle_after_boost": self._coerce_float(desired_out.get("throttle_after_boost"), float("nan"), "desired_out.throttle_after_boost", "publish_row"),
@@ -8904,7 +9239,16 @@ class ApolloGtBridge:
                         )
                     self._maybe_publish_traffic_lights(ts_sec)
                     self._maybe_send_routing_request(snapshot, odom, ts_sec, pose_info, speed_mps=speed_mps)
+                    if not float(self.stats.get("first_publish_ts_sec", 0.0) or 0.0):
+                        self.stats["first_publish_ts_sec"] = ts_sec
+                    if not float(self.stats.get("first_publish_wall_ts_sec", 0.0) or 0.0):
+                        self.stats["first_publish_wall_ts_sec"] = now_wall
                     self.stats["last_publish_ts_sec"] = ts_sec
+                    self.stats["last_publish_wall_ts_sec"] = now_wall
+                    first_sim = float(self.stats.get("first_publish_ts_sec", 0.0) or 0.0)
+                    first_wall = float(self.stats.get("first_publish_wall_ts_sec", 0.0) or 0.0)
+                    self.stats["publish_elapsed_sim_sec"] = max(0.0, float(ts_sec) - first_sim)
+                    self.stats["publish_elapsed_wall_sec"] = max(0.0, float(now_wall) - first_wall)
                     self.stats["last_publish_error"] = ""
                     if str(self.stats.get("last_error", "")).startswith("publish loop error:"):
                         self.stats["last_error"] = ""

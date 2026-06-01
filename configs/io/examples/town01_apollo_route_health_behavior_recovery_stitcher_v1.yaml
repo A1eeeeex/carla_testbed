@@ -176,6 +176,7 @@ algo:
       throttle_scale: 1.5
       brake_scale: 1.0
       steer_scale: 0.25
+      steering_percent_normalization: legacy_double_percent
       brake_deadzone: 0.05
       actuator_mapping_mode: legacy
       straight_lane_zero_steer_enabled: false

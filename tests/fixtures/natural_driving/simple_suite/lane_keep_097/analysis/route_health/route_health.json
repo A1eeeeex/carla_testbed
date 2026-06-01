@@ -1,0 +1,71 @@
+{
+  "schema_version": "route_health.v1",
+  "route_id": "lane097",
+  "map_name": "Town01",
+  "source": {
+    "run_dir": "tests/fixtures/natural_driving/simple_suite/lane_keep_097",
+    "manifest_path": "tests/fixtures/natural_driving/simple_suite/lane_keep_097/manifest.json",
+    "summary_path": "tests/fixtures/natural_driving/simple_suite/lane_keep_097/summary.json",
+    "timeseries_path": "tests/fixtures/natural_driving/simple_suite/lane_keep_097/timeseries.csv",
+    "route_path": "tests/fixtures/routes/simple_straight.json"
+  },
+  "route_geometry": {
+    "point_count": 4,
+    "length_m": 96.0,
+    "curve_segments_count": 0,
+    "spacing": {
+      "mean_m": 32.0,
+      "p95_m": 32.0,
+      "max_m": 32.0
+    },
+    "heading": {
+      "max_jump_rad": 0.02,
+      "jump_locations": []
+    },
+    "curvature": {
+      "mean_abs": 0.001,
+      "p95_abs": 0.002,
+      "max_abs": 0.002,
+      "spike_locations": []
+    },
+    "curve_segments": [],
+    "spawn_alignment": {
+      "distance_m": 0.1,
+      "heading_error_rad": 0.01,
+      "direction_consistent": true
+    },
+    "route_direction_consistency": {
+      "status": "pass",
+      "warnings": []
+    }
+  },
+  "run_metrics": {
+    "lateral_error_mean_m": 0.11,
+    "lateral_error_p95_m": 0.18,
+    "lateral_error_max_m": 0.18,
+    "heading_error_mean_rad": 0.025,
+    "heading_error_p95_rad": 0.04,
+    "heading_error_max_rad": 0.04,
+    "lateral_error_by_curvature_bucket": {},
+    "heading_error_by_curvature_bucket": {}
+  },
+  "apollo_semantics": {
+    "matched_point_anomaly_locations": [],
+    "target_point_anomaly_locations": [],
+    "first_high_steer": null
+  },
+  "control_semantics": {
+    "raw_mapped_applied_steer_available": true,
+    "guard_apply_counts": {
+      "lateral_guard": 0,
+      "trajectory_contract_lateral_guard": 0
+    }
+  },
+  "missing_fields": [],
+  "missing_inputs": [],
+  "warnings": [],
+  "verdict": {
+    "status": "pass",
+    "reason": null
+  }
+}

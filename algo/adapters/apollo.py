@@ -36,6 +36,8 @@ class ApolloAdapter(Adapter):
         candidates: list[Path] = []
         for token in map_tokens:
             candidates.append(apollo_root / "modules" / "map" / "data" / token)
+            candidates.append(apollo_root / "application-core" / "data" / "map_data" / token)
+            candidates.append(apollo_root / "application-core" / "data" / "map-data" / token)
             candidates.append((apollo_root / ".." / "share" / "modules" / "map" / "data" / token).resolve())
         app_core_root = None
         parents = list(apollo_root.parents)
@@ -1012,6 +1014,7 @@ PY
             "steer_scale",
             "brake_deadzone",
             "actuator_mapping_mode",
+            "steering_percent_normalization",
             "zero_hold_sec",
             "startup_throttle_boost_add",
             "startup_throttle_boost_cap",
@@ -1047,7 +1050,7 @@ PY
             if key in ctrl_cfg:
                 ctrl_map[key] = (
                     str(ctrl_cfg[key])
-                    if key == "actuator_mapping_mode"
+                    if key in {"actuator_mapping_mode", "steering_percent_normalization"}
                     else float(ctrl_cfg[key])
                 )
         for key in (

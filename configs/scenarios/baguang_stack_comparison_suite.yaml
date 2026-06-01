@@ -1,0 +1,116 @@
+schema_version: baguang_stack_comparison_suite.v1
+name: baguang_apollo_autoware_followstop_comparison
+description: >
+  Offline comparison contract for Apollo and Autoware on the same
+  straight_road_for_baguang truth-input 300m / near-80kph follow-stop scene.
+  This suite records evidence and assistance boundaries; it does not claim
+  unassisted natural driving.
+
+common_scene:
+  scenario_id: baguang_followstop_300m_80kph
+  scenario_class: follow_stop_80kph
+  map: straight_road_for_baguang
+  route_id: straight_road_for_baguang_mainline_followstop_300m
+  duration_s: 90
+  target_speed_kph: 80
+  lead_distance_m: 300
+  ego_spawn_ref: carla_spawn_index_0
+  front_vehicle:
+    placement: 300m_ahead_same_lane
+    initial_state: stopped
+  route_ref: carla_waypoint_trace_from_ego_to_380m
+  vehicle_blueprint: vehicle.lincoln.mkz_2020
+  required_artifacts:
+    - manifest.json
+    - summary.json
+    - config.resolved.yaml
+    - timeseries.csv
+    - events.jsonl
+    - video/dual_cam/demo_third_person.mp4
+
+comparison_requirements:
+  must_match:
+    - map
+    - route_id
+    - target_speed_kph
+    - lead_distance_m
+    - ego_spawn_ref
+    - front_vehicle.placement
+    - vehicle_blueprint
+  behavior_gate:
+    max_speed_mps_min: 20.0
+    final_speed_mps_max: 0.5
+    min_lead_distance_m_max: 15.0
+    collision_count_max: 0
+    lane_invasion_count_max: 0
+  claim_boundary:
+    assisted_profiles_can_be_compared: true
+    assisted_profiles_prove_unassisted_natural_driving: false
+    full_sensor_perception_reproduced: false
+  lane_event_contract:
+    report_path: runs/analysis/baguang_lane_event_contract_20260531/baguang_lane_event_contract_report.json
+    purpose: justify Baguang lane-invasion event quarantine before comparing assisted profiles.
+
+stacks:
+  - stack_id: apollo_carla_direct_assisted
+    stack: apollo
+    backend: carla_direct
+    algorithm_variant_id: apollo_10_0_carla_gt_baguang_assisted
+    run_command: tools/run_baguang_apollo_followstop_80kph_demo.sh
+    evidence_run: runs/assist_reduction/baguang_online_20260531_apollo_no_terminal_hold/apollo/apollo_no_terminal_stop_hold/baguang_assist_reduction_20260531_130752__apollo_no_terminal_stop_hold__02
+    status: experimental_assisted_verified_once
+    required_artifacts:
+      - artifacts/cyber_bridge_stats.json
+      - artifacts/direct_bridge_stats.json
+      - artifacts/direct_bridge_control_apply.jsonl
+      - artifacts/planning_topic_debug_summary.json
+      - artifacts/control_decode_debug.jsonl
+      - artifacts/bridge_control_decode.jsonl
+      - artifacts/dreamview_capture.mp4
+      - artifacts/dreamview_recording_status.json
+      - video/dual_cam/demo_third_person.mp4
+    declared_assists:
+      - carla_direct_transport
+      - straight_lane_lateral_stabilizer
+      - straight_acc_override
+      - lane_invasion_event_disabled
+    not_proven:
+      - unassisted_apollo_lateral_semantics
+      - unassisted_apollo_longitudinal_follow_stop
+      - full_apollo_perception_or_localization
+
+  - stack_id: autoware_ros2_assisted
+    stack: autoware
+    backend: ros2_autoware
+    algorithm_variant_id: autoware_truth_input_baguang_assisted
+    run_command_source: carla_testbed.autoware.baguang_readiness:online_autoware_followstop_demo_recording
+    evidence_run: runs/assist_reduction/baguang_online_20260531_autoware_no_smoothing/autoware/autoware_no_bridge_smoothing_probe/baguang_assist_reduction_20260531_124254__autoware_no_bridge_smoothing_probe__02
+    status: experimental_assisted_verified_once
+    required_artifacts:
+      - artifacts/autoware_control.jsonl
+      - artifacts/autoware_carla_control_bridge.log
+      - analysis/autoware_control/autoware_control_diagnostics.json
+      - analysis/autoware_followstop/autoware_followstop_diagnostics.json
+      - video/dual_cam/demo_third_person.mp4
+      - video/dual_cam/demo_third_person_hud.mp4
+      - video/dual_cam/demo_third_person_raw.mp4
+    declared_assists:
+      - goal_planner_module_disabled
+      - planning_common_dynamics_override
+      - speed_feedback_bridge_profile
+      - recording_timeout_sec_5
+      - lane_invasion_event_disabled
+    not_proven:
+      - unmodified_autoware_follow_stop
+      - unassisted_autoware_longitudinal_behavior
+      - full_autoware_sensor_perception
+
+next_reduction_steps:
+  - use configs/experiments/baguang_assist_reduction.yaml to generate a reproducible assist-reduction matrix.
+  - Autoware bridge smoothing has one positive removal sample; repeat it or promote it to a removable assist only after the batch report is refreshed.
+  - reduce Autoware recording timeout while keeping artifacts complete, or explain it as a recording-chain workaround if repeated default-timeout probes continue to fail.
+  - Apollo terminal stop hold has one positive removal sample; repeat it or promote it to a removable assist only after the batch report is refreshed.
+  - reduce Apollo straight-line longitudinal override and lateral stabilizer while keeping artifacts complete.
+  - run Apollo and Autoware with the same artifact checklist and side-by-side report.
+  - add route_health.json for both stacks before making lateral capability claims.
+  - only promote unassisted natural-driving claims after declared_assists is empty or justified by gates.

@@ -1,0 +1,14 @@
+{
+  "route_id": "simple_straight",
+  "map": "TownTest",
+  "source": "fixture",
+  "spawn_pose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
+  "goal_pose": {"x": 30.0, "y": 0.0, "yaw": 0.0},
+  "metadata": {"geometry_class": "straight"},
+  "points": [
+    {"x": 0.0, "y": 0.0},
+    {"x": 10.0, "y": 0.0},
+    {"x": 20.0, "y": 0.0},
+    {"x": 30.0, "y": 0.0}
+  ]
+}

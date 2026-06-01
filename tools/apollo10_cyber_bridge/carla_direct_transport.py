@@ -52,6 +52,10 @@ def _clamp(val: float, lo: float = -1.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, val))
 
 
+def _wrap_rad(angle: float) -> float:
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
 def _quat_from_rpy_deg(roll_deg: float, pitch_deg: float, yaw_deg: float) -> Tuple[float, float, float, float]:
     roll = math.radians(roll_deg or 0.0)
     pitch = math.radians(pitch_deg or 0.0)
@@ -93,6 +97,32 @@ class NoopExecutor:
         return True
 
 
+STALE_WORLD_FRAME_POLICY_UNTIL_CONTROL = "until_control"
+STALE_WORLD_FRAME_POLICY_ALWAYS_REPUBLISH = "always_republish"
+STALE_WORLD_FRAME_POLICY_SKIP = "skip"
+STALE_WORLD_FRAME_POLICIES = {
+    STALE_WORLD_FRAME_POLICY_UNTIL_CONTROL,
+    STALE_WORLD_FRAME_POLICY_ALWAYS_REPUBLISH,
+    STALE_WORLD_FRAME_POLICY_SKIP,
+}
+
+
+def normalize_stale_world_frame_policy(policy: str | None) -> str:
+    normalized = str(policy or STALE_WORLD_FRAME_POLICY_UNTIL_CONTROL).strip().lower()
+    if normalized not in STALE_WORLD_FRAME_POLICIES:
+        return STALE_WORLD_FRAME_POLICY_UNTIL_CONTROL
+    return normalized
+
+
+def should_republish_stale_world_frame(policy: str | None, *, control_tx_count: int) -> bool:
+    normalized = normalize_stale_world_frame_policy(policy)
+    if normalized == STALE_WORLD_FRAME_POLICY_ALWAYS_REPUBLISH:
+        return True
+    if normalized == STALE_WORLD_FRAME_POLICY_SKIP:
+        return False
+    return int(control_tx_count or 0) <= 0
+
+
 class CarlaDirectTransport:
     def __init__(
         self,
@@ -121,7 +151,16 @@ class CarlaDirectTransport:
         route_command_mode: str = "cyber_direct",
         require_no_ros2_runtime: bool = False,
         client_timeout_sec: float = 5.0,
+        control_apply_mode: str = "immediate_or_defer",
+        stale_world_frame_policy: str = STALE_WORLD_FRAME_POLICY_UNTIL_CONTROL,
         invert_tf: bool = True,
+        straight_lane_lateral_stabilizer_enabled: bool = False,
+        straight_lane_lateral_stabilizer_max_abs_steer: float = 0.04,
+        straight_lane_lateral_stabilizer_k_cte: float = 0.015,
+        straight_lane_lateral_stabilizer_k_heading: float = 0.25,
+        straight_lane_lateral_stabilizer_max_cte_m: float = 4.0,
+        straight_lane_lateral_stabilizer_max_heading_error_deg: float = 20.0,
+        straight_lane_lateral_stabilizer_max_speed_mps: float = 30.0,
     ) -> None:
         self.artifacts_dir = Path(artifacts_dir)
         self.control_out_type = str(control_out_type or "direct").lower()
@@ -149,7 +188,28 @@ class CarlaDirectTransport:
         self.route_command_mode = str(route_command_mode or "cyber_direct").strip().lower() or "cyber_direct"
         self.require_no_ros2_runtime = bool(require_no_ros2_runtime)
         self.client_timeout_sec = max(float(client_timeout_sec), 0.5)
+        self.control_apply_mode = str(control_apply_mode or "immediate_or_defer").strip().lower()
+        if self.control_apply_mode not in {"immediate_or_defer", "frame_flush_only"}:
+            self.control_apply_mode = "immediate_or_defer"
+        self.stale_world_frame_policy = normalize_stale_world_frame_policy(stale_world_frame_policy)
         self.invert_tf = bool(invert_tf)
+        self.straight_lane_lateral_stabilizer_enabled = bool(straight_lane_lateral_stabilizer_enabled)
+        self.straight_lane_lateral_stabilizer_max_abs_steer = max(
+            float(straight_lane_lateral_stabilizer_max_abs_steer), 0.0
+        )
+        self.straight_lane_lateral_stabilizer_k_cte = float(straight_lane_lateral_stabilizer_k_cte)
+        self.straight_lane_lateral_stabilizer_k_heading = float(
+            straight_lane_lateral_stabilizer_k_heading
+        )
+        self.straight_lane_lateral_stabilizer_max_cte_m = max(
+            float(straight_lane_lateral_stabilizer_max_cte_m), 0.0
+        )
+        self.straight_lane_lateral_stabilizer_max_heading_error_deg = max(
+            float(straight_lane_lateral_stabilizer_max_heading_error_deg), 0.0
+        )
+        self.straight_lane_lateral_stabilizer_max_speed_mps = max(
+            float(straight_lane_lateral_stabilizer_max_speed_mps), 0.0
+        )
 
         self.client: Optional[carla.Client] = None
         self.world: Optional[carla.World] = None
@@ -159,6 +219,7 @@ class CarlaDirectTransport:
         self._first_msg_received = False
         self._recent_positive_throttle_monotonic: Optional[float] = None
         self._last_applied_frame: Optional[int] = None
+        self._pending_control: Optional[Dict[str, Any]] = None
         self._last_control_wall_sec = 0.0
         self._last_snapshot_wall_sec = 0.0
         self._cached_snapshot: Optional[Dict[str, Any]] = None
@@ -191,6 +252,14 @@ class CarlaDirectTransport:
             "snapshot_count": 0,
             "world_frame_repeat_count": 0,
             "control_apply_count": 0,
+            "control_apply_deferred_count": 0,
+            "control_apply_mode": self.control_apply_mode,
+            "stale_world_frame_policy": self.stale_world_frame_policy,
+            "control_apply_frame_flush_queue_count": 0,
+            "control_apply_frame_flush_overwrite_count": 0,
+            "control_apply_pending_overwrite_count": 0,
+            "control_apply_pending_flush_count": 0,
+            "control_apply_duplicate_frame_skip_count": 0,
             "control_apply_watchdog_count": 0,
             "control_apply_fail_count": 0,
             "control_apply_first_frame": None,
@@ -201,6 +270,11 @@ class CarlaDirectTransport:
             "control_apply_max_throttle": 0.0,
             "control_apply_max_brake": 0.0,
             "control_apply_max_speed_mps": 0.0,
+            "straight_lane_lateral_stabilizer_enabled": self.straight_lane_lateral_stabilizer_enabled,
+            "straight_lane_lateral_stabilizer_apply_count": 0,
+            "straight_lane_lateral_stabilizer_skip_count": 0,
+            "straight_lane_lateral_stabilizer_error_count": 0,
+            "last_straight_lane_lateral_stabilizer": {},
             "startup_brake_suppressed_count": 0,
             "world_map": "",
             "ego_actor_id": None,
@@ -468,7 +542,37 @@ class CarlaDirectTransport:
             return True
         return False
 
-    def _apply_control(
+    def _defer_control(
+        self,
+        ctrl: carla.VehicleControl,
+        *,
+        source: str,
+        source_steer: float,
+        steer_norm: float,
+        steer_clamped: bool,
+        frame_id: Optional[int],
+    ) -> None:
+        if self._pending_control is not None:
+            self.stats["control_apply_pending_overwrite_count"] = int(
+                self.stats.get("control_apply_pending_overwrite_count", 0)
+            ) + 1
+        self._pending_control = {
+            "ctrl": ctrl,
+            "source": source,
+            "source_steer": float(source_steer),
+            "steer_norm": float(steer_norm),
+            "steer_clamped": bool(steer_clamped),
+            "deferred_frame_id": frame_id,
+            "deferred_ts_sec": time.time(),
+        }
+        self.stats["control_apply_deferred_count"] = int(
+            self.stats.get("control_apply_deferred_count", 0)
+        ) + 1
+        self.stats["control_apply_duplicate_frame_skip_count"] = int(
+            self.stats.get("control_apply_duplicate_frame_skip_count", 0)
+        ) + 1
+
+    def _queue_frame_flush_control(
         self,
         ctrl: carla.VehicleControl,
         *,
@@ -477,13 +581,184 @@ class CarlaDirectTransport:
         steer_norm: float,
         steer_clamped: bool,
     ) -> None:
+        if self._pending_control is not None:
+            self.stats["control_apply_frame_flush_overwrite_count"] = int(
+                self.stats.get("control_apply_frame_flush_overwrite_count", 0)
+            ) + 1
+        self._pending_control = {
+            "ctrl": ctrl,
+            "source": source,
+            "source_steer": float(source_steer),
+            "steer_norm": float(steer_norm),
+            "steer_clamped": bool(steer_clamped),
+            "deferred_frame_id": self._current_world_frame(),
+            "deferred_ts_sec": time.time(),
+        }
+        self.stats["control_apply_frame_flush_queue_count"] = int(
+            self.stats.get("control_apply_frame_flush_queue_count", 0)
+        ) + 1
+
+    def _maybe_apply_straight_lane_lateral_stabilizer(
+        self,
+        ctrl: carla.VehicleControl,
+        *,
+        speed_mps: float,
+    ) -> Tuple[carla.VehicleControl, Dict[str, Any]]:
+        payload: Dict[str, Any] = {
+            "enabled": self.straight_lane_lateral_stabilizer_enabled,
+            "applied": False,
+            "reason": "disabled",
+        }
+        if not self.straight_lane_lateral_stabilizer_enabled:
+            return ctrl, payload
+        if self.ego is None or self.world is None:
+            payload["reason"] = "missing_ego_or_world"
+            self.stats["straight_lane_lateral_stabilizer_skip_count"] = int(
+                self.stats.get("straight_lane_lateral_stabilizer_skip_count", 0)
+            ) + 1
+            self.stats["last_straight_lane_lateral_stabilizer"] = payload
+            return ctrl, payload
+        if float(speed_mps) > self.straight_lane_lateral_stabilizer_max_speed_mps:
+            payload["reason"] = "speed_above_limit"
+            payload["speed_mps"] = float(speed_mps)
+            self.stats["straight_lane_lateral_stabilizer_skip_count"] = int(
+                self.stats.get("straight_lane_lateral_stabilizer_skip_count", 0)
+            ) + 1
+            self.stats["last_straight_lane_lateral_stabilizer"] = payload
+            return ctrl, payload
+        try:
+            transform = self.ego.get_transform()
+            carla_map = self.world.get_map()
+            lane_type = getattr(getattr(carla, "LaneType", object), "Driving", None)
+            if lane_type is not None:
+                waypoint = carla_map.get_waypoint(
+                    transform.location,
+                    project_to_road=True,
+                    lane_type=lane_type,
+                )
+            else:
+                waypoint = carla_map.get_waypoint(transform.location, project_to_road=True)
+            if waypoint is None:
+                payload["reason"] = "no_waypoint"
+                self.stats["straight_lane_lateral_stabilizer_skip_count"] = int(
+                    self.stats.get("straight_lane_lateral_stabilizer_skip_count", 0)
+                ) + 1
+                self.stats["last_straight_lane_lateral_stabilizer"] = payload
+                return ctrl, payload
+            lane_transform = waypoint.transform
+            ego_loc = transform.location
+            lane_loc = lane_transform.location
+            lane_yaw_rad = math.radians(float(lane_transform.rotation.yaw))
+            ego_yaw_rad = math.radians(float(transform.rotation.yaw))
+            dx = float(ego_loc.x - lane_loc.x)
+            dy = float(ego_loc.y - lane_loc.y)
+            left_x = -math.sin(lane_yaw_rad)
+            left_y = math.cos(lane_yaw_rad)
+            cte_m = dx * left_x + dy * left_y
+            heading_error_rad = _wrap_rad(ego_yaw_rad - lane_yaw_rad)
+            heading_error_deg = math.degrees(heading_error_rad)
+            payload.update(
+                {
+                    "reason": "computed",
+                    "speed_mps": float(speed_mps),
+                    "cross_track_error_m": float(cte_m),
+                    "heading_error_rad": float(heading_error_rad),
+                    "heading_error_deg": float(heading_error_deg),
+                    "lane_id": int(getattr(waypoint, "lane_id", 0)),
+                    "road_id": int(getattr(waypoint, "road_id", 0)),
+                    "section_id": int(getattr(waypoint, "section_id", 0)),
+                    "original_steer": float(ctrl.steer),
+                }
+            )
+            if abs(cte_m) > self.straight_lane_lateral_stabilizer_max_cte_m:
+                payload["reason"] = "cte_above_limit"
+            elif abs(heading_error_deg) > self.straight_lane_lateral_stabilizer_max_heading_error_deg:
+                payload["reason"] = "heading_error_above_limit"
+            else:
+                steer_cmd = -(
+                    self.straight_lane_lateral_stabilizer_k_cte * cte_m
+                    + self.straight_lane_lateral_stabilizer_k_heading * heading_error_rad
+                )
+                steer_cmd = _clamp(
+                    steer_cmd,
+                    -self.straight_lane_lateral_stabilizer_max_abs_steer,
+                    self.straight_lane_lateral_stabilizer_max_abs_steer,
+                )
+                ctrl.steer = float(steer_cmd)
+                payload["applied"] = True
+                payload["reason"] = "applied"
+                payload["stabilized_steer"] = float(ctrl.steer)
+                self.stats["straight_lane_lateral_stabilizer_apply_count"] = int(
+                    self.stats.get("straight_lane_lateral_stabilizer_apply_count", 0)
+                ) + 1
+            if not payload["applied"]:
+                self.stats["straight_lane_lateral_stabilizer_skip_count"] = int(
+                    self.stats.get("straight_lane_lateral_stabilizer_skip_count", 0)
+                ) + 1
+            self.stats["last_straight_lane_lateral_stabilizer"] = payload
+            return ctrl, payload
+        except Exception as exc:
+            payload["reason"] = "error"
+            payload["error"] = str(exc)
+            self.stats["straight_lane_lateral_stabilizer_error_count"] = int(
+                self.stats.get("straight_lane_lateral_stabilizer_error_count", 0)
+            ) + 1
+            self.stats["last_straight_lane_lateral_stabilizer"] = payload
+            return ctrl, payload
+
+    def _apply_pending_control_if_ready(self) -> None:
+        pending = self._pending_control
+        if pending is None:
+            return
         if not self._ensure_ego():
             return
         frame_id = self._current_world_frame()
         if not self._should_apply_on_frame(frame_id):
             return
+        self._pending_control = None
+        self.stats["control_apply_pending_flush_count"] = int(
+            self.stats.get("control_apply_pending_flush_count", 0)
+        ) + 1
+        self._apply_control(
+            pending["ctrl"],
+            source=str(pending["source"]),
+            source_steer=float(pending["source_steer"]),
+            steer_norm=float(pending["steer_norm"]),
+            steer_clamped=bool(pending["steer_clamped"]),
+            defer_if_duplicate=False,
+        )
+
+    def _apply_control(
+        self,
+        ctrl: carla.VehicleControl,
+        *,
+        source: str,
+        source_steer: float,
+        steer_norm: float,
+        steer_clamped: bool,
+        defer_if_duplicate: bool = True,
+    ) -> None:
+        if not self._ensure_ego():
+            return
+        frame_id = self._current_world_frame()
+        if not self._should_apply_on_frame(frame_id):
+            if defer_if_duplicate and source != "watchdog":
+                self._defer_control(
+                    ctrl,
+                    source=source,
+                    source_steer=source_steer,
+                    steer_norm=steer_norm,
+                    steer_clamped=steer_clamped,
+                    frame_id=frame_id,
+                )
+            return
         ctrl = self._maybe_suppress_startup_brake(ctrl, source=source)
         try:
+            speed_mps_before_apply = float(self._current_speed_mps())
+            ctrl, stabilizer_payload = self._maybe_apply_straight_lane_lateral_stabilizer(
+                ctrl,
+                speed_mps=speed_mps_before_apply,
+            )
             self.ego.apply_control(ctrl)
             if frame_id is not None:
                 self._last_applied_frame = frame_id
@@ -527,6 +802,7 @@ class CarlaDirectTransport:
                 "brake": float(ctrl.brake),
                 "steer": float(ctrl.steer),
                 "speed_mps": speed_mps,
+                "straight_lane_lateral_stabilizer": stabilizer_payload,
             }
             self._append_jsonl(self.control_apply_path, payload)
         except Exception as exc:
@@ -581,6 +857,7 @@ class CarlaDirectTransport:
         self._last_control_wall_sec = time.time()
 
     def tick(self) -> None:
+        self._apply_pending_control_if_ready()
         self._apply_watchdog_if_needed()
 
     def snapshot(self) -> Dict[str, Any]:
@@ -679,6 +956,15 @@ class CarlaDirectTransport:
             )
             if float(ctrl.throttle) >= self.startup_brake_suppression_min_throttle:
                 self._recent_positive_throttle_monotonic = time.monotonic()
+            if self.control_apply_mode == "frame_flush_only":
+                self._queue_frame_flush_control(
+                    ctrl,
+                    source="pending",
+                    source_steer=raw_steer,
+                    steer_norm=raw_steer,
+                    steer_clamped=abs(steer - raw_steer) > 1e-6,
+                )
+                return
             self._apply_control(
                 ctrl,
                 source="pending",
@@ -698,6 +984,15 @@ class CarlaDirectTransport:
                 steer_norm=steer_norm,
                 accel=float(msg.drive.acceleration),
             )
+            if self.control_apply_mode == "frame_flush_only":
+                self._queue_frame_flush_control(
+                    ctrl,
+                    source="pending",
+                    source_steer=float(msg.drive.steering_angle),
+                    steer_norm=steer_norm,
+                    steer_clamped=steer_clamped,
+                )
+                return
             self._apply_control(
                 ctrl,
                 source="pending",
@@ -717,6 +1012,15 @@ class CarlaDirectTransport:
                 steer_norm=steer_norm,
                 accel=0.0,
             )
+            if self.control_apply_mode == "frame_flush_only":
+                self._queue_frame_flush_control(
+                    ctrl,
+                    source="pending",
+                    source_steer=steer_norm,
+                    steer_norm=steer_norm,
+                    steer_clamped=steer_clamped,
+                )
+                return
             self._apply_control(
                 ctrl,
                 source="pending",
@@ -733,6 +1037,8 @@ class CarlaDirectTransport:
             "mode": "carla_direct",
             "gt_source": "carla_world_snapshot_direct",
             "control_apply_path": "bridge_direct_actor_apply",
+            "control_apply_mode": self.control_apply_mode,
+            "stale_world_frame_policy": self.stale_world_frame_policy,
             "tick_owner": "runner_harness_world_tick",
             "uses_ros2_gt": False,
             "uses_ros2_control_bridge": False,

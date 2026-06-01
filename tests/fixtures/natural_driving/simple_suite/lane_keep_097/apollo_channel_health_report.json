@@ -1,0 +1,19 @@
+{
+  "schema_version": "apollo_channel_health_report.v1",
+  "status": "pass",
+  "scenario_class": "lane_keep",
+  "missing_inputs": [],
+  "missing_required_channels": [],
+  "source": {
+    "config_path": "configs/algorithms/apollo_natural_driving_channels.yaml",
+    "stats_path": "tests/fixtures/apollo/channel_stats_natural_valid.json"
+  },
+  "channel_results": {
+    "localization": {"status": "pass", "required": true},
+    "chassis": {"status": "pass", "required": true},
+    "obstacles": {"status": "pass", "required": true},
+    "planning": {"status": "pass", "required": true},
+    "control": {"status": "pass", "required": true},
+    "traffic_light": {"status": "warn", "required": false}
+  }
+}

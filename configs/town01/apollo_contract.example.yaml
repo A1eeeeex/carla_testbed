@@ -1,0 +1,92 @@
+schema_version: town01_apollo_contract.v1
+map_name: Town01
+apollo_map_root: ${APOLLO_MAP_ROOT}/modules/map/data/Town01
+description: >
+  Offline Town01 Apollo route/HDMap/signal contract fixture. Placeholder IDs are
+  intentionally marked as placeholders until validated against local Apollo map
+  artifacts; they must not be treated as real Apollo or CARLA IDs.
+
+thresholds:
+  max_spawn_distance_m: 3.0
+  max_spawn_heading_error_rad: 0.7853981633974483
+
+routes:
+  - route_id: lane097
+    scenario_id: town01_lane_keep_097_contract
+    scenario_class: lane_keep
+    spawn_pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      heading: 0.0
+    goal_ref: town01_lane097_goal_placeholder
+    route_ref: inline:lane097_placeholder
+    route_points:
+      - {x: 0.0, y: 0.0, z: 0.0, heading: 0.0, lane_id: placeholder:lane097}
+      - {x: 25.0, y: 0.0, z: 0.0, heading: 0.0, lane_id: placeholder:lane097}
+      - {x: 50.0, y: 0.0, z: 0.0, heading: 0.0, lane_id: placeholder:lane097}
+    required_scenarios:
+      - lane_keep
+
+  - route_id: lane217
+    scenario_id: town01_lane_keep_217_contract
+    scenario_class: lane_keep
+    spawn_pose:
+      x: 0.0
+      y: 10.0
+      z: 0.0
+      heading: 0.0
+    goal_ref: town01_lane217_goal_placeholder
+    route_ref: inline:lane217_placeholder
+    route_points:
+      - {x: 0.0, y: 10.0, z: 0.0, heading: 0.0, lane_id: placeholder:lane217}
+      - {x: 30.0, y: 10.0, z: 0.0, heading: 0.0, lane_id: placeholder:lane217}
+      - {x: 60.0, y: 10.0, z: 0.0, heading: 0.0, lane_id: placeholder:lane217}
+    required_scenarios:
+      - lane_keep
+
+  - route_id: junction031
+    scenario_id: town01_junction_031_contract
+    scenario_class: junction_turn
+    spawn_pose:
+      x: 0.0
+      y: 20.0
+      z: 0.0
+      heading: 0.0
+    goal_ref: town01_junction031_goal_placeholder
+    route_ref: inline:junction031_placeholder
+    route_points:
+      - {x: 0.0, y: 20.0, z: 0.0, heading: 0.0, lane_id: placeholder:junction031_in}
+      - {x: 15.0, y: 20.0, z: 0.0, heading: 0.0, lane_id: placeholder:junction031_in}
+      - {x: 25.0, y: 30.0, z: 0.0, heading: 0.7853981633974483, lane_id: placeholder:junction031_turn}
+    required_scenarios:
+      - junction_turn
+
+  - route_id: traffic_light_red_stop_placeholder
+    scenario_id: town01_traffic_light_red_stop_contract
+    scenario_class: traffic_light_red_stop
+    spawn_pose:
+      x: 0.0
+      y: 30.0
+      z: 0.0
+      heading: 0.0
+    goal_ref: town01_traffic_light_red_stop_goal_placeholder
+    route_ref: inline:traffic_light_red_stop_placeholder
+    route_points:
+      - {x: 0.0, y: 30.0, z: 0.0, heading: 0.0, lane_id: placeholder:tl_lane_approach}
+      - {x: 20.0, y: 30.0, z: 0.0, heading: 0.0, lane_id: placeholder:tl_lane_approach}
+      - {x: 40.0, y: 30.0, z: 0.0, heading: 0.0, lane_id: placeholder:tl_lane_after_stop}
+    required_scenarios:
+      - traffic_light_red_stop
+      - traffic_light_green_go
+      - traffic_light_red_to_green_release
+
+signals:
+  - logical_id: town01_tl_red_stop_placeholder
+    apollo_signal_id: placeholder:apollo_signal_town01_red_stop
+    stop_line_id: placeholder:apollo_stop_line_town01_red_stop
+    carla_landmark_id: placeholder:carla_landmark_town01_red_stop
+    lane_ids:
+      - placeholder:tl_lane_approach
+    route_ids:
+      - traffic_light_red_stop_placeholder

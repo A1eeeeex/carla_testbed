@@ -1,0 +1,64 @@
+schema_version: calibration_profile.v1
+profile_id: town01_control_actuation_legacy_draft
+created_at: "2026-05-23"
+status: draft
+
+environment:
+  carla_version: "0.9.16"
+  apollo_version: "10.0"
+  map: Town01
+  fixed_delta_seconds: 0.05
+
+vehicle:
+  vehicle_blueprint: vehicle.lincoln.mkz_2020
+  physics_profile_id: town01_default_pending_measurement
+  wheelbase_m: null
+
+control_mapping:
+  actuator_mapping_mode: legacy
+  steer_scale: 0.25
+  steering_sign: 1
+  throttle_mapping:
+    kind: legacy_percent_to_carla
+    status: unmeasured
+  brake_mapping:
+    kind: legacy_percent_to_carla
+    status: unmeasured
+
+latency_ms:
+  steer: null
+  throttle: null
+  brake: null
+
+validation_routes:
+  - "097"
+  - "217"
+  - "031"
+
+no_regression_gates:
+  "097":
+    route_id: "097"
+    purpose: "防 lane-keep 基础能力回归"
+    status: pending
+    required: true
+  "217":
+    route_id: "217"
+    purpose: "防 lane/materialization/mild-curve 回归"
+    status: pending
+    required: true
+  "031":
+    route_id: "031"
+    purpose: "防 junction/turn/routing-control handoff 回归"
+    status: pending
+    required: true
+
+recommendation_policy:
+  can_modify_mainline_config: false
+  automatic_promotion: false
+  promotion_requires_all_no_regression_gates_pass: true
+  scope: "control-actuation evidence only; not a curve first-fix mechanism"
+
+notes: >
+  Draft profile for explaining throttle/brake/steer response, latency,
+  legacy steer_scale=0.25, and whether physical mapping is worth re-testing.
+  This file is evidence schema only and must not modify Town01 mainline config.

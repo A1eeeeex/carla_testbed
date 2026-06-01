@@ -1,0 +1,58 @@
+{
+  "failure_reason": null,
+  "interpretation_boundary": "Fixture traffic-light behavior evidence for unit tests only.",
+  "metrics": {
+    "green_pass_time_s": null,
+    "red_stop_distance_m": 3.2,
+    "red_to_green_release_time_s": null,
+    "stopped_at_red": true,
+    "traffic_light_contract_status": "pass"
+  },
+  "missing_fields": [],
+  "missing_inputs": [],
+  "route_id": "traffic_light_red_stop_tbd",
+  "run_id": "traffic_light_red_stop",
+  "scenario_class": "traffic_light_red_stop",
+  "schema_version": "traffic_light_behavior_report.v1",
+  "source": {
+    "events_path": "events.jsonl",
+    "manifest_path": "manifest.json",
+    "summary_path": "summary.json",
+    "timeseries_path": "timeseries.csv",
+    "traffic_light_contract_path": "traffic_light_contract_report.json"
+  },
+  "status": "pass",
+  "traffic_light_control": {
+    "current_phase": "initial",
+    "current_state": "RED",
+    "events": [
+      {
+        "affected_count": 1,
+        "frame_id": null,
+        "phase": "initial",
+        "state": "RED",
+        "timestamp": null
+      }
+    ],
+    "freeze": true,
+    "initial_affected_count": 1,
+    "initial_state": "RED",
+    "mode": "deterministic_gt_control",
+    "release_after_s": 0.0,
+    "release_state": "",
+    "scope": "all_traffic_lights",
+    "stimulus_mode": "deterministic_gt_control",
+    "target_actor_ids": []
+  },
+  "traffic_light_expectation": {
+    "claim_grade": true,
+    "expected_behavior": "red_stop",
+    "expected_initial_state": "RED",
+    "required_report_fields": [
+      "red_stop_distance_m",
+      "stopped_at_red"
+    ],
+    "stimulus_mode": "deterministic_gt_control"
+  },
+  "warnings": []
+}

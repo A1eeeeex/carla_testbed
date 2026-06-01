@@ -1,0 +1,58 @@
+{
+  "algorithm_variant_id": "apollo_10_0_carla_gt_town01_reference",
+  "algorithm_variant_manifest_path": "configs/algorithms/apollo_variant.carla_gt.example.yaml",
+  "backend": "apollo_cyberrt",
+  "duration_s": 60,
+  "fixed_delta_seconds": 0.05,
+  "carla_world": {
+    "configured_town": "Town01",
+    "loaded_map_name": "Town01",
+    "matches_configured_town": true,
+    "schema_version": "carla_world_identity.v1",
+    "source": "fixture",
+    "spawn_point_count": 255
+  },
+  "map": "Town01",
+  "online_config_path": "configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml",
+  "online_config_profile_name": "town01_apollo_route_health_behavior_recovery_stitcher_v1",
+  "route_id": "traffic_light_red_stop_tbd",
+  "run_id": "traffic_light_red_stop",
+  "scenario_class": "traffic_light_red_stop",
+  "scenario_id": "traffic_light_red_stop_placeholder",
+  "ticks": 1200,
+  "traffic_light_control": {
+    "current_phase": "initial",
+    "current_state": "RED",
+    "events": [
+      {
+        "affected_count": 1,
+        "frame_id": null,
+        "phase": "initial",
+        "state": "RED",
+        "timestamp": null
+      }
+    ],
+    "freeze": true,
+    "initial_affected_count": 1,
+    "initial_state": "RED",
+    "mode": "deterministic_gt_control",
+    "release_after_s": 0.0,
+    "release_state": "",
+    "scope": "all_traffic_lights",
+    "stimulus_mode": "deterministic_gt_control",
+    "target_actor_ids": []
+  },
+  "traffic_light_expectation": {
+    "claim_grade": true,
+    "expected_behavior": "red_stop",
+    "expected_initial_state": "RED",
+    "required_report_fields": [
+      "red_stop_distance_m",
+      "stopped_at_red"
+    ],
+    "stimulus_mode": "deterministic_gt_control"
+  },
+  "transport_mode": "ros2_gt",
+  "transport_mode_source": "online_config.scenario.publish_ros2_gt",
+  "truth_input": true
+}

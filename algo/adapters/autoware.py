@@ -140,7 +140,9 @@ class AutowareAdapter(Adapter):
             env["RUN_ARTIFACT_DIR"] = str(Path("/work/runs") / run_path.name / "artifacts")
         map_root, carla_map = self._infer_map_root(stack_cfg)
         autoware_map_root = map_root
-        carla_wheel_dir_cfg = str(stack_cfg.get("carla_wheel_dir") or "").strip()
+        carla_wheel_dir_cfg = os.path.expandvars(str(stack_cfg.get("carla_wheel_dir") or "")).strip()
+        if "${" in carla_wheel_dir_cfg:
+            carla_wheel_dir_cfg = ""
         if carla_wheel_dir_cfg:
             carla_wheel_dir = Path(carla_wheel_dir_cfg).expanduser().resolve()
         else:

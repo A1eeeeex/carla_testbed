@@ -1,0 +1,26 @@
+# Route Health Summary
+
+- route_id: `None`
+- map_name: `None`
+- point_count: `None`
+- length_m: ``
+- spacing mean/p95/max: `` / `` / ``
+- max_heading_jump_rad: ``
+- curvature p95/max: `` / ``
+- curve segment count: `None`
+- spawn alignment distance_m: ``
+- spawn alignment heading_error_rad: ``
+- spawn alignment direction_consistent: `None`
+- route_direction_consistency: `unknown`
+- route_direction_warnings: `none`
+- ego_speed mean/p95/max: `` / `` / ``
+- stopped_ratio: ``
+- ego_yaw_rate_abs_p95_rad_s: ``
+- throttle_applied_p95: ``
+- brake_applied_p95: ``
+- brake_throttle_conflict_frames: ``
+- missing_inputs: `route`
+- missing_fields: `none`
+- verdict: `insufficient_data`
+- verdict_reason: `route artifact not found`
+- plots: `skipped`

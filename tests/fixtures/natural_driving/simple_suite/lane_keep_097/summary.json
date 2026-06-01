@@ -1,0 +1,19 @@
+{
+  "run_id": "lane_keep_097",
+  "scenario_id": "lane_keep_097",
+  "scenario_class": "lane_keep",
+  "route_id": "lane097",
+  "runtime_contract": {
+    "status": "aligned"
+  },
+  "routing_materialized": true,
+  "planning_materialized": true,
+  "control_handoff_status": "control_consuming_with_nonzero_planning",
+  "materialization_status": "planning_control_materialized",
+  "metrics": {
+    "route_completion": 0.96,
+    "collision_count": 0,
+    "lane_invasion_count": 0,
+    "control_latency_p95_ms": 80.0
+  }
+}
