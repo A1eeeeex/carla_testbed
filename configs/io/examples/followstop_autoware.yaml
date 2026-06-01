@@ -3,6 +3,10 @@ run:  # 运行相关
   ticks: 700                 # 仿真步数（对应 followstop --ticks）
   ego_id: ego                # 车辆 role_name / ros_name
   map: Town01                # CARLA 地图
+  post_spawn_settle_ticks: 2  # 避免刚 spawn 后 actor pose 仍是 (0,0,0)，污染 Autoware goal
+  post_spawn_visibility_ticks: 40  # adapter 启动前确认 fresh CARLA client 能看到 ego/front
+  post_spawn_visibility_tick_timeout_s: 5.0
+  require_post_spawn_actor_visibility: true
   weather: ClearNoon         # 天气预设
   traffic:
     enable: false            # 是否启用交通流
@@ -11,8 +15,15 @@ run:  # 运行相关
 scenario:                    # 场景/驱动层
   driver: carla_followstop   # 场景驱动器（目前 follow-stop）
   publish_ros2_native: false # Mode-2 下必须 false（传感器发布由 Autoware 接口负责）
-  front_idx: 210             # 前车 spawn 点（CARLA waypoint 索引）
-  ego_idx: 120               # 自车 spawn 点
+  front_idx: 57              # Town01 rank-1 follow-stop scan candidate: ~300m ahead of ego_idx=78.
+  ego_idx: 78                # Verified route/engage anchor for strict 300m follow-stop probes.
+  auto_align_front_spawn: false  # Keep the verified 78->57 pair stable; change only via explicit scan/override.
+  require_aligned_front_spawn: true
+  front_min_ahead_m: 20.0
+  front_max_ahead_m: 380.0
+  front_target_ahead_m: 300.0
+  front_max_lateral_m: 4.0
+  front_max_heading_diff_deg: 35.0
 
 io:                          # I/O 契约与生成
   mode: autoware_direct      # 后端模式（固定 autoware_direct）
@@ -36,6 +47,8 @@ algo:                        # 算法栈选择
     is_direct: true                                         # Mode-2 直连 CARLA
     mode: gt_planning                                      # gt_planning | e2e
     perception_mode: gt                                    # gt | ml | off，默认使用 GT
+    rmw_implementation: rmw_cyclonedds_cpp                 # FastDDS 在当前容器里曾触发 behavior_planning_container SIGSEGV
+    start_after_scenario_spawn: true                       # 先生成 ego/front，再启动 GT bridge/route sender
     disable_cameras: true                                  # 阶段1：硬关相机链路
     truth_objects_topic: /perception/object_recognition/objects
     launch_file: autoware.launch.xml
@@ -47,19 +60,96 @@ algo:                        # 算法栈选择
       launch_control:=true
       launch_map:=true
       launch_vehicle:=true
+      is_simulation:=true
+      launch_system_monitor:=false
+      launch_dummy_diag_publisher:=true
+      diagnostic_graph_aggregator_graph_path:=/opt/autoware/share/autoware_launch/config/system/diagnostics/autoware-carla.yaml
+      rviz:=false
+      rviz_respawn:=false
+    planning_common_max_vel_mps: null                     # 默认不覆盖 Autoware common.param.yaml；80kph follow-stop probe 可显式设为 22.22。
+    planning_common_nominal_max_acc_mps2: null            # 诊断开关：保持默认 null；显式 probe 时写入 Autoware common.param.yaml 的 normal.max_acc。
+    planning_common_nominal_min_acc_mps2: null            # 诊断开关：保持默认 null；显式 probe 时写入 Autoware common.param.yaml 的 normal.min_acc。
+    planning_common_limit_max_acc_mps2: null              # 诊断开关：保持默认 null；需和 no-regression/comfort 证据一起解释。
+    planning_common_limit_min_acc_mps2: null              # 诊断开关：保持默认 null；不要用它掩盖 obstacle-stop 语义问题。
+    velocity_limit_probe:
+      enabled: false                                      # 诊断开关：向 external_velocity_limit_selector 发布 max_velocity_default，默认关闭。
+      topic: /planning/scenario_planning/max_velocity_default
+      max_velocity_mps: null                              # 80kph probe 可显式设为 22.22；不能直接 promotion。
+      publish_hz: 5.0
+      duration_s: 60.0
+      start_delay_s: 8.0
+      sender: api
     map_root: ${AUTOWARE_MAP_ROOT}           # 推荐：maps 根目录（含 point_cloud_maps / vector_maps）
     map_path: ${AUTOWARE_MAP_ROOT}           # 兼容旧字段；若指向 Town 子目录会自动推断
     carla_map: Town01
     carla_host: 127.0.0.1
     carla_port: 2000
-    carla_wheel_dir: ""                                      # 请通过 CARLA_ROOT/PythonAPI/carla/dist 提供
+    carla_wheel_dir: /home/ubuntu/CARLA_0.9.16/PythonAPI/carla/dist
+    carla_control_bridge:
+      enabled: true
+      control_topic: /control/command/control_cmd
+      control_type: autoware_control
+      max_steer_angle: 0.6
+      speed_gain: 10.0
+      brake_gain: 5.0
+      accel_throttle_gain: 0.3  # Town01 smoke: 0.5 m/s^2 startup accel should overcome CARLA static friction.
+      longitudinal_mode: open_loop  # Default preserves legacy behavior; use speed_feedback only for explicit probes.
+      speed_feedback_gain: 0.25
+      speed_feedback_brake_gain: 0.25
+      speed_feedback_deadband_mps: 0.2
+      accel_feedforward_speed_margin_mps: 0.5
+      accel_feedforward_overspeed_taper_mps: 0.0
+      positive_accel_brake_inhibit_enabled: false
+      positive_accel_brake_inhibit_min_accel_mps2: 0.05
+      positive_accel_brake_inhibit_speed_margin_mps: 0.5
+      positive_accel_overshoot_action: throttle  # throttle preserves legacy candidate behavior; use coast only for explicit probes.
+      positive_accel_min_throttle: 0.0  # Disabled by default; explicit calibration probes may raise this.
+      positive_accel_min_throttle_speed_mps: 5.0
+      negative_accel_brake_speed_margin_mps: -1.0  # Disabled by default; non-negative values are calibration probes only.
+      speed_feedback_transition_coast_sec: 0.0
+      speed_feedback_max_throttle_step: 1.0
+      speed_feedback_max_brake_step: 1.0
+      speed_source: carla
+      velocity_status_topic: /vehicle/status/velocity_status
+      velocity_status_stale_sec: 0.5
+      timeout_sec: 0.8
+      apply_hz: 20.0
+      autoware_steer_sign: -1.0
     enable_perception: false                               # 兼容旧字段；若 perception_mode 未显式设置则按此推导
     launch_sensing: false                                  # 兼容旧字段（阶段1关闭 sensing）
     autoware_data_path: ""                                 # 若需要感知，请提供该路径并设置 enable_perception=true
     goal:                                                   # 给 Autoware 下发目标点（map 坐标）
       enable: true
-      ahead_m: 20.0                                         # 相对前车朝向前推的距离；0 表示用前车当前位置
+      ahead_m: 0.0                                          # 使用已验证可路由 anchor；更远 follow-stop 目标需要先通过 route-health 找到可路由长直线。
       frame_id: map
+      pre_goal_warmup_ticks: 120                            # 先 tick CARLA，让 GT bridge 绑定 ego 并发布 odometry
+      pre_goal_warmup_sleep_s: 0.05
+      wait_timeout_s: 90.0
+      localization_wait_s: 60.0
+      tf_wait_s: 30.0
+      localization_retry_wait_s: 20.0
+      tf_retry_wait_s: 20.0
+      route_ready_wait_s: 180.0                              # 组合式轮询 odom+/tf，避免 GT bridge 刚绑定就错过 route
+      tick_while_waiting_for_route: true                     # route 等待期间保持 CARLA tick，GT bridge 才能发布 odom/tf
+      route_wait_tick_timeout_s: 5.0
+      route_wait_tick_sleep_s: 0.05                           # 与 fixed_delta_seconds 对齐，避免 route 等待阶段仿真时间狂飙
+      engage_retry_timeout_s: 60.0                             # diagnostics/trajectory/control topic ready 后重试标准 autonomous endpoint
+      engage_retry_period_s: 2.0
+      engage_ready_topics:                                    # engage 前至少等到 planning trajectory，避免过早切 autonomous
+        - /planning/trajectory
+      engage_ready_wait_s: 60.0
+      engage_ready_probe_timeout_s: 5.0
+      require_engage_ready_topics: true                        # 严格 follow-stop 证据必须先有 planning trajectory；缺失时 fail-fast。
+      publish_goal_topic_after_route_service: false             # route service 成功后不再重复发布 legacy goal topic，避免 route reset 干扰 planning materialization。
+      require_localization_before_route: true
+      carla_goal_pose:                                      # Rank-1 Town01 follow-stop route-scan goal for ego_idx=78/front_idx=57.
+        x: 2.0167312622070312
+        y: 266.0464172363281
+        z: 0.0
+        yaw_deg: 270.0074768066406
+    carla_to_autoware:                                      # 与 gt_bridge_node.py 的 CARLA->ROS map 变换保持一致
+      invert_y: true
+      invert_yaw: true
     params:
       use_sim_time: true
   legacy_followstop:         # 直连本地 legacy 控制器（不走 Autoware）
@@ -70,8 +160,8 @@ algo:                        # 算法栈选择
 
 record:                      # 录制配置
   rosbag:
-    enable: false            # 是否录制 rosbag2
-    out: null                # 自定义输出前缀，可留空使用脚本默认
+    enable: true             # Autoware demo 默认录制 rosbag2（由 AutowareAdapter 在容器内启动）
+    out: rosbag2/autoware_demo  # 相对 run_dir；容器内映射到 /work/runs/...
     storage: sqlite3         # sqlite3 | mcap
     compress: none           # none | zstd
     include_tf: true         # 录 /tf /tf_static
@@ -85,10 +175,10 @@ record:                      # 录制配置
     topics: []               # 显式 topics（列表）
     extra_topics: []         # 追加 topics
   visual:                    # 视频/可视化录制
-    modes: []                # 可选 dual_cam | hud | sensor_demo，列表可为空
+    modes: [dual_cam]        # Autoware demo 默认保留 CARLA 第三人称视频
     output: null             # 录制输出目录，null 则跟随脚本默认 runs/<ts>/video
-    fps: null                # 输出 fps，null 取仿真 1/dt
-    resolution: 1920x1080    # 录制分辨率
+    fps: 20                  # 输出 fps
+    resolution: 960x540      # demo 默认轻量录制，降低对 wall-time tick 的扰动
     chase_distance: 8.0
     chase_height: 3.0
     chase_pitch: -15.0
@@ -97,12 +187,64 @@ record:                      # 录制配置
     no_lidar: false
     no_radar: false
     no_hud: false
+    hud_mode: driving
+    dual_cam_third_person_only: true
+  autoware_operator_view:
+    enabled: true            # Autoware 没有 Dreamview；默认录 RViz2 operator view 作为 UI 证据
+    docker_image: ghcr.io/autowarefoundation/autoware:universe-devel-cuda
+    display: null            # null 表示沿用宿主机 DISPLAY；当前本机通常是 :0
+    capture_region: 1280x720+0,0
+    fps: 10
+    fixed_frame: map
+    startup_delay_s: 2.0
   control_log:               # 控制话题记录（自动用 docker compose exec autoware 运行）
     enable: true
     topic: /control/command/control_cmd
+    extra_topics:
+      - /planning/mission_planning/route
+      - /planning/scenario_planning/lane_driving/behavior_planning/path_with_lane_id
+      - /planning/scenario_planning/lane_driving/behavior_planning/path
+      - /planning/scenario_planning/trajectory
+      - /planning/scenario_planning/velocity_smoother/trajectory
+      - /planning/trajectory
+      - /planning/planning_factors/obstacle_stop
+      - /planning/planning_factors/stop_line
+      - /planning/planning_factors/motion_velocity_planner
+      - /planning/scenario_planning/max_velocity
+      - /planning/scenario_planning/max_velocity_default
+      - /planning/scenario_planning/current_max_velocity
+      - /planning/scenario_planning/max_velocity_candidates
+      - /planning/scenario_planning/velocity_limit
+      - /planning/scenario_planning/status/stop_reasons
+      - /perception/object_recognition/objects
+      - /perception/traffic_light_recognition/traffic_signals
+      - /control/trajectory_follower/control_cmd
+      - /control/trajectory_follower/controller_node_exe/debug/resampled_reference_trajectory
+      - /control/trajectory_follower/controller_node_exe/debug/predicted_trajectory_in_frenet_coordinate
+      - /control/trajectory_follower/lateral/predicted_trajectory
+      - /control/trajectory_follower/longitudinal/diagnostic
+      - /control/trajectory_follower/longitudinal/slope_angle
+      - /control/trajectory_follower/longitudinal/stop_reason
+      - /localization/kinematic_state
+      - /localization/acceleration
+      - /vehicle/status/velocity_status
+      - /vehicle/status/steering_status
+      - /vehicle/status/control_mode
+      - /vehicle/status/gear_status
+      - /system/operation_mode/state
+      - /system/fail_safe/mrm_state
+      - /control/vehicle_cmd_gate/operation_mode
+      - /diagnostics
+      - /diagnostics_agg
+    extra_topic_types:
+      /planning/planning_factors/obstacle_stop: autoware_internal_planning_msgs/msg/PlanningFactorArray
+      /planning/planning_factors/stop_line: autoware_internal_planning_msgs/msg/PlanningFactorArray
+      /planning/planning_factors/motion_velocity_planner: autoware_internal_planning_msgs/msg/PlanningFactorArray
+      /planning/scenario_planning/status/stop_reasons: tier4_planning_msgs/msg/StopReasonArray
+      /control/trajectory_follower/longitudinal/stop_reason: tier4_planning_msgs/msg/StopReasonArray
     max_msgs: null           # 可选：记录 N 条后退出；null 表示全程
     force_anymsg: true       # 强制 AnyMsg 以避免缺少 Python type support
-    reliability: best_effort # best_effort | reliable
+    reliability: reliable    # best_effort | reliable
   sensor_probe:              # 传感器话题探测（旧字段，兼容保留）
     enable: true
     topics: ["/clock", "/tf", "/control/command/control_cmd"]
@@ -124,10 +266,26 @@ logging:
   level: INFO                # 日志级别
 acceptance:
   min_speed_mps: 5.0         # 闭环判定阈值（最大速度需超过该值）
+  control_health:
+    enabled: true             # 防止“车动了但油门/刹车振荡”被误判为自然驾驶成功
+    fail_on_missing: true
+    max_applied_throttle_brake_switch_count: 10
+    target_speed_tracking:
+      enabled: true           # 防止 bridge 辅助给油把超出 Autoware target speed 的运动误判为自然控制
+      fail_on_missing: false
+      overspeed_threshold_mps: 2.0
+      max_throttle_while_overspeed_rows: 9
+  followstop:
+    enabled: true             # 防止只通过 smoke/motion gate 却未到达前车 stop zone 的 run 被误判为 follow-stop demo。
+    fail_on_warn: true
+    stop_zone_m: 15.0
+    stopped_speed_mps: 1.0
 runtime:
   carla:
     start: false
     host: localhost
     port: 2000
+    launch_with_map: false    # 避免启动参数延迟 load map 清掉已 spawn 的 ego/front；由 runner 显式 load_world
+    bootstrap_stability_window_s: 8.0
     extra_args: ""
     foreground: false

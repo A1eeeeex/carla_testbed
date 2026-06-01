@@ -39,6 +39,21 @@ from algo.registry import get_adapter
 from carla_testbed.config import HarnessConfig
 from carla_testbed.config.rig_loader import apply_overrides, load_rig_file, load_rig_preset, rig_to_specs
 from carla_testbed.control import LegacyControllerConfig
+from carla_testbed.evaluation import (
+    applied_control_health_from_timeseries,
+    bridge_target_speed_failures_from_check,
+    bridge_target_speed_health_from_log,
+    control_health_failures_from_check,
+    safety_failures_from_summary,
+)
+from carla_testbed.analysis.autoware_followstop import (
+    analyze_followstop_run,
+    write_followstop_report,
+)
+from carla_testbed.analysis.autoware_control_diagnostics import (
+    analyze_autoware_control_run,
+    write_autoware_control_diagnostics,
+)
 from carla_testbed.record import RecordManager, RecordOptions
 from carla_testbed.record.monitor import SignalMonitor
 from carla_testbed.record.rviz.launcher import RvizLauncher
@@ -293,6 +308,7 @@ def _compute_low_speed_creep_metrics(
     front_gap_above_m: float,
     require_routing_established: bool,
     ignore_when_terminal_stop_hold_active: bool,
+    require_reached_speed_mps: float = 0.0,
 ) -> Dict[str, Any]:
     metrics: Dict[str, Any] = {
         "available": False,
@@ -302,6 +318,7 @@ def _compute_low_speed_creep_metrics(
         "front_gap_above_m": float(front_gap_above_m),
         "require_routing_established": bool(require_routing_established),
         "ignore_when_terminal_stop_hold_active": bool(ignore_when_terminal_stop_hold_active),
+        "require_reached_speed_mps": float(require_reached_speed_mps),
         "sample_count": 0,
         "matched_sample_count": 0,
         "longest_streak_frames": 0,
@@ -332,6 +349,7 @@ def _compute_low_speed_creep_metrics(
     prev_ts: Optional[float] = None
     best_end_ts: Optional[float] = None
     best_duration = 0.0
+    reached_speed_gate = float(require_reached_speed_mps) <= 0.0
 
     def _close_streak(end_ts: Optional[float]) -> None:
         nonlocal current_frames, current_start_ts, best_duration, best_end_ts
@@ -362,7 +380,13 @@ def _compute_low_speed_creep_metrics(
         if ts_sec is None or speed_mps is None or front_gap_lon_m is None:
             _close_streak(prev_ts)
             continue
+        if (
+            not reached_speed_gate
+            and float(speed_mps) >= float(require_reached_speed_mps)
+        ):
+            reached_speed_gate = True
         cond = ts_sec >= (first_ts + float(start_after_sec))
+        cond = cond and reached_speed_gate
         cond = cond and speed_mps < float(speed_below_mps)
         cond = cond and front_gap_lon_m > float(front_gap_above_m)
         if require_routing_established:
@@ -530,6 +554,35 @@ def _quaternion_from_yaw(yaw_deg: float):
     return 0.0, 0.0, math.sin(half), math.cos(half)
 
 
+def _autoware_pose_from_carla_transform(
+    tr: carla.Transform,
+    *,
+    ahead_m: float = 0.0,
+    invert_y: bool = True,
+    invert_yaw: bool = True,
+) -> Dict[str, float]:
+    """Convert a CARLA actor transform into the ROS map frame used by GT bridge."""
+    yaw_carla = float(tr.rotation.yaw)
+    loc = tr.location
+    target_x = float(loc.x) + (float(ahead_m) * math.cos(math.radians(yaw_carla)))
+    target_y = float(loc.y) + (float(ahead_m) * math.sin(math.radians(yaw_carla)))
+    yaw_ros = -yaw_carla if invert_yaw else yaw_carla
+    qx, qy, qz, qw = _quaternion_from_yaw(yaw_ros)
+    return {
+        "x": target_x,
+        "y": -target_y if invert_y else target_y,
+        "z": float(loc.z),
+        "yaw_deg": float(yaw_ros),
+        "qx": qx,
+        "qy": qy,
+        "qz": qz,
+        "qw": qw,
+        "source_carla_x": float(target_x),
+        "source_carla_y": float(target_y),
+        "source_carla_yaw_deg": float(yaw_carla),
+    }
+
+
 def _transform_xy_with_cfg(x: float, y: float, z: float, tf_cfg: Dict[str, Any]) -> tuple[float, float, float]:
     yaw_rad = math.radians(float(tf_cfg.get("yaw_deg", 0.0) or 0.0))
     c = math.cos(yaw_rad)
@@ -578,6 +631,89 @@ def _stable_actor_transform(
         if (abs(float(loc.x)) + abs(float(loc.y))) > 1e-3:
             return fallback_transform
     return best
+
+
+def _wait_for_external_actor_visibility(
+    client: carla.Client,
+    world: carla.World,
+    *,
+    expected: Dict[str, int],
+    max_ticks: int,
+    tick_timeout_s: float = 5.0,
+    sleep_s: float = 0.0,
+) -> Dict[str, Any]:
+    """Tick CARLA until spawned actors are visible to a fresh client world.
+
+    CARLA 0.9.x can return actor handles from spawn_actor before a separate
+    client can list them. External stack bridges run in their own process, so
+    this gate proves the actor registry is committed before the bridge starts.
+    """
+
+    expected = {str(k): int(v) for k, v in expected.items() if int(v or 0) > 0}
+    report: Dict[str, Any] = {
+        "visible": False,
+        "attempts": 0,
+        "frames": [],
+        "expected": dict(expected),
+        "seen": {},
+        "actor_count": None,
+        "vehicle_count": None,
+        "last_error": None,
+    }
+    if not expected:
+        report["visible"] = True
+        return report
+
+    max_ticks = max(0, int(max_ticks))
+    for attempt in range(max_ticks + 1):
+        report["attempts"] = attempt + 1
+        try:
+            fresh_world = client.get_world()
+            snapshot = fresh_world.get_snapshot()
+            frame = int(getattr(snapshot, "frame", 0) or 0)
+            actors = fresh_world.get_actors()
+            vehicles = list(actors.filter("vehicle.*"))
+            seen: Dict[str, Optional[int]] = {}
+            for label, actor_id in expected.items():
+                found = None
+                for actor in vehicles:
+                    role_name = str(actor.attributes.get("role_name", "") or "")
+                    ros_name = str(actor.attributes.get("ros_name", "") or "")
+                    if int(getattr(actor, "id", 0) or 0) == actor_id or role_name == label or ros_name == label:
+                        found = int(getattr(actor, "id", 0) or 0)
+                        break
+                seen[label] = found
+            report.update(
+                {
+                    "frames": [*report.get("frames", []), frame],
+                    "seen": seen,
+                    "actor_count": len(actors),
+                    "vehicle_count": len(vehicles),
+                }
+            )
+            if all(value is not None for value in seen.values()):
+                report["visible"] = True
+                return report
+        except Exception as exc:
+            report["last_error"] = repr(exc)
+
+        if attempt >= max_ticks:
+            break
+
+        try:
+            # Use a fresh client world first; this matches what external
+            # bridges observe better than a possibly stale pre-load handle.
+            client.get_world().tick(float(tick_timeout_s))
+        except Exception as exc:
+            report["last_error"] = repr(exc)
+            try:
+                world.tick(float(tick_timeout_s))
+            except Exception as fallback_exc:
+                report["last_error"] = f"{repr(exc)}; fallback={repr(fallback_exc)}"
+        if sleep_s > 0.0:
+            time.sleep(float(sleep_s))
+
+    return report
 
 
 def _write_apollo_scenario_goal(
@@ -848,6 +984,59 @@ def _run_cleanup_with_timeout(label: str, fn, timeout_s: float = 8.0) -> None:
         print(f"[WARN] cleanup '{label}' failed: {exc}")
 
 
+def _start_carla_tick_pump(
+    world,
+    *,
+    label: str,
+    tick_timeout_s: float = 5.0,
+    sleep_s: float = 0.0,
+) -> tuple[threading.Event, threading.Thread, Dict[str, Any]]:
+    """Temporarily keep a synchronous CARLA world moving during external waits.
+
+    Autoware route setup waits on ROS topics produced by a CARLA GT bridge.
+    If the runner stops ticking while waiting, the bridge cannot observe new
+    frames and those topics never appear. This pump is scoped to that wait only;
+    the main harness remains the normal tick owner.
+    """
+    stop_event = threading.Event()
+    stats: Dict[str, Any] = {"ticks": 0, "errors": 0, "last_error": None}
+
+    def _worker() -> None:
+        while not stop_event.is_set():
+            try:
+                world.tick(float(tick_timeout_s))
+                stats["ticks"] = int(stats.get("ticks", 0)) + 1
+            except Exception as exc:
+                stats["errors"] = int(stats.get("errors", 0)) + 1
+                stats["last_error"] = str(exc)
+                time.sleep(0.2)
+            if sleep_s > 0.0:
+                time.sleep(float(sleep_s))
+
+    thread = threading.Thread(target=_worker, name=f"{label}_carla_tick_pump", daemon=True)
+    thread.start()
+    return stop_event, thread, stats
+
+
+def _stop_carla_tick_pump(
+    stop_event: threading.Event,
+    thread: threading.Thread,
+    stats: Dict[str, Any],
+    *,
+    label: str,
+    join_timeout_s: float = 5.0,
+) -> None:
+    stop_event.set()
+    thread.join(timeout=float(join_timeout_s))
+    if thread.is_alive():
+        print(f"[WARN] {label} CARLA tick pump did not stop within {join_timeout_s:.1f}s")
+    print(
+        f"[goal] {label} CARLA tick pump stopped "
+        f"ticks={stats.get('ticks', 0)} errors={stats.get('errors', 0)}"
+        + (f" last_error={stats.get('last_error')}" if stats.get("last_error") else "")
+    )
+
+
 def _build_ros2_runner(effective_cfg: Dict[str, Any], adapter_started: bool):
     stack = effective_cfg.get("algo", {}).get("stack")
     if stack == "autoware" and adapter_started:
@@ -931,7 +1120,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--override", action="append", default=[], help="key=value 覆盖配置，可多次")
     ap.add_argument("--run-dir", type=Path, default=None, help="输出目录；不填则自动 runs/followstop_<ts>")
     ap.add_argument("--town", default="Town01")
-    ap.add_argument("--ticks", type=int, default=10)
+    ap.add_argument("--ticks", type=int, default=None)
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--port", type=int, default=2000)
     ap.add_argument("--carla-root", type=Path, default=DEFAULT_CARLA_ROOT, help="CARLA根目录（含 code/followstop/controllers.py）")
@@ -1029,8 +1218,12 @@ def main():
         "ros2_bag_lidar_cloud_suffix": "point_cloud",
         "ros2_bag_radar_cloud_suffix": "point_cloud",
         "auto_align_front_spawn": True,
+        "require_aligned_front_spawn": False,
         "front_min_ahead_m": 20.0,
         "front_max_ahead_m": 80.0,
+        "front_target_ahead_m": None,
+        "front_placement_mode": "spawn_index",
+        "front_waypoint_ahead_m": None,
         "front_max_lateral_m": 3.0,
         "front_max_heading_diff_deg": 25.0,
         "force_green_traffic_lights": False,
@@ -1050,6 +1243,8 @@ def main():
         "front_offset_y_m": 0.0,
         "front_offset_z_m": 0.0,
         "front_yaw_offset_deg": 0.0,
+        "ego_initial_brake": 0.0,
+        "ego_initial_hand_brake": False,
         "semantic_scene_type": "lateral_straight_track",
         "semantic_waypoint_spacing_m": 3.0,
         "semantic_preview_distance_m": 40.0,
@@ -1107,7 +1302,8 @@ def main():
         # 保存 effective 到 run_dir 后面再写
         run_cfg = cfg.get("run", {})
         args.town = run_cfg.get("map", args.town)
-        args.ticks = run_cfg.get("ticks", args.ticks)
+        if args.ticks is None:
+            args.ticks = run_cfg.get("ticks", 10)
         args.ego_id = run_cfg.get("ego_id", args.ego_id)
         scenario_cfg = cfg.get("scenario", {})
         stack_cfg = (cfg.get("algo", {}) or {}).get("stack")
@@ -1116,8 +1312,20 @@ def main():
         args.auto_align_front_spawn = bool(
             scenario_cfg.get("auto_align_front_spawn", args.auto_align_front_spawn)
         )
+        args.require_aligned_front_spawn = bool(
+            scenario_cfg.get("require_aligned_front_spawn", args.require_aligned_front_spawn)
+        )
         args.front_min_ahead_m = float(scenario_cfg.get("front_min_ahead_m", args.front_min_ahead_m))
         args.front_max_ahead_m = float(scenario_cfg.get("front_max_ahead_m", args.front_max_ahead_m))
+        target_ahead = scenario_cfg.get("front_target_ahead_m", args.front_target_ahead_m)
+        args.front_target_ahead_m = None if target_ahead is None else float(target_ahead)
+        args.front_placement_mode = str(
+            scenario_cfg.get("front_placement_mode", args.front_placement_mode) or "spawn_index"
+        )
+        waypoint_ahead = scenario_cfg.get(
+            "front_waypoint_ahead_m", args.front_waypoint_ahead_m
+        )
+        args.front_waypoint_ahead_m = None if waypoint_ahead is None else float(waypoint_ahead)
         args.front_max_lateral_m = float(
             scenario_cfg.get("front_max_lateral_m", args.front_max_lateral_m)
         )
@@ -1158,6 +1366,16 @@ def main():
         args.front_yaw_offset_deg = float(
             front_pose_offset.get(
                 "yaw_deg", scenario_cfg.get("front_yaw_offset_deg", args.front_yaw_offset_deg)
+            )
+        )
+        ego_initial_hold_cfg = scenario_cfg.get("ego_initial_hold", {}) or {}
+        args.ego_initial_brake = float(
+            ego_initial_hold_cfg.get("brake", scenario_cfg.get("ego_initial_brake", args.ego_initial_brake))
+        )
+        args.ego_initial_hand_brake = bool(
+            ego_initial_hold_cfg.get(
+                "hand_brake",
+                scenario_cfg.get("ego_initial_hand_brake", args.ego_initial_hand_brake),
             )
         )
         semantic_cfg = scenario_cfg.get("semantic_suite", {}) or {}
@@ -1259,6 +1477,13 @@ def main():
         args.ros2_gt_markers_hz = gt_cfg.get("markers_hz", args.ros2_gt_markers_hz)
         args.ros2_gt_qos_reliability = gt_cfg.get("qos_reliability", args.ros2_gt_qos_reliability)
         args.ros2_gt_qos_depth = gt_cfg.get("qos_depth", args.ros2_gt_qos_depth)
+        apollo_tf_cfg = (
+            ((cfg.get("algo", {}) or {}).get("apollo", {}) or {}).get("carla_to_apollo", {}) or {}
+        )
+        if "invert_tf" in apollo_tf_cfg:
+            args.ros_invert_tf = bool(apollo_tf_cfg.get("invert_tf"))
+        elif "invert_tf" in io_ros_cfg:
+            args.ros_invert_tf = bool(io_ros_cfg.get("invert_tf"))
         # rig
         io_contract = cfg.get("io", {}).get("contract", {}) if cfg.get("io") else {}
         rig_path = io_contract.get("sensor_minimal")
@@ -1352,6 +1577,8 @@ def main():
                 args.scenario_goal_z = float(cfg_goal_xy["z"])
     else:
         cfg = {}
+        if args.ticks is None:
+            args.ticks = 10
 
     _maybe_reexec_with_ros2_runtime(args)
 
@@ -1445,6 +1672,7 @@ def main():
         "adapter_start_attempted": False,
         "out_run_dir": out_run_dir,
         "control_logger_proc": None,
+        "control_logger_extra_procs": [],
         "sensor_probe_proc": None,
         "world": None,
         "original_settings": None,
@@ -1479,6 +1707,8 @@ def main():
             timeout_s=6.0,
         )
         stop_process(cleanup_state.get("control_logger_proc"))
+        for proc in cleanup_state.get("control_logger_extra_procs", []) or []:
+            stop_process(proc)
         stop_process(cleanup_state.get("sensor_probe_proc"))
         world_obj = cleanup_state.get("world")
         original = cleanup_state.get("original_settings")
@@ -1609,9 +1839,41 @@ def main():
     acceptance_low_speed_creep_ignore_terminal_hold = bool(
         low_speed_creep_cfg.get("ignore_when_terminal_stop_hold_active", True)
     )
+    acceptance_low_speed_creep_require_reached_speed_mps = _safe_float(
+        low_speed_creep_cfg.get("require_reached_speed_mps")
+    )
+    if acceptance_low_speed_creep_require_reached_speed_mps is None:
+        acceptance_low_speed_creep_require_reached_speed_mps = 0.0
     acceptance_low_speed_creep_max_duration_sec = _safe_float(
         low_speed_creep_cfg.get("max_duration_sec")
     )
+    control_health_acceptance_cfg = acceptance_cfg.get("control_health", {}) or {}
+    acceptance_control_health_enabled = bool(control_health_acceptance_cfg.get("enabled", False))
+    acceptance_control_health_fail_on_missing = bool(
+        control_health_acceptance_cfg.get("fail_on_missing", False)
+    )
+    acceptance_control_health_max_switch_count = _safe_int(
+        control_health_acceptance_cfg.get("max_applied_throttle_brake_switch_count")
+    )
+    if acceptance_control_health_max_switch_count is None:
+        acceptance_control_health_max_switch_count = 10
+    target_speed_tracking_cfg = control_health_acceptance_cfg.get("target_speed_tracking", {}) or {}
+    acceptance_target_speed_tracking_enabled = bool(
+        target_speed_tracking_cfg.get("enabled", False)
+    )
+    acceptance_target_speed_tracking_fail_on_missing = bool(
+        target_speed_tracking_cfg.get("fail_on_missing", False)
+    )
+    acceptance_target_speed_tracking_overspeed_threshold_mps = _safe_float(
+        target_speed_tracking_cfg.get("overspeed_threshold_mps")
+    )
+    if acceptance_target_speed_tracking_overspeed_threshold_mps is None:
+        acceptance_target_speed_tracking_overspeed_threshold_mps = 2.0
+    acceptance_target_speed_tracking_max_throttle_rows = _safe_int(
+        target_speed_tracking_cfg.get("max_throttle_while_overspeed_rows")
+    )
+    if acceptance_target_speed_tracking_max_throttle_rows is None:
+        acceptance_target_speed_tracking_max_throttle_rows = 9
     route_health_acceptance_cfg = acceptance_cfg.get("route_health", {}) or {}
     route_health_min_completion_ratio = _safe_float(
         route_health_acceptance_cfg.get("min_completion_ratio")
@@ -1625,11 +1887,26 @@ def main():
     route_health_max_longest_saturation_sec = _safe_float(
         route_health_acceptance_cfg.get("max_longest_saturation_sec")
     )
+    followstop_acceptance_cfg = acceptance_cfg.get("followstop", {}) or {}
+    acceptance_followstop_enabled = bool(followstop_acceptance_cfg.get("enabled", False))
+    acceptance_followstop_fail_on_warn = bool(
+        followstop_acceptance_cfg.get("fail_on_warn", True)
+    )
+    acceptance_followstop_stop_zone_m = _safe_float(
+        followstop_acceptance_cfg.get("stop_zone_m")
+    )
+    if acceptance_followstop_stop_zone_m is None:
+        acceptance_followstop_stop_zone_m = 15.0
+    acceptance_followstop_stopped_speed_mps = _safe_float(
+        followstop_acceptance_cfg.get("stopped_speed_mps")
+    )
+    if acceptance_followstop_stopped_speed_mps is None:
+        acceptance_followstop_stopped_speed_mps = 1.0
 
     if args.enable_rviz and not args.enable_ros2_native:
         print("[ERROR] --enable-rviz 仅在 --enable-ros2-native 模式下可用")
         sys.exit(1)
-    if args.enable_ros2_bag and not args.enable_ros2_native:
+    if args.enable_ros2_bag and not args.enable_ros2_native and stack_cfg != "autoware":
         print("[ERROR] --enable-ros2-bag 仅支持原生 ROS2 发布模式，请先加 --enable-ros2-native")
         sys.exit(1)
     args.ros2_namespace = _normalize_ros_namespace(args.ros2_namespace)
@@ -1767,6 +2044,66 @@ def main():
     adapter_started = False
     adapter_fail_reason = None
     carla_stop_hook = None
+    autoware_stack_cfg = ((effective_cfg.get("algo", {}) or {}).get("autoware", {}) or {}) if effective_cfg else {}
+    defer_adapter_start_until_scenario_spawn = (
+        str(stack or "").strip().lower() == "autoware"
+        and _config_bool(autoware_stack_cfg.get("start_after_scenario_spawn"), default=True)
+    )
+
+    def _start_stack_adapter(start_reason: str) -> None:
+        nonlocal adapter_start_attempted, adapter_started, adapter_fail_reason
+        if not adapter or not adapter_profile or adapter_started:
+            return
+        try:
+            _write_startup_stage(
+                "adapter_prepare_start",
+                stack=str(stack or ""),
+                start_reason=str(start_reason),
+            )
+            adapter_start_attempted = True
+            cleanup_state["adapter_start_attempted"] = True
+            adapter.prepare(adapter_profile, out_run_dir)
+            _write_startup_stage(
+                "adapter_prepare_done",
+                stack=str(stack or ""),
+                start_reason=str(start_reason),
+            )
+            started_result = adapter.start(adapter_profile, out_run_dir)
+            adapter_started = True if started_result is None else bool(started_result)
+            _write_startup_stage(
+                "adapter_start_done",
+                stack=str(stack or ""),
+                adapter_started=adapter_started,
+                start_reason=str(start_reason),
+            )
+            if stack in {"autoware", "apollo"} and not adapter_started:
+                adapter_fail_reason = (
+                    "AUTOWARE_CONTAINER_EXIT" if stack == "autoware" else "APOLLO_BRIDGE_EXIT"
+                )
+                return
+            if stack == "apollo":
+                ok = adapter.healthcheck(adapter_profile, out_run_dir)
+                if not ok:
+                    print("[WARN] Apollo backend healthcheck failed (non-fatal); see artifacts")
+            else:
+                ok = healthcheck(eff_path, timeout=5.0)
+                if not ok:
+                    print("[WARN] ROS2 healthcheck failed (non-fatal); see messages above")
+        except Exception as exc:
+            if stack == "autoware":
+                adapter_fail_reason = "AUTOWARE_START_FAIL"
+            elif stack == "apollo":
+                adapter_fail_reason = "APOLLO_START_FAIL"
+            else:
+                adapter_fail_reason = "ADAPTER_START_FAIL"
+            print(f"[WARN] adapter start failed: {exc}")
+            _write_startup_stage(
+                "adapter_start_exception",
+                stack=str(stack or ""),
+                start_reason=str(start_reason),
+                error=str(exc),
+            )
+
     runtime_carla_cfg = ((effective_cfg.get("runtime", {}) or {}).get("carla", {}) or {}) if effective_cfg else {}
     stop_reused_on_exit = bool(runtime_carla_cfg.get("stop_reused_on_exit", True))
     carla_ready_timeout_sec = float(runtime_carla_cfg.get("ready_timeout_sec", 180.0) or 180.0)
@@ -2033,45 +2370,16 @@ def main():
         _write_carla_world_ready_event("carla_load_world_skipped", current_town=current_town)
 
     # Start external stacks only after CARLA has settled on the target town.
-    # Loading a different world under a live Apollo/Autoware bridge can leave
-    # calibration scenes hanging in map-switch recovery instead of entering
-    # scenario setup.
-    if adapter and adapter_profile:
-        try:
-            _write_startup_stage("adapter_prepare_start", stack=str(stack or ""))
-            adapter_start_attempted = True
-            cleanup_state["adapter_start_attempted"] = True
-            adapter.prepare(adapter_profile, out_run_dir)
-            _write_startup_stage("adapter_prepare_done", stack=str(stack or ""))
-            started_result = adapter.start(adapter_profile, out_run_dir)
-            adapter_started = True if started_result is None else bool(started_result)
-            _write_startup_stage(
-                "adapter_start_done",
-                stack=str(stack or ""),
-                adapter_started=adapter_started,
-            )
-            if stack in {"autoware", "apollo"} and not adapter_started:
-                adapter_fail_reason = (
-                    "AUTOWARE_CONTAINER_EXIT" if stack == "autoware" else "APOLLO_BRIDGE_EXIT"
-                )
-            else:
-                if stack == "apollo":
-                    ok = adapter.healthcheck(adapter_profile, out_run_dir)
-                    if not ok:
-                        print("[WARN] Apollo backend healthcheck failed (non-fatal); see artifacts")
-                else:
-                    ok = healthcheck(eff_path, timeout=5.0)
-                    if not ok:
-                        print("[WARN] ROS2 healthcheck failed (non-fatal); see messages above")
-        except Exception as exc:
-            if stack == "autoware":
-                adapter_fail_reason = "AUTOWARE_START_FAIL"
-            elif stack == "apollo":
-                adapter_fail_reason = "APOLLO_START_FAIL"
-            else:
-                adapter_fail_reason = "ADAPTER_START_FAIL"
-            print(f"[WARN] adapter start failed: {exc}")
-            _write_startup_stage("adapter_start_exception", stack=str(stack or ""), error=str(exc))
+    # Autoware GT bridge additionally needs the ego actor to exist before route
+    # submission, otherwise localization/tf waits can expire before the bridge
+    # ever binds the CARLA actor.
+    if adapter and adapter_profile and defer_adapter_start_until_scenario_spawn:
+        _write_startup_stage(
+            "adapter_start_deferred_until_scenario_spawn",
+            stack=str(stack or ""),
+        )
+    else:
+        _start_stack_adapter("post_world_ready")
 
     original_settings = world.get_settings()
     cleanup_state["world"] = world
@@ -2159,6 +2467,7 @@ def main():
         )
     elif scenario_driver == "carla_town01_route_health":
         route_health_cfg = ((effective_cfg.get("scenario", {}) or {}).get("route_health", {}) or {})
+        traffic_lights_cfg = ((effective_cfg.get("scenario", {}) or {}).get("traffic_lights", {}) or {})
         scenario = Town01RouteHealthScenario(
             Town01RouteHealthConfig(
                 random_seed=int(
@@ -2180,6 +2489,42 @@ def main():
                 ),
                 freeze_traffic_lights=bool(
                     route_health_cfg.get("freeze_traffic_lights", args.freeze_traffic_lights)
+                ),
+                traffic_light_control_mode=str(
+                    route_health_cfg.get(
+                        "traffic_light_control_mode",
+                        traffic_lights_cfg.get("control_mode", ""),
+                    )
+                    or ""
+                ),
+                traffic_light_initial_state=str(
+                    route_health_cfg.get(
+                        "traffic_light_initial_state",
+                        traffic_lights_cfg.get("initial_state", ""),
+                    )
+                    or ""
+                ),
+                traffic_light_release_state=str(
+                    route_health_cfg.get(
+                        "traffic_light_release_state",
+                        traffic_lights_cfg.get("release_state", ""),
+                    )
+                    or ""
+                ),
+                traffic_light_release_after_s=float(
+                    route_health_cfg.get(
+                        "traffic_light_release_after_s",
+                        traffic_lights_cfg.get("release_after_s", 0.0),
+                    )
+                    or 0.0
+                ),
+                traffic_light_target_actor_ids=tuple(
+                    _safe_int_list(
+                        route_health_cfg.get(
+                            "traffic_light_target_actor_ids",
+                            traffic_lights_cfg.get("target_actor_ids", []),
+                        )
+                    )
                 ),
                 route_step_m=float(route_health_cfg.get("route_step_m", 5.0) or 5.0),
                 spawn_min_forward_length_m=float(
@@ -2214,8 +2559,12 @@ def main():
                 vehicle_blueprint_id=str(args.vehicle_blueprint_id or ""),
                 vehicle_blueprint_patterns=tuple(str(item) for item in args.vehicle_blueprint_patterns),
                 auto_align_front_spawn=bool(args.auto_align_front_spawn),
+                require_aligned_front_spawn=bool(args.require_aligned_front_spawn),
                 front_min_ahead_m=float(args.front_min_ahead_m),
                 front_max_ahead_m=float(args.front_max_ahead_m),
+                front_target_ahead_m=args.front_target_ahead_m,
+                front_placement_mode=str(args.front_placement_mode or "spawn_index"),
+                front_waypoint_ahead_m=args.front_waypoint_ahead_m,
                 front_max_lateral_m=float(args.front_max_lateral_m),
                 front_max_heading_diff_deg=float(args.front_max_heading_diff_deg),
                 force_green_traffic_lights=bool(args.force_green_traffic_lights),
@@ -2228,6 +2577,8 @@ def main():
                 front_offset_y_m=float(args.front_offset_y_m),
                 front_offset_z_m=float(args.front_offset_z_m),
                 front_yaw_offset_deg=float(args.front_yaw_offset_deg),
+                ego_initial_brake=float(args.ego_initial_brake),
+                ego_initial_hand_brake=bool(args.ego_initial_hand_brake),
             )
         )
     cleanup_state["scenario"] = scenario
@@ -2240,6 +2591,69 @@ def main():
         cleanup_state["actors"] = actors
         ego = actors.ego
         front = actors.front
+        run_mode_cfg_for_spawn = effective_cfg.get("run", {}) if effective_cfg else {}
+        post_spawn_settle_ticks = int(run_mode_cfg_for_spawn.get("post_spawn_settle_ticks", 2) or 0)
+        if post_spawn_settle_ticks > 0:
+            for _ in range(post_spawn_settle_ticks):
+                try:
+                    # Before external-stack route submission this process is
+                    # the only reliable CARLA tick owner. Prefer an active
+                    # tick even when cfg.synchronous_mode is stale, otherwise
+                    # spawned actors can remain invisible to bridge clients.
+                    world.tick()
+                except Exception as exc:
+                    if not cfg.synchronous_mode:
+                        try:
+                            world.wait_for_tick(1.0)
+                            continue
+                        except Exception:
+                            pass
+                    print(f"[WARN] post-spawn settle tick failed: {exc}")
+                    break
+        post_spawn_visibility_ticks = int(
+            run_mode_cfg_for_spawn.get(
+                "post_spawn_visibility_ticks",
+                30 if defer_adapter_start_until_scenario_spawn else 0,
+            )
+            or 0
+        )
+        if post_spawn_visibility_ticks > 0:
+            _write_startup_stage(
+                "scenario_actor_visibility_start",
+                ego_actor_id=int(getattr(ego, "id", 0) or 0),
+                front_actor_id=int(getattr(front, "id", 0) or 0) if front is not None else 0,
+                max_ticks=post_spawn_visibility_ticks,
+            )
+            visibility_report = _wait_for_external_actor_visibility(
+                client,
+                world,
+                expected={
+                    str(args.ego_id or "ego"): int(getattr(ego, "id", 0) or 0),
+                    "front": int(getattr(front, "id", 0) or 0) if front is not None else 0,
+                },
+                max_ticks=post_spawn_visibility_ticks,
+                tick_timeout_s=float(run_mode_cfg_for_spawn.get("post_spawn_visibility_tick_timeout_s", 5.0) or 5.0),
+                sleep_s=float(run_mode_cfg_for_spawn.get("post_spawn_visibility_sleep_s", 0.0) or 0.0),
+            )
+            try:
+                (out_run_dir / "artifacts" / "scenario_actor_visibility.json").write_text(
+                    json.dumps(visibility_report, indent=2, ensure_ascii=False)
+                )
+            except Exception:
+                pass
+            stage = (
+                "scenario_actor_visibility_ok"
+                if visibility_report.get("visible")
+                else "scenario_actor_visibility_failed"
+            )
+            _write_startup_stage(stage, **visibility_report)
+            if not visibility_report.get("visible"):
+                print(
+                    "[WARN] spawned actors are not visible to a fresh CARLA client before adapter start; "
+                    f"report={out_run_dir / 'artifacts' / 'scenario_actor_visibility.json'}"
+                )
+                if _config_bool(run_mode_cfg_for_spawn.get("require_post_spawn_actor_visibility"), default=False):
+                    raise RuntimeError("spawned actors not visible to external CARLA clients")
         scenario_meta_path = out_run_dir / "artifacts" / "scenario_metadata.json"
         try:
             scenario_meta = scenario.metadata() if hasattr(scenario, "metadata") else {}
@@ -2275,45 +2689,243 @@ def main():
         except Exception as exc:
             print(f"[WARN] failed to write Apollo scenario goal: {exc}")
 
+        if defer_adapter_start_until_scenario_spawn and adapter and adapter_profile and not adapter_started:
+            _write_startup_stage(
+                "adapter_start_after_scenario_spawn",
+                stack=str(stack or ""),
+                ego_actor_id=int(getattr(ego, "id", 0) or 0),
+                front_actor_id=int(getattr(front, "id", 0) or 0) if front is not None else 0,
+            )
+            _start_stack_adapter("post_scenario_spawn")
+
         ros2_runner = _build_ros2_runner(effective_cfg, adapter_started)
 
         # optional: send goal + engage (backend-agnostic for compose/local ROS2)
-        goal_cfg = effective_cfg.get("algo", {}).get("autoware", {}).get("goal", {}) if effective_cfg else {}
+        aw_cfg = effective_cfg.get("algo", {}).get("autoware", {}) if effective_cfg else {}
+        goal_cfg = aw_cfg.get("goal", {}) if aw_cfg else {}
         goal_log_path = out_run_dir / "artifacts" / "autoware_goal_and_engage.log"
         if goal_cfg.get("enable", False) and (args.enable_ros2_native or (stack == "autoware" and adapter_started)):
             ahead_m = float(goal_cfg.get("ahead_m", 50.0) or 0.0)
             frame_id = goal_cfg.get("frame_id", "map")
             target_actor = front or ego
-            tr = target_actor.get_transform()
+            fallback_tf = None
+            ego_fallback_tf = None
+            try:
+                spawns = world.get_map().get_spawn_points()
+                spawn_idx = getattr(getattr(scenario, "cfg", None), "front_idx" if front is not None else "ego_idx", None)
+                if isinstance(spawn_idx, int) and 0 <= spawn_idx < len(spawns):
+                    fallback_tf = spawns[spawn_idx]
+                ego_idx = getattr(getattr(scenario, "cfg", None), "ego_idx", None)
+                if isinstance(ego_idx, int) and 0 <= ego_idx < len(spawns):
+                    ego_fallback_tf = spawns[ego_idx]
+            except Exception:
+                fallback_tf = None
+                ego_fallback_tf = None
+            explicit_goal = goal_cfg.get("carla_goal_pose") or goal_cfg.get("goal_pose")
+            if isinstance(explicit_goal, dict):
+                tr = carla.Transform(
+                    carla.Location(
+                        x=float(explicit_goal.get("x", 0.0) or 0.0),
+                        y=float(explicit_goal.get("y", 0.0) or 0.0),
+                        z=float(explicit_goal.get("z", 0.0) or 0.0),
+                    ),
+                    carla.Rotation(yaw=float(explicit_goal.get("yaw_deg", 0.0) or 0.0)),
+                )
+                target_actor_id = "config"
+            else:
+                tr = _stable_actor_transform(target_actor, fallback_transform=fallback_tf)
+                target_actor_id = getattr(target_actor, "id", "<unknown>")
+            ego_tr_for_aw = _stable_actor_transform(ego, fallback_transform=ego_fallback_tf)
             loc = tr.location
             yaw = tr.rotation.yaw
-            dx = ahead_m * math.cos(math.radians(yaw))
-            dy = ahead_m * math.sin(math.radians(yaw))
-            qx, qy, qz, qw = _quaternion_from_yaw(yaw)
-            goal_pose = {
-                "x": loc.x + dx,
-                "y": loc.y + dy,
-                "z": loc.z,
-                "qx": qx,
-                "qy": qy,
-                "qz": qz,
-                "qw": qw,
-            }
-            result = send_goal_and_engage(
-                ros2_runner,
-                goal_pose,
-                frame_id=frame_id,
-                log_path=goal_log_path,
+            aw_tf_cfg = aw_cfg.get("carla_to_autoware", {}) or {}
+            invert_y = bool(aw_tf_cfg.get("invert_y", True))
+            invert_yaw = bool(aw_tf_cfg.get("invert_yaw", True))
+            goal_pose = _autoware_pose_from_carla_transform(
+                tr,
+                ahead_m=ahead_m,
+                invert_y=invert_y,
+                invert_yaw=invert_yaw,
+            )
+            initial_pose = _autoware_pose_from_carla_transform(
+                ego_tr_for_aw,
+                ahead_m=0.0,
+                invert_y=invert_y,
+                invert_yaw=invert_yaw,
+            )
+            if (abs(float(goal_pose["x"])) + abs(float(goal_pose["y"]))) <= 1e-3:
+                print(
+                    "[WARN] Autoware goal is near map origin after spawn-settle; "
+                    "routing may be invalid. Check scenario spawn metadata."
+                )
+            print(
+                "[goal] Autoware target from actor_id=%s loc=(%.3f, %.3f, %.3f) "
+                "yaw=%.3f ahead_m=%.3f -> carla_goal=(%.3f, %.3f, %.3f) "
+                "autoware_goal=(%.3f, %.3f, %.3f yaw=%.3f)"
+                % (
+                    target_actor_id,
+                    float(loc.x),
+                    float(loc.y),
+                    float(loc.z),
+                    float(yaw),
+                    float(ahead_m),
+                    float(goal_pose["source_carla_x"]),
+                    float(goal_pose["source_carla_y"]),
+                    float(goal_pose["z"]),
+                    float(goal_pose["x"]),
+                    float(goal_pose["y"]),
+                    float(goal_pose["z"]),
+                    float(goal_pose["yaw_deg"]),
+                )
             )
             print(
-                "[goal] sent=%s subscriber_ready=%s subscriber_count=%d engage=%s"
+                "[localization] Autoware initial pose from ego loc=(%.3f, %.3f, %.3f) "
+                "yaw=%.3f -> autoware_initial=(%.3f, %.3f, %.3f yaw=%.3f)"
+                % (
+                    float(ego_tr_for_aw.location.x),
+                    float(ego_tr_for_aw.location.y),
+                    float(ego_tr_for_aw.location.z),
+                    float(ego_tr_for_aw.rotation.yaw),
+                    float(initial_pose["x"]),
+                    float(initial_pose["y"]),
+                    float(initial_pose["z"]),
+                    float(initial_pose["yaw_deg"]),
+                )
+            )
+            pre_goal_warmup_ticks = int(goal_cfg.get("pre_goal_warmup_ticks", 0) or 0)
+            pre_goal_warmup_sleep_s = float(goal_cfg.get("pre_goal_warmup_sleep_s", 0.0) or 0.0)
+            if pre_goal_warmup_ticks > 0:
+                print(f"[goal] pre-goal CARLA warmup ticks={pre_goal_warmup_ticks}")
+                for _ in range(pre_goal_warmup_ticks):
+                    try:
+                        # The external bridge needs committed CARLA frames
+                        # before localization/tf waits start. An active tick
+                        # is safer than wait_for_tick here because there may be
+                        # no other tick owner before harness.run().
+                        world.tick()
+                    except Exception as exc:
+                        if not cfg.synchronous_mode:
+                            try:
+                                world.wait_for_tick()
+                                if pre_goal_warmup_sleep_s > 0.0:
+                                    time.sleep(pre_goal_warmup_sleep_s)
+                                continue
+                            except Exception:
+                                pass
+                        print(f"[WARN] pre-goal warmup tick failed: {exc}")
+                        break
+                    if pre_goal_warmup_sleep_s > 0.0:
+                        time.sleep(pre_goal_warmup_sleep_s)
+            tick_pump = None
+            tick_while_waiting = bool(goal_cfg.get("tick_while_waiting_for_route", True))
+            if tick_while_waiting and cfg.synchronous_mode:
+                tick_pump = _start_carla_tick_pump(
+                    world,
+                    label="autoware_route_wait",
+                    tick_timeout_s=float(goal_cfg.get("route_wait_tick_timeout_s", 5.0) or 5.0),
+                    sleep_s=float(goal_cfg.get("route_wait_tick_sleep_s", 0.0) or 0.0),
+                )
+                print("[goal] started CARLA tick pump while waiting for Autoware localization/tf/route")
+            try:
+                    result = send_goal_and_engage(
+                        ros2_runner,
+                        goal_pose,
+                        frame_id=frame_id,
+                        publish_goal_topic_after_route_service=bool(
+                            goal_cfg.get("publish_goal_topic_after_route_service", True)
+                        ),
+                        initial_pose=initial_pose,
+                    wait_timeout_s=float(goal_cfg.get("wait_timeout_s", 30.0) or 30.0),
+                    localization_wait_s=float(goal_cfg.get("localization_wait_s", 12.0) or 12.0),
+                    tf_wait_s=float(goal_cfg.get("tf_wait_s", 8.0) or 8.0),
+                    localization_retry_wait_s=float(
+                        goal_cfg.get("localization_retry_wait_s", 15.0) or 15.0
+                    ),
+                    tf_retry_wait_s=float(goal_cfg.get("tf_retry_wait_s", 15.0) or 15.0),
+                    route_ready_wait_s=(
+                        float(goal_cfg["route_ready_wait_s"])
+                        if goal_cfg.get("route_ready_wait_s") is not None
+                        else None
+                    ),
+                    engage_retry_timeout_s=float(
+                        goal_cfg.get("engage_retry_timeout_s", 0.0) or 0.0
+                    ),
+                    engage_retry_period_s=float(
+                        goal_cfg.get("engage_retry_period_s", 2.0) or 2.0
+                    ),
+                    engage_ready_topics=list(goal_cfg.get("engage_ready_topics", []) or []),
+                    engage_ready_wait_s=(
+                        float(goal_cfg["engage_ready_wait_s"])
+                        if goal_cfg.get("engage_ready_wait_s") is not None
+                        else None
+                    ),
+                    engage_ready_probe_timeout_s=float(
+                        goal_cfg.get("engage_ready_probe_timeout_s", 5.0) or 5.0
+                    ),
+                    require_engage_ready_topics=bool(
+                        goal_cfg.get("require_engage_ready_topics", False)
+                    ),
+                    require_localization_before_route=bool(
+                        goal_cfg.get("require_localization_before_route", False)
+                    ),
+                    log_path=goal_log_path,
+                )
+            finally:
+                if tick_pump is not None:
+                    stop_event, thread, stats = tick_pump
+                    _stop_carla_tick_pump(stop_event, thread, stats, label="autoware_route_wait")
+            print(
+                "[goal] sent=%s route_set=%s localization_initialized=%s "
+                "subscriber_ready=%s subscriber_count=%d engage=%s"
                 % (
                     result.goal_sent,
+                    result.route_set,
+                    result.localization_initialized,
                     result.goal_subscriber_ready,
                     result.goal_subscriber_count,
                     result.engage_succeeded,
                 )
             )
+            if bool(goal_cfg.get("require_engage_ready_topics", False)) and not result.engage_succeeded:
+                fail_reason = "AUTOWARE_PRE_ENGAGE_READINESS_FAILED"
+                goal_status = {
+                    "schema_version": "autoware_goal_status.v1",
+                    "success": False,
+                    "fail_reason": fail_reason,
+                    "goal_sent": bool(result.goal_sent),
+                    "route_set": bool(result.route_set),
+                    "localization_initialized": bool(result.localization_initialized),
+                    "goal_subscriber_ready": bool(result.goal_subscriber_ready),
+                    "goal_subscriber_count": int(result.goal_subscriber_count),
+                    "engage_succeeded": bool(result.engage_succeeded),
+                    "pre_engage_ready": result.pre_engage_ready,
+                    "required_engage_ready_topics": list(goal_cfg.get("engage_ready_topics", []) or []),
+                    "missing_engage_ready_topics": list(result.missing_engage_ready_topics or []),
+                    "log_path": str(goal_log_path),
+                }
+                artifacts_dir.mkdir(parents=True, exist_ok=True)
+                (artifacts_dir / "autoware_goal_status.json").write_text(
+                    json.dumps(goal_status, indent=2)
+                )
+                summary = {
+                    "success": False,
+                    "exit_reason": fail_reason,
+                    "fail_reason": fail_reason,
+                    "frames": 0,
+                    "scenario_driver": scenario_driver,
+                    "adapter_started": adapter_started,
+                    "adapter_fail_reason": adapter_fail_reason,
+                    "autoware_goal_status": goal_status,
+                    "metrics": {
+                        "frames": 0,
+                        "exit_reason": fail_reason,
+                        "collision_count": 0,
+                        "lane_invasion_count": 0,
+                    },
+                }
+                (out_run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+                print(f"[goal][fail-fast] {fail_reason}; wrote {out_run_dir / 'summary.json'}")
+                return
 
         run_mode_cfg = effective_cfg.get("run", {}) if effective_cfg else {}
         external_probe_hold = bool(run_mode_cfg.get("external_probe_hold", False))
@@ -2455,6 +3067,12 @@ def main():
         if effective_cfg.get("record", {}).get("sensors", {}).get("enable") is False:
             sensor_capture_enabled = False
         external_stack = stack in {"autoware", "apollo"}
+        apollo_cfg_effective = ((effective_cfg.get("algo", {}) or {}).get("apollo", {}) or {})
+        apollo_direct_no_ros2 = bool(
+            stack == "apollo"
+            and str(apollo_cfg_effective.get("transport_mode") or "").strip() == "carla_direct"
+            and bool((apollo_cfg_effective.get("direct_bridge", {}) or {}).get("require_no_ros2_runtime", False))
+        )
         # External stacks (Apollo/Autoware) should usually own control output.
         # Keep this behavior explicit and configurable for ablation experiments.
         disable_control_cfg = ((effective_cfg.get("algo", {}) or {}).get(
@@ -2462,7 +3080,11 @@ def main():
         ))
         disable_control_cfg_effective = bool(external_stack) if disable_control_cfg is None else bool(disable_control_cfg)
         disable_control = disable_control_cfg_effective
-        ros2_mode_active = bool(args.enable_ros2_native or args.enable_ros2_gt or (external_stack and adapter_started))
+        ros2_mode_active = bool(
+            args.enable_ros2_native
+            or args.enable_ros2_gt
+            or (external_stack and adapter_started and not apollo_direct_no_ros2)
+        )
         tick_callbacks = []
         scenario_tick_hook = getattr(scenario, "on_sim_tick", None)
         if callable(scenario_tick_hook):
@@ -2516,6 +3138,32 @@ def main():
                 print(f"[monitor] control logger started for {topic}, writing to {out_log}")
             except Exception as exc:
                 print(f"[WARN] failed to start control logger: {exc}")
+            extra_control_topics = [
+                str(t).strip()
+                for t in (control_log_cfg.get("extra_topics") or [])
+                if str(t).strip() and str(t).strip() != str(topic)
+            ]
+            extra_topic_types = control_log_cfg.get("extra_topic_types") or {}
+            for extra_topic in extra_control_topics:
+                safe_topic = extra_topic.strip("/").replace("/", "__").replace("~", "_")
+                out_extra = out_run_dir / "artifacts" / f"ros2_topic__{safe_topic}.jsonl"
+                out_extra_log = out_run_dir / "artifacts" / f"ros2_topic__{safe_topic}.log"
+                try:
+                    proc = start_control_logger(
+                        ros2_runner,
+                        TESTBED_ROOT,
+                        topic=extra_topic,
+                        topic_type=extra_topic_types.get(extra_topic),
+                        out_jsonl=out_extra,
+                        out_log=out_extra_log,
+                        max_msgs=max_msgs,
+                        force_anymsg=force_anymsg,
+                        reliability=reliability,
+                    )
+                    cleanup_state.setdefault("control_logger_extra_procs", []).append(proc)
+                    print(f"[monitor] extra topic logger started for {extra_topic}, writing to {out_extra}")
+                except Exception as exc:
+                    print(f"[WARN] failed to start extra topic logger for {extra_topic}: {exc}")
 
         # optional: topic probe via shared ROS2 runner
         probe_cfg = None
@@ -2578,11 +3226,41 @@ def main():
             disable_control=disable_control,
             sensor_capture_enabled=sensor_capture_enabled,
             tick_callbacks=tick_callbacks or None,
+            scenario_metadata=scenario_meta,
         )
         print(
             f"Run core finished: harness_success={summary['success']} "
             f"harness_fail_reason={summary['fail_reason']} collisions={summary['collision_count']}"
         )
+        try:
+            latest_scenario_meta = scenario.metadata() if hasattr(scenario, "metadata") else {}
+            if not isinstance(latest_scenario_meta, dict):
+                latest_scenario_meta = {}
+            latest_scenario_meta.update(
+                {
+                    "scenario_driver": scenario_driver,
+                    "ego_role": args.ego_id,
+                    "front_role": "front",
+                    "ego_actor_id": int(getattr(ego, "id", 0) or 0),
+                    "front_actor_id": int(getattr(front, "id", 0) or 0) if front is not None else 0,
+                }
+            )
+            scenario_meta = json.loads(json.dumps(latest_scenario_meta, default=str))
+            scenario_meta_path.parent.mkdir(parents=True, exist_ok=True)
+            scenario_meta_path.write_text(json.dumps(scenario_meta, indent=2))
+            manifest_path = out_run_dir / "manifest.json"
+            if manifest_path.exists():
+                manifest_data = _load_json_if_exists(manifest_path)
+                manifest_metadata = manifest_data.get("metadata")
+                if not isinstance(manifest_metadata, dict):
+                    manifest_metadata = {}
+                manifest_metadata["scenario_metadata"] = scenario_meta
+                manifest_data["metadata"] = manifest_metadata
+                if isinstance(scenario_meta.get("traffic_light_control"), dict):
+                    manifest_data["traffic_light_control"] = scenario_meta["traffic_light_control"]
+                manifest_path.write_text(json.dumps(manifest_data, indent=2))
+        except Exception as exc:
+            print(f"[WARN] failed to refresh scenario metadata after run: {exc}")
 
         summary_path = out_run_dir / "summary.json"
         provisional_summary_path = out_run_dir / "summary.provisional.json"
@@ -2641,8 +3319,8 @@ def main():
             except Exception as exc:
                 print(f"[WARN] failed to parse sensor probe: {exc}")
         motion_ok = state.max_speed_mps > acceptance_speed_threshold
-        require_control_log = bool(stack in {"autoware", "apollo"})
-        require_sensor_probe = bool(stack in {"autoware", "apollo"})
+        require_control_log = bool(stack == "autoware" or (stack == "apollo" and not apollo_direct_no_ros2))
+        require_sensor_probe = bool(stack == "autoware" or (stack == "apollo" and not apollo_direct_no_ros2))
         ros2_enable_api_available = bool(
             hasattr(carla.Actor, "enable_for_ros")
             or hasattr(carla.Sensor, "enable_for_ros")
@@ -2651,6 +3329,117 @@ def main():
 
         failures = []
         failure_details: List[Dict[str, Any]] = []
+        for safety_failure in safety_failures_from_summary(summary_data):
+            failures.append(safety_failure.code)
+            failure_details.append(safety_failure.detail)
+        control_health_check = applied_control_health_from_timeseries(
+            out_run_dir / "timeseries.csv",
+            max_throttle_brake_switch_count=acceptance_control_health_max_switch_count,
+        )
+        for control_health_failure in control_health_failures_from_check(
+            control_health_check,
+            enabled=acceptance_control_health_enabled,
+            fail_on_missing=acceptance_control_health_fail_on_missing,
+        ):
+            failures.append(control_health_failure.code)
+            failure_details.append(control_health_failure.detail)
+        bridge_target_speed_check = bridge_target_speed_health_from_log(
+            out_run_dir / "artifacts" / "autoware_carla_control_bridge.log",
+            overspeed_threshold_mps=acceptance_target_speed_tracking_overspeed_threshold_mps,
+            max_throttle_while_overspeed_rows=acceptance_target_speed_tracking_max_throttle_rows,
+        )
+        for bridge_target_speed_failure in bridge_target_speed_failures_from_check(
+            bridge_target_speed_check,
+            enabled=acceptance_target_speed_tracking_enabled,
+            fail_on_missing=acceptance_target_speed_tracking_fail_on_missing,
+        ):
+            failures.append(bridge_target_speed_failure.code)
+            failure_details.append(bridge_target_speed_failure.detail)
+        followstop_acceptance_check: Dict[str, Any] = {
+            "enabled": acceptance_followstop_enabled,
+            "available": False,
+        }
+        if acceptance_followstop_enabled:
+            try:
+                followstop_report = analyze_followstop_run(
+                    out_run_dir,
+                    min_ahead_m=float(args.front_min_ahead_m),
+                    max_ahead_m=float(args.front_max_ahead_m),
+                    max_lateral_m=float(args.front_max_lateral_m),
+                    max_heading_diff_deg=float(args.front_max_heading_diff_deg),
+                    stop_zone_m=float(acceptance_followstop_stop_zone_m),
+                    stopped_speed_mps=float(acceptance_followstop_stopped_speed_mps),
+                )
+                followstop_paths = write_followstop_report(
+                    followstop_report,
+                    out_run_dir / "analysis" / "autoware_followstop",
+                )
+                followstop_status = str(followstop_report.get("status") or "insufficient_data")
+                followstop_reasons = list(followstop_report.get("failure_reasons") or [])
+                followstop_acceptance_check = {
+                    "enabled": True,
+                    "available": True,
+                    "ok": followstop_status == "pass",
+                    "status": followstop_status,
+                    "failure_reasons": followstop_reasons,
+                    "json_path": followstop_paths.get("json"),
+                    "stop_zone_m": float(acceptance_followstop_stop_zone_m),
+                    "stopped_speed_mps": float(acceptance_followstop_stopped_speed_mps),
+                    "fail_on_warn": acceptance_followstop_fail_on_warn,
+                }
+                followstop_should_fail = followstop_status in {"fail", "insufficient_data"} or (
+                    acceptance_followstop_fail_on_warn and followstop_status == "warn"
+                )
+                if followstop_should_fail:
+                    failures.append("FOLLOWSTOP_NOT_VALID")
+                    failure_details.append(
+                        {
+                            "code": "FOLLOWSTOP_NOT_VALID",
+                            "scope": "scenario_behavior",
+                            "status": followstop_status,
+                            "failure_reasons": followstop_reasons,
+                            "path": followstop_paths.get("json"),
+                        }
+                    )
+            except Exception as exc:
+                followstop_acceptance_check = {
+                    "enabled": True,
+                    "available": False,
+                    "ok": False,
+                    "error": str(exc),
+                }
+                failures.append("FOLLOWSTOP_DIAGNOSTICS_FAILED")
+                failure_details.append(
+                    {
+                        "code": "FOLLOWSTOP_DIAGNOSTICS_FAILED",
+                        "scope": "scenario_behavior",
+                        "error": str(exc),
+                    }
+                )
+        autoware_control_diagnostics_check: Dict[str, Any] = {
+            "enabled": stack == "autoware",
+            "available": False,
+        }
+        if stack == "autoware":
+            try:
+                autoware_control_report = analyze_autoware_control_run(out_run_dir)
+                autoware_control_out = out_run_dir / "analysis" / "autoware_control"
+                write_autoware_control_diagnostics(autoware_control_report, autoware_control_out)
+                autoware_control_verdict = autoware_control_report.get("verdict") or {}
+                autoware_control_diagnostics_check = {
+                    "enabled": True,
+                    "available": True,
+                    "status": autoware_control_verdict.get("status"),
+                    "failure_reasons": autoware_control_verdict.get("failure_reasons") or [],
+                    "json_path": str(autoware_control_out / "autoware_control_diagnostics.json"),
+                }
+            except Exception as exc:
+                autoware_control_diagnostics_check = {
+                    "enabled": True,
+                    "available": False,
+                    "error": str(exc),
+                }
+                print(f"[WARN] failed to write Autoware control diagnostics: {exc}")
         if adapter_fail_reason and not adapter_started:
             failures.append(adapter_fail_reason)
             failure_details.append({"code": adapter_fail_reason, "scope": "adapter"})
@@ -2717,6 +3506,7 @@ def main():
                 front_gap_above_m=acceptance_low_speed_creep_front_gap_above_m,
                 require_routing_established=acceptance_low_speed_creep_require_routing_established,
                 ignore_when_terminal_stop_hold_active=acceptance_low_speed_creep_ignore_terminal_hold,
+                require_reached_speed_mps=acceptance_low_speed_creep_require_reached_speed_mps,
             )
             if acceptance_low_speed_creep_enabled
             else {
@@ -2952,6 +3742,24 @@ def main():
                     "max_speed_mps": state.max_speed_mps,
                     "threshold": acceptance_speed_threshold,
                 },
+                "safety": {
+                    "ok": not any(detail.get("scope") == "safety" for detail in failure_details),
+                    "exit_reason": summary_data.get("exit_reason"),
+                    "collision_count": summary_data.get("collision_count"),
+                    "lane_invasion_count": summary_data.get("lane_invasion_count"),
+                },
+                "control_health": {
+                    "enabled": acceptance_control_health_enabled,
+                    "fail_on_missing": acceptance_control_health_fail_on_missing,
+                    **control_health_check,
+                    "target_speed_tracking": {
+                        "enabled": acceptance_target_speed_tracking_enabled,
+                        "fail_on_missing": acceptance_target_speed_tracking_fail_on_missing,
+                        **bridge_target_speed_check,
+                    },
+                },
+                "followstop": followstop_acceptance_check,
+                "autoware_control_diagnostics": autoware_control_diagnostics_check,
                 "apollo_health_artifacts": {
                     "ok": apollo_health_artifacts_ok,
                     "required": acceptance_require_apollo_health_artifacts,
@@ -3049,6 +3857,8 @@ def main():
         if scenario_driver == "carla_town01_route_health":
             summary_data["route_health"] = acceptance["checks"].get("route_health", {})
             summary_data["route_health_label"] = acceptance["checks"].get("route_health", {}).get("label")
+            if isinstance(scenario_meta.get("traffic_light_control"), dict):
+                summary_data["traffic_light_control"] = scenario_meta["traffic_light_control"]
         provisional_summary_path.write_text(json.dumps(summary_data, indent=2))
         summary_path.write_text(json.dumps(summary_data, indent=2))
         (out_run_dir / "artifacts" / "profile_info.json").write_text(json.dumps(profile_info, indent=2))

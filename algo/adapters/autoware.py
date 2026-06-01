@@ -16,6 +16,8 @@ class AutowareAdapter(Adapter):
         self.compose_proc: Optional[subprocess.Popen] = None
         self.repo_root = Path(__file__).resolve().parents[2]
         self.last_env: Dict[str, str] = {}
+        self.operator_view_recorder = None
+        self.autoware_rosbag_recorder = None
 
     @staticmethod
     def _is_relative_to(path: Path, base: Path) -> bool:
@@ -58,8 +60,18 @@ class AutowareAdapter(Adapter):
 
     def _infer_map_root(self, stack_cfg: Dict[str, Any]) -> Tuple[Path, str]:
         """Infer map_root and carla_map from config."""
-        map_root_cfg = stack_cfg.get("map_root")
-        map_path_cfg = stack_cfg.get("map_path")
+        def _expand_path(raw: Any) -> Optional[str]:
+            if raw is None:
+                return None
+            expanded = os.path.expandvars(str(raw)).strip()
+            # Treat unresolved shell placeholders as absent so configs can use
+            # ${AUTOWARE_MAP_ROOT} while still failing with a clear fallback.
+            if not expanded or "${" in expanded:
+                return None
+            return expanded
+
+        map_root_cfg = _expand_path(stack_cfg.get("map_root"))
+        map_path_cfg = _expand_path(stack_cfg.get("map_path"))
         carla_map = stack_cfg.get("carla_map") or "Town01"
         if map_root_cfg:
             root = Path(map_root_cfg).expanduser().resolve()
@@ -73,6 +85,9 @@ class AutowareAdapter(Adapter):
             pcd = list(p.glob("*.pcd"))
             if lane or pcd:
                 return p.parent, p.name
+        default_root = Path("/home/ubuntu/autoware-contents/maps")
+        if default_root.exists():
+            return default_root.resolve(), carla_map
         raise ValueError(
             f"map_root/map_path invalid; expected a maps根目录(含 point_cloud_maps,vector_maps)或具体Town目录。传入: {map_path_cfg or map_root_cfg}"
         )
@@ -125,7 +140,12 @@ class AutowareAdapter(Adapter):
             env["RUN_ARTIFACT_DIR"] = str(Path("/work/runs") / run_path.name / "artifacts")
         map_root, carla_map = self._infer_map_root(stack_cfg)
         autoware_map_root = map_root
-        carla_wheel_dir = Path(stack_cfg.get("carla_wheel_dir", os.environ.get("CARLA_ROOT", "")) / Path("PythonAPI/carla/dist")).expanduser().resolve() if stack_cfg.get("carla_wheel_dir") is None else Path(stack_cfg.get("carla_wheel_dir")).expanduser().resolve()
+        carla_wheel_dir_cfg = str(stack_cfg.get("carla_wheel_dir") or "").strip()
+        if carla_wheel_dir_cfg:
+            carla_wheel_dir = Path(carla_wheel_dir_cfg).expanduser().resolve()
+        else:
+            carla_root = str(os.environ.get("CARLA_ROOT") or "/home/ubuntu/CARLA_0.9.16").strip()
+            carla_wheel_dir = (Path(carla_root).expanduser() / "PythonAPI" / "carla" / "dist").resolve()
         autoware_data_path_cfg = stack_cfg.get("autoware_data_path")
         autoware_data_path = (
             Path(autoware_data_path_cfg).expanduser().resolve()
@@ -160,6 +180,45 @@ class AutowareAdapter(Adapter):
                 "launch_planning:=true launch_control:=true launch_map:=true launch_vehicle:=true",
             )
         )
+        planning_max_vel = stack_cfg.get("planning_common_max_vel_mps")
+        if planning_max_vel is not None:
+            env["AUTOWARE_PLANNING_COMMON_MAX_VEL_MPS"] = str(planning_max_vel)
+        planning_common_dynamics = {
+            "planning_common_nominal_max_acc_mps2": "AUTOWARE_PLANNING_COMMON_NOMINAL_MAX_ACC_MPS2",
+            "planning_common_nominal_min_acc_mps2": "AUTOWARE_PLANNING_COMMON_NOMINAL_MIN_ACC_MPS2",
+            "planning_common_limit_max_acc_mps2": "AUTOWARE_PLANNING_COMMON_LIMIT_MAX_ACC_MPS2",
+            "planning_common_limit_min_acc_mps2": "AUTOWARE_PLANNING_COMMON_LIMIT_MIN_ACC_MPS2",
+        }
+        for cfg_key, env_key in planning_common_dynamics.items():
+            value = stack_cfg.get(cfg_key)
+            if value is not None:
+                env[env_key] = str(value)
+        planning_common_param_path = stack_cfg.get("planning_common_param_path")
+        if planning_common_param_path:
+            env["AUTOWARE_PLANNING_COMMON_PARAM_PATH"] = str(planning_common_param_path)
+        velocity_limit_probe = stack_cfg.get("velocity_limit_probe") or {}
+        env["AUTOWARE_VELOCITY_LIMIT_PROBE_ENABLED"] = (
+            "1" if bool(velocity_limit_probe.get("enabled", False)) else "0"
+        )
+        env["AUTOWARE_VELOCITY_LIMIT_PROBE_TOPIC"] = str(
+            velocity_limit_probe.get("topic", "/planning/scenario_planning/max_velocity_default")
+        )
+        if velocity_limit_probe.get("max_velocity_mps") is not None:
+            env["AUTOWARE_VELOCITY_LIMIT_PROBE_MAX_VELOCITY_MPS"] = str(
+                velocity_limit_probe.get("max_velocity_mps")
+            )
+        env["AUTOWARE_VELOCITY_LIMIT_PROBE_PUBLISH_HZ"] = str(
+            velocity_limit_probe.get("publish_hz", 5.0)
+        )
+        env["AUTOWARE_VELOCITY_LIMIT_PROBE_DURATION_S"] = str(
+            velocity_limit_probe.get("duration_s", 30.0)
+        )
+        env["AUTOWARE_VELOCITY_LIMIT_PROBE_START_DELAY_S"] = str(
+            velocity_limit_probe.get("start_delay_s", 8.0)
+        )
+        env["AUTOWARE_VELOCITY_LIMIT_PROBE_SENDER"] = str(
+            velocity_limit_probe.get("sender", "api")
+        )
         env["EGO_ROLE_NAME"] = str(profile.get("run", {}).get("ego_id", "ego"))
         env["CARLA_MAP"] = str(carla_map)
         env["AUTOWARE_MAP_ROOT"] = str(autoware_map_root)
@@ -169,6 +228,77 @@ class AutowareAdapter(Adapter):
         env["CARLA_HOST"] = str(stack_cfg.get("carla_host", "127.0.0.1"))
         env["CARLA_PORT"] = str(stack_cfg.get("carla_port", 2000))
         env["CONTROL_TOPIC"] = str(profile.get("record", {}).get("control_log", {}).get("topic", "/control/command/control_cmd"))
+        control_bridge_cfg = stack_cfg.get("carla_control_bridge") or {}
+        env["AUTOWARE_CONTROL_BRIDGE_ENABLED"] = "1" if bool(control_bridge_cfg.get("enabled", False)) else "0"
+        env["AUTOWARE_CONTROL_BRIDGE_TYPE"] = str(control_bridge_cfg.get("control_type", "autoware_control"))
+        env["AUTOWARE_CONTROL_BRIDGE_TOPIC"] = str(
+            control_bridge_cfg.get("control_topic")
+            or profile.get("record", {}).get("control_log", {}).get("topic", "/control/command/control_cmd")
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_MAX_STEER_ANGLE"] = str(control_bridge_cfg.get("max_steer_angle", 0.6))
+        env["AUTOWARE_CONTROL_BRIDGE_SPEED_GAIN"] = str(control_bridge_cfg.get("speed_gain", 10.0))
+        env["AUTOWARE_CONTROL_BRIDGE_BRAKE_GAIN"] = str(control_bridge_cfg.get("brake_gain", 5.0))
+        env["AUTOWARE_CONTROL_BRIDGE_ACCEL_THROTTLE_GAIN"] = str(
+            control_bridge_cfg.get("accel_throttle_gain", 0.05)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_LONGITUDINAL_MODE"] = str(
+            control_bridge_cfg.get("longitudinal_mode", "open_loop")
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_GAIN"] = str(
+            control_bridge_cfg.get("speed_feedback_gain", 0.25)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_BRAKE_GAIN"] = str(
+            control_bridge_cfg.get("speed_feedback_brake_gain", 0.25)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_DEADBAND_MPS"] = str(
+            control_bridge_cfg.get("speed_feedback_deadband_mps", 0.2)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_ACCEL_FEEDFORWARD_SPEED_MARGIN_MPS"] = str(
+            control_bridge_cfg.get("accel_feedforward_speed_margin_mps", 0.5)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_ACCEL_FEEDFORWARD_OVERSPEED_TAPER_MPS"] = str(
+            control_bridge_cfg.get("accel_feedforward_overspeed_taper_mps", 0.0)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_BRAKE_INHIBIT_ENABLED"] = (
+            "1" if bool(control_bridge_cfg.get("positive_accel_brake_inhibit_enabled", False)) else "0"
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_BRAKE_INHIBIT_MIN_ACCEL_MPS2"] = str(
+            control_bridge_cfg.get("positive_accel_brake_inhibit_min_accel_mps2", 0.05)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_BRAKE_INHIBIT_SPEED_MARGIN_MPS"] = str(
+            control_bridge_cfg.get("positive_accel_brake_inhibit_speed_margin_mps", 0.5)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_OVERSHOOT_ACTION"] = str(
+            control_bridge_cfg.get("positive_accel_overshoot_action", "throttle")
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_MIN_THROTTLE"] = str(
+            control_bridge_cfg.get("positive_accel_min_throttle", 0.0)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_MIN_THROTTLE_SPEED_MPS"] = str(
+            control_bridge_cfg.get("positive_accel_min_throttle_speed_mps", 5.0)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_NEGATIVE_ACCEL_BRAKE_SPEED_MARGIN_MPS"] = str(
+            control_bridge_cfg.get("negative_accel_brake_speed_margin_mps", -1.0)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_TRANSITION_COAST_SEC"] = str(
+            control_bridge_cfg.get("speed_feedback_transition_coast_sec", 0.0)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_MAX_THROTTLE_STEP"] = str(
+            control_bridge_cfg.get("speed_feedback_max_throttle_step", 1.0)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_MAX_BRAKE_STEP"] = str(
+            control_bridge_cfg.get("speed_feedback_max_brake_step", 1.0)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_SPEED_SOURCE"] = str(control_bridge_cfg.get("speed_source", "carla"))
+        env["AUTOWARE_CONTROL_BRIDGE_VELOCITY_STATUS_TOPIC"] = str(
+            control_bridge_cfg.get("velocity_status_topic", "/vehicle/status/velocity_status")
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_VELOCITY_STATUS_STALE_SEC"] = str(
+            control_bridge_cfg.get("velocity_status_stale_sec", 0.5)
+        )
+        env["AUTOWARE_CONTROL_BRIDGE_TIMEOUT_SEC"] = str(control_bridge_cfg.get("timeout_sec", 0.8))
+        env["AUTOWARE_CONTROL_BRIDGE_APPLY_HZ"] = str(control_bridge_cfg.get("apply_hz", 20.0))
+        env["AUTOWARE_CONTROL_BRIDGE_STEER_SIGN"] = str(control_bridge_cfg.get("autoware_steer_sign", -1.0))
         probe_cfg = profile.get("record", {}).get("probe") or profile.get("record", {}).get("sensor_probe", {})
         probe_topics = probe_cfg.get("topics", ["/clock", "/tf"])
         env["PROBE_TOPICS"] = ",".join(probe_topics) if isinstance(probe_topics, list) else str(probe_topics)
@@ -187,13 +317,45 @@ class AutowareAdapter(Adapter):
         env_dump_lines = [
             f"AUTOWARE_LAUNCH_FILE={env.get('AUTOWARE_LAUNCH_FILE','')}",
             f"AUTOWARE_LAUNCH_EXTRA_ARGS={extra_args_str}",
+            f"AUTOWARE_PLANNING_COMMON_MAX_VEL_MPS={env.get('AUTOWARE_PLANNING_COMMON_MAX_VEL_MPS','')}",
+            f"AUTOWARE_PLANNING_COMMON_NOMINAL_MAX_ACC_MPS2={env.get('AUTOWARE_PLANNING_COMMON_NOMINAL_MAX_ACC_MPS2','')}",
+            f"AUTOWARE_PLANNING_COMMON_NOMINAL_MIN_ACC_MPS2={env.get('AUTOWARE_PLANNING_COMMON_NOMINAL_MIN_ACC_MPS2','')}",
+            f"AUTOWARE_PLANNING_COMMON_LIMIT_MAX_ACC_MPS2={env.get('AUTOWARE_PLANNING_COMMON_LIMIT_MAX_ACC_MPS2','')}",
+            f"AUTOWARE_PLANNING_COMMON_LIMIT_MIN_ACC_MPS2={env.get('AUTOWARE_PLANNING_COMMON_LIMIT_MIN_ACC_MPS2','')}",
+            f"AUTOWARE_PLANNING_COMMON_PARAM_PATH={env.get('AUTOWARE_PLANNING_COMMON_PARAM_PATH','')}",
+            f"AUTOWARE_VELOCITY_LIMIT_PROBE_ENABLED={env.get('AUTOWARE_VELOCITY_LIMIT_PROBE_ENABLED','')}",
+            f"AUTOWARE_VELOCITY_LIMIT_PROBE_TOPIC={env.get('AUTOWARE_VELOCITY_LIMIT_PROBE_TOPIC','')}",
+            f"AUTOWARE_VELOCITY_LIMIT_PROBE_MAX_VELOCITY_MPS={env.get('AUTOWARE_VELOCITY_LIMIT_PROBE_MAX_VELOCITY_MPS','')}",
+            f"AUTOWARE_VELOCITY_LIMIT_PROBE_PUBLISH_HZ={env.get('AUTOWARE_VELOCITY_LIMIT_PROBE_PUBLISH_HZ','')}",
+            f"AUTOWARE_VELOCITY_LIMIT_PROBE_DURATION_S={env.get('AUTOWARE_VELOCITY_LIMIT_PROBE_DURATION_S','')}",
+            f"AUTOWARE_VELOCITY_LIMIT_PROBE_START_DELAY_S={env.get('AUTOWARE_VELOCITY_LIMIT_PROBE_START_DELAY_S','')}",
+            f"USE_SIM_TIME={env.get('USE_SIM_TIME','')}",
             f"AUTOWARE_MODE={env.get('AUTOWARE_MODE','')}",
             f"AUTOWARE_PERCEPTION_MODE={env.get('AUTOWARE_PERCEPTION_MODE','')}",
+            f"RMW_IMPLEMENTATION={env.get('RMW_IMPLEMENTATION','')}",
             f"RUN_ARTIFACT_DIR={env.get('RUN_ARTIFACT_DIR','')}",
             f"CARLA_HOST={env.get('CARLA_HOST','')}",
             f"CARLA_PORT={env.get('CARLA_PORT','')}",
             f"CARLA_MAP={env.get('CARLA_MAP','')}",
             f"EGO_ROLE_NAME={env.get('EGO_ROLE_NAME','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_ENABLED={env.get('AUTOWARE_CONTROL_BRIDGE_ENABLED','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_TYPE={env.get('AUTOWARE_CONTROL_BRIDGE_TYPE','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_TOPIC={env.get('AUTOWARE_CONTROL_BRIDGE_TOPIC','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_LONGITUDINAL_MODE={env.get('AUTOWARE_CONTROL_BRIDGE_LONGITUDINAL_MODE','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_ACCEL_THROTTLE_GAIN={env.get('AUTOWARE_CONTROL_BRIDGE_ACCEL_THROTTLE_GAIN','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_GAIN={env.get('AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_GAIN','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_BRAKE_GAIN={env.get('AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_BRAKE_GAIN','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_BRAKE_INHIBIT_ENABLED={env.get('AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_BRAKE_INHIBIT_ENABLED','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_BRAKE_INHIBIT_SPEED_MARGIN_MPS={env.get('AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_BRAKE_INHIBIT_SPEED_MARGIN_MPS','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_OVERSHOOT_ACTION={env.get('AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_OVERSHOOT_ACTION','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_MIN_THROTTLE={env.get('AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_MIN_THROTTLE','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_MIN_THROTTLE_SPEED_MPS={env.get('AUTOWARE_CONTROL_BRIDGE_POSITIVE_ACCEL_MIN_THROTTLE_SPEED_MPS','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_NEGATIVE_ACCEL_BRAKE_SPEED_MARGIN_MPS={env.get('AUTOWARE_CONTROL_BRIDGE_NEGATIVE_ACCEL_BRAKE_SPEED_MARGIN_MPS','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_TRANSITION_COAST_SEC={env.get('AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_TRANSITION_COAST_SEC','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_MAX_THROTTLE_STEP={env.get('AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_MAX_THROTTLE_STEP','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_MAX_BRAKE_STEP={env.get('AUTOWARE_CONTROL_BRIDGE_SPEED_FEEDBACK_MAX_BRAKE_STEP','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_SPEED_SOURCE={env.get('AUTOWARE_CONTROL_BRIDGE_SPEED_SOURCE','')}",
+            f"AUTOWARE_CONTROL_BRIDGE_VELOCITY_STATUS_TOPIC={env.get('AUTOWARE_CONTROL_BRIDGE_VELOCITY_STATUS_TOPIC','')}",
         ]
         try:
             env_dump_path.write_text("\n".join(env_dump_lines))
@@ -239,12 +401,69 @@ class AutowareAdapter(Adapter):
             print(f"[autoware][health] compose ps failed: {exc}")
             return False
         self.last_env = env
+        self._start_demo_recorders(profile, run_path, artifacts_dir, compose_path, env)
         return True
+
+    def _start_demo_recorders(
+        self,
+        profile: Dict[str, Any],
+        run_path: Path,
+        artifacts_dir: Path,
+        compose_path: Path,
+        env: Dict[str, str],
+    ) -> None:
+        record_cfg = profile.get("record", {}) or {}
+        stack_cfg = profile.get("algo", {}).get("autoware", {}) or {}
+        domain_id = int(profile.get("io", {}).get("ros", {}).get("domain_id", env.get("ROS_DOMAIN_ID", 0)) or 0)
+        rmw = str(stack_cfg.get("rmw_implementation") or env.get("RMW_IMPLEMENTATION") or "rmw_cyclonedds_cpp")
+
+        operator_cfg = record_cfg.get("autoware_operator_view") or {}
+        if bool(operator_cfg.get("enabled", False)):
+            try:
+                from carla_testbed.record.autoware_operator_view import AutowareOperatorViewRecorder
+
+                self.operator_view_recorder = AutowareOperatorViewRecorder(
+                    run_dir=run_path,
+                    artifacts_dir=artifacts_dir,
+                    config=operator_cfg,
+                    ros_domain_id=domain_id,
+                    rmw_implementation=rmw,
+                    env=env,
+                )
+                self.operator_view_recorder.start()
+                print("[autoware][recording] operator-view recorder requested")
+            except Exception as exc:
+                print(f"[autoware][recording][warn] operator-view recorder failed to start: {exc}")
+
+        rosbag_cfg = record_cfg.get("rosbag") or {}
+        if bool(rosbag_cfg.get("enable", False)):
+            try:
+                from carla_testbed.record.autoware_rosbag import AutowareRosbagRecorder
+
+                self.autoware_rosbag_recorder = AutowareRosbagRecorder(
+                    compose_path=compose_path,
+                    run_dir=run_path,
+                    artifacts_dir=artifacts_dir,
+                    repo_root=self.repo_root,
+                    profile=profile,
+                    env=env,
+                    container_name=str(stack_cfg.get("container_name", "autoware")),
+                )
+                self.autoware_rosbag_recorder.start()
+                print("[autoware][recording] rosbag recorder requested")
+            except Exception as exc:
+                print(f"[autoware][recording][warn] rosbag recorder failed to start: {exc}")
 
     def healthcheck(self, profile: Dict[str, Any], run_dir) -> bool:
         stack_cfg = profile.get("algo", {}).get("autoware", {})
         compose = stack_cfg.get("compose")
-        control_topic = stack_cfg.get("control_topic") or "/control/command/control_cmd"
+        control_bridge_cfg = stack_cfg.get("carla_control_bridge") or {}
+        control_topic = (
+            control_bridge_cfg.get("control_topic")
+            or stack_cfg.get("control_topic")
+            or profile.get("record", {}).get("control_log", {}).get("topic")
+            or "/control/command/control_cmd"
+        )
         if isinstance(control_topic, list):
             control_topic = control_topic[0]
         container_name = stack_cfg.get("container_name", "autoware")
@@ -348,6 +567,18 @@ class AutowareAdapter(Adapter):
 
     def stop(self, profile: Dict[str, Any], run_dir):
         compose = profile.get("algo", {}).get("autoware", {}).get("compose")
+        for label, recorder in (
+            ("autoware_rosbag", self.autoware_rosbag_recorder),
+            ("operator_view", self.operator_view_recorder),
+        ):
+            if recorder is None:
+                continue
+            try:
+                recorder.stop()
+            except Exception as exc:
+                print(f"[autoware][recording][warn] {label} stop failed: {exc}")
+        self.autoware_rosbag_recorder = None
+        self.operator_view_recorder = None
         if not compose:
             return
         compose_path = Path(compose).resolve()
