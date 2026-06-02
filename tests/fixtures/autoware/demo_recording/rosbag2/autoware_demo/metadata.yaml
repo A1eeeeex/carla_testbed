@@ -1,0 +1,8 @@
+rosbag2_bagfile_information:
+  topics_with_message_count:
+    - topic_metadata:
+        name: /clock
+    - topic_metadata:
+        name: /tf
+    - topic_metadata:
+        name: /tf_static

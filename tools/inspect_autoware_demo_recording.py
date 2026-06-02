@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from carla_testbed.analysis.autoware_evidence import analyze_autoware_evidence_run_dir
+
 
 def _file_ok(path: Path) -> bool:
     try:
@@ -30,6 +32,7 @@ def _find_run_dirs(root: Path) -> List[Path]:
 
 
 def _inspect_run(run_dir: Path) -> Dict[str, Any]:
+    evidence = analyze_autoware_evidence_run_dir(run_dir)
     carla_video = run_dir / "video" / "dual_cam" / "demo_third_person.mp4"
     rviz_video = run_dir / "video" / "rviz" / "autoware_rviz.mp4"
     rosbag_dir = run_dir / "rosbag2" / "autoware_demo"
@@ -60,6 +63,12 @@ def _inspect_run(run_dir: Path) -> Dict[str, Any]:
         "run_dir": str(run_dir),
         "status": status,
         "checks": checks,
+        "acceptance_gate": {
+            "schema_version": evidence.get("schema_version"),
+            "artifact_completeness_status": evidence.get("artifact_completeness_status"),
+            "can_compare_with_apollo": evidence.get("can_compare_with_apollo"),
+            "missing_artifacts": evidence.get("missing_artifacts") or [],
+        },
         "artifacts": {
             "carla_video": str(carla_video),
             "rviz_video": str(rviz_video),

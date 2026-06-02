@@ -1,0 +1,9 @@
+{
+  "run_id": "autoware_demo_recording",
+  "scenario_id": "lane_keep_097",
+  "scenario_class": "lane_keep",
+  "route_id": "lane097",
+  "metrics": {
+    "route_completion": 0.0
+  }
+}

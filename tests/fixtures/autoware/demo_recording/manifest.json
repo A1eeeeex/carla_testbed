@@ -1,0 +1,16 @@
+{
+  "backend": "autoware",
+  "duration_s": 30,
+  "route_id": "lane097",
+  "scenario_class": "lane_keep",
+  "scenario_id": "lane_keep_097",
+  "record": {
+    "rosbag": {
+      "required_topics": [
+        "/clock",
+        "/tf",
+        "/tf_static"
+      ]
+    }
+  }
+}
