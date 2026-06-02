@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# LEGACY / OPERATIONAL HELPER: retained for historical Town01 review pack generation.
+# Do not add new platform logic here; move reusable code into carla_testbed.analysis report writers.
+# Migration target: carla_testbed.analysis report writers.
 from __future__ import annotations
 
 import argparse

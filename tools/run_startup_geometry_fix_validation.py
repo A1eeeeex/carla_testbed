@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# LEGACY / OPERATIONAL HELPER: retained for historical startup geometry fix validation.
+# Do not add new platform logic here; move reusable code into carla_testbed.analysis.
+# Migration target: carla_testbed.analysis.route_start_alignment.
 from __future__ import annotations
 
 import argparse

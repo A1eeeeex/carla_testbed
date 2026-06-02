@@ -51,3 +51,13 @@ def test_record_package_lightweight_import_does_not_import_carla() -> None:
 
     assert "carla" not in sys.modules
     assert record.ROUTE_CURVE_P0_FIELDS
+
+
+def test_runner_and_sim_package_imports_do_not_import_carla() -> None:
+    sys.modules.pop("carla", None)
+    runner = importlib.import_module("carla_testbed.runner")
+    sim = importlib.import_module("carla_testbed.sim")
+
+    assert "carla" not in sys.modules
+    assert runner.FrameContext
+    assert "tick_world" in sim.__all__

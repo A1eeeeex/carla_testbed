@@ -40,8 +40,10 @@ markers = [
     "unit: fast tests that do not require live CARLA/Apollo services",
     "carla: requires a live CARLA simulator or CARLA Python wheel",
     "apollo: requires Apollo/CyberRT runtime",
+    "autoware: requires Autoware/ROS2 runtime",
     "integration: requires external simulator/runtime services",
     "smoke: lightweight executable smoke checks",
+    "local: local-machine checks that are not expected to run in CI",
 ]
 testpaths = ["tests"]
 

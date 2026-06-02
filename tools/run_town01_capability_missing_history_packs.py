@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# LEGACY / OPERATIONAL HELPER: retained for historical Town01 evidence pack recovery.
+# Do not add new platform logic here; move reusable code into carla_testbed.analysis or carla_testbed.record.
+# Migration target: carla_testbed.analysis and carla_testbed.record.
 from __future__ import annotations
 
 import argparse

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# LEGACY / OPERATIONAL HELPER: retained for historical Town01 transport A/B orchestration.
+# Do not add new platform logic here; move reusable code into carla_testbed.experiments or analysis modules.
+# Migration target: carla_testbed.experiments.ab_runner and carla_testbed.analysis.transport_ab.
 from __future__ import annotations
 
 import argparse

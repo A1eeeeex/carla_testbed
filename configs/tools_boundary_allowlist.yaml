@@ -1,0 +1,126 @@
+schema_version: tools_boundary_allowlist.v1
+description: >
+  Existing tools/run_*.py scripts that are retained as legacy or operational
+  helpers. They may remain runnable, but new platform logic should move into
+  carla_testbed package modules instead of growing these files.
+entries:
+  - path: tools/run_apollo_actuator_semantic_suite.py
+    reason: Historical Apollo/CARLA actuator semantic online suite.
+    status: legacy
+    migration_target: carla_testbed.analysis.control_attribution and carla_testbed.calibration
+    allowed_to_grow: false
+  - path: tools/run_apollo_control_replay_validation.py
+    reason: Historical Apollo control replay validation orchestration.
+    status: legacy
+    migration_target: carla_testbed.analysis.control_health and carla_testbed.calibration
+    allowed_to_grow: false
+  - path: tools/run_apollo_control_runtime_smoke.py
+    reason: Local Apollo/CyberRT runtime smoke helper with runtime-specific setup.
+    status: operational_helper
+    migration_target: carla_testbed.adapters.apollo runtime diagnostics
+    allowed_to_grow: false
+  - path: tools/run_apollo_lateral_regression.py
+    reason: Historical Apollo lateral regression wrapper.
+    status: legacy
+    migration_target: carla_testbed.analysis.apollo_lateral_semantics
+    allowed_to_grow: false
+  - path: tools/run_baguang_followstop_300m.py
+    reason: Local Baguang CARLA follow-stop helper that imports CARLA lazily.
+    status: operational_helper
+    migration_target: carla_testbed.experiments follow-stop scenario runner
+    allowed_to_grow: false
+  - path: tools/run_calibration_pipeline_regression.py
+    reason: Historical calibration regression wrapper.
+    status: legacy
+    migration_target: carla_testbed.calibration report and gate modules
+    allowed_to_grow: false
+  - path: tools/run_dreamview_recording_shortfix_regression.py
+    reason: Historical Dreamview recording regression helper.
+    status: legacy
+    migration_target: carla_testbed.record and carla_testbed.adapters.apollo recording helpers
+    allowed_to_grow: false
+  - path: tools/run_stage6_reference_line_provider.py
+    reason: Historical Apollo reference-line provider validation helper.
+    status: legacy
+    migration_target: carla_testbed.analysis.apollo_lateral_semantics
+    allowed_to_grow: false
+  - path: tools/run_startup_geometry_fix_validation.py
+    reason: Historical startup geometry fix validation wrapper.
+    status: legacy
+    migration_target: carla_testbed.analysis.route_start_alignment
+    allowed_to_grow: false
+  - path: tools/run_startup_geometry_validation.py
+    reason: Historical startup geometry validation wrapper.
+    status: legacy
+    migration_target: carla_testbed.analysis.route_start_alignment
+    allowed_to_grow: false
+  - path: tools/run_town01_capability_missing_history_packs.py
+    reason: Historical Town01 artifact collection helper.
+    status: legacy
+    migration_target: carla_testbed.analysis and carla_testbed.record
+    allowed_to_grow: false
+  - path: tools/run_town01_capability_online_chain.py
+    reason: Historical Town01 online chain orchestration.
+    status: legacy
+    migration_target: carla_testbed.experiments natural driving and A/B runners
+    allowed_to_grow: false
+  - path: tools/run_town01_capability_online_pack.py
+    reason: Historical Town01 online evidence pack helper.
+    status: legacy
+    migration_target: carla_testbed.record artifact store and carla_testbed.analysis
+    allowed_to_grow: false
+  - path: tools/run_town01_capability_review_packs.py
+    reason: Historical Town01 review pack helper.
+    status: legacy
+    migration_target: carla_testbed.analysis report writers
+    allowed_to_grow: false
+  - path: tools/run_town01_demo_showcase.py
+    reason: Historical demo showcase orchestration.
+    status: legacy
+    migration_target: carla_testbed.record demo recording helpers
+    allowed_to_grow: false
+  - path: tools/run_town01_direct_curve_pair_recovery_retry.py
+    reason: Historical direct curve pair retry orchestration.
+    status: legacy
+    migration_target: carla_testbed.experiments AB runner and route-health analyzers
+    allowed_to_grow: false
+  - path: tools/run_town01_direct_curve_recovery_retry.py
+    reason: Historical direct curve recovery retry orchestration.
+    status: legacy
+    migration_target: carla_testbed.experiments AB runner and route-health analyzers
+    allowed_to_grow: false
+  - path: tools/run_town01_goal_offline_audit.py
+    reason: Historical Town01 goal offline audit wrapper.
+    status: legacy
+    migration_target: carla_testbed.analysis town01 goal audit modules
+    allowed_to_grow: false
+  - path: tools/run_town01_goal_online_runbook.py
+    reason: Historical Town01 online runbook wrapper.
+    status: legacy
+    migration_target: carla_testbed.experiments natural driving runner
+    allowed_to_grow: false
+  - path: tools/run_town01_goal_sequence.py
+    reason: Historical Town01 goal sequence wrapper.
+    status: legacy
+    migration_target: carla_testbed.experiments natural driving runner
+    allowed_to_grow: false
+  - path: tools/run_town01_route_health.py
+    reason: Historical Town01 online route-health orchestrator.
+    status: legacy
+    migration_target: carla_testbed.analysis.route_health_report and carla_testbed.experiments
+    allowed_to_grow: false
+  - path: tools/run_town01_transport_ab.py
+    reason: Historical Town01 transport A/B orchestration.
+    status: legacy
+    migration_target: carla_testbed.experiments.ab_runner and carla_testbed.analysis.transport_ab
+    allowed_to_grow: false
+  - path: tools/run_unified_calibration_pipeline.py
+    reason: Historical unified calibration orchestration.
+    status: legacy
+    migration_target: carla_testbed.calibration profile and report pipeline
+    allowed_to_grow: false
+  - path: tools/run_unified_calibration_regression.py
+    reason: Historical calibration regression wrapper.
+    status: legacy
+    migration_target: carla_testbed.calibration report pipeline
+    allowed_to_grow: false

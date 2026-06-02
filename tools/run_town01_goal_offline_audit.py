@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# LEGACY / OPERATIONAL HELPER: retained for historical Town01 goal offline audit.
+# Do not add new platform logic here; move reusable code into carla_testbed.analysis.
+# Migration target: carla_testbed.analysis town01 goal audit modules.
 from __future__ import annotations
 
 import argparse

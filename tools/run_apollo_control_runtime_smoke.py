@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# OPERATIONAL HELPER: local Apollo/CyberRT smoke probe, not a platform architecture layer.
+# Do not add new platform logic here; move reusable code into carla_testbed.adapters.apollo diagnostics.
+# Migration target: carla_testbed.adapters.apollo runtime diagnostics.
 """Run a minimal Apollo control runtime smoke inside the Apollo container.
 
 This tool is intentionally narrow: it starts only the control component DAG

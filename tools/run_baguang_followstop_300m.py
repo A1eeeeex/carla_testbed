@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# OPERATIONAL HELPER: local Baguang follow-stop runner with CARLA runtime access.
+# Do not add new platform logic here; move reusable code into carla_testbed.experiments.
+# Migration target: carla_testbed.experiments follow-stop scenario runner.
 """Spawn a 300 m follow-stop scene on straight_road_for_baguang.
 
 This is a thin CARLA API tool for validating the imported RoadRunner map before

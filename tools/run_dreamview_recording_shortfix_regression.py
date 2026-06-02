@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# LEGACY / OPERATIONAL HELPER: retained for historical Dreamview recording regression.
+# Do not add new platform logic here; move reusable code into carla_testbed.record or adapters.
+# Migration target: carla_testbed.record and carla_testbed.adapters.apollo recording helpers.
 from __future__ import annotations
 
 import io

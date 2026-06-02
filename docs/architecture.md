@@ -46,6 +46,11 @@ priority target.
 | `examples/` | Lightweight examples and legacy demo wrappers. | Examples should call platform APIs, not become platform code. |
 | `tools/` | Operational helpers, regressions, batch runners, analysis scripts. | Not a canonical architecture layer. |
 
+See `docs/tools_boundary.md` for the enforced rule: new reusable logic belongs
+in `carla_testbed.*` package modules, while `tools/run_*.py` remains a thin
+CLI/orchestration surface. Historical large scripts are listed in
+`configs/tools_boundary_allowlist.yaml` and are not allowed to grow.
+
 ## Dependency Direction
 
 The intended direction is:

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# LEGACY / OPERATIONAL HELPER: retained for historical Town01 demo showcase orchestration.
+# Do not add new platform logic here; move reusable code into carla_testbed.record or experiments modules.
+# Migration target: carla_testbed.record demo recording helpers.
 from __future__ import annotations
 
 import argparse

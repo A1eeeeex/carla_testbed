@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# LEGACY / OPERATIONAL HELPER: retained for historical Apollo actuator semantic runs.
+# Do not add new platform logic here; move reusable code into carla_testbed.analysis or carla_testbed.calibration.
+# Migration target: carla_testbed.analysis.control_attribution and carla_testbed.calibration.
 from __future__ import annotations
 
 import argparse

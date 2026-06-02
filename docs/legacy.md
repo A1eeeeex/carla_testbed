@@ -29,6 +29,11 @@ The supported work areas are:
 | `tools/run_*.py` | operational helpers | regressions, batch runs, analysis, demos | core platform abstractions or new public APIs |
 | Autoware configs/adapters | legacy experimental | preserving compatibility and old experiments | current equal-priority platform direction |
 
+Large historical `tools/run_*.py` files are tracked in
+`configs/tools_boundary_allowlist.yaml`. They should keep their `LEGACY` or
+`OPERATIONAL HELPER` header and should not receive new platform logic. See
+`docs/tools_boundary.md`.
+
 ## Recommended Runtime Shape
 
 Current canonical no-runtime commands:

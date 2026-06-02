@@ -4,8 +4,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
-from .carla_client import CarlaClientManager
-
 
 AttemptCallback = Callable[[str, Dict[str, Any]], None]
 
@@ -36,6 +34,8 @@ def create_client_with_retry(
     root: Any = None,
     attempt_callback: Optional[AttemptCallback] = None,
 ) -> Any:
+    from .carla_client import CarlaClientManager
+
     last_exc: Optional[Exception] = None
     attempts = max(1, int(attempts))
     for attempt in range(1, attempts + 1):

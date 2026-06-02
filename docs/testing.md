@@ -8,7 +8,7 @@ server, Apollo Docker, CyberRT, ROS2 daemon, GPU rendering, or Dreamview.
 Use this command for normal pull-request checks:
 
 ```bash
-python -m pytest -m "not carla and not apollo and not integration" -q
+python -m pytest -m "not carla and not apollo and not autoware and not integration" -q
 ```
 
 This includes unit tests, config/schema tests, contract tests, mock backend
@@ -18,7 +18,7 @@ Use the project conda environment when running locally on the development
 machine:
 
 ```bash
-conda run -n carla16 python -m pytest -m "not carla and not apollo and not integration" -q
+conda run -n carla16 python -m pytest -m "not carla and not apollo and not autoware and not integration" -q
 ```
 
 ## Test Categories
@@ -94,7 +94,20 @@ planning, or control materialization.
 Real Apollo runtime checks must be marked `apollo` or run manually outside the
 default CI path.
 
-### 5. Local Heavy Integration Tests
+### 5. Autoware Runtime Tests
+
+Autoware tests that require ROS2 graph state, Autoware Docker containers, RViz2,
+rosbag2, or a running bridge must be marked `autoware` or `integration`.
+Offline Autoware config/schema/recorder command-construction tests can remain
+in the default CI set.
+
+Example local shape:
+
+```bash
+python -m pytest -m autoware -q
+```
+
+### 6. Local Heavy Integration Tests
 
 Tests that require Apollo/CyberRT, ROS2 graph state, Docker containers, or
 long-running CARLA sessions must be marked `apollo` or `integration`, and should
@@ -114,8 +127,10 @@ Only run this on a machine with the full runtime stack configured.
 - `smoke`: lightweight executable smoke checks.
 - `carla`: requires CARLA simulator or CARLA Python runtime.
 - `apollo`: requires Apollo/CyberRT runtime.
+- `autoware`: requires Autoware/ROS2 runtime.
 - `integration`: requires external services, long-running processes, or full
   simulator/backend orchestration.
+- `local`: local-machine checks that are not expected to run in CI.
 
 `tests/conftest.py` automatically marks files under `tests/unit/` as `unit`.
 

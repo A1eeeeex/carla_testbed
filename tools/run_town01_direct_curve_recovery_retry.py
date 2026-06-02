@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# LEGACY / OPERATIONAL HELPER: retained for historical direct curve recovery retry runs.
+# Do not add new platform logic here; move reusable code into carla_testbed.experiments or analysis.
+# Migration target: carla_testbed.experiments AB runner and route-health analyzers.
 from __future__ import annotations
 
 import argparse

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# LEGACY / OPERATIONAL HELPER: retained for historical Town01 online route-health orchestration.
+# Do not add new platform logic here; move reusable code into carla_testbed.analysis or experiments modules.
+# Migration target: carla_testbed.analysis.route_health_report and carla_testbed.experiments.
 from __future__ import annotations
 
 import argparse
@@ -39,7 +42,6 @@ from carla_testbed.utils.town01_route_health import (
     write_platform_report,
 )
 from carla_testbed.config.rig_loader import apply_overrides, load_rig_file
-from carla_testbed.sim.bringup import get_world_with_retry, load_world_with_retry
 
 _ROS_SOURCED_ENV: Dict[str, str] | None = None
 _DOTENV_CACHE: Dict[str, str] | None = None
@@ -973,6 +975,8 @@ def _connect_world(
     def _load_town01_world(client, *, previous_timeout: float, deadline_s: float):
         nonlocal last_err
         try:
+            from carla_testbed.sim.bringup import load_world_with_retry
+
             return load_world_with_retry(
                 client,
                 "Town01",
@@ -1010,6 +1014,8 @@ def _connect_world(
 
     world = None
     try:
+        from carla_testbed.sim.bringup import get_world_with_retry
+
         world = get_world_with_retry(
             client,
             attempts=GET_WORLD_RETRY_ATTEMPTS,
