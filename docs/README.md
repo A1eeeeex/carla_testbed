@@ -41,13 +41,14 @@
 12. `town01_route_health.md`
 13. `carla_direct_ab.md`
 14. `calibration_pipeline.md`
-15. `run_artifacts.md`
-16. `testing.md`
-17. `legacy.md`
-18. `dual_machine_workflow.md`
-19. `migration_followstop_playbook.md`
-20. `apollo10_gt_sim.md`
-21. `gt_truth_simulation_pipeline.md`
+15. `autoware_recording.md`
+16. `run_artifacts.md`
+17. `testing.md`
+18. `legacy.md`
+19. `dual_machine_workflow.md`
+20. `migration_followstop_playbook.md`
+21. `apollo10_gt_sim.md`
+22. `gt_truth_simulation_pipeline.md`
 
 ## 主要文档分组
 - 展示与总览:
@@ -80,6 +81,7 @@
   - `town01_route_health.md`
   - `carla_direct_ab.md`
   - `calibration_pipeline.md`
+  - `autoware_recording.md`
   - `apollo10_gt_sim.md`
   - `gt_truth_simulation_pipeline.md`
   - `gt_followstop_apollo_baseline.md`

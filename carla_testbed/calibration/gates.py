@@ -46,7 +46,7 @@ def _num(value: Any) -> float | None:
 def _gate_status(comparison_status: str | None) -> str:
     if comparison_status == "candidate_positive":
         return "pass"
-    if comparison_status == "candidate_degraded":
+    if comparison_status in {"candidate_negative", "candidate_degraded"}:
         return "fail"
     if comparison_status:
         return str(comparison_status)

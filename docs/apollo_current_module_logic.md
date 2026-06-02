@@ -713,7 +713,9 @@ Apollo throttle / brake / steer
 - `actuator_mapping_mode = legacy` 仍在使用；
 - 不要直接改 `steer_scale`；
 - 不要默认启用 physical mapping；
-- calibration 只能作为 control-actuation evidence，不能自动 promotion。
+- calibration 只能作为 control-actuation evidence，不能自动 promotion；任何
+  calibration promotion 都必须同时引用 `calibration_report.json` 和
+  097/217/031 no-regression gates。
 
 典型证据：
 

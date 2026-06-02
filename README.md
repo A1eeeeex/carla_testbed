@@ -112,6 +112,8 @@ New core behavior should be shaped around the harness, config schema, backend co
   - `ros2_gt` vs `carla_direct` A/B manifest、dry-run matrix、multi-metric verdict 和本地验证边界。
 - `docs/calibration_pipeline.md`
   - control-actuation calibration profile/report；只解释 throttle/brake/steer response、latency 和 no-regression gates。
+- `docs/autoware_recording.md`
+  - Autoware demo recording evidence normalization；RViz/rosbag/CARLA video are operator evidence and must be paired with route/channel/control/natural-driving reports before Apollo comparison.
 - `docs/run_artifacts.md`
   - run output 目录、manifest、resolved config、summary、events、timeseries。
 - `docs/testing.md`
@@ -139,6 +141,7 @@ New core behavior should be shaped around the harness, config schema, backend co
 - `docs/town01_route_health.md`
 - `docs/carla_direct_ab.md`
 - `docs/calibration_pipeline.md`
+- `docs/autoware_recording.md`
 - `docs/run_artifacts.md`
 - `docs/testing.md`
 - `docs/project_showcase.md`
