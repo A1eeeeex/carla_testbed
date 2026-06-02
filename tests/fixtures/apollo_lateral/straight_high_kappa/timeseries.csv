@@ -1,0 +1,4 @@
+run_id,route_id,backend,sim_time,route_curvature,reference_lane_curvature,apollo_planning_first_kappa,apollo_target_point_kappa,apollo_steer_raw,bridge_steer_mapped,carla_steer_applied,ego_yaw_rate,cross_track_error,heading_error,apollo_matched_point_distance,apollo_target_point_distance,steer_scale,steering_sign
+straight_high_kappa,lane_keep_097,carla_direct,0.00,0.000,0.000,0.120,0.000,0.20,0.050,0.050,0.012,0.02,0.010,0.20,0.50,0.25,1
+straight_high_kappa,lane_keep_097,carla_direct,0.05,0.000,0.000,0.110,0.000,0.16,0.040,0.040,0.010,0.02,0.010,0.20,0.55,0.25,1
+straight_high_kappa,lane_keep_097,carla_direct,0.10,0.000,0.000,0.100,0.000,0.12,0.030,0.030,0.008,0.03,0.012,0.25,0.60,0.25,1

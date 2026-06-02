@@ -1,0 +1,21 @@
+{
+  "schema_version": "route_health.v1",
+  "route_id": "lane_keep_097",
+  "map_name": "Town01",
+  "source": "fixture",
+  "route_geometry": {
+    "point_count": 3,
+    "length_m": 20.0,
+    "curvature": {
+      "mean_abs": 0.0,
+      "p95_abs": 0.0,
+      "max_abs": 0.0
+    }
+  },
+  "missing_fields": [],
+  "missing_inputs": [],
+  "warnings": [],
+  "verdict": {
+    "status": "pass"
+  }
+}

@@ -98,11 +98,19 @@ def analyze_control_health_run_dir(
             "cyber_bridge_stats.json",
         ],
     )
+    control_attribution_path = _find_first(
+        root,
+        [
+            "analysis/control_attribution/control_attribution_report.json",
+            "control_attribution_report.json",
+        ],
+    )
     summary = _read_json(summary_path)
     manifest = _read_json(manifest_path)
     control_handoff_debug = _read_json(control_handoff_path) if control_handoff_path else {}
     planning_debug = _read_json(planning_summary_path) if planning_summary_path else {}
     cyber_bridge_stats = _read_json(cyber_bridge_stats_path) if cyber_bridge_stats_path else {}
+    control_attribution = _read_json(control_attribution_path) if control_attribution_path else {}
     rows = _read_rows(timeseries_path)
     control_bridge_log = _analyze_control_bridge_log(control_bridge_log_path)
     control_decode_debug = _analyze_control_decode_debug(control_decode_debug_path)
@@ -180,6 +188,7 @@ def analyze_control_health_run_dir(
         "control_bridge_log": control_bridge_log,
         "control_decode_debug": control_decode_debug,
         "direct_control_apply_log": direct_control_apply,
+        "control_attribution": _control_attribution_summary(control_attribution, control_attribution_path),
     }
     missing_fields = _missing_control_fields(rows)
     external_control_evidence_available = _external_control_evidence_available(
@@ -229,11 +238,30 @@ def analyze_control_health_run_dir(
             "control_handoff_path": str(control_handoff_path) if control_handoff_path else None,
             "planning_summary_path": str(planning_summary_path) if planning_summary_path else None,
             "cyber_bridge_stats_path": str(cyber_bridge_stats_path) if cyber_bridge_stats_path else None,
+            "control_attribution_path": str(control_attribution_path) if control_attribution_path else None,
         },
         "interpretation_boundary": (
             "Control-health report checks handoff and raw/mapped/applied command evidence only. "
             "It does not prove Apollo planning quality or full perception/localization."
         ),
+    }
+
+
+def _control_attribution_summary(
+    report: Mapping[str, Any],
+    path: Path | None,
+) -> dict[str, Any]:
+    attribution = report.get("attribution") if isinstance(report.get("attribution"), Mapping) else {}
+    verdict = report.get("verdict") if isinstance(report.get("verdict"), Mapping) else {}
+    return {
+        "available": bool(report),
+        "path": str(path) if path else None,
+        "status": verdict.get("status"),
+        "dominant_breakpoint": attribution.get("dominant_breakpoint"),
+        "raw_control_available": report.get("raw_control_available"),
+        "mapped_control_available": report.get("mapped_control_available"),
+        "applied_control_available": report.get("applied_control_available"),
+        "vehicle_response_available": report.get("vehicle_response_available"),
     }
 
 

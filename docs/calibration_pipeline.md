@@ -153,6 +153,35 @@ explain evidence, but it must not update the mainline config.
 - Missing gate results set `promotion_allowed=false` and list all missing gates.
 - Synthetic fixture success is not real calibration evidence.
 
+## Control-Chain Attribution
+
+Before changing `steer_scale`, enabling physical mapping, or promoting a
+calibration recommendation, collect control-chain attribution evidence:
+
+```bash
+python tools/analyze_control_attribution.py \
+  --timeseries runs/<run_id>/timeseries.csv \
+  --out runs/<run_id>/analysis/control_attribution
+```
+
+Outputs:
+
+- `control_attribution_report.json`
+- `control_attribution_summary.md`
+
+The report separates four boundaries:
+
+- source control semantics: Apollo/raw control fields;
+- bridge mapping: raw to mapped command conversion;
+- CARLA apply: mapped command to CARLA-applied command;
+- vehicle response: applied steer to observed yaw-rate response.
+
+This is evidence, not a tuning mechanism. A source-control-semantics breakpoint
+does not prove Apollo algorithm limitation; route, reference-line, matched
+point, and target-point semantics must still be checked. A bridge or vehicle
+response breakpoint is a reason to inspect mapping, latency, or actuation, not
+permission to automatically change the mainline config.
+
 ## CI-Friendly Tests
 
 These tests do not require CARLA, Apollo, ROS2, or CyberRT:
@@ -161,6 +190,7 @@ These tests do not require CARLA, Apollo, ROS2, or CyberRT:
 python -m pytest \
   tests/test_calibration_profile.py \
   tests/test_calibration_report.py \
+  tests/test_control_attribution.py \
   -q
 ```
 

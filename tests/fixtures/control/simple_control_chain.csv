@@ -1,0 +1,5 @@
+run_id,route_id,backend,sim_time,apollo_steer_raw,bridge_steer_mapped,carla_steer_applied,ego_yaw_rate,throttle_raw,throttle_mapped,throttle_applied,brake_raw,brake_mapped,brake_applied,control_latency_ms,steer_scale,steering_sign,actuator_mapping_mode,calibration_profile_id
+simple_control_chain,lane_keep_097,carla_direct,0.00,0.00,0.000,0.000,0.000,0.10,0.10,0.10,0.00,0.00,0.00,45,0.25,1,legacy,control_actuation_draft
+simple_control_chain,lane_keep_097,carla_direct,0.05,0.20,0.050,0.050,0.010,0.20,0.20,0.20,0.00,0.00,0.00,48,0.25,1,legacy,control_actuation_draft
+simple_control_chain,lane_keep_097,carla_direct,0.10,0.24,0.060,0.060,0.012,0.25,0.25,0.25,0.00,0.00,0.00,47,0.25,1,legacy,control_actuation_draft
+simple_control_chain,lane_keep_097,carla_direct,0.15,0.16,0.040,0.040,0.009,0.00,0.00,0.00,0.10,0.10,0.10,44,0.25,1,legacy,control_actuation_draft
