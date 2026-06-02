@@ -216,6 +216,8 @@ def test_candidate_control_health_failure_blocks_positive() -> None:
         "planning_hz": 10.0,
         "carla_applied_control_hz": 20.0,
         "localization_hz": 20.0,
+        "chassis_hz": 20.0,
+        "route_hard_gate_eligible": True,
         "failure_reason": "success",
     }
     candidate = {
@@ -272,6 +274,77 @@ def test_direct_transport_contract_mismatch_blocks_positive(tmp_path: Path) -> N
     comparison = _comparison(report, "lane097")
     assert comparison["status"] == "insufficient_data"
     assert any("direct transport contract mismatch" in reason for reason in comparison["reasons"])
+
+
+def test_assist_mismatch_blocks_ab_candidate_positive() -> None:
+    baseline = {
+        "run_id": "baseline_lane097",
+        "route_id": "lane097",
+        "backend": "ros2_gt",
+        "duration_s": 30.0,
+        "run_status": "success",
+        "return_code": None,
+        "artifact_complete": True,
+        "route_completion": 0.7,
+        "lateral_error_p95_m": 0.5,
+        "heading_error_p95_rad": 0.02,
+        "planning_hz": 10.0,
+        "carla_applied_control_hz": 20.0,
+        "localization_hz": 20.0,
+        "chassis_hz": 20.0,
+        "route_hard_gate_eligible": True,
+        "failure_reason": "success",
+        "active_assists": [],
+        "blocking_assists": [],
+    }
+    candidate = {
+        **baseline,
+        "run_id": "candidate_lane097",
+        "backend": "carla_direct",
+        "active_assists": ["carla_direct_transport", "straight_lane_lateral_stabilizer"],
+        "blocking_assists": ["straight_lane_lateral_stabilizer"],
+        "direct_transport_contract_status": "aligned",
+    }
+
+    comparison = _compare_pair(baseline, candidate)
+
+    assert comparison["status"] == "not_comparable"
+    assert "assist mismatch blocks candidate_positive" in comparison["reasons"]
+
+
+def test_direct_transport_assist_alone_does_not_block_ab_positive() -> None:
+    baseline = {
+        "run_id": "baseline_lane097",
+        "route_id": "lane097",
+        "backend": "ros2_gt",
+        "duration_s": 30.0,
+        "run_status": "success",
+        "return_code": None,
+        "artifact_complete": True,
+        "route_completion": 0.7,
+        "lateral_error_p95_m": 0.5,
+        "heading_error_p95_rad": 0.02,
+        "planning_hz": 10.0,
+        "carla_applied_control_hz": 20.0,
+        "localization_hz": 20.0,
+        "chassis_hz": 20.0,
+        "route_hard_gate_eligible": True,
+        "failure_reason": "success",
+        "active_assists": [],
+        "blocking_assists": [],
+    }
+    candidate = {
+        **baseline,
+        "run_id": "candidate_lane097",
+        "backend": "carla_direct",
+        "active_assists": ["carla_direct_transport"],
+        "blocking_assists": [],
+        "direct_transport_contract_status": "aligned",
+    }
+
+    comparison = _compare_pair(baseline, candidate)
+
+    assert comparison["status"] == "candidate_positive"
 
 
 def test_direct_stale_policy_can_be_inferred_from_counts(tmp_path: Path) -> None:
@@ -408,11 +481,71 @@ def test_high_lateral_error_is_degraded_without_blocking_other_routes() -> None:
     ]
 
     comparison = _comparison(report, "curve217")
-    assert comparison["status"] == "candidate_degraded"
-    assert any("lateral_error_p95_m degraded" in reason for reason in comparison["reasons"])
+    assert comparison["status"] == "insufficient_data"
+    assert any("missing required multi-metric evidence" in reason for reason in comparison["reasons"])
 
     assert _comparison(report, "lane097")["status"] == "candidate_positive"
-    assert report["verdict"]["status"] == "candidate_degraded"
+    assert report["verdict"]["status"] == "inconclusive"
+
+
+def test_lateral_regression_is_candidate_negative() -> None:
+    baseline = {
+        "run_id": "baseline_lane097",
+        "route_id": "lane097",
+        "backend": "ros2_gt",
+        "duration_s": 30.0,
+        "run_status": "success",
+        "return_code": None,
+        "artifact_complete": True,
+        "route_completion": 0.7,
+        "lateral_error_p95_m": 0.5,
+        "heading_error_p95_rad": 0.02,
+        "planning_hz": 10.0,
+        "carla_applied_control_hz": 20.0,
+        "localization_hz": 20.0,
+        "chassis_hz": 20.0,
+        "route_hard_gate_eligible": True,
+        "failure_reason": "success",
+    }
+    candidate = {
+        **baseline,
+        "run_id": "candidate_lane097",
+        "backend": "carla_direct",
+        "lateral_error_p95_m": 1.0,
+        "direct_transport_contract_status": "aligned",
+    }
+
+    comparison = _compare_pair(baseline, candidate)
+
+    assert comparison["status"] == "candidate_negative"
+    assert "lateral_error_p95_m degraded" in comparison["reasons"]
+
+
+def test_direct_apply_count_alone_cannot_be_candidate_positive() -> None:
+    baseline = {
+        "run_id": "baseline_lane097",
+        "route_id": "lane097",
+        "backend": "ros2_gt",
+        "duration_s": 30.0,
+        "run_status": "success",
+        "return_code": None,
+        "artifact_complete": True,
+        "route_completion": 0.2,
+        "failure_reason": "success",
+    }
+    candidate = {
+        **baseline,
+        "run_id": "candidate_lane097",
+        "backend": "carla_direct",
+        "route_completion": 0.3,
+        "direct_apply_count": 100,
+        "direct_transport_contract_status": "aligned",
+    }
+
+    comparison = _compare_pair(baseline, candidate)
+
+    assert comparison["status"] == "insufficient_data"
+    assert any("missing required multi-metric evidence" in reason for reason in comparison["reasons"])
 
 
 def test_curve_candidate_positive_is_blocked_without_route_curve_p1_gap_evidence() -> None:
@@ -430,6 +563,7 @@ def test_curve_candidate_positive_is_blocked_without_route_curve_p1_gap_evidence
         "planning_hz": 10.0,
         "carla_applied_control_hz": 20.0,
         "localization_hz": 20.0,
+        "chassis_hz": 20.0,
         "failure_reason": "success",
         "route_curve_artifact_gap_status": "pass",
     }
@@ -514,6 +648,8 @@ def test_small_short_window_route_completion_delta_is_tolerated() -> None:
         "planning_hz": 10.0,
         "carla_applied_control_hz": 20.0,
         "localization_hz": 20.0,
+        "chassis_hz": 20.0,
+        "route_hard_gate_eligible": True,
         "failure_reason": "success",
     }
     candidate = {
@@ -547,6 +683,8 @@ def test_large_route_completion_delta_still_degrades_candidate() -> None:
         "planning_hz": 10.0,
         "carla_applied_control_hz": 20.0,
         "localization_hz": 20.0,
+        "chassis_hz": 20.0,
+        "route_hard_gate_eligible": True,
         "failure_reason": "success",
     }
     candidate = {
@@ -559,7 +697,7 @@ def test_large_route_completion_delta_still_degrades_candidate() -> None:
 
     comparison = _compare_pair(baseline, candidate)
 
-    assert comparison["status"] == "candidate_degraded"
+    assert comparison["status"] == "candidate_negative"
     assert "route_completion regressed" in comparison["reasons"]
 
 
@@ -618,7 +756,7 @@ def test_cli_writes_ab_report_files(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["verdict"]["status"] == "candidate_degraded"
+    assert payload["verdict"]["status"] == "inconclusive"
     assert (tmp_path / "ab_report.json").is_file()
     assert (tmp_path / "ab_report.csv").is_file()
     summary = (tmp_path / "ab_report_summary.md").read_text(encoding="utf-8")

@@ -7,6 +7,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any, Mapping, Sequence
 
+from carla_testbed.analysis.assist_ledger import NON_BLOCKING_ASSISTS, build_assist_ledger, read_assist_ledger_from_run_dir
 from carla_testbed.experiments.ab_manifest import ABManifest, ABRunRecord, load_ab_manifest
 
 from .failure_reason import classify_failure
@@ -26,11 +27,17 @@ AB_REPORT_CSV_FIELDS = [
     "transport_mode",
     "bridge_mode",
     "backend_config_path",
+    "active_assists",
+    "blocking_assists",
+    "can_claim_unassisted",
     "duration_s",
     "artifact_dir",
     "actual_run_dir",
     "summary_path",
     "route_health_path",
+    "route_source",
+    "route_evidence_level",
+    "route_hard_gate_eligible",
     "route_curve_artifact_gap_path",
     "route_curve_artifact_gap_source",
     "route_curve_artifact_gap_status",
@@ -101,6 +108,7 @@ AB_REPORT_CSV_FIELDS = [
     "carla_applied_control_hz",
     "planning_hz",
     "localization_hz",
+    "chassis_hz",
     "control_latency_p95_ms",
     "brake_throttle_conflict_frames",
     "stop_ratio",
@@ -918,6 +926,14 @@ def _run_result(record: ABRunRecord, *, manifest_dir: Path) -> dict[str, Any]:
     channel_health = _read_json(channel_health_path)
     direct_stats = _read_json(_first_recursive(run_dir, "direct_bridge_stats.json"))
     cyber_bridge_stats = _read_json(_first_recursive(run_dir, "cyber_bridge_stats.json"))
+    assist_ledger = read_assist_ledger_from_run_dir(run_dir) if run_dir is not None else build_assist_ledger()
+    if record.backend == "carla_direct" and "carla_direct_transport" not in set(assist_ledger.get("active_assists") or []):
+        assist_ledger = build_assist_ledger(
+            config=None,
+            bridge_stats={**direct_stats, **cyber_bridge_stats},
+            summary=summary,
+            manifest={"backend": record.backend, "assist_ledger": assist_ledger},
+        )
     steering_trace = _steering_normalization_trace(run_dir)
     route_health_source = "route_health_file" if route_health else None
     if not route_health and isinstance(summary.get("route_health"), dict):
@@ -1066,11 +1082,19 @@ def _run_result(record: ABRunRecord, *, manifest_dir: Path) -> dict[str, Any]:
         "transport_mode": record.transport_mode,
         "bridge_mode": record.bridge_mode,
         "backend_config_path": record.backend_config_path,
+        "assist_ledger": assist_ledger,
+        "active_assists": list(assist_ledger.get("active_assists") or []),
+        "blocking_assists": list(assist_ledger.get("blocking_assists") or []),
+        "non_blocking_assists": list(assist_ledger.get("non_blocking_assists") or []),
+        "can_claim_unassisted": assist_ledger.get("can_claim_unassisted_natural_driving"),
         "duration_s": record.duration_s,
         "artifact_dir": None if run_dir is None else str(run_dir),
         "actual_run_dir": record.actual_run_dir,
         "summary_path": None if summary_path is None else str(summary_path),
         "route_health_path": None if route_health_path is None else str(route_health_path),
+        "route_source": route_health.get("route_source"),
+        "route_evidence_level": route_health.get("evidence_level"),
+        "route_hard_gate_eligible": route_health.get("hard_gate_eligible"),
         "route_curve_artifact_gap_path": None
         if route_curve_gap_path is None
         else str(route_curve_gap_path),
@@ -1138,6 +1162,8 @@ def _run_result(record: ABRunRecord, *, manifest_dir: Path) -> dict[str, Any]:
         "carla_applied_control_hz": carla_applied_control_hz,
         "planning_hz": planning_hz,
         "localization_hz": localization_hz,
+        "chassis_hz": _count_rate(bridge_chassis_count, bridge_rate_duration)
+        or _rate(rows, duration, "chassis_timestamp", "chassis_available", bool_only=True),
         "control_latency_p95_ms": _percentile(_series(rows, "control_latency_ms"), 0.95),
         "brake_throttle_conflict_frames": sum(
             1
@@ -1179,6 +1205,7 @@ def _compare_pair(
     candidate: dict[str, Any] | None,
     *,
     completion_threshold: float = 0.5,
+    allow_assist_mismatch: bool = False,
 ) -> dict[str, Any]:
     route_id = (candidate or baseline or {}).get("route_id")
     duration_s = (candidate or baseline or {}).get("duration_s")
@@ -1235,6 +1262,27 @@ def _compare_pair(
         ),
     }
     reasons: list[str] = []
+    baseline_blocking = set(str(item) for item in (baseline.get("blocking_assists") or []) if item)
+    candidate_blocking = set(str(item) for item in (candidate.get("blocking_assists") or []) if item)
+    baseline_claim_relevant = set(str(item) for item in (baseline.get("active_assists") or []) if item) - NON_BLOCKING_ASSISTS
+    candidate_claim_relevant = set(str(item) for item in (candidate.get("active_assists") or []) if item) - NON_BLOCKING_ASSISTS
+    assist_mismatch = baseline_blocking != candidate_blocking or baseline_claim_relevant != candidate_claim_relevant
+    if assist_mismatch and not allow_assist_mismatch:
+        return {
+            "route_id": route_id,
+            "duration_s": duration_s,
+            "baseline_run_id": baseline.get("run_id"),
+            "candidate_run_id": candidate.get("run_id"),
+            "status": "not_comparable",
+            "reasons": [
+                "assist mismatch blocks candidate_positive",
+                f"baseline_blocking_assists={sorted(baseline_blocking)}",
+                f"candidate_blocking_assists={sorted(candidate_blocking)}",
+            ],
+            "cadence_comparison": cadence_comparison,
+            "control_apply_comparison": control_apply_comparison,
+            "metric_tolerances": _comparison_tolerances(),
+        }
     baseline_modes = set(str(item) for item in (baseline.get("steering_normalization_modes") or []) if item)
     candidate_modes = set(str(item) for item in (candidate.get("steering_normalization_modes") or []) if item)
     if baseline_modes or candidate_modes:
@@ -1256,11 +1304,18 @@ def _compare_pair(
         "planning_hz",
         "carla_applied_control_hz",
         "localization_hz",
+        "chassis_hz",
     ]
-    if not candidate.get("artifact_complete"):
-        reasons.append("candidate artifact_complete is false")
-    if any(candidate.get(key) is None for key in required_metric_keys):
-        reasons.append("candidate missing required multi-metric evidence")
+    for role, row in (("baseline", baseline), ("candidate", candidate)):
+        if not row.get("artifact_complete"):
+            reasons.append(f"{role} artifact_complete is false")
+        missing_required = [key for key in required_metric_keys if row.get(key) is None]
+        if missing_required:
+            reasons.append(
+                f"{role} missing required multi-metric evidence: {', '.join(missing_required)}"
+            )
+        if route_id in HARD_GATE_ROUTE_IDS and row.get("route_hard_gate_eligible") is not True:
+            reasons.append(f"{role} route_health hard_gate_eligible is not true")
     if candidate.get("failure_reason") in BAD_POSITIVE_FAILURE_REASONS:
         reasons.append(f"candidate failure_reason={candidate.get('failure_reason')}")
     if candidate.get("backend") == "carla_direct" and candidate.get("direct_transport_contract_status") == "mismatch":
@@ -1335,7 +1390,7 @@ def _compare_pair(
             "duration_s": duration_s,
             "baseline_run_id": baseline.get("run_id"),
             "candidate_run_id": candidate.get("run_id"),
-            "status": "candidate_degraded",
+            "status": "candidate_negative",
             "reasons": reasons,
             "cadence_comparison": cadence_comparison,
             "control_apply_comparison": control_apply_comparison,
@@ -1360,11 +1415,13 @@ def _build_comparisons(manifest: ABManifest, run_results: Sequence[dict[str, Any
         key = (str(result.get("route_id")), result.get("duration_s"))
         grouped.setdefault(key, {})[str(result.get("backend"))] = result
     comparisons: list[dict[str, Any]] = []
+    allow_assist_mismatch = any("assist" in str(item).lower() for item in (manifest.allowed_differences or []))
     for (_route_id, _duration), by_backend in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1] or 0)):
         comparisons.append(
             _compare_pair(
                 by_backend.get(manifest.baseline_backend),
                 by_backend.get(manifest.candidate_backend),
+                allow_assist_mismatch=allow_assist_mismatch,
             )
         )
     return comparisons
@@ -1374,7 +1431,7 @@ def _hard_gate_summary(comparisons: Sequence[Mapping[str, Any]]) -> dict[str, An
     by_route = {str(item.get("route_id")): dict(item) for item in comparisons}
     missing: list[str] = []
     positive: list[str] = []
-    degraded: list[str] = []
+    negative: list[str] = []
     insufficient: list[str] = []
     for route_id in HARD_GATE_ROUTE_IDS:
         comparison = by_route.get(route_id)
@@ -1384,11 +1441,11 @@ def _hard_gate_summary(comparisons: Sequence[Mapping[str, Any]]) -> dict[str, An
         status = str(comparison.get("status") or "")
         if status == "candidate_positive":
             positive.append(route_id)
-        elif status == "candidate_degraded":
-            degraded.append(route_id)
+        elif status in {"candidate_negative", "candidate_degraded"}:
+            negative.append(route_id)
         else:
             insufficient.append(route_id)
-    if degraded:
+    if negative:
         status = "hard_gate_fail"
     elif insufficient:
         status = "hard_gate_insufficient_data"
@@ -1401,7 +1458,8 @@ def _hard_gate_summary(comparisons: Sequence[Mapping[str, Any]]) -> dict[str, An
         "expected_routes": list(HARD_GATE_ROUTE_IDS),
         "observed_routes": sorted(set(HARD_GATE_ROUTE_IDS) - set(missing)),
         "positive_routes": positive,
-        "degraded_routes": degraded,
+        "negative_routes": negative,
+        "degraded_routes": negative,
         "insufficient_routes": insufficient,
         "missing_routes": missing,
         "complete": not missing,
@@ -1419,12 +1477,14 @@ def analyze_ab_manifest(manifest_path: str | Path, *, batch_root: str | Path | N
     counts: dict[str, int] = {}
     for comparison in comparisons:
         counts[comparison["status"]] = counts.get(comparison["status"], 0) + 1
-    if counts.get("candidate_degraded"):
-        status = "candidate_degraded"
+    if counts.get("candidate_negative") or counts.get("candidate_degraded"):
+        status = "candidate_negative"
+    elif counts.get("not_comparable"):
+        status = "not_comparable"
     elif counts.get("candidate_positive") and not counts.get("insufficient_data"):
         status = "candidate_positive"
     elif counts.get("candidate_positive"):
-        status = "candidate_inconclusive"
+        status = "inconclusive"
     else:
         status = "insufficient_data"
     return {
@@ -1588,6 +1648,8 @@ def write_ab_report_csv(path: str | Path, report: Mapping[str, Any]) -> None:
         for row in report.get("run_results") or []:
             payload = dict(row)
             payload["missing_fields"] = ";".join(payload.get("missing_fields") or [])
+            payload["active_assists"] = ";".join(payload.get("active_assists") or [])
+            payload["blocking_assists"] = ";".join(payload.get("blocking_assists") or [])
             payload["apollo_channel_health_missing_required_channels"] = ";".join(
                 payload.get("apollo_channel_health_missing_required_channels") or []
             )
@@ -1644,7 +1706,7 @@ def render_ab_report_summary(report: Mapping[str, Any]) -> str:
             [
                 f"- hard_gate_status: `{hard_gate.get('status')}`",
                 f"- hard_gate_positive: `{', '.join(hard_gate.get('positive_routes') or [])}`",
-                f"- hard_gate_degraded: `{', '.join(hard_gate.get('degraded_routes') or [])}`",
+                f"- hard_gate_negative: `{', '.join(hard_gate.get('negative_routes') or hard_gate.get('degraded_routes') or [])}`",
                 f"- hard_gate_insufficient: `{', '.join(hard_gate.get('insufficient_routes') or [])}`",
                 f"- hard_gate_missing: `{', '.join(hard_gate.get('missing_routes') or [])}`",
             ]

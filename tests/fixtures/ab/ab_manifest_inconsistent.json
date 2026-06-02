@@ -42,6 +42,7 @@
     "route_id": "lane097",
     "route_definition_hash": "routehash-placeholder",
     "spawn_pose": {"baseline": {"x": 0.0, "y": 0.0, "yaw": 0.0}, "candidate": {"x": 1.0, "y": 0.0, "yaw": 0.0}},
+    "goal_pose": {"x": 70.0, "y": 0.0, "z": 0.0, "yaw": 0.0},
     "ego_blueprint": "vehicle.lincoln.mkz_2020",
     "vehicle_physics_hash": "phys-placeholder",
     "fixed_delta_seconds": 0.05,
@@ -57,6 +58,7 @@
     "steer_scale": {"baseline": 0.25, "candidate": 0.5},
     "guard_config_hash": "guard-placeholder",
     "calibration_profile_id": "none",
+    "active_assists": {"baseline": [], "candidate": ["carla_direct_transport"]},
     "timeout_policy": "420_ticks_120_post_fail"
   },
   "allowed_differences": ["backend", "transport_mode"],

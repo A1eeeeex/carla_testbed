@@ -61,6 +61,48 @@ def test_must_match_difference_fails() -> None:
     assert any("MUST_MATCH variable differs: steer_scale" in error for error in result.errors)
 
 
+def test_must_match_difference_without_schema_errors_is_not_comparable(tmp_path: Path) -> None:
+    payload = json.loads((FIXTURES / "ab_manifest_valid.json").read_text(encoding="utf-8"))
+    payload["fixed_variables"]["spawn_pose"] = {
+        "baseline": {"x": 0.0, "y": 0.0, "yaw": 0.0},
+        "candidate": {"x": 1.0, "y": 0.0, "yaw": 0.0},
+    }
+    path = tmp_path / "not_comparable.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = check_ab_manifest_file(path)
+
+    assert result.status == "not_comparable"
+    assert any("MUST_MATCH variable differs: spawn_pose" in error for error in result.errors)
+
+
+def test_active_assist_mismatch_in_manifest_is_not_comparable(tmp_path: Path) -> None:
+    payload = json.loads((FIXTURES / "ab_manifest_valid.json").read_text(encoding="utf-8"))
+    payload["fixed_variables"]["active_assists"] = {
+        "baseline": [],
+        "candidate": ["carla_direct_transport", "straight_lane_lateral_stabilizer"],
+    }
+    path = tmp_path / "assist_mismatch.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = check_ab_manifest_file(path)
+
+    assert result.status == "not_comparable"
+    assert any("MUST_MATCH variable differs: active_assists" in error for error in result.errors)
+
+
+def test_missing_must_match_field_is_not_comparable(tmp_path: Path) -> None:
+    payload = json.loads((FIXTURES / "ab_manifest_valid.json").read_text(encoding="utf-8"))
+    payload["fixed_variables"]["route_definition_hash"] = None
+    path = tmp_path / "missing_must_match.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = check_ab_manifest_file(path)
+
+    assert result.status == "not_comparable"
+    assert any("MUST_MATCH variable missing: route_definition_hash" in error for error in result.errors)
+
+
 def test_one_metric_candidate_positive_is_rejected() -> None:
     result = check_ab_manifest_file(FIXTURES / "ab_manifest_inconsistent.json")
 

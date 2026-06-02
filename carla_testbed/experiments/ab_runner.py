@@ -379,6 +379,12 @@ def build_run_matrix(config: ABRunnerConfig) -> list[dict[str, Any]]:
 
 def _manifest_fixed_variables(config: ABRunnerConfig, route_ids: Sequence[str]) -> dict[str, Any]:
     route_id_value: Any = route_ids[0] if len(set(route_ids)) == 1 else list(dict.fromkeys(route_ids))
+    baseline_assists: list[str] = []
+    candidate_assists: list[str] = []
+    if config.baseline_backend == "carla_direct":
+        baseline_assists.append("carla_direct_transport")
+    if config.candidate_backend == "carla_direct":
+        candidate_assists.append("carla_direct_transport")
     fixed = {key: None for key in FIXED_VARIABLE_KEYS}
     fixed.update(
         {
@@ -387,6 +393,8 @@ def _manifest_fixed_variables(config: ABRunnerConfig, route_ids: Sequence[str]) 
             "route_definition_hash": None,
             "spawn_pose": None,
             "spawn_ref": "from_canonical_route_asset",
+            "goal_pose": None,
+            "goal_ref": "from_canonical_route_asset",
             "ego_blueprint": "vehicle.lincoln.mkz_2020",
             "fixed_delta_seconds": float(config.fixed_delta_seconds),
             "sim_duration_s": list(config.durations_s),
@@ -401,6 +409,10 @@ def _manifest_fixed_variables(config: ABRunnerConfig, route_ids: Sequence[str]) 
             "steer_scale": 0.25,
             "guard_config_hash": "from_config",
             "calibration_profile_id": "none",
+            "active_assists": {
+                "baseline": baseline_assists,
+                "candidate": candidate_assists,
+            },
             "timeout_policy": "continue_on_failure" if config.continue_on_failure else "stop_on_first_failure",
         }
     )
@@ -482,10 +494,13 @@ def build_ab_manifest(config: ABRunnerConfig, matrix: Sequence[dict[str, Any]]) 
             "route_completion": None,
             "control_available": None,
             "planning_available": None,
+            "localization_available": None,
+            "chassis_available": None,
             "lateral_error": None,
             "heading_error": None,
             "failure_reason": None,
             "artifact_complete": None,
+            "route_health_hard_gate_eligible": None,
         },
         analysis_commands=build_analysis_commands(config),
     )

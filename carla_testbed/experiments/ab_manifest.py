@@ -15,6 +15,7 @@ FIXED_VARIABLE_KEYS = [
     "route_id",
     "route_definition_hash",
     "spawn_pose",
+    "goal_pose",
     "ego_blueprint",
     "vehicle_physics_hash",
     "fixed_delta_seconds",
@@ -30,6 +31,7 @@ FIXED_VARIABLE_KEYS = [
     "steer_scale",
     "guard_config_hash",
     "calibration_profile_id",
+    "active_assists",
     "timeout_policy",
 ]
 
@@ -37,10 +39,13 @@ CANDIDATE_POSITIVE_INPUT_KEYS = [
     "route_completion",
     "control_available",
     "planning_available",
+    "localization_available",
+    "chassis_available",
     "lateral_error",
     "heading_error",
     "failure_reason",
     "artifact_complete",
+    "route_health_hard_gate_eligible",
 ]
 
 

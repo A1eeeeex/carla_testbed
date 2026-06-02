@@ -11,6 +11,9 @@ default backend.
 The current short-window positive result supports a narrow claim: direct
 transport/materialization can be promising on the compared routes. It does not
 prove canonical curve tracking is healthy.
+Even a `6/6 candidate_positive` short-window result is transport evidence until
+the 30/60/120s hard-gate A/B and natural-driving artifacts support the same
+claim.
 
 `ab_report.json` is an input to the Apollo reproduction gate described in
 `docs/apollo_reproduction.md`. Without an A/B report, do not claim
@@ -23,7 +26,8 @@ proved the steering mode was `single_percent_at_select`, but direct control
 writeback was too aggressive and produced a collision-heavy degradation. The
 follow-up `runs/ab/town01_frame_flush_097_canary_20260523_165408` enabled
 `algo.apollo.direct_bridge.control_apply_mode=frame_flush_only`; this removed
-the direct collision failure, but `lane097` remained `candidate_degraded`
+the direct collision failure, but `lane097` still reported a negative
+candidate comparison under the current gate vocabulary
 because lateral/heading error and lane invasions were still worse than
 `ros2_gt`.
 
@@ -122,8 +126,10 @@ The checker treats these fields as must-match between baseline and candidate:
 
 - `route_id`
 - `town_map`
+- `map_hash`
 - `route_definition_hash`
 - `spawn_pose`
+- `goal_pose`
 - `ego_blueprint`
 - `vehicle_physics_hash`
 - `fixed_delta_seconds`
@@ -136,6 +142,8 @@ The checker treats these fields as must-match between baseline and candidate:
 - `steer_scale`
 - `guard_config_hash`
 - `calibration_profile_id`
+- `active_assists`, except for the non-blocking `carla_direct_transport`
+  transport marker
 - `timeout_policy`
 
 Allowed differences are transport-specific:
@@ -149,9 +157,22 @@ Allowed differences are transport-specific:
 - direct stale-world-frame policy, when explicitly recorded as transport
   behavior
 
-Missing route, map, spawn, fixed delta, duration, control mode, actuator mapping
-mode, or `steer_scale` fails the manifest. Missing version/hash fields can
-warn, but the warning must remain visible.
+Assist conditions must also be comparable. The A/B analyzer records
+`active_assists`, `blocking_assists`, and `can_claim_unassisted` for each run.
+`carla_direct_transport` alone is a non-blocking transport difference, but
+behavior-changing assists such as `straight_lane_lateral_stabilizer`,
+`straight_acc_override`, `terminal_stop_hold`,
+`goal_planner_module_disabled`, `planning_common_dynamics_override`, or
+`speed_feedback_bridge_profile` must match between baseline and candidate.
+If they do not match, the comparison is `not_comparable` or
+`insufficient_data`, not `candidate_positive`, unless the manifest explicitly
+declares an assist A/B experiment.
+
+Missing route, map, spawn/spawn-ref, fixed delta, duration, control mode,
+actuator mapping mode, or `steer_scale` fails the manifest. Missing same-field
+evidence or assist mismatch makes the comparison `not_comparable`, not
+`candidate_negative`. Missing version/hash fields can warn, but the warning
+must remain visible.
 
 ## Long-Window Matrix
 
@@ -166,6 +187,10 @@ python tools/run_town01_direct_ab.py \
   --dry-run \
   --out /tmp/direct_ab_dryrun
 ```
+
+Dry-run output is a planning artifact. Its manifest may be `not_comparable`
+until real run artifacts provide route-definition hashes and environment hashes.
+That is expected; do not use a dry-run manifest as promotion evidence.
 
 Window intent:
 
@@ -207,17 +232,32 @@ The analyzer requires:
 - complete artifacts;
 - successful execution status and zero or absent process return code;
 - route completion evidence;
-- planning/control/localization rate evidence;
+- planning/control/localization/chassis rate evidence;
+- route-health hard-gate eligibility for hard-gate routes;
 - lateral error evidence;
 - heading error evidence;
+- assist consistency between baseline and candidate;
 - a non-blocking failure reason.
 
 Missing lateral or heading evidence makes the candidate insufficient for a
 positive verdict, even if the vehicle moved.
+`direct_apply_count`, control-write count, or "the vehicle moved" is never
+enough for `candidate_positive` by itself.
 Route-completion comparison has a small absolute tolerance for 30s windows so
 one or two percentage points of rollout jitter is not mislabeled as a transport
 regression. This does not relax lateral error, heading error, failure reason,
 artifact completeness, or strict direct transport/cadence gates.
+
+Comparison statuses are intentionally conservative:
+
+- `candidate_positive`: multi-metric evidence supports the direct candidate.
+- `candidate_negative`: comparable evidence shows regression or blocking
+  failure.
+- `not_comparable`: manifest variables, assists, or experiment conditions do
+  not match.
+- `insufficient_data`: required artifacts or metrics are missing.
+- `inconclusive`: some comparisons are positive but the batch still has
+  insufficient evidence.
 
 The analyzer writes:
 
@@ -240,13 +280,14 @@ any single-normalization, transport, or control-mapping change. It reports:
 - `hard_gate_status`: `hard_gate_pass`, `hard_gate_fail`,
   `hard_gate_insufficient_data`, or `hard_gate_incomplete`;
 - `positive_routes`: hard gates that passed the multi-metric comparison;
-- `degraded_routes`: hard gates that regressed;
+- `negative_routes`: hard gates that regressed;
 - `insufficient_routes`: hard gates with incomplete evidence;
 - `missing_routes`: hard gates absent from the batch.
 
 Only `hard_gate_pass` across `lane097`, `lane217`, and `junction031` allows the
-change to proceed to curve promotion analysis. A curve `candidate_positive`
-without hard-gate pass is diagnostic evidence only.
+change to proceed to curve promotion analysis. `curve217` and `curve213` are
+diagnostic routes by default; a curve `candidate_positive` without hard-gate
+pass is diagnostic evidence only and does not make `carla_direct` default.
 
 ## CI-Friendly Commands
 

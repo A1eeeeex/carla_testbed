@@ -15,8 +15,10 @@ from .ab_manifest import (
 MUST_MATCH = [
     "route_id",
     "town_map",
+    "map_hash",
     "route_definition_hash",
     "spawn_pose",
+    "goal_pose",
     "ego_blueprint",
     "vehicle_physics_hash",
     "fixed_delta_seconds",
@@ -29,6 +31,7 @@ MUST_MATCH = [
     "steer_scale",
     "guard_config_hash",
     "calibration_profile_id",
+    "active_assists",
     "timeout_policy",
 ]
 
@@ -37,6 +40,7 @@ MAY_DIFFER = [
     "transport_mode",
     "bridge_mode",
     "backend_config_path",
+    "candidate_backend_config_path",
     "ros2_gt_vs_carla_direct",
     "ros2_gt_vs_carla_direct transport details",
     "direct_control_apply_mode",
@@ -53,6 +57,7 @@ FAIL_IF_MISSING = [
     "actuator_mapping_mode",
     "steer_scale",
 ]
+NON_BLOCKING_TRANSPORT_ASSISTS = {"carla_direct_transport"}
 
 
 @dataclass(frozen=True)
@@ -102,10 +107,36 @@ def _fixed_values_differ(value: Any) -> bool:
     return pair[0] != pair[1]
 
 
+def _match_value_missing(key: str, value: Any) -> bool:
+    if key == "traffic_actors":
+        pair = _fixed_pair(value)
+        if pair is None:
+            return value is None or value == ""
+        return pair[0] is None or pair[1] is None
+    return _value_missing_for_fixed(value)
+
+
+def _assist_values_differ(value: Any) -> bool:
+    pair = _fixed_pair(value)
+    if pair is None:
+        return False
+    baseline = {str(item) for item in (pair[0] or []) if item} - NON_BLOCKING_TRANSPORT_ASSISTS
+    candidate = {str(item) for item in (pair[1] or []) if item} - NON_BLOCKING_TRANSPORT_ASSISTS
+    return baseline != candidate
+
+
 def _has_spawn_reference(fixed: Mapping[str, Any]) -> bool:
     if not _value_missing_for_fixed(fixed.get("spawn_pose")):
         return True
     if not _value_missing_for_fixed(fixed.get("spawn_ref")):
+        return True
+    return False
+
+
+def _has_goal_reference(fixed: Mapping[str, Any]) -> bool:
+    if not _value_missing_for_fixed(fixed.get("goal_pose")):
+        return True
+    if not _value_missing_for_fixed(fixed.get("goal_ref")):
         return True
     return False
 
@@ -122,6 +153,7 @@ def check_ab_manifest(manifest: ABManifest | Mapping[str, Any]) -> ABConsistency
         manifest = ABManifest.from_mapping(dict(manifest))
     errors: list[str] = []
     warnings: list[str] = []
+    not_comparable: list[str] = []
     missing: list[str] = []
     fixed = manifest.fixed_variables
 
@@ -158,10 +190,21 @@ def check_ab_manifest(manifest: ABManifest | Mapping[str, Any]) -> ABConsistency
         errors.append("spawn_pose or spawn_ref is required")
 
     for key in MUST_MATCH:
-        if key not in fixed or _value_missing_for_fixed(fixed.get(key)):
+        if key == "active_assists":
+            if key in fixed and _assist_values_differ(fixed.get(key)):
+                not_comparable.append("MUST_MATCH variable differs: active_assists")
+            continue
+        if key not in fixed or _match_value_missing(key, fixed.get(key)):
+            if key in WARN_IF_MISSING or key in FAIL_IF_MISSING:
+                continue
+            if key == "spawn_pose" and _has_spawn_reference(fixed):
+                continue
+            if key == "goal_pose" and _has_goal_reference(fixed):
+                continue
+            not_comparable.append(f"MUST_MATCH variable missing: {key}")
             continue
         if _fixed_values_differ(fixed.get(key)):
-            errors.append(f"MUST_MATCH variable differs: {key}")
+            not_comparable.append(f"MUST_MATCH variable differs: {key}")
 
     allowed = set(manifest.allowed_differences)
     if manifest.baseline_backend == manifest.candidate_backend:
@@ -198,7 +241,9 @@ def check_ab_manifest(manifest: ABManifest | Mapping[str, Any]) -> ABConsistency
 
     missing_tuple = tuple(sorted(set(missing)))
     if errors:
-        return ABConsistencyResult("fail", tuple(errors), tuple(warnings), missing_tuple)
+        return ABConsistencyResult("fail", tuple(errors + not_comparable), tuple(warnings), missing_tuple)
+    if not_comparable:
+        return ABConsistencyResult("not_comparable", tuple(not_comparable), tuple(warnings), missing_tuple)
     if warnings:
         return ABConsistencyResult("warn", (), tuple(warnings), missing_tuple)
     return ABConsistencyResult("pass", (), (), missing_tuple)
