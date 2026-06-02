@@ -9,7 +9,9 @@ meter frame used by CARLA.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
+from typing import Mapping
 import xml.etree.ElementTree as ET
 
 
@@ -318,6 +320,70 @@ def summarize_text_map(map_txt: str | Path) -> dict[str, int]:
         "right_neighbor_reverse": text.count("right_neighbor_reverse_lane_id"),
         "predecessors": text.count("predecessor_id"),
         "successors": text.count("successor_id"),
+    }
+
+
+def build_roadrunner_conversion_metadata(
+    *,
+    source_map_path: str | Path | None = None,
+    generated_base_map_path: str | Path | None = None,
+    scale: HeaderScale | Mapping[str, float] | None = None,
+    lane_count: int | None = None,
+    signal_count: int | None = None,
+    stop_line_count: int | None = None,
+    warnings: list[str] | None = None,
+) -> dict[str, object]:
+    """Build optional RoadRunner conversion evidence for contract reports.
+
+    This is metadata only: it records what was converted and hashed, but it does
+    not by itself make an Apollo HDMap/reference-line/signal contract verified.
+    """
+
+    source = Path(source_map_path).expanduser() if source_map_path else None
+    generated = Path(generated_base_map_path).expanduser() if generated_base_map_path else None
+    source_counts = _count_xml_map_entities(source) if source and source.exists() else {}
+    return {
+        "schema_version": "roadrunner_conversion_metadata.v1",
+        "source_map_path": None if source is None else str(source),
+        "source_map_hash": _sha256_file(source),
+        "generated_base_map_path": None if generated is None else str(generated),
+        "generated_base_map_hash": _sha256_file(generated),
+        "scale": _scale_payload(scale),
+        "lane_count": lane_count if lane_count is not None else source_counts.get("lane_count"),
+        "signal_count": signal_count if signal_count is not None else source_counts.get("signal_count"),
+        "stop_line_count": stop_line_count if stop_line_count is not None else source_counts.get("stop_line_count"),
+        "warnings": list(warnings or []),
+    }
+
+
+def _sha256_file(path: Path | None) -> str | None:
+    if path is None or not path.exists() or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _scale_payload(scale: HeaderScale | Mapping[str, float] | None) -> dict[str, float] | None:
+    if scale is None:
+        return None
+    if isinstance(scale, HeaderScale):
+        return {"x_scale": scale.x_scale, "y_scale": scale.y_scale}
+    return {str(key): float(value) for key, value in scale.items()}
+
+
+def _count_xml_map_entities(path: Path) -> dict[str, int]:
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        return {}
+    text = path.read_text(errors="ignore")
+    return {
+        "lane_count": len(root.findall(".//lane")),
+        "signal_count": len(root.findall(".//signal")),
+        "stop_line_count": text.count("stopLine") + text.count("stop_line"),
     }
 
 

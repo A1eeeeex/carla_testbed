@@ -1,0 +1,6 @@
+{
+  "schema_version": "signal_overlap_report.v1",
+  "status": "pass",
+  "signal_overlap_verified": true,
+  "signals": ["signal_001"]
+}

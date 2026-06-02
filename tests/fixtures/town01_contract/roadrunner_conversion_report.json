@@ -1,0 +1,15 @@
+{
+  "schema_version": "roadrunner_conversion_metadata.v1",
+  "source_map_path": "/tmp/baguang/source.xml",
+  "source_map_hash": "abc",
+  "generated_base_map_path": "/tmp/baguang/base_map.xml",
+  "generated_base_map_hash": "def",
+  "scale": {
+    "x_scale": 1.0,
+    "y_scale": 1.0
+  },
+  "lane_count": 2,
+  "signal_count": 1,
+  "stop_line_count": 1,
+  "warnings": []
+}

@@ -212,11 +212,13 @@ from carla_testbed.algorithms.reproduction_gate import evaluate_reproduction_gat
 The gate connects the reproduction ladder to the three Town01 evidence
 surfaces:
 
-- route-health: required before curve lateral semantics conclusions.
-- `ros2_gt` vs `carla_direct` A/B: required before direct-transport improvement
-  claims.
+- route-health: `route_health.json` or `apollo_lateral_semantics_report.json`
+  is required before curve lateral semantics conclusions.
+- `ros2_gt` vs `carla_direct` A/B: `ab_report.json` is required before
+  direct-transport improvement claims.
 - calibration: optional for general evidence, but required before changing
-  `steer_scale` or promoting physical mapping.
+  `steer_scale` or promoting physical mapping; calibration promotion requires
+  `calibration_report.json` plus no-regression gates.
 
 Gate rules:
 
@@ -226,10 +228,11 @@ Gate rules:
   route/reference-line/planning semantics first.
 - If L5 fails while L4 passed and control-actuation evidence is absent, attach a
   `control_actuation_report` before claiming algorithm limitation.
-- Missing route-health prevents curve semantics conclusions.
-- Missing A/B report prevents `carla_direct` improvement claims.
+- Missing `route_health.json` prevents curve semantics conclusions.
+- Missing `ab_report.json` prevents `carla_direct` improvement claims.
 - Missing calibration is a warning unless the requested claim changes
-  `steer_scale` or physical mapping.
+  `steer_scale` or physical mapping; promotion also requires
+  `calibration_report.json` and no-regression gates.
 
 ## Local Validation Commands
 

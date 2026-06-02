@@ -1,0 +1,6 @@
+{
+  "schema_version": "reference_line_validation_report.v1",
+  "status": "pass",
+  "reference_line_verified": true,
+  "route_ids": ["lane097"]
+}
