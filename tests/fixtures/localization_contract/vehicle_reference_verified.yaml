@@ -1,0 +1,11 @@
+schema_version: vehicle_reference.v1
+vehicle_blueprint: vehicle.lincoln.mkz_2020
+apollo_reference_point: rear_axle_center
+carla_actor_origin_definition: measured_actor_origin
+origin_to_vrp_carla:
+  x: -1.35
+  y: 0.0
+  z: 0.0
+source: unit_test
+confidence: verified
+notes: "Fixture with explicit measured actor origin semantics."

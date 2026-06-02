@@ -1,0 +1,16 @@
+{
+  "schema_version": "channel_stats.v1",
+  "created_at": "2026-06-02T00:00:00Z",
+  "channels": {
+    "/apollo/localization/pose": {
+      "message_count": 80,
+      "hz": 20.0,
+      "first_timestamp": 0.0,
+      "last_timestamp": 4.0,
+      "max_gap_ms": 55.0,
+      "timestamp_monotonic": true,
+      "sequence_monotonic": true,
+      "stale_count": 0
+    }
+  }
+}

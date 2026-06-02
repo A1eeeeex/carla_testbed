@@ -1,0 +1,13 @@
+{
+  "localization": {
+    "back_offset_m": 1.4235,
+    "reference_mode": "rear_axle",
+    "expected_rear_axle_back_offset_m": 1.4235,
+    "apollo_control_state_reference": "rear_axle_input_com_internal"
+  },
+  "last_pose_debug": {
+    "localization_reference_mode": "rear_axle",
+    "localization_back_offset_m": 1.4235,
+    "apollo_control_state_reference": "rear_axle_input_com_internal"
+  }
+}

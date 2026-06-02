@@ -1,0 +1,361 @@
+# Apollo GT Localization Contract
+
+This document defines the current truth-input localization boundary for Apollo
+in CARLA. GT localization is not “missing localization.” It means CARLA ego
+truth is converted into the semantics Apollo expects from
+`LocalizationEstimate`.
+
+This is not evidence that Apollo native localization has been reproduced.
+Current truth-input runs replace the native Apollo localization module output
+with a CARLA-derived adapter output. Any report or demo using this mode must say
+so explicitly.
+
+## Required Semantics
+
+Apollo localization pose is interpreted in the Apollo map ENU frame. The
+position reference point is the vehicle reference point, normally the rear axle
+center. CARLA actor transforms are not automatically the same thing. A CARLA
+actor origin can be at a blueprint-specific location, so the offset from CARLA
+actor origin to Apollo VRP must be declared.
+
+The repository now carries two CI-safe example contracts:
+
+- `configs/town01/apollo_frame_transform.example.yaml`
+- `configs/vehicles/ego_vehicle_reference.example.yaml`
+
+Both examples are `confidence: assumed`; they are schema fixtures, not
+claim-grade evidence.
+
+## Frame Contract
+
+CARLA uses Unreal/CARLA convention: X forward, Y right, Z up, left-handed.
+Apollo map uses ENU: East, North, Up. A valid truth-input localization adapter
+must explicitly declare the CARLA world to Apollo map transform:
+
+- source frame and target frame;
+- translation `tx`, `ty`, `tz`;
+- `yaw_rad`;
+- `scale`;
+- whether the CARLA Y axis is flipped into Apollo ENU.
+
+Do not silently treat CARLA world coordinates as Apollo map coordinates. The
+frame transform must appear in a localization contract report before
+curve/junction/traffic-light behavior is used for attribution.
+
+## Vehicle Reference Point
+
+Apollo position should be generated at the rear axle center / VRP. CARLA actor
+origin must not be assumed to be the rear axle center. The vehicle reference
+contract must declare:
+
+- `vehicle_blueprint`;
+- `apollo_reference_point`;
+- `carla_actor_origin_definition`;
+- `origin_to_vrp_carla` in CARLA actor coordinates.
+
+`origin_to_vrp_carla` is interpreted in the CARLA actor local basis, not in the
+global map frame: `x` is forward, `y` is right, and `z` is up. The adapter should
+first move from actor origin to VRP in CARLA coordinates, then apply the CARLA
+world to Apollo map frame transform. The CI-safe helper for this is
+`carla_testbed.adapters.apollo.vehicle_reference.carla_vrp_to_apollo_position`.
+
+If `carla_actor_origin_definition=unknown` or `confidence=assumed`, the
+contract can support diagnostics only. It cannot support hard-gate natural
+driving claims.
+
+## Localization Dict Builder
+
+`carla_testbed.adapters.apollo.localization_gt.build_localization_estimate_dict`
+builds a protobuf-free, `LocalizationEstimate`-like dictionary from CARLA ego
+truth. This is the contract object that a future CyberRT publisher can translate
+to Apollo protobuf; it is not itself evidence that CyberRT publishing or Apollo
+native localization has been reproduced.
+
+The builder uses simulation time for `header.timestamp_sec` and
+`measurement_time`, uses the VRP/rear-axle-center position from the vehicle
+reference contract, computes heading from the transformed actor forward vector,
+and converts linear velocity, optional acceleration, and optional angular
+velocity into Apollo map semantics. If angular velocity arrives in degrees per
+second, it must be converted to radians per second; if the unit is unknown, the
+field is omitted and the output metadata records a warning.
+
+The output metadata must retain `gt_localization=true`, `carla_frame_id`,
+`position_reference`, map/frame transform identity, vehicle reference
+confidence, angular velocity input unit, warnings, and missing fields. Missing
+optional acceleration or angular velocity is acceptable for diagnostics, but it
+must be visible in metadata rather than silently fabricated.
+
+Apollo VRF fields use RFU axis order: `x=Right`, `y=Forward`, `z=Up`. They are
+not FLU and not Forward/Right/Up. CARLA actor-local offsets remain
+`x=forward`, `y=right`, `z=up`; the conversion into Apollo VRF must explicitly
+swap into RFU semantics.
+
+Apollo `pose.orientation` is the rotation from vehicle RFU coordinates to
+Apollo ENU world coordinates. It is not an ordinary ENU yaw quaternion. For a
+vehicle heading East (`heading=0`), the RFU-to-ENU quaternion is not identity:
+the vehicle forward axis maps to ENU East and the vehicle right axis maps to
+ENU South. The GT builder records `orientation_convention=RFU_to_ENU`,
+`heading_from_forward_vector`, and `quaternion_heading_diff_rad` so this can be
+audited later.
+
+## Localization Contract Report
+
+`carla_testbed.analysis.localization_contract` reads run artifacts and writes
+`localization_contract_report.json` plus `localization_contract_summary.md`. The
+report combines `timeseries.csv/jsonl`, `channel_stats.json`,
+`route_health.json`, the frame transform YAML, and the vehicle reference YAML to
+check whether the truth-input localization evidence is good enough for later
+curve, junction, or traffic-light attribution.
+
+The report checks `/apollo/localization/pose` rate, message count, timestamp and
+sequence monotonicity, timestamp deltas against chassis/planning evidence,
+configured frame transform presence, VRP/rear-axle reference confidence, heading
+consistency, velocity/chassis speed consistency, yaw-rate consistency, and
+availability of status/uncertainty fields. Missing historical fields must become
+`missing_fields` and `warnings`; they must not be fabricated.
+
+Yaw-rate consistency can use an explicit `heading_fd_yaw_rate` field when one is
+recorded, or the analyzer can compute a finite-difference yaw rate from
+`localization_heading` and `localization_header_timestamp_sec`. This makes the
+check independent of a bridge-provided self-report while still avoiding CARLA
+runtime imports.
+
+In truth-input mode, Apollo MSF status, native sensor status, and pose
+uncertainty are not equivalent to native Apollo localization outputs. If these
+are not modeled, the bridge should record explicit policy fields such as
+`not_modelled_gt_truth` or `not_applicable_gt_truth`. The checklist then remains
+`warn`, not `pass`, but the gap is no longer an unexplained missing field.
+
+Channel health separates publish rate from fresh-sample rate. The bridge may
+republish the latest localization sample multiple times while waiting for a new
+CARLA/ROS2 odometry stamp. Therefore `loc_count` or raw publish count is not
+automatically the number of fresh localization samples. The analyzer reports
+`publish_message_count`, `fresh_sample_count`, `unique_timestamp_count`,
+`duplicate_timestamp_count`, `publish_hz`, and `fresh_sample_hz`. Duplicate
+timestamps are allowed as evidence of republish behavior. If timestamps are
+non-decreasing and `fresh_sample_hz` is sufficient, the report records
+`republish_policy=stale_republish_allowed_when_fresh_sample_rate_ok` rather
+than treating duplicate timestamps as a localization fault. Duplicate rows must
+still not be counted as fresh samples.
+
+The reference-point check distinguishes configured intent from runtime evidence.
+`vehicle_reference.yaml` can say the configured Apollo reference point should be
+rear axle center, but that alone does not prove the published localization
+position used VRP. Claim-grade evidence needs runtime artifacts such as
+`ros2_gt_live_stats.json` and `cyber_bridge_stats.json`. A valid current path is:
+ROS2 GT publishes CARLA vehicle-origin odometry, then the Cyber bridge publishes
+Apollo localization as rear-axle/VRP using an explicit
+`localization_back_offset_m`. The report records this as
+`source_vehicle_origin_to_published_rear_axle`. If both source and published
+references remain `vehicle_origin`, `position_uses_vrp=false` blocks hard-gate
+claims.
+
+The frame transform report separates affine self-consistency from actual map
+alignment. `affine_self_consistency_roundtrip_error_m_max=0` only means the
+configured transform is internally invertible; it does not prove the Apollo
+HDMap, lane projection, or reference line is aligned. Those claims require
+separate route projection, reference-line, or HDMap contract artifacts.
+
+`manifest.scenario_metadata.route_trace` or
+`manifest.metadata.scenario_metadata.route_trace` may provide claim-grade CARLA
+route geometry for route-health. That is still not Apollo reference-line
+verification. A route trace can make `route_health.json` eligible for CARLA
+route-geometry gates while `reference_line_verified=false` and
+`apollo_reference_line_claim_grade=false` remain true until an explicit
+`reference_line_validation_report.json`, route projection report, or HDMap
+contract report exists.
+
+Runtime rows or localization debug artifacts should expose:
+
+- `localization_header_timestamp_sec`, `localization_measurement_time`, and
+  `localization_sequence_num`;
+- `localization_heading`, `localization_orientation_yaw`,
+  `orientation_heading_diff_rad`, `heading_source`, and
+  `orientation_convention`;
+- `localization_speed_mps`, `chassis_speed_mps`,
+  `velocity_norm_vs_chassis_speed_mps`, `ego_yaw_rate`,
+  `heading_fd_yaw_rate`, and `yaw_rate_vs_heading_fd_rad_s`;
+- `localization_angular_velocity_unit`, `linear_acceleration_available`,
+  `linear_acceleration_vrf_available`, `angular_velocity_vrf_available`, and
+  `acceleration_source`.
+
+Orientation diagnostics should include `localization_orientation_qx`,
+`localization_orientation_qy`, `localization_orientation_qz`, and
+`localization_orientation_qw`. The analyzer independently decodes the
+RFU-to-ENU quaternion by rotating the RFU forward axis and comparing the decoded
+heading with `localization_heading`. If only a self-reported
+`orientation_heading_diff_rad` exists, the report can be useful for diagnostics
+but should not be treated as the same evidence level as an independent decode.
+
+CARLA `Actor.get_angular_velocity()` returns degrees per second; ROS odometry
+and Apollo localization diagnostics should use radians per second. CARLA
+`ActorSnapshot.get_angular_velocity()` uses radians per second. Do not mix these
+two sources without recording the source API and unit.
+
+Acceleration fields distinguish presence from physical availability. The current
+bridge should compute map-frame and VRF linear acceleration from finite
+differences over simulation-time velocity samples after the first fresh sample.
+If a stale localization sample is republished, the row should be marked
+`acceleration_source=stale_timestamp_republish`; analyzer evidence should prefer
+later `finite_difference` samples over first-row initialization. If
+`acceleration_source=zero_filled`, then acceleration is present as a protobuf
+field but is not physical acceleration evidence. Reports should set
+`physical_linear_acceleration_available=false`,
+`linear_acceleration_claim_grade=false`, and warn with
+`acceleration_zero_filled`. Zero-filled acceleration alone should not block a
+lane-keep diagnostic, but it must not be used as claim-grade dynamics evidence.
+
+The report also contains `acceptance_checklist`, a machine-readable checklist
+for the final localization acceptance questions:
+
+- `localization_channel_health`: `/apollo/localization/pose` exists, rate is
+  reasonable, timestamps and sequence numbers are monotonic, and stale messages
+  are visible.
+- `sim_time_time_base`: header timestamp and `measurement_time` use simulation
+  time rather than an untracked wall-time source.
+- `frame_transform_configured`: CARLA world to Apollo map transform is
+  explicitly configured, including axis flip/mapping.
+- `position_uses_vrp`: Apollo position uses rear axle center / VRP rather than
+  raw CARLA actor origin.
+- `source_to_published_reference_explained`: the source reference point and the
+  published Apollo localization reference are explicitly explained.
+- `heading_from_transformed_forward`: heading is derived from the transformed
+  actor forward vector.
+- `rfu_to_enu_orientation`: orientation declares the RFU-to-ENU Apollo
+  convention.
+- `decoded_orientation_consistency`: orientation quaternion and heading are
+  consistent when independently decoded from qx/qy/qz/qw.
+- `kinematics_frame_and_units`: velocity, acceleration, angular velocity, and
+  VRF fields use declared frame/unit semantics.
+- `chassis_speed_consistency`: localization speed and chassis speed agree
+  within configured tolerance.
+- `lane_projection`: ego pose has diagnostic lane projection evidence.
+- `reference_line_projection`: Apollo reference-line projection is explicitly
+  verified when a scenario requires it.
+- `acceleration_semantics`: acceleration fields are not mistaken for
+  claim-grade evidence when zero-filled.
+- `uncertainty_status_policy`: uncertainty and status fields are available or
+  explicitly treated as policy gaps.
+- `natural_driving_gate_ready`: localization evidence does not block
+  `natural_driving_report.json` hard-gate claims.
+
+Each checklist item has `status`, `question`, `evidence_fields`, and `reason`.
+If required evidence is absent, the item must be `insufficient_data`, `warn`, or
+`fail`; it must not be silently treated as `pass`.
+
+This report is a prerequisite localization/input-contract artifact. A passing
+`localization_contract_report.json` does not by itself prove natural driving,
+planning correctness, or Apollo native localization reproduction. It only
+reduces the chance that a later `route_health.json` or
+`apollo_lateral_semantics_report.json` conclusion is actually caused by bad GT
+localization semantics.
+
+This workflow does not enable Apollo native localization. It remains a
+truth-input MVP where CARLA truth is adapted into Apollo localization semantics.
+
+## Heading And Dynamics
+
+Heading should not be copied directly from CARLA yaw. The adapter should
+transform the actor forward vector into Apollo map ENU and compute heading from
+that converted vector. This prevents left-handed/right-handed and axis-flip
+mistakes from hiding inside one yaw scalar.
+
+Velocity, acceleration, and angular velocity must be in Apollo map semantics.
+Angular velocity units must be explicit, especially when data could be mixed
+between degrees per second and radians per second. Any contract report should
+state the chosen unit.
+
+## Evidence Boundary
+
+A localization contract report is prerequisite evidence before using
+curve/junction/traffic-light failures as Apollo behavior conclusions alongside
+`route_health.json` or `apollo_lateral_semantics_report.json`. Without the
+frame transform and vehicle reference contracts, a curve tracking or junction
+issue may still be a localization/input-contract issue rather than a planning
+or control issue.
+
+Related artifacts:
+
+- `route_health.json`
+- `apollo_lateral_semantics_report.json`
+- `town01_apollo_contract_report.json`
+- `localization_contract_report.json`
+
+The schema validator is CI-safe and does not import CARLA, CyberRT, or Apollo
+protobufs:
+
+```bash
+python -m pytest tests/test_apollo_gt_localization_contract_schema.py -q
+python -m pytest tests/test_apollo_localization_contract.py -q
+```
+
+## Validation And Fix Loop
+
+Start with offline self-checks:
+
+```bash
+python3 -m pytest \
+  tests/test_apollo_gt_localization_contract_schema.py \
+  tests/test_apollo_frame_transform.py \
+  tests/test_apollo_vehicle_reference.py \
+  tests/test_apollo_localization_gt.py \
+  tests/test_apollo_localization_contract.py \
+  tests/test_natural_driving_localization_gate.py -q
+```
+
+Then generate a synthetic report:
+
+```bash
+python tools/analyze_apollo_localization_contract.py \
+  --timeseries tests/fixtures/localization_contract/complete_timeseries.csv \
+  --channel-stats tests/fixtures/localization_contract/channel_stats.json \
+  --route-health tests/fixtures/localization_contract/route_health.json \
+  --frame-transform configs/town01/apollo_frame_transform.example.yaml \
+  --vehicle-reference tests/fixtures/localization_contract/vehicle_reference_verified.yaml \
+  --out /tmp/localization_contract_check
+cat /tmp/localization_contract_check/localization_contract_summary.md
+```
+
+The tracked `configs/vehicles/ego_vehicle_reference.example.yaml` is
+`confidence: assumed`, so it should produce a `warn` report rather than a
+claim-grade `pass`. That warning is intentional until the rear-axle / VRP offset
+is measured or otherwise verified for the online vehicle blueprint. The current
+claim-grade runtime profile is
+`configs/vehicles/ego_vehicle_reference.verified.yaml`, which records the
+bridge-verified Lincoln MKZ rear-axle offset used by the GT localization path.
+
+An online `warn` with no blocking reasons is useful diagnostic evidence, but it
+is not automatically claim-grade. `natural_driving_report.json` must inspect the
+`acceptance_checklist`; hard pass is blocked if simulation time, configured
+frame transform, runtime VRP conversion, heading/quaternion consistency,
+kinematics units, chassis speed consistency, or route/lane projection evidence
+is missing or failing.
+
+For an online run:
+
+```bash
+RUN=runs/<run_id>
+python tools/analyze_route_health.py --run-dir "$RUN"
+python tools/analyze_apollo_localization_contract.py \
+  --run-dir "$RUN" \
+  --frame-transform configs/town01/apollo_frame_transform.example.yaml \
+  --vehicle-reference configs/vehicles/ego_vehicle_reference.example.yaml \
+  --out "$RUN/analysis/localization_contract"
+cat "$RUN/analysis/localization_contract/localization_contract_summary.md"
+cat "$RUN/analysis/route_health/route_health_summary.md"
+```
+
+Use this fix order:
+
+- channel/timestamp failures: inspect CyberRT publisher, bridge time adapter,
+  and sim-time source before rerunning the same route;
+- frame-transform failures: verify CARLA world to Apollo map alignment before
+  changing route or control parameters;
+- VRP failures: measure actor origin to rear-axle offset and update the vehicle
+  reference config; never assume actor origin is Apollo position;
+- heading/quaternion failures: check that heading comes from the transformed
+  forward vector, not raw CARLA yaw;
+- velocity/yaw-rate failures: check frame conversion and deg/s versus rad/s;
+- route/lane projection failures: check localization transform, VRP, route
+  health, and Apollo map/reference-line contracts before blaming Apollo
+  lateral behavior.

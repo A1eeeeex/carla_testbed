@@ -1,0 +1,23 @@
+{
+  "schema_version": "route_health.v1",
+  "route_id": "lane097",
+  "route_source": "configured_route_file",
+  "evidence_level": "claim_grade",
+  "hard_gate_eligible": true,
+  "route_geometry": {
+    "spawn_alignment": {
+      "distance_m": 0.08,
+      "heading_error_rad": 0.01,
+      "direction_consistent": true
+    }
+  },
+  "run_metrics": {
+    "heading_error_p95_rad": 0.03,
+    "lateral_error_p95_m": 0.20
+  },
+  "missing_fields": [],
+  "missing_inputs": [],
+  "verdict": {
+    "status": "diagnostic_ready"
+  }
+}

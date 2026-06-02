@@ -1,0 +1,11 @@
+schema_version: vehicle_reference.v1
+vehicle_blueprint: vehicle.lincoln.mkz_2020
+apollo_reference_point: rear_axle_center
+carla_actor_origin_definition: carla_ros_bridge_vehicle_origin_with_runtime_rear_axle_offset
+origin_to_vrp_carla:
+  x: -1.4235
+  y: 0.0
+  z: 0.0
+source: bridge_runtime_back_offset_measurement
+confidence: verified
+notes: "Verified for current Lincoln MKZ GT-localization bridge path by runtime rear-axle back-offset evidence."

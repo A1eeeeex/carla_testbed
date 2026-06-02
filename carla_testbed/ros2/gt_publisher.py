@@ -29,6 +29,16 @@ def _quat_from_rpy_deg(roll_deg: float, pitch_deg: float, yaw_deg: float) -> Tup
     return qx, qy, qz, qw
 
 
+def _carla_angular_velocity_deg_to_ros_rad(value: Any) -> Tuple[float, float, float]:
+    """CARLA Actor.get_angular_velocity returns deg/s; ROS odometry uses rad/s."""
+
+    return (
+        math.radians(float(getattr(value, "x", 0.0))),
+        math.radians(float(getattr(value, "y", 0.0))),
+        math.radians(float(getattr(value, "z", 0.0))),
+    )
+
+
 def _normalize_namespace(namespace: str) -> str:
     ns = (namespace or "/carla").strip()
     if not ns.startswith("/"):
@@ -112,6 +122,9 @@ class GroundTruthRos2Publisher:
                 "pose_source": "ego_transform_origin",
                 "localization_reference_mode": "vehicle_origin",
                 "apollo_control_state_reference": "rear_axle_input_com_internal",
+                "angular_velocity_source_api": "Actor.get_angular_velocity",
+                "angular_velocity_source_unit": "deg_per_s",
+                "odom_angular_velocity_unit": "rad_per_s",
             },
             "counts": {
                 "odom": 0,
@@ -552,7 +565,7 @@ class GroundTruthRos2Publisher:
         odom.pose.pose.orientation.w = qw
 
         vx, vy, vz = self._vec_xyz(ego.get_velocity())
-        wx, wy, wz = self._vec_xyz(ego.get_angular_velocity())
+        wx, wy, wz = _carla_angular_velocity_deg_to_ros_rad(ego.get_angular_velocity())
         odom.twist.twist.linear.x = vx
         odom.twist.twist.linear.y = vy
         odom.twist.twist.linear.z = vz

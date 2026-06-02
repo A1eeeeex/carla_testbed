@@ -1,0 +1,17 @@
+schema_version: apollo_frame_transform.v1
+map_name: Town01
+source_frame: carla_world
+target_frame: apollo_map
+convention:
+  carla: UE_left_handed_X_forward_Y_right_Z_up
+  apollo: ENU_East_North_Up
+transform:
+  tx: 0.0
+  ty: 0.0
+  tz: 0.0
+  yaw_rad: 0.0
+  scale: 1.0
+  y_flip: true
+source: manual
+confidence: assumed
+notes: "Example only; not claim-grade."

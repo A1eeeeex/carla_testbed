@@ -1,0 +1,10 @@
+{
+  "reference": {
+    "pose_source": "ego_transform_origin",
+    "localization_reference_mode": "vehicle_origin",
+    "apollo_control_state_reference": "rear_axle_input_com_internal",
+    "angular_velocity_source_api": "Actor.get_angular_velocity",
+    "angular_velocity_source_unit": "deg_per_s",
+    "odom_angular_velocity_unit": "rad_per_s"
+  }
+}

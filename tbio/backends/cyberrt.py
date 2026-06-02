@@ -2310,6 +2310,9 @@ class CyberRTBackend(Backend):
     def _apollo_planning_cfg(self) -> Dict[str, Any]:
         return (self._apollo_cfg().get("planning", {}) or {})
 
+    def _apollo_control_pipeline_cfg(self) -> Dict[str, Any]:
+        return (self._apollo_cfg().get("control_pipeline", {}) or {})
+
     def _global_flagfile_map_overlay_shell(self) -> str:
         """Point Apollo modules at the CARLA run map before launch.
 
@@ -2556,6 +2559,7 @@ class CyberRTBackend(Backend):
         trajectory_stitcher = planning_cfg.get("enable_trajectory_stitcher")
         default_cruise_speed = planning_cfg.get("default_cruise_speed_mps")
         planning_upper_speed_limit = planning_cfg.get("planning_upper_speed_limit_mps")
+        smoother_config_filename = self._planning_smoother_config_filename(planning_cfg)
         overlay_path = "/apollo_workspace/conf_overlay/modules/planning/planning_component/conf/planning.conf"
         target_path = "/apollo/modules/planning/planning_component/conf/planning.conf"
         if (
@@ -2563,6 +2567,7 @@ class CyberRTBackend(Backend):
             and trajectory_stitcher is None
             and default_cruise_speed is None
             and planning_upper_speed_limit is None
+            and smoother_config_filename is None
         ):
             return self._managed_overlay_link_shell(overlay_path, target_path, enabled=False)
         script_parts = [
@@ -2589,6 +2594,8 @@ class CyberRTBackend(Backend):
             script_parts.append("prefixes.append('--default_cruise_speed='); ")
         if planning_upper_speed_limit is not None:
             script_parts.append("prefixes.append('--planning_upper_speed_limit='); ")
+        if smoother_config_filename is not None:
+            script_parts.append("prefixes.append('--smoother_config_filename='); ")
         script_parts.append("lines=[ln for ln in lines if not any(ln.startswith(prefix) for prefix in prefixes)]; ")
         if desired_stitch is not None:
             script_parts.append(f"lines.append('--enable_reference_line_stitching={desired_stitch}'); ")
@@ -2602,6 +2609,8 @@ class CyberRTBackend(Backend):
             script_parts.append(
                 f"lines.append('--planning_upper_speed_limit={float(planning_upper_speed_limit):.3f}'); "
             )
+        if smoother_config_filename is not None:
+            script_parts.append(f"lines.append('--smoother_config_filename={smoother_config_filename}'); ")
         script_parts.extend(
             [
                 f"out=Path({overlay_path!r}); ",
@@ -2613,6 +2622,81 @@ class CyberRTBackend(Backend):
         return (
             "python3 -c "
             + shlex.quote(script)
+            + "; "
+            + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)
+        )
+
+    @staticmethod
+    def _planning_smoother_config_filename(planning_cfg: Dict[str, Any]) -> Optional[str]:
+        raw_filename = planning_cfg.get("smoother_config_filename")
+        if raw_filename not in {None, ""}:
+            return str(raw_filename)
+        raw_mode = str(planning_cfg.get("smoother") or "").strip().lower()
+        if not raw_mode:
+            return None
+        aliases = {
+            "discrete": "discrete_points",
+            "discrete_points": "discrete_points",
+            "discrete_points_smoother": "discrete_points",
+            "qp": "qp_spline",
+            "qp_spline": "qp_spline",
+            "qp_spline_smoother": "qp_spline",
+            "spiral": "spiral",
+            "spiral_smoother": "spiral",
+        }
+        mode = aliases.get(raw_mode)
+        if mode == "discrete_points":
+            return "modules/planning/planning_component/conf/discrete_points_smoother_config.pb.txt"
+        if mode == "qp_spline":
+            return "modules/planning/planning_component/conf/qp_spline_smoother_config.pb.txt"
+        if mode == "spiral":
+            return "modules/planning/planning_component/conf/spiral_smoother_config.pb.txt"
+        return None
+
+    def _control_pipeline_overlay_shell(self) -> str:
+        cfg = self._apollo_control_pipeline_cfg()
+        raw_mode = str(cfg.get("mode") or cfg.get("pipeline_mode") or "").strip().lower()
+        overlay_path = "/apollo_workspace/conf_overlay/modules/control/control_component/conf/pipeline.pb.txt"
+        target_path = "/apollo/modules/control/control_component/conf/pipeline.pb.txt"
+        if not raw_mode:
+            return self._managed_overlay_link_shell(overlay_path, target_path, enabled=False)
+        aliases = {
+            "lat_lon": "lat_lon",
+            "latlon": "lat_lon",
+            "lateral_longitudinal": "lat_lon",
+            "lqr_pid": "lat_lon",
+            "mpc": "mpc",
+            "mpc_controller": "mpc",
+        }
+        mode = aliases.get(raw_mode)
+        if mode == "lat_lon":
+            content = (
+                "controller {\n"
+                '  name: "LAT_CONTROLLER"\n'
+                '  type: "LatController"\n'
+                "}\n"
+                "controller {\n"
+                '  name: "LON_CONTROLLER"\n'
+                '  type: "LonController"\n'
+                "}\n"
+            )
+        elif mode == "mpc":
+            content = (
+                "controller {\n"
+                '  name: "MPC_CONTROLLER"\n'
+                '  type: "MPCController"\n'
+                "}\n"
+            )
+        else:
+            return f"echo unsupported_control_pipeline_mode={shlex.quote(raw_mode)}; exit 2; "
+        return (
+            "python3 -c "
+            + shlex.quote(
+                "from pathlib import Path; "
+                f"p=Path({overlay_path!r}); "
+                "p.parent.mkdir(parents=True, exist_ok=True); "
+                f"p.write_text({content!r})"
+            )
             + "; "
             + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)
         )
@@ -2802,6 +2886,7 @@ class CyberRTBackend(Backend):
                 self._speed_bounds_decider_overlay_shell(),
                 self._speed_decider_overlay_shell(),
                 self._public_road_planner_overlay_shell(),
+                self._control_pipeline_overlay_shell(),
                 "declare -A lf_map=( "
                 "[lane_change_path.pb.txt]=lane_change_path "
                 "[lane_follow_path.pb.txt]=lane_follow_path "

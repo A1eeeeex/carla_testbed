@@ -244,6 +244,71 @@ def _yaw_to_quat(yaw: float) -> Tuple[float, float, float, float]:
     return 0.0, 0.0, math.sin(half), math.cos(half)
 
 
+def _rfu_to_enu_quat_from_heading(heading: float) -> Tuple[float, float, float, float]:
+    # Apollo Pose.orientation rotates vehicle RFU (Right/Forward/Up) to ENU.
+    # This is equivalent to an ordinary local-X yaw quaternion at heading - pi/2.
+    return _yaw_to_quat(float(heading) - math.pi / 2.0)
+
+
+def _rotate_vector_by_quat(
+    qx: float,
+    qy: float,
+    qz: float,
+    qw: float,
+    vx: float,
+    vy: float,
+    vz: float,
+) -> Tuple[float, float, float]:
+    # q * v * q^-1 for unit quaternions.
+    tx = 2.0 * (qy * vz - qz * vy)
+    ty = 2.0 * (qz * vx - qx * vz)
+    tz = 2.0 * (qx * vy - qy * vx)
+    return (
+        vx + qw * tx + (qy * tz - qz * ty),
+        vy + qw * ty + (qz * tx - qx * tz),
+        vz + qw * tz + (qx * ty - qy * tx),
+    )
+
+
+def _decode_rfu_to_enu_heading_from_quat(
+    qx: float,
+    qy: float,
+    qz: float,
+    qw: float,
+) -> float:
+    # Apollo RFU forward axis is local +Y.
+    fx, fy, _ = _rotate_vector_by_quat(qx, qy, qz, qw, 0.0, 1.0, 0.0)
+    return math.atan2(fy, fx)
+
+
+def _odom_angular_velocity_rad_per_s(odom: Odometry) -> Tuple[float, float, float]:
+    # ROS Odometry twist.angular is already rad/s. CARLA deg/s conversion must
+    # happen before odom construction.
+    ang = odom.twist.twist.angular
+    return float(ang.x), float(ang.y), float(ang.z)
+
+
+def _localization_acceleration_from_velocity(
+    previous_sample: Optional[Tuple[float, float, float, float]],
+    timestamp_sec: float,
+    vx: float,
+    vy: float,
+    vz: float,
+) -> Tuple[float, float, float, str]:
+    if previous_sample is None:
+        return 0.0, 0.0, 0.0, "initial_sample_missing_previous_velocity"
+    prev_timestamp, prev_vx, prev_vy, prev_vz = previous_sample
+    dt = float(timestamp_sec) - float(prev_timestamp)
+    if not math.isfinite(dt) or dt <= 1e-9:
+        return 0.0, 0.0, 0.0, "stale_timestamp_republish"
+    return (
+        (float(vx) - float(prev_vx)) / dt,
+        (float(vy) - float(prev_vy)) / dt,
+        (float(vz) - float(prev_vz)) / dt,
+        "finite_difference",
+    )
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
@@ -2283,12 +2348,14 @@ class ApolloGtBridge:
         self.seq += 1
         return self.seq
 
-    def _fill_header(self, header: Any, ts_sec: float, module_name: str) -> None:
+    def _fill_header(self, header: Any, ts_sec: float, module_name: str) -> Optional[int]:
         if header is None:
-            return
+            return None
+        sequence_num = self._next_seq()
         _safe_set(header, "timestamp_sec", ts_sec)
         _safe_set(header, "module_name", module_name)
-        _safe_set(header, "sequence_num", self._next_seq())
+        _safe_set(header, "sequence_num", sequence_num)
+        return sequence_num
 
     def _command_now_sec(self) -> float:
         try:
@@ -2345,8 +2412,21 @@ class ApolloGtBridge:
     def _extract_ros_stamp_sec(self, msg: Any) -> Optional[float]:
         header = getattr(msg, "header", None)
         stamp = getattr(header, "stamp", None) if header is not None else None
+        if stamp is None:
+            return None
         stamp_sec = _stamp_to_sec(stamp)
         return stamp_sec if math.isfinite(stamp_sec) and stamp_sec > 0.0 else None
+
+    def _localization_time_from_odom(
+        self,
+        odom: Any,
+        *,
+        fallback_wall_time_sec: float,
+    ) -> Tuple[float, str]:
+        sim_time_sec = self._extract_ros_stamp_sec(odom)
+        if sim_time_sec is not None:
+            return float(sim_time_sec), "sim_time"
+        return float(fallback_wall_time_sec), "cyber_time_fallback"
 
     def _record_timing_from_odom(
         self,
@@ -5654,10 +5734,14 @@ class ApolloGtBridge:
 
     def _odom_to_loc(self, odom: Odometry, *, direct_world_frame: Optional[int] = None):
         loc = self.localization_pb2.LocalizationEstimate()
-        header_ts_sec = self._command_now_sec()
+        wall_time_sec = self._command_now_sec()
+        header_ts_sec, localization_time_base = self._localization_time_from_odom(
+            odom,
+            fallback_wall_time_sec=wall_time_sec,
+        )
         self._record_timing_from_odom(
             odom,
-            wall_time_sec=header_ts_sec,
+            wall_time_sec=wall_time_sec,
             direct_world_frame=direct_world_frame,
         )
         self._fill_header(
@@ -5667,7 +5751,6 @@ class ApolloGtBridge:
         pos = odom.pose.pose.position
         ori = odom.pose.pose.orientation
         vel = odom.twist.twist.linear
-        ang = odom.twist.twist.angular
         pose_info = self._transform_pose(pos, ori)
         self._maybe_auto_calibrate(
             pose_info["raw_x"],
@@ -5683,13 +5766,29 @@ class ApolloGtBridge:
         y = pose_info["map_y"]
         z = pose_info["map_z"]
         vx, vy, vz = self.tf.apply_vector(float(vel.x), float(vel.y), float(vel.z))
-        wz = float(ang.z)
+        wx_raw, wy_raw, wz_raw = _odom_angular_velocity_rad_per_s(odom)
+        wx, wy, wz = self.tf.apply_vector(wx_raw, wy_raw, wz_raw)
         yaw_ap = pose_info["map_yaw"]
         c_yaw = math.cos(yaw_ap)
         s_yaw = math.sin(yaw_ap)
-        vx_vrf = c_yaw * vx + s_yaw * vy
-        vy_vrf = -s_yaw * vx + c_yaw * vy
-        qx, qy, qz, qw = _yaw_to_quat(yaw_ap)
+        velocity_right_vrf = s_yaw * vx - c_yaw * vy
+        velocity_forward_vrf = c_yaw * vx + s_yaw * vy
+        angular_right_vrf = s_yaw * wx - c_yaw * wy
+        angular_forward_vrf = c_yaw * wx + s_yaw * wy
+        ax, ay, az, acceleration_source = _localization_acceleration_from_velocity(
+            getattr(self, "_last_localization_velocity_sample", None),
+            header_ts_sec,
+            vx,
+            vy,
+            vz,
+        )
+        if acceleration_source != "stale_timestamp_republish":
+            self._last_localization_velocity_sample = (header_ts_sec, vx, vy, vz)
+        acceleration_right_vrf = s_yaw * ax - c_yaw * ay
+        acceleration_forward_vrf = c_yaw * ax + s_yaw * ay
+        qx, qy, qz, qw = _rfu_to_enu_quat_from_heading(yaw_ap)
+        decoded_orientation_heading = _decode_rfu_to_enu_heading_from_quat(qx, qy, qz, qw)
+        orientation_heading_diff_rad = _wrap_to_pi(decoded_orientation_heading - yaw_ap)
 
         pose = getattr(loc, "pose", None)
         if pose is not None:
@@ -5709,28 +5808,99 @@ class ApolloGtBridge:
                 _safe_set(pose.linear_velocity, "y", vy)
                 _safe_set(pose.linear_velocity, "z", vz)
             if hasattr(pose, "linear_velocity_vrf"):
-                _safe_set(pose.linear_velocity_vrf, "x", vx_vrf)
-                _safe_set(pose.linear_velocity_vrf, "y", vy_vrf)
+                _safe_set(pose.linear_velocity_vrf, "x", velocity_right_vrf)
+                _safe_set(pose.linear_velocity_vrf, "y", velocity_forward_vrf)
                 _safe_set(pose.linear_velocity_vrf, "z", vz)
             if hasattr(pose, "angular_velocity"):
-                _safe_set(pose.angular_velocity, "x", 0.0)
-                _safe_set(pose.angular_velocity, "y", 0.0)
+                _safe_set(pose.angular_velocity, "x", wx)
+                _safe_set(pose.angular_velocity, "y", wy)
                 _safe_set(pose.angular_velocity, "z", wz)
             if hasattr(pose, "angular_velocity_vrf"):
-                _safe_set(pose.angular_velocity_vrf, "x", 0.0)
-                _safe_set(pose.angular_velocity_vrf, "y", 0.0)
+                _safe_set(pose.angular_velocity_vrf, "x", angular_right_vrf)
+                _safe_set(pose.angular_velocity_vrf, "y", angular_forward_vrf)
                 _safe_set(pose.angular_velocity_vrf, "z", wz)
             if hasattr(pose, "linear_acceleration"):
-                _safe_set(pose.linear_acceleration, "x", 0.0)
-                _safe_set(pose.linear_acceleration, "y", 0.0)
-                _safe_set(pose.linear_acceleration, "z", 0.0)
+                _safe_set(pose.linear_acceleration, "x", ax)
+                _safe_set(pose.linear_acceleration, "y", ay)
+                _safe_set(pose.linear_acceleration, "z", az)
             if hasattr(pose, "linear_acceleration_vrf"):
-                _safe_set(pose.linear_acceleration_vrf, "x", 0.0)
-                _safe_set(pose.linear_acceleration_vrf, "y", 0.0)
-                _safe_set(pose.linear_acceleration_vrf, "z", 0.0)
+                _safe_set(pose.linear_acceleration_vrf, "x", acceleration_right_vrf)
+                _safe_set(pose.linear_acceleration_vrf, "y", acceleration_forward_vrf)
+                _safe_set(pose.linear_acceleration_vrf, "z", az)
         # Apollo vehicle state freshness checks use measurement_time/header against cyber clock.
         _safe_set(loc, "measurement_time", header_ts_sec)
         pose_debug = self._pose_diagnostics(pose_info, header_ts_sec)
+        localization_debug = {
+            "localization_header_timestamp_sec": header_ts_sec,
+            "localization_measurement_time": header_ts_sec,
+            "localization_sequence_num": getattr(getattr(loc, "header", None), "sequence_num", None),
+            "localization_module_name": getattr(getattr(loc, "header", None), "module_name", None),
+            "localization_frame_id": "map",
+            "localization_carla_frame_id": direct_world_frame,
+            "direct_world_frame": direct_world_frame,
+            "localization_time_base": localization_time_base,
+            "localization_heading": yaw_ap,
+            "localization_orientation_yaw": yaw_ap,
+            "localization_orientation_raw_yaw": yaw_ap - math.pi / 2.0,
+            "localization_orientation_qx": qx,
+            "localization_orientation_qy": qy,
+            "localization_orientation_qz": qz,
+            "localization_orientation_qw": qw,
+            "decoded_orientation_heading": decoded_orientation_heading,
+            "decoded_orientation_heading_diff_rad": orientation_heading_diff_rad,
+            "orientation_heading_diff_rad": orientation_heading_diff_rad,
+            "heading_source": "transformed_forward_vector",
+            "orientation_convention": "RFU_to_ENU",
+            "ego_yaw_rate_rad_s": wz,
+            "localization_yaw_rate_rad_s": wz,
+            "localization_angular_velocity_z_rad_s": wz,
+            "angular_velocity_z_rad_s": wz,
+            "localization_angular_velocity_unit": "rad_per_s",
+            "angular_velocity_source": (
+                "carla_direct_odom_twist" if self.transport_mode == "carla_direct" else "ros2_odom_twist"
+            ),
+            "linear_acceleration_x": ax,
+            "linear_acceleration_y": ay,
+            "linear_acceleration_z": az,
+            "linear_acceleration_vrf_x": acceleration_right_vrf,
+            "linear_acceleration_vrf_y": acceleration_forward_vrf,
+            "linear_acceleration_vrf_z": az,
+            "linear_acceleration_available": True,
+            "linear_acceleration_vrf_available": True,
+            "angular_velocity_vrf_available": True,
+            "acceleration_source": acceleration_source,
+            "localization_uncertainty_policy": "not_modelled_gt_truth",
+            "localization_msf_status_policy": "not_applicable_gt_truth",
+            "localization_sensor_status_policy": "not_applicable_gt_truth",
+        }
+        pose_debug.update(localization_debug)
+        self.stats["localization"].update(
+            {
+                "header_timestamp_sec": header_ts_sec,
+                "measurement_time": header_ts_sec,
+                "sequence_num": localization_debug["localization_sequence_num"],
+                "module_name": localization_debug["localization_module_name"],
+                "frame_id": localization_debug["localization_frame_id"],
+                "time_base": localization_debug["localization_time_base"],
+                "orientation_convention": localization_debug["orientation_convention"],
+                "ego_yaw_rate_rad_s": wz,
+                "localization_yaw_rate_rad_s": wz,
+                "localization_angular_velocity_z_rad_s": wz,
+                "orientation_heading_diff_rad": orientation_heading_diff_rad,
+                "angular_velocity_unit": "rad_per_s",
+                "angular_velocity_source": localization_debug["angular_velocity_source"],
+                "linear_acceleration_x": ax,
+                "linear_acceleration_y": ay,
+                "linear_acceleration_z": az,
+                "linear_acceleration_vrf_x": acceleration_right_vrf,
+                "linear_acceleration_vrf_y": acceleration_forward_vrf,
+                "linear_acceleration_vrf_z": az,
+                "acceleration_source": acceleration_source,
+                "uncertainty_policy": localization_debug["localization_uncertainty_policy"],
+                "msf_status_policy": localization_debug["localization_msf_status_policy"],
+                "sensor_status_policy": localization_debug["localization_sensor_status_policy"],
+            }
+        )
         return loc, header_ts_sec, (vx, vy, vz), pose_debug, pose_info
 
     def _odom_to_chassis(
@@ -8726,6 +8896,23 @@ class ApolloGtBridge:
                     speed_mps = math.sqrt(sum(v * v for v in vel_xyz))
                     self._latest_speed_mps = float(speed_mps)
                     self._max_speed_mps = max(self._max_speed_mps, self._latest_speed_mps)
+                    pose_debug.update(
+                        {
+                            "localization_speed_mps": float(speed_mps),
+                            "chassis_speed_mps": float(speed_mps),
+                            "velocity_norm_vs_chassis_speed_mps": 0.0,
+                            "chassis_header_timestamp_sec": ts_sec,
+                            "localization_chassis_timestamp_delta_ms": 0.0,
+                        }
+                    )
+                    self.stats["localization"].update(
+                        {
+                            "localization_speed_mps": float(speed_mps),
+                            "chassis_speed_mps": float(speed_mps),
+                            "velocity_norm_vs_chassis_speed_mps": 0.0,
+                            "localization_chassis_timestamp_delta_ms": 0.0,
+                        }
+                    )
                     nearest_obs = self._nearest_obstacle_distance(snapshot, (ex, ey))
                     front_status = self._front_obstacle_behavior_status()
                     front_gap = front_status.get("last_gap", {}) or {}
@@ -8789,6 +8976,169 @@ class ApolloGtBridge:
                         "preview_y": self._coerce_float(pose_debug.get("preview_y"), float("nan"), "pose_debug.preview_y", "publish_row"),
                         "preview_heading_deg": self._coerce_float(pose_debug.get("preview_heading_deg"), float("nan"), "pose_debug.preview_heading_deg", "publish_row"),
                         "target_curvature": self._coerce_float(pose_debug.get("target_curvature"), float("nan"), "pose_debug.target_curvature", "publish_row"),
+                        "localization_header_timestamp_sec": self._coerce_float(
+                            pose_debug.get("localization_header_timestamp_sec"),
+                            float("nan"),
+                            "pose_debug.localization_header_timestamp_sec",
+                            "publish_row",
+                        ),
+                        "localization_measurement_time": self._coerce_float(
+                            pose_debug.get("localization_measurement_time"),
+                            float("nan"),
+                            "pose_debug.localization_measurement_time",
+                            "publish_row",
+                        ),
+                        "localization_sequence_num": pose_debug.get("localization_sequence_num"),
+                        "localization_module_name": pose_debug.get("localization_module_name"),
+                        "localization_frame_id": pose_debug.get("localization_frame_id"),
+                        "localization_carla_frame_id": pose_debug.get("localization_carla_frame_id"),
+                        "localization_time_base": pose_debug.get("localization_time_base"),
+                        "localization_heading": self._coerce_float(
+                            pose_debug.get("localization_heading"), float("nan"), "pose_debug.localization_heading", "publish_row"
+                        ),
+                        "localization_orientation_yaw": self._coerce_float(
+                            pose_debug.get("localization_orientation_yaw"),
+                            float("nan"),
+                            "pose_debug.localization_orientation_yaw",
+                            "publish_row",
+                        ),
+                        "localization_orientation_qx": self._coerce_float(
+                            pose_debug.get("localization_orientation_qx"),
+                            float("nan"),
+                            "pose_debug.localization_orientation_qx",
+                            "publish_row",
+                        ),
+                        "localization_orientation_qy": self._coerce_float(
+                            pose_debug.get("localization_orientation_qy"),
+                            float("nan"),
+                            "pose_debug.localization_orientation_qy",
+                            "publish_row",
+                        ),
+                        "localization_orientation_qz": self._coerce_float(
+                            pose_debug.get("localization_orientation_qz"),
+                            float("nan"),
+                            "pose_debug.localization_orientation_qz",
+                            "publish_row",
+                        ),
+                        "localization_orientation_qw": self._coerce_float(
+                            pose_debug.get("localization_orientation_qw"),
+                            float("nan"),
+                            "pose_debug.localization_orientation_qw",
+                            "publish_row",
+                        ),
+                        "decoded_orientation_heading": self._coerce_float(
+                            pose_debug.get("decoded_orientation_heading"),
+                            float("nan"),
+                            "pose_debug.decoded_orientation_heading",
+                            "publish_row",
+                        ),
+                        "decoded_orientation_heading_diff_rad": self._coerce_float(
+                            pose_debug.get("decoded_orientation_heading_diff_rad"),
+                            float("nan"),
+                            "pose_debug.decoded_orientation_heading_diff_rad",
+                            "publish_row",
+                        ),
+                        "orientation_heading_diff_rad": self._coerce_float(
+                            pose_debug.get("orientation_heading_diff_rad"),
+                            float("nan"),
+                            "pose_debug.orientation_heading_diff_rad",
+                            "publish_row",
+                        ),
+                        "heading_source": pose_debug.get("heading_source"),
+                        "orientation_convention": pose_debug.get("orientation_convention"),
+                        "ego_yaw_rate_rad_s": self._coerce_float(
+                            pose_debug.get("ego_yaw_rate_rad_s"),
+                            float("nan"),
+                            "pose_debug.ego_yaw_rate_rad_s",
+                            "publish_row",
+                        ),
+                        "localization_yaw_rate_rad_s": self._coerce_float(
+                            pose_debug.get("localization_yaw_rate_rad_s"),
+                            float("nan"),
+                            "pose_debug.localization_yaw_rate_rad_s",
+                            "publish_row",
+                        ),
+                        "localization_angular_velocity_z_rad_s": self._coerce_float(
+                            pose_debug.get("localization_angular_velocity_z_rad_s"),
+                            float("nan"),
+                            "pose_debug.localization_angular_velocity_z_rad_s",
+                            "publish_row",
+                        ),
+                        "localization_angular_velocity_unit": pose_debug.get("localization_angular_velocity_unit"),
+                        "angular_velocity_source": pose_debug.get("angular_velocity_source"),
+                        "linear_acceleration_x": self._coerce_float(
+                            pose_debug.get("linear_acceleration_x"),
+                            float("nan"),
+                            "pose_debug.linear_acceleration_x",
+                            "publish_row",
+                        ),
+                        "linear_acceleration_y": self._coerce_float(
+                            pose_debug.get("linear_acceleration_y"),
+                            float("nan"),
+                            "pose_debug.linear_acceleration_y",
+                            "publish_row",
+                        ),
+                        "linear_acceleration_z": self._coerce_float(
+                            pose_debug.get("linear_acceleration_z"),
+                            float("nan"),
+                            "pose_debug.linear_acceleration_z",
+                            "publish_row",
+                        ),
+                        "linear_acceleration_vrf_x": self._coerce_float(
+                            pose_debug.get("linear_acceleration_vrf_x"),
+                            float("nan"),
+                            "pose_debug.linear_acceleration_vrf_x",
+                            "publish_row",
+                        ),
+                        "linear_acceleration_vrf_y": self._coerce_float(
+                            pose_debug.get("linear_acceleration_vrf_y"),
+                            float("nan"),
+                            "pose_debug.linear_acceleration_vrf_y",
+                            "publish_row",
+                        ),
+                        "linear_acceleration_vrf_z": self._coerce_float(
+                            pose_debug.get("linear_acceleration_vrf_z"),
+                            float("nan"),
+                            "pose_debug.linear_acceleration_vrf_z",
+                            "publish_row",
+                        ),
+                        "linear_acceleration_available": pose_debug.get("linear_acceleration_available"),
+                        "linear_acceleration_vrf_available": pose_debug.get("linear_acceleration_vrf_available"),
+                        "angular_velocity_vrf_available": pose_debug.get("angular_velocity_vrf_available"),
+                        "acceleration_source": pose_debug.get("acceleration_source"),
+                        "localization_uncertainty_policy": pose_debug.get("localization_uncertainty_policy"),
+                        "localization_msf_status_policy": pose_debug.get("localization_msf_status_policy"),
+                        "localization_sensor_status_policy": pose_debug.get("localization_sensor_status_policy"),
+                        "localization_speed_mps": self._coerce_float(
+                            pose_debug.get("localization_speed_mps"),
+                            float("nan"),
+                            "pose_debug.localization_speed_mps",
+                            "publish_row",
+                        ),
+                        "chassis_speed_mps": self._coerce_float(
+                            pose_debug.get("chassis_speed_mps"),
+                            float("nan"),
+                            "pose_debug.chassis_speed_mps",
+                            "publish_row",
+                        ),
+                        "velocity_norm_vs_chassis_speed_mps": self._coerce_float(
+                            pose_debug.get("velocity_norm_vs_chassis_speed_mps"),
+                            float("nan"),
+                            "pose_debug.velocity_norm_vs_chassis_speed_mps",
+                            "publish_row",
+                        ),
+                        "chassis_header_timestamp_sec": self._coerce_float(
+                            pose_debug.get("chassis_header_timestamp_sec"),
+                            float("nan"),
+                            "pose_debug.chassis_header_timestamp_sec",
+                            "publish_row",
+                        ),
+                        "localization_chassis_timestamp_delta_ms": self._coerce_float(
+                            pose_debug.get("localization_chassis_timestamp_delta_ms"),
+                            float("nan"),
+                            "pose_debug.localization_chassis_timestamp_delta_ms",
+                            "publish_row",
+                        ),
                         "apollo_desired_throttle": self._coerce_float(desired_in.get("throttle"), float("nan"), "desired_in.throttle", "publish_row"),
                         "apollo_desired_brake": self._coerce_float(desired_in.get("brake"), float("nan"), "desired_in.brake", "publish_row"),
                         "apollo_desired_steer": self._coerce_float(desired_in.get("steer"), float("nan"), "desired_in.steer", "publish_row"),
