@@ -1,0 +1,116 @@
+schema_version: followstop_combo_plan.v1
+name: town01_followstop_apollo_autoware_combo_matrix
+description: >
+  First-round follow-stop combination plan for locally available Apollo and
+  Autoware knobs. This is a screening plan, not a natural-driving capability
+  claim and not a carla_direct promotion gate.
+
+scenario:
+  map: Town01
+  objective: ego accelerates toward 80 kph and stops before a stationary lead vehicle 300 m ahead
+  ego_idx: 78
+  front_idx: 57
+  front_target_ahead_m: 300.0
+  target_speed_mps: 22.22
+  route_goal_ahead_m: 330.0
+  duration_s: 90.0
+  fixed_delta_seconds: 0.05
+  ticks: 1800
+
+fixed_conditions:
+  seed: 42
+  ego_blueprint: vehicle.lincoln.mkz_2020
+  traffic_actors: []
+  actuator_mapping_mode: legacy
+  steer_scale: 0.25
+  physical_mapping_enabled: false
+  lane_invasion_as_hard_gate: false
+  same_spawn_required_for_stack_comparison: true
+
+apollo:
+  baseline_config: configs/io/examples/followstop_apollo_gt_lateral_enabled_stitcher_v1.yaml
+  primary_transport: ros2_gt
+  optional_transport: carla_direct
+  planning_smoothers:
+    - id: discrete_points
+      local_evidence: Apollo planning config comments and current default path
+      runtime_wiring_status: config_override
+    - id: qp_spline
+      local_evidence: Apollo planning config comments
+      runtime_wiring_status: config_override
+    - id: spiral
+      local_evidence: Apollo planning config comments
+      runtime_wiring_status: config_override
+  control_modes:
+    - id: lat_lon
+      label: LatController + LonController
+      local_evidence: Apollo control plugins and current runtime overlay
+      runtime_wiring_status: config_override
+    - id: mpc
+      label: MPCController
+      local_evidence: Apollo control plugin libraries present in runtime overlay
+      runtime_wiring_status: config_override
+
+autoware:
+  baseline_config: configs/io/examples/followstop_autoware.yaml
+  control_modes:
+    - id: mpc_pid
+      launch_args:
+        trajectory_follower_mode: trajectory_follower_node
+        lateral_controller_mode: mpc
+        longitudinal_controller_mode: pid
+    - id: pure_pursuit_pid
+      launch_args:
+        trajectory_follower_mode: trajectory_follower_node
+        lateral_controller_mode: pure_pursuit
+        longitudinal_controller_mode: pid
+    - id: smart_mpc
+      launch_args:
+        trajectory_follower_mode: smart_mpc_trajectory_follower
+  velocity_smoothers:
+    - id: JerkFiltered
+      local_evidence: Autoware planning preset default
+    - id: Analytical
+      local_evidence: Autoware planning preset option
+
+confirmation:
+  top_candidates_per_stack: 2
+  repeats_per_candidate: 3
+  selection_requires:
+    - artifact_complete
+    - no_collision
+    - stop_success
+    - control_health_warn_or_pass
+
+required_artifacts:
+  - manifest.json
+  - summary.json
+  - config.resolved.yaml or effective.yaml
+  - timeseries.csv or timeseries.jsonl
+  - events.jsonl
+  - analysis/route_health/route_health.json
+  - analysis/control_attribution/control_attribution_report.json
+  - analysis/control_health/control_health_report.json
+  - video/dual_cam/demo_third_person.mp4
+  - video/rviz/autoware_rviz.mp4 for Autoware demo evidence
+  - rosbag2/autoware_demo for Autoware topic evidence
+
+acceptance_metrics:
+  - speed_peak_kph
+  - stop_success
+  - min_lead_distance_m
+  - collision_count
+  - lane_invasion_count
+  - lateral_error_p95
+  - heading_error_p95
+  - raw_mapped_applied_control_consistency
+  - brake_throttle_conflict_frames
+  - planning_control_channel_availability
+  - artifact_completeness
+
+claim_boundary:
+  - One row is one configuration group, not a repeated run.
+  - First-round screening cannot prove natural driving capability.
+  - Apollo internal variants require explicit local Apollo config patching before online execution.
+  - carla_direct is an experimental transport candidate, not a default backend.
+  - Confirmation repeats are selected after screening artifacts identify top candidates.
