@@ -435,6 +435,7 @@ def test_jsonl_timeseries_control_trace_is_supported(tmp_path: Path) -> None:
     for report_path in (
         run_dir / "analysis" / "route_health" / "route_health.json",
         run_dir / "analysis" / "control_health" / "control_health_report.json",
+        run_dir / "analysis" / "localization_contract" / "localization_contract_report.json",
         run_dir / "analysis" / "failure_timeline" / "failure_timeline_report.json",
         run_dir / "analysis" / "route_start_alignment" / "route_start_alignment_report.json",
     ):

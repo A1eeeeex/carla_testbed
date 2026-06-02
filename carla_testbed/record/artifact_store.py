@@ -8,6 +8,8 @@ from typing import Any, Mapping
 
 import yaml
 
+from carla_testbed.analysis.assist_ledger import build_runtime_assist_ledger
+
 from .route_curve_fields import ROUTE_CURVE_FIELDS_SCHEMA_VERSION
 
 
@@ -34,6 +36,39 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     _atomic_write_text(path, json.dumps(_json_safe(payload), indent=2, sort_keys=True))
+
+
+def _read_json_mapping(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_yaml_mapping(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _append_warning(payload: dict[str, Any], warning: str) -> None:
+    existing = payload.get("warnings")
+    if isinstance(existing, list):
+        warnings = [str(item) for item in existing]
+    elif existing in (None, ""):
+        warnings = []
+    else:
+        warnings = [str(existing)]
+    if warning not in warnings:
+        warnings.append(warning)
+    payload["warnings"] = warnings
 
 
 def _normalize_carla_map_name(value: Any) -> str | None:
@@ -126,6 +161,54 @@ class RunArtifactStore:
             self.traffic_light_dir / "traffic_light_contract_report.json"
         )
 
+    def _first_existing_json_mapping(self, *relative_paths: str) -> dict[str, Any]:
+        for relative in relative_paths:
+            payload = _read_json_mapping(self.run_dir / relative)
+            if payload:
+                return payload
+        return {}
+
+    def _runtime_assist_ledger_for_payload(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        payload_role: str,
+    ) -> dict[str, Any]:
+        manifest = _read_json_mapping(self.manifest_path)
+        summary = _read_json_mapping(self.summary_path)
+        if payload_role == "manifest":
+            manifest = dict(payload)
+        elif payload_role == "summary":
+            summary = dict(payload)
+        config = _read_yaml_mapping(self.resolved_config_path)
+        bridge_stats = self._first_existing_json_mapping(
+            "artifacts/direct_bridge_stats.json",
+            "artifacts/cyber_bridge_stats.json",
+            "direct_bridge_stats.json",
+            "cyber_bridge_stats.json",
+        )
+        return build_runtime_assist_ledger(
+            config=config or None,
+            bridge_stats=bridge_stats or None,
+            summary=summary or None,
+            manifest=manifest or None,
+        )
+
+    def _with_runtime_assist_ledger(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        payload_role: str,
+    ) -> dict[str, Any]:
+        enriched = _json_safe(payload)
+        if not isinstance(enriched, dict):
+            enriched = dict(payload)
+        ledger = self._runtime_assist_ledger_for_payload(enriched, payload_role=payload_role)
+        enriched["assist_ledger"] = ledger
+        for warning in ledger.get("warnings") or []:
+            _append_warning(enriched, str(warning))
+        return enriched
+
     def ensure(self) -> "RunArtifactStore":
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -137,7 +220,10 @@ class RunArtifactStore:
         return self
 
     def write_manifest(self, manifest: Mapping[str, Any]) -> None:
-        _write_json(self.manifest_path, manifest)
+        _write_json(
+            self.manifest_path,
+            self._with_runtime_assist_ledger(manifest, payload_role="manifest"),
+        )
 
     def update_manifest(self, updates: Mapping[str, Any]) -> dict:
         current: dict[str, Any] = {}
@@ -157,7 +243,10 @@ class RunArtifactStore:
         _atomic_write_text(self.resolved_config_path, text)
 
     def write_summary(self, summary: Mapping[str, Any]) -> None:
-        _write_json(self.summary_path, summary)
+        _write_json(
+            self.summary_path,
+            self._with_runtime_assist_ledger(summary, payload_role="summary"),
+        )
 
     def open_events(self, *, append: bool = False) -> EventsWriter:
         return EventsWriter(self.events_path, append=append)

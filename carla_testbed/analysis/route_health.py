@@ -7,6 +7,18 @@ from typing import Any, Iterable, Mapping, Sequence
 from carla_testbed.routes.geometry import compute_spacing, heading_error, nearest_route_index
 from carla_testbed.routes.schema import RouteDefinition, RouteHealthReport
 
+ROUTE_SOURCE_CONFIGURED_ROUTE_FILE = "configured_route_file"
+ROUTE_SOURCE_MANIFEST_ROUTE = "manifest_route"
+ROUTE_SOURCE_MANIFEST_ROUTE_TRACE = "manifest_route_trace"
+ROUTE_SOURCE_INLINE_ROUTE = "inline_route"
+ROUTE_SOURCE_RECONSTRUCTED_FROM_TIMESERIES = "reconstructed_from_timeseries"
+ROUTE_SOURCE_MISSING = "missing"
+
+EVIDENCE_LEVEL_CLAIM_GRADE = "claim_grade"
+EVIDENCE_LEVEL_CLAIM_GRADE_FOR_CARLA_ROUTE_GEOMETRY = "claim_grade_for_carla_route_geometry"
+EVIDENCE_LEVEL_DIAGNOSTIC_ONLY = "diagnostic_only"
+EVIDENCE_LEVEL_INSUFFICIENT = "insufficient"
+
 
 def _percentile(values: Sequence[float], q: float) -> float | None:
     cleaned = sorted(float(value) for value in values if value is not None and math.isfinite(float(value)))
@@ -70,6 +82,96 @@ def _route_length(route: RouteDefinition) -> float:
     if last.s is not None:
         return float(last.s)
     return sum(compute_spacing(route.points))
+
+
+def _route_evidence_fields(
+    route: RouteDefinition,
+    *,
+    route_source: str,
+    route_geometry: Mapping[str, Any],
+) -> dict[str, Any]:
+    source = str(route_source or ROUTE_SOURCE_MISSING)
+    point_count = _scalar(route_geometry, "point_count")
+    length_m = _scalar(route_geometry, "length_m")
+    has_valid_identity = bool(str(route.route_id or "").strip()) and bool(str(route.map_name or "").strip())
+    has_valid_geometry = point_count is not None and point_count > 1 and length_m is not None and length_m > 0.0
+    has_claim_grade_shape = has_valid_identity and has_valid_geometry
+
+    if source in {ROUTE_SOURCE_CONFIGURED_ROUTE_FILE, ROUTE_SOURCE_MANIFEST_ROUTE}:
+        if has_claim_grade_shape:
+            return {
+                "route_source": source,
+                "evidence_level": EVIDENCE_LEVEL_CLAIM_GRADE,
+                "hard_gate_eligible": True,
+                "route_evidence_reason": f"{source}_with_valid_route_identity_and_geometry",
+            }
+        return {
+            "route_source": source,
+            "evidence_level": EVIDENCE_LEVEL_INSUFFICIENT,
+            "hard_gate_eligible": False,
+            "route_evidence_reason": "route_identity_or_geometry_invalid_for_claim_grade",
+        }
+
+    if source == ROUTE_SOURCE_MANIFEST_ROUTE_TRACE:
+        if has_claim_grade_shape:
+            return {
+                "route_source": source,
+                "evidence_level": EVIDENCE_LEVEL_CLAIM_GRADE_FOR_CARLA_ROUTE_GEOMETRY,
+                "hard_gate_eligible": True,
+                "route_evidence_reason": "manifest_route_trace",
+                "reference_line_verified": False,
+                "apollo_reference_line_claim_grade": False,
+            }
+        return {
+            "route_source": source,
+            "evidence_level": EVIDENCE_LEVEL_INSUFFICIENT,
+            "hard_gate_eligible": False,
+            "route_evidence_reason": "manifest_route_trace_identity_or_geometry_invalid",
+            "reference_line_verified": False,
+            "apollo_reference_line_claim_grade": False,
+        }
+
+    if source == ROUTE_SOURCE_INLINE_ROUTE:
+        inline_source = str(
+            route.metadata.get("route_evidence_source")
+            or route.metadata.get("inline_source_key")
+            or route.metadata.get("source")
+            or route.source
+            or ""
+        )
+        explicit_inline_source = inline_source in {"route_definition", "route_ref_resolved"}
+        if explicit_inline_source and has_claim_grade_shape:
+            return {
+                "route_source": source,
+                "evidence_level": EVIDENCE_LEVEL_CLAIM_GRADE,
+                "hard_gate_eligible": True,
+                "route_evidence_reason": f"inline_{inline_source}_with_valid_route_identity_and_geometry",
+            }
+        if not has_claim_grade_shape:
+            reason = "inline_route_identity_or_geometry_invalid_for_claim_grade"
+        else:
+            reason = "inline_route_source_ambiguous_cannot_support_hard_gate"
+        return {
+            "route_source": source,
+            "evidence_level": EVIDENCE_LEVEL_DIAGNOSTIC_ONLY,
+            "hard_gate_eligible": False,
+            "route_evidence_reason": reason,
+        }
+
+    if source == ROUTE_SOURCE_RECONSTRUCTED_FROM_TIMESERIES:
+        return {
+            "route_source": source,
+            "evidence_level": EVIDENCE_LEVEL_DIAGNOSTIC_ONLY,
+            "hard_gate_eligible": False,
+            "route_evidence_reason": "reconstructed_from_timeseries_cannot_support_hard_gate",
+        }
+
+    return {
+        "route_source": ROUTE_SOURCE_MISSING,
+        "evidence_level": EVIDENCE_LEVEL_INSUFFICIENT,
+        "hard_gate_eligible": False,
+        "route_evidence_reason": "route_missing_or_unrecognized_source",
+    }
 
 
 def _curve_direction(values: Sequence[float]) -> str:
@@ -506,6 +608,7 @@ def analyze_route_health(
     timeseries_rows: Iterable[Mapping[str, Any]] | None = None,
     *,
     curvature_abs_threshold: float = 0.03,
+    route_source: str = ROUTE_SOURCE_CONFIGURED_ROUTE_FILE,
 ) -> dict[str, Any]:
     rows = list(timeseries_rows) if timeseries_rows is not None else None
     missing_fields: list[str] = []
@@ -531,5 +634,12 @@ def analyze_route_health(
         verdict={},
     )
     payload = report.to_dict()
+    payload.update(
+        _route_evidence_fields(
+            route,
+            route_source=route_source,
+            route_geometry=payload.get("route_geometry") or {},
+        )
+    )
     payload["verdict"] = _verdict(payload["warnings"], payload["missing_inputs"])
     return payload

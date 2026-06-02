@@ -111,6 +111,13 @@ def check_run_artifact_completeness(
             "apollo_channel_health_report.json",
         ],
     )
+    localization_contract_path = _find_first(
+        root,
+        [
+            "analysis/localization_contract/localization_contract_report.json",
+            "localization_contract_report.json",
+        ],
+    )
     control_health_path = _find_first(
         root,
         [
@@ -165,6 +172,7 @@ def check_run_artifact_completeness(
         "curve_segments": str(curve_segments_path) if curve_segments_path else None,
         "route_health_summary": str(route_health_summary_path) if route_health_summary_path else None,
         "apollo_channel_health": str(channel_health_path) if channel_health_path else None,
+        "localization_contract": str(localization_contract_path) if localization_contract_path else None,
         "control_health": str(control_health_path) if control_health_path else None,
         "failure_timeline": str(failure_timeline_path) if failure_timeline_path else None,
         "route_start_alignment": str(route_start_alignment_path) if route_start_alignment_path else None,
@@ -191,6 +199,7 @@ def check_run_artifact_completeness(
         route_id=route_id,
         route_health_path=route_health_path,
         channel_health_path=channel_health_path,
+        localization_contract_path=localization_contract_path,
         control_health_path=control_health_path,
         failure_timeline_path=failure_timeline_path,
         route_start_alignment_path=route_start_alignment_path,
@@ -315,6 +324,7 @@ def _missing_artifacts(artifacts: Mapping[str, Any], *, scenario_class: str | No
         ("curve_segments", "curve_segments.csv"),
         ("route_health_summary", "route_health_summary.md"),
         ("apollo_channel_health", "apollo_channel_health_report.json"),
+        ("localization_contract", "localization_contract_report.json"),
         ("control_health", "control_health_report.json"),
         ("failure_timeline", "failure_timeline_report.json"),
         ("route_start_alignment", "route_start_alignment_report.json"),
@@ -338,6 +348,7 @@ def _invalid_report_source_fields(
     route_id: str,
     route_health_path: Path | None,
     channel_health_path: Path | None,
+    localization_contract_path: Path | None,
     control_health_path: Path | None,
     failure_timeline_path: Path | None,
     route_start_alignment_path: Path | None,
@@ -366,6 +377,14 @@ def _invalid_report_source_fields(
             run_dir=run_dir,
             report_name="apollo_channel_health",
             required_source_fields=("config_path", "stats_path"),
+        )
+    )
+    invalid.extend(
+        _invalid_source_fields(
+            localization_contract_path,
+            run_dir=run_dir,
+            report_name="localization_contract",
+            required_source_fields=("timeseries_path", "channel_stats_path", "route_health_path"),
         )
     )
     invalid.extend(

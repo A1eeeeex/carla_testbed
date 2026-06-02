@@ -187,7 +187,7 @@ def _hard_gate_from_comparisons(report: Mapping[str, Any]) -> dict[str, Any]:
         status = str(comparison.get("status") or "")
         if status == "candidate_positive":
             positive.append(route_id)
-        elif status == "candidate_degraded":
+        elif status in {"candidate_negative", "candidate_degraded"}:
             degraded.append(route_id)
         else:
             insufficient.append(route_id)
@@ -719,11 +719,11 @@ def evaluate_random_regression(report: Mapping[str, Any]) -> dict[str, Any]:
             "claim_supported": "no random regression A/B evidence",
         }
     positive = [item for item in comparisons if item.get("status") == "candidate_positive"]
-    degraded = [item for item in comparisons if item.get("status") == "candidate_degraded"]
+    degraded = [item for item in comparisons if item.get("status") in {"candidate_negative", "candidate_degraded"}]
     insufficient = [
         item
         for item in comparisons
-        if item.get("status") not in {"candidate_positive", "candidate_degraded"}
+        if item.get("status") not in {"candidate_positive", "candidate_negative", "candidate_degraded"}
     ]
     if degraded:
         status = "degraded"

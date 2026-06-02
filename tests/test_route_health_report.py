@@ -30,12 +30,20 @@ def test_route_health_report_files_created(tmp_path: Path) -> None:
     payload = json.loads((tmp_path / "route_health.json").read_text(encoding="utf-8"))
     summary = (tmp_path / "route_health_summary.md").read_text(encoding="utf-8")
     assert payload["route_id"] == "spawn_alignment_curve"
+    assert payload["route_source"] == "configured_route_file"
+    assert payload["evidence_level"] == "claim_grade"
+    assert payload["hard_gate_eligible"] is True
+    assert payload["route_evidence_reason"] == "configured_route_file_with_valid_route_identity_and_geometry"
     assert payload["route_geometry"]["curve_segments_count"] >= 1
     assert payload["route_geometry"]["spawn_alignment"]["direction_consistent"] is True
     assert "curve segment count" in summary
     assert "spawn alignment" in summary
     assert "ego_speed mean/p95/max" in summary
     assert "brake_throttle_conflict_frames" in summary
+    assert "Route source" in summary
+    assert "Evidence level" in summary
+    assert "Hard gate eligible" in summary
+    assert "Route evidence reason" in summary
 
 
 def test_curve_segments_csv_header_is_fixed(tmp_path: Path) -> None:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import carla_testbed.scenarios.town01_route_health as route_health_module
-from carla_testbed.scenarios import Town01RouteHealthConfig, Town01RouteHealthScenario
+import pytest
+
+pytestmark = pytest.mark.carla
 
 
 class _FakeTrafficLight:
@@ -31,6 +32,9 @@ class _FakeWorld:
 
 
 def test_deterministic_traffic_light_policy_sets_initial_and_release_state() -> None:
+    import carla_testbed.scenarios.town01_route_health as route_health_module
+    from carla_testbed.scenarios import Town01RouteHealthConfig, Town01RouteHealthScenario
+
     light = _FakeTrafficLight(101)
     world = _FakeWorld([light])
     scenario = Town01RouteHealthScenario(
@@ -58,6 +62,9 @@ def test_deterministic_traffic_light_policy_sets_initial_and_release_state() -> 
 
 
 def test_deterministic_traffic_light_policy_can_target_actor_ids() -> None:
+    import carla_testbed.scenarios.town01_route_health as route_health_module
+    from carla_testbed.scenarios import Town01RouteHealthConfig, Town01RouteHealthScenario
+
     target = _FakeTrafficLight(101)
     other = _FakeTrafficLight(202)
     world = _FakeWorld([target, other])
@@ -79,6 +86,8 @@ def test_deterministic_traffic_light_policy_can_target_actor_ids() -> None:
 
 
 def test_default_traffic_light_policy_does_not_change_lights() -> None:
+    from carla_testbed.scenarios import Town01RouteHealthConfig, Town01RouteHealthScenario
+
     light = _FakeTrafficLight(101)
     scenario = Town01RouteHealthScenario(Town01RouteHealthConfig())
 

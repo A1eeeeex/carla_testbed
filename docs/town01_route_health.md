@@ -18,9 +18,33 @@ fields. Missing matched-point, target-point, or control fields should become
 `missing_fields` entries, not uncaught exceptions.
 
 Route-health reports are also an input to the Apollo reproduction gate
-(`docs/apollo_reproduction.md`). Without a route-health report, do not claim a
-curve lateral semantics conclusion, even if the closed-loop run moved the ego
-vehicle.
+(`docs/apollo_reproduction.md`). Without `route_health.json` or
+`apollo_lateral_semantics_report.json`, do not claim a curve lateral semantics
+conclusion, even if the closed-loop run moved the ego vehicle.
+
+Route-health is not a substitute for the Apollo map/route/signal contract.
+`town01_apollo_contract_report.json` now records contract levels for route,
+spawn, HDMap, reference-line, and signal-overlap evidence. Placeholder/example
+contracts can support schema development and diagnostics, but they cannot pass
+hard gates for junction or traffic-light claims. In particular:
+
+- lane-keep claims require claim-grade route geometry and spawn alignment;
+- curve and junction claims require `route_health.json` plus
+  `reference_line_verified` evidence unless the run is explicitly
+  diagnostic-only;
+- traffic-light claims require `signal_overlap_verified`;
+- RoadRunner/Baguang conversion metadata records provenance, hashes, scale, and
+  counts, but it does not by itself verify Apollo reference lines or signal
+  overlaps.
+
+Route-health is also not a substitute for the GT localization contract.
+`localization_contract_report.json` is required before route-health evidence can
+support lane-keep, junction, or traffic-light hard-gate claims in
+`natural_driving_report.json`. Missing localization contract evidence keeps the
+aggregate result at `insufficient_data` or `diagnostic_only`; it must not be
+reported as an Apollo algorithm failure. Blocking localization findings include
+non-monotonic timestamps, high lane-heading error, missing frame-transform or
+axis-mapping declaration, and `position_uses_vrp=false`.
 
 ## Core Modules
 
@@ -47,6 +71,10 @@ fields:
 - `schema_version`
 - `route_id`
 - `map_name`
+- `route_source`
+- `evidence_level`
+- `hard_gate_eligible`
+- `route_evidence_reason`
 - `source`
 - `route_geometry`
 - `run_metrics`
@@ -57,9 +85,47 @@ fields:
 - `warnings`
 - `verdict`
 
+When run-directory postprocess can find
+`analysis/localization_contract/localization_contract_report.json`, the
+generated `route_health_summary.md` also displays the localization contract
+status, warnings, and blocking reasons. If no report is present, the summary
+prints `localization_contract_status: not evaluated`.
+
 `route_geometry` includes point count, route length, spacing statistics,
 heading jump statistics, curvature statistics, curve segments, spawn alignment,
 and route direction consistency.
+
+Route evidence fields are deliberately separate from diagnostic geometry:
+
+- `route_source` is one of `configured_route_file`, `manifest_route`,
+  `manifest_route_trace`, `inline_route`, `reconstructed_from_timeseries`, or
+  `missing`.
+- `evidence_level=claim_grade` means the route can support a hard-gate claim
+  if other artifacts also pass.
+- `evidence_level=diagnostic_only` means the report can help debug, but must
+  not be used as hard-gate proof.
+- `hard_gate_eligible=false` blocks lane-keep, junction, and traffic-light
+  natural-driving hard gates.
+- `route_evidence_reason` records the exact reason for promotion or downgrade.
+
+Routes reconstructed from P0 `timeseries.csv` route columns are useful for
+debugging legacy or incomplete runs, but they are never claim-grade. They must
+emit `route_source=reconstructed_from_timeseries`,
+`evidence_level=diagnostic_only`, `hard_gate_eligible=false`, and
+`route_evidence_reason=reconstructed_from_timeseries_cannot_support_hard_gate`.
+This prevents the self-confirming loop of deriving a route from the vehicle's
+actual trajectory and then using that same route as proof of route health.
+
+Inline routes are claim-grade only when the manifest or config clearly declares
+the inline payload as `route_definition` or `route_ref_resolved` and the
+`route_id`, map, point count, and length are valid. Ambiguous inline `route`
+payloads remain diagnostic-only.
+
+Manifest `scenario_metadata.route_trace` evidence can support claim-grade CARLA
+route geometry when route id, map, point count, and length are valid. It is not
+Apollo HDMap or reference-line verification by itself, so reports using
+`route_source=manifest_route_trace` must keep `reference_line_verified=false`
+unless an explicit reference-line validation artifact is also present.
 
 `run_metrics` can include lateral and heading error summaries when timeseries
 data is available. It also summarizes P0 longitudinal/control-actuation
@@ -179,6 +245,38 @@ If those fields are missing, `natural_driving_report.json` must remain
 `first_high_steer`, the curve diagnostic run must fail rather than be counted
 as healthy tracking.
 
+## Apollo Lateral Semantics Report
+
+When route-health shows curve or straight-lane lateral anomalies, generate the
+dedicated Apollo lateral-semantics report:
+
+```bash
+python tools/analyze_apollo_lateral_semantics.py \
+  --run-dir runs/<run_id> \
+  --out runs/<run_id>/analysis/apollo_lateral_semantics
+```
+
+Outputs:
+
+- `apollo_lateral_semantics_report.json`
+- `apollo_lateral_semantics_summary.md`
+
+This report compares route curvature, reference-line curvature, Apollo planning
+first-point kappa, target-point kappa, source steer, matched/target point
+distance, mapped/applied steer, yaw-rate response, cross-track error, and
+heading error. It uses `suspected_layer` plus `confidence`, not a definitive
+root-cause claim.
+
+Important caveats:
+
+- straight route plus high planning/target kappa points to reference-line or
+  target-point semantics requiring audit;
+- raw/mapped/applied mismatch points to control mapping evidence, not automatic
+  permission to change `steer_scale`;
+- applied steer with no yaw response points to vehicle response evidence;
+- `lateral_guard_apply_count=0` only says guard is not dominant evidence; it
+  does not prove the bridge is irrelevant.
+
 ## Run Artifact Path
 
 Run-integrated route-health output belongs under:
@@ -194,9 +292,19 @@ Expected files:
 - `curve_segments.csv`
 - `route_health_summary.md`
 
+If `analysis/localization_contract/localization_contract_report.json` is
+available in the same run directory, `route_health_summary.md` includes its
+status. This is a summary echo only; the natural-driving evaluator remains the
+place that decides whether localization evidence blocks a hard-gate claim.
+
 `tools/analyze_route_health.py --run-dir <run>` writes this structure when a
 route and/or timeseries can be discovered. If a route is missing, the verdict is
 `insufficient_data` and `missing_inputs` includes `route`.
+
+If only P0 timeseries route columns are available, the analyzer may still write
+all four report files using a reconstructed route. That output is for diagnosis
+only and cannot make a natural-driving hard gate pass in
+`natural_driving_report.json`.
 
 ## CI-Friendly Tests
 

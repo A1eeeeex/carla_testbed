@@ -7,7 +7,17 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
-from carla_testbed.analysis.route_health import analyze_route_health
+from carla_testbed.analysis.route_health import (
+    EVIDENCE_LEVEL_INSUFFICIENT,
+    ROUTE_SOURCE_CONFIGURED_ROUTE_FILE,
+    ROUTE_SOURCE_INLINE_ROUTE,
+    ROUTE_SOURCE_MANIFEST_ROUTE,
+    ROUTE_SOURCE_MANIFEST_ROUTE_TRACE,
+    ROUTE_SOURCE_MISSING,
+    ROUTE_SOURCE_RECONSTRUCTED_FROM_TIMESERIES,
+    analyze_route_health,
+)
+from carla_testbed.routes.geometry import compute_cumulative_s, compute_curvature, compute_headings
 from carla_testbed.routes.io import load_route_json
 from carla_testbed.routes.schema import RouteDefinition, RoutePoint
 
@@ -119,6 +129,9 @@ def write_curve_segments_csv(path: Path, route: RouteDefinition, report: dict[st
 def render_route_health_summary(report: dict[str, Any]) -> str:
     geometry = report.get("route_geometry", {})
     metrics = report.get("run_metrics", {})
+    localization = report.get("localization_contract")
+    if not isinstance(localization, Mapping):
+        localization = {}
     spacing = geometry.get("spacing", {})
     heading = geometry.get("heading", {})
     curvature = geometry.get("curvature", {})
@@ -130,6 +143,10 @@ def render_route_health_summary(report: dict[str, Any]) -> str:
         "",
         f"- route_id: `{report.get('route_id')}`",
         f"- map_name: `{report.get('map_name')}`",
+        f"- Route source: `{report.get('route_source')}`",
+        f"- Evidence level: `{report.get('evidence_level')}`",
+        f"- Hard gate eligible: `{report.get('hard_gate_eligible')}`",
+        f"- Route evidence reason: `{report.get('route_evidence_reason')}`",
         f"- point_count: `{geometry.get('point_count')}`",
         f"- length_m: `{_format_value(geometry.get('length_m'))}`",
         f"- spacing mean/p95/max: `{_format_value(spacing.get('mean_m'))}` / `{_format_value(spacing.get('p95_m'))}` / `{_format_value(spacing.get('max_m'))}`",
@@ -147,6 +164,9 @@ def render_route_health_summary(report: dict[str, Any]) -> str:
         f"- throttle_applied_p95: `{_format_value(metrics.get('throttle_applied_p95'))}`",
         f"- brake_applied_p95: `{_format_value(metrics.get('brake_applied_p95'))}`",
         f"- brake_throttle_conflict_frames: `{_format_value(metrics.get('brake_throttle_conflict_frames'))}`",
+        f"- localization_contract_status: `{localization.get('status') or 'not evaluated'}`",
+        f"- localization warnings: `{'; '.join(localization.get('warnings') or []) or 'none'}`",
+        f"- localization blocking_reasons: `{'; '.join(localization.get('blocking_reasons') or []) or 'none'}`",
         f"- missing_inputs: `{', '.join(report.get('missing_inputs') or []) or 'none'}`",
         f"- missing_fields: `{', '.join(report.get('missing_fields') or []) or 'none'}`",
         f"- verdict: `{verdict.get('status')}`",
@@ -232,7 +252,7 @@ def _nested_values(payload: Any, keys: set[str]) -> list[Any]:
 
 
 def _resolve_candidate_path(value: Any, *, run_dir: Path) -> Path | None:
-    if value is None:
+    if value is None or isinstance(value, Mapping):
         return None
     path = Path(str(value)).expanduser()
     if not path.is_absolute():
@@ -247,7 +267,199 @@ def _first_existing(paths: Sequence[Path]) -> Path | None:
     return None
 
 
-def discover_route_health_run_inputs(run_dir: str | Path) -> dict[str, Path | None]:
+def _inline_route_candidates(payload: Any) -> list[tuple[str, Mapping[str, Any]]]:
+    candidates: list[tuple[str, Mapping[str, Any]]] = []
+    if isinstance(payload, Mapping):
+        for key, value in payload.items():
+            key_text = str(key)
+            if key_text in {"route_definition", "route_ref_resolved", "route"} and isinstance(value, Mapping):
+                if isinstance(value.get("points"), list):
+                    candidates.append((key_text, value))
+            candidates.extend(_inline_route_candidates(value))
+    elif isinstance(payload, list):
+        for value in payload:
+            candidates.extend(_inline_route_candidates(value))
+    return candidates
+
+
+def _route_point_from_inline(index: int, payload: Mapping[str, Any]) -> RoutePoint:
+    tags = payload.get("tags") or []
+    if isinstance(tags, str):
+        tags = [tags]
+    return RoutePoint(
+        index=int(payload.get("index", index)),
+        x=float(payload["x"]),
+        y=float(payload["y"]),
+        z=float(payload.get("z", 0.0) or 0.0),
+        s=_float_or_none(payload.get("s")),
+        heading=_float_or_none(payload.get("heading")),
+        curvature=_float_or_none(payload.get("curvature")),
+        lane_id=str(payload.get("lane_id")) if payload.get("lane_id") is not None else None,
+        tags=[str(item) for item in tags],
+    )
+
+
+def _fill_inline_geometry_defaults(points: list[RoutePoint]) -> None:
+    cumulative_s = compute_cumulative_s(points)
+    headings = compute_headings(points)
+    curvatures = compute_curvature(points)
+    for index, point in enumerate(points):
+        if point.s is None and index < len(cumulative_s):
+            point.s = cumulative_s[index]
+        if point.heading is None and index < len(headings):
+            point.heading = headings[index]
+        if point.curvature is None and index < len(curvatures):
+            point.curvature = curvatures[index]
+
+
+def route_from_inline_payload(payload: Mapping[str, Any], *, inline_source_key: str) -> RouteDefinition | None:
+    points_payload = payload.get("points")
+    if not isinstance(points_payload, list) or not points_payload:
+        return None
+    try:
+        points = [_route_point_from_inline(index, item) for index, item in enumerate(points_payload)]
+    except Exception:
+        return None
+    _fill_inline_geometry_defaults(points)
+    route_id = str(payload.get("route_id") or payload.get("id") or "").strip()
+    map_name = str(payload.get("map") or payload.get("map_name") or "").strip()
+    metadata = dict(payload.get("metadata") or {})
+    metadata["inline_source_key"] = str(inline_source_key)
+    if inline_source_key in {"route_definition", "route_ref_resolved"}:
+        metadata["route_evidence_source"] = inline_source_key
+    return RouteDefinition(
+        route_id=route_id or "inline_route",
+        map_name=map_name or "unknown_map",
+        source=f"inline:{inline_source_key}",
+        points=points,
+        spawn_pose=payload.get("spawn_pose"),
+        goal_pose=payload.get("goal_pose"),
+        metadata=metadata,
+    )
+
+
+def _nested_get(payload: Mapping[str, Any] | None, path: Sequence[str]) -> Any:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _route_trace_candidates(
+    manifest: Mapping[str, Any] | None,
+    summary: Mapping[str, Any] | None,
+) -> list[tuple[str, Any, Mapping[str, Any] | None]]:
+    return [
+        (
+            "manifest.metadata.scenario_metadata.route_trace",
+            _nested_get(manifest, ("metadata", "scenario_metadata", "route_trace")),
+            manifest,
+        ),
+        (
+            "manifest.scenario_metadata.route_trace",
+            _nested_get(manifest, ("scenario_metadata", "route_trace")),
+            manifest,
+        ),
+        (
+            "summary.scenario_metadata.route_trace",
+            _nested_get(summary, ("scenario_metadata", "route_trace")),
+            summary,
+        ),
+    ]
+
+
+def _route_trace_point(index: int, payload: Mapping[str, Any]) -> RoutePoint | None:
+    location = payload.get("location")
+    if not isinstance(location, Mapping):
+        location = {}
+    x = _float_or_none(payload.get("x"))
+    if x is None:
+        x = _float_or_none(location.get("x"))
+    if x is None:
+        x = _float_or_none(payload.get("carla_x"))
+    y = _float_or_none(payload.get("y"))
+    if y is None:
+        y = _float_or_none(location.get("y"))
+    if y is None:
+        y = _float_or_none(payload.get("carla_y"))
+    if x is None or y is None:
+        return None
+    z = _float_or_none(payload.get("z"))
+    if z is None:
+        z = _float_or_none(location.get("z"))
+    if z is None:
+        z = _float_or_none(payload.get("carla_z"))
+    return RoutePoint(
+        index=int(payload.get("index", index)),
+        x=x,
+        y=y,
+        z=z or 0.0,
+        s=_float_or_none(payload.get("s")),
+        heading=_float_or_none(payload.get("heading")),
+        curvature=_float_or_none(payload.get("curvature")),
+        lane_id=str(payload.get("lane_id")) if payload.get("lane_id") else None,
+        tags=["manifest_route_trace"],
+    )
+
+
+def route_from_manifest_route_trace(
+    route_trace: Any,
+    *,
+    source_payload: Mapping[str, Any] | None,
+    route_trace_source_key: str,
+) -> RouteDefinition | None:
+    if not isinstance(route_trace, list) or len(route_trace) < 2:
+        return None
+    points: list[RoutePoint] = []
+    for index, item in enumerate(route_trace):
+        if not isinstance(item, Mapping):
+            continue
+        point = _route_trace_point(index, item)
+        if point is not None:
+            points.append(point)
+    if len(points) < 2:
+        return None
+    _fill_inline_geometry_defaults(points)
+    source_payload = source_payload or {}
+    scenario_metadata = source_payload.get("scenario_metadata")
+    if not isinstance(scenario_metadata, Mapping):
+        metadata_wrapper = source_payload.get("metadata")
+        if isinstance(metadata_wrapper, Mapping) and isinstance(metadata_wrapper.get("scenario_metadata"), Mapping):
+            scenario_metadata = metadata_wrapper.get("scenario_metadata")
+    if not isinstance(scenario_metadata, Mapping):
+        scenario_metadata = {}
+    route_id = str(
+        source_payload.get("route_id")
+        or scenario_metadata.get("route_id")
+        or source_payload.get("id")
+        or "manifest_route_trace"
+    )
+    map_name = str(
+        source_payload.get("map")
+        or source_payload.get("map_name")
+        or scenario_metadata.get("map")
+        or scenario_metadata.get("map_name")
+        or "unknown_map"
+    )
+    return RouteDefinition(
+        route_id=route_id,
+        map_name=map_name,
+        source=f"manifest:{route_trace_source_key}",
+        points=points,
+        spawn_pose=scenario_metadata.get("spawn_pose") or source_payload.get("spawn_pose"),
+        goal_pose=scenario_metadata.get("goal_pose") or source_payload.get("goal_pose"),
+        metadata={
+            "route_evidence_source": "manifest_route_trace",
+            "route_trace_source_key": route_trace_source_key,
+            "reference_line_verified": False,
+            "apollo_reference_line_claim_grade": False,
+        },
+    )
+
+
+def discover_route_health_run_inputs(run_dir: str | Path) -> dict[str, Any]:
     root = Path(run_dir).expanduser()
     manifest_path = _first_existing([root / "manifest.json"])
     summary_path = _first_existing([root / "summary.json"])
@@ -266,6 +478,12 @@ def discover_route_health_run_inputs(run_dir: str | Path) -> dict[str, Path | No
             root / "bridge_control_decode.jsonl",
         ]
     )
+    localization_contract_path = _first_existing(
+        [
+            root / "analysis" / "localization_contract" / "localization_contract_report.json",
+            root / "localization_contract_report.json",
+        ]
+    )
     route_path = _first_existing(
         [
             root / "route.json",
@@ -273,6 +491,12 @@ def discover_route_health_run_inputs(run_dir: str | Path) -> dict[str, Path | No
             root / "config" / "route.json",
         ]
     )
+    route_source = ROUTE_SOURCE_CONFIGURED_ROUTE_FILE if route_path is not None else ROUTE_SOURCE_MISSING
+    inline_route_payload: Mapping[str, Any] | None = None
+    inline_route_source_key: str | None = None
+    route_trace_payload: Any = None
+    route_trace_source_key: str | None = None
+    route_trace_source_payload: Mapping[str, Any] | None = None
     manifest = _read_json_object(manifest_path)
     summary = _read_json_object(summary_path)
     config = _read_yaml_object(config_path)
@@ -282,8 +506,26 @@ def discover_route_health_run_inputs(run_dir: str | Path) -> dict[str, Path | No
                 candidate = _resolve_candidate_path(value, run_dir=root)
                 if candidate is not None and candidate.suffix.lower() == ".json":
                     route_path = candidate
+                    route_source = ROUTE_SOURCE_MANIFEST_ROUTE
                     break
             if route_path is not None:
+                break
+    if route_path is None:
+        for payload in (manifest, config, summary):
+            for key, value in _inline_route_candidates(payload):
+                inline_route_payload = value
+                inline_route_source_key = key
+                route_source = ROUTE_SOURCE_INLINE_ROUTE
+                break
+            if inline_route_payload is not None:
+                break
+    if route_path is None and inline_route_payload is None:
+        for key, trace, source_payload in _route_trace_candidates(manifest, summary):
+            if isinstance(trace, list) and len(trace) >= 2:
+                route_trace_payload = trace
+                route_trace_source_key = key
+                route_trace_source_payload = source_payload
+                route_source = ROUTE_SOURCE_MANIFEST_ROUTE_TRACE
                 break
     return {
         "run_dir": root,
@@ -292,7 +534,14 @@ def discover_route_health_run_inputs(run_dir: str | Path) -> dict[str, Path | No
         "config_path": config_path,
         "timeseries_path": timeseries_path,
         "bridge_control_decode_path": bridge_control_decode_path,
+        "localization_contract_path": localization_contract_path,
         "route_path": route_path,
+        "route_source": route_source,
+        "inline_route": inline_route_payload,
+        "inline_route_source_key": inline_route_source_key,
+        "route_trace": route_trace_payload,
+        "route_trace_source_key": route_trace_source_key,
+        "route_trace_source_payload": route_trace_source_payload,
     }
 
 
@@ -491,6 +740,32 @@ def _enrich_apollo_semantics_from_summary(report: dict[str, Any], summary: Mappi
         apollo["summary_sources"] = sorted(set(str(item) for item in sources))
 
 
+def _attach_localization_contract_summary(report: dict[str, Any], path: Path | None) -> None:
+    if path is None:
+        report["localization_contract"] = {
+            "status": "not evaluated",
+            "path": None,
+            "warnings": [],
+            "blocking_reasons": [],
+        }
+        return
+    payload = _read_json_object(path) or {}
+    verdict = payload.get("verdict")
+    if not isinstance(verdict, Mapping):
+        verdict = {}
+    status = payload.get("status")
+    if not isinstance(status, str | int | float | bool) or status in {None, ""}:
+        status = verdict.get("status")
+    if not isinstance(status, str | int | float | bool) or status in {None, ""}:
+        status = "insufficient_data"
+    report["localization_contract"] = {
+        "status": str(status),
+        "path": str(path),
+        "warnings": [str(item) for item in (payload.get("warnings") or []) if item],
+        "blocking_reasons": [str(item) for item in (verdict.get("blocking_reasons") or []) if item],
+    }
+
+
 def route_from_timeseries_rows(rows: Sequence[Mapping[str, Any]]) -> RouteDefinition | None:
     """Reconstruct a lightweight route from P0 route_curve columns.
 
@@ -543,7 +818,7 @@ def route_from_timeseries_rows(rows: Sequence[Mapping[str, Any]]) -> RouteDefini
     )
 
 
-def _source_payload(inputs: Mapping[str, Path | None]) -> dict[str, str | None]:
+def _source_payload(inputs: Mapping[str, Any]) -> dict[str, str | None]:
     return {
         "run_dir": str(inputs.get("run_dir")) if inputs.get("run_dir") is not None else None,
         "manifest_path": str(inputs.get("manifest_path")) if inputs.get("manifest_path") is not None else None,
@@ -554,11 +829,23 @@ def _source_payload(inputs: Mapping[str, Path | None]) -> dict[str, str | None]:
             if inputs.get("bridge_control_decode_path") is not None
             else None
         ),
+        "localization_contract_path": (
+            str(inputs.get("localization_contract_path"))
+            if inputs.get("localization_contract_path") is not None
+            else None
+        ),
         "route_path": str(inputs.get("route_path")) if inputs.get("route_path") is not None else None,
+        "route_source": str(inputs.get("route_source") or ROUTE_SOURCE_MISSING),
+        "inline_route_source_key": (
+            str(inputs.get("inline_route_source_key")) if inputs.get("inline_route_source_key") is not None else None
+        ),
+        "route_trace_source_key": (
+            str(inputs.get("route_trace_source_key")) if inputs.get("route_trace_source_key") is not None else None
+        ),
     }
 
 
-def build_insufficient_route_health_report(inputs: Mapping[str, Path | None]) -> dict[str, Any]:
+def build_insufficient_route_health_report(inputs: Mapping[str, Any]) -> dict[str, Any]:
     missing_inputs = ["route"]
     if inputs.get("timeseries_path") is None:
         missing_inputs.append("timeseries")
@@ -566,6 +853,10 @@ def build_insufficient_route_health_report(inputs: Mapping[str, Path | None]) ->
         "schema_version": ROUTE_HEALTH_REPORT_SCHEMA_VERSION,
         "route_id": None,
         "map_name": None,
+        "route_source": ROUTE_SOURCE_MISSING,
+        "evidence_level": EVIDENCE_LEVEL_INSUFFICIENT,
+        "hard_gate_eligible": False,
+        "route_evidence_reason": "route_missing_or_unrecognized_source",
         "source": _source_payload(inputs),
         "route_geometry": {
             "point_count": None,
@@ -622,6 +913,7 @@ def analyze_route_health_run_dir(
     output_dir = Path(out_dir).expanduser() if out_dir is not None else Path(run_dir).expanduser() / "analysis" / "route_health"
     route_path = inputs.get("route_path")
     timeseries_path = inputs.get("timeseries_path")
+    route_source = str(inputs.get("route_source") or ROUTE_SOURCE_MISSING)
     summary = _read_json_object(inputs.get("summary_path")) or {}
     route: RouteDefinition | None = None
     rows = load_timeseries_rows(timeseries_path) if timeseries_path is not None else None
@@ -632,12 +924,55 @@ def analyze_route_health_run_dir(
     analysis_rows = None if rows is None and not bridge_rows else [*(rows or []), *bridge_rows]
     if route_path is not None:
         route = load_route_json(route_path)
-        report = analyze_route_health(route, analysis_rows, curvature_abs_threshold=curvature_abs_threshold)
+        report = analyze_route_health(
+            route,
+            analysis_rows,
+            curvature_abs_threshold=curvature_abs_threshold,
+            route_source=route_source,
+        )
         report["source"] = _source_payload(inputs)
+    elif inputs.get("inline_route") is not None:
+        route = route_from_inline_payload(
+            inputs["inline_route"],
+            inline_source_key=str(inputs.get("inline_route_source_key") or "route"),
+        )
+        if route is not None:
+            report = analyze_route_health(
+                route,
+                analysis_rows,
+                curvature_abs_threshold=curvature_abs_threshold,
+                route_source=ROUTE_SOURCE_INLINE_ROUTE,
+            )
+            report["source"] = _source_payload(inputs)
+        else:
+            report = build_insufficient_route_health_report(inputs)
+    elif inputs.get("route_trace") is not None:
+        route = route_from_manifest_route_trace(
+            inputs.get("route_trace"),
+            source_payload=inputs.get("route_trace_source_payload"),
+            route_trace_source_key=str(inputs.get("route_trace_source_key") or "route_trace"),
+        )
+        if route is not None:
+            report = analyze_route_health(
+                route,
+                analysis_rows,
+                curvature_abs_threshold=curvature_abs_threshold,
+                route_source=ROUTE_SOURCE_MANIFEST_ROUTE_TRACE,
+            )
+            report["source"] = _source_payload(inputs)
+            report["reference_line_verified"] = False
+            report["apollo_reference_line_claim_grade"] = False
+        else:
+            report = build_insufficient_route_health_report(inputs)
     elif rows is not None:
         route = route_from_timeseries_rows(rows)
         if route is not None:
-            report = analyze_route_health(route, analysis_rows, curvature_abs_threshold=curvature_abs_threshold)
+            report = analyze_route_health(
+                route,
+                analysis_rows,
+                curvature_abs_threshold=curvature_abs_threshold,
+                route_source=ROUTE_SOURCE_RECONSTRUCTED_FROM_TIMESERIES,
+            )
             report["source"] = _source_payload(inputs)
             report.setdefault("warnings", []).append("route reconstructed from timeseries P0 route_curve fields")
         else:
@@ -647,6 +982,7 @@ def analyze_route_health_run_dir(
     if bridge_rows and report.get("verdict", {}).get("status") != "insufficient_data":
         report.setdefault("warnings", []).append("control semantics enriched from bridge_control_decode.jsonl")
     _enrich_apollo_semantics_from_summary(report, summary)
+    _attach_localization_contract_summary(report, inputs.get("localization_contract_path"))
     report["missing_fields"] = sorted(set(report.get("missing_fields") or []))
     outputs = write_route_health_report_files(output_dir, report, route=route)
     return {"inputs": _source_payload(inputs), "outputs": outputs, "report": report}

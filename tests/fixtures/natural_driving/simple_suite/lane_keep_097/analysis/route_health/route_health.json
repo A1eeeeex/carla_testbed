@@ -1,8 +1,12 @@
 {
-  "schema_version": "route_health.v1",
-  "route_id": "lane097",
-  "map_name": "Town01",
-  "source": {
+    "schema_version": "route_health.v1",
+    "route_id": "lane097",
+    "map_name": "Town01",
+    "route_source": "configured_route_file",
+    "evidence_level": "claim_grade",
+    "hard_gate_eligible": true,
+    "route_evidence_reason": "configured_route_file_with_valid_route_identity_and_geometry",
+    "source": {
     "run_dir": "tests/fixtures/natural_driving/simple_suite/lane_keep_097",
     "manifest_path": "tests/fixtures/natural_driving/simple_suite/lane_keep_097/manifest.json",
     "summary_path": "tests/fixtures/natural_driving/simple_suite/lane_keep_097/summary.json",

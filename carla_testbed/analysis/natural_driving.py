@@ -7,7 +7,9 @@ from pathlib import Path
 from statistics import mean
 from typing import Any, Mapping, Sequence
 
+from carla_testbed.analysis.assist_ledger import read_assist_ledger_from_run_dir
 from carla_testbed.analysis.artifact_completeness import check_run_artifact_completeness
+from carla_testbed.analysis.natural_driving_evidence import build_natural_driving_evidence
 from carla_testbed.record.route_curve_fields import ROUTE_CURVE_P0_FIELDS
 
 NATURAL_DRIVING_REPORT_SCHEMA_VERSION = "town01_natural_driving_report.v1"
@@ -20,10 +22,31 @@ CLAIM_GRADE_TRAFFIC_LIGHT_STIMULUS_MODES = {"deterministic_gt_control"}
 BASE_REQUIRED_CHANNEL_RESULTS = (
     "localization",
     "chassis",
-    "obstacles",
     "planning",
     "control",
 )
+LOCALIZATION_HARD_GATE_CHECKS = {
+    "localization_channel_health": {"pass", "warn"},
+    "sim_time_time_base": {"pass"},
+    "frame_transform_configured": {"pass"},
+    "position_uses_vrp": {"pass"},
+    "source_to_published_reference_explained": {"pass", "warn"},
+    "heading_from_transformed_forward": {"pass"},
+    "rfu_to_enu_orientation": {"pass"},
+    "decoded_orientation_consistency": {"pass", "warn"},
+    "kinematics_frame_and_units": {"pass", "warn"},
+    "chassis_speed_consistency": {"pass", "warn"},
+    "lane_projection": {"pass", "warn"},
+    "acceleration_semantics": {"pass", "warn"},
+    "uncertainty_status_policy": {"pass", "warn"},
+}
+LOCALIZATION_REFERENCE_LINE_REQUIRED_CLASSES = {
+    "curve_diagnostic",
+    "junction_turn",
+    "traffic_light_red_stop",
+    "traffic_light_green_go",
+    "traffic_light_red_to_green_release",
+}
 EXPECTED_TRAFFIC_LIGHT_BEHAVIOR_BY_CLASS = {
     "traffic_light_red_stop": "red_stop",
     "traffic_light_green_go": "green_go",
@@ -40,6 +63,13 @@ TARGET_SCENARIO_CLASSES = (
 ROUTE_COMPLETION_REQUIRED_CLASSES = {
     "lane_keep",
     "junction_turn",
+    "traffic_light_green_go",
+    "traffic_light_red_to_green_release",
+}
+ROUTE_HEALTH_HARD_GATE_SCENARIO_CLASSES = {
+    "lane_keep",
+    "junction_turn",
+    "traffic_light_red_stop",
     "traffic_light_green_go",
     "traffic_light_red_to_green_release",
 }
@@ -72,6 +102,10 @@ CSV_FIELDS = [
     "scenario_id",
     "scenario_class",
     "route_id",
+    "route_source",
+    "route_evidence_level",
+    "route_hard_gate_eligible",
+    "route_evidence_reason",
     "run_dir",
     "algorithm_variant_id",
     "algorithm_variant_manifest_path",
@@ -82,6 +116,12 @@ CSV_FIELDS = [
     "transport_mode_source",
     "backend",
     "truth_input",
+    "active_assists",
+    "blocking_assists",
+    "non_blocking_assists",
+    "assist_confidence",
+    "assist_source_artifact",
+    "can_claim_unassisted_natural_driving",
     "duration_s",
     "fixed_delta_seconds",
     "ticks",
@@ -95,6 +135,9 @@ CSV_FIELDS = [
     "apollo_channel_low_rate_channels",
     "apollo_channel_missing_required_channels",
     "apollo_channel_failed_channels",
+    "localization_contract_status",
+    "localization_blocking_reasons",
+    "localization_report_path",
     "control_health_status",
     "failure_timeline_status",
     "failure_timeline_primary_failure",
@@ -135,6 +178,15 @@ CSV_FIELDS = [
     "control_bridge_first_watchdog_apply_wall_s",
     "control_bridge_final_rx_count",
     "control_bridge_final_applied_count",
+    "control_attribution_status",
+    "control_attribution_dominant_breakpoint",
+    "autoware_evidence_status",
+    "autoware_can_compare_with_apollo",
+    "autoware_recording_artifacts_ready",
+    "autoware_gate_artifacts_ready",
+    "apollo_lateral_semantics_status",
+    "apollo_lateral_suspected_layer",
+    "apollo_lateral_confidence",
     "matched_point_anomaly_count",
     "target_point_anomaly_count",
     "first_high_steer_seq",
@@ -183,6 +235,8 @@ def analyze_natural_driving_suite(
         "verdict": verdict,
         "summary": {
             "pass_count": sum(1 for run in run_results if run["verdict"] == "pass"),
+            "assisted_pass_count": sum(1 for run in run_results if run["verdict"] == "assisted_pass"),
+            "diagnostic_only_count": sum(1 for run in run_results if run["verdict"] == "diagnostic_only"),
             "warn_count": sum(1 for run in run_results if run["verdict"] == "warn"),
             "fail_count": sum(1 for run in run_results if run["verdict"] == "fail"),
             "insufficient_data_count": sum(1 for run in run_results if run["verdict"] == "insufficient_data"),
@@ -197,6 +251,10 @@ def analyze_natural_driving_suite(
             ),
             "invalid_report_source_fields_run_count": sum(
                 1 for run in run_results if run.get("invalid_report_source_fields")
+            ),
+            "blocking_assist_run_count": sum(1 for run in run_results if run.get("blocking_assists")),
+            "unassisted_claimable_run_count": sum(
+                1 for run in run_results if run.get("can_claim_unassisted_natural_driving") is True
             ),
         },
         "problem_run_details": problem_run_details(run_results),
@@ -232,7 +290,7 @@ def problem_run_details(
     details: list[dict[str, Any]] = []
     for run in run_results:
         verdict = str(run.get("verdict") or "")
-        if verdict not in {"fail", "warn", "insufficient_data"}:
+        if verdict not in {"fail", "warn", "insufficient_data", "assisted_pass", "diagnostic_only"}:
             continue
         details.append(
             {
@@ -258,7 +316,17 @@ def problem_run_details(
                     run.get("apollo_channel_missing_required_channels") or []
                 )[:10],
                 "apollo_channel_failed_channels": list(run.get("apollo_channel_failed_channels") or [])[:10],
+                "localization_contract_status": run.get("localization_contract_status"),
+                "localization_blocking_reasons": list(run.get("localization_blocking_reasons") or [])[:10],
+                "localization_report_path": run.get("localization_report_path"),
                 "control_health_status": run.get("control_health_status"),
+                "control_attribution_status": run.get("control_attribution_status"),
+                "control_attribution_dominant_breakpoint": run.get(
+                    "control_attribution_dominant_breakpoint"
+                ),
+                "apollo_lateral_semantics_status": run.get("apollo_lateral_semantics_status"),
+                "apollo_lateral_suspected_layer": run.get("apollo_lateral_suspected_layer"),
+                "apollo_lateral_confidence": run.get("apollo_lateral_confidence"),
                 "control_health_failure_reason": run.get("control_health_failure_reason"),
                 "control_health_warnings": list(run.get("control_health_warnings") or [])[:10],
                 "control_apply_observation_delay_s": run.get("control_apply_observation_delay_s"),
@@ -387,11 +455,39 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
             "apollo_channel_health_report.json",
         ],
     )
+    localization_contract_path = _find_first(
+        run_dir,
+        [
+            "analysis/localization_contract/localization_contract_report.json",
+            "localization_contract_report.json",
+        ],
+    )
     control_health_path = _find_first(
         run_dir,
         [
             "analysis/control_health/control_health_report.json",
             "control_health_report.json",
+        ],
+    )
+    control_attribution_path = _find_first(
+        run_dir,
+        [
+            "analysis/control_attribution/control_attribution_report.json",
+            "control_attribution_report.json",
+        ],
+    )
+    apollo_lateral_semantics_path = _find_first(
+        run_dir,
+        [
+            "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
+            "apollo_lateral_semantics_report.json",
+        ],
+    )
+    autoware_evidence_path = _find_first(
+        run_dir,
+        [
+            "analysis/autoware_evidence/autoware_evidence_report.json",
+            "autoware_evidence_report.json",
         ],
     )
     failure_timeline_path = _find_first(
@@ -442,7 +538,12 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
 
     route_health = _read_json(route_health_path)
     channel_health = _read_json(channel_health_path)
+    localization_contract = _read_json(localization_contract_path)
     control_health = _read_json(control_health_path)
+    control_attribution = _read_json(control_attribution_path)
+    apollo_lateral_semantics = _read_json(apollo_lateral_semantics_path)
+    autoware_evidence = _read_json(autoware_evidence_path)
+    assist_ledger = read_assist_ledger_from_run_dir(run_dir)
     failure_timeline = _read_json(failure_timeline_path)
     route_start_alignment_path = _find_first(
         run_dir,
@@ -487,6 +588,10 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "scenario_id": _first_text(summary, "scenario_id", manifest, "scenario_id", default=run_dir.name),
         "scenario_class": scenario_class,
         "route_id": _first_text(summary, "route_id", manifest, "route_id", route_health, "route_id"),
+        "route_source": route_health.get("route_source"),
+        "route_evidence_level": route_health.get("evidence_level"),
+        "route_hard_gate_eligible": route_health.get("hard_gate_eligible"),
+        "route_evidence_reason": route_health.get("route_evidence_reason"),
         "run_dir": str(run_dir.relative_to(root) if _is_relative_to(run_dir, root) else run_dir),
         "algorithm_variant_id": _first_text(manifest, "algorithm_variant_id", manifest, "variant_id"),
         "algorithm_variant_manifest_path": _first_text(manifest, "algorithm_variant_manifest_path"),
@@ -497,6 +602,15 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "transport_mode_source": _first_text(manifest, "transport_mode_source"),
         "backend": _first_text(manifest, "backend"),
         "truth_input": _truth_input_declared(manifest),
+        "assist_ledger": assist_ledger,
+        "active_assists": list(assist_ledger.get("active_assists") or []),
+        "blocking_assists": list(assist_ledger.get("blocking_assists") or []),
+        "non_blocking_assists": list(assist_ledger.get("non_blocking_assists") or []),
+        "assist_confidence": assist_ledger.get("assist_confidence"),
+        "assist_source_artifact": assist_ledger.get("source_artifact"),
+        "can_claim_unassisted_natural_driving": assist_ledger.get(
+            "can_claim_unassisted_natural_driving"
+        ),
         "duration_s": _num(manifest.get("duration_s")),
         "fixed_delta_seconds": _num(manifest.get("fixed_delta_seconds")),
         "ticks": _num(manifest.get("ticks")),
@@ -535,6 +649,14 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "control_bridge_final_applied_count": _num(
             control_bridge_log_metrics.get("final_applied_count")
         ),
+        "control_attribution_status": _control_attribution_status(control_attribution),
+        "control_attribution_dominant_breakpoint": _control_attribution_dominant_breakpoint(
+            control_attribution
+        ),
+        "autoware_evidence_status": autoware_evidence.get("artifact_completeness_status"),
+        "autoware_can_compare_with_apollo": autoware_evidence.get("can_compare_with_apollo"),
+        "autoware_recording_artifacts_ready": autoware_evidence.get("recording_artifacts_ready"),
+        "autoware_gate_artifacts_ready": autoware_evidence.get("gate_artifacts_ready"),
         "apollo_channel_health_status": channel_health.get("status"),
         "apollo_channel_gap_failures": _string_list(channel_health.get("gap_failures")),
         "apollo_channel_low_rate_channels": _string_list(channel_health.get("low_rate_channels")),
@@ -542,6 +664,9 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
             channel_health.get("missing_required_channels")
         ),
         "apollo_channel_failed_channels": _failed_channel_names(channel_health),
+        "localization_contract_status": _localization_contract_status(localization_contract),
+        "localization_blocking_reasons": _localization_blocking_reasons(localization_contract),
+        "localization_report_path": str(localization_contract_path) if localization_contract_path else None,
         "failure_timeline_status": failure_timeline.get("status"),
         "failure_timeline_primary_failure": _failure_timeline_primary_failure(failure_timeline),
         "failure_timeline_anchor_event": _failure_timeline_anchor_event(failure_timeline),
@@ -572,7 +697,13 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
             "curve_segments": str(curve_segments_path) if curve_segments_path else None,
             "route_health_summary": str(route_health_summary_path) if route_health_summary_path else None,
             "apollo_channel_health": str(channel_health_path) if channel_health_path else None,
+            "localization_contract": str(localization_contract_path) if localization_contract_path else None,
             "control_health": str(control_health_path) if control_health_path else None,
+            "control_attribution": str(control_attribution_path) if control_attribution_path else None,
+            "autoware_evidence": str(autoware_evidence_path) if autoware_evidence_path else None,
+            "apollo_lateral_semantics": str(apollo_lateral_semantics_path)
+            if apollo_lateral_semantics_path
+            else None,
             "failure_timeline": str(failure_timeline_path) if failure_timeline_path else None,
             "route_start_alignment": str(route_start_alignment_path) if route_start_alignment_path else None,
             "traffic_light_contract": str(traffic_light_contract_path) if traffic_light_contract_path else None,
@@ -642,6 +773,9 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "matched_point_anomaly_count": len(apollo_semantics.get("matched_point_anomaly_locations") or []),
         "target_point_anomaly_count": len(apollo_semantics.get("target_point_anomaly_locations") or []),
         "first_high_steer_seq": _first_high_steer_seq(apollo_semantics),
+        "apollo_lateral_semantics_status": _report_status(apollo_lateral_semantics),
+        "apollo_lateral_suspected_layer": apollo_lateral_semantics.get("suspected_layer"),
+        "apollo_lateral_confidence": apollo_lateral_semantics.get("confidence"),
         "control_latency_p95_ms": _metric(
             metrics,
             "control_latency_p95_ms",
@@ -662,6 +796,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         summary=summary,
         route_health=route_health,
         channel_health=channel_health,
+        localization_contract=localization_contract,
         control_health=control_health,
         traffic_light_contract=traffic_light_contract,
         traffic_light_behavior=traffic_light_behavior,
@@ -669,6 +804,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         run_dir=run_dir,
         route_health_path=route_health_path,
         channel_health_path=channel_health_path,
+        localization_contract_path=localization_contract_path,
         control_health_path=control_health_path,
         traffic_light_contract_path=traffic_light_contract_path,
         traffic_light_behavior_path=traffic_light_behavior_path,
@@ -678,6 +814,21 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
     run_result["verdict"] = verdict
     run_result["failure_reason"] = failure_reason
     run_result["missing_fields"] = missing_fields
+    run_result["evidence"] = build_natural_driving_evidence(
+        run_dir=run_dir,
+        summary=summary,
+        manifest=manifest,
+        route_health=route_health,
+        channel_health=channel_health,
+        localization_contract=localization_contract,
+        control_attribution=control_attribution,
+        assist_ledger=assist_ledger,
+        route_health_path=route_health_path,
+        channel_health_path=channel_health_path,
+        localization_contract_path=localization_contract_path,
+        control_attribution_path=control_attribution_path,
+        traffic_light_evidence_path=traffic_light_behavior_path or traffic_light_contract_path,
+    ).to_dict()
     return run_result
 
 
@@ -687,6 +838,7 @@ def _run_verdict(
     summary: Mapping[str, Any],
     route_health: Mapping[str, Any],
     channel_health: Mapping[str, Any],
+    localization_contract: Mapping[str, Any],
     control_health: Mapping[str, Any],
     traffic_light_contract: Mapping[str, Any],
     traffic_light_behavior: Mapping[str, Any],
@@ -694,6 +846,7 @@ def _run_verdict(
     run_dir: Path,
     route_health_path: Path | None,
     channel_health_path: Path | None,
+    localization_contract_path: Path | None,
     control_health_path: Path | None,
     traffic_light_contract_path: Path | None,
     traffic_light_behavior_path: Path | None,
@@ -770,6 +923,15 @@ def _run_verdict(
         missing_fields.extend(channel_evidence_missing)
         return channel_evidence_status, channel_evidence_reason, missing_fields
 
+    localization_status, localization_reason, localization_missing = _localization_contract_verdict(
+        localization_contract,
+        scenario_class=scenario_class,
+        report_path=localization_contract_path,
+    )
+    if localization_status != "pass":
+        missing_fields.extend(localization_missing)
+        return localization_status, localization_reason, missing_fields
+
     control_status = control_health.get("status")
     if control_status == "fail":
         return "fail", str(control_health.get("failure_reason") or "control_health_failed"), missing_fields
@@ -785,6 +947,13 @@ def _run_verdict(
     if control_evidence_status != "pass":
         missing_fields.extend(control_evidence_missing)
         return control_evidence_status, control_evidence_reason, missing_fields
+    if str(run.get("backend") or "").lower() == "autoware":
+        attribution_status = str(run.get("control_attribution_status") or "")
+        if attribution_status == "fail":
+            return "fail", "control_attribution_failed", missing_fields
+        if attribution_status not in {"pass", "warn"}:
+            missing_fields.append("control_attribution_report.json")
+            return "insufficient_data", "control_attribution_missing_status", missing_fields
 
     route_health_status = _route_health_status(route_health)
     if route_health_status in {"fail", "failed"}:
@@ -794,12 +963,18 @@ def _run_verdict(
     route_evidence_status, route_evidence_reason, route_evidence_missing = _route_health_evidence_verdict(
         route_health,
         expected_route_id=str(run.get("route_id") or ""),
+        scenario_class=scenario_class,
         run_dir=run_dir,
         report_path=route_health_path,
     )
+    route_diagnostic_only = False
     if route_evidence_status != "pass":
-        missing_fields.extend(route_evidence_missing)
-        return route_evidence_status, route_evidence_reason, missing_fields
+        if scenario_class == "curve_diagnostic" and route_evidence_status == "diagnostic_only":
+            route_diagnostic_only = True
+            missing_fields.extend(route_evidence_missing)
+        else:
+            missing_fields.extend(route_evidence_missing)
+            return route_evidence_status, route_evidence_reason, missing_fields
 
     invalid_route_start_diagnostics = _invalid_route_start_diagnostic_fields(run)
     if invalid_route_start_diagnostics:
@@ -815,6 +990,8 @@ def _run_verdict(
             )
             if not missing_fields:
                 missing_fields.append("route_curve_artifact_gap.status")
+            if route_diagnostic_only:
+                return "diagnostic_only", "curve_diagnostic_missing_p1_fields", missing_fields
             return "insufficient_data", "route_curve_artifact_gap_insufficient", missing_fields
         gap_evidence_status, gap_evidence_reason, gap_evidence_missing = _route_curve_artifact_gap_evidence_verdict(
             route_curve_artifact_gap,
@@ -823,11 +1000,17 @@ def _run_verdict(
         )
         if gap_evidence_status != "pass":
             missing_fields.extend(gap_evidence_missing)
+            if route_diagnostic_only:
+                return "diagnostic_only", str(gap_evidence_reason or "curve_diagnostic_gap_diagnostic_only"), missing_fields
             return gap_evidence_status, gap_evidence_reason, missing_fields
         curve_status, curve_reason, curve_missing = _curve_semantic_verdict(run, route_health)
         if curve_status != "pass":
             missing_fields.extend(curve_missing)
+            if route_diagnostic_only and curve_status == "fail":
+                return "diagnostic_only", "curve_diagnostic_anomaly_with_diagnostic_route_evidence", missing_fields
             return curve_status, curve_reason, missing_fields
+        if route_diagnostic_only:
+            return "diagnostic_only", str(route_evidence_reason or "route_health_diagnostic_only"), missing_fields
 
     traffic_status = traffic_light_contract.get("status") if scenario_class in TRAFFIC_LIGHT_SCENARIO_CLASSES else None
     if scenario_class in TRAFFIC_LIGHT_SCENARIO_CLASSES and traffic_status == "fail":
@@ -944,6 +1127,10 @@ def _run_verdict(
 
     if missing_fields:
         return "insufficient_data", "missing_required_metrics", missing_fields
+    blocking_assists = [str(item) for item in (run.get("blocking_assists") or []) if item]
+    if blocking_assists:
+        missing_fields.extend(f"assist_ledger.blocking_assists.{assist}" for assist in blocking_assists)
+        return "assisted_pass", "assisted_pass_unassisted_claim_blocked", missing_fields
     if latency_missing:
         return "warn", "control_latency_missing", ["control_latency_p95_ms"]
     if (
@@ -980,6 +1167,8 @@ def _capability_coverage(
             {
                 "total": 0,
                 "pass": 0,
+                "assisted_pass": 0,
+                "diagnostic_only": 0,
                 "warn": 0,
                 "fail": 0,
                 "insufficient_data": 0,
@@ -989,7 +1178,7 @@ def _capability_coverage(
         bucket["total"] += 1
         bucket["run_ids"].append(run.get("run_id"))
         verdict = str(run.get("verdict") or "insufficient_data")
-        if verdict in {"pass", "warn", "fail", "insufficient_data"}:
+        if verdict in {"pass", "assisted_pass", "diagnostic_only", "warn", "fail", "insufficient_data"}:
             bucket[verdict] += 1
         scenario_id = str(run.get("scenario_id") or "").strip()
         if scenario_id:
@@ -998,6 +1187,8 @@ def _capability_coverage(
                 {
                     "total": 0,
                     "pass": 0,
+                    "assisted_pass": 0,
+                    "diagnostic_only": 0,
                     "warn": 0,
                     "fail": 0,
                     "insufficient_data": 0,
@@ -1010,7 +1201,7 @@ def _capability_coverage(
             scenario_bucket["run_ids"].append(run.get("run_id"))
             scenario_bucket["route_ids"].add(str(run.get("route_id") or ""))
             scenario_bucket["scenario_classes"].add(scenario_class)
-            if verdict in {"pass", "warn", "fail", "insufficient_data"}:
+            if verdict in {"pass", "assisted_pass", "diagnostic_only", "warn", "fail", "insufficient_data"}:
                 scenario_bucket[verdict] += 1
 
     missing_classes = [name for name in TARGET_SCENARIO_CLASSES if name not in by_class]
@@ -1122,6 +1313,10 @@ def _suite_verdict(
         status = "fail"
     elif "insufficient_data" in statuses:
         status = "insufficient_data"
+    elif "diagnostic_only" in statuses:
+        status = "insufficient_data"
+    elif "assisted_pass" in statuses:
+        status = "warn"
     elif "warn" in statuses:
         status = "warn"
     else:
@@ -1149,6 +1344,12 @@ def _suite_verdict(
         "failed_runs": [run.get("run_id") for run in run_results if run.get("verdict") == "fail"],
         "insufficient_data_runs": [
             run.get("run_id") for run in run_results if run.get("verdict") == "insufficient_data"
+        ],
+        "diagnostic_only_runs": [
+            run.get("run_id") for run in run_results if run.get("verdict") == "diagnostic_only"
+        ],
+        "assisted_pass_runs": [
+            run.get("run_id") for run in run_results if run.get("verdict") == "assisted_pass"
         ],
         "warning_runs": [run.get("run_id") for run in run_results if run.get("verdict") == "warn"],
         "require_full_target_coverage": require_full_target_coverage,
@@ -1222,6 +1423,7 @@ def _missing_artifacts(
     curve_segments_path: Path | None,
     route_health_summary_path: Path | None,
     channel_health_path: Path | None,
+    localization_contract_path: Path | None,
     control_health_path: Path | None,
     traffic_light_contract_path: Path | None,
     scenario_class: str,
@@ -1247,6 +1449,8 @@ def _missing_artifacts(
         missing.append("route_health_summary.md")
     if channel_health_path is None:
         missing.append("apollo_channel_health_report.json")
+    if localization_contract_path is None:
+        missing.append("localization_contract_report.json")
     if control_health_path is None:
         missing.append("control_health_report.json")
     if scenario_class in TRAFFIC_LIGHT_SCENARIO_CLASSES and traffic_light_contract_path is None:
@@ -1425,6 +1629,71 @@ def _initial_rear_axle_offset_compatible(route_start_alignment: Mapping[str, Any
     return None
 
 
+def _report_status(report: Mapping[str, Any]) -> str | None:
+    status = report.get("status")
+    if _scalar_status_value(status):
+        return str(status)
+    verdict = report.get("verdict")
+    if isinstance(verdict, Mapping):
+        value = verdict.get("status")
+        if _scalar_status_value(value):
+            return str(value)
+    return None
+
+
+def _scalar_status_value(value: Any) -> bool:
+    return isinstance(value, str | int | float | bool) and value not in {None, ""}
+
+
+def _control_attribution_status(control_attribution: Mapping[str, Any]) -> str:
+    status = _report_status(control_attribution)
+    return status if status is not None else "insufficient_data"
+
+
+def _control_attribution_dominant_breakpoint(control_attribution: Mapping[str, Any]) -> str | None:
+    attribution = control_attribution.get("attribution")
+    if isinstance(attribution, Mapping):
+        value = attribution.get("dominant_breakpoint")
+        if value not in {None, ""}:
+            return str(value)
+    value = control_attribution.get("dominant_breakpoint")
+    return None if value in {None, ""} else str(value)
+
+
+def _localization_contract_status(localization_contract: Mapping[str, Any]) -> str:
+    status = _report_status(localization_contract)
+    return status if status is not None else "insufficient_data"
+
+
+def _localization_blocking_reasons(localization_contract: Mapping[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    verdict = localization_contract.get("verdict")
+    if isinstance(verdict, Mapping):
+        reasons.extend(str(item) for item in (verdict.get("blocking_reasons") or []) if item)
+    reference = localization_contract.get("reference_point")
+    if isinstance(reference, Mapping):
+        if reference.get("position_uses_vrp") is False:
+            reasons.append("position_uses_vrp_false")
+    frame_transform = localization_contract.get("frame_transform")
+    if isinstance(frame_transform, Mapping):
+        if frame_transform.get("uses_configured_transform") is False:
+            reasons.append("frame_transform_missing")
+        if frame_transform.get("y_flip_or_axis_mapping_declared") is False:
+            reasons.append("axis_mapping_missing")
+    pose = localization_contract.get("pose_consistency")
+    if isinstance(pose, Mapping):
+        lane_error = _num(pose.get("heading_error_to_lane_p95_rad"))
+        if lane_error is not None and lane_error >= DEFAULT_THRESHOLDS["max_heading_error_p95_rad"]:
+            reasons.append("heading_error_to_lane_high")
+    channel = localization_contract.get("channel")
+    if isinstance(channel, Mapping):
+        if channel.get("timestamp_monotonic") is False or channel.get("timestamp_non_decreasing") is False:
+            reasons.append("timestamp_non_monotonic")
+        if channel.get("sequence_monotonic") is False:
+            reasons.append("sequence_non_monotonic")
+    return sorted(set(reasons))
+
+
 def _initial_rear_axle_offset_error(route_start_alignment: Mapping[str, Any]) -> float | None:
     initial = route_start_alignment.get("initial_ego_alignment")
     if isinstance(initial, Mapping):
@@ -1527,6 +1796,90 @@ def _channel_health_evidence_verdict(
     if missing:
         return "insufficient_data", "apollo_channel_health_missing_channel_evidence", missing
     return "pass", None, []
+
+
+def _localization_contract_verdict(
+    localization_contract: Mapping[str, Any],
+    *,
+    scenario_class: str,
+    report_path: Path | None,
+) -> tuple[str, str | None, list[str]]:
+    if report_path is None or not localization_contract:
+        if scenario_class == "curve_diagnostic":
+            return (
+                "diagnostic_only",
+                "localization_contract_missing_for_curve_diagnostic",
+                ["localization_contract_report.json"],
+            )
+        return (
+            "insufficient_data",
+            "localization_contract_missing",
+            ["localization_contract_report.json"],
+        )
+
+    status = _localization_contract_status(localization_contract)
+    blocking_reasons = _localization_blocking_reasons(localization_contract)
+    missing_fields = [
+        f"localization_contract.blocking_reasons.{reason}"
+        for reason in blocking_reasons
+    ]
+    if status == "fail" or blocking_reasons:
+        if not missing_fields:
+            missing_fields.append("localization_contract.verdict.status")
+        if scenario_class == "curve_diagnostic":
+            return (
+                "diagnostic_only",
+                "localization_contract_blocking_curve_diagnostic",
+                missing_fields,
+            )
+        return "insufficient_data", "localization_contract_blocking", missing_fields
+    if status not in {"pass", "warn"}:
+        return (
+            "insufficient_data",
+            "localization_contract_missing_status",
+            ["localization_contract.verdict.status"],
+        )
+    checklist_missing = _localization_checklist_hard_gate_missing(
+        localization_contract,
+        scenario_class=scenario_class,
+    )
+    if checklist_missing:
+        missing_fields.extend(checklist_missing)
+        if scenario_class == "curve_diagnostic":
+            return (
+                "diagnostic_only",
+                "localization_contract_not_claim_grade_for_curve_diagnostic",
+                missing_fields,
+            )
+        return (
+            "insufficient_data",
+            "localization_contract_not_claim_grade",
+            missing_fields,
+        )
+    return "pass", None, []
+
+
+def _localization_checklist_hard_gate_missing(
+    localization_contract: Mapping[str, Any],
+    *,
+    scenario_class: str,
+) -> list[str]:
+    checklist = localization_contract.get("acceptance_checklist")
+    if not isinstance(checklist, Mapping):
+        return ["localization_contract.acceptance_checklist"]
+    missing: list[str] = []
+    required_checks = dict(LOCALIZATION_HARD_GATE_CHECKS)
+    if scenario_class in LOCALIZATION_REFERENCE_LINE_REQUIRED_CLASSES:
+        required_checks["reference_line_projection"] = {"pass", "warn"}
+    for check_id, allowed_statuses in required_checks.items():
+        item = checklist.get(check_id)
+        if not isinstance(item, Mapping):
+            missing.append(f"localization_contract.acceptance_checklist.{check_id}")
+            continue
+        status = str(item.get("status") or "")
+        if status not in allowed_statuses:
+            missing.append(f"localization_contract.acceptance_checklist.{check_id}.status")
+    return missing
 
 
 def _missing_channel_health_source_paths(
@@ -1820,6 +2173,7 @@ def _route_health_evidence_verdict(
     route_health: Mapping[str, Any],
     *,
     expected_route_id: str,
+    scenario_class: str,
     run_dir: Path,
     report_path: Path | None,
 ) -> tuple[str, str | None, list[str]]:
@@ -1830,6 +2184,18 @@ def _route_health_evidence_verdict(
             "route_health_missing_inputs",
             [f"route_health.missing_inputs.{item}" for item in missing_inputs],
         )
+    hard_gate_eligible = route_health.get("hard_gate_eligible")
+    evidence_level = str(route_health.get("evidence_level") or "")
+    if hard_gate_eligible is not True:
+        missing = [
+            "route_health.hard_gate_eligible",
+            "route_health.evidence_level",
+            "route_health.route_evidence_reason",
+        ]
+        if scenario_class == "curve_diagnostic" and evidence_level == "diagnostic_only":
+            return "diagnostic_only", "route_health_diagnostic_only_not_claim_grade", missing
+        if scenario_class in ROUTE_HEALTH_HARD_GATE_SCENARIO_CLASSES:
+            return "insufficient_data", "route_health_not_hard_gate_eligible", missing
     source_status, source_reason, source_missing = _route_health_source_evidence_verdict(
         route_health,
         expected_route_id=expected_route_id,
@@ -1959,11 +2325,12 @@ def _route_health_source_evidence_verdict(
         if not _source_path_exists(str(source.get(field)), run_dir=run_dir, report_path=report_path)
     ]
     route_path = source.get("route_path")
+    route_source = str(route_health.get("route_source") or source.get("route_source") or "")
     reconstructed = "route reconstructed from timeseries P0 route_curve fields" in {
         str(item) for item in (route_health.get("warnings") or [])
     }
     if route_path in {None, ""}:
-        if not reconstructed:
+        if route_source != "inline_route" and not reconstructed:
             missing_source.append("route_health.source.route_path")
     elif not _source_path_exists(str(route_path), run_dir=run_dir, report_path=report_path):
         missing_source_artifacts.append("route_path")
@@ -2313,6 +2680,9 @@ def _write_csv(path: Path, run_results: Sequence[Mapping[str, Any]]) -> None:
             row["invalid_manifest_source_fields"] = ";".join(run.get("invalid_manifest_source_fields") or [])
             row["missing_control_trace_fields"] = ";".join(run.get("missing_control_trace_fields") or [])
             row["invalid_report_source_fields"] = ";".join(run.get("invalid_report_source_fields") or [])
+            row["active_assists"] = ";".join(run.get("active_assists") or [])
+            row["blocking_assists"] = ";".join(run.get("blocking_assists") or [])
+            row["non_blocking_assists"] = ";".join(run.get("non_blocking_assists") or [])
             row["apollo_channel_gap_failures"] = ";".join(run.get("apollo_channel_gap_failures") or [])
             row["apollo_channel_low_rate_channels"] = ";".join(
                 run.get("apollo_channel_low_rate_channels") or []
@@ -2322,6 +2692,9 @@ def _write_csv(path: Path, run_results: Sequence[Mapping[str, Any]]) -> None:
             )
             row["apollo_channel_failed_channels"] = ";".join(
                 run.get("apollo_channel_failed_channels") or []
+            )
+            row["localization_blocking_reasons"] = ";".join(
+                run.get("localization_blocking_reasons") or []
             )
             writer.writerow(row)
 
@@ -2346,22 +2719,28 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
         f"- invalid_manifest_source_fields_run_count: `{summary.get('invalid_manifest_source_fields_run_count')}`",
         f"- missing_control_trace_fields_run_count: `{summary.get('missing_control_trace_fields_run_count')}`",
         f"- invalid_report_source_fields_run_count: `{summary.get('invalid_report_source_fields_run_count')}`",
+        f"- blocking_assist_run_count: `{summary.get('blocking_assist_run_count')}`",
+        f"- unassisted_claimable_run_count: `{summary.get('unassisted_claimable_run_count')}`",
         f"- missing_required_scenario_classes: `{', '.join(coverage.get('missing_required_scenario_classes') or [])}`",
         f"- unproven_required_scenario_classes: `{', '.join(coverage.get('unproven_required_scenario_classes') or [])}`",
         f"- missing_required_scenario_ids: `{', '.join(coverage.get('missing_required_scenario_ids') or [])}`",
         f"- unproven_required_scenario_ids: `{', '.join(coverage.get('unproven_required_scenario_ids') or [])}`",
         f"- scenario_identity_mismatches: `{len(coverage.get('scenario_identity_mismatches') or [])}`",
         "",
-        "| run_id | scenario_class | route_id | transport | runtime | handoff | channel | channel_failures | verdict | failure_reason | tl_expected | stopped_at_red | matched | target | first_high_steer |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| run_id | scenario_class | route_id | transport | active_assists | blocking_assists | unassisted_claim | runtime | handoff | channel | localization | localization_blocking | verdict | failure_reason | tl_expected | stopped_at_red | matched | target | first_high_steer |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for run in report.get("run_results") or []:
         lines.append(
             f"| {run.get('run_id')} | {run.get('scenario_class')} | {run.get('route_id')} | "
             f"{run.get('transport_mode')} | "
+            f"{';'.join(run.get('active_assists') or [])} | "
+            f"{';'.join(run.get('blocking_assists') or [])} | "
+            f"{run.get('can_claim_unassisted_natural_driving')} | "
             f"{run.get('runtime_contract_status')} | {run.get('control_handoff_status')} | "
             f"{run.get('apollo_channel_health_status')} | "
-            f"{';'.join(run.get('apollo_channel_failed_channels') or [])} | "
+            f"{run.get('localization_contract_status')} | "
+            f"{';'.join(run.get('localization_blocking_reasons') or [])} | "
             f"{run.get('verdict')} | {run.get('failure_reason')} | "
             f"{run.get('traffic_light_expected_behavior')} | "
             f"{run.get('stopped_at_red')} | "

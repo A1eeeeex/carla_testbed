@@ -55,12 +55,18 @@ def test_synthetic_suite_passes_and_writes_reports(tmp_path: Path) -> None:
     assert all(run["artifacts"]["route_health_summary"] for run in report["run_results"])
     assert all(run["artifacts"]["control_health"] for run in report["run_results"])
     assert all(run["control_health_status"] == "pass" for run in report["run_results"])
+    assert all("evidence" in run for run in report["run_results"])
+    lane_run = next(run for run in report["run_results"] if run["scenario_class"] == "lane_keep")
+    assert lane_run["evidence"]["scenario_id"] == "lane_keep_097"
+    assert lane_run["evidence"]["route_hard_gate_eligible"] is True
+    assert "control_attribution_report.json" in lane_run["evidence"]["missing_artifacts"]
     assert {run["scenario_class"] for run in report["run_results"]} >= {
         "lane_keep",
         "junction_turn",
         "traffic_light_red_stop",
     }
     red_run = next(run for run in report["run_results"] if run["scenario_class"] == "traffic_light_red_stop")
+    assert red_run["evidence"]["traffic_light_evidence_status"] == "pass"
     assert red_run["traffic_light_expected_behavior"] == "red_stop"
     assert red_run["traffic_light_expectation_source"] == "manifest"
     assert red_run["traffic_light_stimulus_mode"] == "deterministic_gt_control"
@@ -143,6 +149,49 @@ def test_missing_control_latency_is_warning_not_insufficient_data(tmp_path: Path
     assert lane_run["failure_reason"] == "control_latency_missing"
     assert lane_run["missing_fields"] == ["control_latency_p95_ms"]
     assert report["verdict"]["status"] == "warn"
+
+
+def test_reconstructed_route_cannot_pass_natural_driving_hard_gate(tmp_path: Path) -> None:
+    suite_root = copy_fixture(tmp_path)
+    route_health_path = suite_root / "lane_keep_097" / "analysis" / "route_health" / "route_health.json"
+    route_health = json.loads(route_health_path.read_text(encoding="utf-8"))
+    route_health["route_source"] = "reconstructed_from_timeseries"
+    route_health["evidence_level"] = "diagnostic_only"
+    route_health["hard_gate_eligible"] = False
+    route_health["route_evidence_reason"] = "reconstructed_from_timeseries_cannot_support_hard_gate"
+    route_health["source"]["route_path"] = None
+    route_health_path.write_text(json.dumps(route_health, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
+
+    assert report["verdict"]["status"] == "insufficient_data"
+    assert lane_run["verdict"] == "insufficient_data"
+    assert lane_run["failure_reason"] == "route_health_not_hard_gate_eligible"
+    assert lane_run["route_source"] == "reconstructed_from_timeseries"
+    assert lane_run["route_evidence_level"] == "diagnostic_only"
+    assert lane_run["route_hard_gate_eligible"] is False
+    assert "route_health.hard_gate_eligible" in lane_run["missing_fields"]
+
+
+def test_terminal_stop_hold_blocks_unassisted_natural_driving_claim(tmp_path: Path) -> None:
+    suite_root = copy_fixture(tmp_path)
+    lane_dir = suite_root / "lane_keep_097"
+    manifest_path = lane_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["active_assists"] = ["terminal_stop_hold"]
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
+
+    assert lane_run["verdict"] == "assisted_pass"
+    assert lane_run["failure_reason"] == "assisted_pass_unassisted_claim_blocked"
+    assert lane_run["active_assists"] == ["terminal_stop_hold"]
+    assert lane_run["blocking_assists"] == ["terminal_stop_hold"]
+    assert lane_run["can_claim_unassisted_natural_driving"] is False
+    assert "assist_ledger.blocking_assists.terminal_stop_hold" in lane_run["missing_fields"]
+    assert report["summary"]["blocking_assist_run_count"] == 1
 
 
 def test_planned_suite_requires_full_target_capability_coverage(tmp_path: Path) -> None:

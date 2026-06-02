@@ -43,18 +43,41 @@ engineering target:
 - control health: raw/mapped/applied control and control handoff remain
   diagnosable.
 
+Each `natural_driving_report.json` scenario result includes an `evidence`
+object (`natural_driving_evidence.v1`). This is a normalized evidence ledger,
+not a replacement for the scenario verdict. It records route-health status,
+whether the route can support a hard gate, Apollo channel health,
+`localization_contract_report.json` status, control attribution status,
+traffic-light evidence status, assist ledger status, artifact completeness,
+active/blocking assists, missing artifacts, missing fields, and warnings.
+Missing evidence must stay explicit, for example
+`localization_contract_report.json`, `control_attribution_report.json`,
+`assist_ledger`, or `traffic_light_evidence_report.json`; the evaluator must
+not infer success from `summary.json` alone.
+
 ## Current Boundaries
 
 - `carla_direct` remains an experimental candidate transport, not the default
   backend.
 - `ros2_gt` remains the default baseline unless a specific run config says
   otherwise.
-- `carla_direct` short-window positives do not prove curve lateral health.
+- `carla_direct` short-window positives do not prove curve lateral health; any
+  `carla_direct` improvement claim requires `ab_report.json`.
 - Calibration is control-actuation evidence only. It is not the first curve
   fix and must not automatically change `steer_scale` or promote physical
   mapping.
 - Do not change Apollo parameters, enable physical mapping, or modify the core
   harness as part of this suite definition.
+- Assisted behavior is not unassisted natural-driving evidence. If
+  `assist_ledger` reports blocking assists such as
+  `straight_lane_lateral_stabilizer`, `straight_acc_override`, or
+  `terminal_stop_hold`, a run can still be diagnostically useful but cannot be
+  claimed as an unassisted Apollo natural-driving pass without
+  `natural_driving_report.json`.
+- Autoware RViz, rosbag2, and CARLA third-person recordings are operator/demo
+  evidence only. Autoware comparison with Apollo must go through the same
+  route-health, channel-health, control-health, control-attribution, and
+  natural-driving reports. See `docs/autoware_recording.md`.
 
 ## Suite Structure
 
@@ -97,6 +120,47 @@ Apollo Planning does not reason over a CARLA traffic-light actor id directly.
 For truth-input traffic-light scenarios, the adapter must map a CARLA
 `carla_actor_id` or `carla_landmark_id` to the Apollo HDMap `apollo_signal_id`
 and associated `stop_line_id` / `lane_ids`.
+
+## Map / Route / Signal Contract Levels
+
+`tools/check_town01_apollo_contract.py` writes
+`town01_apollo_contract_report.json` with schema
+`town01_apollo_contract_report.v2`. The report separates schema placeholders
+from evidence that was verified against explicit artifacts:
+
+- `route_contract_level`
+- `spawn_contract_level`
+- `hdmap_contract_level`
+- `reference_line_contract_level`
+- `signal_contract_level`
+- `overall_contract_level`
+- `can_claim_lane_keep`
+- `can_claim_junction`
+- `can_claim_traffic_light`
+
+Contract levels are ordered as:
+
+```text
+missing < placeholder < schema_only < route_geometry_available < hdmap_file_present < hdmap_verified < reference_line_verified < signal_overlap_verified
+```
+
+Verified levels cannot be inferred from field presence alone. They require
+explicit artifacts such as `hdmap_validation_report.json`,
+`reference_line_validation_report.json`, or `signal_overlap_report.json`.
+Placeholder fields never become verified evidence. For example, the tracked
+`configs/town01/apollo_contract.example.yaml` is useful for schema checks, but
+it cannot support traffic-light or junction claims until local Apollo HDMap,
+reference-line, and signal-overlap reports are attached.
+
+Gate interpretation:
+
+- lane-keep claims require at least route geometry plus spawn alignment;
+- curve and junction claims require `route_health.json` plus reference-line
+  verification unless the run is explicitly diagnostic-only;
+- traffic-light claims require `signal_overlap_verified`;
+- RoadRunner/Baguang conversion metadata can record source/generated map paths,
+  hashes, scale, lane count, signal count, and stop-line count, but it is not
+  itself a replacement for HDMap/reference-line/signal-overlap validation.
 
 The CI-safe adapter currently builds a dict payload only. It does not import
 CyberRT or Apollo protobufs:
@@ -196,6 +260,31 @@ python tools/analyze_apollo_channel_health.py \
 
 ## Gate Layers
 
+### `assist_ledger`
+
+Natural-driving reports read `assist_ledger.v1` evidence from the run
+manifest, summary, config, bridge stats, or an explicit `assist_ledger.json`
+when available.
+
+Recorded assists include:
+
+- `carla_direct_transport`
+- `straight_lane_lateral_stabilizer`
+- `straight_acc_override`
+- `terminal_stop_hold`
+- `goal_planner_module_disabled`
+- `planning_common_dynamics_override`
+- `speed_feedback_bridge_profile`
+
+`carla_direct_transport` is recorded as a non-blocking transport candidate.
+The other assists are blocking for unassisted natural-driving claims unless a
+specific diagnostic experiment marks them `diagnostic_only`. Blocking assists
+should produce a `warn`/diagnostic result such as
+`assisted_pass_unassisted_claim_blocked`, not a clean unassisted
+natural-driving pass. `natural_driving_report.json` must carry the
+`assisted_pass` verdict for runs that satisfy behavior metrics only with a
+blocking assist active.
+
 ### `link_health`
 
 This gate proves the route is materially connected:
@@ -209,6 +298,15 @@ This gate proves the route is materially connected:
 - Apollo control available
 - required channels present at acceptable rates
 - `apollo_channel_health_report.json` present for natural-driving claims
+- `localization_contract_report.json` present and non-blocking for hard-gate
+  behavior claims. A healthy `/apollo/localization/pose` channel is not enough
+  by itself because pose reference point, frame transform, heading, timestamps,
+  and velocity semantics must also be checked. Hard pass uses the report's
+  `acceptance_checklist`: sim-time timestamps, configured CARLA-to-Apollo frame
+  transform, runtime VRP/rear-axle conversion evidence, heading from transformed
+  forward vector, quaternion/heading consistency, kinematics units, chassis
+  speed consistency, and route/lane projection evidence must be `pass` or an
+  explicitly allowed `warn`.
 
 This gate does not prove behavior quality.
 
@@ -223,12 +321,45 @@ This gate proves route geometry and ego relation are interpretable:
 - `route_curve_artifact_gap_report.json` when the scenario contains curve
   diagnostics, so per-frame P1 matched/target/trajectory evidence is checked
   instead of inferred from summary text alone
+- `localization_contract_report.json` with status `pass` or `warn` and no
+  blocking reasons for lane-keep, junction, and traffic-light hard passes. If
+  the report is missing, those scenarios stay `insufficient_data` rather than
+  becoming Apollo algorithm failures.
 - for `curve_diagnostic`, route-health must expose matched-point anomaly,
   target-point anomaly, and Apollo raw-steer evidence. Missing fields keep the
   result `insufficient_data`; matched/target anomalies or first high steer keep
   the result from passing.
 
-This is the first required evidence layer for curve lateral semantics claims.
+This is the first required evidence layer for curve lateral semantics claims;
+the claim must reference `route_health.json` or
+`apollo_lateral_semantics_report.json`.
+
+Lane-keep and curve diagnostic scenarios have separate gate semantics:
+
+- `lane_keep` requires `route_health.json`, `hard_gate_eligible=true`, required
+  Apollo channel health for localization/chassis/planning/control, and
+  control-health evidence. It also requires non-blocking
+  `localization_contract_report.json`; summary success or vehicle motion alone
+  cannot pass this gate.
+- A route reconstructed from `timeseries.csv` remains diagnostic-only and
+  produces `insufficient_data` for lane-keep hard gates.
+- A blocking assist such as `straight_lane_lateral_stabilizer` can produce
+  `assisted_pass`, but `can_claim_unassisted_natural_driving=false`.
+- `curve_diagnostic` can consume diagnostic-only route evidence, but its
+  verdict remains `diagnostic_only`; it is not a promotion hard gate.
+- If `curve_diagnostic` lacks localization contract evidence, or the
+  localization contract has blocking reasons such as non-monotonic timestamps,
+  high lane-heading error, missing frame transform, or
+  `position_uses_vrp=false`, the result must remain `diagnostic_only` or
+  `insufficient_data`. This avoids blaming Apollo lateral logic before the GT
+  localization substitute is proven semantically usable.
+- Missing Apollo matched-point or target-point fields keep curve diagnosis at
+  `diagnostic_only` or `insufficient_data`. They must not be turned into an
+  Apollo algorithm failure claim.
+- When `apollo_lateral_semantics_report.json` exists, the evaluator echoes
+  `suspected_layer` and `confidence` so the report can point toward
+  reference-line, target-point, control-mapping, or vehicle-response evidence
+  without claiming an absolute root cause.
 
 ### `behavior_health`
 
@@ -243,6 +374,10 @@ This gate proves scenario behavior is plausible:
 Behavior claims require route-health and scenario-specific artifacts. Demo
 videos alone are not promotion evidence.
 
+Traffic-light behavior claims additionally require non-blocking localization
+contract evidence because stop-line distance and release timing depend on the
+ego pose reference point and map-frame transform.
+
 ### `control_health`
 
 This gate proves control is observable and not obviously contradictory:
@@ -256,6 +391,30 @@ This gate proves control is observable and not obviously contradictory:
 - control latency is present, with high latency treated as warning evidence;
 - control-actuation report is attached when mapping, `steer_scale`, or physical
   mapping claims are made.
+
+For attribution, add:
+
+- `control_attribution_report.json`;
+- `control_attribution_summary.md`.
+
+The attribution report separates source control semantics, bridge mapping,
+CARLA apply, and vehicle yaw-rate response. It is specifically meant to prevent
+ambiguous claims such as “Apollo is bad” or “the bridge is bad” without checking
+raw, mapped, applied, and response evidence. If it reports
+`source_control_semantics`, that still does not prove Apollo algorithm
+limitation; route/reference-line/matched-target semantics must be checked.
+
+For lateral semantics, add:
+
+- `apollo_lateral_semantics_report.json`;
+- `apollo_lateral_semantics_summary.md`.
+
+This report correlates route/reference curvature, planning first kappa,
+target-point kappa, source steer, matched/target anomalies, mapped/applied
+steer, and yaw-rate response. It is the preferred artifact when a run shows
+first-high-steer, matched-point-too-large, target-point jumps, or high kappa on
+a straight reference. Its output is a suspected layer with confidence; it is
+not a license to change `steer_scale` or declare Apollo algorithm limitation.
 
 Calibration belongs here. It explains control-actuation behavior; it does not
 replace route-health or shadow-mode evidence.
@@ -371,7 +530,7 @@ and traffic-light report paths point at the postprocessed evidence.
 If required inputs such as `channel_stats.json`, route context, or
 traffic-light contract/behavior evidence are missing, the generated reports
 must stay `insufficient_data`. This is a diagnostic result, not a
-natural-driving pass.
+natural-driving pass; `natural_driving_report.json` must preserve that boundary.
 Bridge-counter-derived channel stats are useful for triage, but they are not
 promotion-grade replacements for exported CyberRT monitor/record statistics
 because message gaps and timestamp monotonicity are inferred from aggregate

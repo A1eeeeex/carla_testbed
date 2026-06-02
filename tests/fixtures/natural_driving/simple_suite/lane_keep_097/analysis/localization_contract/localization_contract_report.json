@@ -1,0 +1,248 @@
+{
+  "acceptance_checklist": {
+    "acceleration_semantics": {
+      "evidence_fields": [
+        "fixture"
+      ],
+      "question": "Acceleration fields are not mistaken for claim-grade evidence when zero-filled.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "chassis_speed_consistency": {
+      "evidence_fields": [
+        "kinematics.velocity_norm_vs_chassis_speed_p95_mps"
+      ],
+      "question": "Localization speed is consistent with chassis speed.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "decoded_orientation_consistency": {
+      "evidence_fields": [
+        "pose_consistency.orientation_heading_diff_p95_rad"
+      ],
+      "question": "Quaternion orientation independently decodes to the published heading.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "frame_transform_configured": {
+      "evidence_fields": [
+        "frame_transform.uses_configured_transform",
+        "frame_transform.y_flip_or_axis_mapping_declared",
+        "frame_transform.affine_self_consistency_roundtrip_error_m_max"
+      ],
+      "question": "CARLA world to Apollo map frame transform is explicitly configured.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "heading_from_transformed_forward": {
+      "evidence_fields": [
+        "pose_consistency.heading_source"
+      ],
+      "question": "Heading is derived from transformed actor forward vector.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "kinematics_frame_and_units": {
+      "evidence_fields": [
+        "kinematics.linear_velocity_frame",
+        "kinematics.angular_velocity_unit",
+        "kinematics.vrf_fields_available"
+      ],
+      "question": "Velocity, acceleration, and angular velocity use declared frame/unit semantics.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "lane_projection": {
+      "evidence_fields": [
+        "route_health",
+        "pose_consistency.heading_error_to_route_p95_rad",
+        "pose_consistency.heading_error_to_lane_p95_rad"
+      ],
+      "question": "Ego pose has diagnostic lane projection evidence.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "localization_channel_health": {
+      "evidence_fields": [
+        "channel.message_count",
+        "channel.hz",
+        "channel.timestamp_monotonic",
+        "channel.sequence_monotonic"
+      ],
+      "question": "/apollo/localization/pose exists and timing is monotonic.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "natural_driving_gate_ready": {
+      "evidence_fields": [
+        "verdict.status",
+        "verdict.blocking_reasons"
+      ],
+      "question": "Localization evidence does not block natural-driving hard pass.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "position_uses_vrp": {
+      "evidence_fields": [
+        "reference_point.position_uses_vrp",
+        "reference_point.position_uses_vrp_evidence"
+      ],
+      "question": "Apollo position uses rear axle center / VRP.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "quaternion_heading_consistency": {
+      "evidence_fields": [
+        "pose_consistency.orientation_heading_diff_p95_rad"
+      ],
+      "question": "Quaternion orientation and heading are mutually consistent.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "reference_line_projection": {
+      "evidence_fields": [
+        "fixture"
+      ],
+      "question": "Apollo reference-line projection is explicitly verified.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "rfu_to_enu_orientation": {
+      "evidence_fields": [
+        "fixture"
+      ],
+      "question": "Orientation declares Apollo RFU-to-ENU convention.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "route_lane_projection": {
+      "evidence_fields": [
+        "route_health",
+        "pose_consistency.heading_error_to_route_p95_rad",
+        "pose_consistency.heading_error_to_lane_p95_rad"
+      ],
+      "question": "Ego pose can be projected consistently onto route/lane evidence.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "sim_time_time_base": {
+      "evidence_fields": [
+        "time.time_base",
+        "time.header_timestamp_sec_source",
+        "time.measurement_time_source"
+      ],
+      "question": "Localization timestamps use sim_time and measurement_time is available.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "source_to_published_reference_explained": {
+      "evidence_fields": [
+        "fixture"
+      ],
+      "question": "The source localization reference and published Apollo reference are explicitly explained.",
+      "reason": "fixture",
+      "status": "pass"
+    },
+    "uncertainty_status_policy": {
+      "evidence_fields": [
+        "fixture"
+      ],
+      "question": "Localization uncertainty and status fields are available or explicitly treated as policy gaps.",
+      "reason": "fixture",
+      "status": "pass"
+    }
+  },
+  "backend": "apollo_cyberrt",
+  "channel": {
+    "hz": 20.0,
+    "max_gap_ms": 55.0,
+    "message_count": 80,
+    "message_type": "LocalizationEstimate",
+    "name": "/apollo/localization/pose",
+    "sequence_monotonic": true,
+    "stale_count": 0,
+    "status": "pass",
+    "timestamp_monotonic": true
+  },
+  "frame_transform": {
+    "affine_self_consistency_roundtrip_error_m_max": 0.0,
+    "lane_projection_verified": true,
+    "map_alignment_verified": false,
+    "reference_line_verified": false,
+    "roundtrip_error_m_max": 0.0,
+    "source_frame": "carla_world",
+    "target_frame": "apollo_map",
+    "transform_id": "Town01_fixture",
+    "uses_configured_transform": true,
+    "y_flip_or_axis_mapping_declared": true
+  },
+  "interpretation_boundary": "Fixture localization contract evidence for offline tests only.",
+  "kinematics": {
+    "acceleration_available": true,
+    "angular_velocity_unit": "rad_per_s",
+    "linear_velocity_frame": "apollo_map",
+    "velocity_norm_vs_chassis_speed_p95_mps": 0.03,
+    "vrf_fields_available": true,
+    "yaw_rate_vs_heading_fd_p95_rad_s": 0.02
+  },
+  "missing_fields": [],
+  "pose_consistency": {
+    "heading_error_to_lane_p95_rad": 0.04,
+    "heading_error_to_route_p95_rad": 0.04,
+    "heading_source": "transformed_forward_vector",
+    "orientation_heading_diff_p95_rad": 0.005,
+    "spawn_projection_error_m": 0.1
+  },
+  "reference_point": {
+    "apollo_control_state_reference": "rear_axle_input_com_internal",
+    "apollo_position_reference": "rear_axle_center",
+    "carla_actor_origin_definition": "measured_actor_origin",
+    "confidence": "verified",
+    "configured_apollo_reference_point": "rear_axle_center",
+    "configured_vehicle_reference_confidence": "verified",
+    "expected_rear_axle_back_offset_m": 1.4235,
+    "localization_back_offset_m": 1.4235,
+    "origin_to_vrp_carla_m": {
+      "x": -1.35,
+      "y": 0.0,
+      "z": 0.0
+    },
+    "position_uses_vrp": true,
+    "position_uses_vrp_evidence": [
+      "ros2_gt_live_stats.reference",
+      "cyber_bridge_stats.last_pose_debug"
+    ],
+    "published_localization_reference_mode": "rear_axle",
+    "reference_conversion_detected": true,
+    "reference_conversion_method": "source_vehicle_origin_to_published_rear_axle",
+    "reference_path_status": "pass",
+    "source_reference_mode": "vehicle_origin"
+  },
+  "route_id": "lane097",
+  "run_id": "lane_keep_097",
+  "schema_version": "apollo_localization_contract.v1",
+  "source": {
+    "channel_stats_path": "tests/fixtures/apollo/channel_stats_natural_valid.json",
+    "route_health_path": "analysis/route_health/route_health.json",
+    "run_dir": ".",
+    "timeseries_path": "timeseries.csv"
+  },
+  "status": {
+    "measurement_time_available": true,
+    "msf_status_available": true,
+    "sensor_status_available": true,
+    "uncertainty_available": true
+  },
+  "time": {
+    "header_timestamp_sec_source": "localization_timestamp",
+    "measurement_time_source": "measurement_time",
+    "time_base": "sim_time",
+    "timestamp_chassis_delta_ms_p95": 1.0,
+    "timestamp_planning_age_ms_p95": 20.0
+  },
+  "verdict": {
+    "blocking_reasons": [],
+    "status": "pass"
+  },
+  "warnings": []
+}
