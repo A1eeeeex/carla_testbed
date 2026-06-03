@@ -1,0 +1,12 @@
+{
+  "attribution": {
+    "dominant_breakpoint": "none",
+    "mapped_to_applied_steer_consistency": {
+      "abs_error_p95": 0.0
+    }
+  },
+  "schema_version": "control_attribution.v1",
+  "verdict": {
+    "status": "pass"
+  }
+}

@@ -43,6 +43,30 @@ def test_terminal_stop_hold_blocks_natural_driving_claim() -> None:
     assert ledger["assist_confidence"] == "explicit"
 
 
+def test_legacy_and_manual_assists_block_unassisted_claims() -> None:
+    ledger = build_assist_ledger(
+        manifest={
+            "active_assists": [
+                "dummy_lateral",
+                "legacy_followstop",
+                "route_follower",
+                "direct_autopilot",
+                "manual_intervention",
+            ]
+        }
+    )
+
+    assert ledger["active_assists"] == [
+        "direct_autopilot",
+        "dummy_lateral",
+        "legacy_followstop",
+        "manual_intervention",
+        "route_follower",
+    ]
+    assert ledger["blocking_assists"] == ledger["active_assists"]
+    assert ledger["can_claim_unassisted_natural_driving"] is False
+
+
 def test_direct_transport_alone_is_recorded_but_non_blocking() -> None:
     ledger = build_assist_ledger(manifest={"backend": "carla_direct"})
 

@@ -156,6 +156,9 @@ def build_traffic_light_gt_message_dict(
     timestamp_sec: float | None = None,
     frame_id: int | None = None,
     confidence: float = 1.0,
+    traffic_light_policy: str = "carla_actual",
+    color_source: str = "carla_actor_state",
+    contain_lights: bool | None = None,
 ) -> dict[str, Any]:
     warnings: list[str] = []
     mapping_obj = _coerce_mapping(mapping)
@@ -187,6 +190,12 @@ def build_traffic_light_gt_message_dict(
         warnings.append("traffic_light_state_unknown")
 
     confidence_value = _clamp_confidence(confidence)
+    source_text = str(color_source or "").strip()
+    if source_text not in {"carla_actor_state", "carla_landmark_state", "carla_traffic_light_actor_state"}:
+        warnings.append("traffic_light_color_source_not_claim_grade")
+    if confidence_value < 0.99:
+        warnings.append("traffic_light_confidence_below_claim_grade")
+    contains = bool(signal_id) if contain_lights is None else bool(contain_lights)
     return {
         "schema_version": TRAFFIC_LIGHT_GT_MESSAGE_SCHEMA_VERSION,
         "signal_id": signal_id,
@@ -195,6 +204,9 @@ def build_traffic_light_gt_message_dict(
         "confidence": confidence_value,
         "timestamp_sec": timestamp_sec,
         "frame_id": frame_id,
+        "traffic_light_policy": traffic_light_policy,
+        "color_source": source_text or None,
+        "contain_lights": contains,
         "stop_line_id": stop_line_id,
         "lane_ids": lane_ids,
         "warnings": warnings,

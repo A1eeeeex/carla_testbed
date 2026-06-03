@@ -194,6 +194,114 @@ def test_terminal_stop_hold_blocks_unassisted_natural_driving_claim(tmp_path: Pa
     assert report["summary"]["blocking_assist_run_count"] == 1
 
 
+def test_apollo_control_apply_without_assists_can_claim_unassisted(tmp_path: Path) -> None:
+    suite_root = copy_fixture(tmp_path)
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
+
+    assert lane_run["verdict"] == "pass"
+    assert lane_run["backend"] == "apollo_cyberrt"
+    assert lane_run["control_source"] == "/apollo/control"
+    assert lane_run["routing_success_count"] >= 1
+    assert lane_run["planning_nonempty_ratio"] >= 0.8
+    assert lane_run["control_rx_count"] > 0
+    assert lane_run["control_tx_count"] > 0
+    assert lane_run["control_apply_count"] > 0
+    assert lane_run["lateral_guard_apply_count"] == 0
+    assert lane_run["trajectory_contract_guard_apply_count"] == 0
+    assert lane_run["active_assists"] == []
+    assert lane_run["can_claim_unassisted_natural_driving"] is True
+    assert lane_run["why_not_claimable"] == []
+
+
+def test_missing_assist_evidence_is_insufficient_data_not_default_pass(tmp_path: Path) -> None:
+    suite_root = copy_fixture(tmp_path)
+    lane_dir = suite_root / "lane_keep_097"
+    manifest_path = lane_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("assist_ledger", None)
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
+
+    assert lane_run["verdict"] == "insufficient_data"
+    assert lane_run["failure_reason"] == "unassisted_claim_not_supported"
+    assert lane_run["can_claim_unassisted_natural_driving"] is False
+    assert "assist_ledger_missing_or_unknown" in lane_run["why_not_claimable"]
+    assert "claimability.assist_ledger_missing_or_unknown" in lane_run["missing_fields"]
+
+
+def test_dummy_lateral_cannot_pass_unassisted_claim_gate(tmp_path: Path) -> None:
+    suite_root = copy_fixture(tmp_path)
+    lane_dir = suite_root / "lane_keep_097"
+    manifest_path = lane_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["assist_ledger"] = {
+        "schema_version": "assist_ledger.v1",
+        "active_assists": ["dummy_lateral"],
+        "blocking_assists": ["dummy_lateral"],
+        "non_blocking_assists": [],
+        "assist_sources": {"dummy_lateral": "manifest"},
+        "assist_confidence": "explicit",
+        "source_artifact": "manifest",
+        "can_claim_unassisted_natural_driving": False,
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
+
+    assert lane_run["verdict"] == "assisted_pass"
+    assert lane_run["failure_reason"] == "assisted_pass_unassisted_claim_blocked"
+    assert lane_run["blocking_assists"] == ["dummy_lateral"]
+    assert lane_run["can_claim_unassisted_natural_driving"] is False
+    assert "active_assists_present" in lane_run["why_not_claimable"]
+
+
+def test_legacy_followstop_cannot_pass_unassisted_claim_gate(tmp_path: Path) -> None:
+    suite_root = copy_fixture(tmp_path)
+    lane_dir = suite_root / "lane_keep_097"
+    manifest_path = lane_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["active_assists"] = ["legacy_followstop"]
+    manifest.pop("assist_ledger", None)
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
+
+    assert lane_run["verdict"] == "assisted_pass"
+    assert lane_run["failure_reason"] == "assisted_pass_unassisted_claim_blocked"
+    assert lane_run["blocking_assists"] == ["legacy_followstop"]
+    assert lane_run["can_claim_unassisted_natural_driving"] is False
+
+
+def test_force_green_traffic_light_scenario_cannot_pass_claim_grade(tmp_path: Path) -> None:
+    suite_root = copy_fixture(tmp_path)
+    red_dir = suite_root / "traffic_light_red_stop"
+    manifest_path = red_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["traffic_light_control"]["stimulus_mode"] = "force_green"
+    manifest["traffic_light_control"]["mode"] = "force_green"
+    manifest["traffic_light_expectation"]["stimulus_mode"] = "force_green"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report = analyze_natural_driving_suite(suite_root)
+    red_run = next(run for run in report["run_results"] if run["scenario_class"] == "traffic_light_red_stop")
+
+    assert red_run["verdict"] == "insufficient_data"
+    assert red_run["failure_reason"] in {
+        "traffic_light_control_missing",
+        "traffic_light_stimulus_not_claim_grade",
+        "traffic_light_control_not_deterministic",
+        "unassisted_claim_not_supported",
+    }
+    assert red_run["can_claim_unassisted_natural_driving"] is False
+    assert "force_green_traffic_light_active" in red_run["why_not_claimable"]
+
+
 def test_planned_suite_requires_full_target_capability_coverage(tmp_path: Path) -> None:
     suite_root = copy_fixture(tmp_path)
     with (suite_root / "run_matrix.csv").open("w", encoding="utf-8", newline="") as handle:

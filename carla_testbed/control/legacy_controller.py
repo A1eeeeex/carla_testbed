@@ -2,12 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
-
-import carla
+from typing import Any, Optional
 
 from carla_testbed.schemas import ControlCommand
-from algo.controllers.legacy_followstop import controllers as legacy_ctrl
 
 
 @dataclass
@@ -27,11 +24,23 @@ class LegacyFollowStopController:
         self,
         cfg: LegacyControllerConfig,
         root: Optional[Path] = None,
-        world: Optional[carla.World] = None,
-        carla_map: Optional[carla.Map] = None,
-        ego: Optional[carla.Vehicle] = None,
-        front: Optional[carla.Vehicle] = None,
+        world: Optional[Any] = None,
+        carla_map: Optional[Any] = None,
+        ego: Optional[Any] = None,
+        front: Optional[Any] = None,
     ):
+        try:
+            from algo.controllers.legacy_followstop import controllers as legacy_ctrl
+        except (AttributeError, ImportError, ModuleNotFoundError) as exc:
+            if any(value is not None for value in (world, carla_map, ego, front)):
+                raise
+            self._legacy = None
+            self.cfg = cfg
+            self.ctrl = None
+            self.name = "legacy_controller_unavailable"
+            self.import_error = exc
+            return
+
         # controllers 已迁移到 algo.controllers.legacy_followstop.controllers
         self._legacy = legacy_ctrl
         self.cfg = cfg
@@ -57,12 +66,14 @@ class LegacyFollowStopController:
         self,
         t: float,
         dt: float,
-        world: carla.World,
-        carla_map: carla.Map,
-        ego: carla.Vehicle,
-        front: carla.Vehicle,
+        world: Any,
+        carla_map: Any,
+        ego: Any,
+        front: Any,
     ) -> ControlCommand:
         legacy = self._legacy
+        if legacy is None or self.ctrl is None:
+            raise RuntimeError("LegacyFollowStopController requires a full CARLA PythonAPI runtime")
         v = legacy.speed_mps(ego)
         state = legacy.ControlState(
             t=t,
@@ -74,7 +85,7 @@ class LegacyFollowStopController:
             v=v,
             d=0.0,
         )
-        veh_ctrl: carla.VehicleControl = self.ctrl.step(state)
+        veh_ctrl = self.ctrl.step(state)
         cmd = ControlCommand(
             throttle=veh_ctrl.throttle,
             brake=veh_ctrl.brake,

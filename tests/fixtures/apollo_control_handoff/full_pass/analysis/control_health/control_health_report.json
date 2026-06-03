@@ -1,0 +1,16 @@
+{
+  "failure_reason": null,
+  "metrics": {
+    "control_bridge_log": {
+      "final_applied_count": 10
+    },
+    "control_latency_p95_ms": 23.0,
+    "mapped_applied_steer_abs_error_p95": 0.0
+  },
+  "raw_mapped_applied_control_available": true,
+  "route_id": "lane097",
+  "scenario_class": "lane_keep",
+  "schema_version": "control_health_report.v1",
+  "status": "pass",
+  "warnings": []
+}

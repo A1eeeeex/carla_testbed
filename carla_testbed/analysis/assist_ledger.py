@@ -16,6 +16,11 @@ ASSIST_NAMES = {
     "goal_planner_module_disabled",
     "planning_common_dynamics_override",
     "speed_feedback_bridge_profile",
+    "dummy_lateral",
+    "legacy_followstop",
+    "route_follower",
+    "direct_autopilot",
+    "manual_intervention",
 }
 
 DEFAULT_BLOCKING_ASSISTS = {
@@ -25,6 +30,11 @@ DEFAULT_BLOCKING_ASSISTS = {
     "goal_planner_module_disabled",
     "planning_common_dynamics_override",
     "speed_feedback_bridge_profile",
+    "dummy_lateral",
+    "legacy_followstop",
+    "route_follower",
+    "direct_autopilot",
+    "manual_intervention",
 }
 
 NON_BLOCKING_ASSISTS = {
@@ -272,6 +282,43 @@ def _collect_inferred_assists(
             if key_text.startswith("speed_feedback_"):
                 _record_assist(active, assist_sources, "speed_feedback_bridge_profile", source)
                 inferred = True
+            if key_text in {
+                "dummy_lateral",
+                "dummy_lateral_enabled",
+                "enable_dummy_lateral",
+            } and _boolish(value):
+                _record_assist(active, assist_sources, "dummy_lateral", source)
+                inferred = True
+            if key_text in {
+                "legacy_followstop",
+                "legacy_followstop_enabled",
+                "legacy_follow_stop",
+                "legacy_follow_stop_enabled",
+            } and _boolish(value):
+                _record_assist(active, assist_sources, "legacy_followstop", source)
+                inferred = True
+            if key_text in {
+                "route_follower",
+                "route_follower_enabled",
+                "enable_route_follower",
+            } and _boolish(value):
+                _record_assist(active, assist_sources, "route_follower", source)
+                inferred = True
+            if key_text in {
+                "direct_autopilot",
+                "direct_autopilot_enabled",
+                "carla_autopilot_enabled",
+            } and _boolish(value):
+                _record_assist(active, assist_sources, "direct_autopilot", source)
+                inferred = True
+            if key_text in {
+                "manual_intervention",
+                "manual_intervention_detected",
+                "manual_override",
+                "manual_override_active",
+            } and _boolish(value):
+                _record_assist(active, assist_sources, "manual_intervention", source)
+                inferred = True
     return inferred
 
 
@@ -419,13 +466,9 @@ def read_assist_ledger_from_run_dir(run_dir: str | Path) -> dict[str, Any]:
         if payload.get("schema_version") == ASSIST_LEDGER_SCHEMA_VERSION:
             return dict(payload)
     summary_payload = _read_json(root / "summary.json")
-    embedded = _embedded_ledger(summary_payload)
-    if embedded is not None:
-        return embedded
     manifest_payload = _read_json(root / "manifest.json")
-    embedded = _embedded_ledger(manifest_payload)
-    if embedded is not None:
-        return embedded
+    if _embedded_ledger(summary_payload) is not None or _embedded_ledger(manifest_payload) is not None:
+        return build_runtime_assist_ledger(summary=summary_payload, manifest=manifest_payload)
     config_path = _first_existing(root, "config.resolved.yaml", "effective_config.yaml", "effective.yaml")
     bridge_stats_path = _first_existing(
         root,

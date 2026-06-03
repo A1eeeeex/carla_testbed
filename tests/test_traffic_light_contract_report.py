@@ -67,6 +67,77 @@ def test_missing_scenario_mapping_fails_without_fake_unknown_publish() -> None:
     assert "no_traffic_light_mapping_for_scenario" in report["errors"]
 
 
+def test_carla_actual_mapped_signal_can_be_claim_grade_ready() -> None:
+    contract = load_town01_apollo_contract(TOWN01_CONTRACT)
+    mapping = load_traffic_light_mappings(TRAFFIC_LIGHT_MAPPING)
+    contract["signals"] = [
+        {
+            "logical_id": "verified_red_stop",
+            "apollo_signal_id": "signal_001",
+            "stop_line_id": "stop_line_001",
+            "carla_actor_id": "actor_001",
+            "lane_ids": ["lane_approach"],
+            "status": "pass",
+        }
+    ]
+    mapping["traffic_lights"] = [
+        {
+            "logical_id": "verified_red_stop",
+            "carla_actor_id": "actor_001",
+            "apollo_signal_id": "signal_001",
+            "stop_line_id": "stop_line_001",
+            "lane_ids": ["lane_approach"],
+            "default_state": "RED",
+            "supported_scenarios": ["traffic_light_red_stop"],
+        }
+    ]
+
+    report = build_traffic_light_contract_report(
+        contract,
+        mapping,
+        scenario_class="traffic_light_red_stop",
+    )
+
+    assert report["status"] == "pass"
+    assert report["claim_grade_ready"] is True
+    assert report["mapping_results"][0]["claim_grade_ready"] is True
+
+
+def test_missing_signal_id_is_insufficient_data_not_claim_grade() -> None:
+    contract = load_town01_apollo_contract(TOWN01_CONTRACT)
+    mapping = load_traffic_light_mappings(TRAFFIC_LIGHT_MAPPING)
+    contract["signals"] = [
+        {
+            "logical_id": "missing_signal",
+            "apollo_signal_id": None,
+            "stop_line_id": "stop_line_001",
+            "carla_actor_id": "actor_001",
+            "lane_ids": ["lane_approach"],
+            "status": "pass",
+        }
+    ]
+    mapping["traffic_lights"] = [
+        {
+            "logical_id": "missing_signal",
+            "carla_actor_id": "actor_001",
+            "stop_line_id": "stop_line_001",
+            "lane_ids": ["lane_approach"],
+            "default_state": "RED",
+            "supported_scenarios": ["traffic_light_red_stop"],
+        }
+    ]
+
+    report = build_traffic_light_contract_report(
+        contract,
+        mapping,
+        scenario_class="traffic_light_red_stop",
+    )
+
+    assert report["status"] == "insufficient_data"
+    assert report["claim_grade_ready"] is False
+    assert "missing_apollo_signal_id" in report["errors"]
+
+
 def test_write_traffic_light_contract_report(tmp_path: Path) -> None:
     report = build_traffic_light_contract_report_files(
         town01_contract_path=TOWN01_CONTRACT,

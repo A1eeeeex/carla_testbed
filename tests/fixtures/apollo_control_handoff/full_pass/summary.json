@@ -1,0 +1,14 @@
+{
+  "backend": "apollo",
+  "control_handoff_status": "control_consuming_with_nonzero_planning",
+  "control_pad_required": false,
+  "control_process_started": true,
+  "planning_materialized": true,
+  "planning_message_count": 10,
+  "planning_nonempty_count": 10,
+  "route_id": "lane097",
+  "routing_materialized": true,
+  "run_id": "full_pass",
+  "scenario_class": "lane_keep",
+  "transport_mode": "ros2_gt"
+}

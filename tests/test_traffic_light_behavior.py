@@ -106,6 +106,22 @@ def test_claim_grade_missing_traffic_light_control_is_insufficient_data(tmp_path
     assert "traffic_light_control" in report["missing_fields"]
 
 
+def test_force_green_claim_grade_traffic_light_behavior_is_insufficient_data(tmp_path: Path) -> None:
+    run_dir = _copy_run(tmp_path)
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["traffic_light_control"]["traffic_light_policy"] = "force_green"
+    manifest["traffic_light_control"]["mode"] = "force_green"
+    manifest["traffic_light_control"]["stimulus_mode"] = "force_green"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    report = analyze_traffic_light_behavior_run_dir(run_dir, scenario_class="traffic_light_red_stop")
+
+    assert report["status"] == "insufficient_data"
+    assert report["failure_reason"] == "traffic_light_force_green_not_claim_grade"
+    assert "traffic_light_control.traffic_light_policy" in report["missing_fields"]
+
+
 def test_claim_grade_traffic_light_control_must_affect_actor(tmp_path: Path) -> None:
     run_dir = _copy_run(tmp_path)
     _set_manifest_control(
@@ -140,6 +156,10 @@ def test_red_to_green_claim_grade_requires_release_event(tmp_path: Path) -> None
     manifest["traffic_light_control"] = {
         "mode": "deterministic_gt_control",
         "stimulus_mode": "deterministic_gt_control",
+        "traffic_light_policy": "carla_actual",
+        "color_source": "carla_actor_state",
+        "confidence": 1.0,
+        "contain_lights": True,
         "initial_state": "RED",
         "release_state": "GREEN",
         "initial_affected_count": 1,

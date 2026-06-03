@@ -21,6 +21,9 @@ DEFAULT_THRESHOLDS = {
     "max_control_bridge_ego_bind_delay_s": 5.0,
     "max_control_bridge_bind_to_first_apply_s": 5.0,
     "max_applied_throttle_brake_switch_count": 10,
+    "max_raw_throttle_brake_switch_count": 10,
+    "max_mapped_throttle_brake_switch_count": 10,
+    "max_vehicle_response_sign_switch_count": 10,
 }
 CONTROL_TRACE_FIELDS = [
     "apollo_steer_raw",
@@ -105,12 +108,24 @@ def analyze_control_health_run_dir(
             "control_attribution_report.json",
         ],
     )
+    apollo_control_handoff_report_path = _find_first(
+        root,
+        [
+            "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
+            "apollo_control_handoff_report.json",
+        ],
+    )
     summary = _read_json(summary_path)
     manifest = _read_json(manifest_path)
     control_handoff_debug = _read_json(control_handoff_path) if control_handoff_path else {}
     planning_debug = _read_json(planning_summary_path) if planning_summary_path else {}
     cyber_bridge_stats = _read_json(cyber_bridge_stats_path) if cyber_bridge_stats_path else {}
     control_attribution = _read_json(control_attribution_path) if control_attribution_path else {}
+    apollo_control_handoff = (
+        _read_json(apollo_control_handoff_report_path)
+        if apollo_control_handoff_report_path
+        else {}
+    )
     rows = _read_rows(timeseries_path)
     control_bridge_log = _analyze_control_bridge_log(control_bridge_log_path)
     control_decode_debug = _analyze_control_decode_debug(control_decode_debug_path)
@@ -190,6 +205,17 @@ def analyze_control_health_run_dir(
         "direct_control_apply_log": direct_control_apply,
         "control_attribution": _control_attribution_summary(control_attribution, control_attribution_path),
     }
+    report_metrics["oscillation_decomposition"] = _oscillation_decomposition(
+        rows=rows,
+        control_bridge_log=control_bridge_log,
+        thresholds=active_thresholds,
+    )
+    report_metrics["control_mapping_claim_boundary"] = _control_mapping_claim_boundary(
+        rows=rows,
+        summary=summary,
+        manifest=manifest,
+        cyber_bridge_stats=cyber_bridge_stats,
+    )
     missing_fields = _missing_control_fields(rows)
     external_control_evidence_available = _external_control_evidence_available(
         control_bridge_log=control_bridge_log,
@@ -216,6 +242,16 @@ def analyze_control_health_run_dir(
         "routing_materialized": _summary_bool(summary, "routing_materialized"),
         "planning_materialized": _summary_bool(summary, "planning_materialized"),
         "control_handoff_status": handoff,
+        "apollo_control_handoff_status": apollo_control_handoff.get("verdict"),
+        "apollo_control_handoff_failure_stage": apollo_control_handoff.get("failure_stage"),
+        "apollo_control_handoff_blocking_reasons": list(
+            apollo_control_handoff.get("blocking_reasons") or []
+        ),
+        "apollo_control_handoff_report_path": (
+            str(apollo_control_handoff_report_path)
+            if apollo_control_handoff_report_path
+            else None
+        ),
         "raw_mapped_applied_control_available": not missing_fields or external_control_evidence_available,
         "raw_mapped_applied_control_source": (
             "timeseries"
@@ -239,6 +275,11 @@ def analyze_control_health_run_dir(
             "planning_summary_path": str(planning_summary_path) if planning_summary_path else None,
             "cyber_bridge_stats_path": str(cyber_bridge_stats_path) if cyber_bridge_stats_path else None,
             "control_attribution_path": str(control_attribution_path) if control_attribution_path else None,
+            "apollo_control_handoff_report_path": (
+                str(apollo_control_handoff_report_path)
+                if apollo_control_handoff_report_path
+                else None
+            ),
         },
         "interpretation_boundary": (
             "Control-health report checks handoff and raw/mapped/applied command evidence only. "
@@ -263,6 +304,334 @@ def _control_attribution_summary(
         "applied_control_available": report.get("applied_control_available"),
         "vehicle_response_available": report.get("vehicle_response_available"),
     }
+
+
+def _oscillation_decomposition(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    control_bridge_log: Mapping[str, Any],
+    thresholds: Mapping[str, float],
+) -> dict[str, Any]:
+    raw = _command_oscillation_layer(
+        rows,
+        layer="apollo_raw_command",
+        throttle_fields=("throttle_raw", "apollo_desired_throttle", "commanded_throttle_raw"),
+        brake_fields=("brake_raw", "apollo_desired_brake", "commanded_brake_raw"),
+        steer_fields=("apollo_steer_raw", "apollo_desired_steer", "steering_target", "source_steer"),
+        max_switch_count=thresholds["max_raw_throttle_brake_switch_count"],
+    )
+    mapped = _command_oscillation_layer(
+        rows,
+        layer="bridge_mapped_command",
+        throttle_fields=("throttle_mapped", "mapped_throttle_cmd", "commanded_throttle"),
+        brake_fields=("brake_mapped", "mapped_brake_cmd", "commanded_brake"),
+        steer_fields=("bridge_steer_mapped", "mapped_carla_steer_cmd", "mapped_steer"),
+        max_switch_count=thresholds["max_mapped_throttle_brake_switch_count"],
+    )
+    applied = _command_oscillation_layer(
+        rows,
+        layer="carla_applied_command",
+        throttle_fields=("throttle_applied", "measured_throttle"),
+        brake_fields=("brake_applied", "measured_brake"),
+        steer_fields=("carla_steer_applied", "measured_steer"),
+        max_switch_count=thresholds["max_applied_throttle_brake_switch_count"],
+    )
+    vehicle = _vehicle_response_oscillation_layer(
+        rows,
+        max_switch_count=thresholds["max_vehicle_response_sign_switch_count"],
+    )
+    cadence = _bridge_apply_cadence_layer(control_bridge_log, thresholds)
+    layers = {
+        "apollo_raw_command": raw,
+        "bridge_mapped_command": mapped,
+        "carla_applied_command": applied,
+        "vehicle_response": vehicle,
+        "bridge_apply_cadence": cadence,
+    }
+    priority = [
+        "bridge_apply_cadence",
+        "apollo_raw_command",
+        "bridge_mapped_command",
+        "carla_applied_command",
+        "vehicle_response",
+    ]
+    dominant = "insufficient_data"
+    for name in priority:
+        status = layers[name].get("status")
+        if status == "fail":
+            dominant = name
+            break
+    else:
+        for name in priority:
+            if layers[name].get("status") == "warn":
+                dominant = name
+                break
+        else:
+            if any(layer.get("status") == "pass" for layer in layers.values()):
+                dominant = "none"
+    return {
+        "layers": layers,
+        "dominant_oscillation_layer": dominant,
+        "interpretation": (
+            "Oscillation is decomposed into Apollo raw command, bridge mapped command, "
+            "CARLA applied command, vehicle response, and bridge apply cadence. Do not "
+            "smooth or clamp commands to hide reference-line/localization errors."
+        ),
+    }
+
+
+def _command_oscillation_layer(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    layer: str,
+    throttle_fields: Sequence[str],
+    brake_fields: Sequence[str],
+    steer_fields: Sequence[str],
+    max_switch_count: float,
+) -> dict[str, Any]:
+    states: list[str] = []
+    steer_values: list[float] = []
+    conflict_frames = 0
+    sample_count = 0
+    resolved_fields = {
+        "throttle": _first_present_field(rows, throttle_fields),
+        "brake": _first_present_field(rows, brake_fields),
+        "steer": _first_present_field(rows, steer_fields),
+    }
+    for row in rows:
+        throttle = _first_row_number(row, *throttle_fields)
+        brake = _first_row_number(row, *brake_fields)
+        steer = _first_row_number(row, *steer_fields)
+        if throttle is None and brake is None and steer is None:
+            continue
+        sample_count += 1
+        throttle_f = float(throttle or 0.0)
+        brake_f = float(brake or 0.0)
+        if throttle_f > 0.05 and brake_f > 0.05:
+            conflict_frames += 1
+            states.append("conflict")
+        elif throttle_f > 0.05:
+            states.append("throttle")
+        elif brake_f > 0.05:
+            states.append("brake")
+        else:
+            states.append("coast")
+        if steer is not None:
+            steer_values.append(float(steer))
+    compact_states = [state for state in states if state in {"throttle", "brake"}]
+    switch_count = sum(1 for prev, cur in zip(compact_states, compact_states[1:]) if prev != cur)
+    steer_sign_switch_count = _sign_switch_count(steer_values, deadband=0.01)
+    if sample_count <= 0:
+        status = "insufficient_data"
+        reason = "missing_layer_fields"
+    elif conflict_frames > 0:
+        status = "fail"
+        reason = "throttle_brake_conflict"
+    elif switch_count > max_switch_count:
+        status = "fail"
+        reason = "throttle_brake_switching"
+    elif steer_sign_switch_count > max_switch_count:
+        status = "warn"
+        reason = "steer_sign_switching"
+    else:
+        status = "pass"
+        reason = None
+    return {
+        "layer": layer,
+        "status": status,
+        "reason": reason,
+        "sample_count": sample_count,
+        "resolved_fields": resolved_fields,
+        "throttle_brake_switch_count": switch_count if sample_count else None,
+        "throttle_brake_conflict_frames": conflict_frames if sample_count else None,
+        "steer_sign_switch_count": steer_sign_switch_count if steer_values else None,
+    }
+
+
+def _vehicle_response_oscillation_layer(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    max_switch_count: float,
+) -> dict[str, Any]:
+    yaw_fields = ("ego_yaw_rate", "ego_yaw_rate_rad_s", "yaw_rate_rps", "measured_yaw_rate_rps")
+    accel_fields = (
+        "measured_forward_accel_mps2",
+        "ego_accel_mps2",
+        "linear_acceleration_x",
+        "forward_accel_mps2",
+    )
+    yaw_values = [value for row in rows if (value := _first_row_number(row, *yaw_fields)) is not None]
+    accel_values = [value for row in rows if (value := _first_row_number(row, *accel_fields)) is not None]
+    yaw_switches = _sign_switch_count(yaw_values, deadband=0.01)
+    accel_switches = _sign_switch_count(accel_values, deadband=0.05)
+    sample_count = max(len(yaw_values), len(accel_values))
+    if sample_count <= 0:
+        status = "insufficient_data"
+        reason = "missing_vehicle_response_fields"
+    elif yaw_switches > max_switch_count or accel_switches > max_switch_count:
+        status = "warn"
+        reason = "vehicle_response_sign_switching"
+    else:
+        status = "pass"
+        reason = None
+    return {
+        "layer": "vehicle_response",
+        "status": status,
+        "reason": reason,
+        "sample_count": sample_count,
+        "resolved_fields": {
+            "yaw_rate": _first_present_field(rows, yaw_fields),
+            "forward_accel": _first_present_field(rows, accel_fields),
+        },
+        "yaw_rate_sign_switch_count": yaw_switches if yaw_values else None,
+        "forward_accel_sign_switch_count": accel_switches if accel_values else None,
+    }
+
+
+def _bridge_apply_cadence_layer(
+    control_bridge_log: Mapping[str, Any],
+    thresholds: Mapping[str, float],
+) -> dict[str, Any]:
+    if not isinstance(control_bridge_log, Mapping) or control_bridge_log.get("available") is not True:
+        return {
+            "layer": "bridge_apply_cadence",
+            "status": "insufficient_data",
+            "reason": "control_bridge_log_missing",
+        }
+    configured = _num(control_bridge_log.get("configured_apply_hz"))
+    observed = _num(control_bridge_log.get("apply_world_frame_hz"))
+    drop_ratio = _num(control_bridge_log.get("same_frame_drop_ratio"))
+    coverage_ratio = _num(control_bridge_log.get("apply_frame_coverage_ratio"))
+    sync_to_world_tick = _parse_bool(control_bridge_log.get("sync_to_world_tick"))
+    min_hz = _num(thresholds.get("min_control_bridge_apply_frame_hz"))
+    low_cadence = bool(observed is not None and min_hz is not None and observed < min_hz)
+    expected_same_frame_drop = bool(
+        sync_to_world_tick is True
+        and coverage_ratio is not None
+        and coverage_ratio >= thresholds["min_control_bridge_apply_frame_coverage_ratio"]
+    )
+    high_drop = bool(
+        drop_ratio is not None
+        and drop_ratio > thresholds["max_control_bridge_same_frame_drop_ratio"]
+        and not expected_same_frame_drop
+    )
+    if low_cadence:
+        status = "fail"
+        reason = "control_bridge_world_frame_cadence_low"
+    elif high_drop:
+        status = "fail"
+        reason = "control_bridge_drop_same_frame_high"
+    else:
+        status = "pass"
+        reason = None
+    return {
+        "layer": "bridge_apply_cadence",
+        "status": status,
+        "reason": reason,
+        "configured_apply_hz": configured,
+        "observed_apply_world_frame_hz": observed,
+        "sync_to_world_tick": sync_to_world_tick,
+        "same_frame_drop_ratio": drop_ratio,
+        "apply_frame_coverage_ratio": coverage_ratio,
+        "same_frame_drop_expected_from_sync_tick": expected_same_frame_drop,
+    }
+
+
+def _control_mapping_claim_boundary(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    cyber_bridge_stats: Mapping[str, Any],
+) -> dict[str, Any]:
+    mode = _first_text(manifest, "actuator_mapping_mode", summary, "actuator_mapping_mode")
+    if mode is None:
+        mode = _first_present_value(rows, ("actuator_mapping_mode",))
+    if mode is None:
+        stats_mapping = cyber_bridge_stats.get("actuator_mapping")
+        if isinstance(stats_mapping, Mapping):
+            mode = _text_or_none(stats_mapping.get("mode"))
+    steer_scale = _first_number(
+        manifest.get("steer_scale"),
+        summary.get("steer_scale"),
+        _first_present_number(rows, ("steer_scale",)),
+    )
+    steering_sign = _first_number(
+        manifest.get("steering_sign"),
+        summary.get("steering_sign"),
+        _first_present_number(rows, ("steering_sign",)),
+    )
+    calibration_profile_id = _first_text(
+        manifest,
+        "calibration_profile_id",
+        summary,
+        "calibration_profile_id",
+    )
+    stats_mapping = cyber_bridge_stats.get("actuator_mapping")
+    calibration_status = None
+    if isinstance(stats_mapping, Mapping):
+        calibration = stats_mapping.get("calibration")
+        if isinstance(calibration, Mapping):
+            calibration_status = calibration.get("loaded") or calibration.get("status")
+    claim_grade = bool(str(mode or "").lower() == "physical" and calibration_profile_id)
+    steering_parameters_source = (
+        "calibration_profile" if calibration_profile_id else "runtime_config_or_unknown"
+    )
+    warnings: list[str] = []
+    if str(mode or "").lower() == "legacy":
+        warnings.append("legacy_mapping_smoke_only")
+    if not calibration_profile_id:
+        warnings.append("calibration_profile_missing")
+        warnings.append("steering_parameters_not_backed_by_calibration_profile")
+    return {
+        "actuator_mapping_mode": mode,
+        "steer_scale": steer_scale,
+        "steering_sign": steering_sign,
+        "steering_parameters_source": steering_parameters_source,
+        "calibration_profile_id": calibration_profile_id,
+        "calibration_loaded_or_status": calibration_status,
+        "claim_grade_control_mapping": claim_grade,
+        "warnings": warnings,
+        "interpretation": (
+            "Legacy mapping can support smoke/debug evidence only. Claim-grade actuation "
+            "requires physical/calibrated mapping or an explicit vehicle calibration profile."
+        ),
+    }
+
+
+def _first_present_field(rows: Sequence[Mapping[str, Any]], fields: Sequence[str]) -> str | None:
+    for field in fields:
+        if any(row.get(field) not in {None, ""} for row in rows):
+            return field
+    return None
+
+
+def _first_present_value(rows: Sequence[Mapping[str, Any]], fields: Sequence[str]) -> str | None:
+    for field in fields:
+        for row in rows:
+            value = row.get(field)
+            if value not in {None, ""}:
+                return str(value)
+    return None
+
+
+def _first_present_number(rows: Sequence[Mapping[str, Any]], fields: Sequence[str]) -> float | None:
+    for field in fields:
+        for row in rows:
+            value = _num(row.get(field))
+            if value is not None:
+                return value
+    return None
+
+
+def _sign_switch_count(values: Sequence[float], *, deadband: float) -> int:
+    signs: list[int] = []
+    for value in values:
+        number = float(value)
+        if abs(number) <= deadband:
+            continue
+        signs.append(1 if number > 0.0 else -1)
+    return sum(1 for prev, cur in zip(signs, signs[1:]) if prev != cur)
 
 
 def write_control_health_report(report: Mapping[str, Any], out_dir: str | Path) -> dict[str, str]:
@@ -350,6 +719,15 @@ def _verdict(
         and progress_after_apply < thresholds["min_route_progress_after_applied_control_m"]
     ):
         warnings.append("route_progress_stalled_after_control")
+    oscillation = metrics.get("oscillation_decomposition")
+    oscillation_layers = oscillation.get("layers") if isinstance(oscillation, Mapping) else {}
+    if isinstance(oscillation_layers, Mapping):
+        raw_layer = oscillation_layers.get("apollo_raw_command")
+        mapped_layer = oscillation_layers.get("bridge_mapped_command")
+        if isinstance(raw_layer, Mapping) and raw_layer.get("status") == "fail":
+            return "fail", "apollo_raw_command_oscillation", verdict_missing, warnings
+        if isinstance(mapped_layer, Mapping) and mapped_layer.get("status") == "fail":
+            return "fail", "bridge_mapped_command_oscillation", verdict_missing, warnings
 
     conflict_frames = _num(metrics.get("brake_throttle_conflict_frames"))
     if conflict_frames is not None and conflict_frames > thresholds["max_brake_throttle_conflict_frames"]:
@@ -359,6 +737,10 @@ def _verdict(
         switch_count is not None
         and switch_count > thresholds["max_applied_throttle_brake_switch_count"]
     ):
+        if "control_bridge_world_frame_cadence_low" in warnings:
+            return "fail", "control_bridge_world_frame_cadence_low", verdict_missing, warnings
+        if "control_bridge_drop_same_frame_high" in warnings:
+            return "fail", "control_bridge_drop_same_frame_high", verdict_missing, warnings
         return "fail", "applied_actuation_oscillation", verdict_missing, warnings
     for field in (
         "mapped_applied_steer_abs_error_p95",
@@ -1446,6 +1828,8 @@ def _markdown(report: Mapping[str, Any]) -> str:
         ),
         f"- mapped_applied_throttle_best_lag_frames: `{metrics.get('mapped_applied_throttle_best_lag_frames')}`",
         f"- mapped_applied_brake_abs_error_p95: `{metrics.get('mapped_applied_brake_abs_error_p95')}`",
+        f"- oscillation_decomposition: `{_markdown_oscillation_decomposition(metrics)}`",
+        f"- control_mapping_claim_boundary: `{metrics.get('control_mapping_claim_boundary')}`",
         f"- control_bridge_log: `{_markdown_control_bridge_log(metrics)}`",
         f"- direct_control_apply_log: `{_markdown_direct_control_apply_log(metrics)}`",
         f"- warnings: `{report.get('warnings')}`",
@@ -1471,6 +1855,31 @@ def _markdown_control_bridge_log(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "first_watchdog_apply_wall_s": log_metrics.get("first_watchdog_apply_wall_s"),
         "final_rx_count": log_metrics.get("final_rx_count"),
         "final_applied_count": log_metrics.get("final_applied_count"),
+    }
+
+
+def _markdown_oscillation_decomposition(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    decomposition = metrics.get("oscillation_decomposition")
+    if not isinstance(decomposition, Mapping):
+        return {"available": False}
+    layers = decomposition.get("layers") if isinstance(decomposition.get("layers"), Mapping) else {}
+    return {
+        "dominant_oscillation_layer": decomposition.get("dominant_oscillation_layer"),
+        "apollo_raw_command": (layers.get("apollo_raw_command") or {}).get("status")
+        if isinstance(layers.get("apollo_raw_command"), Mapping)
+        else None,
+        "bridge_mapped_command": (layers.get("bridge_mapped_command") or {}).get("status")
+        if isinstance(layers.get("bridge_mapped_command"), Mapping)
+        else None,
+        "carla_applied_command": (layers.get("carla_applied_command") or {}).get("status")
+        if isinstance(layers.get("carla_applied_command"), Mapping)
+        else None,
+        "vehicle_response": (layers.get("vehicle_response") or {}).get("status")
+        if isinstance(layers.get("vehicle_response"), Mapping)
+        else None,
+        "bridge_apply_cadence": (layers.get("bridge_apply_cadence") or {}).get("status")
+        if isinstance(layers.get("bridge_apply_cadence"), Mapping)
+        else None,
     }
 
 

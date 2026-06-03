@@ -11,6 +11,7 @@ from carla_testbed.analysis.natural_driving_postprocess import postprocess_natur
 
 FIXTURE_ROOT = Path("tests/fixtures/natural_driving/simple_suite")
 CHANNEL_STATS = Path("tests/fixtures/apollo/channel_stats_natural_valid.json")
+LOCALIZATION_FIXTURE_ROOT = Path("tests/fixtures/localization_contract")
 
 
 def _copy_suite(tmp_path: Path) -> Path:
@@ -170,6 +171,63 @@ def test_postprocess_generates_route_health_and_channel_health_when_inputs_exist
     channel = json.loads(Path(lane_result["apollo_channel_health"]["path"]).read_text(encoding="utf-8"))
     assert channel["status"] == "pass"
     assert channel["scenario_class"] == "lane_keep"
+
+
+def test_postprocess_generates_localization_contract_when_inputs_exist(tmp_path: Path) -> None:
+    suite_root = _copy_suite(tmp_path)
+    lane = suite_root / "lane_keep_097"
+    shutil.rmtree(lane / "analysis" / "localization_contract")
+    artifacts = lane / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    shutil.copy2(LOCALIZATION_FIXTURE_ROOT / "complete_timeseries.csv", artifacts / "debug_timeseries.csv")
+    shutil.copy2(LOCALIZATION_FIXTURE_ROOT / "channel_stats.json", lane / "channel_stats.json")
+
+    report = postprocess_natural_driving_runs(suite_root, out_dir=tmp_path / "out")
+    lane_result = next(run for run in report["runs"] if run["run_id"] == "lane_keep_097")
+    localization = json.loads(Path(lane_result["localization_contract"]["path"]).read_text(encoding="utf-8"))
+
+    assert lane_result["localization_contract"]["status"] == "generated"
+    assert Path(lane_result["localization_contract"]["path"]).is_file()
+    assert Path(lane_result["localization_contract"]["summary_path"]).is_file()
+    assert localization["verdict"]["status"] in {"pass", "warn"}
+    assert localization["verdict"]["blocking_reasons"] == []
+    assert localization["reference_point"]["vehicle_reference_hard_gate_eligible"] is True
+
+
+def test_refresh_regenerates_reference_line_after_localization_contract(tmp_path: Path) -> None:
+    suite_root = _copy_suite(tmp_path)
+    lane = suite_root / "lane_keep_097"
+    shutil.rmtree(lane / "analysis" / "localization_contract")
+    artifacts = lane / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    shutil.copy2(LOCALIZATION_FIXTURE_ROOT / "complete_timeseries.csv", artifacts / "debug_timeseries.csv")
+    shutil.copy2(LOCALIZATION_FIXTURE_ROOT / "channel_stats.json", lane / "channel_stats.json")
+    (artifacts / "planning_topic_debug.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": 0.0,
+                "planning": {
+                    "first_trajectory_point_theta": 0.0,
+                    "reference_line_count": 1,
+                    "reference_line_length_max": 80.0,
+                    "trajectory_point_count": 20,
+                },
+                "route_segment": {"heading": 0.0, "count": 1, "total_length_m": 80.0},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = postprocess_natural_driving_runs(suite_root, out_dir=tmp_path / "out", refresh=True)
+    lane_result = next(run for run in report["runs"] if run["run_id"] == "lane_keep_097")
+    reference = json.loads(
+        Path(lane_result["apollo_reference_line_contract"]["path"]).read_text(encoding="utf-8")
+    )
+
+    assert lane_result["localization_contract"]["status"] == "generated"
+    assert lane_result["apollo_reference_line_contract"]["status"] == "generated"
+    assert reference["source"]["localization_contract_path"] == lane_result["localization_contract"]["path"]
 
 
 def test_postprocess_regenerates_control_health_when_context_is_stale(
@@ -355,13 +413,17 @@ def test_refresh_preserves_existing_route_and_channel_reports_when_raw_inputs_ar
 
     assert lane_result["route_health"]["status"] == "existing_report_copied"
     assert lane_result["route_health"]["report_status"] == "pass"
+    assert lane_result["route_health"]["path"] == str(route_report)
+    assert lane_result["route_health"]["source_report"] == str(route_report)
     assert lane_result["apollo_channel_health"]["status"] == "existing_report_copied"
     assert lane_result["apollo_channel_health"]["stats_source"] == "existing_report_without_raw_stats"
     assert channel_path == analysis_report
+    assert lane_result["apollo_channel_health"]["source_report"] == str(lane / "apollo_channel_health_report.json")
     assert route_report_payload["verdict"]["status"] == "pass"
     assert channel_report["status"] == "pass"
     assert traffic_result["traffic_light_contract"]["status"] == "existing_report_copied"
     assert traffic_result["traffic_light_contract"]["report_status"] == "pass"
+    assert "source_report" in traffic_result["traffic_light_contract"]
     assert traffic_result["traffic_light_behavior"]["report_status"] == "pass"
     assert report["natural_driving"]["status"] == "pass"
 

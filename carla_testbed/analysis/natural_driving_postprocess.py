@@ -12,6 +12,12 @@ from carla_testbed.analysis.apollo_channel_health import (
     analyze_apollo_channel_health_files,
     write_apollo_channel_health_report,
 )
+from carla_testbed.analysis.apollo_control_handoff import (
+    ensure_apollo_control_handoff_report,
+)
+from carla_testbed.analysis.apollo_reference_line_contract import (
+    ensure_apollo_reference_line_contract_report,
+)
 from carla_testbed.analysis.channel_stats_normalizer import normalize_channel_stats_for_run
 from carla_testbed.analysis.artifact_completeness import check_run_artifact_completeness
 from carla_testbed.analysis.artifact_completeness import write_run_artifact_completeness_report
@@ -23,6 +29,7 @@ from carla_testbed.analysis.failure_timeline import (
     analyze_failure_timeline_run_dir,
     write_failure_timeline_report,
 )
+from carla_testbed.analysis.localization_contract import ensure_localization_contract_report
 from carla_testbed.analysis.natural_driving import (
     TRAFFIC_LIGHT_SCENARIO_CLASSES,
     analyze_natural_driving_suite,
@@ -149,6 +156,12 @@ def _postprocess_run_dir(
     scenario_class = _scenario_class(summary, manifest, run_dir.name)
     route_health_result = _ensure_route_health(run_dir, refresh=refresh)
     route_curve_artifact_gap_result = _ensure_route_curve_artifact_gap(run_dir, refresh=refresh)
+    apollo_control_handoff_result = _ensure_apollo_control_handoff(run_dir, refresh=refresh)
+    localization_contract_result = _ensure_localization_contract(run_dir, refresh=refresh)
+    apollo_reference_line_contract_result = _ensure_apollo_reference_line_contract(
+        run_dir,
+        refresh=refresh,
+    )
     control_health_result = _ensure_control_health(
         run_dir,
         scenario_class=scenario_class,
@@ -194,6 +207,9 @@ def _postprocess_run_dir(
         "route_health": route_health_result,
         "route_curve_artifact_gap": route_curve_artifact_gap_result,
         "standardization": standardization,
+        "apollo_control_handoff": apollo_control_handoff_result,
+        "localization_contract": localization_contract_result,
+        "apollo_reference_line_contract": apollo_reference_line_contract_result,
         "control_health": control_health_result,
         "failure_timeline": failure_timeline_result,
         "route_start_alignment": route_start_alignment_result,
@@ -212,6 +228,18 @@ def _postprocess_run_dir(
             "invalid_report_source_fields": completeness.get("invalid_report_source_fields") or [],
         },
     }
+
+
+def _ensure_apollo_control_handoff(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    return ensure_apollo_control_handoff_report(run_dir, refresh=refresh)
+
+
+def _ensure_localization_contract(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    return ensure_localization_contract_report(run_dir, refresh=refresh)
+
+
+def _ensure_apollo_reference_line_contract(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    return ensure_apollo_reference_line_contract_report(run_dir, refresh=refresh)
 
 
 def _ensure_route_health(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
@@ -1016,13 +1044,14 @@ def _write_markdown(path: Path, report: Mapping[str, Any]) -> None:
         f"- route_start_probe_plan_status: `{probe_plan.get('status')}`",
         f"- route_start_probe_count: `{probe_plan.get('probe_count')}`",
         "",
-        "| run_id | scenario_class | artifact_status | route_health | route_curve_gap | failure_timeline | route_start_alignment | channel_health | traffic_light_contract | traffic_light_behavior |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| run_id | scenario_class | artifact_status | route_health | route_curve_gap | apollo_reference_line | failure_timeline | route_start_alignment | channel_health | traffic_light_contract | traffic_light_behavior |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for run in report.get("runs") or []:
         completeness = run.get("artifact_completeness") or {}
         route_health = run.get("route_health") or {}
         route_curve = run.get("route_curve_artifact_gap") or {}
+        reference_line = run.get("apollo_reference_line_contract") or {}
         timeline = run.get("failure_timeline") or {}
         route_start = run.get("route_start_alignment") or {}
         channel_health = run.get("apollo_channel_health") or {}
@@ -1032,6 +1061,7 @@ def _write_markdown(path: Path, report: Mapping[str, Any]) -> None:
             f"| {run.get('run_id')} | {run.get('scenario_class')} | "
             f"{completeness.get('status')} | {route_health.get('status')} | "
             f"{route_curve.get('status')} | "
+            f"{reference_line.get('status')} | "
             f"{timeline.get('status')} | "
             f"{route_start.get('status')} | "
             f"{channel_health.get('status')} | {traffic.get('status') if traffic else 'not_applicable'} | "

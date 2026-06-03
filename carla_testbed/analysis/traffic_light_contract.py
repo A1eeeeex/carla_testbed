@@ -41,10 +41,8 @@ def build_traffic_light_contract_report(
     mapping_results: list[dict[str, Any]] = []
 
     if town01_report.get("status") == "fail":
-        status = "fail"
-        errors.append("town01_apollo_contract_failed")
+        warnings.append("town01_apollo_contract_has_failures")
     elif town01_report.get("status") == "warn":
-        status = _combine_status(status, "warn")
         warnings.append("town01_apollo_contract_warn")
 
     if not mappings:
@@ -67,6 +65,18 @@ def build_traffic_light_contract_report(
         "status": status,
         "scenario_class": scenario_class,
         "mapping_results": mapping_results,
+        "claim_grade_ready": bool(
+            status == "pass"
+            and mapping_results
+            and all(item.get("claim_grade_ready") is True for item in mapping_results)
+        ),
+        "claim_grade_requirements": {
+            "traffic_light_policy": "carla_actual",
+            "color_source": ["carla_actor_state", "carla_landmark_state", "carla_traffic_light_actor_state"],
+            "min_confidence": 0.99,
+            "requires_signal_id": True,
+            "requires_stop_line_lane_overlap": True,
+        },
         "town01_contract_status": town01_report.get("status"),
         "town01_signal_count": len(signal_by_logical_id),
         "missing_inputs": [],
@@ -118,6 +128,7 @@ def build_insufficient_traffic_light_contract_report(
         "missing_inputs": sorted(set(missing_inputs)),
         "warnings": ["traffic_light_contract_inputs_missing"],
         "errors": [],
+        "claim_grade_ready": False,
         "interpretation_boundary": (
             "Traffic-light contract inputs were missing. This is insufficient_data, not traffic-light behavior evidence."
         ),
@@ -135,6 +146,8 @@ def _check_mapping(mapping: TrafficLightMapping, signal_by_logical_id: Mapping[s
         "stop_line_id": mapping.stop_line_id,
         "lane_ids": list(mapping.lane_ids),
         "town01_signal_found": signal is not None,
+        "claim_grade_ready": False,
+        "stop_line_lane_overlap_evidence": False,
     }
     if signal is None:
         result["status"] = "fail"
@@ -146,21 +159,23 @@ def _check_mapping(mapping: TrafficLightMapping, signal_by_logical_id: Mapping[s
     signal_lane_ids = {str(item) for item in signal.get("lane_ids") or []}
     mapping_lane_ids = set(mapping.lane_ids)
     if not mapping_lane_ids:
-        result["status"] = "fail"
+        result["status"] = _combine_status(result["status"], "insufficient_data")
         result["issues"].append("missing_mapping_lane_ids")
     elif not signal_lane_ids:
-        result["status"] = "fail"
+        result["status"] = _combine_status(result["status"], "insufficient_data")
         result["issues"].append("missing_signal_lane_ids")
     elif not mapping_lane_ids.issubset(signal_lane_ids):
         result["status"] = "fail"
         result["issues"].append("lane_ids_not_in_signal_contract")
+    else:
+        result["stop_line_lane_overlap_evidence"] = True
 
     for field, value in (
         ("apollo_signal_id", mapping.apollo_signal_id),
         ("stop_line_id", mapping.stop_line_id),
     ):
         if value is None:
-            result["status"] = "fail"
+            result["status"] = _combine_status(result["status"], "insufficient_data")
             result["issues"].append(f"missing_{field}")
         elif str(value).startswith("placeholder:"):
             result["status"] = _combine_status(result["status"], "warn")
@@ -179,11 +194,30 @@ def _check_mapping(mapping: TrafficLightMapping, signal_by_logical_id: Mapping[s
 
     signal_status = str(signal.get("status") or "")
     if signal_status == "fail":
-        result["status"] = "fail"
+        signal_issues = {str(item) for item in signal.get("issues") or []}
+        if signal_issues and signal_issues.issubset(
+            {
+                "missing_apollo_signal_id",
+                "missing_stop_line_id",
+                "missing_lane_ids",
+                "missing_logical_id",
+            }
+        ):
+            result["status"] = _combine_status(result["status"], "insufficient_data")
+        else:
+            result["status"] = "fail"
         result["issues"].append("town01_signal_contract_failed")
     elif signal_status == "warn":
         result["status"] = _combine_status(result["status"], "warn")
         result["warnings"].append("town01_signal_contract_warn")
+    result["claim_grade_ready"] = bool(
+        result["status"] == "pass"
+        and result["town01_signal_found"]
+        and result["apollo_signal_id"]
+        and result["stop_line_id"]
+        and result["lane_ids"]
+        and result["stop_line_lane_overlap_evidence"]
+    )
     return result
 
 
@@ -204,7 +238,7 @@ def _mapping_supports_scenario(mapping: TrafficLightMapping, scenario_class: str
 
 
 def _status_rank(status: str) -> int:
-    return {"pass": 0, "warn": 1, "fail": 2, "insufficient_data": 3}.get(status, 3)
+    return {"pass": 0, "warn": 1, "insufficient_data": 2, "fail": 3}.get(status, 3)
 
 
 def _combine_status(current: str, candidate: str) -> str:

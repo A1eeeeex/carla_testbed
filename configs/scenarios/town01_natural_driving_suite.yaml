@@ -40,7 +40,21 @@ gates:
   control_health:
     required:
       - control_handoff_status=control_consuming_with_nonzero_planning
+      - backend=apollo_cyberrt
+      - control_source=/apollo/control
+      - routing_success_count>=1
+      - planning_nonempty_ratio>=0.8
+      - control_rx_count>0
+      - control_tx_count>0
+      - control_apply_count>0
+      - localization_contract_report.status=pass_or_warn_claim_grade
+      - apollo_reference_line_contract_report.status=pass_or_warn
+      - apollo_control_handoff_report.status=pass_or_warn
       - raw_mapped_applied_control_timeseries
+      - assist_ledger.active_assists=[]
+      - lateral_guard_apply_count=0
+      - trajectory_contract_guard_apply_count=0
+      - force_green=false for claim-grade traffic-light scenarios
       - no_excessive_brake_throttle_conflict
 
 scenarios:
@@ -292,6 +306,13 @@ scenarios:
       behavior_health:
         stop_before_red_light: true
         no_stop_line_violation: true
+        traffic_light_policy: carla_actual
+        color_source:
+          - carla_actor_state
+          - carla_landmark_state
+          - carla_traffic_light_actor_state
+        min_traffic_light_confidence: 0.99
+        contain_lights_verified: true
       control_health:
         brake_or_stop_control_available: true
     traffic_light_expectation:
@@ -301,7 +322,12 @@ scenarios:
       claim_grade: true
       required_report_fields:
         - red_stop_distance_m
+        - distance_to_stop_line_m
+        - ego_s
+        - ego_l
         - stopped_at_red
+        - light_color_timeline_available
+        - apollo_stop_decision_available_or_control_full_stop_evidence
     required_artifacts:
       - summary.json
       - manifest.json
@@ -349,6 +375,13 @@ scenarios:
       behavior_health:
         proceed_on_green: true
         no_unnecessary_stop: true
+        traffic_light_policy: carla_actual
+        color_source:
+          - carla_actor_state
+          - carla_landmark_state
+          - carla_traffic_light_actor_state
+        min_traffic_light_confidence: 0.99
+        contain_lights_verified: true
       control_health:
         control_available_through_light: true
     traffic_light_expectation:
@@ -405,6 +438,13 @@ scenarios:
       behavior_health:
         stop_on_red: true
         release_after_green: true
+        traffic_light_policy: carla_actual
+        color_source:
+          - carla_actor_state
+          - carla_landmark_state
+          - carla_traffic_light_actor_state
+        min_traffic_light_confidence: 0.99
+        contain_lights_verified: true
       control_health:
         brake_then_throttle_available: true
     traffic_light_expectation:

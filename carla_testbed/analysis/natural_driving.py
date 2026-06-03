@@ -75,11 +75,15 @@ ROUTE_HEALTH_HARD_GATE_SCENARIO_CLASSES = {
 }
 DEFAULT_THRESHOLDS = {
     "min_route_completion": 0.8,
+    "min_planning_nonempty_ratio": 0.8,
     "max_lateral_error_p95_m": 1.5,
     "max_heading_error_p95_rad": 0.35,
     "max_control_latency_p95_ms": 500.0,
     "max_red_stop_distance_m": 8.0,
 }
+APOLLO_CYBERRT_BACKEND = "apollo_cyberrt"
+APOLLO_CONTROL_SOURCE = "/apollo/control"
+PASS_WARN_STATUSES = {"pass", "warn"}
 CONTROL_TRACE_REQUIRED_FIELDS = [
     "apollo_steer_raw",
     "bridge_steer_mapped",
@@ -122,6 +126,15 @@ CSV_FIELDS = [
     "assist_confidence",
     "assist_source_artifact",
     "can_claim_unassisted_natural_driving",
+    "why_not_claimable",
+    "control_source",
+    "routing_success_count",
+    "planning_nonempty_ratio",
+    "control_rx_count",
+    "control_tx_count",
+    "control_apply_count",
+    "lateral_guard_apply_count",
+    "trajectory_contract_guard_apply_count",
     "duration_s",
     "fixed_delta_seconds",
     "ticks",
@@ -138,7 +151,13 @@ CSV_FIELDS = [
     "localization_contract_status",
     "localization_blocking_reasons",
     "localization_report_path",
+    "apollo_reference_line_contract_status",
+    "apollo_reference_line_blocking_reasons",
+    "apollo_reference_line_report_path",
     "control_health_status",
+    "apollo_control_handoff_status",
+    "apollo_control_handoff_failure_stage",
+    "apollo_control_handoff_report_path",
     "failure_timeline_status",
     "failure_timeline_primary_failure",
     "failure_timeline_anchor_event",
@@ -301,6 +320,7 @@ def problem_run_details(
                 "failure_reason": run.get("failure_reason"),
                 "missing_artifacts": list(run.get("missing_artifacts") or [])[:10],
                 "missing_fields": list(run.get("missing_fields") or [])[:10],
+                "why_not_claimable": list(run.get("why_not_claimable") or [])[:10],
                 "missing_manifest_fields": list(run.get("missing_manifest_fields") or [])[:10],
                 "invalid_manifest_source_fields": list(run.get("invalid_manifest_source_fields") or [])[:10],
                 "missing_control_trace_fields": list(run.get("missing_control_trace_fields") or [])[:10],
@@ -462,11 +482,25 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
             "localization_contract_report.json",
         ],
     )
+    apollo_reference_line_contract_path = _find_first(
+        run_dir,
+        [
+            "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
+            "apollo_reference_line_contract_report.json",
+        ],
+    )
     control_health_path = _find_first(
         run_dir,
         [
             "analysis/control_health/control_health_report.json",
             "control_health_report.json",
+        ],
+    )
+    apollo_control_handoff_path = _find_first(
+        run_dir,
+        [
+            "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
+            "apollo_control_handoff_report.json",
         ],
     )
     control_attribution_path = _find_first(
@@ -535,11 +569,21 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
     )
     timeseries_path = _find_first(run_dir, ["timeseries.csv"])
     events_path = _find_first(run_dir, ["events.jsonl"])
+    assist_ledger_path = _find_first(
+        run_dir,
+        [
+            "assist_ledger.json",
+            "artifacts/assist_ledger.json",
+            "analysis/assist_ledger/assist_ledger.json",
+        ],
+    )
 
     route_health = _read_json(route_health_path)
     channel_health = _read_json(channel_health_path)
     localization_contract = _read_json(localization_contract_path)
+    apollo_reference_line_contract = _read_json(apollo_reference_line_contract_path)
     control_health = _read_json(control_health_path)
+    apollo_control_handoff = _read_json(apollo_control_handoff_path)
     control_attribution = _read_json(control_attribution_path)
     apollo_lateral_semantics = _read_json(apollo_lateral_semantics_path)
     autoware_evidence = _read_json(autoware_evidence_path)
@@ -583,10 +627,43 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
     control_bridge_log_metrics = control_metrics.get("control_bridge_log")
     if not isinstance(control_bridge_log_metrics, Mapping):
         control_bridge_log_metrics = {}
+    control_source = _control_source(summary, manifest, apollo_control_handoff, control_health)
+    routing_success_count = _routing_success_count(summary, manifest, apollo_control_handoff)
+    planning_nonempty_ratio = _planning_nonempty_ratio(
+        summary,
+        manifest,
+        apollo_reference_line_contract,
+        apollo_control_handoff,
+    )
+    control_rx_count = _control_rx_count(summary, manifest, apollo_control_handoff, control_health)
+    control_tx_count = _control_tx_count(summary, manifest, apollo_control_handoff, control_health)
+    control_apply_count = _control_apply_count(
+        summary,
+        manifest,
+        apollo_control_handoff,
+        control_health,
+    )
+    lateral_guard_apply_count = _guard_apply_count(
+        "lateral_guard_apply_count",
+        "lateral_guard",
+        summary=summary,
+        manifest=manifest,
+        route_health=route_health,
+        control_health=control_health,
+    )
+    trajectory_guard_apply_count = _guard_apply_count(
+        "trajectory_contract_guard_apply_count",
+        "trajectory_contract_lateral_guard",
+        summary=summary,
+        manifest=manifest,
+        route_health=route_health,
+        control_health=control_health,
+    )
     run_result: dict[str, Any] = {
         "run_id": _first_text(summary, "run_id", manifest, "run_id", default=run_dir.name),
         "scenario_id": _first_text(summary, "scenario_id", manifest, "scenario_id", default=run_dir.name),
         "scenario_class": scenario_class,
+        "gate_role": _first_text(summary, "gate_role", manifest, "gate_role"),
         "route_id": _first_text(summary, "route_id", manifest, "route_id", route_health, "route_id"),
         "route_source": route_health.get("route_source"),
         "route_evidence_level": route_health.get("evidence_level"),
@@ -608,9 +685,16 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "non_blocking_assists": list(assist_ledger.get("non_blocking_assists") or []),
         "assist_confidence": assist_ledger.get("assist_confidence"),
         "assist_source_artifact": assist_ledger.get("source_artifact"),
-        "can_claim_unassisted_natural_driving": assist_ledger.get(
-            "can_claim_unassisted_natural_driving"
-        ),
+        "can_claim_unassisted_natural_driving": False,
+        "why_not_claimable": [],
+        "control_source": control_source,
+        "routing_success_count": routing_success_count,
+        "planning_nonempty_ratio": planning_nonempty_ratio,
+        "control_rx_count": control_rx_count,
+        "control_tx_count": control_tx_count,
+        "control_apply_count": control_apply_count,
+        "lateral_guard_apply_count": lateral_guard_apply_count,
+        "trajectory_contract_guard_apply_count": trajectory_guard_apply_count,
         "duration_s": _num(manifest.get("duration_s")),
         "fixed_delta_seconds": _num(manifest.get("fixed_delta_seconds")),
         "ticks": _num(manifest.get("ticks")),
@@ -622,6 +706,14 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "control_health_status": control_health.get("status"),
         "control_health_failure_reason": control_health.get("failure_reason"),
         "control_health_warnings": list(control_health.get("warnings") or []),
+        "apollo_control_handoff_status": apollo_control_handoff.get("verdict"),
+        "apollo_control_handoff_failure_stage": apollo_control_handoff.get("failure_stage"),
+        "apollo_control_handoff_report_path": (
+            str(apollo_control_handoff_path) if apollo_control_handoff_path else None
+        ),
+        "apollo_control_handoff_blocking_reasons": list(
+            apollo_control_handoff.get("blocking_reasons") or []
+        ),
         "control_apply_observation_delay_s": _num(control_metrics.get("control_apply_observation_delay_s")),
         "mapped_applied_throttle_abs_error_p95": _num(
             control_metrics.get("mapped_applied_throttle_abs_error_p95")
@@ -667,6 +759,15 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "localization_contract_status": _localization_contract_status(localization_contract),
         "localization_blocking_reasons": _localization_blocking_reasons(localization_contract),
         "localization_report_path": str(localization_contract_path) if localization_contract_path else None,
+        "apollo_reference_line_contract_status": _apollo_reference_line_contract_status(
+            apollo_reference_line_contract
+        ),
+        "apollo_reference_line_blocking_reasons": _apollo_reference_line_blocking_reasons(
+            apollo_reference_line_contract
+        ),
+        "apollo_reference_line_report_path": (
+            str(apollo_reference_line_contract_path) if apollo_reference_line_contract_path else None
+        ),
         "failure_timeline_status": failure_timeline.get("status"),
         "failure_timeline_primary_failure": _failure_timeline_primary_failure(failure_timeline),
         "failure_timeline_anchor_event": _failure_timeline_anchor_event(failure_timeline),
@@ -698,7 +799,13 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
             "route_health_summary": str(route_health_summary_path) if route_health_summary_path else None,
             "apollo_channel_health": str(channel_health_path) if channel_health_path else None,
             "localization_contract": str(localization_contract_path) if localization_contract_path else None,
+            "apollo_reference_line_contract": (
+                str(apollo_reference_line_contract_path) if apollo_reference_line_contract_path else None
+            ),
             "control_health": str(control_health_path) if control_health_path else None,
+            "apollo_control_handoff": str(apollo_control_handoff_path)
+            if apollo_control_handoff_path
+            else None,
             "control_attribution": str(control_attribution_path) if control_attribution_path else None,
             "autoware_evidence": str(autoware_evidence_path) if autoware_evidence_path else None,
             "apollo_lateral_semantics": str(apollo_lateral_semantics_path)
@@ -709,6 +816,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
             "traffic_light_contract": str(traffic_light_contract_path) if traffic_light_contract_path else None,
             "traffic_light_behavior": str(traffic_light_behavior_path) if traffic_light_behavior_path else None,
             "artifact_completeness": str(artifact_completeness_path) if artifact_completeness_path else None,
+            "assist_ledger": str(assist_ledger_path) if assist_ledger_path else None,
             "route_curve_artifact_gap": str(route_curve_artifact_gap_path)
             if route_curve_artifact_gap_path
             else None,
@@ -791,12 +899,26 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "missing_artifacts": missing_artifacts,
         "missing_fields": [],
     }
+    claimability = _unassisted_claimability(
+        run_result,
+        summary=summary,
+        manifest=manifest,
+        localization_contract=localization_contract,
+        apollo_reference_line_contract=apollo_reference_line_contract,
+        apollo_control_handoff=apollo_control_handoff,
+        control_health=control_health,
+        assist_ledger_path=assist_ledger_path,
+    )
+    run_result["can_claim_unassisted_natural_driving"] = claimability["can_claim_unassisted"]
+    run_result["why_not_claimable"] = claimability["why_not_claimable"]
     verdict, failure_reason, missing_fields = _run_verdict(
         run_result,
         summary=summary,
         route_health=route_health,
         channel_health=channel_health,
         localization_contract=localization_contract,
+        apollo_reference_line_contract=apollo_reference_line_contract,
+        apollo_control_handoff=apollo_control_handoff,
         control_health=control_health,
         traffic_light_contract=traffic_light_contract,
         traffic_light_behavior=traffic_light_behavior,
@@ -805,6 +927,8 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         route_health_path=route_health_path,
         channel_health_path=channel_health_path,
         localization_contract_path=localization_contract_path,
+        apollo_reference_line_contract_path=apollo_reference_line_contract_path,
+        apollo_control_handoff_path=apollo_control_handoff_path,
         control_health_path=control_health_path,
         traffic_light_contract_path=traffic_light_contract_path,
         traffic_light_behavior_path=traffic_light_behavior_path,
@@ -821,15 +945,352 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         route_health=route_health,
         channel_health=channel_health,
         localization_contract=localization_contract,
+        apollo_reference_line_contract=apollo_reference_line_contract,
+        apollo_control_handoff=apollo_control_handoff,
         control_attribution=control_attribution,
         assist_ledger=assist_ledger,
         route_health_path=route_health_path,
         channel_health_path=channel_health_path,
         localization_contract_path=localization_contract_path,
+        apollo_reference_line_contract_path=apollo_reference_line_contract_path,
+        apollo_control_handoff_path=apollo_control_handoff_path,
         control_attribution_path=control_attribution_path,
         traffic_light_evidence_path=traffic_light_behavior_path or traffic_light_contract_path,
+        assist_ledger_path=assist_ledger_path,
     ).to_dict()
     return run_result
+
+
+def _unassisted_claimability(
+    run: Mapping[str, Any],
+    *,
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    localization_contract: Mapping[str, Any],
+    apollo_reference_line_contract: Mapping[str, Any],
+    apollo_control_handoff: Mapping[str, Any],
+    control_health: Mapping[str, Any],
+    assist_ledger_path: Path | None,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    scenario_class = str(run.get("scenario_class") or "")
+
+    if str(run.get("backend") or "").strip() != APOLLO_CYBERRT_BACKEND:
+        reasons.append("backend_not_apollo_cyberrt")
+
+    control_source = str(run.get("control_source") or "").strip()
+    if not control_source:
+        reasons.append("control_source_missing")
+    elif control_source != APOLLO_CONTROL_SOURCE:
+        reasons.append("control_source_not_apollo_control")
+
+    routing_success_count = _num(run.get("routing_success_count"))
+    if routing_success_count is None:
+        reasons.append("routing_success_count_missing")
+    elif routing_success_count < 1:
+        reasons.append("routing_success_count_zero")
+
+    planning_nonempty_ratio = _num(run.get("planning_nonempty_ratio"))
+    if planning_nonempty_ratio is None:
+        reasons.append("planning_nonempty_ratio_missing")
+    elif planning_nonempty_ratio < DEFAULT_THRESHOLDS["min_planning_nonempty_ratio"]:
+        reasons.append("planning_nonempty_ratio_low")
+
+    for field, reason in (
+        ("control_rx_count", "control_rx_count_missing_or_zero"),
+        ("control_tx_count", "control_tx_count_missing_or_zero"),
+        ("control_apply_count", "control_apply_count_missing_or_zero"),
+    ):
+        value = _num(run.get(field))
+        if value is None or value < 1:
+            reasons.append(reason)
+
+    if not _localization_claim_grade(localization_contract):
+        reasons.append("localization_contract_not_claim_grade")
+
+    reference_status = _apollo_reference_line_contract_status(apollo_reference_line_contract)
+    if reference_status not in PASS_WARN_STATUSES or _apollo_reference_line_blocking_reasons(
+        apollo_reference_line_contract
+    ):
+        reasons.append("apollo_reference_line_contract_not_pass_warn")
+
+    handoff_status = str(apollo_control_handoff.get("verdict") or "").strip()
+    handoff_stage = str(apollo_control_handoff.get("failure_stage") or "").strip()
+    if handoff_status not in PASS_WARN_STATUSES or handoff_stage not in {"", "none"}:
+        reasons.append("control_handoff_not_pass_warn")
+
+    if _control_health_blocking(control_health):
+        reasons.append("control_health_blocking")
+
+    assist_confidence = str(run.get("assist_confidence") or "").strip()
+    active_assists = [str(item) for item in (run.get("active_assists") or []) if item]
+    if not _has_assist_ledger_artifact(
+        summary=summary,
+        manifest=manifest,
+        assist_ledger_path=assist_ledger_path,
+    ):
+        reasons.append("assist_ledger_missing_or_unknown")
+    elif assist_confidence not in {"explicit", "inferred"}:
+        reasons.append("assist_ledger_missing_or_unknown")
+    if active_assists:
+        reasons.append("active_assists_present")
+
+    lateral_guard_apply_count = _num(run.get("lateral_guard_apply_count"))
+    if lateral_guard_apply_count is None:
+        reasons.append("lateral_guard_apply_count_missing")
+    elif lateral_guard_apply_count != 0:
+        reasons.append("lateral_guard_apply_count_nonzero")
+
+    trajectory_guard_apply_count = _num(run.get("trajectory_contract_guard_apply_count"))
+    if trajectory_guard_apply_count is None:
+        reasons.append("trajectory_contract_guard_apply_count_missing")
+    elif trajectory_guard_apply_count != 0:
+        reasons.append("trajectory_contract_guard_apply_count_nonzero")
+
+    if scenario_class in TRAFFIC_LIGHT_SCENARIO_CLASSES and _force_green_active(summary, manifest, run):
+        reasons.append("force_green_traffic_light_active")
+
+    return {
+        "can_claim_unassisted": not reasons,
+        "why_not_claimable": sorted(set(reasons)),
+    }
+
+
+def _localization_claim_grade(report: Mapping[str, Any]) -> bool:
+    if _localization_contract_status(report) not in PASS_WARN_STATUSES:
+        return False
+    if _localization_blocking_reasons(report):
+        return False
+    reference = report.get("reference_point")
+    if not isinstance(reference, Mapping):
+        return False
+    if reference.get("position_uses_vrp") is not True:
+        return False
+    if reference.get("vehicle_reference_hard_gate_eligible") is False:
+        return False
+    confidence = str(
+        reference.get("confidence")
+        or reference.get("configured_vehicle_reference_confidence")
+        or ""
+    ).strip()
+    if confidence != "verified":
+        return False
+    checklist_missing = _localization_checklist_hard_gate_missing(report, scenario_class="lane_keep")
+    return not checklist_missing
+
+
+def _control_health_blocking(report: Mapping[str, Any]) -> bool:
+    status = str(report.get("status") or "").strip()
+    if status == "fail":
+        return True
+    if report.get("blocking_failure") is True:
+        return True
+    if report.get("blocking_failures"):
+        return True
+    if report.get("blocking_reasons"):
+        return True
+    return False
+
+
+def _control_source(
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    apollo_control_handoff: Mapping[str, Any],
+    control_health: Mapping[str, Any],
+) -> str | None:
+    source = _first_recursive_text(
+        summary,
+        manifest,
+        control_health,
+        keys={"control_source", "source_control_channel", "control_channel_name"},
+    )
+    if source:
+        return source
+    control_channel = apollo_control_handoff.get("control_channel")
+    if isinstance(control_channel, Mapping):
+        value = _first_text(
+            control_channel,
+            "channel",
+            control_channel,
+            "name",
+            control_channel,
+            "topic",
+        )
+        if value:
+            return value
+        # Older handoff reports only recorded materialized /apollo/control
+        # counts. Keep them usable, but require those counts to be positive.
+        if (_num(control_channel.get("message_count")) or 0.0) > 0:
+            return APOLLO_CONTROL_SOURCE
+    return None
+
+
+def _routing_success_count(
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    apollo_control_handoff: Mapping[str, Any],
+) -> float | None:
+    value = _first_recursive_number(
+        summary,
+        manifest,
+        apollo_control_handoff,
+        keys={"routing_success_count", "routing_response_success_count"},
+    )
+    if value is not None:
+        return value
+    if _summary_bool(summary, "routing_materialized") is True:
+        return 1.0
+    return None
+
+
+def _planning_nonempty_ratio(
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    apollo_reference_line_contract: Mapping[str, Any],
+    apollo_control_handoff: Mapping[str, Any],
+) -> float | None:
+    value = _first_recursive_number(
+        summary,
+        manifest,
+        apollo_control_handoff,
+        keys={"planning_nonempty_ratio", "planning_non_empty_ratio", "nonempty_trajectory_ratio"},
+    )
+    if value is not None:
+        return value
+    evidence = apollo_reference_line_contract.get("evidence")
+    if isinstance(evidence, Mapping):
+        return _num(evidence.get("nonempty_trajectory_ratio"))
+    return None
+
+
+def _control_rx_count(
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    apollo_control_handoff: Mapping[str, Any],
+    control_health: Mapping[str, Any],
+) -> float | None:
+    return _first_recursive_number(
+        apollo_control_handoff,
+        control_health,
+        summary,
+        manifest,
+        keys={"control_rx_count", "final_rx_count"},
+    )
+
+
+def _control_tx_count(
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    apollo_control_handoff: Mapping[str, Any],
+    control_health: Mapping[str, Any],
+) -> float | None:
+    value = _first_recursive_number(
+        apollo_control_handoff,
+        control_health,
+        summary,
+        manifest,
+        keys={"control_tx_count", "final_tx_count", "control_publish_count"},
+    )
+    if value is not None:
+        return value
+    control_channel = apollo_control_handoff.get("control_channel")
+    if isinstance(control_channel, Mapping):
+        return _num(control_channel.get("message_count"))
+    return None
+
+
+def _control_apply_count(
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    apollo_control_handoff: Mapping[str, Any],
+    control_health: Mapping[str, Any],
+) -> float | None:
+    return _first_recursive_number(
+        apollo_control_handoff,
+        control_health,
+        summary,
+        manifest,
+        keys={"control_apply_count", "apply_control_count", "final_applied_count"},
+    )
+
+
+def _guard_apply_count(
+    flat_key: str,
+    route_health_guard_key: str,
+    *,
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    route_health: Mapping[str, Any],
+    control_health: Mapping[str, Any],
+) -> float | None:
+    value = _first_recursive_number(summary, manifest, control_health, keys={flat_key})
+    if value is not None:
+        return value
+    control_semantics = route_health.get("control_semantics")
+    if isinstance(control_semantics, Mapping):
+        guard_counts = control_semantics.get("guard_apply_counts")
+        if isinstance(guard_counts, Mapping):
+            return _num(guard_counts.get(route_health_guard_key))
+    return None
+
+
+def _force_green_active(
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    run: Mapping[str, Any],
+) -> bool:
+    for payload in (summary, manifest, run):
+        for value in _recursive_values(payload, {"force_green", "force_green_enabled"}):
+            if _parse_bool(value) is True:
+                return True
+        for value in _recursive_values(
+            payload,
+            {"traffic_light_policy", "stimulus_mode", "mode"},
+        ):
+            if str(value).strip().lower() == "force_green":
+                return True
+    return False
+
+
+def _has_assist_ledger_artifact(
+    *,
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    assist_ledger_path: Path | None,
+) -> bool:
+    if assist_ledger_path is not None:
+        return True
+    return isinstance(summary.get("assist_ledger"), Mapping) or isinstance(manifest.get("assist_ledger"), Mapping)
+
+
+def _first_recursive_text(*payloads: Mapping[str, Any], keys: set[str]) -> str | None:
+    for payload in payloads:
+        for value in _recursive_values(payload, keys):
+            if value not in {None, ""}:
+                return str(value)
+    return None
+
+
+def _first_recursive_number(*payloads: Mapping[str, Any], keys: set[str]) -> float | None:
+    for payload in payloads:
+        for value in _recursive_values(payload, keys):
+            number = _num(value)
+            if number is not None:
+                return number
+    return None
+
+
+def _recursive_values(payload: Any, keys: set[str]) -> list[Any]:
+    found: list[Any] = []
+    if isinstance(payload, Mapping):
+        for key, value in payload.items():
+            if str(key) in keys:
+                found.append(value)
+            found.extend(_recursive_values(value, keys))
+    elif isinstance(payload, list):
+        for value in payload:
+            found.extend(_recursive_values(value, keys))
+    return found
 
 
 def _run_verdict(
@@ -839,6 +1300,8 @@ def _run_verdict(
     route_health: Mapping[str, Any],
     channel_health: Mapping[str, Any],
     localization_contract: Mapping[str, Any],
+    apollo_reference_line_contract: Mapping[str, Any],
+    apollo_control_handoff: Mapping[str, Any],
     control_health: Mapping[str, Any],
     traffic_light_contract: Mapping[str, Any],
     traffic_light_behavior: Mapping[str, Any],
@@ -847,6 +1310,8 @@ def _run_verdict(
     route_health_path: Path | None,
     channel_health_path: Path | None,
     localization_contract_path: Path | None,
+    apollo_reference_line_contract_path: Path | None,
+    apollo_control_handoff_path: Path | None,
     control_health_path: Path | None,
     traffic_light_contract_path: Path | None,
     traffic_light_behavior_path: Path | None,
@@ -931,6 +1396,23 @@ def _run_verdict(
     if localization_status != "pass":
         missing_fields.extend(localization_missing)
         return localization_status, localization_reason, missing_fields
+
+    reference_status, reference_reason, reference_missing = _apollo_reference_line_contract_verdict(
+        apollo_reference_line_contract,
+        scenario_class=scenario_class,
+        report_path=apollo_reference_line_contract_path,
+    )
+    if reference_status != "pass":
+        missing_fields.extend(reference_missing)
+        return reference_status, reference_reason, missing_fields
+
+    handoff_status, handoff_reason, handoff_missing = _apollo_control_handoff_evidence_verdict(
+        apollo_control_handoff,
+        report_path=apollo_control_handoff_path,
+    )
+    if handoff_status != "pass":
+        missing_fields.extend(handoff_missing)
+        return handoff_status, handoff_reason, missing_fields
 
     control_status = control_health.get("status")
     if control_status == "fail":
@@ -1128,6 +1610,18 @@ def _run_verdict(
     if missing_fields:
         return "insufficient_data", "missing_required_metrics", missing_fields
     blocking_assists = [str(item) for item in (run.get("blocking_assists") or []) if item]
+    why_not_claimable = [str(item) for item in (run.get("why_not_claimable") or []) if item]
+    if why_not_claimable and _applies_apollo_unassisted_claim_gate(run):
+        active_assists = [str(item) for item in (run.get("active_assists") or []) if item]
+        if blocking_assists:
+            missing_fields.extend(f"assist_ledger.blocking_assists.{assist}" for assist in blocking_assists)
+            if _diagnostic_assisted_context(run):
+                return "diagnostic_only", "assisted_diagnostic_only_unassisted_claim_blocked", missing_fields
+            return "assisted_pass", "assisted_pass_unassisted_claim_blocked", missing_fields
+        if active_assists:
+            missing_fields.extend(f"assist_ledger.active_assists.{assist}" for assist in active_assists)
+        missing_fields.extend(f"claimability.{reason}" for reason in why_not_claimable)
+        return "insufficient_data", "unassisted_claim_not_supported", sorted(set(missing_fields))
     if blocking_assists:
         missing_fields.extend(f"assist_ledger.blocking_assists.{assist}" for assist in blocking_assists)
         return "assisted_pass", "assisted_pass_unassisted_claim_blocked", missing_fields
@@ -1142,6 +1636,19 @@ def _run_verdict(
     ):
         return "warn", "upstream_artifact_warn", missing_fields
     return "pass", None, missing_fields
+
+
+def _applies_apollo_unassisted_claim_gate(run: Mapping[str, Any]) -> bool:
+    return str(run.get("backend") or "").strip().lower() != "autoware"
+
+
+def _diagnostic_assisted_context(run: Mapping[str, Any]) -> bool:
+    scenario_id = str(run.get("scenario_id") or "").lower()
+    scenario_class = str(run.get("scenario_class") or "").lower()
+    gate_role = str(run.get("gate_role") or "").lower()
+    if gate_role in {"diagnostic_gate", "informational"}:
+        return True
+    return any(token in scenario_id or token in scenario_class for token in ("smoke", "debug"))
 
 
 def _invalid_route_start_diagnostic_fields(run: Mapping[str, Any]) -> list[str]:
@@ -1424,6 +1931,7 @@ def _missing_artifacts(
     route_health_summary_path: Path | None,
     channel_health_path: Path | None,
     localization_contract_path: Path | None,
+    apollo_reference_line_contract_path: Path | None,
     control_health_path: Path | None,
     traffic_light_contract_path: Path | None,
     scenario_class: str,
@@ -1451,6 +1959,8 @@ def _missing_artifacts(
         missing.append("apollo_channel_health_report.json")
     if localization_contract_path is None:
         missing.append("localization_contract_report.json")
+    if apollo_reference_line_contract_path is None:
+        missing.append("apollo_reference_line_contract_report.json")
     if control_health_path is None:
         missing.append("control_health_report.json")
     if scenario_class in TRAFFIC_LIGHT_SCENARIO_CLASSES and traffic_light_contract_path is None:
@@ -1665,6 +2175,19 @@ def _localization_contract_status(localization_contract: Mapping[str, Any]) -> s
     return status if status is not None else "insufficient_data"
 
 
+def _apollo_reference_line_contract_status(report: Mapping[str, Any]) -> str:
+    status = _report_status(report)
+    return status if status is not None else "insufficient_data"
+
+
+def _apollo_reference_line_blocking_reasons(report: Mapping[str, Any]) -> list[str]:
+    reasons = [str(item) for item in (report.get("blocking_reasons") or []) if item]
+    verdict = report.get("verdict")
+    if isinstance(verdict, Mapping):
+        reasons.extend(str(item) for item in (verdict.get("blocking_reasons") or []) if item)
+    return sorted(set(reasons))
+
+
 def _localization_blocking_reasons(localization_contract: Mapping[str, Any]) -> list[str]:
     reasons: list[str] = []
     verdict = localization_contract.get("verdict")
@@ -1692,6 +2215,88 @@ def _localization_blocking_reasons(localization_contract: Mapping[str, Any]) -> 
         if channel.get("sequence_monotonic") is False:
             reasons.append("sequence_non_monotonic")
     return sorted(set(reasons))
+
+
+REFERENCE_LINE_REQUIRED_SCENARIO_CLASSES = {
+    "lane_keep",
+    "curve_diagnostic",
+    "junction_turn",
+    "traffic_light_red_stop",
+    "traffic_light_green_go",
+    "traffic_light_red_to_green_release",
+}
+
+
+def _apollo_reference_line_contract_verdict(
+    report: Mapping[str, Any],
+    *,
+    scenario_class: str,
+    report_path: Path | None,
+) -> tuple[str, str | None, list[str]]:
+    if scenario_class not in REFERENCE_LINE_REQUIRED_SCENARIO_CLASSES:
+        return "pass", None, []
+    if report_path is None or not report:
+        if scenario_class == "curve_diagnostic":
+            return (
+                "diagnostic_only",
+                "apollo_reference_line_contract_missing_for_curve_diagnostic",
+                ["apollo_reference_line_contract_report.json"],
+            )
+        return (
+            "insufficient_data",
+            "apollo_reference_line_contract_missing",
+            ["apollo_reference_line_contract_report.json"],
+        )
+    status = _apollo_reference_line_contract_status(report)
+    blocking = _apollo_reference_line_blocking_reasons(report)
+    if status == "fail" or blocking:
+        fields = [f"apollo_reference_line_contract.blocking_reasons.{reason}" for reason in blocking]
+        if not fields:
+            fields.append("apollo_reference_line_contract.status")
+        if scenario_class == "curve_diagnostic":
+            return (
+                "diagnostic_only",
+                "apollo_reference_line_contract_blocking_curve_diagnostic",
+                fields,
+            )
+        return "insufficient_data", "apollo_reference_line_contract_blocking", fields
+    if status not in {"pass", "warn"}:
+        if scenario_class == "curve_diagnostic":
+            return (
+                "diagnostic_only",
+                "apollo_reference_line_contract_insufficient_curve_diagnostic",
+                ["apollo_reference_line_contract.status"],
+            )
+        return (
+            "insufficient_data",
+            "apollo_reference_line_contract_missing_status",
+            ["apollo_reference_line_contract.status"],
+        )
+    evidence = report.get("evidence")
+    if not isinstance(evidence, Mapping):
+        return (
+            "insufficient_data",
+            "apollo_reference_line_contract_missing_evidence",
+            ["apollo_reference_line_contract.evidence"],
+        )
+    required = {
+        "planning_reference_available": evidence.get("planning_reference_available") is True,
+        "control_reference_available": evidence.get("control_reference_available") is True,
+    }
+    missing = [
+        f"apollo_reference_line_contract.evidence.{field}"
+        for field, present in required.items()
+        if not present
+    ]
+    if missing:
+        if scenario_class == "curve_diagnostic":
+            return (
+                "diagnostic_only",
+                "apollo_reference_line_contract_diagnostic_only",
+                missing,
+            )
+        return "insufficient_data", "apollo_reference_line_contract_incomplete", missing
+    return "pass", None, []
 
 
 def _initial_rear_axle_offset_error(route_start_alignment: Mapping[str, Any]) -> float | None:
@@ -1869,8 +2474,9 @@ def _localization_checklist_hard_gate_missing(
         return ["localization_contract.acceptance_checklist"]
     missing: list[str] = []
     required_checks = dict(LOCALIZATION_HARD_GATE_CHECKS)
-    if scenario_class in LOCALIZATION_REFERENCE_LINE_REQUIRED_CLASSES:
-        required_checks["reference_line_projection"] = {"pass", "warn"}
+    # Apollo planning/control reference-line closure is checked by
+    # apollo_reference_line_contract_report.json. Do not let bridge nearest-lane
+    # diagnostics satisfy that claim via the localization checklist.
     for check_id, allowed_statuses in required_checks.items():
         item = checklist.get(check_id)
         if not isinstance(item, Mapping):
@@ -2166,6 +2772,60 @@ def _control_health_evidence_verdict(
             "control_health_missing_source_artifacts",
             [f"control_health.source.{field}" for field in missing_source_artifacts],
         )
+    return "pass", None, []
+
+
+def _apollo_control_handoff_evidence_verdict(
+    report: Mapping[str, Any],
+    *,
+    report_path: Path | None,
+) -> tuple[str, str | None, list[str]]:
+    if report_path is None:
+        return (
+            "insufficient_data",
+            "apollo_control_handoff_report_missing",
+            ["apollo_control_handoff_report.json"],
+        )
+    verdict = str(report.get("verdict") or "").strip()
+    if verdict == "fail":
+        stage = str(report.get("failure_stage") or "unknown")
+        return (
+            "fail",
+            f"apollo_control_handoff_{stage}",
+            [f"apollo_control_handoff.failure_stage.{stage}"],
+        )
+    if verdict not in {"pass", "warn"}:
+        return (
+            "insufficient_data",
+            "apollo_control_handoff_missing_status",
+            ["apollo_control_handoff.verdict"],
+        )
+    stage = str(report.get("failure_stage") or "").strip()
+    if stage and stage != "none":
+        status = "insufficient_data" if stage == "insufficient_data" else "fail"
+        return (
+            status,
+            f"apollo_control_handoff_{stage}",
+            [f"apollo_control_handoff.failure_stage.{stage}"],
+        )
+    control_channel = report.get("control_channel")
+    if not isinstance(control_channel, Mapping):
+        control_channel = {}
+    bridge_receive = report.get("bridge_receive")
+    if not isinstance(bridge_receive, Mapping):
+        bridge_receive = {}
+    mapping_and_apply = report.get("mapping_and_apply")
+    if not isinstance(mapping_and_apply, Mapping):
+        mapping_and_apply = {}
+    missing: list[str] = []
+    if (_num(control_channel.get("message_count")) or 0.0) <= 0:
+        missing.append("apollo_control_handoff.control_channel.message_count")
+    if (_num(bridge_receive.get("control_rx_count")) or 0.0) <= 0:
+        missing.append("apollo_control_handoff.bridge_receive.control_rx_count")
+    if (_num(mapping_and_apply.get("apply_control_count")) or 0.0) <= 0:
+        missing.append("apollo_control_handoff.mapping_and_apply.apply_control_count")
+    if missing:
+        return "insufficient_data", "apollo_control_handoff_missing_materialization", missing
     return "pass", None, []
 
 
@@ -2683,6 +3343,7 @@ def _write_csv(path: Path, run_results: Sequence[Mapping[str, Any]]) -> None:
             row["active_assists"] = ";".join(run.get("active_assists") or [])
             row["blocking_assists"] = ";".join(run.get("blocking_assists") or [])
             row["non_blocking_assists"] = ";".join(run.get("non_blocking_assists") or [])
+            row["why_not_claimable"] = ";".join(run.get("why_not_claimable") or [])
             row["apollo_channel_gap_failures"] = ";".join(run.get("apollo_channel_gap_failures") or [])
             row["apollo_channel_low_rate_channels"] = ";".join(
                 run.get("apollo_channel_low_rate_channels") or []
@@ -2727,8 +3388,8 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
         f"- unproven_required_scenario_ids: `{', '.join(coverage.get('unproven_required_scenario_ids') or [])}`",
         f"- scenario_identity_mismatches: `{len(coverage.get('scenario_identity_mismatches') or [])}`",
         "",
-        "| run_id | scenario_class | route_id | transport | active_assists | blocking_assists | unassisted_claim | runtime | handoff | channel | localization | localization_blocking | verdict | failure_reason | tl_expected | stopped_at_red | matched | target | first_high_steer |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| run_id | scenario_class | route_id | transport | active_assists | blocking_assists | unassisted_claim | why_not_claimable | runtime | handoff | channel | localization | localization_blocking | verdict | failure_reason | tl_expected | stopped_at_red | matched | target | first_high_steer |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for run in report.get("run_results") or []:
         lines.append(
@@ -2737,6 +3398,7 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
             f"{';'.join(run.get('active_assists') or [])} | "
             f"{';'.join(run.get('blocking_assists') or [])} | "
             f"{run.get('can_claim_unassisted_natural_driving')} | "
+            f"{';'.join(run.get('why_not_claimable') or [])} | "
             f"{run.get('runtime_contract_status')} | {run.get('control_handoff_status')} | "
             f"{run.get('apollo_channel_health_status')} | "
             f"{run.get('localization_contract_status')} | "

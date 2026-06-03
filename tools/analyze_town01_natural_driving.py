@@ -15,6 +15,15 @@ from carla_testbed.analysis.natural_driving import (  # noqa: E402
     problem_run_details,
     write_natural_driving_report,
 )
+from carla_testbed.analysis.apollo_control_handoff import (  # noqa: E402
+    ensure_apollo_control_handoff_reports_for_root,
+)
+from carla_testbed.analysis.localization_contract import (  # noqa: E402
+    ensure_localization_contract_reports_for_root,
+)
+from carla_testbed.analysis.apollo_reference_line_contract import (  # noqa: E402
+    ensure_apollo_reference_line_contract_reports_for_root,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,6 +53,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    handoff_reports = ensure_apollo_control_handoff_reports_for_root(args.suite_root)
+    localization_reports = ensure_localization_contract_reports_for_root(args.suite_root)
+    reference_line_reports = ensure_apollo_reference_line_contract_reports_for_root(args.suite_root)
     report = analyze_natural_driving_suite(
         args.suite_root,
         require_full_target_coverage=True if args.require_full_target_coverage else None,
@@ -75,6 +87,9 @@ def main(argv: list[str] | None = None) -> int:
         },
         "problem_run_count": len(problems),
         "problem_runs": problems,
+        "apollo_control_handoff_reports": handoff_reports,
+        "localization_contract_reports": localization_reports,
+        "apollo_reference_line_contract_reports": reference_line_reports,
         "outputs": outputs,
     }
     print(json.dumps(payload, indent=2, sort_keys=True))

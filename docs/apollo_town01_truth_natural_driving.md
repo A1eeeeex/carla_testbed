@@ -23,6 +23,22 @@ Natural-driving channel health contract:
 - analyzer: `carla_testbed.analysis.apollo_channel_health`
 - report: `apollo_channel_health_report.json`
 
+Apollo Control handoff evidence:
+
+- analyzer: `carla_testbed.analysis.apollo_control_handoff`
+- report: `apollo_control_handoff_report.json`
+- gate: Control process, `/apollo/control`, bridge receive, raw decode, mapped/applied control, and vehicle response must be non-blocking for hard natural-driving pass in `natural_driving_report.json`.
+
+Apollo reference-line contract evidence:
+
+- analyzer: `carla_testbed.analysis.apollo_reference_line_contract`
+- report: `apollo_reference_line_contract_report.json`
+- gate: lane-keep, curve, junction, and traffic-light hard passes require
+  Apollo planning/control reference-line evidence with status `pass` or `warn`
+  and no blocking reasons. Route heading agreement or bridge nearest-lane
+  diagnostics are useful context, but they cannot replace this report for
+  claim-grade natural-driving evidence.
+
 ## Scope
 
 Truth-input mode means CARLA provides ground-truth inputs such as ego
@@ -47,13 +63,20 @@ Each `natural_driving_report.json` scenario result includes an `evidence`
 object (`natural_driving_evidence.v1`). This is a normalized evidence ledger,
 not a replacement for the scenario verdict. It records route-health status,
 whether the route can support a hard gate, Apollo channel health,
-`localization_contract_report.json` status, control attribution status,
+`localization_contract_report.json` status,
+`apollo_reference_line_contract_report.json` status,
+`apollo_control_handoff_report.json` status, control attribution status,
 traffic-light evidence status, assist ledger status, artifact completeness,
-active/blocking assists, missing artifacts, missing fields, and warnings.
+active/blocking/non-blocking assists, `assist_confidence`,
+`can_claim_unassisted_natural_driving`, `why_not_claimable`, missing artifacts,
+missing fields, and warnings.
 Missing evidence must stay explicit, for example
-`localization_contract_report.json`, `control_attribution_report.json`,
-`assist_ledger`, or `traffic_light_evidence_report.json`; the evaluator must
-not infer success from `summary.json` alone.
+`localization_contract_report.json`,
+`apollo_reference_line_contract_report.json`,
+`apollo_control_handoff_report.json`, `control_attribution_report.json`,
+`assist_ledger`, or
+`traffic_light_evidence_report.json`; the evaluator must not infer success
+from `summary.json` alone.
 
 ## Current Boundaries
 
@@ -74,6 +97,9 @@ not infer success from `summary.json` alone.
   `terminal_stop_hold`, a run can still be diagnostically useful but cannot be
   claimed as an unassisted Apollo natural-driving pass without
   `natural_driving_report.json`.
+- Missing assist evidence is also not proof of no assist. A hard natural-driving
+  pass requires explicit assist evidence with no active assists; otherwise the
+  scenario result stays `insufficient_data` or diagnostic-only.
 - Autoware RViz, rosbag2, and CARLA third-person recordings are operator/demo
   evidence only. Autoware comparison with Apollo must go through the same
   route-health, channel-health, control-health, control-attribution, and
@@ -224,16 +250,40 @@ probes. The runner translates that expectation into explicit
 `scenario.traffic_lights.*` overrides so CARLA traffic-light actors are frozen
 to the requested state, and red-to-green can release after a configured delay.
 This improves reproducibility over `carla_actual_observed`, but it is still
-only truth-input stimulus evidence. A pass still requires Apollo HDMap
-signal/stop-line contract evidence, `/apollo/perception/traffic_light` channel
-health, `traffic_light_behavior_report.json`, and actual run metadata showing
+only truth-input stimulus evidence. Claim-grade publication to Apollo must be
+separate: `traffic_light_policy=carla_actual`, `color_source` must be
+`carla_actor_state`, `carla_landmark_state`, or
+`carla_traffic_light_actor_state`, `confidence >= 0.99`, and `contain_lights`
+must match the controlled intersection. `force_green` is a smoke/debug input
+only and blocks natural-driving claims even if the vehicle moves correctly. A
+pass still requires Apollo HDMap signal/stop-line contract evidence,
+`/apollo/perception/traffic_light` channel health,
+`traffic_light_behavior_report.json`, and actual run metadata showing
 `traffic_light_control` affected CARLA traffic-light actors. For red-to-green
 release, that metadata must also contain a release event. Deterministic
 stimulus alone does not prove traffic-light behavior is solved.
 For red-stop scenarios, `red_stop_distance_m` alone is not enough for a pass:
 the report also requires explicit `stopped_at_red=true` evidence, or derives it
 from timeseries rows that show the ego close to the stop line with speed below
-the configured stop threshold.
+the configured stop threshold. Claim-grade red-stop also requires
+`distance_to_stop_line_m`, ego `s/l`, a light color timeline, and either an
+Apollo stop decision artifact or control full-stop evidence.
+
+## Obstacle GT Contract
+
+Truth-input obstacle publication must also be claim bounded. The bridge writes
+`artifacts/obstacle_gt_contract.jsonl` when front-obstacle evidence is
+available, and `tools/analyze_obstacle_gt_contract.py` converts that stream to
+`obstacle_gt_contract_report.json`. The report checks that the ego actor is not
+published as an obstacle, CARLA actor ids map stably to Apollo perception ids,
+position/theta/velocity frame evidence is declared, length/width/height are
+positive, tracking time is monotonic, and dynamic actors are not represented by
+zero-filled velocity unless they are actually stationary.
+
+`Detection3DArray` or `MarkerArray` fallback sources often do not carry
+velocity. Those artifacts are still useful recording evidence, but the report
+marks them with `velocity_source_missing_or_zero_filled`; dynamic-obstacle
+behavior claims such as follow-stop must not pass on that evidence alone.
 
 ## Apollo Channel Health
 
@@ -275,6 +325,11 @@ Recorded assists include:
 - `goal_planner_module_disabled`
 - `planning_common_dynamics_override`
 - `speed_feedback_bridge_profile`
+- `dummy_lateral`
+- `legacy_followstop`
+- `route_follower`
+- `direct_autopilot`
+- `manual_intervention`
 
 `carla_direct_transport` is recorded as a non-blocking transport candidate.
 The other assists are blocking for unassisted natural-driving claims unless a
@@ -284,6 +339,36 @@ should produce a `warn`/diagnostic result such as
 natural-driving pass. `natural_driving_report.json` must carry the
 `assisted_pass` verdict for runs that satisfy behavior metrics only with a
 blocking assist active.
+
+### Unassisted Apollo control claim gate
+
+`can_claim_unassisted_natural_driving=true` is stricter than a scenario
+`verdict=pass`. It requires all of the following evidence in
+`natural_driving_report.json`:
+
+- `backend=apollo_cyberrt`.
+- `control_source=/apollo/control`.
+- `routing_success_count >= 1`.
+- `planning_nonempty_ratio >= 0.8`.
+- `control_rx_count`, `control_tx_count`, and `control_apply_count` are all
+  positive.
+- `localization_contract_report.json` is `pass` or `warn`, claim-grade, and has
+  no blocking reasons.
+- `apollo_reference_line_contract_report.json` and
+  `apollo_control_handoff_report.json` are `pass` or `warn` with no blocking
+  stage/reason.
+- `control_health_report.json` has no blocking failure.
+- `assist_ledger.active_assists=[]` with explicit or inferred confidence.
+- `lateral_guard_apply_count=0` and
+  `trajectory_contract_guard_apply_count=0`; any replacement control remains a
+  blocker unless explicitly diagnostic-only and not used for capability claim.
+- Claim-grade traffic-light scenarios must use deterministic GT signal control,
+  not `force_green`.
+
+If any item is missing or violated, the evaluator records
+`can_claim_unassisted_natural_driving=false` and adds the concrete blocker to
+`why_not_claimable`. Smoke/debug scenarios with assists can remain useful as
+`diagnostic_only`, but they are not unassisted Apollo natural-driving evidence.
 
 ### `link_health`
 
@@ -307,6 +392,10 @@ This gate proves the route is materially connected:
   forward vector, quaternion/heading consistency, kinematics units, chassis
   speed consistency, and route/lane projection evidence must be `pass` or an
   explicitly allowed `warn`.
+- `apollo_reference_line_contract_report.json` present and non-blocking for
+  hard-gate behavior claims. This report verifies Apollo planning/control
+  reference-line evidence; route-health heading agreement and bridge nearest
+  lane projection diagnostics cannot satisfy this gate.
 
 This gate does not prove behavior quality.
 
@@ -325,6 +414,10 @@ This gate proves route geometry and ego relation are interpretable:
   blocking reasons for lane-keep, junction, and traffic-light hard passes. If
   the report is missing, those scenarios stay `insufficient_data` rather than
   becoming Apollo algorithm failures.
+- `apollo_reference_line_contract_report.json` with status `pass` or `warn`
+  and no blocking reasons. If it is missing, `lane_keep`, `junction_turn`, and
+  traffic-light hard gates stay `insufficient_data`; `curve_diagnostic` remains
+  diagnostic-only rather than becoming an Apollo algorithm failure.
 - for `curve_diagnostic`, route-health must expose matched-point anomaly,
   target-point anomaly, and Apollo raw-steer evidence. Missing fields keep the
   result `insufficient_data`; matched/target anomalies or first high steer keep
@@ -392,6 +485,21 @@ This gate proves control is observable and not obviously contradictory:
 - control-actuation report is attached when mapping, `steer_scale`, or physical
   mapping claims are made.
 
+When oscillation appears, `control_health_report.json` must decompose it before
+any tuning claim:
+
+- Apollo raw command oscillation;
+- bridge mapped command oscillation;
+- CARLA applied command oscillation;
+- vehicle response oscillation;
+- bridge apply cadence / same-frame drop / sync-tick issues.
+
+Low bridge apply cadence or high same-frame drop should be treated as an apply
+scheduling problem first. Do not smooth, clamp, or tune controls to hide a
+localization or reference-line contract failure. Legacy mapping remains
+smoke/debug evidence only; claim-grade natural-driving control mapping requires
+physical/calibrated mapping or an explicit vehicle calibration profile.
+
 For attribution, add:
 
 - `control_attribution_report.json`;
@@ -429,6 +537,154 @@ Before turning a Town01 result into an Apollo capability claim, use
   actuation.
 - L5 closed-loop failure can be interpreted only after the earlier gates and
   relevant route-health/A-B/calibration artifacts are present.
+
+## Apollo Link-Health Aggregator
+
+For each online run, generate a quick blocker index after the individual
+reports are available:
+
+```bash
+python tools/analyze_apollo_link_health.py \
+  --run-dir runs/<run_id>
+```
+
+Outputs:
+
+- `analysis/apollo_link_health/apollo_link_health_report.json`
+- `analysis/apollo_link_health/apollo_link_health_summary.md`
+
+The report summarizes environment/world, bridge runtime, channel health, GT
+localization contract, HDMap projection, Apollo reference line, routing /
+planning / control handoff, control mapping/apply, obstacle GT, traffic-light
+GT, no-assist claim boundary, and final natural-driving outcome. It is an
+evidence index only. Missing required artifacts are `insufficient_data`, not
+pass. If localization/reference-line lane-heading evidence is blocking, control
+oscillation should stay a secondary blocker until those upstream contracts reach
+`pass` or non-blocking `warn`.
+
+## No-Interference Apollo Natural-Driving Claim Checklist
+
+This checklist is the operator workflow for a no-interference Apollo
+truth-input claim. It is stricter than a short online smoke run. A
+natural-driving hard pass must be represented by `natural_driving_report.json`
+in the same suite or run packet; verbal observation, Dreamview, CARLA video, or
+vehicle motion cannot replace that artifact.
+
+Required online command for a claim-candidate suite:
+
+```bash
+/home/ubuntu/miniconda3/envs/carla16/bin/python3 tools/run_town01_natural_driving_suite.py \
+  --suite configs/scenarios/town01_natural_driving_suite.yaml \
+  --out runs/natural/<batch_id> \
+  --classes lane_keep,curve_diagnostic,junction_turn,traffic_light_red_stop,traffic_light_green_go,traffic_light_red_to_green_release \
+  --continue-on-failure \
+  --postprocess-after-run \
+  --fail-on-postprocess-status fail,warn,insufficient_data
+```
+
+Required run artifacts:
+
+- `manifest.json`, `config.resolved.yaml`, `summary.json`, `timeseries.csv` or
+  `timeseries.jsonl`, and `events.jsonl`.
+- `artifacts/cyber_bridge_stats.json`,
+  `artifacts/bridge_health_summary.json`,
+  `artifacts/bridge_transport_summary.json`, and
+  `artifacts/planning_topic_debug_summary.json` when available.
+- `analysis/route_health/route_health.json`.
+- `analysis/apollo_channel_health/apollo_channel_health_report.json`.
+- `analysis/localization_contract/localization_contract_report.json`.
+- `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`.
+- `analysis/apollo_control_handoff/apollo_control_handoff_report.json`.
+- `analysis/control_health/control_health_report.json`.
+- `analysis/apollo_link_health/apollo_link_health_report.json`.
+- `analysis/traffic_light/traffic_light_contract_report.json` and
+  `analysis/traffic_light/traffic_light_behavior_report.json` for
+  traffic-light scenarios.
+- `analysis/obstacle_gt_contract/obstacle_gt_contract_report.json` for
+  obstacle or follow-stop behavior claims.
+- `analysis/natural_driving/natural_driving_report.json`,
+  `natural_driving_report.csv`, and `natural_driving_summary.md`.
+
+Required analyzers for a single online run:
+
+```bash
+RUN=runs/<run_id>
+python tools/analyze_apollo_localization_contract.py --run-dir "$RUN"
+python tools/analyze_apollo_reference_line_contract.py --run-dir "$RUN"
+python tools/analyze_apollo_control_handoff.py --run-dir "$RUN"
+python tools/analyze_apollo_link_health.py --run-dir "$RUN"
+```
+
+Required analyzer for the suite aggregate:
+
+```bash
+python tools/analyze_town01_natural_driving.py \
+  --suite-root runs/natural/<batch_id> \
+  --out runs/natural/<batch_id>/analysis
+```
+
+Strict postprocess for evidence gating:
+
+```bash
+python tools/postprocess_town01_natural_driving.py \
+  --suite-root runs/natural/<batch_id> \
+  --out runs/natural/<batch_id>/analysis/natural_driving \
+  --require-full-target-coverage \
+  --fail-on-status fail,warn,insufficient_data
+```
+
+Minimum pass thresholds for a claim-grade packet:
+
+- `python -m pytest -q` passes before the online run is interpreted.
+- `natural_driving_report.json.status=pass` and
+  `capability_coverage.can_claim_full_natural_driving=true`.
+- Every hard-gate scenario has `can_claim_unassisted_natural_driving=true` and
+  an empty `why_not_claimable`.
+- `localization_contract_report.json` is `pass` or non-blocking `warn`,
+  claim-grade, uses sim-time, writes `header.frame_id=map`, uses verified VRP /
+  rear-axle evidence, and has no blocking reasons.
+- `apollo_reference_line_contract_report.json`,
+  `apollo_control_handoff_report.json`, `apollo_channel_health_report.json`,
+  and `control_health_report.json` are `pass` or non-blocking `warn`.
+- `apollo_link_health_report.json` reports
+  `can_claim_unassisted_natural_driving=true`, no primary blocker, and no
+  missing hard-gate artifacts.
+- `assist_ledger.active_assists=[]`,
+  `lateral_guard_apply_count=0`, and
+  `trajectory_contract_guard_apply_count=0` or explicitly diagnostic
+  non-replacement behavior.
+- Traffic-light claim-grade scenarios use `traffic_light_policy=carla_actual`,
+  not `force_green`, and include mapped signal/stop-line evidence plus behavior
+  evidence.
+
+Known non-claim-grade modes:
+
+- `force_green`;
+- `dummy_lateral`;
+- `legacy_followstop`;
+- `route_follower`;
+- `assumed` vehicle reference;
+- diagnostic nearest-lane projection only;
+- stale localization republish used as fresh-sample evidence;
+- missing HDMap / Apollo reference-line evidence.
+
+Recommended validation sequence:
+
+1. Offline: `python -m pytest -q`.
+2. Single-run postprocess: run the localization, reference-line,
+   control-handoff, link-health, and natural-driving analyzers listed above.
+3. Strict postprocess: run
+   `tools/postprocess_town01_natural_driving.py` with
+   `--require-full-target-coverage --fail-on-status fail,warn,insufficient_data`.
+4. Online smoke: run the existing Town01 `lane_keep_097` path first for a short
+   local smoke. Do not use it as a natural-driving claim. The target is
+   `localization_contract` `pass`/`warn`,
+   `apollo_reference_line_contract` at least `warn`, and
+   `apollo_control_handoff` `pass`/`warn`.
+5. Online claim candidate: run lane-keep, curve, junction, and
+   `traffic_light_actual` scenarios. Only if every hard gate passes, every
+   required artifact exists, and the assist ledger is clean may the suite set
+   `can_claim_unassisted_natural_driving=true`.
 
 ## CI-Friendly Validation
 
@@ -499,6 +755,12 @@ ROS2, or CyberRT. It attempts to:
 - if `channel_stats.json` is absent but `artifacts/cyber_bridge_stats.json`
   exists, derive a conservative `channel_stats.json` from bridge counters and
   mark the resulting channel-health report as estimated/warn-level evidence;
+- generate `analysis/localization_contract/localization_contract_report.json`
+  before the Apollo reference-line contract, so reference-line attribution can
+  see whether GT localization is already blocking;
+- generate `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`
+  from planning/control reference-line artifacts and the localization contract
+  when available;
 - generate `analysis/traffic_light/traffic_light_contract_report.json` from
   the configured Town01 Apollo route/signal contract and CARLA-to-Apollo
   traffic-light mapping; placeholder ids remain `warn`-level evidence;
@@ -521,11 +783,25 @@ using stale root reports after a refreshed postprocess pass.
 When `--refresh` is used but raw regeneration inputs are absent, postprocess
 standardizes existing pass-level reports instead of overwriting them with
 weaker placeholder-derived evidence. This applies to route-health, Apollo
-channel-health, and traffic-light contract reports; copied reports remain
-artifact evidence, not a substitute for missing raw logs or records.
+channel-health, localization contract, Apollo reference-line contract, and
+traffic-light contract reports; copied reports remain artifact evidence, not a
+substitute for missing raw logs or records. For localization specifically,
+ordinary P0 ego timeseries is not enough to regenerate claim-grade localization
+evidence; postprocess requires strong localization fields or bridge
+localization stats before replacing an existing localization contract report.
+If raw regeneration inputs are present, `--refresh` must prefer regeneration
+over a stale existing report. For example, bridge/channel/control handoff raw
+artifacts should be re-analyzed rather than treated as a cached pass. The
+fallback path is only for preserving already valid evidence when the raw inputs
+needed to rebuild the same report are absent.
 If `run_matrix.csv` exists, postprocess also refreshes artifact path columns and
 updates `suite_manifest.json` so `actual_run_dir`, route-health, channel-health,
 and traffic-light report paths point at the postprocessed evidence.
+
+The broader Town01 goal postprocess (`tools/postprocess_town01_goal.py`) treats
+input A/B batches as read-only evidence sources. It writes derived route-health,
+route-curve gap, A/B, calibration, and audit artifacts under `--out`; it must
+not create new `analysis/...` directories inside the input `runs/...` tree.
 
 If required inputs such as `channel_stats.json`, route context, or
 traffic-light contract/behavior evidence are missing, the generated reports

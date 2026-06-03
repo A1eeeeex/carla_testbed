@@ -57,6 +57,10 @@ AB_REPORT_CSV_FIELDS = [
     "control_health_status",
     "control_health_failure_reason",
     "control_health_warnings",
+    "apollo_control_handoff_path",
+    "apollo_control_handoff_status",
+    "apollo_control_handoff_failure_stage",
+    "apollo_control_handoff_blocking_reasons",
     "control_apply_observation_delay_s",
     "route_s_after_first_applied_control_delta_m",
     "stopped_ratio_after_first_applied_control",
@@ -882,6 +886,18 @@ def _control_health_summary(control_health: Mapping[str, Any]) -> dict[str, Any]
     }
 
 
+def _apollo_control_handoff_summary(
+    report: Mapping[str, Any],
+    path: Path | None,
+) -> dict[str, Any]:
+    return {
+        "apollo_control_handoff_path": None if path is None else str(path),
+        "apollo_control_handoff_status": report.get("verdict"),
+        "apollo_control_handoff_failure_stage": report.get("failure_stage"),
+        "apollo_control_handoff_blocking_reasons": list(report.get("blocking_reasons") or []),
+    }
+
+
 def _channel_health_summary(channel_health: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "apollo_channel_health_status": channel_health.get("status"),
@@ -909,6 +925,7 @@ def _run_result(record: ABRunRecord, *, manifest_dir: Path) -> dict[str, Any]:
         route_health_path = _first_recursive(run_dir, "route_health.json")
     if control_health_path is None or not control_health_path.exists():
         control_health_path = _first_recursive(run_dir, "control_health_report.json")
+    apollo_control_handoff_path = _first_recursive(run_dir, "apollo_control_handoff_report.json")
     if channel_health_path is None or not channel_health_path.exists():
         channel_health_path = _first_recursive(run_dir, "apollo_channel_health_report.json")
     if run_dir is not None:
@@ -923,6 +940,7 @@ def _run_result(record: ABRunRecord, *, manifest_dir: Path) -> dict[str, Any]:
     summary = _read_json(summary_path)
     route_health = _read_json(route_health_path)
     control_health = _read_json(control_health_path)
+    apollo_control_handoff = _read_json(apollo_control_handoff_path)
     channel_health = _read_json(channel_health_path)
     direct_stats = _read_json(_first_recursive(run_dir, "direct_bridge_stats.json"))
     cyber_bridge_stats = _read_json(_first_recursive(run_dir, "cyber_bridge_stats.json"))
@@ -1112,6 +1130,7 @@ def _run_result(record: ABRunRecord, *, manifest_dir: Path) -> dict[str, Any]:
         **_channel_health_summary(channel_health),
         "control_health_path": None if control_health_path is None else str(control_health_path),
         **_control_health_summary(control_health),
+        **_apollo_control_handoff_summary(apollo_control_handoff, apollo_control_handoff_path),
         "artifact_complete": artifact_complete,
         "bridge_loc_count": bridge_loc_count,
         "bridge_chassis_count": bridge_chassis_count,
@@ -1242,6 +1261,14 @@ def _compare_pair(
     control_apply_comparison = {
         "baseline_control_health_status": baseline.get("control_health_status"),
         "candidate_control_health_status": candidate.get("control_health_status"),
+        "baseline_apollo_control_handoff_status": baseline.get("apollo_control_handoff_status"),
+        "candidate_apollo_control_handoff_status": candidate.get("apollo_control_handoff_status"),
+        "baseline_apollo_control_handoff_failure_stage": baseline.get(
+            "apollo_control_handoff_failure_stage"
+        ),
+        "candidate_apollo_control_handoff_failure_stage": candidate.get(
+            "apollo_control_handoff_failure_stage"
+        ),
         "baseline_control_apply_observation_delay_s": baseline.get("control_apply_observation_delay_s"),
         "candidate_control_apply_observation_delay_s": candidate.get("control_apply_observation_delay_s"),
         "baseline_control_bridge_apply_world_frame_hz": baseline.get("control_bridge_apply_world_frame_hz"),
@@ -1326,6 +1353,18 @@ def _compare_pair(
     if candidate.get("control_health_status") == "fail":
         reasons.append(
             f"candidate control_health failed: {candidate.get('control_health_failure_reason') or 'unknown'}"
+        )
+    candidate_handoff_status = candidate.get("apollo_control_handoff_status")
+    candidate_handoff_stage = candidate.get("apollo_control_handoff_failure_stage")
+    if candidate_handoff_status == "fail":
+        reasons.append(
+            "candidate apollo_control_handoff failed: "
+            + str(candidate_handoff_stage or "unknown")
+        )
+    elif candidate_handoff_stage not in {None, "", "none"}:
+        reasons.append(
+            "candidate apollo_control_handoff failure_stage="
+            + str(candidate_handoff_stage)
         )
     if reasons:
         return {
@@ -1663,6 +1702,9 @@ def write_ab_report_csv(path: str | Path, report: Mapping[str, Any]) -> None:
                 payload.get("direct_transport_contract_reasons") or []
             )
             payload["control_health_warnings"] = ";".join(payload.get("control_health_warnings") or [])
+            payload["apollo_control_handoff_blocking_reasons"] = ";".join(
+                payload.get("apollo_control_handoff_blocking_reasons") or []
+            )
             payload["steering_normalization_modes"] = ";".join(payload.get("steering_normalization_modes") or [])
             payload["steering_normalization_mode_counts"] = json.dumps(
                 payload.get("steering_normalization_mode_counts") or {},

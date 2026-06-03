@@ -46,6 +46,9 @@ class ControlMappingConfig:
     steer_scale: float
     steer_sign: float
     brake_deadzone: float
+    throttle_brake_mutual_exclusion_enabled: bool
+    throttle_brake_hysteresis_frames: int
+    throttle_brake_min_command: float
     physical_allow_legacy_fallback: bool
     physical_apollo_max_steer_angle_deg: float
     physical_apollo_max_accel_mps2: float
@@ -143,6 +146,94 @@ def legacy_map_base_controls(
         "physical_fallback_reason": "",
         "target_accel_source": "",
         "target_decel_source": "",
+    }
+
+
+def apply_throttle_brake_mutual_exclusion(
+    *,
+    throttle: float,
+    brake: float,
+    previous_state: str,
+    hysteresis_counter: int,
+    config: ControlMappingConfig,
+) -> Dict[str, Any]:
+    """Resolve mapped throttle/brake overlap without hiding raw commands.
+
+    This is a bridge-output safety policy, not an Apollo-command smoother. The
+    caller must still record raw and pre-policy mapped commands.
+    """
+
+    throttle_in = _clamp(float(throttle), 0.0, 1.0)
+    brake_in = _clamp(float(brake), 0.0, 1.0)
+    if not config.throttle_brake_mutual_exclusion_enabled:
+        return {
+            "throttle": throttle_in,
+            "brake": brake_in,
+            "policy_applied": False,
+            "policy_reason": "disabled",
+            "policy_state": previous_state or "coast",
+            "hysteresis_counter": int(hysteresis_counter),
+        }
+
+    threshold = max(0.0, float(config.throttle_brake_min_command))
+    throttle_active = throttle_in > threshold
+    brake_active = brake_in > threshold
+    desired_state = "coast"
+    if throttle_active and brake_active:
+        desired_state = "brake" if brake_in >= throttle_in else "throttle"
+    elif brake_active:
+        desired_state = "brake"
+    elif throttle_active:
+        desired_state = "throttle"
+
+    previous = previous_state if previous_state in {"throttle", "brake", "coast"} else "coast"
+    counter = max(0, int(hysteresis_counter))
+    hysteresis_frames = max(0, int(config.throttle_brake_hysteresis_frames))
+    selected_state = desired_state
+    hysteresis_held = False
+    if (
+        hysteresis_frames > 0
+        and desired_state in {"throttle", "brake"}
+        and previous in {"throttle", "brake"}
+        and desired_state != previous
+        and counter < hysteresis_frames
+    ):
+        selected_state = previous
+        counter += 1
+        hysteresis_held = True
+    elif desired_state == previous:
+        counter = 0
+    else:
+        counter = 0
+
+    throttle_out = throttle_in
+    brake_out = brake_in
+    policy_applied = False
+    if selected_state == "throttle" and brake_out > 0.0:
+        brake_out = 0.0
+        policy_applied = True
+    elif selected_state == "brake" and throttle_out > 0.0:
+        throttle_out = 0.0
+        policy_applied = True
+    elif selected_state == "coast" and (throttle_out > 0.0 or brake_out > 0.0):
+        throttle_out = 0.0
+        brake_out = 0.0
+        policy_applied = True
+
+    reason = "none"
+    if throttle_active and brake_active:
+        reason = "mutual_exclusion_overlap"
+    elif hysteresis_held:
+        reason = "hysteresis_hold"
+    return {
+        "throttle": throttle_out,
+        "brake": brake_out,
+        "policy_applied": policy_applied,
+        "policy_reason": reason,
+        "policy_state": selected_state,
+        "desired_state": desired_state,
+        "hysteresis_counter": counter,
+        "hysteresis_held": hysteresis_held,
     }
 
 

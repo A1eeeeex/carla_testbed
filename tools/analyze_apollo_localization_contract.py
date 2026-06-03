@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeseries", help="timeseries.csv or timeseries.jsonl.")
     parser.add_argument("--channel-stats", help="channel_stats.json.")
     parser.add_argument("--route-health", help="route_health.json.")
+    parser.add_argument("--hdmap-projection", help="Optional artifacts/apollo_hdmap_projection.jsonl from Apollo HDMap API.")
     parser.add_argument("--frame-transform", help="Apollo frame transform YAML.")
     parser.add_argument("--vehicle-reference", help="Vehicle reference YAML.")
     parser.add_argument("--out", required=True, help="Output directory.")
@@ -37,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         timeseries_path=args.timeseries,
         channel_stats_path=args.channel_stats,
         route_health_path=args.route_health,
+        hdmap_projection_path=args.hdmap_projection,
         frame_transform_path=args.frame_transform,
         vehicle_reference_path=args.vehicle_reference,
     )

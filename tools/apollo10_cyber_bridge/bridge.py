@@ -21,6 +21,15 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
+from carla_testbed.adapters.apollo.messages import (
+    build_localization_estimate_dict_from_map_state,
+    fill_header as fill_apollo_header,
+    localization_debug_from_dict,
+    write_localization_estimate_to_pb,
+)
+from carla_testbed.adapters.apollo.vehicle_reference import load_vehicle_reference
+from carla_testbed.analysis.apollo_reference_line_contract import build_reference_line_contract_event
+
 # Apollo 10.0 shipped pb2 files are not compatible with protobuf>=4 C++ descriptors.
 # Force the pure-Python runtime inside the bridge process so planning/traffic-light
 # readers can import the generated modules instead of silently disabling them.
@@ -118,6 +127,7 @@ except Exception:
 try:
     from control_mapping import (
         ControlMappingConfig,
+        apply_throttle_brake_mutual_exclusion as apply_throttle_brake_mutual_exclusion_impl,
         derive_longitudinal_targets as derive_longitudinal_targets_impl,
         legacy_map_base_controls as legacy_map_base_controls_impl,
         normalize_steering_command as normalize_steering_command_impl,
@@ -130,6 +140,7 @@ try:
 except Exception:
     from tools.apollo10_cyber_bridge.control_mapping import (  # type: ignore
         ControlMappingConfig,
+        apply_throttle_brake_mutual_exclusion as apply_throttle_brake_mutual_exclusion_impl,
         derive_longitudinal_targets as derive_longitudinal_targets_impl,
         legacy_map_base_controls as legacy_map_base_controls_impl,
         normalize_steering_command as normalize_steering_command_impl,
@@ -1365,6 +1376,25 @@ class ApolloGtBridge:
         self.localization_reference_mode = _localization_reference_mode(
             self.localization_back_offset_m
         )
+        default_vehicle_reference_path = (
+            Path(__file__).resolve().parents[2]
+            / "configs"
+            / "vehicles"
+            / "ego_vehicle_reference.verified.yaml"
+        )
+        self.vehicle_reference_path = str(
+            bridge_cfg.get("vehicle_reference_path", default_vehicle_reference_path)
+            or default_vehicle_reference_path
+        )
+        self.vehicle_reference_confidence = "unknown"
+        self.vehicle_reference_hard_gate_eligible = False
+        self.vehicle_reference_load_error = ""
+        try:
+            vehicle_reference = load_vehicle_reference(self.vehicle_reference_path)
+            self.vehicle_reference_confidence = vehicle_reference.confidence
+            self.vehicle_reference_hard_gate_eligible = bool(vehicle_reference.hard_gate_eligible)
+        except Exception as exc:
+            self.vehicle_reference_load_error = str(exc)
         self.apollo_control_state_reference = APOLLO_CONTROL_STATE_REFERENCE
         self.map_file_path = str(bridge_cfg.get("map_file", "")).strip()
         self.map_bounds_file = str(bridge_cfg.get("map_bounds_file", "")).strip()
@@ -1384,6 +1414,10 @@ class ApolloGtBridge:
                 self.localization_back_offset_m - REAR_AXLE_LOCALIZATION_BACK_OFFSET_M
             ),
             "apollo_control_state_reference": self.apollo_control_state_reference,
+            "vehicle_reference_path": self.vehicle_reference_path,
+            "vehicle_reference_confidence": self.vehicle_reference_confidence,
+            "vehicle_reference_hard_gate_eligible": self.vehicle_reference_hard_gate_eligible,
+            "vehicle_reference_load_error": self.vehicle_reference_load_error,
         }
         self.debug_csv_path = self.artifacts_dir / "debug_timeseries.csv"
         self.apollo_control_raw_path = self.artifacts_dir / "apollo_control_raw.jsonl"
@@ -1395,6 +1429,9 @@ class ApolloGtBridge:
         self.planning_topic_debug_path = self.artifacts_dir / "planning_topic_debug.jsonl"
         self.planning_topic_debug_summary_path = self.artifacts_dir / "planning_topic_debug_summary.json"
         self.planning_route_segment_debug_path = self.artifacts_dir / "planning_route_segment_debug.jsonl"
+        self.apollo_reference_line_contract_path = (
+            self.artifacts_dir / "apollo_reference_line_contract.jsonl"
+        )
         self.apollo_map_runtime_debug_path = self.artifacts_dir / "apollo_map_runtime_debug.jsonl"
         self.stage5_apollo_map_runtime_debug_path = (
             self.artifacts_dir / "stage5_apollo_map_runtime_debug.jsonl"
@@ -1420,7 +1457,8 @@ class ApolloGtBridge:
             self.artifacts_dir / "stage5_reroute_decision_debug.jsonl"
         )
         self.goal_validity_debug_path = self.artifacts_dir / "goal_validity_debug.jsonl"
-        self.obstacle_contract_debug_path = self.artifacts_dir / "obstacle_contract_debug.jsonl"
+        self.obstacle_gt_contract_path = self.artifacts_dir / "obstacle_gt_contract.jsonl"
+        self.obstacle_contract_debug_path = self.obstacle_gt_contract_path
         self.lateral_guard_debug_path = self.artifacts_dir / "lateral_guard_debug.jsonl"
         self.health_summary_path = self.artifacts_dir / "bridge_health_summary.json"
         self.bridge_transport_summary_path = self.artifacts_dir / "bridge_transport_summary.json"
@@ -1507,6 +1545,19 @@ class ApolloGtBridge:
         if self.steering_percent_normalization not in STEERING_PERCENT_NORMALIZATION_MODES:
             self.steering_percent_normalization = STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT
         self.brake_deadzone = float(ctrl_map.get("brake_deadzone", 0.05))
+        self.throttle_brake_mutual_exclusion_enabled = bool(
+            ctrl_map.get("throttle_brake_mutual_exclusion_enabled", True)
+        )
+        self.throttle_brake_hysteresis_frames = max(
+            0,
+            int(ctrl_map.get("throttle_brake_hysteresis_frames", 2) or 0),
+        )
+        self.throttle_brake_min_command = max(
+            0.0,
+            float(ctrl_map.get("throttle_brake_min_command", 0.05) or 0.0),
+        )
+        self._throttle_brake_policy_state = "coast"
+        self._throttle_brake_hysteresis_counter = 0
         self.actuator_mapping_mode = str(ctrl_map.get("actuator_mapping_mode", "legacy") or "legacy").strip().lower()
         if self.actuator_mapping_mode not in {"legacy", "physical"}:
             self.actuator_mapping_mode = "legacy"
@@ -1564,6 +1615,9 @@ class ApolloGtBridge:
             "steering_field_priority": list(self.physical_steer_field_priority),
             "steering_percent_normalization": self.steering_percent_normalization,
             "acceleration_field_priority": list(self.physical_acceleration_field_priority),
+            "throttle_brake_mutual_exclusion_enabled": self.throttle_brake_mutual_exclusion_enabled,
+            "throttle_brake_hysteresis_frames": self.throttle_brake_hysteresis_frames,
+            "throttle_brake_min_command": self.throttle_brake_min_command,
             "calibration": self._actuator_calibration.status(),
         }
         self.zero_hold_sec = float(ctrl_map.get("zero_hold_sec", 0.0))
@@ -2059,6 +2113,9 @@ class ApolloGtBridge:
         self._traffic_light_publish_count = 0
         self._traffic_light_last_publish_ts = 0.0
         self._traffic_light_proto_error = ""
+        self._traffic_light_last_entries: List[Tuple[str, str]] = []
+        self._traffic_light_last_contain_lights = False
+        self._traffic_light_last_color_source = ""
         self._ignore_roll_route_count = 0
         self._ignore_roll_start_xy: Optional[Tuple[float, float]] = None
 
@@ -2348,13 +2405,23 @@ class ApolloGtBridge:
         self.seq += 1
         return self.seq
 
-    def _fill_header(self, header: Any, ts_sec: float, module_name: str) -> Optional[int]:
+    def _fill_header(
+        self,
+        header: Any,
+        ts_sec: float,
+        module_name: str,
+        frame_id: str = "map",
+    ) -> Optional[int]:
         if header is None:
             return None
         sequence_num = self._next_seq()
-        _safe_set(header, "timestamp_sec", ts_sec)
-        _safe_set(header, "module_name", module_name)
-        _safe_set(header, "sequence_num", sequence_num)
+        fill_apollo_header(
+            header,
+            timestamp_sec=ts_sec,
+            module_name=module_name,
+            sequence_num=sequence_num,
+            frame_id=frame_id,
+        )
         return sequence_num
 
     def _command_now_sec(self) -> float:
@@ -2493,6 +2560,11 @@ class ApolloGtBridge:
 
     def _record_obstacle_contract_event(self, payload: Dict[str, Any]) -> None:
         self._append_jsonl(self.obstacle_contract_debug_path, payload)
+
+    def _ego_actor_id_for_obstacle_contract(self) -> Optional[Any]:
+        # ros2_gt mode does not own a direct CARLA vehicle object; this field is
+        # diagnostic evidence only and must not break the GT publish loop.
+        return getattr(getattr(self, "vehicle", None), "id", None)
 
     def _record_lateral_guard_event(self, payload: Dict[str, Any]) -> None:
         self._append_jsonl(self.lateral_guard_debug_path, payload)
@@ -3822,6 +3894,18 @@ class ApolloGtBridge:
             "last_publish_ts_sec": self._traffic_light_last_publish_ts,
             "writer_enabled": self.traffic_light_writer is not None,
             "proto_error": self._traffic_light_proto_error,
+            "color_source": self._traffic_light_last_color_source,
+            "contain_lights": self._traffic_light_last_contain_lights,
+            "last_entries": [
+                {"signal_id": signal_id, "color": color}
+                for signal_id, color in self._traffic_light_last_entries
+            ],
+            "claim_grade_ready": bool(
+                self.traffic_light_policy == "carla_actual"
+                and self._traffic_light_last_color_source in {"carla_actor_state", "carla_traffic_light_actor_state"}
+                and self._traffic_light_last_contain_lights
+                and self.traffic_light_writer is not None
+            ),
             "ignore_roll_enabled": self.traffic_light_ignore_roll_enabled,
             "ignore_roll_distance_m": self.traffic_light_ignore_roll_distance_m,
             "ignore_roll_ahead_m": self.traffic_light_ignore_roll_ahead_m,
@@ -4685,8 +4769,10 @@ class ApolloGtBridge:
                 raise RuntimeError("TrafficLightDetection has no traffic_light field")
             if self.traffic_light_policy == "force_green":
                 entries = [(signal_id, "GREEN") for signal_id in self.traffic_light_force_ids]
+                color_source = "forced_green"
             else:
                 entries = self._current_carla_actual_traffic_lights()
+                color_source = "carla_actor_state"
             if hasattr(msg, "contain_lights"):
                 msg.contain_lights = bool(entries)
             for signal_id, color_name in entries:
@@ -4706,6 +4792,9 @@ class ApolloGtBridge:
             self._last_traffic_light_publish_ts = ts_sec
             self._traffic_light_last_publish_ts = ts_sec
             self._traffic_light_publish_count += 1
+            self._traffic_light_last_entries = list(entries)
+            self._traffic_light_last_contain_lights = bool(entries)
+            self._traffic_light_last_color_source = color_source
             self.stats["traffic_light"] = self._traffic_light_status()
         except Exception as exc:
             self._traffic_light_proto_error = str(exc)
@@ -5046,6 +5135,9 @@ class ApolloGtBridge:
             steer_scale=float(self.steer_scale),
             steer_sign=float(self.steer_sign),
             brake_deadzone=float(self.brake_deadzone),
+            throttle_brake_mutual_exclusion_enabled=bool(self.throttle_brake_mutual_exclusion_enabled),
+            throttle_brake_hysteresis_frames=int(self.throttle_brake_hysteresis_frames),
+            throttle_brake_min_command=float(self.throttle_brake_min_command),
             physical_allow_legacy_fallback=bool(self.physical_allow_legacy_fallback),
             physical_apollo_max_steer_angle_deg=float(self.physical_apollo_max_steer_angle_deg),
             physical_apollo_max_accel_mps2=float(self.physical_apollo_max_accel_mps2),
@@ -5696,6 +5788,22 @@ class ApolloGtBridge:
                 self._debug_csv_header_written = True
             writer.writerow(row)
 
+    def _record_apollo_reference_line_contract_event(self, row: Dict[str, Any]) -> None:
+        payload: Dict[str, Any] = {}
+        if isinstance(getattr(self, "_planning_last_event", None), dict):
+            payload.update(self._planning_last_event)
+        if isinstance(getattr(self, "_planning_last_route_debug_event", None), dict):
+            payload.update(self._planning_last_route_debug_event)
+        payload.update(row)
+        try:
+            event = build_reference_line_contract_event(
+                payload,
+                source_confidence="bridge_debug_timeseries",
+            )
+            self._append_jsonl(self.apollo_reference_line_contract_path, event)
+        except Exception as exc:
+            self.stats["apollo_reference_line_contract_write_error"] = f"{type(exc).__name__}:{exc}"
+
     def _maybe_dump_saturation_snapshot(self, row: Dict[str, Any]) -> None:
         ts_sec = float(row.get("ts_sec", time.time()))
         self._debug_window.append(dict(row))
@@ -5744,8 +5852,8 @@ class ApolloGtBridge:
             wall_time_sec=wall_time_sec,
             direct_world_frame=direct_world_frame,
         )
-        self._fill_header(
-            getattr(loc, "header", None), header_ts_sec, "tb_apollo10_gt_bridge"
+        sequence_num = self._fill_header(
+            getattr(loc, "header", None), header_ts_sec, "tb_apollo10_gt_bridge", frame_id="map"
         )
 
         pos = odom.pose.pose.position
@@ -5786,93 +5894,52 @@ class ApolloGtBridge:
             self._last_localization_velocity_sample = (header_ts_sec, vx, vy, vz)
         acceleration_right_vrf = s_yaw * ax - c_yaw * ay
         acceleration_forward_vrf = c_yaw * ax + s_yaw * ay
-        qx, qy, qz, qw = _rfu_to_enu_quat_from_heading(yaw_ap)
-        decoded_orientation_heading = _decode_rfu_to_enu_heading_from_quat(qx, qy, qz, qw)
-        orientation_heading_diff_rad = _wrap_to_pi(decoded_orientation_heading - yaw_ap)
-
-        pose = getattr(loc, "pose", None)
-        if pose is not None:
-            if hasattr(pose, "position"):
-                _safe_set(pose.position, "x", x)
-                _safe_set(pose.position, "y", y)
-                _safe_set(pose.position, "z", z)
-            if hasattr(pose, "orientation"):
-                _safe_set(pose.orientation, "qx", qx)
-                _safe_set(pose.orientation, "qy", qy)
-                _safe_set(pose.orientation, "qz", qz)
-                _safe_set(pose.orientation, "qw", qw)
-            if hasattr(pose, "heading"):
-                _safe_set(pose, "heading", yaw_ap)
-            if hasattr(pose, "linear_velocity"):
-                _safe_set(pose.linear_velocity, "x", vx)
-                _safe_set(pose.linear_velocity, "y", vy)
-                _safe_set(pose.linear_velocity, "z", vz)
-            if hasattr(pose, "linear_velocity_vrf"):
-                _safe_set(pose.linear_velocity_vrf, "x", velocity_right_vrf)
-                _safe_set(pose.linear_velocity_vrf, "y", velocity_forward_vrf)
-                _safe_set(pose.linear_velocity_vrf, "z", vz)
-            if hasattr(pose, "angular_velocity"):
-                _safe_set(pose.angular_velocity, "x", wx)
-                _safe_set(pose.angular_velocity, "y", wy)
-                _safe_set(pose.angular_velocity, "z", wz)
-            if hasattr(pose, "angular_velocity_vrf"):
-                _safe_set(pose.angular_velocity_vrf, "x", angular_right_vrf)
-                _safe_set(pose.angular_velocity_vrf, "y", angular_forward_vrf)
-                _safe_set(pose.angular_velocity_vrf, "z", wz)
-            if hasattr(pose, "linear_acceleration"):
-                _safe_set(pose.linear_acceleration, "x", ax)
-                _safe_set(pose.linear_acceleration, "y", ay)
-                _safe_set(pose.linear_acceleration, "z", az)
-            if hasattr(pose, "linear_acceleration_vrf"):
-                _safe_set(pose.linear_acceleration_vrf, "x", acceleration_right_vrf)
-                _safe_set(pose.linear_acceleration_vrf, "y", acceleration_forward_vrf)
-                _safe_set(pose.linear_acceleration_vrf, "z", az)
-        # Apollo vehicle state freshness checks use measurement_time/header against cyber clock.
-        _safe_set(loc, "measurement_time", header_ts_sec)
+        angular_velocity_source = (
+            "carla_direct_odom_twist" if self.transport_mode == "carla_direct" else "ros2_odom_twist"
+        )
+        localization_payload = build_localization_estimate_dict_from_map_state(
+            timestamp_sec=header_ts_sec,
+            sequence_num=sequence_num,
+            position={"x": x, "y": y, "z": z},
+            heading=yaw_ap,
+            linear_velocity={"x": vx, "y": vy, "z": vz},
+            linear_velocity_vrf={"x": velocity_right_vrf, "y": velocity_forward_vrf, "z": vz},
+            angular_velocity={"x": wx, "y": wy, "z": wz},
+            angular_velocity_vrf={"x": angular_right_vrf, "y": angular_forward_vrf, "z": wz},
+            linear_acceleration={"x": ax, "y": ay, "z": az},
+            linear_acceleration_vrf={"x": acceleration_right_vrf, "y": acceleration_forward_vrf, "z": az},
+            module_name="tb_apollo10_gt_bridge",
+            frame_id="map",
+            time_base=localization_time_base,
+            heading_source="odom_quaternion_yaw_after_frame_transform",
+            position_reference="rear_axle_center",
+            vehicle_reference_confidence=self.vehicle_reference_confidence,
+            vehicle_reference_hard_gate_eligible=self.vehicle_reference_hard_gate_eligible,
+            metadata={
+                "carla_frame_id": direct_world_frame,
+                "localization_reference_mode": self.localization_reference_mode,
+                "localization_back_offset_m": float(self.localization_back_offset_m),
+                "apollo_control_state_reference": self.apollo_control_state_reference,
+                "angular_velocity_source": angular_velocity_source,
+                "acceleration_source": acceleration_source,
+                "acceleration_semantics": "finite_difference_or_physical",
+            },
+        )
+        write_localization_estimate_to_pb(loc, localization_payload)
+        actual_header = getattr(loc, "header", None)
+        actual_frame_id = getattr(actual_header, "frame_id", None)
+        localization_payload["header"]["frame_id"] = actual_frame_id
+        decoded_orientation_heading = localization_payload["metadata"]["quaternion_heading"]
+        orientation_heading_diff_rad = localization_payload["metadata"]["quaternion_heading_diff_rad"]
         pose_debug = self._pose_diagnostics(pose_info, header_ts_sec)
-        localization_debug = {
-            "localization_header_timestamp_sec": header_ts_sec,
-            "localization_measurement_time": header_ts_sec,
-            "localization_sequence_num": getattr(getattr(loc, "header", None), "sequence_num", None),
-            "localization_module_name": getattr(getattr(loc, "header", None), "module_name", None),
-            "localization_frame_id": "map",
-            "localization_carla_frame_id": direct_world_frame,
-            "direct_world_frame": direct_world_frame,
-            "localization_time_base": localization_time_base,
-            "localization_heading": yaw_ap,
-            "localization_orientation_yaw": yaw_ap,
-            "localization_orientation_raw_yaw": yaw_ap - math.pi / 2.0,
-            "localization_orientation_qx": qx,
-            "localization_orientation_qy": qy,
-            "localization_orientation_qz": qz,
-            "localization_orientation_qw": qw,
-            "decoded_orientation_heading": decoded_orientation_heading,
-            "decoded_orientation_heading_diff_rad": orientation_heading_diff_rad,
-            "orientation_heading_diff_rad": orientation_heading_diff_rad,
-            "heading_source": "transformed_forward_vector",
-            "orientation_convention": "RFU_to_ENU",
-            "ego_yaw_rate_rad_s": wz,
-            "localization_yaw_rate_rad_s": wz,
-            "localization_angular_velocity_z_rad_s": wz,
-            "angular_velocity_z_rad_s": wz,
-            "localization_angular_velocity_unit": "rad_per_s",
-            "angular_velocity_source": (
-                "carla_direct_odom_twist" if self.transport_mode == "carla_direct" else "ros2_odom_twist"
-            ),
-            "linear_acceleration_x": ax,
-            "linear_acceleration_y": ay,
-            "linear_acceleration_z": az,
-            "linear_acceleration_vrf_x": acceleration_right_vrf,
-            "linear_acceleration_vrf_y": acceleration_forward_vrf,
-            "linear_acceleration_vrf_z": az,
-            "linear_acceleration_available": True,
-            "linear_acceleration_vrf_available": True,
-            "angular_velocity_vrf_available": True,
-            "acceleration_source": acceleration_source,
-            "localization_uncertainty_policy": "not_modelled_gt_truth",
-            "localization_msf_status_policy": "not_applicable_gt_truth",
-            "localization_sensor_status_policy": "not_applicable_gt_truth",
-        }
+        localization_debug = localization_debug_from_dict(localization_payload)
+        localization_debug.update(
+            {
+                "localization_carla_frame_id": direct_world_frame,
+                "direct_world_frame": direct_world_frame,
+                "localization_orientation_raw_yaw": yaw_ap - math.pi / 2.0,
+            }
+        )
         pose_debug.update(localization_debug)
         self.stats["localization"].update(
             {
@@ -6744,6 +6811,23 @@ class ApolloGtBridge:
                 throttle_after_boost,
                 _clamp(boosted_target, 0.0, 1.0),
             )
+        throttle_before_mutual_exclusion = float(throttle_after_boost)
+        brake_before_mutual_exclusion = float(brake_cmd)
+        mutual_exclusion = apply_throttle_brake_mutual_exclusion_impl(
+            throttle=throttle_after_boost,
+            brake=brake_cmd,
+            previous_state=self._throttle_brake_policy_state,
+            hysteresis_counter=self._throttle_brake_hysteresis_counter,
+            config=self._control_mapping_config(),
+        )
+        throttle_after_boost = float(mutual_exclusion.get("throttle", throttle_after_boost))
+        brake_cmd = float(mutual_exclusion.get("brake", brake_cmd))
+        self._throttle_brake_policy_state = str(
+            mutual_exclusion.get("policy_state") or self._throttle_brake_policy_state
+        )
+        self._throttle_brake_hysteresis_counter = int(
+            mutual_exclusion.get("hysteresis_counter", self._throttle_brake_hysteresis_counter) or 0
+        )
         self.stats["last_control_out"] = {
             "throttle": throttle_after_boost,
             "brake": brake_cmd,
@@ -6759,7 +6843,16 @@ class ApolloGtBridge:
             "steer_sign": base_mapping.get("steer_sign", self.steer_sign),
             "throttle_before_boost": throttle_cmd,
             "throttle_after_boost": throttle_after_boost,
-            "startup_boost_applied": throttle_after_boost > throttle_cmd,
+            "startup_boost_applied": throttle_before_mutual_exclusion > throttle_cmd,
+            "throttle_before_mutual_exclusion": throttle_before_mutual_exclusion,
+            "brake_before_mutual_exclusion": brake_before_mutual_exclusion,
+            "throttle_brake_mutual_exclusion_enabled": self.throttle_brake_mutual_exclusion_enabled,
+            "throttle_brake_mutual_exclusion_applied": bool(mutual_exclusion.get("policy_applied", False)),
+            "throttle_brake_mutual_exclusion_reason": mutual_exclusion.get("policy_reason", ""),
+            "throttle_brake_mutual_exclusion_state": mutual_exclusion.get("policy_state", ""),
+            "throttle_brake_mutual_exclusion_desired_state": mutual_exclusion.get("desired_state", ""),
+            "throttle_brake_hysteresis_counter": self._throttle_brake_hysteresis_counter,
+            "throttle_brake_hysteresis_held": bool(mutual_exclusion.get("hysteresis_held", False)),
             "brake_before_deadzone": base_mapping.get("brake_before_deadzone", brake_cmd),
             "brake_after_deadzone": brake_cmd,
             "throttle_mapping_source": base_mapping.get("throttle_source", ""),
@@ -7047,6 +7140,30 @@ class ApolloGtBridge:
                     "commanded_throttle": throttle_after_boost,
                     "commanded_brake": brake_cmd,
                     "commanded_steer": steer,
+                    "throttle_before_mutual_exclusion": self.stats["last_control_out"].get(
+                        "throttle_before_mutual_exclusion"
+                    ),
+                    "brake_before_mutual_exclusion": self.stats["last_control_out"].get(
+                        "brake_before_mutual_exclusion"
+                    ),
+                    "throttle_brake_mutual_exclusion_enabled": self.stats["last_control_out"].get(
+                        "throttle_brake_mutual_exclusion_enabled"
+                    ),
+                    "throttle_brake_mutual_exclusion_applied": self.stats["last_control_out"].get(
+                        "throttle_brake_mutual_exclusion_applied"
+                    ),
+                    "throttle_brake_mutual_exclusion_reason": self.stats["last_control_out"].get(
+                        "throttle_brake_mutual_exclusion_reason", ""
+                    ),
+                    "throttle_brake_mutual_exclusion_state": self.stats["last_control_out"].get(
+                        "throttle_brake_mutual_exclusion_state", ""
+                    ),
+                    "throttle_brake_mutual_exclusion_desired_state": self.stats["last_control_out"].get(
+                        "throttle_brake_mutual_exclusion_desired_state", ""
+                    ),
+                    "throttle_brake_hysteresis_held": self.stats["last_control_out"].get(
+                        "throttle_brake_hysteresis_held", False
+                    ),
                     "planning_lateral_contract_valid": self.stats["last_control_out"].get(
                         "planning_lateral_contract_valid", False
                     ),
@@ -8923,6 +9040,9 @@ class ApolloGtBridge:
                     front_actor_y = None
                     front_actor_yaw_deg = None
                     front_actor_speed_mps = None
+                    front_actor_length_m = None
+                    front_actor_width_m = None
+                    front_actor_height_m = None
                     if front_actor is not None:
                         try:
                             front_actor_id = int(getattr(front_actor, "id"))
@@ -8951,6 +9071,16 @@ class ApolloGtBridge:
                             )
                         except Exception:
                             front_actor_speed_mps = None
+                        try:
+                            extent = getattr(getattr(front_actor, "bounding_box", None), "extent", None)
+                            if extent is not None:
+                                front_actor_length_m = 2.0 * float(getattr(extent, "x", 0.0))
+                                front_actor_width_m = 2.0 * float(getattr(extent, "y", 0.0))
+                                front_actor_height_m = 2.0 * float(getattr(extent, "z", 0.0))
+                        except Exception:
+                            front_actor_length_m = None
+                            front_actor_width_m = None
+                            front_actor_height_m = None
                     def desired_point_distance(prefix: str) -> Optional[float]:
                         px = _finite_or_none(desired_in.get(f"{prefix}_x"))
                         py = _finite_or_none(desired_in.get(f"{prefix}_y"))
@@ -9463,10 +9593,29 @@ class ApolloGtBridge:
                             "front_obstacle_actor_found": front_actor is not None,
                             "front_obstacle_actor_id": front_actor_id,
                             "front_obstacle_actor_role": front_actor_role,
+                            "ego_actor_id": self._ego_actor_id_for_obstacle_contract(),
+                            "carla_actor_id": front_actor_id,
+                            "apollo_perception_id": front_actor_id,
+                            "is_ego": False,
                             "front_obstacle_actor_x": front_actor_x,
                             "front_obstacle_actor_y": front_actor_y,
                             "front_obstacle_actor_yaw_deg": front_actor_yaw_deg,
                             "front_obstacle_actor_speed_mps": front_actor_speed_mps,
+                            "frame_transform_checked": front_actor is not None,
+                            "theta_frame_checked": front_actor is not None,
+                            "position_frame_apollo_map": front_actor is not None,
+                            "length": _finite_or_none(front_actor_length_m),
+                            "width": _finite_or_none(front_actor_width_m),
+                            "height": _finite_or_none(front_actor_height_m),
+                            "velocity_source": "carla_actor_state" if front_actor is not None else "missing",
+                            "velocity": {
+                                "x": _finite_or_none(front_actor_speed_mps),
+                                "y": 0.0,
+                                "z": 0.0,
+                            },
+                            "dynamic": bool(front_actor_speed_mps and front_actor_speed_mps > 1e-3),
+                            "actually_stationary": bool(front_actor_speed_mps is not None and front_actor_speed_mps <= 1e-3),
+                            "tracking_time": max(0.1, ts_sec),
                             "front_obstacle_gap_lon_m": _finite_or_none(front_gap.get("lon_m")),
                             "front_obstacle_gap_lat_m": _finite_or_none(front_gap.get("lat_m")),
                             "front_obstacle_gap_distance_m": _finite_or_none(front_gap.get("distance_m")),
@@ -9477,6 +9626,7 @@ class ApolloGtBridge:
                         }
                     )
                     self._write_debug_row(row)
+                    self._record_apollo_reference_line_contract_event(row)
                     self._write_csv_row(
                         self.vehicle_response_csv_path,
                         {
@@ -9772,6 +9922,9 @@ def _default_config() -> Dict[str, Any]:
                 "brake_scale": 1.0,
                 "steer_scale": 1.0,
                 "brake_deadzone": 0.05,
+                "throttle_brake_mutual_exclusion_enabled": True,
+                "throttle_brake_hysteresis_frames": 2,
+                "throttle_brake_min_command": 0.05,
                 "actuator_mapping_mode": "legacy",
                 "physical": {
                     "calibration_file": "",

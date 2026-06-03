@@ -1,7 +1,19 @@
 {
   "algorithm_variant_id": "apollo_10_0_carla_gt_town01_reference",
   "algorithm_variant_manifest_path": "configs/algorithms/apollo_variant.carla_gt.example.yaml",
+  "assist_ledger": {
+    "active_assists": [],
+    "assist_confidence": "explicit",
+    "assist_sources": {},
+    "blocking_assists": [],
+    "can_claim_unassisted_natural_driving": true,
+    "non_blocking_assists": [],
+    "notes": [],
+    "schema_version": "assist_ledger.v1",
+    "source_artifact": "manifest"
+  },
   "backend": "apollo_cyberrt",
+  "control_source": "/apollo/control",
   "duration_s": 70,
   "fixed_delta_seconds": 0.05,
   "carla_world": {

@@ -199,6 +199,14 @@ def _write_artifact_completeness_files(report: dict, root: Path) -> None:
         run["artifacts"]["artifact_completeness"] = str(path)
 
 
+def _snapshot_tree(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def _insufficient_natural_driving_report() -> dict:
     report = _natural_driving_report()
     report["summary"] = {
@@ -231,6 +239,7 @@ def test_postprocess_generates_evidence_bundle_without_running_online_stack(tmp_
     batch = tmp_path / "batch"
     shutil.copytree(FIXTURE_BATCH, batch)
     out = tmp_path / "postprocess"
+    before_batch_snapshot = _snapshot_tree(batch)
 
     result = postprocess_town01_goal(
         hard_gate_batch=batch,
@@ -258,7 +267,11 @@ def test_postprocess_generates_evidence_bundle_without_running_online_stack(tmp_
         str(out / "route_curve_artifact_gap") in path
         for path in result["route_curve_artifact_gap"]["generated"]
     )
-    assert not (batch / "runs" / "candidate_junction031" / "analysis").exists()
+    assert _snapshot_tree(batch) == before_batch_snapshot
+    candidate_analysis = batch / "runs" / "candidate_junction031" / "analysis"
+    assert (candidate_analysis / "apollo_control_handoff" / "apollo_control_handoff_report.json").is_file()
+    assert not (candidate_analysis / "route_curve_artifact_gap").exists()
+    assert not (candidate_analysis / "route_health").exists()
     assert result["calibration"]["trials"]["trial_count"] > 0
     assert result["natural_driving"]["status"] == "missing"
     with (out / "calibration" / "calibration_trials.csv").open(encoding="utf-8", newline="") as handle:

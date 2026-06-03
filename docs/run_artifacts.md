@@ -127,12 +127,22 @@ run-local diagnostics include:
 - `analysis/route_health/curve_segments.csv`
 - `analysis/route_health/route_health_summary.md`
 - `analysis/apollo_channel_health/apollo_channel_health_report.json`
+- `analysis/localization_contract/localization_contract_report.json`
+- `analysis/localization_contract/localization_contract_summary.md`
+- `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`
+- `analysis/apollo_control_handoff/apollo_control_handoff_report.json`
 - `analysis/control_health/control_health_report.json`
+- `analysis/apollo_link_health/apollo_link_health_report.json`
+- `analysis/apollo_link_health/apollo_link_health_summary.md`
 - `analysis/failure_timeline/failure_timeline_report.json`
 - `analysis/route_start_alignment/route_start_alignment_report.json`
 - `analysis/artifact_completeness/artifact_completeness_report.json`
+- `analysis/obstacle_gt_contract/obstacle_gt_contract_report.json` for obstacle or follow-stop scenarios
 - `analysis/traffic_light/traffic_light_contract_report.json` for traffic-light scenarios
 - `analysis/traffic_light/traffic_light_behavior_report.json` for traffic-light scenarios
+- `analysis/natural_driving/natural_driving_report.json`
+- `analysis/natural_driving/natural_driving_report.csv`
+- `analysis/natural_driving/natural_driving_summary.md`
 
 `natural_driving_report.json` must treat a missing
 `artifact_completeness_report.json` as `insufficient_data`. This keeps the
@@ -143,6 +153,18 @@ check or visual observation.
 `manifest.json.carla_world` identity as `insufficient_data`. A run may request
 `Town01` in config, but capability evidence should separately record the CARLA
 map that was actually loaded.
+
+For no-interference Apollo truth-input claims, `apollo_link_health_report.json`
+is the first triage index, while `natural_driving_report.json` is the final
+suite gate. Missing localization, reference-line, control-handoff,
+traffic-light, obstacle, or assist-ledger evidence must remain
+`insufficient_data`; recording videos or Dreamview screenshots do not promote a
+run to claim-grade evidence.
+
+Postprocess may regenerate `analysis/localization_contract/` only when strong
+localization fields or bridge localization stats are present. Plain ego P0
+timeseries can support route-health diagnostics, but it must not overwrite an
+existing localization contract with weaker reconstructed evidence.
 
 ## Current Implementation
 

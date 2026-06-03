@@ -6,6 +6,21 @@ description: >
   stale messages, and message gaps from an exported channel_stats.json. It does
   not prove planning behavior correctness.
 
+claim_gate:
+  control_source_channel: /apollo/control
+  required_backend: apollo_cyberrt
+  note: >
+    Channel health only proves messages exist and are temporally sane. A
+    claim-grade natural-driving pass also requires routing success,
+    non-empty planning, control rx/tx/apply evidence, localization and
+    Apollo reference-line contracts, no blocking control-health failure, and
+    an explicit assist ledger showing no active assists.
+    For perception channels, message health is not semantic evidence:
+    traffic-light claims require carla_actual color-source metadata and
+    signal/stop-line/lane mapping evidence, while dynamic-obstacle claims
+    require an obstacle_gt_contract_report without ego inclusion or
+    zero-filled dynamic velocity.
+
 traffic_light_required_scenario_classes:
   - traffic_light_red_stop
   - traffic_light_green_go

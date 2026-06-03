@@ -1,0 +1,46 @@
+{
+  "blocking_reasons": [],
+  "evidence": {
+    "apollo_hdmap_projection_available": false,
+    "control_reference_available": true,
+    "nonempty_trajectory_ratio": 1.0,
+    "planning_reference_available": true,
+    "reference_line_provider_ready_ratio": 1.0
+  },
+  "interpretation_boundary": "This verifies Apollo planning/control reference-line evidence, not full perception/localization reproduction.",
+  "lane_ids": {
+    "planning_lane_id_first_topk": [
+      "junction031"
+    ],
+    "routing_unique_lane_signature_topk": [
+      "junction031"
+    ],
+    "target_lane_id_first_topk": [
+      "junction031"
+    ]
+  },
+  "localization_contract_status": "pass",
+  "metrics": {
+    "control_lateral_error_p95_m": 0.12,
+    "control_ref_heading_error_p95_rad": 0.02,
+    "planning_ref_heading_error_p95_rad": 0.01,
+    "reference_line_count_zero_ratio": 0.0,
+    "routing_segment_count_zero_ratio": 0.0,
+    "trajectory_first_theta_vs_segment_heading_p95_rad": 0.01
+  },
+  "route_id": "junction031",
+  "scenario_class": "junction_turn",
+  "schema_version": "apollo_reference_line_contract.v1",
+  "source": {
+    "contract_path": "artifacts/apollo_reference_line_contract.jsonl",
+    "control_decode_debug_path": null,
+    "debug_timeseries_path": null,
+    "hdmap_projection_path": null,
+    "localization_contract_path": "analysis/localization_contract/localization_contract_report.json",
+    "planning_route_segment_debug_path": null,
+    "planning_topic_debug_path": null,
+    "run_dir": "."
+  },
+  "status": "pass",
+  "warnings": []
+}

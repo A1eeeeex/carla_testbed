@@ -1,0 +1,5 @@
+sim_time,route_s,ego_speed,ego_yaw_rate,apollo_steer_raw,bridge_steer_mapped,carla_steer_applied,throttle_raw,throttle_mapped,throttle_applied,brake_raw,brake_mapped,brake_applied,control_latency_ms,localization_timestamp,chassis_timestamp
+0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.4,0.4,0.4,0.0,0.0,0.0,20,0.0,0.0
+0.1,0.2,1.0,0.0,0.01,0.01,0.01,0.4,0.4,0.4,0.0,0.0,0.0,21,0.1,0.1
+0.2,0.5,2.0,0.01,0.02,0.02,0.02,0.2,0.2,0.2,0.0,0.0,0.0,22,0.2,0.2
+0.3,0.9,3.0,0.02,0.02,0.02,0.02,0.0,0.0,0.0,0.2,0.2,0.2,23,0.3,0.3

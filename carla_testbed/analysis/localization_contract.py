@@ -10,6 +10,10 @@ import yaml
 
 from carla_testbed.adapters.apollo.frame_transform import ApolloFrameTransform, Vector3, carla_point_to_apollo
 from carla_testbed.adapters.apollo.vehicle_reference import VehicleReferenceConfig, load_vehicle_reference
+from carla_testbed.analysis.apollo_hdmap_projection import (
+    read_apollo_hdmap_projection,
+    summarize_apollo_hdmap_projection,
+)
 from carla_testbed.analysis.localization_channel_stats import build_localization_channel_stats
 
 REPORT_SCHEMA_VERSION = "apollo_localization_contract.v1"
@@ -17,10 +21,17 @@ LOCALIZATION_CHANNEL = "/apollo/localization/pose"
 DEFAULT_MESSAGE_TYPE = "LocalizationEstimate"
 DEFAULT_HEADING_WARN_RAD = 0.20
 DEFAULT_HEADING_FAIL_RAD = 0.50
+DEFAULT_LANE_HEADING_BLOCK_RAD = 0.35
 DEFAULT_YAW_RATE_WARN_RAD_S = 0.30
 DEFAULT_SPEED_WARN_MPS = 0.50
 DEFAULT_SPEED_FAIL_MPS = 2.00
 DEFAULT_LOCALIZATION_FRESH_HZ = 10.0
+DEFAULT_MEASUREMENT_HEADER_DELTA_FAIL_MS = 1.0
+DEFAULT_ORIENTATION_HEADING_DIFF_FAIL_RAD = 1.0e-3
+DEFAULT_DUPLICATE_TIMESTAMP_WARN_RATIO = 0.01
+DEFAULT_FRAME_TRANSFORM_PATH = Path("configs/town01/apollo_frame_transform.example.yaml")
+DEFAULT_VERIFIED_VEHICLE_REFERENCE_PATH = Path("configs/vehicles/ego_vehicle_reference.verified.yaml")
+DEFAULT_EXAMPLE_VEHICLE_REFERENCE_PATH = Path("configs/vehicles/ego_vehicle_reference.example.yaml")
 
 LOCALIZATION_CONTRACT_STRONG_EVIDENCE_FIELDS = (
     "measurement_time",
@@ -96,10 +107,13 @@ ALIASES = {
     "localization_orientation_qw": ["localization_orientation_qw", "orientation_qw", "qw"],
     "measurement_time": ["measurement_time", "localization_measurement_time"],
     "localization_header_timestamp_sec": ["localization_header_timestamp_sec", "localization_timestamp"],
+    "localization_frame_id": ["localization_frame_id", "localization_header_frame_id", "header_frame_id"],
     "localization_sequence_num": ["localization_sequence_num"],
     "localization_carla_frame_id": ["localization_carla_frame_id", "direct_world_frame"],
     "localization_time_base": ["localization_time_base"],
     "heading_source": ["heading_source"],
+    "vehicle_reference_confidence": ["vehicle_reference_confidence"],
+    "vehicle_reference_hard_gate_eligible": ["vehicle_reference_hard_gate_eligible"],
     "orientation_convention": ["orientation_convention"],
     "angular_velocity_unit": ["angular_velocity_unit", "localization_angular_velocity_unit"],
     "acceleration": ["linear_acceleration", "linear_acceleration_x", "accel_mean_mps2", "ego_acceleration"],
@@ -129,6 +143,7 @@ def analyze_localization_contract(
     timeseries_rows: list[dict[str, Any]] | None = None,
     channel_stats: Mapping[str, Any] | None = None,
     route_health: Mapping[str, Any] | None = None,
+    hdmap_projection_rows: list[dict[str, Any]] | None = None,
     frame_transform: ApolloFrameTransform | None = None,
     vehicle_reference: VehicleReferenceConfig | None = None,
     source: Mapping[str, Any] | None = None,
@@ -149,6 +164,12 @@ def analyze_localization_contract(
     reference_point = _analyze_reference_point(vehicle_reference, source, missing_fields, warnings, blocking_reasons)
     pose = _analyze_pose_consistency(rows, route_health, missing_fields, warnings)
     lane_projection = _analyze_lane_projection(rows, missing_fields, warnings)
+    apollo_hdmap_projection = summarize_apollo_hdmap_projection(hdmap_projection_rows or [])
+    if apollo_hdmap_projection["file_present"]:
+        warnings.extend(str(item) for item in apollo_hdmap_projection.get("warnings", []) if item)
+        blocking_reasons.extend(str(item) for item in apollo_hdmap_projection.get("blocking_reasons", []) if item)
+    pose["heading_error_to_apollo_hdmap_lane_p95_rad"] = apollo_hdmap_projection.get("heading_error_p95_rad")
+    pose["lateral_error_to_apollo_hdmap_lane_p95_m"] = apollo_hdmap_projection.get("lateral_error_p95_m")
     kinematics = _analyze_kinematics(rows, missing_fields, warnings)
     status = _analyze_status(rows, missing_fields, warnings)
 
@@ -156,12 +177,42 @@ def analyze_localization_contract(
         warnings.append("route_health_missing")
         missing_fields.append("route_health")
 
+    if time["measurement_time_source"] is None:
+        missing_fields.append("measurement_time")
+        warnings.append("measurement_time_missing")
+    if time["measurement_header_delta_ms_p95"] is not None:
+        if float(time["measurement_header_delta_ms_p95"]) > DEFAULT_MEASUREMENT_HEADER_DELTA_FAIL_MS:
+            blocking_reasons.append("measurement_header_timestamp_mismatch")
+    if channel.get("header_frame_id") != "map" and (
+        rows or channel.get("publish_message_count") or channel.get("fresh_sample_count")
+    ):
+        blocking_reasons.append("localization_header_frame_id_not_map")
+        if not channel.get("header_frame_id"):
+            missing_fields.append("localization_header_frame_id")
+    if pose.get("orientation_heading_diff_p95_rad") is not None:
+        if float(pose["orientation_heading_diff_p95_rad"]) >= DEFAULT_ORIENTATION_HEADING_DIFF_FAIL_RAD:
+            blocking_reasons.append("orientation_heading_diff_high")
+    if pose.get("heading_source_truthful") is not True:
+        warnings.append("heading_source_not_verified")
+    if reference_point.get("vehicle_reference_hard_gate_eligible") is not True:
+        missing_fields.append("vehicle_reference_hard_gate_eligible")
+        warnings.append("vehicle_reference_not_claim_grade")
+    if _duplicate_timestamp_ratio_claim_blocking(channel, source):
+        warnings.append("duplicate_localization_timestamps_detected")
+        blocking_reasons.append("duplicate_localization_timestamps_claim_grade_blocked")
+
     if pose["heading_error_to_route_p95_rad"] is not None:
         heading_p95 = float(pose["heading_error_to_route_p95_rad"])
         if heading_p95 >= DEFAULT_HEADING_FAIL_RAD:
             blocking_reasons.append("heading_error_to_route_high")
         elif heading_p95 >= DEFAULT_HEADING_WARN_RAD:
             warnings.append("heading_error_to_route_elevated")
+    if pose["heading_error_to_lane_p95_rad"] is not None:
+        lane_heading_p95 = float(pose["heading_error_to_lane_p95_rad"])
+        if lane_heading_p95 >= DEFAULT_LANE_HEADING_BLOCK_RAD:
+            blocking_reasons.append("heading_error_to_lane_high")
+        elif lane_heading_p95 >= DEFAULT_HEADING_WARN_RAD:
+            warnings.append("heading_error_to_lane_elevated")
 
     if kinematics["yaw_rate_vs_heading_fd_p95_rad_s"] is not None:
         yaw_rate_delta = float(kinematics["yaw_rate_vs_heading_fd_p95_rad_s"])
@@ -213,11 +264,13 @@ def analyze_localization_contract(
             status=status,
             verdict=verdict,
             route_health=route_health,
+            apollo_hdmap_projection=apollo_hdmap_projection,
         ),
         "missing_fields": sorted(set(missing_fields)),
         "warnings": sorted(set(warnings)),
         "source": dict(source),
         "verdict": verdict,
+        "apollo_hdmap_projection": apollo_hdmap_projection,
         "interpretation_boundary": (
             "This report checks GT localization contract evidence only. It does not prove Apollo "
             "planning/control capability, and insufficient localization evidence should be resolved "
@@ -231,6 +284,7 @@ def analyze_localization_contract_files(
     timeseries_path: str | Path | None = None,
     channel_stats_path: str | Path | None = None,
     route_health_path: str | Path | None = None,
+    hdmap_projection_path: str | Path | None = None,
     frame_transform_path: str | Path | None = None,
     vehicle_reference_path: str | Path | None = None,
     run_dir: str | Path | None = None,
@@ -241,6 +295,7 @@ def analyze_localization_contract_files(
         timeseries_path=Path(timeseries_path).expanduser() if timeseries_path else None,
         channel_stats_path=Path(channel_stats_path).expanduser() if channel_stats_path else None,
         route_health_path=Path(route_health_path).expanduser() if route_health_path else None,
+        hdmap_projection_path=Path(hdmap_projection_path).expanduser() if hdmap_projection_path else None,
     )
     timeseries = _read_timeseries(source.get("timeseries_path"))
     run_dir_path = source.get("run_dir")
@@ -258,6 +313,7 @@ def analyze_localization_contract_files(
             source["timeseries_selection_reason"] = "debug_timeseries_has_stronger_localization_contract_fields"
     channel_stats = _read_json_optional(source.get("channel_stats_path"))
     route_health = _read_json_optional(source.get("route_health_path"))
+    hdmap_projection_rows = read_apollo_hdmap_projection(source.get("hdmap_projection_path"))
     frame_transform = _load_frame_transform_optional(frame_transform_path)
     vehicle_reference = load_vehicle_reference(vehicle_reference_path) if vehicle_reference_path else None
     metadata = _read_run_metadata(source.get("run_dir"), route_health)
@@ -275,6 +331,7 @@ def analyze_localization_contract_files(
         timeseries_rows=timeseries,
         channel_stats=channel_stats,
         route_health=route_health,
+        hdmap_projection_rows=hdmap_projection_rows,
         frame_transform=frame_transform,
         vehicle_reference=vehicle_reference,
         source=metadata,
@@ -294,11 +351,90 @@ def write_localization_contract_report(report: Mapping[str, Any], out_dir: str |
     }
 
 
+def ensure_localization_contract_report(
+    run_dir: str | Path,
+    *,
+    refresh: bool = False,
+    frame_transform_path: str | Path | None = DEFAULT_FRAME_TRANSFORM_PATH,
+    vehicle_reference_path: str | Path | None = None,
+) -> dict[str, Any]:
+    root = Path(run_dir).expanduser()
+    report_dir = root / "analysis" / "localization_contract"
+    report_path = report_dir / "localization_contract_report.json"
+    existing = _find_first(
+        root,
+        [
+            "analysis/localization_contract/localization_contract_report.json",
+            "localization_contract_report.json",
+        ],
+    )
+    if existing is not None and not refresh:
+        report = _read_json_optional(existing) or {}
+        return {
+            "status": "existing",
+            "path": str(existing),
+            "report_status": _report_status(report),
+        }
+    if existing is not None and not _has_localization_regeneration_inputs(root):
+        report_dir.mkdir(parents=True, exist_ok=True)
+        if existing.resolve() != report_path.resolve():
+            report_path.write_text(existing.read_text(encoding="utf-8"), encoding="utf-8")
+            summary = existing.parent / "localization_contract_summary.md"
+            if summary.exists():
+                (report_dir / "localization_contract_summary.md").write_text(
+                    summary.read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+        report = _read_json_optional(report_path if report_path.exists() else existing) or {}
+        return {
+            "status": "existing_report_copied",
+            "path": str(report_path if report_path.exists() else existing),
+            "report_status": _report_status(report),
+            "source_report": str(existing),
+        }
+
+    vehicle_reference = vehicle_reference_path or _default_vehicle_reference_path()
+    report = analyze_localization_contract_files(
+        run_dir=root,
+        frame_transform_path=frame_transform_path if _path_exists(frame_transform_path) else None,
+        vehicle_reference_path=vehicle_reference,
+    )
+    outputs = write_localization_contract_report(report, report_dir)
+    return {
+        "status": "generated",
+        "path": outputs["localization_contract_report"],
+        "summary_path": outputs["localization_contract_summary"],
+        "report_status": _report_status(report),
+    }
+
+
+def ensure_localization_contract_reports_for_root(
+    root: str | Path,
+    *,
+    refresh: bool = False,
+    frame_transform_path: str | Path | None = DEFAULT_FRAME_TRANSFORM_PATH,
+    vehicle_reference_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    base = Path(root).expanduser()
+    run_dirs = [base] if (base / "summary.json").exists() else sorted({path.parent for path in base.rglob("summary.json")})
+    return [
+        ensure_localization_contract_report(
+            path,
+            refresh=refresh,
+            frame_transform_path=frame_transform_path,
+            vehicle_reference_path=vehicle_reference_path,
+        )
+        for path in run_dirs
+    ]
+
+
 def localization_contract_summary_md(report: Mapping[str, Any]) -> str:
     verdict = _mapping(report.get("verdict"))
     channel = _mapping(report.get("channel"))
     reference_point = _mapping(report.get("reference_point"))
     pose = _mapping(report.get("pose_consistency"))
+    hdmap_projection = _mapping(report.get("apollo_hdmap_projection"))
+    time = _mapping(report.get("time"))
     kinematics = _mapping(report.get("kinematics"))
     checklist = _mapping(report.get("acceptance_checklist"))
     checklist_statuses = [
@@ -314,13 +450,21 @@ def localization_contract_summary_md(report: Mapping[str, Any]) -> str:
         f"- Verdict: `{verdict.get('status')}`",
         f"- Blocking reasons: `{', '.join(verdict.get('blocking_reasons') or []) or 'none'}`",
         f"- Channel status: `{channel.get('status')}`",
+        f"- Header frame_id: `{channel.get('header_frame_id')}`",
+        f"- Measurement/header delta p95 ms: `{time.get('measurement_header_delta_ms_p95')}`",
         f"- Localization publish Hz: `{channel.get('publish_hz')}`",
         f"- Localization fresh sample Hz: `{channel.get('fresh_sample_hz')}`",
         f"- Localization fresh/publish count: `{channel.get('fresh_sample_count')}` / `{channel.get('publish_message_count')}`",
         f"- Localization republish policy: `{channel.get('republish_policy') or 'none'}`",
         f"- Vehicle reference confidence: `{reference_point.get('confidence')}`",
+        f"- Vehicle reference hard-gate eligible: `{reference_point.get('vehicle_reference_hard_gate_eligible')}`",
         f"- Position uses VRP: `{reference_point.get('position_uses_vrp')}`",
+        f"- Heading source: `{pose.get('heading_source')}` truthful=`{pose.get('heading_source_truthful')}`",
         f"- Heading error to route p95 rad: `{pose.get('heading_error_to_route_p95_rad')}`",
+        f"- Apollo HDMap projection status: `{hdmap_projection.get('status')}`",
+        f"- Apollo HDMap projection claim-grade: `{hdmap_projection.get('claim_grade')}`",
+        f"- Apollo HDMap projection heading p95 rad: `{hdmap_projection.get('heading_error_p95_rad')}`",
+        f"- Apollo HDMap projection lateral p95 m: `{hdmap_projection.get('lateral_error_p95_m')}`",
         f"- Yaw-rate vs heading finite-difference p95 rad/s: `{kinematics.get('yaw_rate_vs_heading_fd_p95_rad_s')}`",
         f"- Acceptance checklist: `{', '.join(checklist_statuses) or 'not evaluated'}`",
         f"- Missing fields: `{', '.join(report.get('missing_fields') or []) or 'none'}`",
@@ -344,6 +488,7 @@ def _build_acceptance_checklist(
     status: Mapping[str, Any],
     verdict: Mapping[str, Any],
     route_health: Mapping[str, Any] | None,
+    apollo_hdmap_projection: Mapping[str, Any],
 ) -> dict[str, dict[str, Any]]:
     return {
         "localization_channel_health": _check(
@@ -359,6 +504,7 @@ def _build_acceptance_checklist(
                 "channel.timestamp_strictly_increasing",
                 "channel.sequence_monotonic",
                 "channel.stale_count",
+                "channel.header_frame_id",
             ],
             reason=f"channel.status={channel.get('status')}",
         ),
@@ -369,6 +515,7 @@ def _build_acceptance_checklist(
                 "time.time_base",
                 "time.header_timestamp_sec_source",
                 "time.measurement_time_source",
+                "time.measurement_header_delta_ms_p95",
                 "status.measurement_time_available",
             ],
             reason=f"time_base={time.get('time_base')}; measurement_time_available={status.get('measurement_time_available')}",
@@ -428,14 +575,17 @@ def _build_acceptance_checklist(
             ),
         ),
         "heading_from_transformed_forward": _check(
-            question="Heading is derived from transformed actor forward vector.",
+            question="Heading source is truthfully declared and consistent with the published orientation.",
             status=(
                 "pass"
-                if pose_consistency.get("heading_source") == "transformed_forward_vector"
+                if pose_consistency.get("heading_source_truthful") is True
                 else "insufficient_data"
             ),
-            evidence_fields=["pose_consistency.heading_source"],
-            reason=f"heading_source={pose_consistency.get('heading_source')}",
+            evidence_fields=["pose_consistency.heading_source", "pose_consistency.heading_source_truthful"],
+            reason=(
+                f"heading_source={pose_consistency.get('heading_source')}; "
+                f"truthful={pose_consistency.get('heading_source_truthful')}"
+            ),
         ),
         "rfu_to_enu_orientation": _check(
             question="Orientation declares Apollo RFU-to-ENU convention.",
@@ -447,8 +597,8 @@ def _build_acceptance_checklist(
             question="Quaternion orientation independently decodes to the published heading.",
             status=_bounded_metric_status(
                 pose_consistency.get("orientation_heading_diff_p95_rad"),
-                warn_threshold=DEFAULT_HEADING_WARN_RAD,
-                fail_threshold=DEFAULT_HEADING_FAIL_RAD,
+                warn_threshold=DEFAULT_ORIENTATION_HEADING_DIFF_FAIL_RAD / 2.0,
+                fail_threshold=DEFAULT_ORIENTATION_HEADING_DIFF_FAIL_RAD,
             ),
             evidence_fields=[
                 "pose_consistency.orientation_heading_diff_p95_rad",
@@ -503,17 +653,28 @@ def _build_acceptance_checklist(
         ),
         "reference_line_projection": _check(
             question="Apollo reference-line projection is explicitly verified.",
-            status=_reference_line_projection_status(frame_transform, pose_consistency, route_health),
+            status=_reference_line_projection_status(
+                frame_transform,
+                pose_consistency,
+                route_health,
+                apollo_hdmap_projection,
+            ),
             evidence_fields=[
                 "route_health",
                 "pose_consistency.heading_error_to_route_p95_rad",
                 "frame_transform.reference_line_verified",
+                "apollo_hdmap_projection.status",
+                "apollo_hdmap_projection.claim_grade",
+                "apollo_hdmap_projection.heading_error_p95_rad",
+                "apollo_hdmap_projection.lateral_error_p95_m",
                 "pose_consistency.spawn_projection_error_m",
             ],
             reason=(
                 f"route_health_present={route_health is not None}; "
                 f"heading_error_to_route_p95_rad={pose_consistency.get('heading_error_to_route_p95_rad')}; "
                 f"reference_line_verified={frame_transform.get('reference_line_verified')}; "
+                f"apollo_hdmap_projection_status={apollo_hdmap_projection.get('status')}; "
+                f"apollo_hdmap_projection_claim_grade={apollo_hdmap_projection.get('claim_grade')}; "
                 f"spawn_projection_error_m={pose_consistency.get('spawn_projection_error_m')}"
             ),
         ),
@@ -586,6 +747,8 @@ def _channel_check_status(channel: Mapping[str, Any]) -> str:
     status = str(channel.get("status") or "insufficient_data")
     if status not in {"pass", "warn"}:
         return status
+    if channel.get("header_frame_id") != "map":
+        return "fail"
     if channel.get("timestamp_non_decreasing") is not True or channel.get("sequence_monotonic") is False:
         return "fail"
     if not isinstance(channel.get("fresh_sample_count"), (int, float)) or float(channel.get("fresh_sample_count") or 0.0) <= 0:
@@ -599,7 +762,10 @@ def _sim_time_check_status(time: Mapping[str, Any], status: Mapping[str, Any]) -
     if not time.get("header_timestamp_sec_source"):
         return "insufficient_data"
     if status.get("measurement_time_available") is not True:
-        return "warn"
+        return "insufficient_data"
+    delta = _number_or_none(time.get("measurement_header_delta_ms_p95"))
+    if delta is not None and delta > DEFAULT_MEASUREMENT_HEADER_DELTA_FAIL_MS:
+        return "fail"
     return "pass"
 
 
@@ -609,6 +775,8 @@ def _position_reference_check_status(reference_point: Mapping[str, Any]) -> str:
     if reference_point.get("position_uses_vrp") is False:
         return "fail"
     if reference_point.get("position_uses_vrp") is not True:
+        return "insufficient_data"
+    if reference_point.get("vehicle_reference_hard_gate_eligible") is not True:
         return "insufficient_data"
     if reference_point.get("configured_vehicle_reference_confidence") == "assumed":
         return "warn"
@@ -664,7 +832,15 @@ def _reference_line_projection_status(
     frame_transform: Mapping[str, Any],
     pose_consistency: Mapping[str, Any],
     route_health: Mapping[str, Any] | None,
+    apollo_hdmap_projection: Mapping[str, Any],
 ) -> str:
+    projection_status = str(apollo_hdmap_projection.get("status") or "insufficient_data")
+    if projection_status == "fail":
+        return "fail"
+    if apollo_hdmap_projection.get("claim_grade") is True:
+        return "pass"
+    if apollo_hdmap_projection.get("official_source_available") is True and projection_status == "warn":
+        return "warn"
     if route_health is None:
         return "insufficient_data"
     if frame_transform.get("reference_line_verified") is not True:
@@ -747,6 +923,14 @@ def _analyze_channel(
         missing_fields.append("channel_stats")
     if result.get("fresh_sample_hz") is None:
         missing_fields.append("fresh_sample_hz")
+    cyber_stats = _mapping(source.get("cyber_bridge_stats"))
+    cyber_pose = _mapping(cyber_stats.get("last_pose_debug"))
+    cyber_localization = _mapping(cyber_stats.get("localization"))
+    result["header_frame_id"] = (
+        _first_row_value(rows, "localization_frame_id")
+        or cyber_pose.get("localization_frame_id")
+        or cyber_localization.get("frame_id")
+    )
     return result
 
 
@@ -767,6 +951,7 @@ def _analyze_time(
     if not measurement_time_available:
         warnings.append("measurement_time_field_missing")
     time_base = _first_row_value(rows, "localization_time_base") or "sim_time"
+    measurement_header_delta_ms = _measurement_header_delta_ms_p95(rows)
     return {
         "time_base": time_base,
         "header_timestamp_sec_source": (
@@ -775,6 +960,7 @@ def _analyze_time(
             else ("localization_timestamp" if _has_any(rows, "localization_timestamp") else None)
         ),
         "measurement_time_source": "measurement_time" if measurement_time_available else None,
+        "measurement_header_delta_ms_p95": measurement_header_delta_ms,
         "timestamp_chassis_delta_ms_p95": (
             chassis_delta_ms_direct if chassis_delta_ms_direct is not None else (chassis_delta * 1000.0 if chassis_delta is not None else None)
         ),
@@ -850,6 +1036,7 @@ def _analyze_reference_point(
 
     configured_reference = None
     configured_confidence = None
+    configured_hard_gate_eligible = False
     origin_to_vrp = None
     actor_origin_definition = None
     if vehicle_reference is None:
@@ -858,6 +1045,7 @@ def _analyze_reference_point(
     else:
         configured_reference = vehicle_reference.apollo_reference_point
         configured_confidence = vehicle_reference.confidence
+        configured_hard_gate_eligible = bool(vehicle_reference.hard_gate_eligible)
         actor_origin_definition = vehicle_reference.carla_actor_origin_definition
         origin_to_vrp = vehicle_reference.origin_to_vrp_carla.to_dict()
     if configured_confidence == "assumed":
@@ -913,14 +1101,33 @@ def _analyze_reference_point(
         reference_path_status = "warn"
         warnings.append("reference_path_ambiguous")
 
+    runtime_confidence = (
+        cyber_pose.get("vehicle_reference_confidence")
+        or cyber_localization.get("vehicle_reference_confidence")
+    )
+    runtime_hard_gate = _bool_or_none(
+        cyber_pose.get("vehicle_reference_hard_gate_eligible")
+        if cyber_pose.get("vehicle_reference_hard_gate_eligible") is not None
+        else cyber_localization.get("vehicle_reference_hard_gate_eligible")
+    )
+    vehicle_reference_hard_gate_eligible = bool(configured_hard_gate_eligible)
+    if runtime_confidence not in {None, "", "verified"}:
+        vehicle_reference_hard_gate_eligible = False
+        warnings.append(f"vehicle_reference_confidence_{runtime_confidence}")
+    if runtime_hard_gate is False:
+        vehicle_reference_hard_gate_eligible = False
+
     return {
         "apollo_position_reference": configured_reference,
         "carla_actor_origin_definition": actor_origin_definition,
         "origin_to_vrp_carla_m": origin_to_vrp,
         "position_uses_vrp": position_uses_vrp,
         "confidence": configured_confidence,
+        "vehicle_reference_hard_gate_eligible": vehicle_reference_hard_gate_eligible,
         "configured_apollo_reference_point": configured_reference,
         "configured_vehicle_reference_confidence": configured_confidence,
+        "runtime_vehicle_reference_confidence": runtime_confidence,
+        "runtime_vehicle_reference_hard_gate_eligible": runtime_hard_gate,
         "source_reference_mode": source_reference_mode,
         "published_localization_reference_mode": published_reference_mode,
         "apollo_control_state_reference": apollo_control_state_reference,
@@ -962,8 +1169,14 @@ def _analyze_pose_consistency(
         spawn_projection = _spawn_alignment_distance(route_health)
     if route_health is None:
         warnings.append("route_health_missing_for_pose_consistency")
+    heading_source = _first_row_value(rows, "heading_source")
+    truthful_sources = {
+        "transformed_forward_vector",
+        "odom_quaternion_yaw_after_frame_transform",
+    }
     return {
-        "heading_source": _first_row_value(rows, "heading_source") or "transformed_forward_vector",
+        "heading_source": heading_source,
+        "heading_source_truthful": heading_source in truthful_sources,
         "orientation_convention": _first_row_value(rows, "orientation_convention"),
         "orientation_quaternion_available": _has_orientation_quaternion(rows),
         "orientation_heading_diff_source": orientation_diff_source,
@@ -1113,6 +1326,8 @@ def _verdict_status(
         return "fail"
     if "channel_stats" in missing_fields or "timeseries" in missing_fields:
         return "insufficient_data"
+    if "measurement_time" in missing_fields or "vehicle_reference_hard_gate_eligible" in missing_fields:
+        return "insufficient_data"
     if warnings or channel_status == "warn" or missing_fields:
         return "warn"
     return "pass"
@@ -1124,6 +1339,7 @@ def _resolve_inputs(
     timeseries_path: Path | None,
     channel_stats_path: Path | None,
     route_health_path: Path | None,
+    hdmap_projection_path: Path | None,
 ) -> dict[str, Path | None]:
     source = {"run_dir": run_dir}
     if run_dir is not None:
@@ -1139,6 +1355,14 @@ def _resolve_inputs(
             run_dir,
             ["analysis/route_health/route_health.json", "route_health.json", "artifacts/route_health.json"],
         )
+        source["hdmap_projection_path"] = hdmap_projection_path or _find_first(
+            run_dir,
+            [
+                "artifacts/apollo_hdmap_projection.jsonl",
+                "apollo_hdmap_projection.jsonl",
+                "analysis/apollo_hdmap_projection/apollo_hdmap_projection.json",
+            ],
+        )
         source["cyber_bridge_stats_path"] = _find_first(
             run_dir,
             ["artifacts/cyber_bridge_stats.json", "cyber_bridge_stats.json"],
@@ -1151,6 +1375,7 @@ def _resolve_inputs(
         source["timeseries_path"] = timeseries_path
         source["channel_stats_path"] = channel_stats_path
         source["route_health_path"] = route_health_path
+        source["hdmap_projection_path"] = hdmap_projection_path
         source["cyber_bridge_stats_path"] = None
         source["ros2_gt_live_stats_path"] = None
     return source
@@ -1229,6 +1454,52 @@ def _find_first(root: Path, candidates: Iterable[str]) -> Path | None:
         path = root / candidate
         if path.exists():
             return path
+    return None
+
+
+def _has_localization_regeneration_inputs(root: Path) -> bool:
+    stats_path = _find_first(
+        root,
+        [
+            "artifacts/cyber_bridge_stats.json",
+            "cyber_bridge_stats.json",
+            "artifacts/ros2_gt_live_stats.json",
+            "ros2_gt_live_stats.json",
+        ],
+    )
+    if stats_path is not None:
+        return True
+    timeseries_path = _find_first(
+        root,
+        [
+            "artifacts/debug_timeseries.csv",
+            "debug_timeseries.csv",
+            "timeseries.csv",
+            "timeseries.jsonl",
+            "artifacts/timeseries.csv",
+            "artifacts/timeseries.jsonl",
+        ],
+    )
+    return _localization_contract_evidence_score(_read_timeseries(timeseries_path)) > 0
+
+
+def _report_status(report: Mapping[str, Any]) -> str | None:
+    verdict = report.get("verdict")
+    if isinstance(verdict, Mapping) and verdict.get("status"):
+        return str(verdict.get("status"))
+    if report.get("status"):
+        return str(report.get("status"))
+    return None
+
+
+def _path_exists(path: str | Path | None) -> bool:
+    return path is not None and Path(path).expanduser().exists()
+
+
+def _default_vehicle_reference_path() -> Path | None:
+    for candidate in (DEFAULT_VERIFIED_VEHICLE_REFERENCE_PATH, DEFAULT_EXAMPLE_VEHICLE_REFERENCE_PATH):
+        if candidate.exists():
+            return candidate
     return None
 
 
@@ -1412,6 +1683,29 @@ def _p95_abs_delta(rows: list[dict[str, Any]], lhs_field: str, rhs_field: str) -
     return _percentile(deltas, 0.95)
 
 
+def _measurement_header_delta_ms_p95(rows: list[dict[str, Any]]) -> float | None:
+    deltas = []
+    for row in rows:
+        measurement = _number_or_none(_value(row, "measurement_time"))
+        header = _number_or_none(_value(row, "localization_header_timestamp_sec"))
+        if measurement is not None and header is not None:
+            deltas.append(abs(measurement - header) * 1000.0)
+    return _percentile(deltas, 0.95)
+
+
+def _duplicate_timestamp_ratio_claim_blocking(channel: Mapping[str, Any], source: Mapping[str, Any]) -> bool:
+    ratio = _number_or_none(channel.get("duplicate_timestamp_ratio"))
+    if ratio is None or ratio < DEFAULT_DUPLICATE_TIMESTAMP_WARN_RATIO:
+        return False
+    return not _is_non_claim_debug_run(source)
+
+
+def _is_non_claim_debug_run(source: Mapping[str, Any]) -> bool:
+    if _bool_or_none(source.get("claim_grade")) is False:
+        return True
+    return any(_bool_or_none(source.get(key)) is True for key in ("non_claim_debug_run", "debug_run"))
+
+
 def _has_heading_finite_difference(rows: list[dict[str, Any]]) -> bool:
     return _p95_abs_yaw_rate_vs_heading_finite_difference(rows) is not None
 
@@ -1533,6 +1827,19 @@ def _number_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value in {None, ""}:
+        return None
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "available", "pass"}:
+        return True
+    if text in {"0", "false", "no", "n", "unavailable", "fail"}:
+        return False
+    return None
 
 
 def _optional_text(value: Any) -> str | None:

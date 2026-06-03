@@ -1,0 +1,7 @@
+{
+  "backend": "apollo",
+  "route_id": "lane097",
+  "run_id": "full_pass",
+  "scenario_class": "lane_keep",
+  "transport_mode": "ros2_gt"
+}

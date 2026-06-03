@@ -1,0 +1,14 @@
+{
+  "pose_consistency": {
+    "heading_error_to_lane_p95_rad": 0.8,
+    "heading_error_to_route_p95_rad": 0.002
+  },
+  "schema_version": "apollo_localization_contract.v1",
+  "status": "pass",
+  "verdict": {
+    "blocking_reasons": [
+      "heading_error_to_lane_high"
+    ],
+    "status": "pass"
+  }
+}

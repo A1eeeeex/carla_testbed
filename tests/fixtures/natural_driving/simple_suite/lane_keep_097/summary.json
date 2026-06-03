@@ -7,6 +7,7 @@
     "status": "aligned"
   },
   "routing_materialized": true,
+  "routing_success_count": 1,
   "planning_materialized": true,
   "control_handoff_status": "control_consuming_with_nonzero_planning",
   "materialization_status": "planning_control_materialized",
@@ -14,6 +15,7 @@
     "route_completion": 0.96,
     "collision_count": 0,
     "lane_invasion_count": 0,
-    "control_latency_p95_ms": 80.0
+    "control_latency_p95_ms": 80.0,
+    "planning_nonempty_ratio": 1.0
   }
 }

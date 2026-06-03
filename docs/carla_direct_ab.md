@@ -231,6 +231,8 @@ The analyzer requires:
 
 - complete artifacts;
 - successful execution status and zero or absent process return code;
+- non-blocking `apollo_control_handoff_report.json` evidence for Control
+  process/channel/bridge/apply handoff;
 - route completion evidence;
 - planning/control/localization/chassis rate evidence;
 - route-health hard-gate eligibility for hard-gate routes;
@@ -243,6 +245,9 @@ Missing lateral or heading evidence makes the candidate insufficient for a
 positive verdict, even if the vehicle moved.
 `direct_apply_count`, control-write count, or "the vehicle moved" is never
 enough for `candidate_positive` by itself.
+A failed Control handoff report also blocks `candidate_positive`; improved
+transport counters are not enough if Apollo Control does not materialize
+through bridge receive and CARLA apply evidence.
 Route-completion comparison has a small absolute tolerance for 30s windows so
 one or two percentage points of rollout jitter is not mislabeled as a transport
 regression. This does not relax lateral error, heading error, failure reason,

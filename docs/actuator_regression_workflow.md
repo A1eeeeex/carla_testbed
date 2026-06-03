@@ -233,6 +233,42 @@ python -m carla_testbed run \
 - `artifacts/actuator_tracking_validation.json`
 - `artifacts/apollo_control_replay_validation.json`
 
+## 8.1 Control-health 分解优先级
+
+在 `localization_contract_report.json` 和
+`apollo_reference_line_contract_report.json` 没有达到 `pass/warn` 且无 blocking
+reason 之前，不要用平滑、限幅、PID 或 `steer_scale` 修改去掩盖 reference-line
+或 localization 问题。若出现 `applied_actuation_oscillation`，先运行：
+
+```bash
+python tools/analyze_control_health.py \
+  --run-dir runs/<run_id> \
+  --out runs/<run_id>/analysis/control_health
+```
+
+`control_health_report.json.metrics.oscillation_decomposition` 会把问题分为：
+
+- `apollo_raw_command`
+- `bridge_mapped_command`
+- `carla_applied_command`
+- `vehicle_response`
+- `bridge_apply_cadence`
+
+如果 `bridge_apply_cadence` 显示 `control_bridge_world_frame_cadence_low` 或
+`control_bridge_drop_same_frame_high`，应先查 apply loop、CARLA sync tick 和
+same-frame drop，而不是先调 Apollo PID 或执行器标定。
+
+纵向 `throttle_brake_mutual_exclusion_enabled` / `throttle_brake_hysteresis_frames`
+只在 raw decode 和 base mapping 之后生效；它降低 mapped-output 层的
+throttle/brake 冲突和快速翻转，但不能删除或改写 Apollo raw command 证据。报告
+必须仍然保留 raw -> mapped -> applied 链路。
+
+`legacy` mapping 只能作为 smoke/debug evidence。claim-grade 控制映射需要
+`physical` / calibrated mapping 或明确的 vehicle calibration profile，并通过
+097 / 217 / 031 no-regression gate。报告中的 `steer_scale` / `steering_sign`
+必须同时查看 `steering_parameters_source`；如果来源是
+`runtime_config_or_unknown`，只能作为 diagnostic/smoke 证据。
+
 ## 9. 必检指标
 
 ### 8.1 执行器匹配误差

@@ -45,6 +45,11 @@ def test_control_health_passes_and_writes_report(tmp_path: Path) -> None:
     assert report["failure_reason"] is None
     assert report["raw_mapped_applied_control_available"] is True
     assert report["metrics"]["brake_throttle_conflict_frames"] == 0
+    boundary = report["metrics"]["control_mapping_claim_boundary"]
+    assert boundary["claim_grade_control_mapping"] is False
+    assert boundary["steering_parameters_source"] == "runtime_config_or_unknown"
+    assert "calibration_profile_missing" in boundary["warnings"]
+    assert "steering_parameters_not_backed_by_calibration_profile" in boundary["warnings"]
     assert Path(outputs["control_health_report"]).is_file()
     assert Path(outputs["control_health_summary"]).is_file()
 
@@ -121,12 +126,12 @@ def test_control_health_uses_external_bridge_evidence_when_p0_raw_mapped_is_null
                     "[INFO] [1002.000000000] [carla_control_bridge]: apply frame=10 source=pending "
                     "actor_id=197 role=hero src_steer=0.000 norm_steer=0.000 carla_steer=0.000 "
                     "clamped=False throttle=0.800 brake=0.000 rx=10 applied=1 drop_same_frame=0"
-                ),
-                (
-                    "[INFO] [1003.000000000] [carla_control_bridge]: apply frame=11 source=pending "
-                    "actor_id=197 role=hero src_steer=0.000 norm_steer=0.000 carla_steer=0.000 "
-                    "clamped=False throttle=0.000 brake=0.700 rx=20 applied=2 drop_same_frame=0"
-                ),
+            ),
+            (
+                "[INFO] [1002.050000000] [carla_control_bridge]: apply frame=11 source=pending "
+                "actor_id=197 role=hero src_steer=0.000 norm_steer=0.000 carla_steer=0.000 "
+                "clamped=False throttle=0.000 brake=0.700 rx=20 applied=2 drop_same_frame=0"
+            ),
             ]
         )
         + "\n",
@@ -183,6 +188,39 @@ def test_control_health_applied_throttle_brake_switching_fails(tmp_path: Path) -
     rows = rows[:12]
     for index, row in enumerate(rows):
         row["sim_time"] = str(index * 0.05)
+        row["throttle_mapped"] = "0.2"
+        row["brake_mapped"] = "0.0"
+        row["bridge_steer_mapped"] = "0.0"
+        row["throttle_applied"] = "0.8" if index % 2 == 0 else "0.0"
+        row["brake_applied"] = "0.0" if index % 2 == 0 else "0.7"
+        row["carla_steer_applied"] = "0.0"
+    _write_csv(csv_path, rows)
+
+    report = analyze_control_health_run_dir(run_dir)
+
+    assert report["status"] == "fail"
+    assert report["failure_reason"] == "applied_actuation_oscillation"
+    assert report["metrics"]["applied_throttle_brake_switch_count"] == 11
+    assert report["metrics"]["applied_throttle_frames"] == 6
+    assert report["metrics"]["applied_brake_frames"] == 6
+    layers = report["metrics"]["oscillation_decomposition"]["layers"]
+    assert layers["carla_applied_command"]["status"] == "fail"
+    assert report["metrics"]["oscillation_decomposition"]["dominant_oscillation_layer"] == "carla_applied_command"
+
+
+def test_control_health_bridge_mapped_command_oscillation_is_not_mislabelled_as_applied(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    csv_path = run_dir / "timeseries.csv"
+    rows = _read_csv(csv_path)
+    while len(rows) < 12:
+        rows.append(dict(rows[-1]))
+    rows = rows[:12]
+    for index, row in enumerate(rows):
+        row["sim_time"] = str(index * 0.05)
+        row["throttle_raw"] = "0.2"
+        row["brake_raw"] = "0.0"
         row["throttle_mapped"] = "0.8" if index % 2 == 0 else "0.0"
         row["brake_mapped"] = "0.0" if index % 2 == 0 else "0.7"
         row["bridge_steer_mapped"] = "0.0"
@@ -194,10 +232,91 @@ def test_control_health_applied_throttle_brake_switching_fails(tmp_path: Path) -
     report = analyze_control_health_run_dir(run_dir)
 
     assert report["status"] == "fail"
-    assert report["failure_reason"] == "applied_actuation_oscillation"
-    assert report["metrics"]["applied_throttle_brake_switch_count"] == 11
-    assert report["metrics"]["applied_throttle_frames"] == 6
-    assert report["metrics"]["applied_brake_frames"] == 6
+    assert report["failure_reason"] == "bridge_mapped_command_oscillation"
+    layers = report["metrics"]["oscillation_decomposition"]["layers"]
+    assert layers["apollo_raw_command"]["status"] == "pass"
+    assert layers["bridge_mapped_command"]["status"] == "fail"
+
+
+def test_control_health_apollo_raw_command_oscillation_is_separate_layer(tmp_path: Path) -> None:
+    run_dir = _copy_run(tmp_path)
+    csv_path = run_dir / "timeseries.csv"
+    rows = _read_csv(csv_path)
+    while len(rows) < 12:
+        rows.append(dict(rows[-1]))
+    rows = rows[:12]
+    for index, row in enumerate(rows):
+        row["sim_time"] = str(index * 0.05)
+        row["throttle_raw"] = "0.8" if index % 2 == 0 else "0.0"
+        row["brake_raw"] = "0.0" if index % 2 == 0 else "0.7"
+        row["throttle_mapped"] = "0.2"
+        row["brake_mapped"] = "0.0"
+        row["bridge_steer_mapped"] = "0.0"
+        row["throttle_applied"] = "0.2"
+        row["brake_applied"] = "0.0"
+        row["carla_steer_applied"] = "0.0"
+    _write_csv(csv_path, rows)
+
+    report = analyze_control_health_run_dir(run_dir)
+
+    assert report["status"] == "fail"
+    assert report["failure_reason"] == "apollo_raw_command_oscillation"
+    layers = report["metrics"]["oscillation_decomposition"]["layers"]
+    assert layers["apollo_raw_command"]["status"] == "fail"
+    assert layers["bridge_mapped_command"]["status"] == "pass"
+
+
+def test_control_health_prioritizes_apply_cadence_before_actuation_tuning(tmp_path: Path) -> None:
+    run_dir = _copy_run(tmp_path)
+    csv_path = run_dir / "timeseries.csv"
+    rows = _read_csv(csv_path)
+    while len(rows) < 12:
+        rows.append(dict(rows[-1]))
+    rows = rows[:12]
+    for index, row in enumerate(rows):
+        row["sim_time"] = str(index * 0.05)
+        row["throttle_raw"] = "0.2"
+        row["brake_raw"] = "0.0"
+        row["throttle_mapped"] = "0.2"
+        row["brake_mapped"] = "0.0"
+        row["bridge_steer_mapped"] = "0.0"
+        row["throttle_applied"] = "0.8" if index % 2 == 0 else "0.0"
+        row["brake_applied"] = "0.0" if index % 2 == 0 else "0.7"
+        row["carla_steer_applied"] = "0.0"
+    _write_csv(csv_path, rows)
+
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "cyber_control_bridge.err.log").write_text(
+        "\n".join(
+            [
+                (
+                    "[INFO] [100.000000000] [carla_control_bridge]: "
+                    "Bridge listening on /tb/ego/control_cmd (direct), carla=127.0.0.1:2000, "
+                    "ego_role=hero, dryrun=False, apply_hz=20.0, sync_to_world_tick=False"
+                ),
+                "[INFO] [100.000000000] [carla_control_bridge]: control target bound actor_id=197 role=hero",
+                (
+                    "[INFO] [101.000000000] [carla_control_bridge]: apply frame=10 source=pending "
+                    "actor_id=197 role=hero src_steer=0.000 norm_steer=0.000 carla_steer=0.000 "
+                    "clamped=False throttle=0.800 brake=0.000 rx=10 applied=1 drop_same_frame=0"
+                ),
+                (
+                    "[INFO] [111.000000000] [carla_control_bridge]: apply frame=20 source=pending "
+                    "actor_id=197 role=hero src_steer=0.000 norm_steer=0.000 carla_steer=0.000 "
+                    "clamped=False throttle=0.000 brake=0.700 rx=20 applied=2 drop_same_frame=0"
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+
+    assert report["status"] == "fail"
+    assert report["failure_reason"] == "control_bridge_world_frame_cadence_low"
+    assert report["metrics"]["oscillation_decomposition"]["layers"]["bridge_apply_cadence"]["status"] == "fail"
 
 
 def test_control_health_throttle_sampling_mismatch_warns_when_apply_is_observed(

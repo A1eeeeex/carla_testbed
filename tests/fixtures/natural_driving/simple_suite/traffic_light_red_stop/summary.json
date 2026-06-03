@@ -7,6 +7,7 @@
     "status": "aligned"
   },
   "routing_materialized": true,
+  "routing_success_count": 1,
   "planning_materialized": true,
   "control_handoff_status": "control_consuming_with_nonzero_planning",
   "materialization_status": "planning_control_materialized",
@@ -15,7 +16,14 @@
     "collision_count": 0,
     "lane_invasion_count": 0,
     "red_stop_distance_m": 3.2,
+    "distance_to_stop_line_m": 3.2,
+    "ego_s": 36.8,
+    "ego_l": 0.1,
+    "light_color_timeline_available": true,
+    "apollo_stop_decision_available": true,
+    "control_full_stop_evidence": true,
     "stopped_at_red": true,
-    "control_latency_p95_ms": 95.0
+    "control_latency_p95_ms": 95.0,
+    "planning_nonempty_ratio": 1.0
   }
 }

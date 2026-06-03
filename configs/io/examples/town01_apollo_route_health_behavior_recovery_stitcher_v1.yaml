@@ -178,6 +178,9 @@ algo:
       steer_scale: 0.25
       steering_percent_normalization: legacy_double_percent
       brake_deadzone: 0.05
+      throttle_brake_mutual_exclusion_enabled: true
+      throttle_brake_hysteresis_frames: 2
+      throttle_brake_min_command: 0.05
       actuator_mapping_mode: legacy
       straight_lane_zero_steer_enabled: false
       straight_lane_zero_steer_max_speed_mps: 8.0

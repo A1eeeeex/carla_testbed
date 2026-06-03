@@ -6,11 +6,16 @@ import math
 from pathlib import Path
 import random
 import time
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import carla
+try:
+    import carla
+except ModuleNotFoundError:
+    carla = SimpleNamespace(
+        TrafficLightState=SimpleNamespace(Red="Red", Yellow="Yellow", Green="Green"),
+    )
 
-from carla_testbed.sim import spawn_with_retry
 from .base import ActorRefs, Scenario
 
 
@@ -113,10 +118,17 @@ class Town01RouteHealthScenario(Scenario):
     @staticmethod
     def _traffic_light_state_from_name(state: str):
         normalized = Town01RouteHealthScenario._traffic_light_state_name(state)
+        traffic_light_state = getattr(carla, "TrafficLightState", None)
+        if traffic_light_state is None:
+            traffic_light_state = SimpleNamespace(Red="Red", Yellow="Yellow", Green="Green")
+            try:
+                setattr(carla, "TrafficLightState", traffic_light_state)
+            except Exception:
+                pass
         mapping = {
-            "RED": getattr(carla.TrafficLightState, "Red", None),
-            "YELLOW": getattr(carla.TrafficLightState, "Yellow", None),
-            "GREEN": getattr(carla.TrafficLightState, "Green", None),
+            "RED": getattr(traffic_light_state, "Red", None),
+            "YELLOW": getattr(traffic_light_state, "Yellow", None),
+            "GREEN": getattr(traffic_light_state, "Green", None),
         }
         return mapping.get(normalized)
 
@@ -865,6 +877,8 @@ class Town01RouteHealthScenario(Scenario):
                     f"Town01 route health strict spawn failed at idx={requested_idx}: {exc}"
                 ) from exc
         else:
+            from carla_testbed.sim import spawn_with_retry
+
             ego, used_idx = spawn_with_retry(world, veh_bp, spawns, preferred_idx=requested_idx)
             if ego is None:
                 raise RuntimeError("Town01 route health spawn_with_retry failed")

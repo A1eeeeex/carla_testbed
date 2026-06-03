@@ -1,0 +1,23 @@
+{
+  "blocking_reasons": [],
+  "bridge_receive": {
+    "control_rx_count": 10,
+    "status": "pass"
+  },
+  "control_channel": {
+    "channel": "/apollo/control",
+    "message_count": 10,
+    "status": "pass"
+  },
+  "failure_stage": "none",
+  "mapping_and_apply": {
+    "apply_control_count": 10,
+    "control_tx_count": 10,
+    "status": "pass"
+  },
+  "route_id": "lane097",
+  "run_id": "lane_keep_097",
+  "scenario_class": "lane_keep",
+  "schema_version": "apollo_control_handoff.v1",
+  "verdict": "pass"
+}

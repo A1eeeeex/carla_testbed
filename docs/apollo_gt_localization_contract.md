@@ -98,6 +98,33 @@ ENU South. The GT builder records `orientation_convention=RFU_to_ENU`,
 `heading_from_forward_vector`, and `quaternion_heading_diff_rad` so this can be
 audited later.
 
+`carla_testbed.adapters.apollo.messages` is the shared dict-to-protobuf-like
+write boundary for online bridge code. The Apollo Cyber bridge should not
+inline a second copy of `LocalizationEstimate` semantics. It must write
+`header.timestamp_sec`, `header.frame_id`, `measurement_time`, pose, RFU-to-ENU
+orientation, kinematics, and debug metadata from the same canonical payload.
+
+For the current ROS odometry bridge path, heading is sourced from odom
+quaternion yaw after CARLA-to-Apollo frame transform, so debug metadata should
+record `heading_source=odom_quaternion_yaw_after_frame_transform`. It must not
+claim `transformed_forward_vector` unless the runtime actually used CARLA actor
+forward/basis vectors. The bridge should still publish an RFU-to-ENU
+orientation whose independently decoded forward heading equals `pose.heading`.
+
+Claim-grade online localization evidence now requires:
+
+- `LocalizationEstimate.header.frame_id` actually written as `map`;
+- `LocalizationEstimate.header.timestamp_sec == measurement_time` within 1 ms;
+- `orientation_convention=RFU_to_ENU`;
+- RFU quaternion decoded heading p95 difference below `1e-3 rad`;
+- declared velocity/acceleration/angular-velocity frames and units;
+- `vehicle_reference_confidence=verified` and
+  `vehicle_reference_hard_gate_eligible=true`.
+
+Stale republish rows may still be useful diagnostic evidence, but duplicate
+localization timestamps block claim-grade natural-driving evidence unless the
+run is explicitly marked as non-claim/debug.
+
 ## Localization Contract Report
 
 `carla_testbed.analysis.localization_contract` reads run artifacts and writes
@@ -132,11 +159,13 @@ CARLA/ROS2 odometry stamp. Therefore `loc_count` or raw publish count is not
 automatically the number of fresh localization samples. The analyzer reports
 `publish_message_count`, `fresh_sample_count`, `unique_timestamp_count`,
 `duplicate_timestamp_count`, `publish_hz`, and `fresh_sample_hz`. Duplicate
-timestamps are allowed as evidence of republish behavior. If timestamps are
-non-decreasing and `fresh_sample_hz` is sufficient, the report records
+timestamps are allowed as diagnostic evidence of republish behavior. If
+timestamps are non-decreasing and `fresh_sample_hz` is sufficient, the report records
 `republish_policy=stale_republish_allowed_when_fresh_sample_rate_ok` rather
-than treating duplicate timestamps as a localization fault. Duplicate rows must
-still not be counted as fresh samples.
+than treating duplicate timestamps as a channel fault. Duplicate rows must
+still not be counted as fresh samples, and claim-grade hard pass remains blocked
+when `duplicate_timestamp_ratio >= 0.01` unless the run is explicitly marked as
+non-claim/debug.
 
 The reference-point check distinguishes configured intent from runtime evidence.
 `vehicle_reference.yaml` can say the configured Apollo reference point should be
@@ -156,6 +185,28 @@ configured transform is internally invertible; it does not prove the Apollo
 HDMap, lane projection, or reference line is aligned. Those claims require
 separate route projection, reference-line, or HDMap contract artifacts.
 
+## Apollo HDMap Projection Artifact
+
+Claim-grade Apollo lane projection evidence can be supplied by
+`artifacts/apollo_hdmap_projection.jsonl`. This file is optional because it
+must be generated inside the Apollo environment or from an Apollo Cyber record
+using the Apollo HDMap API; CI does not build or import that runtime.
+
+Each JSONL row records a localization sample, nearest Apollo lane id,
+projection `s/l`, lane heading at `s`, heading error, lateral error, map name,
+map directory, and `status`. The row is claim-grade only when
+`source="apollo_hdmap_api"`. Bridge-side nearest-lane diagnostics, CARLA
+waypoint projection, route-health projection, or reconstructed route projection
+must not be labeled as this source.
+
+When the artifact is missing, analyzers report
+`apollo_hdmap_projection_available=false` and the projection section remains
+`insufficient_data`; they do not fabricate `reference_line_verified=true`. When
+official projection rows exist but heading or lateral error is high, the
+localization/reference-line reports fail and prioritize map alignment, lane
+direction, lane id, or routing snap investigation before any Apollo behavior
+claim.
+
 `manifest.scenario_metadata.route_trace` or
 `manifest.metadata.scenario_metadata.route_trace` may provide claim-grade CARLA
 route geometry for route-health. That is still not Apollo reference-line
@@ -165,10 +216,26 @@ route-geometry gates while `reference_line_verified=false` and
 `reference_line_validation_report.json`, route projection report, or HDMap
 contract report exists.
 
+Natural-driving hard gates now separate localization semantics from Apollo
+reference-line semantics. `localization_contract_report.json` checks time base,
+frame transform, VRP/rear-axle reference, heading, quaternion, velocity,
+yaw-rate, and route/lane diagnostic consistency. It must not treat a bridge
+nearest-lane diagnostic as proof that Apollo Planning and Control are using a
+compatible reference line. That claim is carried by
+`apollo_reference_line_contract_report.json`, which checks planning trajectory
+heading, control reference heading, lateral error, non-empty trajectory ratio,
+reference-line provider readiness, and routing/reference-line availability.
+If the localization route-heading error is small but the Apollo reference-line
+contract fails or is missing, `natural_driving_report.json` must remain
+`insufficient_data` or diagnostic-only rather than claiming Apollo natural
+driving.
+
 Runtime rows or localization debug artifacts should expose:
 
 - `localization_header_timestamp_sec`, `localization_measurement_time`, and
   `localization_sequence_num`;
+- `localization_frame_id`, which should match the actual Apollo header
+  `frame_id`;
 - `localization_heading`, `localization_orientation_yaw`,
   `orientation_heading_diff_rad`, `heading_source`, and
   `orientation_convention`;
@@ -219,8 +286,10 @@ for the final localization acceptance questions:
   raw CARLA actor origin.
 - `source_to_published_reference_explained`: the source reference point and the
   published Apollo localization reference are explicitly explained.
-- `heading_from_transformed_forward`: heading is derived from the transformed
-  actor forward vector.
+- `heading_from_transformed_forward`: legacy checklist key retained for
+  compatibility; the check now means the heading source is truthfully declared
+  as either transformed actor forward vector or odom quaternion yaw after frame
+  transform.
 - `rfu_to_enu_orientation`: orientation declares the RFU-to-ENU Apollo
   convention.
 - `decoded_orientation_consistency`: orientation quaternion and heading are
@@ -359,3 +428,46 @@ Use this fix order:
 - route/lane projection failures: check localization transform, VRP, route
   health, and Apollo map/reference-line contracts before blaming Apollo
   lateral behavior.
+
+## Operator Claim Gate
+
+For no-interference Apollo truth-input evidence, localization is a prerequisite
+contract, not the final behavior verdict. A lane, curve, junction, or
+traffic-light hard gate can only be interpreted through
+`natural_driving_report.json` after the localization report is attached.
+
+Operator sequence:
+
+```bash
+RUN=runs/<run_id>
+python tools/analyze_apollo_localization_contract.py --run-dir "$RUN"
+python tools/analyze_apollo_reference_line_contract.py --run-dir "$RUN"
+python tools/analyze_apollo_link_health.py --run-dir "$RUN"
+```
+
+Claim-grade localization requires:
+
+- `/apollo/localization/pose` channel evidence with acceptable rate, monotonic
+  timestamps, monotonic sequence, and bounded gaps.
+- `header.timestamp_sec` and `measurement_time` both use simulation time, with
+  p95 delta no greater than `1 ms`.
+- `header.frame_id=map`.
+- an explicitly configured CARLA world to Apollo map transform.
+- position generated from verified rear-axle / VRP evidence, not raw CARLA
+  actor origin.
+- truthful heading source metadata and RFU-to-ENU quaternion decoded heading
+  p95 difference below `1e-3 rad`.
+- velocity, acceleration, angular velocity, and VRF fields with declared frame
+  and unit semantics.
+- chassis speed and localization speed consistency within configured
+  tolerance.
+- Apollo HDMap or reference-line projection evidence when a scenario uses lane,
+  junction, curve, or stop-line claims, alongside `route_health.json` or
+  `apollo_lateral_semantics_report.json` for curve conclusions.
+
+Non-claim-grade localization modes include `confidence: assumed` vehicle
+reference, stale timestamp republish counted as fresh samples, diagnostic
+nearest-lane projection only, missing `apollo_hdmap_projection.jsonl`, and
+missing `apollo_reference_line_contract_report.json`. These modes may still be
+useful diagnostics, but they must keep the natural-driving verdict at
+`insufficient_data`, `diagnostic_only`, or non-claim `warn`.
