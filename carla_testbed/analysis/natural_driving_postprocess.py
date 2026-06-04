@@ -36,6 +36,10 @@ from carla_testbed.analysis.natural_driving import (
     problem_run_details,
     write_natural_driving_report,
 )
+from carla_testbed.analysis.obstacle_gt_contract import (
+    analyze_obstacle_gt_contract_run_dir,
+    write_obstacle_gt_contract_report,
+)
 from carla_testbed.analysis.route_health_report import analyze_route_health_run_dir
 from carla_testbed.analysis.route_curve_artifact_gap import (
     analyze_route_curve_artifact_gap,
@@ -195,6 +199,11 @@ def _postprocess_run_dir(
         scenario_class=scenario_class,
         refresh=refresh,
     )
+    obstacle_gt_contract_result = _ensure_obstacle_gt_contract_report(
+        run_dir,
+        scenario_class=scenario_class,
+        refresh=refresh,
+    )
     completeness = check_run_artifact_completeness(run_dir, scenario_class=scenario_class)
     completeness_outputs = write_run_artifact_completeness_report(
         completeness,
@@ -216,6 +225,7 @@ def _postprocess_run_dir(
         "apollo_channel_health": channel_health_result,
         "traffic_light_contract": traffic_light_result,
         "traffic_light_behavior": traffic_light_behavior_result,
+        "obstacle_gt_contract": obstacle_gt_contract_result,
         "artifact_completeness": {
             "status": completeness["status"],
             "artifact_complete": completeness["artifact_complete"],
@@ -734,6 +744,38 @@ def _source_path_exists(raw: str, *, run_dir: Path, report_path: Path) -> bool:
     return any(candidate.exists() for candidate in candidates)
 
 
+def _ensure_obstacle_gt_contract_report(
+    run_dir: Path,
+    *,
+    scenario_class: str | None,
+    refresh: bool,
+) -> dict[str, Any]:
+    report_path = run_dir / "analysis" / "obstacle_gt_contract" / "obstacle_gt_contract_report.json"
+    existing = _find_first(
+        run_dir,
+        [
+            "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json",
+            "obstacle_gt_contract_report.json",
+        ],
+    )
+    if existing is not None and not refresh:
+        return {
+            "status": "existing",
+            "path": str(existing),
+            "report_status": _json_report_status(existing),
+        }
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class=scenario_class)
+    outputs = write_obstacle_gt_contract_report(report, report_path.parent)
+    return {
+        "status": "generated",
+        "path": outputs["obstacle_gt_contract_report"],
+        "report_status": report.get("status"),
+        "missing_fields": report.get("missing_fields") or [],
+        "warnings": report.get("warnings") or [],
+        "errors": report.get("errors") or [],
+    }
+
+
 def _ensure_traffic_light_contract_report(
     run_dir: Path,
     *,
@@ -744,10 +786,12 @@ def _ensure_traffic_light_contract_report(
 ) -> dict[str, Any] | None:
     if scenario_class not in TRAFFIC_LIGHT_SCENARIO_CLASSES:
         return None
-    report_path = run_dir / "analysis" / "traffic_light" / "traffic_light_contract_report.json"
+    report_path = run_dir / "analysis" / "traffic_light_contract" / "traffic_light_contract_report.json"
+    legacy_report_path = run_dir / "analysis" / "traffic_light" / "traffic_light_contract_report.json"
     existing = _find_first(
         run_dir,
         [
+            "analysis/traffic_light_contract/traffic_light_contract_report.json",
             "analysis/traffic_light/traffic_light_contract_report.json",
             "traffic_light_contract_report.json",
         ],
@@ -775,9 +819,10 @@ def _ensure_traffic_light_contract_report(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         if existing.resolve() != report_path.resolve():
             shutil.copy2(existing, report_path)
+        _mirror_legacy_traffic_light_contract_report(report_path, legacy_report_path)
         return {
             "status": "existing_report_copied",
-            "path": str(report_path),
+            "path": str(legacy_report_path),
             "report_status": report.get("status"),
             "source_report": str(existing),
         }
@@ -794,9 +839,10 @@ def _ensure_traffic_light_contract_report(
             missing_inputs=missing_inputs,
         )
         _write_json(report_path, report)
+        _mirror_legacy_traffic_light_contract_report(report_path, legacy_report_path)
         return {
             "status": "insufficient_data",
-            "path": str(report_path),
+            "path": str(legacy_report_path),
             "missing_inputs": report["missing_inputs"],
         }
 
@@ -806,13 +852,20 @@ def _ensure_traffic_light_contract_report(
         scenario_class=scenario_class,
     )
     outputs = write_traffic_light_contract_report(report, report_path.parent)
+    _mirror_legacy_traffic_light_contract_report(Path(outputs["traffic_light_contract_report"]), legacy_report_path)
     return {
         "status": "generated",
-        "path": outputs["traffic_light_contract_report"],
+        "path": str(legacy_report_path),
         "report_status": report.get("status"),
         "town01_contract_config": str(town01_contract_config),
         "traffic_light_mapping_config": str(traffic_light_mapping_config),
     }
+
+
+def _mirror_legacy_traffic_light_contract_report(source: Path, legacy_path: Path) -> None:
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    if source.resolve() != legacy_path.resolve():
+        shutil.copy2(source, legacy_path)
 
 
 def _traffic_light_contract_report_reusable(
@@ -851,6 +904,7 @@ def _ensure_traffic_light_behavior_report(
     existing = _find_first(
         run_dir,
         [
+            "analysis/traffic_light_behavior/traffic_light_behavior_report.json",
             "analysis/traffic_light/traffic_light_behavior_report.json",
             "traffic_light_behavior_report.json",
         ],

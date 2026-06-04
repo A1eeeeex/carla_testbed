@@ -803,9 +803,12 @@ def _can_claim_unassisted(layers: Mapping[str, Mapping[str, Any]]) -> bool:
         "bridge_runtime",
         "channel_health",
         "localization_gt_contract",
+        "hdmap_projection",
         "planning_reference_line",
         "routing_planning_control_handoff",
         "control_mapping_apply",
+        "perception_gt_obstacles",
+        "traffic_light_gt",
         "no_assist_claim_boundary",
         "natural_driving_outcome",
     )

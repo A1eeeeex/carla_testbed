@@ -115,6 +115,20 @@ def analyze_control_health_run_dir(
             "apollo_control_handoff_report.json",
         ],
     )
+    localization_contract_path = _find_first(
+        root,
+        [
+            "analysis/localization_contract/localization_contract_report.json",
+            "localization_contract_report.json",
+        ],
+    )
+    apollo_reference_line_contract_path = _find_first(
+        root,
+        [
+            "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
+            "apollo_reference_line_contract_report.json",
+        ],
+    )
     summary = _read_json(summary_path)
     manifest = _read_json(manifest_path)
     control_handoff_debug = _read_json(control_handoff_path) if control_handoff_path else {}
@@ -124,6 +138,16 @@ def analyze_control_health_run_dir(
     apollo_control_handoff = (
         _read_json(apollo_control_handoff_report_path)
         if apollo_control_handoff_report_path
+        else {}
+    )
+    localization_contract = (
+        _read_json(localization_contract_path)
+        if localization_contract_path
+        else {}
+    )
+    apollo_reference_line_contract = (
+        _read_json(apollo_reference_line_contract_path)
+        if apollo_reference_line_contract_path
         else {}
     )
     rows = _read_rows(timeseries_path)
@@ -204,6 +228,12 @@ def analyze_control_health_run_dir(
         "control_decode_debug": control_decode_debug,
         "direct_control_apply_log": direct_control_apply,
         "control_attribution": _control_attribution_summary(control_attribution, control_attribution_path),
+        "upstream_contract_preconditions": _upstream_contract_preconditions(
+            localization_contract=localization_contract,
+            localization_contract_path=localization_contract_path,
+            apollo_reference_line_contract=apollo_reference_line_contract,
+            apollo_reference_line_contract_path=apollo_reference_line_contract_path,
+        ),
     }
     report_metrics["oscillation_decomposition"] = _oscillation_decomposition(
         rows=rows,
@@ -280,6 +310,14 @@ def analyze_control_health_run_dir(
                 if apollo_control_handoff_report_path
                 else None
             ),
+            "localization_contract_path": (
+                str(localization_contract_path) if localization_contract_path else None
+            ),
+            "apollo_reference_line_contract_path": (
+                str(apollo_reference_line_contract_path)
+                if apollo_reference_line_contract_path
+                else None
+            ),
         },
         "interpretation_boundary": (
             "Control-health report checks handoff and raw/mapped/applied command evidence only. "
@@ -303,6 +341,75 @@ def _control_attribution_summary(
         "mapped_control_available": report.get("mapped_control_available"),
         "applied_control_available": report.get("applied_control_available"),
         "vehicle_response_available": report.get("vehicle_response_available"),
+    }
+
+
+def _upstream_contract_preconditions(
+    *,
+    localization_contract: Mapping[str, Any],
+    localization_contract_path: Path | None,
+    apollo_reference_line_contract: Mapping[str, Any],
+    apollo_reference_line_contract_path: Path | None,
+) -> dict[str, Any]:
+    localization = _contract_precondition(
+        "localization_contract",
+        localization_contract,
+        localization_contract_path,
+    )
+    reference_line = _contract_precondition(
+        "apollo_reference_line_contract",
+        apollo_reference_line_contract,
+        apollo_reference_line_contract_path,
+    )
+    blocking = [
+        *list(localization.get("blocking_reasons") or []),
+        *list(reference_line.get("blocking_reasons") or []),
+    ]
+    eligible = bool(localization.get("non_blocking") and reference_line.get("non_blocking"))
+    return {
+        "control_oscillation_analysis_eligible": eligible,
+        "localization_contract": localization,
+        "apollo_reference_line_contract": reference_line,
+        "blocking_reasons": sorted(set(str(item) for item in blocking if item)),
+        "interpretation": (
+            "Applied actuation oscillation is claim-grade only after localization_contract "
+            "and apollo_reference_line_contract are pass/warn with no blocking reasons. "
+            "Otherwise treat applied oscillation as deferred secondary evidence."
+        ),
+    }
+
+
+def _contract_precondition(
+    name: str,
+    report: Mapping[str, Any],
+    path: Path | None,
+) -> dict[str, Any]:
+    if not report:
+        return {
+            "status": "insufficient_data",
+            "non_blocking": False,
+            "blocking_reasons": [f"{name}_missing"],
+            "warnings": [],
+            "path": str(path) if path else None,
+        }
+    verdict = report.get("verdict") if isinstance(report.get("verdict"), Mapping) else {}
+    status = str(verdict.get("status") or report.get("status") or "insufficient_data")
+    blocking = [
+        str(item)
+        for item in (
+            list(verdict.get("blocking_reasons") or [])
+            + list(report.get("blocking_reasons") or [])
+        )
+        if item
+    ]
+    warnings = [str(item) for item in (report.get("warnings") or []) if item]
+    non_blocking = status in {"pass", "warn"} and not blocking
+    return {
+        "status": status,
+        "non_blocking": non_blocking,
+        "blocking_reasons": sorted(set(blocking)),
+        "warnings": sorted(set(warnings)),
+        "path": str(path) if path else None,
     }
 
 
@@ -741,6 +848,10 @@ def _verdict(
             return "fail", "control_bridge_world_frame_cadence_low", verdict_missing, warnings
         if "control_bridge_drop_same_frame_high" in warnings:
             return "fail", "control_bridge_drop_same_frame_high", verdict_missing, warnings
+        upstream_preconditions = metrics.get("upstream_contract_preconditions")
+        if not _control_oscillation_analysis_eligible(upstream_preconditions):
+            warnings.append("applied_actuation_oscillation_deferred_until_upstream_contracts_nonblocking")
+            return "warn", "control_health_warn", verdict_missing, warnings
         return "fail", "applied_actuation_oscillation", verdict_missing, warnings
     for field in (
         "mapped_applied_steer_abs_error_p95",
@@ -767,6 +878,12 @@ def _verdict(
     if warnings:
         return "warn", "control_health_warn", verdict_missing, warnings
     return "pass", None, verdict_missing, warnings
+
+
+def _control_oscillation_analysis_eligible(preconditions: Any) -> bool:
+    if not isinstance(preconditions, Mapping):
+        return False
+    return _parse_bool(preconditions.get("control_oscillation_analysis_eligible")) is True
 
 
 def _missing_control_fields(rows: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -1828,6 +1945,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
         ),
         f"- mapped_applied_throttle_best_lag_frames: `{metrics.get('mapped_applied_throttle_best_lag_frames')}`",
         f"- mapped_applied_brake_abs_error_p95: `{metrics.get('mapped_applied_brake_abs_error_p95')}`",
+        f"- upstream_contract_preconditions: `{_markdown_upstream_contract_preconditions(metrics)}`",
         f"- oscillation_decomposition: `{_markdown_oscillation_decomposition(metrics)}`",
         f"- control_mapping_claim_boundary: `{metrics.get('control_mapping_claim_boundary')}`",
         f"- control_bridge_log: `{_markdown_control_bridge_log(metrics)}`",
@@ -1855,6 +1973,27 @@ def _markdown_control_bridge_log(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "first_watchdog_apply_wall_s": log_metrics.get("first_watchdog_apply_wall_s"),
         "final_rx_count": log_metrics.get("final_rx_count"),
         "final_applied_count": log_metrics.get("final_applied_count"),
+    }
+
+
+def _markdown_upstream_contract_preconditions(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    preconditions = metrics.get("upstream_contract_preconditions")
+    if not isinstance(preconditions, Mapping):
+        return {"available": False}
+    localization = preconditions.get("localization_contract")
+    reference_line = preconditions.get("apollo_reference_line_contract")
+    if not isinstance(localization, Mapping):
+        localization = {}
+    if not isinstance(reference_line, Mapping):
+        reference_line = {}
+    return {
+        "available": True,
+        "control_oscillation_analysis_eligible": preconditions.get(
+            "control_oscillation_analysis_eligible"
+        ),
+        "localization_contract_status": localization.get("status"),
+        "apollo_reference_line_contract_status": reference_line.get("status"),
+        "blocking_reasons": preconditions.get("blocking_reasons") or [],
     }
 
 

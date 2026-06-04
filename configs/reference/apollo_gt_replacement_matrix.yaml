@@ -1,0 +1,283 @@
+schema_version: gt_replacement_matrix.v1
+algorithm: apollo
+applies_to_variant: apollo_ported_carla_gt
+description: >
+  Current GT replacement matrix for the Apollo CARLA truth-input variant. This
+  matrix records which Apollo reference modules are native, GT-replaced,
+  bypassed, missing, or operator evidence, and what evidence is required before
+  a replacement can support claim-grade capability.
+
+modules:
+  - name: hdmap
+    reference_module: hdmap
+    replacement_status: native
+    current_source: Apollo HDMap files loaded for the target map.
+    current_runtime_path: Apollo map directory and Dreamview selected map.
+    expected_official_source: Apollo HDMap base/routing map files.
+    output_contract: Apollo lane topology, routing graph, reference line, signal overlap, and stop-line query APIs.
+    required_evidence:
+      - map manifest with map hash
+      - hdmap_validation_report.json
+      - apollo_hdmap_projection.jsonl
+      - apollo_reference_line_contract_report.json
+    current_evidence_status: insufficient_data
+    hard_gate_eligible: false
+    allowed_for_capabilities:
+      - diagnostic
+    blocked_capabilities:
+      - curve
+      - junction
+      - traffic_light
+    bypass_reason: null
+    notes: Native HDMap is required, but claim-grade HDMap projection/reference-line evidence is still required.
+
+  - name: routing
+    reference_module: routing
+    replacement_status: native
+    current_source: Apollo routing receives bridge-issued routing or lane-follow commands.
+    current_runtime_path: tools/apollo10_cyber_bridge/bridge.py routing command path.
+    expected_official_source: Apollo routing module and /apollo/routing_response.
+    output_contract: /apollo/routing_response plus routing success diagnostics.
+    required_evidence:
+      - routing_event_debug.jsonl
+      - goal_validity_debug.jsonl
+      - summary.json routing_success_count
+      - channel_stats.json /apollo/routing_response
+    current_evidence_status: warn
+    hard_gate_eligible: true
+    allowed_for_capabilities:
+      - lane_keep
+      - curve
+      - junction
+      - traffic_light
+      - closed_loop
+    blocked_capabilities: []
+    bypass_reason: null
+    notes: Routing must stay native; route follower bypass is a blocking assist.
+
+  - name: localization
+    reference_module: localization
+    replacement_status: gt_replaced
+    current_source: CARLA ego truth converted to Apollo LocalizationEstimate semantics.
+    current_runtime_path: carla_testbed/adapters/apollo/localization_gt.py and tools/apollo10_cyber_bridge/bridge.py.
+    expected_official_source: Apollo localization module publishing /apollo/localization/pose.
+    output_contract: /apollo/localization/pose with map-frame VRP position, heading, orientation, velocity, angular velocity, and measurement_time.
+    required_evidence:
+      - localization_contract_report.json
+      - frame transform validation
+      - vehicle reference validation
+      - channel_stats.json /apollo/localization/pose
+    current_evidence_status: insufficient_data
+    hard_gate_eligible: false
+    allowed_for_capabilities:
+      - diagnostic
+    blocked_capabilities:
+      - lane_keep
+      - curve
+      - junction
+      - traffic_light
+      - closed_loop
+    bypass_reason: null
+    notes: GT localization is allowed, but only the contract report decides claim-grade eligibility.
+
+  - name: chassis
+    reference_module: chassis
+    replacement_status: gt_replaced
+    current_source: CARLA ego state and applied control feedback converted to Apollo chassis.
+    current_runtime_path: tools/apollo10_cyber_bridge/bridge.py chassis publisher path.
+    expected_official_source: Apollo canbus module publishing /apollo/canbus/chassis.
+    output_contract: /apollo/canbus/chassis speed, drive mode, throttle/brake/steer feedback, timestamp, and vehicle state.
+    required_evidence:
+      - chassis_contract_report.json or channel_stats/control_feedback evidence
+      - control_health_report.json
+      - channel_stats.json /apollo/canbus/chassis
+    current_evidence_status: insufficient_data
+    hard_gate_eligible: false
+    allowed_for_capabilities:
+      - diagnostic
+    blocked_capabilities:
+      - lane_keep
+      - curve
+      - junction
+      - traffic_light
+      - closed_loop
+    bypass_reason: null
+    notes: Chassis GT replacement must prove state feedback semantics, not just ego motion.
+
+  - name: perception_obstacles
+    reference_module: perception_obstacles
+    replacement_status: gt_replaced
+    current_source: CARLA actor truth converted to Apollo perception obstacles.
+    current_runtime_path: tools/apollo10_cyber_bridge/bridge.py obstacle publisher and obstacle contract artifacts.
+    expected_official_source: Apollo perception obstacle output.
+    output_contract: /apollo/perception/obstacles with stable IDs, frame-correct pose/theta/velocity, dimensions, and tracking_time.
+    required_evidence:
+      - obstacle_gt_contract_report.json or obstacle_debug artifacts
+      - channel_stats.json /apollo/perception/obstacles
+      - ego actor exclusion evidence
+      - dynamic actor velocity evidence when dynamic obstacle behavior is claimed
+    current_evidence_status: insufficient_data
+    hard_gate_eligible: false
+    allowed_for_capabilities:
+      - diagnostic
+    blocked_capabilities:
+      - closed_loop
+    bypass_reason: null
+    notes: A Detection3DArray fallback without velocity is recording evidence, not dynamic obstacle claim evidence.
+
+  - name: prediction
+    reference_module: prediction
+    replacement_status: bypassed
+    current_source: Explicit prediction_evidence_report.json; native /apollo/prediction when observed, otherwise bypassed_with_gt_obstacles only with scenario-scoped reason.
+    current_runtime_path: Apollo prediction channel, channel_stats.json, and analysis/prediction_evidence/prediction_evidence_report.json.
+    expected_official_source: Apollo prediction module publishing /apollo/prediction.
+    output_contract: /apollo/prediction or explicit prediction_evidence_report.json with prediction_mode and bypass_reason.
+    required_evidence:
+      - prediction_evidence_report.json
+      - prediction_mode native_observed or bypassed_with_gt_obstacles
+      - bypass_reason when prediction is bypassed
+      - channel_stats.json /apollo/prediction when native prediction is enabled
+    current_evidence_status: insufficient_data
+    hard_gate_eligible: false
+    allowed_for_capabilities:
+      - diagnostic
+    blocked_capabilities:
+      - junction
+      - traffic_light
+      - closed_loop
+    bypass_reason: Static lane_keep diagnostics may use bypassed_with_gt_obstacles only when prediction_evidence_report.json records the reason; dynamic-obstacle, junction, and traffic-light claims require native_observed or explicit scenario override.
+    notes: Prediction must not be unknown or silently missing; /apollo/perception/obstacles is not /apollo/prediction.
+
+  - name: traffic_light_perception
+    reference_module: traffic_light_perception
+    replacement_status: gt_replaced
+    current_source: CARLA traffic-light state mapped to Apollo signal IDs when mapping exists.
+    current_runtime_path: carla_testbed/adapters/apollo/traffic_light_gt.py and tools/apollo10_cyber_bridge/bridge.py traffic-light publisher.
+    expected_official_source: Apollo traffic-light perception publishing /apollo/perception/traffic_light.
+    output_contract: /apollo/perception/traffic_light keyed by Apollo HDMap signal IDs with color, confidence, timestamp, contain_lights, and planning-visible semantics.
+    required_evidence:
+      - traffic_light_contract_report.json
+      - traffic_light_evidence_report.json
+      - signal/stop-line/lane mapping artifact
+      - /apollo/perception/traffic_light publish evidence
+      - planning_consumed traffic-light evidence
+      - traffic_light_behavior_report.json behavior observed evidence
+    current_evidence_status: insufficient_data
+    hard_gate_eligible: false
+    allowed_for_capabilities:
+      - diagnostic
+    blocked_capabilities:
+      - traffic_light
+    bypass_reason: null
+    notes: Placeholder mapping and force_green are smoke/debug only and block claim-grade traffic-light behavior.
+
+  - name: planning
+    reference_module: planning
+    replacement_status: native
+    current_source: Native Apollo planning.
+    current_runtime_path: Apollo planning module publishing /apollo/planning.
+    expected_official_source: Apollo planning module consuming routing, prediction, traffic-light perception, localization, and chassis.
+    output_contract: /apollo/planning ADCTrajectory with non-empty trajectory when route materializes.
+    required_evidence:
+      - planning_topic_debug_summary.json
+      - /apollo/planning channel evidence
+      - apollo_reference_line_contract_report.json
+      - apollo_control_handoff_report.json
+    current_evidence_status: warn
+    hard_gate_eligible: true
+    allowed_for_capabilities:
+      - lane_keep
+      - curve
+      - junction
+      - traffic_light
+      - closed_loop
+    blocked_capabilities: []
+    bypass_reason: null
+    notes: Testbed trajectory, dummy lateral, route follower, or planning replacement is a blocking assist.
+
+  - name: control
+    reference_module: control
+    replacement_status: native
+    current_source: Native Apollo control.
+    current_runtime_path: Apollo control module publishing /apollo/control.
+    expected_official_source: Apollo control module consuming /apollo/planning, /apollo/localization/pose, /apollo/canbus/chassis, and /apollo/control/pad.
+    output_contract: /apollo/control raw ControlCommand that can be traced to mapped/applied CARLA control.
+    required_evidence:
+      - apollo_control_handoff_report.json
+      - /apollo/control channel evidence
+      - control_health_report.json
+      - control_attribution_report.json
+    current_evidence_status: warn
+    hard_gate_eligible: true
+    allowed_for_capabilities:
+      - lane_keep
+      - curve
+      - junction
+      - traffic_light
+      - closed_loop
+    blocked_capabilities: []
+    bypass_reason: null
+    notes: Bridge applied control is not Apollo Control replacement.
+
+  - name: vehicle_interface
+    reference_module: vehicle_interface
+    replacement_status: carla_replaced
+    current_source: Apollo raw control mapped to CARLA VehicleControl.
+    current_runtime_path: tools/apollo10_cyber_bridge/control_mapping.py and CARLA apply loop.
+    expected_official_source: Native vehicle interface/CAN actuation.
+    output_contract: Raw Apollo control, bridge mapped control, CARLA applied control, and vehicle response.
+    required_evidence:
+      - control_attribution_report.json with raw/mapped/applied/vehicle response evidence
+      - control_health_report.json
+      - direct_bridge_control_apply.jsonl
+      - calibration profile or explicit control mapping profile
+    current_evidence_status: insufficient_data
+    hard_gate_eligible: false
+    allowed_for_capabilities:
+      - diagnostic
+    blocked_capabilities:
+      - lane_keep
+      - curve
+      - junction
+      - traffic_light
+      - closed_loop
+    bypass_reason: null
+    notes: CARLA VehicleControl replacement is allowed only with control-chain attribution and no blocking assists.
+
+  - name: cyberrt
+    reference_module: cyberrt
+    replacement_status: native
+    current_source: Apollo CyberRT runtime and bridge channel writers/readers.
+    current_runtime_path: Apollo container runtime plus tools/apollo10_cyber_bridge.
+    expected_official_source: Apollo CyberRT runtime and recorder.
+    output_contract: Healthy required channel graph, timestamps, and channel evidence.
+    required_evidence:
+      - channel_stats.json or cyber_bridge_stats.json
+      - bridge_transport_summary.json
+      - cyber_record or cyber_recorder_info for claim-grade preference
+    current_evidence_status: warn
+    hard_gate_eligible: true
+    allowed_for_capabilities:
+      - closed_loop
+    blocked_capabilities: []
+    bypass_reason: null
+    notes: Claim-grade runs should prefer cyber_record or cyber_recorder_info over summary-only evidence.
+
+  - name: dreamview
+    reference_module: dreamview
+    replacement_status: operator_evidence
+    current_source: Apollo Dreamview operator UI when launched.
+    current_runtime_path: Dreamview browser/operator recording path.
+    expected_official_source: Apollo Dreamview HMI/operator UI.
+    output_contract: Operator visualization and optional HMI state evidence.
+    required_evidence:
+      - Dreamview screenshot or video when used
+      - demo recording inspection report
+    current_evidence_status: not_run
+    hard_gate_eligible: false
+    allowed_for_capabilities:
+      - diagnostic
+      - operator_demo
+    blocked_capabilities: []
+    bypass_reason: Dreamview is not required for offline CI or non-demo analysis.
+    notes: Dreamview is operator evidence, not planning/control health proof.

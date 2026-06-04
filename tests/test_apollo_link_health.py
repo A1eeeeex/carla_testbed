@@ -304,6 +304,37 @@ def test_missing_required_artifact_is_insufficient_not_pass(tmp_path: Path) -> N
     assert report["can_claim_unassisted_natural_driving"] is False
 
 
+def test_missing_obstacle_contract_blocks_unassisted_claim(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    (run_dir / "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json").unlink()
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert report["layers"]["perception_gt_obstacles"]["status"] == "insufficient_data"
+    assert "perception_gt_obstacles:insufficient_data" in report["why_not_claimable"]
+    assert report["can_claim_unassisted_natural_driving"] is False
+
+
+def test_traffic_light_scenario_missing_contract_blocks_claim(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    summary_path = run_dir / "summary.json"
+    manifest_path = run_dir / "manifest.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    summary["scenario_id"] = "traffic_light_red_stop"
+    summary["scenario_class"] = "traffic_light_red_stop"
+    manifest["scenario_id"] = "traffic_light_red_stop"
+    manifest["scenario_class"] = "traffic_light_red_stop"
+    _write_json(summary_path, summary)
+    _write_json(manifest_path, manifest)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert report["layers"]["traffic_light_gt"]["status"] == "insufficient_data"
+    assert "traffic_light_gt:insufficient_data" in report["why_not_claimable"]
+    assert report["can_claim_unassisted_natural_driving"] is False
+
+
 def test_cli_writes_report(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     out = tmp_path / "out"

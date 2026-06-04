@@ -109,6 +109,19 @@ def test_placeholder_signal_ids_are_not_treated_as_verified() -> None:
     assert "stop_line_id_placeholder_unverified" in message["warnings"]
 
 
+def test_force_green_message_is_not_claim_grade() -> None:
+    message = build_traffic_light_gt_message_dict(
+        "GREEN",
+        verified_mapping(),
+        traffic_light_policy="force_green",
+        color_source="forced_green",
+    )
+
+    assert message["status"] == "warn"
+    assert "traffic_light_policy_force_green_not_claim_grade" in message["warnings"]
+    assert "traffic_light_color_source_not_claim_grade" in message["warnings"]
+
+
 def test_mock_publisher_records_messages_and_warnings() -> None:
     publisher = MockTrafficLightGTPublisher()
     message = publisher.publish_state("UNKNOWN", verified_mapping(), timestamp_sec=3.0, frame_id=30)

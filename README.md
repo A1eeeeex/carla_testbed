@@ -100,6 +100,8 @@ New core behavior should be shaped around the harness, config schema, backend co
   - 面向读者的 Apollo 当前模块逻辑说明；解释哪些是真 Apollo 模块、哪些由 CARLA truth-input 替代。
 - `docs/apollo_algorithm_inventory.md`
   - Apollo 模块化算法栈清单；区分 upstream、replayed、CARLA GT port 和 Town01 tuned variant。
+- `docs/apollo_reference_chain.md`
+  - Apollo 官方/成熟 bridge 期望链条；配置化列出 module dependencies、required channels、GT replacement contracts 和 claim-grade evidence boundaries。
 - `docs/apollo_reproduction.md`
   - Apollo L0-L5 复现层级；冻结 environment/replay/adapter/shadow/closed-loop 证据和归因规则。
 - `docs/apollo_town01_truth_natural_driving.md`
@@ -136,6 +138,7 @@ New core behavior should be shaped around the harness, config schema, backend co
 - `docs/apollo_mvp_bridge.md`
 - `docs/apollo_current_module_logic.md`
 - `docs/apollo_algorithm_inventory.md`
+- `docs/apollo_reference_chain.md`
 - `docs/apollo_reproduction.md`
 - `docs/apollo_town01_truth_natural_driving.md`
 - `docs/town01_route_health.md`

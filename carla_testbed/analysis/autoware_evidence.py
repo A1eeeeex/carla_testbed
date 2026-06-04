@@ -64,6 +64,7 @@ def analyze_autoware_evidence_run_dir(
     traffic_light_contract_path = _find_first(
         root,
         (
+            "analysis/traffic_light_contract/traffic_light_contract_report.json",
             "analysis/traffic_light/traffic_light_contract_report.json",
             "traffic_light_contract_report.json",
         ),

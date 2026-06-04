@@ -357,8 +357,10 @@ def _traffic_light_evidence_paths() -> list[str]:
     return [
         "analysis/traffic_light/traffic_light_evidence_report.json",
         "traffic_light_evidence_report.json",
+        "analysis/traffic_light_behavior/traffic_light_behavior_report.json",
         "analysis/traffic_light/traffic_light_behavior_report.json",
         "traffic_light_behavior_report.json",
+        "analysis/traffic_light_contract/traffic_light_contract_report.json",
         "analysis/traffic_light/traffic_light_contract_report.json",
         "traffic_light_contract_report.json",
     ]

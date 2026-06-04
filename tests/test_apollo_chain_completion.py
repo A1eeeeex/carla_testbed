@@ -1,0 +1,463 @@
+from __future__ import annotations
+
+import json
+from copy import deepcopy
+from pathlib import Path
+
+import yaml
+
+from carla_testbed.algorithms.gt_replacement_matrix import load_gt_replacement_matrix
+from carla_testbed.analysis.apollo_chain_completion import (
+    APOLLO_CHAIN_COMPLETION_SCHEMA_VERSION,
+    analyze_apollo_chain_completion_run_dir,
+    write_apollo_chain_completion_report,
+)
+from carla_testbed.analysis.apollo_link_health import analyze_apollo_link_health_run_dir
+
+REFERENCE = "configs/reference/apollo_reference_chain.yaml"
+DEFAULT_REPLACEMENT = "configs/reference/apollo_gt_replacement_matrix.yaml"
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _base_run(tmp_path: Path, *, scenario_class: str = "lane_keep") -> Path:
+    run_dir = tmp_path / "run"
+    scenario_id = "traffic_light_red_stop" if scenario_class == "traffic_light_red_stop" else "lane_keep_097"
+    _write_json(
+        run_dir / "summary.json",
+        {
+            "run_id": "run",
+            "scenario_id": scenario_id,
+            "scenario_class": scenario_class,
+            "route_id": "097",
+            "backend": "apollo_cyberrt",
+            "runtime_contract": {"status": "aligned"},
+            "routing_materialized": True,
+            "routing_success_count": 1,
+            "planning_materialized": True,
+            "planning_nonempty_ratio": 1.0,
+        },
+    )
+    _write_json(
+        run_dir / "manifest.json",
+        {
+            "run_id": "run",
+            "scenario_id": scenario_id,
+            "scenario_class": scenario_class,
+            "route_id": "097",
+            "backend": "apollo_cyberrt",
+            "control_source": "/apollo/control",
+            "transport_mode": "ros2_gt",
+            "algorithm_variant_id": "apollo_ported_carla_gt",
+            "runtime_contract": {"status": "aligned"},
+            "carla_world": {
+                "configured_town": "Town01",
+                "loaded_map_name": "Town01",
+                "matches_configured_town": True,
+                "spawn_point_count": 255,
+            },
+            "assist_ledger": {
+                "schema_version": "assist_ledger.v1",
+                "active_assists": [],
+                "blocking_assists": [],
+                "non_blocking_assists": [],
+                "assist_sources": {},
+                "assist_confidence": "explicit",
+                "source_artifact": "manifest",
+                "can_claim_unassisted_natural_driving": True,
+            },
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/cyber_bridge_stats.json",
+        {
+            "routing_success_count": 1,
+            "control_rx_count": 100,
+            "control_tx_count": 100,
+            "apply_control_count": 100,
+        },
+    )
+    _write_json(run_dir / "artifacts/bridge_health_summary.json", {"status": "pass"})
+    _write_json(run_dir / "artifacts/bridge_transport_summary.json", {"status": "pass"})
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {"status": "pass", "messages_with_nonzero_trajectory_points": 100},
+    )
+    _write_json(
+        run_dir / "analysis/apollo_channel_health/apollo_channel_health_report.json",
+        {"schema_version": "apollo_channel_health_report.v1", "status": "pass"},
+    )
+    _write_json(
+        run_dir / "analysis/localization_contract/localization_contract_report.json",
+        {
+            "schema_version": "apollo_localization_contract.v1",
+            "verdict": {"status": "pass", "blocking_reasons": []},
+            "channel": {"status": "pass"},
+            "pose_consistency": {
+                "heading_error_to_route_p95_rad": 0.01,
+                "heading_error_to_lane_p95_rad": 0.02,
+            },
+            "reference_point": {
+                "position_uses_vrp": True,
+                "vehicle_reference_hard_gate_eligible": True,
+            },
+            "time": {"measurement_header_delta_ms_p95": 0.0},
+            "apollo_hdmap_projection": {
+                "file_present": True,
+                "official_source_available": True,
+                "claim_grade": True,
+                "status": "pass",
+                "blocking_reasons": [],
+                "warnings": [],
+            },
+            "warnings": [],
+        },
+    )
+    _write_json(
+        run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
+        {
+            "schema_version": "apollo_reference_line_contract.v1",
+            "status": "pass",
+            "blocking_reasons": [],
+            "warnings": [],
+            "metrics": {"control_ref_heading_error_p95_rad": 0.01},
+            "evidence": {"nonempty_trajectory_ratio": 1.0},
+            "apollo_hdmap_projection": {
+                "file_present": True,
+                "official_source_available": True,
+                "claim_grade": True,
+                "status": "pass",
+                "blocking_reasons": [],
+                "warnings": [],
+            },
+        },
+    )
+    _write_json(
+        run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
+        {
+            "schema_version": "apollo_control_handoff.v1",
+            "verdict": "pass",
+            "failure_stage": "none",
+            "blocking_reasons": [],
+            "warnings": [],
+            "control_channel": {"message_count": 100},
+            "bridge_receive": {"control_rx_count": 100},
+            "mapping_and_apply": {"apply_control_count": 100},
+            "vehicle_response": {"status": "pass"},
+        },
+    )
+    _write_json(
+        run_dir / "analysis/control_health/control_health_report.json",
+        {
+            "schema_version": "control_health_report.v1",
+            "status": "pass",
+            "failure_reason": None,
+            "metrics": {
+                "lateral_guard_apply_count": 0,
+                "trajectory_contract_guard_apply_count": 0,
+            },
+            "warnings": [],
+        },
+    )
+    _write_json(
+        run_dir / "analysis/control_attribution/control_attribution_report.json",
+        {"schema_version": "control_attribution.v1", "verdict": "pass"},
+    )
+    _write_json(
+        run_dir / "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json",
+        {"schema_version": "obstacle_gt_contract.v1", "status": "pass", "errors": [], "warnings": []},
+    )
+    _write_json(
+        run_dir / "analysis/prediction_evidence/prediction_evidence_report.json",
+        {
+            "schema_version": "prediction_evidence.v1",
+            "prediction_mode": "native_observed",
+            "prediction_message_count": 50,
+            "prediction_channel_available": True,
+            "hard_gate_eligible": True,
+            "blocking_capabilities": [],
+            "verdict": "pass",
+            "warnings": [],
+        },
+    )
+    _write_json(
+        run_dir / "analysis/natural_driving/natural_driving_report.json",
+        {
+            "schema_version": "natural_driving_report.v1",
+            "verdict": {"status": "pass"},
+            "can_claim_unassisted_natural_driving": True,
+            "blocking_reasons": [],
+            "warnings": [],
+        },
+    )
+    _write_json(
+        run_dir / "analysis/traffic_light_contract/traffic_light_contract_report.json",
+        {"schema_version": "traffic_light_contract_report.v1", "status": "pass"},
+    )
+    _write_json(
+        run_dir / "analysis/traffic_light_evidence/traffic_light_evidence_report.json",
+        {
+            "schema_version": "traffic_light_evidence.v1",
+            "status": "pass",
+            "planning_consumed": True,
+            "behavior_observed": True,
+        },
+    )
+    _write_json(
+        run_dir / "analysis/traffic_light_behavior/traffic_light_behavior_report.json",
+        {"schema_version": "traffic_light_behavior.v1", "status": "pass"},
+    )
+    return run_dir
+
+
+def _claim_grade_replacement_matrix(tmp_path: Path, *, prediction_bypass_reason: bool = True) -> Path:
+    matrix = deepcopy(load_gt_replacement_matrix(DEFAULT_REPLACEMENT))
+    for module in matrix["modules"]:
+        module["current_evidence_status"] = "pass"
+        module["hard_gate_eligible"] = module["name"] != "dreamview"
+        module["blocked_capabilities"] = []
+        module["allowed_for_capabilities"] = [
+            "lane_keep",
+            "curve",
+            "junction",
+            "traffic_light",
+            "closed_loop",
+        ]
+        if module["name"] == "prediction":
+            if prediction_bypass_reason:
+                module["replacement_status"] = "native"
+                module["bypass_reason"] = None
+            else:
+                module["replacement_status"] = "bypassed"
+                module["bypass_reason"] = None
+        if module["name"] == "traffic_light_perception":
+            module["required_evidence"] = [
+                "traffic_light_contract_report.json",
+                "traffic_light_evidence_report.json",
+                "planning_consumed traffic-light evidence",
+                "traffic_light_behavior_report.json behavior observed evidence",
+            ]
+        if module["name"] == "vehicle_interface":
+            module["required_evidence"] = [
+                "control_attribution_report.json with raw/mapped/applied/vehicle response evidence",
+                "control_health_report.json",
+            ]
+    path = tmp_path / "replacement.yaml"
+    path.write_text(yaml.safe_dump(matrix, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def test_full_fixture_closed_loop_pass(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["schema_version"] == APOLLO_CHAIN_COMPLETION_SCHEMA_VERSION
+    assert report["capability_status"]["closed_loop"] == "pass"
+    assert report["failure_stage"] == "none"
+    assert report["can_claim_truth_input_closed_loop"] is True
+    assert report["can_claim_unassisted_natural_driving"] is True
+    assert "dreamview" not in report["blocking_modules"]
+
+
+def test_missing_control_handoff_blocks_closed_loop(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    (run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json").unlink()
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["module_statuses"]["control"]["evidence_status"] == "missing"
+    assert report["capability_status"]["closed_loop"] == "insufficient_data"
+    assert report["failure_stage"] == "control_handoff"
+
+
+def test_traffic_light_only_schema_blocks_traffic_light_capability(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path, scenario_class="traffic_light_red_stop")
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    (run_dir / "analysis/traffic_light_evidence/traffic_light_evidence_report.json").unlink()
+    (run_dir / "analysis/traffic_light_behavior/traffic_light_behavior_report.json").unlink()
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["module_statuses"]["traffic_light_perception"]["evidence_status"] == "missing"
+    assert report["capability_status"]["traffic_light"] == "insufficient_data"
+
+
+def test_prediction_bypass_without_reason_fails_matrix_validation(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path, prediction_bypass_reason=False)
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["failure_stage"] == "invalid_replacement_matrix"
+    assert report["verdict"] == "fail"
+
+
+def test_chain_completion_reads_prediction_evidence_report(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    _write_json(
+        run_dir / "analysis/prediction_evidence/prediction_evidence_report.json",
+        {
+            "schema_version": "prediction_evidence.v1",
+            "prediction_mode": "bypassed_with_gt_obstacles",
+            "bypass_reason": "static lane_keep route-only diagnostic",
+            "hard_gate_eligible": True,
+            "blocking_capabilities": [],
+            "verdict": "warn",
+            "warnings": ["prediction_bypassed_with_reason"],
+        },
+    )
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["module_statuses"]["prediction"]["evidence_status"] == "warn"
+    assert report["module_statuses"]["prediction"]["hard_gate_eligible"] is True
+
+
+def test_route_health_without_reference_line_blocks_curve_and_junction(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    (run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json").unlink()
+    _write_json(
+        run_dir / "analysis/route_health/route_health.json",
+        {
+            "schema_version": "route_health.v1",
+            "hard_gate_eligible": True,
+            "evidence_level": "claim_grade",
+        },
+    )
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["capability_status"]["lane_keep"] == "warn"
+    assert report["capability_status"]["curve"] == "insufficient_data"
+    assert report["capability_status"]["junction"] == "insufficient_data"
+    assert report["module_statuses"]["planning"]["evidence_status"] == "missing"
+
+
+def test_localization_fail_blocks_driving_capabilities(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    _write_json(
+        run_dir / "analysis/localization_contract/localization_contract_report.json",
+        {
+            "schema_version": "apollo_localization_contract.v1",
+            "verdict": {
+                "status": "fail",
+                "blocking_reasons": ["heading_error_to_lane_high"],
+            },
+            "warnings": [],
+        },
+    )
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["module_statuses"]["localization"]["evidence_status"] == "fail"
+    assert all(report["capability_status"][capability] == "fail" for capability in report["capability_status"])
+    assert report["failure_stage"] == "localization_contract"
+
+
+def test_blocking_assist_prevents_unassisted_claim(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["assist_ledger"]["active_assists"] = ["straight_lane_lateral_stabilizer"]
+    manifest["assist_ledger"]["blocking_assists"] = ["straight_lane_lateral_stabilizer"]
+    manifest["assist_ledger"]["can_claim_unassisted_natural_driving"] = False
+    _write_json(run_dir / "manifest.json", manifest)
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["can_claim_unassisted_natural_driving"] is False
+    assert "no_assist_claim_boundary" in report["blocking_layers"]
+
+
+def test_missing_artifacts_are_insufficient_data_not_pass(tmp_path: Path) -> None:
+    run_dir = tmp_path / "empty_run"
+    run_dir.mkdir()
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["verdict"] == "insufficient_data"
+    assert report["can_claim_truth_input_closed_loop"] is False
+
+
+def test_link_health_layer_summary_is_reused_and_compatible(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    link_report = analyze_apollo_link_health_run_dir(run_dir)
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["link_health_layers"]["localization_gt_contract"] == link_report["layers"][
+        "localization_gt_contract"
+    ]
+    assert report["source_link_health"]["schema_version"] == link_report["schema_version"]
+
+
+def test_write_report_outputs_chain_and_compatible_link_health(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+    out_dir = tmp_path / "out"
+
+    outputs = write_apollo_chain_completion_report(
+        report,
+        out_dir,
+        link_health_report=analyze_apollo_link_health_run_dir(run_dir),
+    )
+
+    assert Path(outputs["apollo_chain_completion_report"]).exists()
+    assert Path(outputs["apollo_chain_completion_summary"]).exists()
+    assert Path(outputs["apollo_link_health_report"]).exists()

@@ -1,0 +1,14 @@
+{
+  "backend": "apollo_cyberrt",
+  "planning_materialized": true,
+  "planning_nonempty_ratio": 1.0,
+  "route_id": "097",
+  "routing_materialized": true,
+  "routing_success_count": 1,
+  "run_id": "chain_control_missing",
+  "runtime_contract": {
+    "status": "aligned"
+  },
+  "scenario_class": "lane_keep",
+  "scenario_id": "lane_keep_097"
+}

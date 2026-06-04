@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -8,7 +9,9 @@ from unittest import mock
 
 from carla_testbed.analysis.obstacle_gt_contract import (
     OBSTACLE_GT_CONTRACT_SCHEMA_VERSION,
+    analyze_obstacle_gt_contract_run_dir,
     analyze_obstacle_gt_contract_records,
+    write_obstacle_gt_contract_report,
 )
 
 
@@ -157,6 +160,20 @@ def test_detection3d_velocity_missing_warns_when_dynamic_behavior_not_claimed() 
 
     assert report["status"] == "warn"
     assert "velocity_source_missing_or_zero_filled" in report["warnings"]
+
+
+def test_run_dir_obstacle_contract_generates_report_from_artifact(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifact = run_dir / "artifacts" / "obstacle_gt_contract.jsonl"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(json.dumps(_obstacle()) + "\n", encoding="utf-8")
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="follow_stop")
+    outputs = write_obstacle_gt_contract_report(report, run_dir / "analysis" / "obstacle_gt_contract")
+
+    assert report["status"] == "pass"
+    assert report["source"]["path"] == str(artifact)
+    assert Path(outputs["obstacle_gt_contract_report"]).exists()
 
 
 def test_tracking_time_non_monotonic_fails() -> None:

@@ -156,6 +156,7 @@ def check_run_artifact_completeness(
     traffic_light_contract_path = _find_first(
         root,
         [
+            "analysis/traffic_light_contract/traffic_light_contract_report.json",
             "analysis/traffic_light/traffic_light_contract_report.json",
             "traffic_light_contract_report.json",
         ],
@@ -163,6 +164,7 @@ def check_run_artifact_completeness(
     traffic_light_behavior_path = _find_first(
         root,
         [
+            "analysis/traffic_light_behavior/traffic_light_behavior_report.json",
             "analysis/traffic_light/traffic_light_behavior_report.json",
             "traffic_light_behavior_report.json",
         ],

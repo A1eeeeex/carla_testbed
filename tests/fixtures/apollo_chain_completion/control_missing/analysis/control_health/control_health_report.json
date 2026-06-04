@@ -1,0 +1,10 @@
+{
+  "failure_reason": "control_handoff_missing",
+  "metrics": {
+    "lateral_guard_apply_count": 0,
+    "trajectory_contract_guard_apply_count": 0
+  },
+  "schema_version": "control_health_report.v1",
+  "status": "fail",
+  "warnings": []
+}

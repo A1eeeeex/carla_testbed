@@ -31,6 +31,37 @@ def analyze_obstacle_gt_contract_file(
     )
 
 
+def analyze_obstacle_gt_contract_run_dir(
+    run_dir: str | Path,
+    *,
+    scenario_class: str | None = None,
+    dynamic_obstacle_required: bool | None = None,
+) -> dict[str, Any]:
+    root = Path(run_dir).expanduser()
+    source_path = _find_first(
+        root,
+        [
+            "artifacts/obstacle_gt_contract.jsonl",
+            "obstacle_gt_contract.jsonl",
+            "analysis/obstacle_gt_contract/obstacle_gt_contract.jsonl",
+            "artifacts/obstacle_gt_contract.json",
+            "obstacle_gt_contract.json",
+        ],
+    )
+    if source_path is None:
+        return analyze_obstacle_gt_contract_records(
+            [],
+            scenario_class=scenario_class,
+            dynamic_obstacle_required=dynamic_obstacle_required,
+            source_path=None,
+        )
+    return analyze_obstacle_gt_contract_file(
+        source_path,
+        scenario_class=scenario_class,
+        dynamic_obstacle_required=dynamic_obstacle_required,
+    )
+
+
 def analyze_obstacle_gt_contract_records(
     records: Sequence[Mapping[str, Any]],
     *,
@@ -217,6 +248,14 @@ def _read_records(path: Path) -> list[dict[str, Any]]:
         if isinstance(payload, dict):
             records.append(payload)
     return records
+
+
+def _find_first(root: Path, relatives: Sequence[str]) -> Path | None:
+    for relative in relatives:
+        path = root / relative
+        if path.exists():
+            return path
+    return None
 
 
 def _record_objects(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:

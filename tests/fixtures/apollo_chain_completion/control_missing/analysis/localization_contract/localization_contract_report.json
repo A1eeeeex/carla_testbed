@@ -1,0 +1,30 @@
+{
+  "apollo_hdmap_projection": {
+    "blocking_reasons": [],
+    "claim_grade": true,
+    "file_present": true,
+    "official_source_available": true,
+    "status": "pass",
+    "warnings": []
+  },
+  "channel": {
+    "status": "pass"
+  },
+  "pose_consistency": {
+    "heading_error_to_lane_p95_rad": 0.02,
+    "heading_error_to_route_p95_rad": 0.01
+  },
+  "reference_point": {
+    "position_uses_vrp": true,
+    "vehicle_reference_hard_gate_eligible": true
+  },
+  "schema_version": "apollo_localization_contract.v1",
+  "time": {
+    "measurement_header_delta_ms_p95": 0.0
+  },
+  "verdict": {
+    "blocking_reasons": [],
+    "status": "pass"
+  },
+  "warnings": []
+}

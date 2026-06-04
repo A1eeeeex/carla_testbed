@@ -82,8 +82,10 @@ When ego behavior is wrong, check in this order unless evidence clearly says oth
 - Do not leave durable knowledge only in `artifacts/`, chat transcripts, or ignored scratch files.
 - If a result is still uncertain or conflicts with other evidence, put it in `reference_pack/reference/05_verified_findings/to_verify_items.md`.
 - For Apollo no-interference natural-driving claims, require the documented
-  localization, reference-line, control-handoff, link-health, natural-driving,
-  and assist-ledger artifacts before writing a capability claim.
+  channel-health, localization, HDMap projection, reference-line,
+  control-handoff, control-health, link-health, traffic-light/obstacle GT,
+  natural-driving, and assist-ledger artifacts before writing a capability
+  claim.
 - `docs/prompt_usually_used.md` is local scratch and is not part of the tracked project documentation surface.
 
 ## Coding Rules

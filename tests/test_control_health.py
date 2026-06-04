@@ -50,6 +50,10 @@ def test_control_health_passes_and_writes_report(tmp_path: Path) -> None:
     assert boundary["steering_parameters_source"] == "runtime_config_or_unknown"
     assert "calibration_profile_missing" in boundary["warnings"]
     assert "steering_parameters_not_backed_by_calibration_profile" in boundary["warnings"]
+    preconditions = report["metrics"]["upstream_contract_preconditions"]
+    assert preconditions["control_oscillation_analysis_eligible"] is True
+    assert preconditions["localization_contract"]["status"] == "pass"
+    assert preconditions["apollo_reference_line_contract"]["status"] == "pass"
     assert Path(outputs["control_health_report"]).is_file()
     assert Path(outputs["control_health_summary"]).is_file()
 
@@ -206,6 +210,75 @@ def test_control_health_applied_throttle_brake_switching_fails(tmp_path: Path) -
     layers = report["metrics"]["oscillation_decomposition"]["layers"]
     assert layers["carla_applied_command"]["status"] == "fail"
     assert report["metrics"]["oscillation_decomposition"]["dominant_oscillation_layer"] == "carla_applied_command"
+
+
+def test_control_health_defers_applied_oscillation_until_upstream_contracts_nonblocking(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    csv_path = run_dir / "timeseries.csv"
+    rows = _read_csv(csv_path)
+    while len(rows) < 12:
+        rows.append(dict(rows[-1]))
+    rows = rows[:12]
+    for index, row in enumerate(rows):
+        row["sim_time"] = str(index * 0.05)
+        row["throttle_raw"] = "0.2"
+        row["brake_raw"] = "0.0"
+        row["throttle_mapped"] = "0.2"
+        row["brake_mapped"] = "0.0"
+        row["bridge_steer_mapped"] = "0.0"
+        row["throttle_applied"] = "0.8" if index % 2 == 0 else "0.0"
+        row["brake_applied"] = "0.0" if index % 2 == 0 else "0.7"
+        row["carla_steer_applied"] = "0.0"
+    _write_csv(csv_path, rows)
+
+    localization_path = (
+        run_dir / "analysis/localization_contract/localization_contract_report.json"
+    )
+    localization = json.loads(localization_path.read_text(encoding="utf-8"))
+    localization["verdict"] = {
+        "status": "fail",
+        "blocking_reasons": ["heading_error_to_lane_high"],
+    }
+    localization_path.write_text(json.dumps(localization, indent=2) + "\n", encoding="utf-8")
+
+    report = analyze_control_health_run_dir(run_dir)
+    preconditions = report["metrics"]["upstream_contract_preconditions"]
+    layers = report["metrics"]["oscillation_decomposition"]["layers"]
+
+    assert report["status"] == "warn"
+    assert report["failure_reason"] == "control_health_warn"
+    assert "applied_actuation_oscillation_deferred_until_upstream_contracts_nonblocking" in report[
+        "warnings"
+    ]
+    assert preconditions["control_oscillation_analysis_eligible"] is False
+    assert "heading_error_to_lane_high" in preconditions["blocking_reasons"]
+    assert layers["carla_applied_command"]["status"] == "fail"
+    assert report["metrics"]["oscillation_decomposition"]["dominant_oscillation_layer"] == "carla_applied_command"
+
+
+def test_control_health_records_calibration_profile_for_steering_parameters(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["calibration_profile_id"] = "town01_control_actuation_legacy_draft"
+    manifest["actuator_mapping_mode"] = "legacy"
+    manifest["steer_scale"] = 0.25
+    manifest["steering_sign"] = 1.0
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    report = analyze_control_health_run_dir(run_dir)
+    boundary = report["metrics"]["control_mapping_claim_boundary"]
+
+    assert boundary["calibration_profile_id"] == "town01_control_actuation_legacy_draft"
+    assert boundary["steer_scale"] == 0.25
+    assert boundary["steering_sign"] == 1.0
+    assert boundary["steering_parameters_source"] == "calibration_profile"
+    assert boundary["claim_grade_control_mapping"] is False
+    assert "legacy_mapping_smoke_only" in boundary["warnings"]
 
 
 def test_control_health_bridge_mapped_command_oscillation_is_not_mislabelled_as_applied(

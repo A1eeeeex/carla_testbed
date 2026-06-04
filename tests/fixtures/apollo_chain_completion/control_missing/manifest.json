@@ -1,0 +1,29 @@
+{
+  "algorithm_variant_id": "apollo_ported_carla_gt",
+  "assist_ledger": {
+    "active_assists": [],
+    "assist_confidence": "explicit",
+    "assist_sources": {},
+    "blocking_assists": [],
+    "can_claim_unassisted_natural_driving": true,
+    "non_blocking_assists": [],
+    "schema_version": "assist_ledger.v1",
+    "source_artifact": "manifest"
+  },
+  "backend": "apollo_cyberrt",
+  "carla_world": {
+    "configured_town": "Town01",
+    "loaded_map_name": "Town01",
+    "matches_configured_town": true,
+    "spawn_point_count": 255
+  },
+  "control_source": "/apollo/control",
+  "route_id": "097",
+  "run_id": "chain_control_missing",
+  "runtime_contract": {
+    "status": "aligned"
+  },
+  "scenario_class": "lane_keep",
+  "scenario_id": "lane_keep_097",
+  "transport_mode": "ros2_gt"
+}

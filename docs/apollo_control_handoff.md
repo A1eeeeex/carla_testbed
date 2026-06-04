@@ -49,9 +49,17 @@ apply evidence is positive. A successful handoff does not prove behavior
 quality; it only proves the source command reached the bridge and CARLA apply
 surface.
 
+For a no-interference natural-driving claim, follow the full checklist in
+`docs/apollo_town01_truth_natural_driving.md`; this handoff report is one
+required artifact, not the final gate.
+
 ## Boundaries
 
 This report does not change `steer_scale`, does not enable physical mapping, and does not tune Apollo Control. It only records evidence across source control semantics, bridge decoding, mapped/applied controls, and CARLA vehicle response.
+
+`control_health_report.json` decomposes oscillation into Apollo raw command, bridge mapped command, CARLA applied command, vehicle response, and bridge apply cadence. Applied actuation oscillation is only claim-grade control evidence after `localization_contract_report.json` and `apollo_reference_line_contract_report.json` are `pass` or `warn` with no blocking reasons. If those upstream contracts are missing or blocking, applied oscillation remains secondary evidence and should not be hidden with smoothing or PID changes.
+
+Bridge apply cadence and same-frame drop are checked before actuation tuning. If `apply_hz` is not met, or same-frame drops are not explained by CARLA synchronous world ticks, fix the tick/apply scheduling evidence first. Legacy `actuator_mapping_mode` remains smoke/debug evidence; claim-grade control mapping requires physical/calibrated mapping or an explicit calibration profile, and the report must preserve raw -> mapped -> applied command fields.
 
 If the dominant issue appears to be source control semantics, this still does not by itself prove an Apollo algorithm limitation. Check route/reference-line, matched point, target point, localization contract, and lateral semantics reports before making that claim.
 

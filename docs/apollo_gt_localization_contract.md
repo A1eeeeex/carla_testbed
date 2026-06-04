@@ -435,6 +435,9 @@ For no-interference Apollo truth-input evidence, localization is a prerequisite
 contract, not the final behavior verdict. A lane, curve, junction, or
 traffic-light hard gate can only be interpreted through
 `natural_driving_report.json` after the localization report is attached.
+Use the full "No-interference Apollo natural-driving claim checklist" in
+`docs/apollo_town01_truth_natural_driving.md` before turning this report into a
+capability claim.
 
 Operator sequence:
 

@@ -138,8 +138,9 @@ run-local diagnostics include:
 - `analysis/route_start_alignment/route_start_alignment_report.json`
 - `analysis/artifact_completeness/artifact_completeness_report.json`
 - `analysis/obstacle_gt_contract/obstacle_gt_contract_report.json` for obstacle or follow-stop scenarios
-- `analysis/traffic_light/traffic_light_contract_report.json` for traffic-light scenarios
-- `analysis/traffic_light/traffic_light_behavior_report.json` for traffic-light scenarios
+- `analysis/traffic_light_contract/traffic_light_contract_report.json` for traffic-light scenarios
+- `analysis/traffic_light_behavior/traffic_light_behavior_report.json` or legacy
+  `analysis/traffic_light/traffic_light_behavior_report.json` for traffic-light scenarios
 - `analysis/natural_driving/natural_driving_report.json`
 - `analysis/natural_driving/natural_driving_report.csv`
 - `analysis/natural_driving/natural_driving_summary.md`
@@ -160,6 +161,13 @@ suite gate. Missing localization, reference-line, control-handoff,
 traffic-light, obstacle, or assist-ledger evidence must remain
 `insufficient_data`; recording videos or Dreamview screenshots do not promote a
 run to claim-grade evidence.
+
+`apollo_link_health_report.json` aggregates environment/world, bridge runtime,
+channel health, GT localization, HDMap projection, planning reference-line,
+routing/planning/control handoff, control mapping/apply, obstacle GT,
+traffic-light GT, no-assist boundary, and natural-driving outcome layers. A
+missing applicable layer blocks `can_claim_unassisted_natural_driving`; traffic
+light evidence may be `not_applicable` only for non-traffic-light scenarios.
 
 Postprocess may regenerate `analysis/localization_contract/` only when strong
 localization fields or bridge localization stats are present. Plain ego P0

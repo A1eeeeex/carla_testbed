@@ -40,6 +40,7 @@ def analyze_traffic_light_behavior_run_dir(
     contract_path = _find_first(
         root,
         [
+            "analysis/traffic_light_contract/traffic_light_contract_report.json",
             "analysis/traffic_light/traffic_light_contract_report.json",
             "traffic_light_contract_report.json",
         ],

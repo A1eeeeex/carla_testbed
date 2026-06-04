@@ -534,6 +534,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
     traffic_light_contract_path = _find_first(
         run_dir,
         [
+            "analysis/traffic_light_contract/traffic_light_contract_report.json",
             "analysis/traffic_light/traffic_light_contract_report.json",
             "traffic_light_contract_report.json",
         ],
@@ -548,6 +549,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
     traffic_light_behavior_path = _find_first(
         run_dir,
         [
+            "analysis/traffic_light_behavior/traffic_light_behavior_report.json",
             "analysis/traffic_light/traffic_light_behavior_report.json",
             "traffic_light_behavior_report.json",
         ],

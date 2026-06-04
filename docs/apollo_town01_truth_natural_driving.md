@@ -273,8 +273,12 @@ Apollo stop decision artifact or control full-stop evidence.
 
 Truth-input obstacle publication must also be claim bounded. The bridge writes
 `artifacts/obstacle_gt_contract.jsonl` when front-obstacle evidence is
-available, and `tools/analyze_obstacle_gt_contract.py` converts that stream to
-`obstacle_gt_contract_report.json`. The report checks that the ego actor is not
+available, and `tools/analyze_obstacle_gt_contract.py --run-dir <run> --out <run>/analysis/obstacle_gt_contract`
+converts that stream to
+`analysis/obstacle_gt_contract/obstacle_gt_contract_report.json`. Standard
+natural-driving postprocess also writes this report; if the source stream is
+missing it records `insufficient_data` rather than treating obstacle GT as
+claim-grade. The report checks that the ego actor is not
 published as an obstacle, CARLA actor ids map stably to Apollo perception ids,
 position/theta/velocity frame evidence is declared, length/width/height are
 positive, tracking time is monotonic, and dynamic actors are not represented by
@@ -562,7 +566,7 @@ pass. If localization/reference-line lane-heading evidence is blocking, control
 oscillation should stay a secondary blocker until those upstream contracts reach
 `pass` or non-blocking `warn`.
 
-## No-Interference Apollo Natural-Driving Claim Checklist
+## No-interference Apollo natural-driving claim checklist
 
 This checklist is the operator workflow for a no-interference Apollo
 truth-input claim. It is stricter than a short online smoke run. A
@@ -597,7 +601,7 @@ Required run artifacts:
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`.
 - `analysis/control_health/control_health_report.json`.
 - `analysis/apollo_link_health/apollo_link_health_report.json`.
-- `analysis/traffic_light/traffic_light_contract_report.json` and
+- `analysis/traffic_light_contract/traffic_light_contract_report.json` and
   `analysis/traffic_light/traffic_light_behavior_report.json` for
   traffic-light scenarios.
 - `analysis/obstacle_gt_contract/obstacle_gt_contract_report.json` for
@@ -672,7 +676,8 @@ Recommended validation sequence:
 
 1. Offline: `python -m pytest -q`.
 2. Single-run postprocess: run the localization, reference-line,
-   control-handoff, link-health, and natural-driving analyzers listed above.
+   control-handoff, and link-health analyzers listed above, then run
+   `python tools/analyze_town01_natural_driving.py --suite-root <suite> --out <suite>/analysis`.
 3. Strict postprocess: run
    `tools/postprocess_town01_natural_driving.py` with
    `--require-full-target-coverage --fail-on-status fail,warn,insufficient_data`.
@@ -681,10 +686,16 @@ Recommended validation sequence:
    `localization_contract` `pass`/`warn`,
    `apollo_reference_line_contract` at least `warn`, and
    `apollo_control_handoff` `pass`/`warn`.
-5. Online claim candidate: run lane-keep, curve, junction, and
-   `traffic_light_actual` scenarios. Only if every hard gate passes, every
-   required artifact exists, and the assist ledger is clean may the suite set
-   `can_claim_unassisted_natural_driving=true`.
+5. Online claim candidate: run lane-keep, curve, junction, and traffic-light
+   scenarios with `traffic_light_policy=carla_actual`. Only if every hard gate
+   passes, every required artifact exists, and the assist ledger is clean may
+   the suite set `can_claim_unassisted_natural_driving=true`.
+
+Each final submission or handoff for this workflow should state the modified
+files, newly generated artifact/report paths, pytest commands that passed,
+what is still not proven, and the next online run or postprocess check that
+should be performed. Keep this close-out factual; do not convert a smoke run
+or diagnostic report into a natural-driving capability claim.
 
 ## CI-Friendly Validation
 
@@ -761,7 +772,7 @@ ROS2, or CyberRT. It attempts to:
 - generate `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`
   from planning/control reference-line artifacts and the localization contract
   when available;
-- generate `analysis/traffic_light/traffic_light_contract_report.json` from
+- generate `analysis/traffic_light_contract/traffic_light_contract_report.json` from
   the configured Town01 Apollo route/signal contract and CARLA-to-Apollo
   traffic-light mapping; placeholder ids remain `warn`-level evidence;
 - create an explicit `insufficient_data` traffic-light contract report when the

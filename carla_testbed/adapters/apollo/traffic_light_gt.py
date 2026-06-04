@@ -190,6 +190,11 @@ def build_traffic_light_gt_message_dict(
         warnings.append("traffic_light_state_unknown")
 
     confidence_value = _clamp_confidence(confidence)
+    policy_text = str(traffic_light_policy or "").strip()
+    if policy_text == "force_green":
+        warnings.append("traffic_light_policy_force_green_not_claim_grade")
+    elif policy_text and policy_text != "carla_actual":
+        warnings.append("traffic_light_policy_not_claim_grade")
     source_text = str(color_source or "").strip()
     if source_text not in {"carla_actor_state", "carla_landmark_state", "carla_traffic_light_actor_state"}:
         warnings.append("traffic_light_color_source_not_claim_grade")
@@ -204,7 +209,7 @@ def build_traffic_light_gt_message_dict(
         "confidence": confidence_value,
         "timestamp_sec": timestamp_sec,
         "frame_id": frame_id,
-        "traffic_light_policy": traffic_light_policy,
+        "traffic_light_policy": policy_text or None,
         "color_source": source_text or None,
         "contain_lights": contains,
         "stop_line_id": stop_line_id,
