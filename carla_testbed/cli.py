@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import dataclasses
 import json
 import os
@@ -13,10 +14,26 @@ from typing import Any, Mapping
 from carla_testbed.config import ConfigError, TestbedConfig, load_config
 from carla_testbed.analysis.artifact_completeness import check_run_artifact_completeness
 from carla_testbed.analysis.route_health_report import route_health_inspect_summary
+from carla_testbed.backends.registry import default_backend_registry
 from carla_testbed.contracts import EgoState, FrameStamp, SceneTruth
 from carla_testbed.control import DummyController
 from carla_testbed.doctor import doctor_main
+from carla_testbed.evidence import (
+    build_and_write_evidence_bundle,
+    package_run_evidence,
+    run_and_write_gate,
+)
+from carla_testbed.platform.compiler import (
+    PlatformCompileError,
+    compile_run_plan,
+    compile_suite_matrix,
+    plan_to_yaml,
+    write_run_plan,
+)
+from carla_testbed.platform.plan import RunPlan
+from carla_testbed.platform.registry import PlatformRegistry, PlatformRegistryError
 from carla_testbed.record import RunArtifactStore, build_manifest, build_summary
+from carla_testbed.record.registry import default_recorder_registry
 from carla_testbed.utils.env import resolve_repo_root
 
 try:
@@ -56,9 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     run_p = sub.add_parser("run", help="run a configured scenario or dispatch a legacy run config")
-    run_p.add_argument("--config", required=True, type=Path)
+    run_p.add_argument("--config", type=Path)
+    run_p.add_argument("--plan", type=Path, help="resolved run_plan.v1 YAML")
     run_p.add_argument("--override", action="append", default=[])
     run_p.add_argument("--dry-run", action="store_true")
+    run_p.add_argument("--plan-only", action="store_true")
+    run_p.add_argument("--legacy-dispatch", action="store_true")
     run_p.add_argument("--print-effective-config", action="store_true")
     run_p.add_argument("--run-dir", type=Path)
     run_p.add_argument("--log-level", default=None)
@@ -77,6 +97,43 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_p.add_argument("output_dir", type=Path)
 
     sub.add_parser("doctor", help="环境检查")
+
+    list_p = sub.add_parser("list", help="list platform profile registry entries")
+    list_p.add_argument(
+        "kind",
+        choices=("platforms", "algorithms", "scenarios", "recording", "recorders", "gates", "suites", "backends"),
+    )
+    list_p.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    plan_p = sub.add_parser("plan", help="compile an offline RunPlan; does not start runtime")
+    plan_p.add_argument("--request", type=Path, help="run_request.v1 YAML with include profiles")
+    plan_p.add_argument("--platform")
+    plan_p.add_argument("--algorithm")
+    plan_p.add_argument("--scenario")
+    plan_p.add_argument("--record", "--recording", dest="recording", default="none")
+    plan_p.add_argument("--gate", default="smoke")
+    plan_p.add_argument("--suite", type=Path, help="compile suite matrix instead of a single run")
+    plan_p.add_argument("--out", type=Path, help="output plan YAML path or directory for suite matrix")
+    plan_p.add_argument("--print", action="store_true", dest="print_plan")
+
+    suite_p = sub.add_parser("suite", help="compile or dry-run a RunPlan suite matrix")
+    suite_p.add_argument("action", nargs="?", default="dry-run", choices=("dry-run", "run"))
+    suite_p.add_argument("--suite", required=True, type=Path)
+    suite_p.add_argument("--out", required=True, type=Path)
+    suite_p.add_argument("--dry-run", action="store_true")
+    suite_p.add_argument("--legacy-dispatch", action="store_true")
+
+    analyze_p = sub.add_parser("analyze", help="build evidence bundle and gate report for a run dir")
+    analyze_p.add_argument("--run-dir", required=True, type=Path)
+    analyze_p.add_argument("--plan", type=Path)
+    analyze_p.add_argument("--gate", help="gate profile name; defaults to plan gate if a plan is provided")
+    analyze_p.add_argument("--out", type=Path, help="analysis output root; defaults to run_dir/analysis")
+
+    pack_p = sub.add_parser("pack", help="package run evidence for review")
+    pack_p.add_argument("--run-dir", required=True, type=Path)
+    pack_p.add_argument("--out", required=True, type=Path)
+    pack_p.add_argument("--profile", default="claim", choices=("metrics", "debug", "demo", "claim"))
+    pack_p.add_argument("--include-large-artifacts", action="store_true")
     return ap
 
 
@@ -282,9 +339,58 @@ def _read_json_optional(path: Path) -> Mapping[str, Any] | None:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    if args.plan:
+        try:
+            plan = _read_run_plan(args.plan)
+        except PlatformCompileError as exc:
+            print(f"[run] failed to read plan: {exc}", file=sys.stderr)
+            return 2
+        backend = default_backend_registry().for_plan(plan)
+        preflight = backend.preflight(plan).to_dict()
+        print(
+            json.dumps(
+                {
+                    "schema_version": "run_dispatch_preview.v1",
+                    "run_id": plan.identity.run_id,
+                    "plan": str(args.plan),
+                    "backend": plan.platform.name,
+                    "plan_only": bool(args.plan_only),
+                    "dry_run": bool(args.dry_run),
+                    "legacy_dispatch": bool(args.legacy_dispatch),
+                    "preflight": preflight,
+                    "legacy_dispatch_hint": dict(backend.legacy_dispatch_hint(plan)),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        if args.plan_only or args.dry_run:
+            return 0
+        if args.legacy_dispatch:
+            print(
+                "[run] legacy dispatch from RunPlan is not wired yet; use the hint above.",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            "[run] RunPlan runtime dispatch is not implemented yet. "
+            "Use --plan-only/--dry-run or legacy configs/io commands.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not args.config:
+        print("[run] either --config or --plan is required", file=sys.stderr)
+        return 2
     try:
         cfg = load_config(args.config, overrides=_parse_override_pairs(args.override))
     except ConfigError as exc:
+        if not (args.legacy_dispatch or args.dry_run):
+            print(
+                f"[run] typed config load failed and --legacy-dispatch was not set: {exc}",
+                file=sys.stderr,
+            )
+            return 2
         print(f"[run] typed config load failed, falling back to legacy runner: {exc}", file=sys.stderr)
         from tbio.scripts.run import main as legacy_run_main
 
@@ -307,6 +413,214 @@ def _cmd_run(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     return 2
+
+
+def _cmd_list(args: argparse.Namespace) -> int:
+    if args.kind == "backends":
+        registry = default_backend_registry()
+        names = registry.names()
+        if args.json:
+            print(json.dumps([{"name": name} for name in names], indent=2, sort_keys=True))
+        else:
+            for name in names:
+                print(name)
+        return 0
+    if args.kind == "recorders":
+        registry = default_recorder_registry()
+        names = registry.names()
+        if args.json:
+            print(json.dumps([{"name": name} for name in names], indent=2, sort_keys=True))
+        else:
+            for name in names:
+                print(name)
+        return 0
+    registry = PlatformRegistry(repo_root=resolve_repo_root())
+    try:
+        entries = registry.list(args.kind)
+    except PlatformRegistryError as exc:
+        print(f"[list] failed: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "kind": entry.kind,
+                        "name": entry.name,
+                        "path": str(entry.path),
+                        "schema_version": entry.payload.get("schema_version"),
+                    }
+                    for entry in entries
+                ],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    for entry in entries:
+        print(f"{entry.name}\t{entry.path}")
+    return 0
+
+
+def _cmd_plan(args: argparse.Namespace) -> int:
+    registry = PlatformRegistry(repo_root=resolve_repo_root())
+    try:
+        if args.suite:
+            plans = compile_suite_matrix(args.suite, registry=registry)
+            if args.out:
+                output = args.out
+                output.mkdir(parents=True, exist_ok=True)
+                for plan in plans:
+                    write_run_plan(plan, output / f"{plan.identity.run_id}.plan.resolved.yaml")
+            payload = {
+                "schema_version": "run_plan_matrix.v1",
+                "suite": str(args.suite),
+                "plan_count": len(plans),
+                "run_ids": [plan.identity.run_id for plan in plans],
+                "output_dir": str(args.out) if args.out else None,
+            }
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+
+        plan = compile_run_plan(
+            args.request,
+            platform=args.platform,
+            algorithm=args.algorithm,
+            scenario=args.scenario,
+            recording=args.recording,
+            gate=args.gate,
+            registry=registry,
+        )
+        if args.out:
+            write_run_plan(plan, args.out)
+            print(f"[plan] wrote {args.out}")
+        if args.print_plan or not args.out:
+            print(plan_to_yaml(plan))
+        return 0
+    except PlatformCompileError as exc:
+        print(f"[plan] failed: {exc}", file=sys.stderr)
+        return 2
+
+
+def _cmd_suite(args: argparse.Namespace) -> int:
+    registry = PlatformRegistry(repo_root=resolve_repo_root())
+    try:
+        plans = compile_suite_matrix(args.suite, registry=registry)
+    except PlatformCompileError as exc:
+        print(f"[suite] failed: {exc}", file=sys.stderr)
+        return 2
+    out = args.out.expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+    plan_dir = out / "plans"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    for plan in plans:
+        write_run_plan(plan, plan_dir / f"{plan.identity.run_id}.plan.resolved.yaml")
+    manifest_path = out / "suite_manifest.json"
+    matrix_path = out / "run_matrix.csv"
+    manifest = {
+        "schema_version": "suite_dry_run_manifest.v1",
+        "suite": str(args.suite),
+        "action": args.action,
+        "dry_run": True,
+        "legacy_dispatch": bool(args.legacy_dispatch),
+        "plan_count": len(plans),
+        "plan_dir": str(plan_dir),
+        "run_ids": [plan.identity.run_id for plan in plans],
+        "starts_runtime": False,
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with matrix_path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(
+            fh,
+            fieldnames=[
+                "run_id",
+                "suite_id",
+                "platform",
+                "algorithm",
+                "scenario_id",
+                "scenario_class",
+                "recording",
+                "gate",
+                "plan_path",
+            ],
+        )
+        writer.writeheader()
+        for plan in plans:
+            writer.writerow(
+                {
+                    "run_id": plan.identity.run_id,
+                    "suite_id": plan.identity.suite_id,
+                    "platform": plan.platform.name,
+                    "algorithm": plan.algorithm.variant_id,
+                    "scenario_id": plan.scenario.scenario_id,
+                    "scenario_class": plan.scenario.scenario_class,
+                    "recording": plan.recording.profile,
+                    "gate": plan.gate.profile,
+                    "plan_path": str(plan_dir / f"{plan.identity.run_id}.plan.resolved.yaml"),
+                }
+            )
+    print(json.dumps(manifest, indent=2, sort_keys=True))
+    if args.action == "run" and not (args.dry_run or args.legacy_dispatch):
+        print("[suite] real RunPlan suite dispatch is not implemented; dry-run artifacts were written", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _cmd_analyze(args: argparse.Namespace) -> int:
+    plan = _read_run_plan(args.plan) if args.plan else None
+    gate_payload = None
+    if args.gate:
+        try:
+            gate_entry = PlatformRegistry(repo_root=resolve_repo_root()).get("gate", args.gate)
+        except PlatformRegistryError as exc:
+            print(f"[analyze] failed: {exc}", file=sys.stderr)
+            return 2
+        gate_payload = {
+            "profile": gate_entry.payload.get("name") or args.gate,
+            **dict(gate_entry.payload.get("gate") or {}),
+        }
+    root = args.run_dir.expanduser()
+    output_root = args.out.expanduser() if args.out else root / "analysis"
+    bundle_paths = build_and_write_evidence_bundle(
+        root,
+        out_dir=output_root / "evidence_bundle",
+        plan=plan,
+    )
+    gate_paths = run_and_write_gate(
+        root,
+        out_dir=output_root / "gate",
+        plan=plan,
+        gate=gate_payload,
+    )
+    print(json.dumps({"evidence_bundle": bundle_paths, "gate": gate_paths}, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_pack(args: argparse.Namespace) -> int:
+    result = package_run_evidence(
+        args.run_dir,
+        out_path=args.out,
+        profile=args.profile,
+        include_large_artifacts=args.include_large_artifacts,
+    )
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    return 0
+
+
+def _read_run_plan(path: Path | None) -> RunPlan:
+    import yaml
+
+    if path is None:
+        raise PlatformCompileError("plan path is required")
+    try:
+        payload = yaml.safe_load(path.expanduser().read_text(encoding="utf-8")) or {}
+    except FileNotFoundError as exc:
+        raise PlatformCompileError(f"plan file not found: {path}") from exc
+    except yaml.YAMLError as exc:
+        raise PlatformCompileError(f"failed to parse plan YAML {path}: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise PlatformCompileError(f"{path}: root must be a mapping")
+    return RunPlan.from_dict(payload)
 
 
 def main(argv=None) -> int:
@@ -337,6 +651,16 @@ def main(argv=None) -> int:
     elif args.cmd == "doctor":
         doctor_main()
         return 0
+    elif args.cmd == "list":
+        return _cmd_list(args)
+    elif args.cmd == "plan":
+        return _cmd_plan(args)
+    elif args.cmd == "suite":
+        return _cmd_suite(args)
+    elif args.cmd == "analyze":
+        return _cmd_analyze(args)
+    elif args.cmd == "pack":
+        return _cmd_pack(args)
     else:
         ap.print_help()
         return 2

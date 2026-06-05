@@ -86,6 +86,32 @@ def test_high_heading_error_fails_with_suspected_layers(tmp_path: Path) -> None:
     assert "lane_direction" in report["suspected_failure_layers"]
 
 
+def test_claim_grade_projection_uses_strict_heading_and_lateral_thresholds(tmp_path: Path) -> None:
+    heading_path = tmp_path / "heading.jsonl"
+    lateral_path = tmp_path / "lateral.jsonl"
+    _write_jsonl(heading_path, _projection_rows(heading_error_rad=0.06, lateral_error_m=0.05))
+    _write_jsonl(lateral_path, _projection_rows(heading_error_rad=0.01, lateral_error_m=0.60))
+
+    heading_report = analyze_apollo_hdmap_projection_file(heading_path)
+    lateral_report = analyze_apollo_hdmap_projection_file(lateral_path)
+
+    assert heading_report["status"] == "fail"
+    assert "apollo_hdmap_projection_heading_error_high" in heading_report["blocking_reasons"]
+    assert lateral_report["status"] == "fail"
+    assert "apollo_hdmap_projection_lateral_error_high" in lateral_report["blocking_reasons"]
+
+
+def test_claim_grade_projection_requires_minimum_sample_count(tmp_path: Path) -> None:
+    path = tmp_path / "apollo_hdmap_projection.jsonl"
+    _write_jsonl(path, _projection_rows(heading_error_rad=0.01, lateral_error_m=0.05)[:1])
+
+    report = analyze_apollo_hdmap_projection_file(path)
+
+    assert report["status"] == "fail"
+    assert report["claim_grade"] is False
+    assert "apollo_hdmap_projection_sample_count_low" in report["blocking_reasons"]
+
+
 def test_cli_writes_projection_report(tmp_path: Path) -> None:
     path = tmp_path / "apollo_hdmap_projection.jsonl"
     out = tmp_path / "out"

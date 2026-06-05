@@ -1,0 +1,45 @@
+schema_version: gate_profile.v1
+name: claim_natural_driving
+gate:
+  can_claim_natural_driving: true
+  claim_requires:
+    - no_assist
+    - route_established
+    - planning_nonempty_ratio>=0.8
+    - channel_health_pass
+    - localization_contract_claim_grade
+    - hdmap_projection_claim_grade
+    - reference_line_contract_pass
+    - control_handoff_pass
+    - control_attribution_pass
+    - prediction_evidence_explicit
+    - natural_driving_report
+  fail_on_status:
+    - fail
+    - warn
+    - insufficient_data
+evidence:
+  required_analyzers:
+    - artifact_completeness
+    - route_health
+    - channel_health
+    - localization_contract
+    - apollo_hdmap_projection
+    - apollo_reference_line_contract
+    - planning_materialization
+    - apollo_control_handoff
+    - control_health
+    - control_attribution
+    - prediction_evidence
+    - assist_ledger
+    - natural_driving
+  optional_analyzers:
+    - traffic_light_contract
+    - obstacle_gt_contract
+  expected_artifacts:
+    - manifest.json
+    - summary.json
+    - events.jsonl
+    - timeseries.csv
+    - artifacts/topic_publish_stats.jsonl
+    - artifacts/control_apply_trace.jsonl

@@ -1,0 +1,32 @@
+schema_version: scenario_spec.v1
+scenario_id: town01_traffic_light_red_stop
+scenario_class: traffic_light_red_stop
+map: Town01
+gate_role: hard_gate
+route:
+  spawn_ref: town01_tl_red_spawn
+  goal_ref: town01_tl_red_goal
+  route_ref: town01_traffic_light_red_stop
+actors:
+  ego:
+    blueprint: vehicle.lincoln.mkz_2020
+  dynamic_obstacles: []
+  traffic_lights:
+    required: true
+requirements:
+  route_required: true
+  localization_required: true
+  hdmap_projection_required: true
+  reference_line_required: true
+  planning_required: true
+  control_required: true
+  traffic_light_required: true
+  traffic_light_policy: carla_actual
+success_intent:
+  red_stop_required: true
+  no_force_green: true
+  distance_to_stop_line_required: true
+tags:
+  - town01
+  - traffic_light
+  - hard_gate

@@ -136,6 +136,31 @@ def _base_run(tmp_path: Path, *, scenario_class: str = "lane_keep") -> Path:
         },
     )
     _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "run_id": "run",
+            "route_id": "097",
+            "scenario_class": scenario_class,
+            "planning_message_count": 100,
+            "nonempty_trajectory_count": 100,
+            "nonempty_trajectory_ratio": 1.0,
+            "after_routing_success_nonempty_ratio": 1.0,
+            "after_localization_chassis_ready_nonempty_ratio": 1.0,
+            "first_nonempty_after_routing_latency_s": 0.2,
+            "longest_empty_streak": 0,
+            "empty_reason_histogram": {},
+            "route_establishment": {
+                "route_established": True,
+                "blocking_reasons": [],
+                "route_completion_ratio": 1.0,
+            },
+            "blocking_reasons": [],
+            "warnings": [],
+            "verdict": "pass",
+        },
+    )
+    _write_json(
         run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
         {
             "schema_version": "apollo_control_handoff.v1",

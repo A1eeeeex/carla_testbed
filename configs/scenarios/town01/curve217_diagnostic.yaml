@@ -1,0 +1,29 @@
+schema_version: scenario_spec.v1
+scenario_id: town01_curve217_diagnostic
+scenario_class: curve_diagnostic
+map: Town01
+gate_role: diagnostic_gate
+route:
+  spawn_ref: town01_spawn217
+  goal_ref: town01_curve217_goal
+  route_ref: town01_curve217
+actors:
+  ego:
+    blueprint: vehicle.lincoln.mkz_2020
+  dynamic_obstacles: []
+  traffic_lights:
+    required: false
+requirements:
+  route_required: true
+  localization_required: true
+  planning_required: true
+  control_required: true
+  matched_target_fields_optional: true
+  traffic_light_required: false
+success_intent:
+  diagnostic_only: true
+  inspect_matched_target_anomalies: true
+tags:
+  - town01
+  - curve
+  - diagnostic_gate

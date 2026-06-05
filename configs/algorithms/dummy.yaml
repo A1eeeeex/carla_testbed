@@ -1,0 +1,9 @@
+schema_version: algorithm_variant.v2
+variant_id: dummy
+stack: dummy
+modules: {}
+forbidden_assists: []
+truth_input: {}
+claim_boundary:
+  full_stack_reproduction: false
+  label: Dummy baseline; not autonomy evidence

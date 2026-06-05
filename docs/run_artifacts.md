@@ -196,10 +196,11 @@ run to claim-grade evidence.
 
 `apollo_link_health_report.json` aggregates environment/world, bridge runtime,
 channel health, GT localization, HDMap projection, planning reference-line,
-routing/planning/control handoff, control mapping/apply, obstacle GT,
-traffic-light GT, no-assist boundary, and natural-driving outcome layers. A
-missing applicable layer blocks `can_claim_unassisted_natural_driving`; traffic
-light evidence may be `not_applicable` only for non-traffic-light scenarios.
+route establishment, routing/planning/control handoff, control mapping/apply,
+obstacle GT, traffic-light GT, no-assist boundary, and natural-driving outcome
+layers. A missing applicable layer blocks
+`can_claim_unassisted_natural_driving`; traffic-light evidence may be
+`not_applicable` only for non-traffic-light scenarios.
 `apollo_reference_line_contract_report.json` should be read as three layers:
 planning trajectory, control reference, and official Apollo HDMap projection.
 The first two are diagnostic/reference-line semantics evidence; the HDMap
@@ -212,6 +213,19 @@ the artifact is official Apollo HDMap API evidence before the broader
 reference-line and localization contracts consume it. A missing projection
 report or missing JSONL should remain `insufficient_data`; do not substitute
 bridge nearest-lane diagnostics or CARLA waypoint projection.
+Claim-grade projection evidence requires official `source=apollo_hdmap_api`,
+`ok_ratio >= 0.95`, at least the configured minimum sample count, heading
+`p95 < 0.05 rad`, lateral error `p95 < 0.50 m`, and lane-id compatibility with
+Planning `lane_id` or `target_lane_id` evidence. The report also records
+sim-time and projection-s coverage so scenario gates can require stronger
+coverage later.
+
+When `apollo_reference_line_contract_report.json` is regenerated from fallback
+planning/control/timeseries artifacts, the analyzer uses timestamp/as-of joins
+with a default 50 ms tolerance. Rows outside that tolerance are dropped from
+claim-grade metrics and reported through `fallback_join_coverage_ratio` and
+`fallback_join_dropped_unaligned_rows`. Index-based merging is not acceptable
+claim evidence.
 
 `artifacts/topic_publish_stats.jsonl` is row-level bridge publish evidence for
 claim-grade Apollo channel health. It records each published channel with wall
@@ -221,12 +235,43 @@ prefer this artifact over aggregate bridge counters when it is present, because
 aggregate counters cannot distinguish repeated cached publish attempts from
 fresh CARLA world-frame samples.
 
+`artifacts/publish_gap_trace.jsonl` is bridge-side attribution evidence for
+missed expected GT publishes or publish-loop overruns. It records world frame,
+sim time, localization/chassis publish flags, skip reason, publish-loop
+duration, stats-write duration, and async artifact queue depth. It is
+diagnostic evidence only: a gap with a clear reason is still a channel-health
+finding until the run satisfies the configured max-gap threshold.
+
 For Apollo planning, `channel_stats.json` may record both the primary Apollo
 header/wall-time axis and a secondary `sim_time_*` axis when
 `planning_topic_debug.jsonl` contains `sim_time_sec`. A small sim-time gap does
 not erase a large Apollo header/wall-time gap: if Control consumes expired
 trajectories or Planning pauses in wall time, channel health must remain a
 blocking failure and should report the time-axis diagnosis explicitly.
+
+`analysis/planning_materialization/planning_materialization_report.json`
+explains whether Apollo Planning actually materialized non-empty
+`ADCTrajectory` output after routing and required channel evidence. It reports
+the non-empty trajectory ratio, longest empty streak, route-establishment
+status, and an empty-reason histogram from planning route-segment/reference-line
+debug artifacts when present. Control rx/tx evidence must not override a
+`planning_trajectory_materialization_low` or `route_establishment_latency`
+blocker.
+
+Operator workflow should generate this report before interpreting control
+behavior:
+
+```bash
+python tools/analyze_apollo_planning_materialization.py \
+  --run-dir runs/<run_id> \
+  --out runs/<run_id>/analysis/planning_materialization
+```
+
+`analysis/prediction_evidence/prediction_evidence_report.json` records whether
+`/apollo/prediction` was natively observed, explicitly bypassed with GT
+obstacles for a permitted case, missing, or not required. `/apollo/perception`
+obstacles do not count as prediction evidence. Link-health treats missing or
+unknown prediction state as `insufficient_data` for claim boundaries.
 
 `artifacts/control_apply_trace.jsonl` is the preferred row-level control-chain
 evidence for Apollo CyberRT truth-input runs. Each row preserves Apollo raw

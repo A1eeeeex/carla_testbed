@@ -100,7 +100,7 @@ def test_normalize_channel_stats_prefers_timeseries_span_over_absolute_sim_stamp
     assert stats is not None
     assert stats["source"]["duration_s"] == 20.0
     assert stats["source"]["duration_source"] == "timeseries_span"
-    assert stats["channels"]["/apollo/localization/pose"]["hz"] == 0.1
+    assert stats["channels"]["/apollo/localization/pose"]["hz"] == 0.05
     assert stats["channels"]["/apollo/localization/pose"]["source"] == "timeseries.csv.localization_timestamp"
 
 
@@ -251,11 +251,51 @@ def test_normalize_channel_stats_prefers_topic_publish_stats_for_claim_grade_row
     assert loc["promotion_grade_evidence"] is True
     assert loc["message_count"] == 2
     assert loc["fresh_message_count"] == 2
-    assert loc["fresh_world_frame_hz"] == pytest.approx(40.0)
+    assert loc["fresh_world_frame_hz"] == pytest.approx(20.0)
+    assert loc["world_frame_missing_count"] == 0
     obstacles = stats["channels"]["/apollo/perception/obstacles"]
     assert obstacles["message_count"] == 1
     assert obstacles["obstacle_count"] == 0
     assert obstacles["empty_message_count"] == 1
+
+
+def test_topic_publish_stats_records_missing_world_frame_count(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "cyber_bridge_stats.json").write_text(json.dumps(_bridge_stats()), encoding="utf-8")
+    rows = [
+        {
+            "channel": "/apollo/localization/pose",
+            "wall_time_sec": 100.0,
+            "sim_time_sec": 10.0,
+            "header_timestamp_sec": 10.0,
+            "sequence_num": 1,
+            "frame_id": "map",
+            "payload_count": 1,
+        },
+        {
+            "channel": "/apollo/localization/pose",
+            "wall_time_sec": 100.05,
+            "sim_time_sec": 10.05,
+            "header_timestamp_sec": 10.05,
+            "sequence_num": 2,
+            "frame_id": "map",
+            "carla_world_frame": 101,
+            "payload_count": 1,
+        },
+    ]
+    (artifacts / "topic_publish_stats.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    stats = normalize_channel_stats_for_run(run_dir)
+
+    assert stats is not None
+    loc = stats["channels"]["/apollo/localization/pose"]
+    assert loc["world_frame_missing_count"] == 1
+    assert loc["fresh_message_count"] == 2
 
 
 def test_bridge_stats_to_channel_stats_prefers_publish_elapsed_wall_time() -> None:

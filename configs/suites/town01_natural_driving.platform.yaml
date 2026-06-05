@@ -1,0 +1,24 @@
+schema_version: suite.v1
+suite_id: town01_natural_driving_platform_p0
+seed: 1
+max_ticks: 700
+output_root: runs
+matrix:
+  scenarios:
+    - town01/lane_keep_097
+    - town01/curve217_diagnostic
+    - town01/junction_031
+    - town01/traffic_light_red_stop
+  platforms:
+    - apollo_cyberrt
+    - autoware_ros2
+  algorithms:
+    apollo_cyberrt:
+      - apollo/apollo10_carla_gt
+    autoware_ros2:
+      - autoware/universe_gt_localization
+  recording:
+    - none
+    - demo
+  gate:
+    - diagnostic

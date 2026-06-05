@@ -9,10 +9,12 @@ from typing import Any, Iterable, Mapping, Sequence
 OFFICIAL_SOURCE = "apollo_hdmap_api"
 HDMAP_PROJECTION_REPORT_SCHEMA_VERSION = "apollo_hdmap_projection_report.v1"
 
-HDMAP_HEADING_WARN_RAD = 0.10
-HDMAP_HEADING_FAIL_RAD = 0.20
-HDMAP_LATERAL_WARN_M = 1.00
-HDMAP_LATERAL_FAIL_M = 3.00
+HDMAP_HEADING_WARN_RAD = 0.03
+HDMAP_HEADING_FAIL_RAD = 0.05
+HDMAP_LATERAL_WARN_M = 0.30
+HDMAP_LATERAL_FAIL_M = 0.50
+HDMAP_MIN_CLAIM_GRADE_ROWS = 2
+HDMAP_MIN_OK_RATIO = 0.95
 
 
 def read_apollo_hdmap_projection(path: str | Path | None) -> list[dict[str, Any]]:
@@ -97,6 +99,10 @@ def summarize_apollo_hdmap_projection(rows: Sequence[Mapping[str, Any]] | None) 
     status_counts = Counter(str(row.get("status") or "missing") for row in official_rows)
     heading_p95 = _p95_abs(_num(row.get("heading_error_rad")) for row in ok_rows)
     lateral_p95 = _p95_abs(_num(row.get("lateral_error_m")) for row in ok_rows)
+    timestamps = [_num(row.get("timestamp")) for row in ok_rows]
+    projection_s_values = [_num(row.get("projection_s")) for row in ok_rows]
+    sim_time_coverage_s = _span(timestamps)
+    projection_s_coverage_m = _span(projection_s_values)
 
     warnings: list[str] = []
     blocking: list[str] = []
@@ -167,6 +173,10 @@ def summarize_apollo_hdmap_projection(rows: Sequence[Mapping[str, Any]] | None) 
     ok_ratio = len(ok_rows) / len(official_rows) if official_rows else None
     if official_rows and non_ok_count:
         warnings.append("apollo_hdmap_projection_non_ok_rows_present")
+    if official_rows and len(ok_rows) < HDMAP_MIN_CLAIM_GRADE_ROWS:
+        blocking.append("apollo_hdmap_projection_sample_count_low")
+    if ok_ratio is not None and ok_ratio < HDMAP_MIN_OK_RATIO:
+        blocking.append("apollo_hdmap_projection_ok_ratio_low")
 
     if blocking:
         status = "fail"
@@ -188,6 +198,10 @@ def summarize_apollo_hdmap_projection(rows: Sequence[Mapping[str, Any]] | None) 
         "official_row_count": len(official_rows),
         "ok_row_count": len(ok_rows),
         "ok_ratio": ok_ratio,
+        "min_claim_grade_rows": HDMAP_MIN_CLAIM_GRADE_ROWS,
+        "min_ok_ratio": HDMAP_MIN_OK_RATIO,
+        "sim_time_coverage_s": sim_time_coverage_s,
+        "projection_s_coverage_m": projection_s_coverage_m,
         "status_counts": dict(status_counts),
         "heading_error_p95_rad": heading_p95,
         "lateral_error_p95_m": lateral_p95,
@@ -239,6 +253,13 @@ def _p95_abs(values: Iterable[float | None]) -> float | None:
     upper = min(lower + 1, len(finite) - 1)
     fraction = position - lower
     return finite[lower] * (1.0 - fraction) + finite[upper] * fraction
+
+
+def _span(values: Iterable[float | None]) -> float | None:
+    finite = sorted(float(value) for value in values if value is not None and math.isfinite(float(value)))
+    if len(finite) < 2:
+        return None
+    return finite[-1] - finite[0]
 
 
 def _num(value: Any) -> float | None:

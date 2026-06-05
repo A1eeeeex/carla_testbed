@@ -335,7 +335,7 @@ def _channel_entry_from_series(
     ]
     gap_values = [gap for gap, _index, _left, _right in gaps]
     max_gap = max(gaps, key=lambda item: item[0]) if gaps else None
-    hz = (len(timestamps) / span) if span and span > 0 else None
+    hz = ((len(timestamps) - 1) / span) if span and span > 0 and len(timestamps) > 1 else None
     return {
         "message_count": len(timestamps),
         "hz": hz,
@@ -406,6 +406,7 @@ def _channel_entries_from_topic_publish_stats(path: Path) -> dict[str, dict[str,
         previous_timestamp: float | None = None
         payload_counts: list[int] = []
         empty_message_count = 0
+        world_frame_missing_count = 0
         for row in rows:
             timestamp = _float_or_none(row.get("header_timestamp_sec"))
             if timestamp is None:
@@ -416,7 +417,11 @@ def _channel_entries_from_topic_publish_stats(path: Path) -> dict[str, dict[str,
                     duplicate_timestamp_count += 1
                 previous_timestamp = timestamp
                 world_frame = row.get("carla_world_frame")
-                sample_keys.append(("world_frame", world_frame) if world_frame is not None else ("timestamp", timestamp))
+                if world_frame is not None:
+                    sample_keys.append(("world_frame", world_frame))
+                else:
+                    world_frame_missing_count += 1
+                    sample_keys.append(("timestamp", timestamp))
             wall_time = _float_or_none(row.get("wall_time_sec"))
             if wall_time is not None:
                 wall_times.append(wall_time)
@@ -450,6 +455,7 @@ def _channel_entries_from_topic_publish_stats(path: Path) -> dict[str, dict[str,
                 "fresh_world_frame_hz": fresh_hz,
                 "delivery_wall_hz": delivery_wall_hz,
                 "header_sim_hz": header_sim_hz,
+                "world_frame_missing_count": world_frame_missing_count,
                 "duplicate_timestamp_count": duplicate_timestamp_count,
                 "stale_count": duplicate_timestamp_count,
                 "derived_from_bridge_counters": False,
@@ -469,13 +475,13 @@ def _channel_entries_from_topic_publish_stats(path: Path) -> dict[str, dict[str,
 
 
 def _rate_from_span(count: int, timestamps: list[float]) -> float | None:
-    if count <= 0 or len(timestamps) < 2:
+    if count <= 1 or len(timestamps) < 2:
         return None
     first = timestamps[0]
     last = timestamps[-1]
     if last <= first:
         return None
-    return float(count) / (last - first)
+    return float(count - 1) / (last - first)
 
 
 def _monotonic(values: list[float]) -> bool:

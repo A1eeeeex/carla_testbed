@@ -40,16 +40,17 @@
 11. `apollo_reproduction.md`
 12. `apollo_town01_truth_natural_driving.md`
 13. `town01_route_health.md`
-14. `carla_direct_ab.md`
-15. `calibration_pipeline.md`
-16. `autoware_recording.md`
-17. `run_artifacts.md`
-18. `testing.md`
-19. `legacy.md`
-20. `dual_machine_workflow.md`
-21. `migration_followstop_playbook.md`
-22. `apollo10_gt_sim.md`
-23. `gt_truth_simulation_pipeline.md`
+14. `platform_run_plan.md`
+15. `carla_direct_ab.md`
+16. `calibration_pipeline.md`
+17. `autoware_recording.md`
+18. `run_artifacts.md`
+19. `testing.md`
+20. `legacy.md`
+21. `dual_machine_workflow.md`
+22. `migration_followstop_playbook.md`
+23. `apollo10_gt_sim.md`
+24. `gt_truth_simulation_pipeline.md`
 
 ## 主要文档分组
 - 展示与总览:
@@ -57,6 +58,15 @@
   - 面向对外/对技术同事展示的总览入口，强调当前能力、证据、命令和可见产出
 - canonical 运行入口:
   - `python -m carla_testbed run`
+- platform planning:
+  - `python -m carla_testbed plan`
+  - `python -m carla_testbed suite dry-run`
+  - `python -m carla_testbed analyze`
+  - `python -m carla_testbed pack`
+  - `platform_run_plan.md`
+  - 离线编译 platform / algorithm / scenario / recording / gate 组合为
+    `run_plan.v1`；当前不启动 CARLA/Apollo/Autoware。`analyze` 只聚合
+    已有 artifacts 为 evidence/gate report，`pack` 只打包小型审核材料。
 - legacy / transition / operational 入口:
   - `examples/run_followstop.py`
   - `tools/run_apollo_mainline.py`
@@ -81,6 +91,7 @@
   - `apollo_reproduction.md`
   - `apollo_town01_truth_natural_driving.md`
   - `town01_route_health.md`
+  - `platform_run_plan.md`
   - `carla_direct_ab.md`
   - `calibration_pipeline.md`
   - `autoware_recording.md`

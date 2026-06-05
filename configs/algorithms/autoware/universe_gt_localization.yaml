@@ -1,0 +1,21 @@
+schema_version: algorithm_variant.v2
+variant_id: autoware_universe_gt_localization
+stack: autoware
+type: truth_input_closed_loop
+modules:
+  localization:
+    source: carla_gt_replacement
+  planning:
+    source: autoware_native
+  control:
+    source: autoware_native
+truth_input:
+  localization: carla_gt
+  obstacles: carla_gt_when_required
+forbidden_assists:
+  - route_follower
+  - direct_autopilot
+  - manual_intervention
+claim_boundary:
+  full_stack_reproduction: false
+  label: Autoware planning/control with CARLA GT truth inputs

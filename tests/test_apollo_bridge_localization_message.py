@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import math
 import queue
 import sys
@@ -244,6 +245,149 @@ def test_bridge_async_artifact_writer_drains_on_flush(tmp_path: Path) -> None:
     assert jsonl_path.read_text(encoding="utf-8").strip() == '{"sample": 1}'
     assert csv_path.read_text(encoding="utf-8").splitlines() == ["ts,value", "1.0,3"]
     assert adapter.stats["artifact_buffering"]["async_written_count"] == 2
+
+
+def test_bridge_non_close_artifact_flush_does_not_join_async_queue() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+
+    class _JoinTrackingQueue:
+        joined = False
+
+        def join(self) -> None:
+            self.joined = True
+            raise AssertionError("non-close artifact flush must not drain async queue")
+
+        def qsize(self) -> int:
+            return 7
+
+    fake_queue = _JoinTrackingQueue()
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+    adapter._artifact_write_queue = fake_queue
+    adapter._jsonl_artifact_handles = {}
+    adapter._csv_artifact_states = {}
+    adapter._artifact_write_lock = bridge.threading.Lock()
+
+    adapter._flush_artifact_buffers(close=False)
+
+    assert fake_queue.joined is False
+    buffering = adapter.stats["artifact_buffering"]
+    assert buffering["async_queue_size"] == 7
+    assert buffering["async_queue_size_max"] == 7
+
+
+def test_bridge_enqueue_artifact_write_records_backpressure(tmp_path: Path) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+
+    class _BackpressureQueue:
+        def __init__(self) -> None:
+            self.items = []
+
+        def put_nowait(self, item: object) -> None:
+            raise queue.Full
+
+        def put(self, item: object, timeout: float | None = None) -> None:
+            self.items.append(item)
+
+        def qsize(self) -> int:
+            return len(self.items)
+
+    fake_queue = _BackpressureQueue()
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+    adapter.artifact_async_write_enabled = True
+    adapter._artifact_write_queue = fake_queue
+    adapter._artifact_writer_started = True
+
+    assert adapter._enqueue_artifact_write("jsonl", tmp_path / "artifact.jsonl", {"sample": 1})
+
+    buffering = adapter.stats["artifact_buffering"]
+    assert buffering["async_enqueued_count"] == 1
+    assert buffering["async_queue_full_count"] == 1
+    assert buffering["async_queue_blocked_duration_s"] >= 0.0
+    assert buffering["async_queue_size"] == 1
+    assert buffering["async_queue_size_max"] == 1
+
+
+def test_bridge_write_stats_records_diagnostic_write_durations(tmp_path: Path) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+    adapter.stats_path = tmp_path / "cyber_bridge_stats.json"
+    adapter.artifact_stats_flush_interval_s = 0.0
+    adapter._last_artifact_stats_flush_sec = 0.0
+    adapter.node = types.SimpleNamespace(write_artifacts=lambda: None)
+    adapter._write_health_summary = lambda: None
+    adapter._write_startup_geometry_summary = lambda: None
+    adapter._write_planning_topic_debug_summary = lambda: None
+
+    adapter._write_stats()
+
+    buffering = adapter.stats["artifact_buffering"]
+    for key in (
+        "health_summary_write_duration_s",
+        "startup_geometry_summary_write_duration_s",
+        "planning_summary_write_duration_s",
+        "node_write_artifacts_duration_s",
+        "stats_json_write_duration_s",
+        "stats_write_duration_s",
+    ):
+        assert key in buffering
+        assert buffering[key] >= 0.0
+        assert buffering[f"{key}_max"] >= buffering[key]
+    assert adapter.stats_path.is_file()
+
+
+def test_bridge_publish_gap_trace_records_skip_reason_and_queue_depth(tmp_path: Path) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {
+        "artifact_buffering": {
+            "stats_write_duration_s": 0.012,
+            "async_queue_size": 3,
+            "async_queue_size_max": 5,
+            "async_queue_full_count": 1,
+        }
+    }
+    adapter.artifact_async_write_enabled = False
+    adapter.publish_gap_trace_path = tmp_path / "publish_gap_trace.jsonl"
+    adapter._latest_world_frame = 123
+    adapter._latest_sim_time_sec = 10.0
+    adapter._jsonl_artifact_handles = {}
+    adapter._csv_artifact_states = {}
+    adapter._artifact_pending_rows = {}
+    adapter._artifact_last_flush_sec = {}
+    adapter._artifact_write_lock = bridge.threading.Lock()
+    adapter.artifact_flush_interval_s = 0.0
+    adapter.artifact_flush_max_pending_rows = 0
+    odom = _Odom(1780600000.0)
+
+    adapter._record_publish_gap_trace(
+        snapshot={"world_frame": 456},
+        odom=odom,
+        published_localization=False,
+        published_chassis=False,
+        skip_reason="stale_sample_skipped",
+        loop_start_wall_s=bridge.time.time() - 0.02,
+    )
+    adapter._flush_artifact_buffers(close=True)
+
+    row = json.loads(adapter.publish_gap_trace_path.read_text(encoding="utf-8").strip())
+    assert row["schema_version"] == "publish_gap_trace.v1"
+    assert row["world_frame"] == 456
+    assert row["skip_reason"] == "stale_sample_skipped"
+    assert row["published_localization"] is False
+    assert row["stats_write_ms"] == 12.0
+    assert row["async_queue_depth"] == 3
+    assert row["artifact_backpressure"] is True
 
 
 def test_bridge_debug_timeseries_uses_buffered_csv_writer(tmp_path: Path) -> None:

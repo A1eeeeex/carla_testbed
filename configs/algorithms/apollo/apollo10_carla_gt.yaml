@@ -1,0 +1,40 @@
+schema_version: algorithm_variant.v2
+variant_id: apollo10_carla_gt
+stack: apollo
+type: truth_input_closed_loop
+modules:
+  routing:
+    source: apollo_native
+  planning:
+    source: apollo_native
+  control:
+    source: apollo_native
+  localization:
+    source: carla_gt_replacement
+    contract: apollo_localization_estimate_v1
+  chassis:
+    source: carla_gt_replacement
+    contract: apollo_chassis_v1
+  perception_obstacles:
+    source: carla_gt_replacement
+    contract: apollo_perception_obstacles_v1
+  prediction:
+    source: native_or_explicit_bypass
+  traffic_light:
+    source: carla_actual_gt_when_required
+truth_input:
+  localization: carla_gt_vrp
+  chassis: carla_gt
+  obstacles: carla_gt
+  traffic_light: carla_actual_when_required
+  prediction: native_or_explicit_bypass
+forbidden_assists:
+  - dummy_lateral
+  - force_green
+  - legacy_followstop
+  - route_follower
+  - direct_autopilot
+  - manual_intervention
+claim_boundary:
+  full_stack_reproduction: false
+  label: Apollo planning/control with CARLA GT localization/chassis/perception inputs

@@ -1,0 +1,30 @@
+schema_version: scenario_spec.v1
+scenario_id: town01_junction_031
+scenario_class: junction_turn
+map: Town01
+gate_role: hard_gate
+route:
+  spawn_ref: town01_spawn031
+  goal_ref: town01_junction031_goal
+  route_ref: town01_junction031
+actors:
+  ego:
+    blueprint: vehicle.lincoln.mkz_2020
+  dynamic_obstacles: []
+  traffic_lights:
+    required: false
+requirements:
+  route_required: true
+  localization_required: true
+  hdmap_projection_required: true
+  reference_line_required: true
+  planning_required: true
+  control_required: true
+success_intent:
+  no_collision: true
+  no_lane_invasion: true
+  junction_exit_required: true
+tags:
+  - town01
+  - junction
+  - hard_gate

@@ -1,0 +1,22 @@
+schema_version: platform_profile.v1
+name: autoware_ros2
+adapter: autoware_ros2
+runtime_mode: docker
+middleware: ros2
+launch_profile: autoware_truth_input_minimal
+expected_outputs:
+  - trajectory
+  - control
+supported_recorders:
+  - neutral_manifest
+  - neutral_events
+  - neutral_timeseries
+  - control_apply_trace
+  - carla_dual_cam
+  - carla_hud
+  - autoware_rviz_capture
+  - autoware_rosbag2
+params:
+  compatibility_backend: autoware_adapter
+  needs_local_carla: true
+  needs_local_autoware: true

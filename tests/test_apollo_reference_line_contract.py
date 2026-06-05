@@ -259,12 +259,12 @@ def test_existing_contract_rows_are_augmented_with_control_decode_debug(tmp_path
         control,
         [
             {
-                "ts_sec": 10.0,
+                "ts_sec": 0.0,
                 "debug_simple_lat_heading_error": 0.01,
                 "debug_simple_lat_lateral_error": 0.10,
             },
             {
-                "ts_sec": 10.1,
+                "ts_sec": 0.1,
                 "debug_simple_lat_heading_error": 0.02,
                 "debug_simple_lat_lateral_error": 0.12,
             },
@@ -310,7 +310,7 @@ def test_nested_apollo_control_raw_can_supply_control_reference(tmp_path: Path) 
         control,
         [
             {
-                "ts_sec": 10.0,
+                "ts_sec": 0.0,
                 "apollo_control_raw": {
                     "debug_simple_lat_ref_heading": 0.01,
                     "debug_simple_lat_heading": 0.0,
@@ -360,7 +360,7 @@ def test_run_dir_prefers_control_decode_file_with_reference_fields(tmp_path: Pat
         run_dir / "artifacts" / "bridge_control_decode.jsonl",
         [
             {
-                "ts_sec": 10.0,
+                "ts_sec": 0.0,
                 "debug_simple_lat_heading_error": 0.01,
                 "debug_simple_lat_lateral_error": 0.10,
             }
@@ -372,6 +372,52 @@ def test_run_dir_prefers_control_decode_file_with_reference_fields(tmp_path: Pat
     assert report["source"]["control_decode_debug_path"].endswith("bridge_control_decode.jsonl")
     assert report["contracts"]["control_reference"]["status"] == "pass"
     assert report["evidence"]["control_reference_available"] is True
+
+
+def test_unaligned_control_debug_is_not_index_joined_into_contract_rows(tmp_path: Path) -> None:
+    contract = tmp_path / "apollo_reference_line_contract.jsonl"
+    control = tmp_path / "bridge_control_decode.jsonl"
+    _write_jsonl(
+        contract,
+        [
+            {
+                "timestamp": 0.0,
+                "localization": {"heading": 0.0},
+                "planning": {
+                    "trajectory_point_count": 20,
+                    "first_trajectory_point_theta": 0.01,
+                    "reference_line_count": 1,
+                    "reference_line_provider_status": "ready",
+                },
+                "computed": {
+                    "planning_reference_available": True,
+                    "control_reference_available": False,
+                    "localization_to_planning_first_heading_error_rad": 0.01,
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        control,
+        [
+            {
+                "ts_sec": 10.0,
+                "debug_simple_lat_heading_error": 0.01,
+                "debug_simple_lat_lateral_error": 0.10,
+            }
+        ],
+    )
+
+    report = analyze_apollo_reference_line_contract_files(
+        contract_path=contract,
+        control_decode_debug_path=control,
+    )
+
+    assert report["contracts"]["planning_trajectory"]["status"] == "pass"
+    assert report["contracts"]["control_reference"]["status"] == "insufficient_data"
+    assert report["metrics"]["control_ref_heading_error_p95_rad"] is None
+    assert report["metrics"]["fallback_join_dropped_unaligned_rows"] == 1
+    assert report["metrics"]["fallback_join_tolerance_ms"] == 50.0
 
 
 def test_cli_writes_report(tmp_path: Path) -> None:

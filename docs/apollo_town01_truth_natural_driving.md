@@ -600,11 +600,14 @@ Outputs:
 - `analysis/apollo_link_health/apollo_link_health_summary.md`
 
 The report summarizes environment/world, bridge runtime, channel health, GT
-localization contract, HDMap projection, Apollo reference line, routing /
-planning / control handoff, control mapping/apply, obstacle GT, traffic-light
-GT, no-assist claim boundary, and final natural-driving outcome. It is an
-evidence index only. Missing required artifacts are `insufficient_data`, not
-pass. If localization/reference-line lane-heading evidence is blocking, control
+localization contract, HDMap projection, Apollo reference line, route
+establishment, routing / planning / control handoff, control mapping/apply,
+obstacle GT, prediction evidence, traffic-light GT, no-assist claim boundary, and final
+natural-driving outcome. It is an evidence index only. Missing required
+artifacts are `insufficient_data`, not pass. If planning only emits sparse
+non-empty trajectories after routing, `route_establishment` should be the
+primary blocker even when `/apollo/control` rx/tx counts are high. If
+localization/reference-line lane-heading evidence is blocking, control
 oscillation should stay a secondary blocker until those upstream contracts reach
 `pass` or non-blocking `warn`.
 
@@ -654,6 +657,16 @@ Required run artifacts:
   `artifacts/apollo_hdmap_projection.jsonl` is available; otherwise
   reference-line hard gates remain `insufficient_data`.
 - `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`.
+  Fallback merges from planning/control/timeseries artifacts must be
+  timestamp/as-of joins within the configured tolerance, not index joins.
+- `analysis/planning_materialization/planning_materialization_report.json` for
+  non-empty `ADCTrajectory` ratio, empty-reason histogram, and
+  `route_establishment` status. Control rx/tx evidence does not replace this
+  report.
+- `analysis/prediction_evidence/prediction_evidence_report.json`. Prediction
+  may be `native_observed`, explicitly bypassed for a permitted static case, or
+  `not_required_for_case`; missing or unknown prediction state cannot silently
+  pass the chain.
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`.
 - `analysis/control_health/control_health_report.json`.
 - `analysis/apollo_link_health/apollo_link_health_report.json`.
@@ -681,6 +694,8 @@ python tools/analyze_apollo_hdmap_projection.py \
   --out "$RUN/analysis/apollo_hdmap_projection"
 python tools/analyze_apollo_localization_contract.py --run-dir "$RUN"
 python tools/analyze_apollo_reference_line_contract.py --run-dir "$RUN"
+python tools/analyze_apollo_planning_materialization.py --run-dir "$RUN"
+python tools/analyze_apollo_prediction_evidence.py --run-dir "$RUN" --out "$RUN/analysis/prediction_evidence"
 python tools/analyze_apollo_control_handoff.py --run-dir "$RUN"
 python tools/analyze_apollo_link_health.py --run-dir "$RUN"
 ```
@@ -715,8 +730,14 @@ Minimum pass thresholds for a claim-grade packet:
   rear-axle evidence, skips stale GT sample republish for claim-grade runs, and
   has no blocking reasons.
 - `apollo_reference_line_contract_report.json`,
+  `planning_materialization_report.json`,
+  `prediction_evidence_report.json`,
   `apollo_control_handoff_report.json`, `apollo_channel_health_report.json`,
   and `control_health_report.json` are `pass` or non-blocking `warn`.
+- Apollo HDMap projection claim-grade evidence uses official
+  `source=apollo_hdmap_api`, `ok_ratio >= 0.95`, heading `p95 < 0.05 rad`,
+  lateral error `p95 < 0.50 m`, and lane-id compatibility with Planning
+  `lane_id` or `target_lane_id` evidence.
 - `apollo_link_health_report.json` reports
   `can_claim_unassisted_natural_driving=true`, no primary blocker, and no
   missing hard-gate artifacts.
@@ -724,6 +745,10 @@ Minimum pass thresholds for a claim-grade packet:
   `lateral_guard_apply_count=0`, and
   `trajectory_contract_guard_apply_count=0` or explicitly diagnostic
   non-replacement behavior.
+- Explicit non-Apollo `control_source`, `controller`, or `lateral_mode`
+  declarations override bridge `/apollo/control` rx counters. If they conflict
+  with Apollo control-topic evidence, the run is `control_source_conflict`, not
+  no-interference Apollo control.
 - Traffic-light claim-grade scenarios use `traffic_light_policy=carla_actual`,
   not `force_green`, and include mapped signal/stop-line evidence plus behavior
   evidence.
@@ -737,7 +762,9 @@ Known non-claim-grade modes:
 - `assumed` vehicle reference;
 - diagnostic nearest-lane projection only;
 - stale localization republish used as fresh-sample evidence;
-- missing HDMap / Apollo reference-line evidence.
+- missing HDMap / Apollo reference-line evidence;
+- missing or unknown prediction evidence when the scenario requires prediction;
+- explicit non-Apollo control source conflicting with `/apollo/control` rx/tx.
 
 Recommended validation sequence:
 

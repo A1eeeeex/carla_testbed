@@ -1,0 +1,26 @@
+schema_version: gate_profile.v1
+name: diagnostic
+gate:
+  can_claim_natural_driving: false
+  claim_requires:
+    - route_health
+    - channel_health
+    - control_handoff
+  fail_on_status:
+    - fail
+evidence:
+  required_analyzers:
+    - artifact_completeness
+    - route_health
+    - channel_health
+    - control_health
+    - control_attribution
+    - apollo_link_health
+  optional_analyzers:
+    - apollo_hdmap_projection
+    - prediction_evidence
+  expected_artifacts:
+    - manifest.json
+    - summary.json
+    - events.jsonl
+    - timeseries.csv

@@ -1,0 +1,14 @@
+schema_version: gate_profile.v1
+name: smoke
+gate:
+  can_claim_natural_driving: false
+  claim_requires: []
+  fail_on_status:
+    - fail
+evidence:
+  required_analyzers:
+    - artifact_completeness
+  optional_analyzers: []
+  expected_artifacts:
+    - manifest.json
+    - summary.json

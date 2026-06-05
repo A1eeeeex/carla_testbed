@@ -1,0 +1,22 @@
+schema_version: recording_profile.v1
+name: claim
+recorders:
+  - neutral_manifest
+  - neutral_events
+  - neutral_timeseries
+  - control_apply_trace
+  - topic_publish_stats
+  - publish_gap_trace
+  - stack_logs
+platform_overrides:
+  apollo_cyberrt:
+    add:
+      - apollo_cyber_record
+      - apollo_dreamview_capture
+  autoware_ros2:
+    add:
+      - autoware_rosbag2
+      - autoware_rviz_capture
+claim_boundary:
+  recording_alone_is_not_evidence_of_natural_driving: true
+  required_for_claim: true

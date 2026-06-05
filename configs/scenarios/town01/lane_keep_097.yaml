@@ -1,0 +1,32 @@
+schema_version: scenario_spec.v1
+scenario_id: town01_lane_keep_097
+scenario_class: lane_keep
+map: Town01
+route:
+  spawn_ref: town01_spawn097
+  goal_ref: town01_goal046
+  route_ref: town01_rh_spawn097_goal046
+actors:
+  ego:
+    blueprint: vehicle.lincoln.mkz_2020
+  dynamic_obstacles: []
+  pedestrians: []
+  traffic_lights:
+    required: false
+requirements:
+  route_required: true
+  localization_required: true
+  planning_required: true
+  control_required: true
+  traffic_light_required: false
+  dynamic_obstacle_required: false
+  prediction_required: false
+success_intent:
+  min_distance_m: 75
+  no_collision: true
+  no_lane_invasion: true
+  max_lateral_error_p95_m: 1.5
+tags:
+  - town01
+  - lane_keep
+  - hard_gate

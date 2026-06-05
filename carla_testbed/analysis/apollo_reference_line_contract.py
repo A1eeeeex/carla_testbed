@@ -25,6 +25,7 @@ PASS_LATERAL_M = 0.50
 WARN_LATERAL_M = 1.00
 MIN_NONEMPTY_TRAJECTORY_RATIO = 0.80
 MIN_PROVIDER_READY_RATIO = 0.80
+FALLBACK_JOIN_TOLERANCE_S = 0.05
 
 
 def analyze_apollo_reference_line_contract_run_dir(run_dir: str | Path) -> dict[str, Any]:
@@ -425,6 +426,10 @@ def _contracts(
         "planning_trajectory": _planning_trajectory_contract(rows, evidence, metrics),
         "control_reference": _control_reference_contract(evidence, metrics),
         "apollo_hdmap_projection": _apollo_hdmap_projection_contract(hdmap_projection),
+        "apollo_hdmap_projection_lane_compatibility": _lane_compatibility_contract(
+            rows,
+            hdmap_projection,
+        ),
     }
 
 
@@ -574,6 +579,59 @@ def _apollo_hdmap_projection_contract(hdmap_projection: Mapping[str, Any]) -> di
     }
 
 
+def _lane_compatibility_contract(
+    rows: Sequence[Mapping[str, Any]],
+    hdmap_projection: Mapping[str, Any],
+) -> dict[str, Any]:
+    projection_lane_ids = [str(item) for item in hdmap_projection.get("nearest_lane_id_topk") or [] if item]
+    planning_lane_ids = [
+        lane_id
+        for row in rows
+        for lane_id in (
+            list(_list_value(_nested(row, "planning.lane_ids")))
+            + list(_list_value(_nested(row, "planning.target_lane_ids")))
+        )
+        if lane_id
+    ]
+    normalized_projection = {_normalize_lane_id(item) for item in projection_lane_ids}
+    normalized_planning = {_normalize_lane_id(item) for item in planning_lane_ids}
+    warnings: list[str] = []
+    blocking: list[str] = []
+    missing: list[str] = []
+    available = bool(projection_lane_ids and planning_lane_ids)
+    compatible = bool(normalized_projection & normalized_planning) if available else None
+    if not projection_lane_ids:
+        missing.append("apollo_hdmap_projection.nearest_lane_id")
+    if not planning_lane_ids:
+        missing.append("planning.lane_ids_or_target_lane_ids")
+    if available and compatible is False:
+        blocking.append("apollo_hdmap_projection_lane_id_not_compatible_with_planning")
+    status = _contract_status(
+        available=available,
+        blocking=blocking,
+        warnings=warnings,
+        missing=missing,
+    )
+    return {
+        "status": status,
+        "available": available,
+        "compatible": compatible,
+        "blocking_reasons": sorted(set(blocking)),
+        "warnings": sorted(set(warnings)),
+        "missing_fields": sorted(set(missing)),
+        "key_metrics": {
+            "projection_lane_id_topk": projection_lane_ids,
+            "planning_lane_id_topk": _topk(planning_lane_ids),
+            "normalized_projection_lane_ids": sorted(normalized_projection),
+            "normalized_planning_lane_ids": sorted(normalized_planning),
+        },
+        "interpretation": (
+            "Claim-grade reference-line evidence requires Apollo HDMap projection lane ids "
+            "to be compatible with Planning lane_id or target_lane_id evidence."
+        ),
+    }
+
+
 def _contract_status(
     *,
     available: bool,
@@ -694,7 +752,45 @@ def _metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:
         ),
         "reference_line_count_zero_ratio": _zero_ratio(rows, "planning.reference_line_count"),
         "routing_segment_count_zero_ratio": _zero_ratio(rows, "planning.routing_segment_count", "routing.routing_segment_count"),
+        "fallback_join_coverage_ratio": _fallback_join_coverage_ratio(rows),
+        "fallback_join_tolerance_ms": FALLBACK_JOIN_TOLERANCE_S * 1000.0,
+        "fallback_join_dropped_unaligned_rows": _fallback_join_dropped_unaligned_rows(rows),
     }
+
+
+def _fallback_join_coverage_ratio(rows: Sequence[Mapping[str, Any]]) -> float | None:
+    values = [
+        _num(_nested(row, "computed.fallback_join_coverage_ratio"))
+        for row in rows
+        if _nested(row, "computed.fallback_join_coverage_ratio") is not None
+    ]
+    values.extend(
+        _num(_nested(row, "computed.control_reference_join_coverage_ratio"))
+        for row in rows
+        if _nested(row, "computed.control_reference_join_coverage_ratio") is not None
+    )
+    finite = [value for value in values if value is not None and math.isfinite(value)]
+    if not finite:
+        return None
+    return sum(finite) / len(finite)
+
+
+def _fallback_join_dropped_unaligned_rows(rows: Sequence[Mapping[str, Any]]) -> float | None:
+    values = [
+        _num(_nested(row, "computed.control_reference_dropped_unaligned_rows"))
+        for row in rows
+        if _nested(row, "computed.control_reference_dropped_unaligned_rows") is not None
+    ]
+    if values:
+        return max(value for value in values if value is not None)
+    dropped = 0
+    observed = False
+    for row in rows:
+        missing = _nested(row, "computed.fallback_join_missing_sources")
+        if isinstance(missing, list):
+            observed = True
+            dropped += len(missing)
+    return float(dropped) if observed else None
 
 
 def _tail_nonempty_ratio(
@@ -764,16 +860,12 @@ def _normalized_rows(
 ) -> list[dict[str, Any]]:
     if contract_rows:
         return _augment_contract_rows_with_control_debug(contract_rows, control_rows)
-    rows: list[dict[str, Any]] = []
-    max_len = max(len(planning_rows), len(route_segment_rows), len(control_rows), len(timeseries_rows), 0)
-    for index in range(max_len):
-        flat: dict[str, Any] = {}
-        for collection in (planning_rows, route_segment_rows, control_rows, timeseries_rows):
-            if index < len(collection):
-                flat.update(collection[index])
-        if flat:
-            rows.append(build_reference_line_contract_event(flat, source_confidence="fallback_artifacts"))
-    return rows
+    return _fallback_asof_join_rows(
+        planning_rows=planning_rows,
+        route_segment_rows=route_segment_rows,
+        control_rows=control_rows,
+        timeseries_rows=timeseries_rows,
+    )
 
 
 def _augment_contract_rows_with_control_debug(
@@ -794,8 +886,21 @@ def _augment_contract_rows_with_control_debug(
     if not control_events:
         return rows
 
-    for index, row in enumerate(rows):
-        control_event = control_events[_resampled_index(index, len(rows), len(control_events))]
+    matched_rows = 0
+    dropped_rows = 0
+    for row in rows:
+        row_ts = _event_timestamp(row)
+        control_event: Mapping[str, Any] | None = None
+        if row_ts is not None:
+            control_event = _nearest_asof_event(row_ts, control_events, tolerance_s=FALLBACK_JOIN_TOLERANCE_S)
+        if control_event is None:
+            dropped_rows += 1
+            row_computed = dict(_mapping(row.get("computed")))
+            row_computed["control_reference_source_confidence"] = "control_decode_debug_unaligned"
+            row_computed["control_reference_join_tolerance_ms"] = FALLBACK_JOIN_TOLERANCE_S * 1000.0
+            row["computed"] = row_computed
+            continue
+        matched_rows += 1
         control_payload = _mapping(control_event.get("control"))
         computed_payload = _mapping(control_event.get("computed"))
         row_control = dict(_mapping(row.get("control")))
@@ -812,8 +917,20 @@ def _augment_contract_rows_with_control_debug(
             if value not in {None, ""} and row_computed.get(key) in {None, ""}:
                 row_computed[key] = value
         row_computed["control_reference_source_confidence"] = "control_decode_debug"
+        row_computed["control_reference_join_tolerance_ms"] = FALLBACK_JOIN_TOLERANCE_S * 1000.0
+        row_computed["control_reference_join_delta_ms"] = _join_delta_ms(
+            row_ts,
+            _event_timestamp(control_event),
+        )
+        row_computed["control_reference_join_matched"] = True
         row["control"] = row_control
         row["computed"] = row_computed
+    if rows:
+        for row in rows:
+            row_computed = dict(_mapping(row.get("computed")))
+            row_computed["control_reference_join_coverage_ratio"] = matched_rows / len(rows)
+            row_computed["control_reference_dropped_unaligned_rows"] = dropped_rows
+            row["computed"] = row_computed
     return rows
 
 
@@ -827,10 +944,116 @@ def _control_debug_contract_event(row: Mapping[str, Any]) -> dict[str, Any]:
     return build_reference_line_contract_event(flat, source_confidence="control_decode_debug")
 
 
-def _resampled_index(index: int, target_len: int, source_len: int) -> int:
-    if source_len <= 1 or target_len <= 1:
-        return 0
-    return min(source_len - 1, round(index * (source_len - 1) / (target_len - 1)))
+def _fallback_asof_join_rows(
+    *,
+    planning_rows: Sequence[Mapping[str, Any]],
+    route_segment_rows: Sequence[Mapping[str, Any]],
+    control_rows: Sequence[Mapping[str, Any]],
+    timeseries_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    sources: list[tuple[str, list[Mapping[str, Any]]]] = [
+        ("planning", list(planning_rows)),
+        ("route_segment", list(route_segment_rows)),
+        ("timeseries", list(timeseries_rows)),
+        ("control", list(control_rows)),
+    ]
+    base_name, base_rows = next(((name, rows) for name, rows in sources if rows), ("missing", []))
+    rows: list[dict[str, Any]] = []
+    if not base_rows:
+        return rows
+    for base in base_rows:
+        flat = dict(base)
+        base_ts = _flat_timestamp(base)
+        matched_sources = [base_name]
+        missing_sources: list[str] = []
+        max_delta_ms = 0.0
+        for source_name, source_rows in sources:
+            if source_name == base_name or not source_rows:
+                continue
+            matched = None
+            if base_ts is not None:
+                matched = _nearest_asof_flat_row(base_ts, source_rows, tolerance_s=FALLBACK_JOIN_TOLERANCE_S)
+            if matched is None:
+                missing_sources.append(source_name)
+                continue
+            matched_sources.append(source_name)
+            delta_ms = abs((_flat_timestamp(matched) or base_ts) - base_ts) * 1000.0
+            max_delta_ms = max(max_delta_ms, delta_ms)
+            flat.update(matched)
+        event = build_reference_line_contract_event(flat, source_confidence="fallback_artifacts_asof_join")
+        computed = dict(_mapping(event.get("computed")))
+        computed["fallback_join_tolerance_ms"] = FALLBACK_JOIN_TOLERANCE_S * 1000.0
+        computed["fallback_join_base_source"] = base_name
+        computed["fallback_join_matched_sources"] = matched_sources
+        computed["fallback_join_missing_sources"] = missing_sources
+        computed["fallback_join_max_delta_ms"] = max_delta_ms if base_ts is not None else None
+        computed["fallback_join_coverage_ratio"] = (
+            (len(matched_sources) - 1)
+            / max(1, sum(1 for name, source_rows in sources if name != base_name and source_rows))
+            if base_ts is not None
+            else 0.0
+        )
+        event["computed"] = computed
+        rows.append(event)
+    return rows
+
+
+def _nearest_asof_flat_row(
+    timestamp: float,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    tolerance_s: float,
+) -> Mapping[str, Any] | None:
+    candidates: list[tuple[float, Mapping[str, Any]]] = []
+    for row in rows:
+        row_ts = _flat_timestamp(row)
+        if row_ts is None:
+            continue
+        delta = timestamp - row_ts
+        if 0.0 <= delta <= tolerance_s:
+            candidates.append((delta, row))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def _nearest_asof_event(
+    timestamp: float,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    tolerance_s: float,
+) -> Mapping[str, Any] | None:
+    candidates: list[tuple[float, Mapping[str, Any]]] = []
+    for row in rows:
+        row_ts = _event_timestamp(row)
+        if row_ts is None:
+            continue
+        delta = timestamp - row_ts
+        if 0.0 <= delta <= tolerance_s:
+            candidates.append((delta, row))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def _flat_timestamp(row: Mapping[str, Any]) -> float | None:
+    return _num(_first(row, "timestamp", "ts_sec", "sim_time_sec", "sim_time", "planning_header_timestamp_sec", "wall_time_sec"))
+
+
+def _event_timestamp(row: Mapping[str, Any]) -> float | None:
+    return _first_number(row, "timestamp", "sim_time_sec", "wall_time_sec", "planning.planning_header_timestamp_sec")
+
+
+def _join_delta_ms(left: float | None, right: float | None) -> float | None:
+    if left is None or right is None:
+        return None
+    return abs(left - right) * 1000.0
+
+
+def _normalize_lane_id(value: Any) -> str:
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
 
 def _apply_heading_threshold(value: float | None, *, warnings: list[str], blocking: list[str], warn_reason: str, fail_reason: str) -> None:

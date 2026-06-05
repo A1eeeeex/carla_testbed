@@ -1,0 +1,14 @@
+schema_version: platform_profile.v1
+name: dummy
+adapter: dummy
+runtime_mode: in_process
+middleware: none
+launch_profile: none
+expected_outputs: []
+supported_recorders:
+  - neutral_manifest
+  - neutral_events
+  - neutral_timeseries
+params:
+  starts_carla: false
+  starts_external_stack: false

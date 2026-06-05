@@ -18,7 +18,7 @@ import types
 from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import yaml
 
@@ -1505,6 +1505,7 @@ class ApolloGtBridge:
         )
         self.goal_validity_debug_path = self.artifacts_dir / "goal_validity_debug.jsonl"
         self.topic_publish_stats_path = self.artifacts_dir / "topic_publish_stats.jsonl"
+        self.publish_gap_trace_path = self.artifacts_dir / "publish_gap_trace.jsonl"
         self.control_apply_trace_path = self.artifacts_dir / "control_apply_trace.jsonl"
         self.obstacle_gt_contract_path = self.artifacts_dir / "obstacle_gt_contract.jsonl"
         self.obstacle_contract_debug_path = self.obstacle_gt_contract_path
@@ -1551,6 +1552,10 @@ class ApolloGtBridge:
             "enabled": True,
             "async_write_enabled": self.artifact_async_write_enabled,
             "async_queue_max_rows": artifact_async_queue_max,
+            "async_queue_size": 0,
+            "async_queue_size_max": 0,
+            "async_queue_full_count": 0,
+            "async_queue_blocked_duration_s": 0.0,
             "async_enqueued_count": 0,
             "async_written_count": 0,
             "async_write_error_count": 0,
@@ -2609,16 +2614,31 @@ class ApolloGtBridge:
         if write_queue is None:
             return False
         self._start_artifact_writer()
+        blocked_duration_s = 0.0
         try:
             write_queue.put_nowait((kind, str(path), dict(payload)))
         except queue.Full:
             # Do not drop claim/debug evidence. The queue should normally be
             # unbounded; if an operator sets a cap, back-pressure is explicit.
+            blocked_start_s = time.time()
             write_queue.put((kind, str(path), dict(payload)), timeout=1.0)
+            blocked_duration_s = max(0.0, time.time() - blocked_start_s)
         buffering = self.stats.setdefault("artifact_buffering", {})
         buffering["async_enqueued_count"] = int(buffering.get("async_enqueued_count", 0) or 0) + 1
+        if blocked_duration_s > 0.0:
+            buffering["async_queue_full_count"] = int(
+                buffering.get("async_queue_full_count", 0) or 0
+            ) + 1
+            buffering["async_queue_blocked_duration_s"] = float(
+                buffering.get("async_queue_blocked_duration_s", 0.0) or 0.0
+            ) + blocked_duration_s
         try:
-            buffering["async_queue_size"] = int(write_queue.qsize())
+            queue_size = int(write_queue.qsize())
+            buffering["async_queue_size"] = queue_size
+            buffering["async_queue_size_max"] = max(
+                int(buffering.get("async_queue_size_max", 0) or 0),
+                queue_size,
+            )
         except Exception:
             pass
         return True
@@ -2678,9 +2698,20 @@ class ApolloGtBridge:
 
     def _flush_artifact_buffers(self, *, close: bool = False) -> None:
         write_queue = getattr(self, "_artifact_write_queue", None)
-        if write_queue is not None:
+        if close and write_queue is not None:
             try:
                 write_queue.join()
+            except Exception:
+                pass
+        if write_queue is not None:
+            try:
+                buffering = self.stats.setdefault("artifact_buffering", {})
+                queue_size = int(write_queue.qsize())
+                buffering["async_queue_size"] = queue_size
+                buffering["async_queue_size_max"] = max(
+                    int(buffering.get("async_queue_size_max", 0) or 0),
+                    queue_size,
+                )
             except Exception:
                 pass
         for handles in (
@@ -3071,6 +3102,67 @@ class ApolloGtBridge:
 
     def _record_goal_validity_event(self, payload: Dict[str, Any]) -> None:
         self._append_jsonl(self.goal_validity_debug_path, payload)
+
+    def _record_publish_gap_trace(
+        self,
+        *,
+        snapshot: Optional[Dict[str, Any]] = None,
+        odom: Any = None,
+        expected_publish: bool = True,
+        published_localization: bool = False,
+        published_chassis: bool = False,
+        skip_reason: str = "unknown",
+        loop_start_wall_s: Optional[float] = None,
+        publish_loop_duration_s: Optional[float] = None,
+    ) -> None:
+        snapshot = snapshot or {}
+        now_wall_s = time.time()
+        if publish_loop_duration_s is None and loop_start_wall_s is not None:
+            publish_loop_duration_s = max(0.0, now_wall_s - float(loop_start_wall_s))
+        odom_stamp = self._extract_ros_stamp_sec(odom) if odom is not None else None
+        latest_odom_age_ms: Optional[float] = None
+        # ROS stamps may use sim-time rather than wall-time. Only report
+        # wall-age when the stamp is clearly in Unix-time space.
+        if odom_stamp is not None and odom_stamp > 1_000_000_000.0:
+            latest_odom_age_ms = max(0.0, (now_wall_s - odom_stamp) * 1000.0)
+        buffering = self.stats.get("artifact_buffering") if isinstance(self.stats, dict) else {}
+        if not isinstance(buffering, Mapping):
+            buffering = {}
+        world_frame = snapshot.get("world_frame")
+        if world_frame is None:
+            world_frame = getattr(self, "_latest_world_frame", None)
+        self._append_jsonl(
+            self.publish_gap_trace_path,
+            {
+                "schema_version": "publish_gap_trace.v1",
+                "wall_time_sec": now_wall_s,
+                "world_frame": world_frame,
+                "sim_time": odom_stamp if odom_stamp is not None else getattr(self, "_latest_sim_time_sec", None),
+                "expected_publish": bool(expected_publish),
+                "published_localization": bool(published_localization),
+                "published_chassis": bool(published_chassis),
+                "skip_reason": str(skip_reason or "unknown"),
+                "latest_odom_age_ms": latest_odom_age_ms,
+                "snapshot_age_ms": None,
+                "publish_loop_duration_ms": (
+                    publish_loop_duration_s * 1000.0
+                    if publish_loop_duration_s is not None
+                    else None
+                ),
+                "artifact_payload_build_ms": None,
+                "stats_write_ms": (
+                    float(buffering.get("stats_write_duration_s", 0.0) or 0.0) * 1000.0
+                    if buffering
+                    else None
+                ),
+                "async_queue_depth": buffering.get("async_queue_size"),
+                "async_queue_depth_max": buffering.get("async_queue_size_max"),
+                "async_queue_full_count": buffering.get("async_queue_full_count"),
+                "artifact_backpressure": bool(
+                    int(buffering.get("async_queue_full_count", 0) or 0) > 0
+                ),
+            },
+        )
 
     def _record_obstacle_contract_event(self, payload: Dict[str, Any]) -> None:
         self._append_jsonl(self.obstacle_contract_debug_path, payload)
@@ -9567,6 +9659,15 @@ class ApolloGtBridge:
             self.auto_routing_active_goal = (x1, y1, z1)
 
     def _write_stats(self) -> None:
+        stats_write_start_s = time.time()
+        buffering = self.stats.setdefault("artifact_buffering", {})
+
+        def record_stats_phase_duration(key: str, start_s: float) -> None:
+            duration_s = max(0.0, time.time() - start_s)
+            buffering[key] = duration_s
+            max_key = f"{key}_max"
+            buffering[max_key] = max(float(buffering.get(max_key, 0.0) or 0.0), duration_s)
+
         try:
             stats_flush_interval_s = max(
                 0.0,
@@ -9575,19 +9676,35 @@ class ApolloGtBridge:
             last_flush = float(getattr(self, "_last_artifact_stats_flush_sec", 0.0) or 0.0)
             now = time.time()
             if stats_flush_interval_s > 0.0 and (now - last_flush) >= stats_flush_interval_s:
+                flush_start_s = time.time()
                 self._flush_artifact_buffers(close=False)
+                record_stats_phase_duration("artifact_stats_flush_duration_s", flush_start_s)
                 self._last_artifact_stats_flush_sec = now
         except Exception:
             pass
+        health_start_s = time.time()
         self._write_health_summary()
+        record_stats_phase_duration("health_summary_write_duration_s", health_start_s)
+        startup_start_s = time.time()
         self._write_startup_geometry_summary()
+        record_stats_phase_duration("startup_geometry_summary_write_duration_s", startup_start_s)
+        planning_start_s = time.time()
         self._write_planning_topic_debug_summary()
+        record_stats_phase_duration("planning_summary_write_duration_s", planning_start_s)
         if hasattr(self.node, "write_artifacts"):
             try:
+                node_artifacts_start_s = time.time()
                 self.node.write_artifacts()
+                record_stats_phase_duration(
+                    "node_write_artifacts_duration_s",
+                    node_artifacts_start_s,
+                )
             except Exception:
                 pass
+        stats_file_start_s = time.time()
         self._write_json_file(self.stats_path, self.stats)
+        record_stats_phase_duration("stats_json_write_duration_s", stats_file_start_s)
+        record_stats_phase_duration("stats_write_duration_s", stats_write_start_s)
 
     def run(self) -> int:
         self.ros_thread.start()
@@ -9621,6 +9738,8 @@ class ApolloGtBridge:
         while not self.stop_event.is_set():
             loop_start_wall_s = time.time()
             loop_published_gt = False
+            snapshot: Dict[str, Any] = {}
+            odom: Any = None
             if hasattr(self.cyber, "is_shutdown") and self.cyber.is_shutdown():
                 break
             try:
@@ -9670,6 +9789,15 @@ class ApolloGtBridge:
                         self.stats["direct_stale_world_frame_skip_count"] = int(
                             self.stats.get("direct_stale_world_frame_skip_count", 0) or 0
                         ) + 1
+                        self._record_publish_gap_trace(
+                            snapshot=snapshot,
+                            odom=odom,
+                            expected_publish=True,
+                            published_localization=False,
+                            published_chassis=False,
+                            skip_reason="world_frame_not_advanced",
+                            loop_start_wall_s=loop_start_wall_s,
+                        )
                         now = time.time()
                         if (now - last_stats_flush) >= 1.0:
                             self._write_stats()
@@ -9697,6 +9825,15 @@ class ApolloGtBridge:
                         target_period_s=period,
                     )
                     if not should_publish_gt:
+                        self._record_publish_gap_trace(
+                            snapshot=snapshot,
+                            odom=odom,
+                            expected_publish=True,
+                            published_localization=False,
+                            published_chassis=False,
+                            skip_reason=sample_reason or "unknown",
+                            loop_start_wall_s=loop_start_wall_s,
+                        )
                         now = time.time()
                         if (now - last_stats_flush) >= 1.0:
                             self._write_stats()
@@ -10808,6 +10945,7 @@ class ApolloGtBridge:
                     print(f"[bridge][warn] {msg}")
 
             now = time.time()
+            publish_loop_duration_s = max(0.0, now - loop_start_wall_s)
             self._record_publish_loop_timing(
                 start_wall_s=loop_start_wall_s,
                 end_wall_s=now,
@@ -10815,6 +10953,17 @@ class ApolloGtBridge:
                 published_gt=loop_published_gt,
                 phase="publish_gt" if loop_published_gt else "idle_or_error",
             )
+            if publish_loop_duration_s > period:
+                self._record_publish_gap_trace(
+                    snapshot=snapshot if isinstance(snapshot, dict) else {},
+                    odom=odom,
+                    expected_publish=True,
+                    published_localization=bool(loop_published_gt),
+                    published_chassis=bool(loop_published_gt),
+                    skip_reason="publish_loop_overrun",
+                    loop_start_wall_s=loop_start_wall_s,
+                    publish_loop_duration_s=publish_loop_duration_s,
+                )
             if (now - last_stats_flush) >= 1.0:
                 self._write_stats()
                 last_stats_flush = now

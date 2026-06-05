@@ -1,0 +1,23 @@
+schema_version: platform_profile.v1
+name: apollo_cyberrt
+adapter: apollo_cyberrt
+runtime_mode: docker
+middleware: cyberrt
+launch_profile: apollo_truth_input_minimal
+expected_outputs:
+  - routing_response
+  - planning
+  - control
+supported_recorders:
+  - neutral_manifest
+  - neutral_events
+  - neutral_timeseries
+  - control_apply_trace
+  - carla_dual_cam
+  - carla_hud
+  - apollo_dreamview_capture
+  - apollo_cyber_record
+params:
+  compatibility_backend: tools/apollo10_cyber_bridge
+  needs_local_carla: true
+  needs_local_apollo: true

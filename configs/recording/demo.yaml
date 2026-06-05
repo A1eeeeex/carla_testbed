@@ -1,0 +1,19 @@
+schema_version: recording_profile.v1
+name: demo
+recorders:
+  - neutral_manifest
+  - neutral_events
+  - neutral_timeseries
+  - control_apply_trace
+  - carla_dual_cam
+  - carla_hud
+platform_overrides:
+  apollo_cyberrt:
+    add:
+      - apollo_dreamview_capture
+  autoware_ros2:
+    add:
+      - autoware_rviz_capture
+      - autoware_rosbag2
+claim_boundary:
+  recording_alone_is_not_evidence_of_natural_driving: true

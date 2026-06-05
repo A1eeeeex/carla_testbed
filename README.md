@@ -46,6 +46,26 @@ Inspect a run directory:
 python -m carla_testbed inspect-run runs/smoke
 ```
 
+Compile platform RunPlans without starting CARLA/Apollo/Autoware:
+
+```bash
+python -m carla_testbed suite dry-run \
+  --suite configs/suites/town01_natural_driving.platform.yaml \
+  --out /tmp/town01_platform_suite
+```
+
+Build evidence/gate summaries from existing artifacts:
+
+```bash
+python -m carla_testbed analyze \
+  --run-dir runs/<run_id> \
+  --plan /tmp/town01_platform_suite/plans/<run_id>.plan.resolved.yaml
+```
+
+These platform commands are planning and evidence-indexing surfaces. They do
+not make an Apollo natural-driving pass claim without the required reports such
+as `natural_driving_report.json`.
+
 Lightweight examples:
 
 ```bash
@@ -108,6 +128,10 @@ New core behavior should be shaped around the harness, config schema, backend co
   - Town01 truth-input MVP natural-driving goal and gates. Claims require
     local verification artifacts such as `natural_driving_report.json`; this is
     not full perception reproduction.
+- `docs/platform_run_plan.md`
+  - Offline platform planning layer; compiles platform / algorithm / scenario /
+    recording / gate selections into `run_plan.v1`. It does not start
+    CARLA/Apollo/Autoware and is not behavior evidence by itself.
 - `docs/town01_route_health.md`
   - Town01 route-health schema、P0/P1/P2 recorder 字段、curve segment report 和 run artifact 接入。
 - `docs/carla_direct_ab.md`

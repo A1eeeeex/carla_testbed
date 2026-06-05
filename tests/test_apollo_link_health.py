@@ -84,7 +84,11 @@ def _base_run(tmp_path: Path) -> Path:
     )
     _write_json(
         run_dir / "artifacts/planning_topic_debug_summary.json",
-        {"status": "pass", "messages_with_nonzero_trajectory_points": 100},
+        {
+            "status": "pass",
+            "total_messages_received": 100,
+            "messages_with_nonzero_trajectory_points": 100,
+        },
     )
     _write_json(
         run_dir / "analysis/apollo_channel_health/apollo_channel_health_report.json",
@@ -197,6 +201,21 @@ def _base_run(tmp_path: Path) -> Path:
         },
     )
     _write_json(
+        run_dir / "analysis/prediction_evidence/prediction_evidence_report.json",
+        {
+            "schema_version": "prediction_evidence.v1",
+            "scenario_class": "lane_keep",
+            "prediction_mode": "native_observed",
+            "prediction_channel_available": True,
+            "prediction_message_count": 100,
+            "planning_requires_prediction": True,
+            "hard_gate_eligible": True,
+            "blocking_capabilities": [],
+            "warnings": [],
+            "verdict": "pass",
+        },
+    )
+    _write_json(
         run_dir / "analysis/natural_driving/natural_driving_report.json",
         {
             "schema_version": "natural_driving_report.v1",
@@ -219,6 +238,61 @@ def test_all_green_link_health_is_claimable(tmp_path: Path) -> None:
     assert report["can_claim_unassisted_natural_driving"] is True
     assert report["layers"]["traffic_light_gt"]["status"] == "not_applicable"
     assert report["layers"]["hdmap_projection"]["status"] == "pass"
+    assert report["layers"]["route_establishment"]["status"] == "pass"
+    assert report["layers"]["prediction_evidence"]["status"] == "pass"
+
+
+def test_missing_prediction_evidence_blocks_claim(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    (run_dir / "analysis/prediction_evidence/prediction_evidence_report.json").unlink()
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert report["can_claim_unassisted_natural_driving"] is False
+    assert report["layers"]["prediction_evidence"]["status"] == "insufficient_data"
+    assert "prediction_evidence:insufficient_data" in report["why_not_claimable"]
+
+
+def test_explicit_non_apollo_control_source_conflicts_with_apollo_control_rx(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["control_source"] = "route_follower"
+    _write_json(manifest_path, manifest)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    layer = report["layers"]["no_assist_claim_boundary"]
+    assert layer["status"] == "fail"
+    assert "control_source_conflict" in layer["blocking_reasons"]
+    assert "control_source_not_apollo_control" in layer["blocking_reasons"]
+    assert layer["key_metrics"]["explicit_control_source"] == "route_follower"
+    assert layer["key_metrics"]["apollo_control_topic_observed"] is True
+    assert report["can_claim_unassisted_natural_driving"] is False
+
+
+def test_low_planning_materialization_is_primary_blocker(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["fail_reason"] = "ROUTE_ESTABLISHMENT_LATENCY_SEC"
+    _write_json(summary_path, summary)
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "status": "fail",
+            "total_messages_received": 550,
+            "messages_with_nonzero_trajectory_points": 14,
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert report["primary_blocker"] == "route_establishment:planning_trajectory_materialization_low"
+    layer = report["layers"]["route_establishment"]
+    assert layer["status"] == "fail"
+    assert layer["key_metrics"]["nonempty_trajectory_ratio"] == 14 / 550
+    assert "route_establishment_latency" in layer["blocking_reasons"]
 
 
 def test_independent_hdmap_projection_report_is_consumed(tmp_path: Path) -> None:
@@ -935,7 +1009,7 @@ def test_summary_dummy_lateral_blocks_no_assist_claim(tmp_path: Path) -> None:
     assert report["can_claim_unassisted_natural_driving"] is False
 
 
-def test_external_stack_legacy_placeholder_does_not_block_no_assist_claim(tmp_path: Path) -> None:
+def test_external_stack_legacy_placeholder_blocks_no_interference_claim(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     summary_path = run_dir / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -954,11 +1028,14 @@ def test_external_stack_legacy_placeholder_does_not_block_no_assist_claim(tmp_pa
     report = analyze_apollo_link_health_run_dir(run_dir)
 
     layer = report["layers"]["no_assist_claim_boundary"]
-    assert layer["status"] == "pass"
+    assert layer["status"] == "fail"
     assert layer["key_metrics"]["active_assists"] == []
     assert layer["key_metrics"]["blocking_assists"] == []
     assert layer["key_metrics"]["assist_confidence"] == "explicit"
-    assert report["can_claim_unassisted_natural_driving"] is True
+    assert layer["key_metrics"]["control_source"] == "external_stack"
+    assert "control_source_not_apollo_control" in layer["blocking_reasons"]
+    assert "control_source_conflict" in layer["blocking_reasons"]
+    assert report["can_claim_unassisted_natural_driving"] is False
 
 
 def test_no_assist_layer_infers_apollo_control_from_handoff_artifacts(tmp_path: Path) -> None:
@@ -995,7 +1072,7 @@ def test_no_assist_layer_infers_apollo_control_from_handoff_artifacts(tmp_path: 
     assert report["can_claim_unassisted_natural_driving"] is True
 
 
-def test_no_assist_layer_uses_bridge_rx_and_control_health_apply_for_external_stack_placeholder(
+def test_no_assist_layer_does_not_let_bridge_rx_override_external_stack_placeholder(
     tmp_path: Path,
 ) -> None:
     run_dir = _base_run(tmp_path)
@@ -1039,9 +1116,13 @@ def test_no_assist_layer_uses_bridge_rx_and_control_health_apply_for_external_st
     report = analyze_apollo_link_health_run_dir(run_dir)
 
     layer = report["layers"]["no_assist_claim_boundary"]
-    assert layer["key_metrics"]["control_source"] == "/apollo/control"
+    assert layer["status"] == "fail"
+    assert layer["key_metrics"]["control_source"] == "external_stack"
+    assert layer["key_metrics"]["explicit_control_source"] == "external_stack"
+    assert layer["key_metrics"]["apollo_control_topic_observed"] is True
     assert layer["key_metrics"]["control_apply_count"] == 75
-    assert "control_source_not_apollo_control" not in layer["blocking_reasons"]
+    assert "control_source_not_apollo_control" in layer["blocking_reasons"]
+    assert "control_source_conflict" in layer["blocking_reasons"]
     assert "control_apply_missing" not in layer["blocking_reasons"]
 
 
