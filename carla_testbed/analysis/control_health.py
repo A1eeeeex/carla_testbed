@@ -73,6 +73,20 @@ def analyze_control_health_run_dir(
             "bridge_control_decode.jsonl",
         ],
     )
+    control_trajectory_consume_path = _find_first(
+        root,
+        [
+            "artifacts/control_trajectory_consume_debug.jsonl",
+            "control_trajectory_consume_debug.jsonl",
+        ],
+    )
+    control_apply_trace_path = _find_first(
+        root,
+        [
+            "artifacts/control_apply_trace.jsonl",
+            "control_apply_trace.jsonl",
+        ],
+    )
     direct_control_apply_path = _find_first(
         root,
         [
@@ -92,6 +106,29 @@ def analyze_control_health_run_dir(
         [
             "artifacts/planning_topic_debug_summary.json",
             "planning_topic_debug_summary.json",
+        ],
+    )
+    planning_topic_debug_path = _find_first(
+        root,
+        [
+            "artifacts/planning_topic_debug.jsonl",
+            "planning_topic_debug.jsonl",
+        ],
+    )
+    planning_route_segment_debug_path = _find_first(
+        root,
+        [
+            "artifacts/planning_route_segment_debug.jsonl",
+            "artifacts/apollo_route_segment_debug.jsonl",
+            "planning_route_segment_debug.jsonl",
+            "apollo_route_segment_debug.jsonl",
+        ],
+    )
+    apollo_planning_log_path = _find_first(
+        root,
+        [
+            "artifacts/apollo_planning.INFO",
+            "apollo_planning.INFO",
         ],
     )
     cyber_bridge_stats_path = _find_first(
@@ -152,12 +189,22 @@ def analyze_control_health_run_dir(
     )
     rows = _read_rows(timeseries_path)
     control_bridge_log = _analyze_control_bridge_log(control_bridge_log_path)
-    control_decode_debug = _analyze_control_decode_debug(control_decode_debug_path)
+    control_row_level_trace_path = control_decode_debug_path or control_apply_trace_path
+    control_decode_debug = _analyze_control_decode_debug(
+        control_row_level_trace_path,
+        trajectory_consume_path=control_trajectory_consume_path,
+        planning_topic_debug_path=planning_topic_debug_path,
+        planning_route_segment_debug_path=planning_route_segment_debug_path,
+    )
     direct_control_apply = _analyze_direct_control_apply_log(direct_control_apply_path)
-    control_application = _control_application_metrics(rows)
+    control_application_timeseries = _control_application_metrics(rows)
     control_apply_delay = _control_apply_delay_metrics(
-        control_application=control_application,
+        control_application=control_application_timeseries,
         direct_control_apply=direct_control_apply,
+    )
+    control_application = _augment_control_application_with_decode(
+        control_application_timeseries,
+        control_decode_debug=control_decode_debug,
     )
     steer_error = _paired_abs_error_metrics(
         rows,
@@ -224,8 +271,16 @@ def analyze_control_health_run_dir(
             control_bridge_log=control_bridge_log,
             cyber_bridge_stats=cyber_bridge_stats,
         ),
+        "gt_state_sampling_cadence": _gt_state_sampling_cadence(
+            summary=summary,
+            cyber_bridge_stats=cyber_bridge_stats,
+            control_decode_debug=control_decode_debug,
+        ),
         "control_bridge_log": control_bridge_log,
         "control_decode_debug": control_decode_debug,
+        "planning_log_fallback_diagnostics": _planning_log_fallback_diagnostics(
+            apollo_planning_log_path
+        ),
         "direct_control_apply_log": direct_control_apply,
         "control_attribution": _control_attribution_summary(control_attribution, control_attribution_path),
         "upstream_contract_preconditions": _upstream_contract_preconditions(
@@ -238,6 +293,7 @@ def analyze_control_health_run_dir(
     report_metrics["oscillation_decomposition"] = _oscillation_decomposition(
         rows=rows,
         control_bridge_log=control_bridge_log,
+        control_decode_debug=control_decode_debug,
         thresholds=active_thresholds,
     )
     report_metrics["control_mapping_claim_boundary"] = _control_mapping_claim_boundary(
@@ -300,9 +356,27 @@ def analyze_control_health_run_dir(
             "timeseries_path": str(timeseries_path) if timeseries_path else None,
             "control_bridge_log_path": str(control_bridge_log_path) if control_bridge_log_path else None,
             "control_decode_debug_path": str(control_decode_debug_path) if control_decode_debug_path else None,
+            "control_trajectory_consume_path": (
+                str(control_trajectory_consume_path) if control_trajectory_consume_path else None
+            ),
+            "control_apply_trace_path": str(control_apply_trace_path) if control_apply_trace_path else None,
+            "control_row_level_trace_path": (
+                str(control_row_level_trace_path) if control_row_level_trace_path else None
+            ),
             "direct_control_apply_path": str(direct_control_apply_path) if direct_control_apply_path else None,
             "control_handoff_path": str(control_handoff_path) if control_handoff_path else None,
             "planning_summary_path": str(planning_summary_path) if planning_summary_path else None,
+            "planning_topic_debug_path": (
+                str(planning_topic_debug_path) if planning_topic_debug_path else None
+            ),
+            "planning_route_segment_debug_path": (
+                str(planning_route_segment_debug_path)
+                if planning_route_segment_debug_path
+                else None
+            ),
+            "apollo_planning_log_path": (
+                str(apollo_planning_log_path) if apollo_planning_log_path else None
+            ),
             "cyber_bridge_stats_path": str(cyber_bridge_stats_path) if cyber_bridge_stats_path else None,
             "control_attribution_path": str(control_attribution_path) if control_attribution_path else None,
             "apollo_control_handoff_report_path": (
@@ -417,6 +491,7 @@ def _oscillation_decomposition(
     *,
     rows: Sequence[Mapping[str, Any]],
     control_bridge_log: Mapping[str, Any],
+    control_decode_debug: Mapping[str, Any],
     thresholds: Mapping[str, float],
 ) -> dict[str, Any]:
     raw = _command_oscillation_layer(
@@ -446,6 +521,16 @@ def _oscillation_decomposition(
     vehicle = _vehicle_response_oscillation_layer(
         rows,
         max_switch_count=thresholds["max_vehicle_response_sign_switch_count"],
+    )
+    raw = _prefer_decode_layer(
+        current=raw,
+        decoded=control_decode_debug.get("apollo_raw_command_layer"),
+        source_name="control_decode_debug.jsonl",
+    )
+    mapped = _prefer_decode_layer(
+        current=mapped,
+        decoded=control_decode_debug.get("bridge_mapped_command_layer"),
+        source_name="control_decode_debug.jsonl",
     )
     cadence = _bridge_apply_cadence_layer(control_bridge_log, thresholds)
     layers = {
@@ -485,6 +570,27 @@ def _oscillation_decomposition(
             "smooth or clamp commands to hide reference-line/localization errors."
         ),
     }
+
+
+def _prefer_decode_layer(
+    *,
+    current: Mapping[str, Any],
+    decoded: Any,
+    source_name: str,
+) -> dict[str, Any]:
+    current_layer = dict(current)
+    if not isinstance(decoded, Mapping):
+        return current_layer
+    decoded_layer = dict(decoded)
+    decoded_count = _num(decoded_layer.get("sample_count")) or 0.0
+    current_count = _num(current_layer.get("sample_count")) or 0.0
+    if decoded_count <= 0:
+        return current_layer
+    if current_layer.get("status") == "insufficient_data" or decoded_count > current_count:
+        decoded_layer["source"] = source_name
+        return decoded_layer
+    current_layer.setdefault("alternate_source", source_name)
+    return current_layer
 
 
 def _command_oscillation_layer(
@@ -611,12 +717,26 @@ def _bridge_apply_cadence_layer(
     coverage_ratio = _num(control_bridge_log.get("apply_frame_coverage_ratio"))
     sync_to_world_tick = _parse_bool(control_bridge_log.get("sync_to_world_tick"))
     min_hz = _num(thresholds.get("min_control_bridge_apply_frame_hz"))
-    low_cadence = bool(observed is not None and min_hz is not None and observed < min_hz)
-    expected_same_frame_drop = bool(
-        sync_to_world_tick is True
-        and coverage_ratio is not None
-        and coverage_ratio >= thresholds["min_control_bridge_apply_frame_coverage_ratio"]
+    sync_tick_cadence_explained = _sync_tick_cadence_explained(
+        sync_to_world_tick=sync_to_world_tick,
+        coverage_ratio=coverage_ratio,
+        thresholds=thresholds,
     )
+    low_cadence = bool(
+        configured is not None
+        and observed is not None
+        and min_hz is not None
+        and observed < min_hz
+        and not sync_tick_cadence_explained
+    )
+    low_cadence_unconfigured = bool(
+        configured is None
+        and observed is not None
+        and min_hz is not None
+        and observed < min_hz
+        and not sync_tick_cadence_explained
+    )
+    expected_same_frame_drop = sync_tick_cadence_explained
     high_drop = bool(
         drop_ratio is not None
         and drop_ratio > thresholds["max_control_bridge_same_frame_drop_ratio"]
@@ -625,6 +745,9 @@ def _bridge_apply_cadence_layer(
     if low_cadence:
         status = "fail"
         reason = "control_bridge_world_frame_cadence_low"
+    elif low_cadence_unconfigured:
+        status = "warn"
+        reason = "control_bridge_world_frame_cadence_low_unconfigured"
     elif high_drop:
         status = "fail"
         reason = "control_bridge_drop_same_frame_high"
@@ -641,6 +764,10 @@ def _bridge_apply_cadence_layer(
         "same_frame_drop_ratio": drop_ratio,
         "apply_frame_coverage_ratio": coverage_ratio,
         "same_frame_drop_expected_from_sync_tick": expected_same_frame_drop,
+        "wall_cadence_low_explained_by_sync_tick": sync_tick_cadence_explained
+        and observed is not None
+        and min_hz is not None
+        and observed < min_hz,
     }
 
 
@@ -817,6 +944,7 @@ def _verdict(
     ):
         warnings.append("control_apply_observation_delay_high")
     warnings.extend(_control_bridge_log_warnings(metrics, thresholds))
+    warnings.extend(_gt_state_sampling_warnings(metrics))
 
     progress_after_apply = _num(metrics.get("route_s_after_first_applied_control_delta_m"))
     if (
@@ -829,8 +957,12 @@ def _verdict(
     oscillation = metrics.get("oscillation_decomposition")
     oscillation_layers = oscillation.get("layers") if isinstance(oscillation, Mapping) else {}
     if isinstance(oscillation_layers, Mapping):
+        cadence_layer = oscillation_layers.get("bridge_apply_cadence")
         raw_layer = oscillation_layers.get("apollo_raw_command")
         mapped_layer = oscillation_layers.get("bridge_mapped_command")
+        if isinstance(cadence_layer, Mapping) and cadence_layer.get("status") == "fail":
+            reason = str(cadence_layer.get("reason") or "control_bridge_apply_cadence_failed")
+            return "fail", reason, verdict_missing, warnings
         if isinstance(raw_layer, Mapping) and raw_layer.get("status") == "fail":
             return "fail", "apollo_raw_command_oscillation", verdict_missing, warnings
         if isinstance(mapped_layer, Mapping) and mapped_layer.get("status") == "fail":
@@ -1106,6 +1238,88 @@ def _link_delay_decomposition(
     }
 
 
+def _gt_state_sampling_cadence(
+    *,
+    summary: Mapping[str, Any],
+    cyber_bridge_stats: Mapping[str, Any],
+    control_decode_debug: Mapping[str, Any],
+) -> dict[str, Any]:
+    elapsed = _num(cyber_bridge_stats.get("publish_elapsed_wall_sec"))
+    loc_count = _num(cyber_bridge_stats.get("loc_count"))
+    chassis_count = _num(cyber_bridge_stats.get("chassis_count"))
+    control_rx_count = _num(cyber_bridge_stats.get("control_rx_count"))
+    control_tx_count = _num(cyber_bridge_stats.get("control_tx_count"))
+    tick_health = summary.get("carla_tick_health")
+    tick_health = tick_health if isinstance(tick_health, Mapping) else {}
+    tick_count = _num(tick_health.get("tick_count"))
+    tick_wall_span = _span(
+        _num(tick_health.get("first_tick_wall_time_s")),
+        _num(tick_health.get("last_tick_wall_time_s")),
+    )
+    longitudinal = control_decode_debug.get("longitudinal_debug")
+    longitudinal = longitudinal if isinstance(longitudinal, Mapping) else {}
+    current_accel_abs_p95 = _nested(
+        longitudinal,
+        "stats.debug_simple_lon_current_acceleration_mps2.p95_abs",
+    )
+    speed_fd_accel_abs_p95 = _nested(
+        longitudinal,
+        "speed_finite_difference_acceleration_abs_p95_mps2",
+    )
+    loc_hz = _safe_div(loc_count, elapsed)
+    chassis_hz = _safe_div(chassis_count, elapsed)
+    control_rx_hz = _safe_div(control_rx_count, elapsed)
+    return {
+        "available": bool(elapsed and (loc_count is not None or chassis_count is not None)),
+        "publish_elapsed_wall_sec": elapsed,
+        "localization_publish_count": int(loc_count) if loc_count is not None else None,
+        "chassis_publish_count": int(chassis_count) if chassis_count is not None else None,
+        "control_rx_count": int(control_rx_count) if control_rx_count is not None else None,
+        "control_tx_count": int(control_tx_count) if control_tx_count is not None else None,
+        "localization_wall_hz": loc_hz,
+        "chassis_wall_hz": chassis_hz,
+        "control_rx_wall_hz": control_rx_hz,
+        "control_to_localization_count_ratio": _safe_div(control_rx_count, loc_count),
+        "control_to_chassis_count_ratio": _safe_div(control_rx_count, chassis_count),
+        "carla_tick_count": int(tick_count) if tick_count is not None else None,
+        "carla_tick_wall_span_s": tick_wall_span,
+        "carla_tick_wall_hz": _safe_div(tick_count, tick_wall_span),
+        "carla_inter_tick_wall_interval_p95_s": _num(
+            tick_health.get("inter_tick_wall_interval_p95_s")
+        ),
+        "current_acceleration_abs_p95_mps2": current_accel_abs_p95,
+        "speed_fd_acceleration_abs_p95_mps2": speed_fd_accel_abs_p95,
+        "interpretation": (
+            "Apollo control can run many wall-clock cycles per CARLA world tick. If GT "
+            "localization/chassis arrives slowly in wall time while control keeps cycling, "
+            "Apollo longitudinal debug may show stale-state oversampling and acceleration spikes."
+        ),
+    }
+
+
+def _gt_state_sampling_warnings(metrics: Mapping[str, Any]) -> list[str]:
+    cadence = metrics.get("gt_state_sampling_cadence")
+    if not isinstance(cadence, Mapping) or cadence.get("available") is not True:
+        return []
+    warnings: list[str] = []
+    ratio = _num(cadence.get("control_to_chassis_count_ratio"))
+    control_hz = _num(cadence.get("control_rx_wall_hz"))
+    chassis_hz = _num(cadence.get("chassis_wall_hz"))
+    accel_abs_p95 = _num(cadence.get("current_acceleration_abs_p95_mps2"))
+    if ratio is not None and ratio > 5.0:
+        warnings.append("apollo_control_oversamples_gt_state")
+    if (
+        control_hz is not None
+        and chassis_hz is not None
+        and control_hz >= 10.0
+        and chassis_hz < 10.0
+    ):
+        warnings.append("gt_state_wall_rate_low_relative_to_control")
+    if accel_abs_p95 is not None and accel_abs_p95 > 5.0:
+        warnings.append("apollo_control_current_acceleration_spiky")
+    return warnings
+
+
 def _positive_span(start: float | None, end: float | None) -> float | None:
     value = _span(start, end)
     if value is None:
@@ -1132,6 +1346,26 @@ def _control_apply_delay_metrics(
         "control_apply_observation_delay_source": control_application.get("control_apply_observation_delay_source"),
         "control_apply_observation_delay_timeseries_s": timeseries_delay,
     }
+
+
+def _augment_control_application_with_decode(
+    control_application: Mapping[str, Any],
+    *,
+    control_decode_debug: Mapping[str, Any],
+) -> dict[str, Any]:
+    out = dict(control_application)
+    decoded_mapped_frames = _num(control_decode_debug.get("nonzero_mapped_control_frames"))
+    if decoded_mapped_frames is None:
+        return out
+    current_mapped = _num(out.get("nonzero_mapped_control_frames"))
+    if current_mapped is None or current_mapped <= 0:
+        out["nonzero_mapped_control_frames"] = int(decoded_mapped_frames)
+        out["nonzero_mapped_control_frames_source"] = "control_decode_debug.jsonl"
+        out["first_nonzero_mapped_control_s"] = control_decode_debug.get("first_nonzero_mapped_control_ts_sec")
+        out["first_nonzero_mapped_control_time_base"] = "control_decode_wall_time"
+    else:
+        out["nonzero_mapped_control_frames_source"] = "timeseries"
+    return out
 
 
 def _route_progress_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1394,20 +1628,33 @@ def _control_bridge_log_warnings(
         return []
     warnings: list[str] = []
     frame_hz = _num(log_metrics.get("apply_world_frame_hz"))
+    sync_tick_cadence_explained = _sync_tick_cadence_explained(
+        sync_to_world_tick=_parse_bool(log_metrics.get("sync_to_world_tick")),
+        coverage_ratio=_num(log_metrics.get("apply_frame_coverage_ratio")),
+        thresholds=thresholds,
+    )
     if (
         frame_hz is not None
         and frame_hz < thresholds["min_control_bridge_apply_frame_hz"]
         and _num(log_metrics.get("apply_log_count")) not in {None, 0}
+        and not sync_tick_cadence_explained
     ):
         warnings.append("control_bridge_world_frame_cadence_low")
     drop_ratio = _num(log_metrics.get("same_frame_drop_ratio"))
     coverage_ratio = _num(log_metrics.get("apply_frame_coverage_ratio"))
     sync_to_world_tick = _parse_bool(log_metrics.get("sync_to_world_tick"))
-    same_frame_drop_expected = bool(
-        sync_to_world_tick is True
-        and coverage_ratio is not None
-        and coverage_ratio >= thresholds["min_control_bridge_apply_frame_coverage_ratio"]
+    same_frame_drop_expected = _sync_tick_cadence_explained(
+        sync_to_world_tick=sync_to_world_tick,
+        coverage_ratio=coverage_ratio,
+        thresholds=thresholds,
     )
+    if (
+        frame_hz is not None
+        and frame_hz < thresholds["min_control_bridge_apply_frame_hz"]
+        and _num(log_metrics.get("apply_log_count")) not in {None, 0}
+        and same_frame_drop_expected
+    ):
+        warnings.append("control_bridge_sync_tick_wall_cadence_low_explained")
     if (
         drop_ratio is not None
         and drop_ratio > thresholds["max_control_bridge_same_frame_drop_ratio"]
@@ -1431,6 +1678,19 @@ def _control_bridge_log_warnings(
     return warnings
 
 
+def _sync_tick_cadence_explained(
+    *,
+    sync_to_world_tick: bool | None,
+    coverage_ratio: float | None,
+    thresholds: Mapping[str, float],
+) -> bool:
+    return bool(
+        sync_to_world_tick is True
+        and coverage_ratio is not None
+        and coverage_ratio >= thresholds["min_control_bridge_apply_frame_coverage_ratio"]
+    )
+
+
 def _control_latency_source(
     *,
     summary_latency: float | None,
@@ -1446,13 +1706,20 @@ def _control_latency_source(
     return None
 
 
-def _analyze_control_decode_debug(path: Path | None) -> dict[str, Any]:
+def _analyze_control_decode_debug(
+    path: Path | None,
+    *,
+    trajectory_consume_path: Path | None = None,
+    planning_topic_debug_path: Path | None = None,
+    planning_route_segment_debug_path: Path | None = None,
+) -> dict[str, Any]:
     if path is None or not path.exists():
         return {"available": False}
 
     control_latency_values: list[float] = []
     control_message_age_values: list[float] = []
     planning_message_age_values: list[float] = []
+    trace_rows: list[dict[str, Any]] = []
     line_count = 0
     parsed_count = 0
     malformed_count = 0
@@ -1478,6 +1745,9 @@ def _analyze_control_decode_debug(path: Path | None) -> dict[str, Any]:
                     control_message_age_values.append(value)
                 if (value := _nested_first_number(payload, _PLANNING_MESSAGE_AGE_PATHS)) is not None:
                     planning_message_age_values.append(value)
+                trace = _control_decode_payload_to_trace_row(payload)
+                if trace:
+                    trace_rows.append(trace)
     except OSError as exc:
         return {
             "available": False,
@@ -1485,12 +1755,72 @@ def _analyze_control_decode_debug(path: Path | None) -> dict[str, Any]:
             "read_error": str(exc),
         }
 
+    raw_layer = _command_oscillation_layer(
+        trace_rows,
+        layer="apollo_raw_command",
+        throttle_fields=("throttle_raw", "apollo_desired_throttle", "raw_throttle"),
+        brake_fields=("brake_raw", "apollo_desired_brake", "raw_brake"),
+        steer_fields=("apollo_steer_raw", "raw_steer", "steering_normalized_for_mapping"),
+        max_switch_count=DEFAULT_THRESHOLDS["max_raw_throttle_brake_switch_count"],
+    )
+    mapped_layer = _command_oscillation_layer(
+        trace_rows,
+        layer="bridge_mapped_command",
+        throttle_fields=("throttle_mapped", "mapped_throttle_cmd", "commanded_throttle"),
+        brake_fields=("brake_mapped", "mapped_brake_cmd", "commanded_brake"),
+        steer_fields=("bridge_steer_mapped", "mapped_carla_steer_cmd", "commanded_steer"),
+        max_switch_count=DEFAULT_THRESHOLDS["max_mapped_throttle_brake_switch_count"],
+    )
+    nonzero_mapped = sum(
+        1
+        for row in trace_rows
+        if _row_has_nonzero_control(
+            row,
+            throttle_field="throttle_mapped",
+            brake_field="brake_mapped",
+            steer_field="bridge_steer_mapped",
+        )
+    )
+    first_nonzero_mapped_ts = None
+    for row in trace_rows:
+        if _row_has_nonzero_control(
+            row,
+            throttle_field="throttle_mapped",
+            brake_field="brake_mapped",
+            steer_field="bridge_steer_mapped",
+        ):
+            first_nonzero_mapped_ts = _num(row.get("ts_sec"))
+            break
+
     return {
         "available": True,
         "path": str(path),
         "line_count": line_count,
         "parsed_line_count": parsed_count,
         "malformed_line_count": malformed_count,
+        "trace_row_count": len(trace_rows),
+        "nonzero_mapped_control_frames": nonzero_mapped if trace_rows else None,
+        "first_nonzero_mapped_control_ts_sec": first_nonzero_mapped_ts,
+        "apollo_raw_command_layer": raw_layer,
+        "bridge_mapped_command_layer": mapped_layer,
+        "throttle_brake_mutual_exclusion_applied_count": sum(
+            1 for row in trace_rows if _parse_bool(row.get("throttle_brake_mutual_exclusion_applied")) is True
+        ),
+        "throttle_brake_hysteresis_held_count": sum(
+            1 for row in trace_rows if _parse_bool(row.get("throttle_brake_hysteresis_held")) is True
+        ),
+        "longitudinal_debug": _longitudinal_debug_summary(trace_rows),
+        "longitudinal_oscillation_attribution": _longitudinal_oscillation_attribution(trace_rows),
+        "trajectory_consume_correlation": _trajectory_consume_correlation(
+            trace_rows,
+            trajectory_consume_path=trajectory_consume_path,
+        ),
+        "planning_trajectory_correlation": _planning_trajectory_correlation(
+            trace_rows,
+            trajectory_consume_path=trajectory_consume_path,
+            planning_topic_debug_path=planning_topic_debug_path,
+            planning_route_segment_debug_path=planning_route_segment_debug_path,
+        ),
         "control_latency_sample_count": len(control_latency_values),
         "control_latency_p50_ms": _percentile(control_latency_values, 0.50),
         "control_latency_p95_ms": _percentile(control_latency_values, 0.95),
@@ -1575,6 +1905,1141 @@ def _analyze_direct_control_apply_log(path: Path | None) -> dict[str, Any]:
         "max_throttle": max_throttle,
         "max_brake": max_brake,
     }
+
+
+def _control_decode_payload_to_trace_row(payload: Mapping[str, Any]) -> dict[str, Any]:
+    parsed = payload.get("parsed_control")
+    parsed_map = parsed if isinstance(parsed, Mapping) else {}
+    output = payload.get("output_to_carla")
+    output_map = output if isinstance(output, Mapping) else {}
+    apollo_raw = payload.get("apollo_raw")
+    apollo_raw_map = apollo_raw if isinstance(apollo_raw, Mapping) else {}
+    raw_dump = payload.get("raw_control_msg_dump")
+    raw_dump_map = raw_dump if isinstance(raw_dump, Mapping) else {}
+    bridge_mapped = payload.get("bridge_mapped")
+    bridge_mapped_map = bridge_mapped if isinstance(bridge_mapped, Mapping) else {}
+    carla_applied = payload.get("carla_applied")
+    carla_applied_map = carla_applied if isinstance(carla_applied, Mapping) else {}
+    row = {
+        "ts_sec": _first_number(
+            payload.get("ts_sec"),
+            payload.get("timestamp"),
+            parsed_map.get("control_rx_timestamp"),
+            output_map.get("control_rx_timestamp"),
+        ),
+        "control_header_sequence_num": _first_number(
+            parsed_map.get("control_header_sequence_num"),
+            payload.get("control_header_sequence_num"),
+            raw_dump_map.get("control_header_sequence_num"),
+        ),
+        "throttle_raw": _first_number(
+            payload.get("raw_throttle"),
+            apollo_raw_map.get("throttle"),
+            parsed_map.get("throttle"),
+            _percent_to_unit(_nested_raw(payload, ("raw_control_msg_dump", "throttle"))),
+        ),
+        "brake_raw": _first_number(
+            payload.get("raw_brake"),
+            apollo_raw_map.get("brake"),
+            parsed_map.get("brake"),
+            _percent_to_unit(_nested_raw(payload, ("raw_control_msg_dump", "brake"))),
+        ),
+        "apollo_steer_raw": _first_number(
+            payload.get("raw_steer"),
+            apollo_raw_map.get("steer"),
+            parsed_map.get("steer"),
+            parsed_map.get("steering_normalized_for_mapping"),
+            output_map.get("steering_normalized_for_mapping"),
+        ),
+        "throttle_mapped": _first_number(
+            payload.get("mapped_throttle_cmd"),
+            bridge_mapped_map.get("throttle"),
+            bridge_mapped_map.get("mapped_throttle_cmd"),
+            output_map.get("mapped_throttle_cmd"),
+            payload.get("commanded_throttle"),
+            output_map.get("throttle"),
+        ),
+        "brake_mapped": _first_number(
+            payload.get("mapped_brake_cmd"),
+            bridge_mapped_map.get("brake"),
+            bridge_mapped_map.get("mapped_brake_cmd"),
+            output_map.get("mapped_brake_cmd"),
+            payload.get("commanded_brake"),
+            output_map.get("brake"),
+        ),
+        "bridge_steer_mapped": _first_number(
+            payload.get("mapped_carla_steer_cmd"),
+            bridge_mapped_map.get("steer"),
+            bridge_mapped_map.get("mapped_carla_steer_cmd"),
+            output_map.get("mapped_carla_steer_cmd"),
+            payload.get("commanded_steer"),
+            output_map.get("steer"),
+        ),
+        "throttle_applied": _first_number(
+            payload.get("throttle_applied"),
+            carla_applied_map.get("throttle"),
+        ),
+        "brake_applied": _first_number(
+            payload.get("brake_applied"),
+            carla_applied_map.get("brake"),
+        ),
+        "carla_steer_applied": _first_number(
+            payload.get("carla_steer_applied"),
+            carla_applied_map.get("steer"),
+        ),
+        "throttle_before_mutual_exclusion": _first_number(
+            payload.get("throttle_before_mutual_exclusion"),
+            bridge_mapped_map.get("throttle_before_mutual_exclusion"),
+            output_map.get("throttle_before_mutual_exclusion"),
+        ),
+        "brake_before_mutual_exclusion": _first_number(
+            payload.get("brake_before_mutual_exclusion"),
+            bridge_mapped_map.get("brake_before_mutual_exclusion"),
+            output_map.get("brake_before_mutual_exclusion"),
+        ),
+        "throttle_brake_mutual_exclusion_applied": _first_raw(
+            payload,
+            "throttle_brake_mutual_exclusion_applied",
+            bridge_mapped_map,
+            "throttle_brake_mutual_exclusion_applied",
+            output_map,
+            "throttle_brake_mutual_exclusion_applied",
+        ),
+        "throttle_brake_hysteresis_held": _first_raw(
+            payload,
+            "throttle_brake_hysteresis_held",
+            bridge_mapped_map,
+            "throttle_brake_hysteresis_held",
+            output_map,
+            "throttle_brake_hysteresis_held",
+        ),
+        "debug_simple_lon_current_speed_mps": _first_number(
+            parsed_map.get("debug_simple_lon_current_speed_mps"),
+            payload.get("debug_simple_lon_current_speed_mps"),
+            raw_dump_map.get("debug_simple_lon_current_speed"),
+        ),
+        "debug_simple_lon_speed_reference_mps": _first_number(
+            parsed_map.get("debug_simple_lon_speed_reference_mps"),
+            payload.get("debug_simple_lon_speed_reference_mps"),
+            raw_dump_map.get("debug_simple_lon_speed_reference"),
+        ),
+        "debug_simple_lon_speed_error_mps": _first_number(
+            parsed_map.get("debug_simple_lon_speed_error_mps"),
+            payload.get("debug_simple_lon_speed_error_mps"),
+            raw_dump_map.get("debug_simple_lon_speed_error"),
+        ),
+        "debug_simple_lon_current_acceleration_mps2": _first_number(
+            parsed_map.get("debug_simple_lon_current_acceleration_mps2"),
+            payload.get("debug_simple_lon_current_acceleration_mps2"),
+            raw_dump_map.get("debug_simple_lon_current_acceleration"),
+        ),
+        "debug_simple_lon_acceleration_reference_mps2": _first_number(
+            parsed_map.get("debug_simple_lon_acceleration_reference_mps2"),
+            payload.get("debug_simple_lon_acceleration_reference_mps2"),
+            raw_dump_map.get("debug_simple_lon_acceleration_reference"),
+        ),
+        "debug_simple_lon_acceleration_error_mps2": _first_number(
+            parsed_map.get("debug_simple_lon_acceleration_error_mps2"),
+            payload.get("debug_simple_lon_acceleration_error_mps2"),
+            raw_dump_map.get("debug_simple_lon_acceleration_error"),
+        ),
+        "debug_simple_lon_acceleration_cmd_mps2": _first_number(
+            parsed_map.get("debug_simple_lon_acceleration_cmd_mps2"),
+            payload.get("debug_simple_lon_acceleration_cmd_mps2"),
+            raw_dump_map.get("debug_simple_lon_acceleration_cmd"),
+        ),
+        "debug_simple_lon_acceleration_cmd_closeloop_mps2": _first_number(
+            parsed_map.get("debug_simple_lon_acceleration_cmd_closeloop_mps2"),
+            payload.get("debug_simple_lon_acceleration_cmd_closeloop_mps2"),
+            raw_dump_map.get("debug_simple_lon_acceleration_cmd_closeloop"),
+        ),
+        "debug_simple_lon_acceleration_lookup_mps2": _first_number(
+            parsed_map.get("debug_simple_lon_acceleration_lookup_mps2"),
+            payload.get("debug_simple_lon_acceleration_lookup_mps2"),
+            raw_dump_map.get("debug_simple_lon_acceleration_lookup"),
+        ),
+        "debug_simple_lon_throttle_cmd_pct": _first_number(
+            parsed_map.get("debug_simple_lon_throttle_cmd_pct"),
+            payload.get("debug_simple_lon_throttle_cmd_pct"),
+            raw_dump_map.get("debug_simple_lon_throttle_cmd"),
+        ),
+        "debug_simple_lon_brake_cmd_pct": _first_number(
+            parsed_map.get("debug_simple_lon_brake_cmd_pct"),
+            payload.get("debug_simple_lon_brake_cmd_pct"),
+            raw_dump_map.get("debug_simple_lon_brake_cmd"),
+        ),
+        "debug_simple_lon_path_remain_m": _first_number(
+            parsed_map.get("debug_simple_lon_path_remain_m"),
+            payload.get("debug_simple_lon_path_remain_m"),
+            raw_dump_map.get("debug_simple_lon_path_remain"),
+        ),
+        "debug_simple_lon_station_error_m": _first_number(
+            parsed_map.get("debug_simple_lon_station_error_m"),
+            payload.get("debug_simple_lon_station_error_m"),
+            raw_dump_map.get("debug_simple_lon_station_error"),
+        ),
+        "debug_simple_lon_preview_station_error_m": _first_number(
+            parsed_map.get("debug_simple_lon_preview_station_error_m"),
+            payload.get("debug_simple_lon_preview_station_error_m"),
+            raw_dump_map.get("debug_simple_lon_preview_station_error"),
+        ),
+        "debug_simple_lon_is_full_stop": _first_raw(
+            payload,
+            "debug_simple_lon_is_full_stop",
+            parsed_map,
+            "debug_simple_lon_is_full_stop",
+            raw_dump_map,
+            "debug_simple_lon_is_full_stop",
+        ),
+    }
+    return {key: value for key, value in row.items() if value not in {None, ""}}
+
+
+def _longitudinal_debug_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    fields = (
+        "debug_simple_lon_current_speed_mps",
+        "debug_simple_lon_speed_reference_mps",
+        "debug_simple_lon_speed_error_mps",
+        "debug_simple_lon_current_acceleration_mps2",
+        "debug_simple_lon_acceleration_reference_mps2",
+        "debug_simple_lon_acceleration_error_mps2",
+        "debug_simple_lon_acceleration_cmd_mps2",
+        "debug_simple_lon_acceleration_cmd_closeloop_mps2",
+        "debug_simple_lon_acceleration_lookup_mps2",
+        "debug_simple_lon_throttle_cmd_pct",
+        "debug_simple_lon_brake_cmd_pct",
+        "debug_simple_lon_path_remain_m",
+        "debug_simple_lon_station_error_m",
+        "debug_simple_lon_preview_station_error_m",
+    )
+    sample_count = len(rows)
+    available_counts: dict[str, int] = {}
+    stats: dict[str, Any] = {}
+    for field in fields:
+        values = [_num(row.get(field)) for row in rows]
+        numeric = [float(value) for value in values if value is not None]
+        available_counts[field] = len(numeric)
+        stats[field] = {
+            "sample_count": len(numeric),
+            "p50": _percentile(numeric, 0.50),
+            "p95": _percentile(numeric, 0.95),
+            "p95_abs": _percentile([abs(value) for value in numeric], 0.95),
+            "min": min(numeric) if numeric else None,
+            "max": max(numeric) if numeric else None,
+        }
+    full_stop_count = sum(1 for row in rows if _parse_bool(row.get("debug_simple_lon_is_full_stop")) is True)
+    required_for_context = (
+        "debug_simple_lon_current_speed_mps",
+        "debug_simple_lon_speed_reference_mps",
+        "debug_simple_lon_speed_error_mps",
+        "debug_simple_lon_acceleration_cmd_mps2",
+        "debug_simple_lon_throttle_cmd_pct",
+        "debug_simple_lon_brake_cmd_pct",
+    )
+    missing_context_fields = [
+        field for field in required_for_context if available_counts.get(field, 0) <= 0
+    ]
+    return {
+        "available": bool(sample_count and not missing_context_fields),
+        "sample_count": sample_count,
+        "available_counts": available_counts,
+        "missing_context_fields": missing_context_fields,
+        "full_stop_count": full_stop_count,
+        "stats": stats,
+    }
+
+
+def _longitudinal_oscillation_attribution(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    states: list[tuple[int, Mapping[str, Any], str]] = []
+    for index, row in enumerate(rows):
+        state = _longitudinal_command_state(row)
+        if state in {"throttle", "brake", "coast", "conflict"}:
+            states.append((index, row, state))
+    state_counts = {
+        name: sum(1 for _, _, state in states if state == name)
+        for name in ("throttle", "brake", "coast", "conflict")
+    }
+    transitions: list[tuple[int, Mapping[str, Any], str, int, Mapping[str, Any], str]] = []
+    previous: tuple[int, Mapping[str, Any], str] | None = None
+    for current in states:
+        if previous is not None and current[2] != previous[2]:
+            if {previous[2], current[2]}.issubset({"throttle", "brake", "coast"}):
+                transitions.append((*previous, *current))
+        previous = current
+
+    buckets = {
+        "acceleration_cmd_sign_flip": 0,
+        "path_remain_large_drop": 0,
+        "path_remain_large_jump": 0,
+        "station_error_large_drop": 0,
+        "station_error_large_jump": 0,
+        "speed_reference_large_drop": 0,
+        "speed_reference_large_jump": 0,
+        "current_speed_large_jump": 0,
+        "sequence_gap_gt_one": 0,
+    }
+    examples: list[dict[str, Any]] = []
+    for prev_index, prev_row, prev_state, cur_index, cur_row, cur_state in transitions:
+        _count_large_delta(
+            buckets,
+            prev_row,
+            cur_row,
+            field="debug_simple_lon_path_remain_m",
+            drop_key="path_remain_large_drop",
+            jump_key="path_remain_large_jump",
+            threshold=5.0,
+        )
+        _count_large_delta(
+            buckets,
+            prev_row,
+            cur_row,
+            field="debug_simple_lon_station_error_m",
+            drop_key="station_error_large_drop",
+            jump_key="station_error_large_jump",
+            threshold=1.0,
+        )
+        _count_large_delta(
+            buckets,
+            prev_row,
+            cur_row,
+            field="debug_simple_lon_speed_reference_mps",
+            drop_key="speed_reference_large_drop",
+            jump_key="speed_reference_large_jump",
+            threshold=0.5,
+        )
+        _count_large_delta(
+            buckets,
+            prev_row,
+            cur_row,
+            field="debug_simple_lon_current_speed_mps",
+            drop_key="current_speed_large_jump",
+            jump_key="current_speed_large_jump",
+            threshold=0.5,
+        )
+        prev_acc = _num(prev_row.get("debug_simple_lon_acceleration_cmd_mps2"))
+        cur_acc = _num(cur_row.get("debug_simple_lon_acceleration_cmd_mps2"))
+        if prev_acc is not None and cur_acc is not None and prev_acc * cur_acc < 0:
+            buckets["acceleration_cmd_sign_flip"] += 1
+        prev_seq = _int(prev_row.get("control_header_sequence_num"))
+        cur_seq = _int(cur_row.get("control_header_sequence_num"))
+        if prev_seq is not None and cur_seq is not None and cur_seq - prev_seq > 1:
+            buckets["sequence_gap_gt_one"] += 1
+        if len(examples) < 5:
+            examples.append(
+                _longitudinal_transition_example(
+                    prev_index=prev_index,
+                    prev_row=prev_row,
+                    prev_state=prev_state,
+                    cur_index=cur_index,
+                    cur_row=cur_row,
+                    cur_state=cur_state,
+                )
+            )
+
+    transition_count = len(transitions)
+    full_stop_count = sum(1 for _, row, _ in states if _parse_bool(row.get("debug_simple_lon_is_full_stop")) is True)
+    suspected_factors: list[str] = []
+    if transition_count and buckets["acceleration_cmd_sign_flip"] / transition_count >= 0.8:
+        suspected_factors.append("apollo_simple_lon_acceleration_cmd_sign_switching")
+    path_jump_count = buckets["path_remain_large_drop"] + buckets["path_remain_large_jump"]
+    station_jump_count = buckets["station_error_large_drop"] + buckets["station_error_large_jump"]
+    if transition_count and (path_jump_count + station_jump_count) / transition_count >= 0.4:
+        suspected_factors.append("trajectory_station_or_path_remain_jump")
+    speed_reference_jump_count = buckets["speed_reference_large_drop"] + buckets["speed_reference_large_jump"]
+    if transition_count and speed_reference_jump_count / transition_count >= 0.25:
+        suspected_factors.append("speed_reference_jump")
+    if full_stop_count:
+        suspected_factors.append("full_stop_logic_active")
+
+    return {
+        "available": bool(rows),
+        "sample_count": len(rows),
+        "state_counts": state_counts,
+        "transition_count": transition_count,
+        "transition_buckets": buckets,
+        "full_stop_count": full_stop_count,
+        "suspected_factors": suspected_factors,
+        "dominant_suspected_factor": suspected_factors[0] if suspected_factors else None,
+        "interpretation_caveat": (
+            "This is attribution evidence for Apollo raw longitudinal command switching; "
+            "it does not by itself prove an Apollo algorithm limitation. Check planning "
+            "trajectory, reference-line, routing segment, localization, and control debug together."
+        ),
+        "thresholds": {
+            "path_remain_jump_m": 5.0,
+            "station_error_jump_m": 1.0,
+            "speed_reference_jump_mps": 0.5,
+            "current_speed_jump_mps": 0.5,
+            "acceleration_cmd_sign_flip_ratio_for_factor": 0.8,
+        },
+        "examples": examples,
+    }
+
+
+def _trajectory_consume_correlation(
+    trace_rows: Sequence[Mapping[str, Any]],
+    *,
+    trajectory_consume_path: Path | None,
+) -> dict[str, Any]:
+    if trajectory_consume_path is None or not trajectory_consume_path.exists():
+        return {"available": False, "missing_inputs": ["control_trajectory_consume_debug.jsonl"]}
+    consume_rows: list[Mapping[str, Any]] = []
+    malformed_count = 0
+    try:
+        with trajectory_consume_path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    malformed_count += 1
+                    continue
+                if isinstance(payload, Mapping):
+                    consume_rows.append(payload)
+                else:
+                    malformed_count += 1
+    except OSError as exc:
+        return {
+            "available": False,
+            "path": str(trajectory_consume_path),
+            "read_error": str(exc),
+        }
+
+    transition_indices = _longitudinal_transition_indices(trace_rows)
+    aligned_transition_indices = [
+        index for index in transition_indices if index < len(trace_rows) and index < len(consume_rows)
+    ]
+    buckets = {
+        "planning_sequence_changed": 0,
+        "same_planning_sequence": 0,
+        "planning_sequence_gap_gt_one": 0,
+        "trajectory_point_count_changed": 0,
+        "candidate_source_changed": 0,
+        "effective_planning_source_changed": 0,
+        "planning_age_drop_gt_50ms": 0,
+        "planning_age_after_gt_500ms": 0,
+        "trajectory_window_changed": 0,
+    }
+    examples: list[dict[str, Any]] = []
+    for index in aligned_transition_indices:
+        prev_consume = consume_rows[index - 1]
+        cur_consume = consume_rows[index]
+        prev_trace = trace_rows[index - 1]
+        cur_trace = trace_rows[index]
+        prev_seq = _int(prev_consume.get("planning_header_sequence_num_used"))
+        cur_seq = _int(cur_consume.get("planning_header_sequence_num_used"))
+        if prev_seq != cur_seq:
+            buckets["planning_sequence_changed"] += 1
+        else:
+            buckets["same_planning_sequence"] += 1
+        if prev_seq is not None and cur_seq is not None and cur_seq - prev_seq > 1:
+            buckets["planning_sequence_gap_gt_one"] += 1
+        if prev_consume.get("latest_planning_trajectory_point_count") != cur_consume.get(
+            "latest_planning_trajectory_point_count"
+        ):
+            buckets["trajectory_point_count_changed"] += 1
+        if prev_consume.get("control_input_candidate_source") != cur_consume.get("control_input_candidate_source"):
+            buckets["candidate_source_changed"] += 1
+        if prev_consume.get("effective_planning_source") != cur_consume.get("effective_planning_source"):
+            buckets["effective_planning_source_changed"] += 1
+        prev_age = _num(prev_consume.get("latest_planning_msg_age_ms"))
+        cur_age = _num(cur_consume.get("latest_planning_msg_age_ms"))
+        if prev_age is not None and cur_age is not None and prev_age - cur_age > 50.0:
+            buckets["planning_age_drop_gt_50ms"] += 1
+        if cur_age is not None and cur_age > 500.0:
+            buckets["planning_age_after_gt_500ms"] += 1
+        if (
+            prev_consume.get("trajectory_first_point_relative_time")
+            != cur_consume.get("trajectory_first_point_relative_time")
+            or prev_consume.get("trajectory_last_point_relative_time")
+            != cur_consume.get("trajectory_last_point_relative_time")
+        ):
+            buckets["trajectory_window_changed"] += 1
+        if len(examples) < 5:
+            examples.append(
+                {
+                    "row_index": [index - 1, index],
+                    "state": [
+                        _longitudinal_command_state(prev_trace),
+                        _longitudinal_command_state(cur_trace),
+                    ],
+                    "control_sequence_num": [
+                        _int(prev_trace.get("control_header_sequence_num")),
+                        _int(cur_trace.get("control_header_sequence_num")),
+                    ],
+                    "planning_sequence_num": [prev_seq, cur_seq],
+                    "planning_age_ms": [prev_age, cur_age],
+                    "trajectory_point_count": [
+                        _int(prev_consume.get("latest_planning_trajectory_point_count")),
+                        _int(cur_consume.get("latest_planning_trajectory_point_count")),
+                    ],
+                    "effective_planning_source": [
+                        prev_consume.get("effective_planning_source"),
+                        cur_consume.get("effective_planning_source"),
+                    ],
+                    "trajectory_first_point_relative_time": [
+                        _num(prev_consume.get("trajectory_first_point_relative_time")),
+                        _num(cur_consume.get("trajectory_first_point_relative_time")),
+                    ],
+                    "trajectory_last_point_relative_time": [
+                        _num(prev_consume.get("trajectory_last_point_relative_time")),
+                        _num(cur_consume.get("trajectory_last_point_relative_time")),
+                    ],
+                    "path_remain_m": [
+                        _num(prev_trace.get("debug_simple_lon_path_remain_m")),
+                        _num(cur_trace.get("debug_simple_lon_path_remain_m")),
+                    ],
+                    "station_error_m": [
+                        _num(prev_trace.get("debug_simple_lon_station_error_m")),
+                        _num(cur_trace.get("debug_simple_lon_station_error_m")),
+                    ],
+                    "acceleration_cmd_mps2": [
+                        _num(prev_trace.get("debug_simple_lon_acceleration_cmd_mps2")),
+                        _num(cur_trace.get("debug_simple_lon_acceleration_cmd_mps2")),
+                    ],
+                }
+            )
+
+    transition_count = len(transition_indices)
+    aligned_count = len(aligned_transition_indices)
+    suspected_factors: list[str] = []
+    if aligned_count and buckets["planning_sequence_changed"] / aligned_count >= 0.5:
+        suspected_factors.append("planning_sequence_update_correlates_with_switches")
+    if aligned_count and buckets["same_planning_sequence"] > 0:
+        suspected_factors.append("intra_trajectory_longitudinal_switches_present")
+    if aligned_count and buckets["effective_planning_source_changed"] / aligned_count >= 0.25:
+        suspected_factors.append("effective_planning_source_switching")
+    return {
+        "available": bool(consume_rows),
+        "path": str(trajectory_consume_path),
+        "trace_row_count": len(trace_rows),
+        "consume_row_count": len(consume_rows),
+        "aligned_row_count": min(len(trace_rows), len(consume_rows)),
+        "malformed_line_count": malformed_count,
+        "transition_count": transition_count,
+        "aligned_transition_count": aligned_count,
+        "transition_buckets": buckets,
+        "suspected_factors": suspected_factors,
+        "dominant_suspected_factor": suspected_factors[0] if suspected_factors else None,
+        "examples": examples,
+    }
+
+
+def _planning_trajectory_correlation(
+    trace_rows: Sequence[Mapping[str, Any]],
+    *,
+    trajectory_consume_path: Path | None,
+    planning_topic_debug_path: Path | None,
+    planning_route_segment_debug_path: Path | None,
+) -> dict[str, Any]:
+    missing_inputs: list[str] = []
+    if trajectory_consume_path is None or not trajectory_consume_path.exists():
+        missing_inputs.append("control_trajectory_consume_debug.jsonl")
+    if planning_topic_debug_path is None or not planning_topic_debug_path.exists():
+        missing_inputs.append("planning_topic_debug.jsonl")
+    if missing_inputs:
+        return {"available": False, "missing_inputs": missing_inputs}
+
+    consume_rows, consume_malformed = _read_jsonl_mappings(trajectory_consume_path)
+    planning_rows, planning_malformed = _read_jsonl_mappings(planning_topic_debug_path)
+    route_rows: list[Mapping[str, Any]] = []
+    route_malformed = 0
+    if planning_route_segment_debug_path is not None and planning_route_segment_debug_path.exists():
+        route_rows, route_malformed = _read_jsonl_mappings(planning_route_segment_debug_path)
+
+    planning_by_seq = _index_by_sequence(planning_rows, "planning_header_sequence_num")
+    route_by_seq = _index_by_sequence(route_rows, "planning_header_sequence_num")
+    transition_indices = _longitudinal_transition_indices(trace_rows)
+    aligned_transition_indices = [
+        index
+        for index in transition_indices
+        if 0 < index < len(trace_rows) and index < len(consume_rows)
+    ]
+    buckets = {
+        "planning_sequence_changed": 0,
+        "same_planning_sequence": 0,
+        "planning_debug_missing_for_sequence": 0,
+        "trajectory_point_count_changed": 0,
+        "trajectory_path_length_delta_gt_5m": 0,
+        "trajectory_total_time_delta_gt_1s": 0,
+        "trajectory_relative_window_changed": 0,
+        "trajectory_first_point_jump_gt_5m": 0,
+        "trajectory_last_point_jump_gt_5m": 0,
+        "trajectory_type_changed": 0,
+        "speed_fallback_involved": 0,
+        "scenario_or_stage_changed": 0,
+        "route_signature_changed": 0,
+        "reference_line_count_changed": 0,
+        "route_segment_status_changed": 0,
+    }
+    examples: list[dict[str, Any]] = []
+    for index in aligned_transition_indices:
+        prev_trace = trace_rows[index - 1]
+        cur_trace = trace_rows[index]
+        prev_consume = consume_rows[index - 1]
+        cur_consume = consume_rows[index]
+        prev_seq = _int(prev_consume.get("planning_header_sequence_num_used"))
+        cur_seq = _int(cur_consume.get("planning_header_sequence_num_used"))
+        if prev_seq != cur_seq:
+            buckets["planning_sequence_changed"] += 1
+        else:
+            buckets["same_planning_sequence"] += 1
+
+        prev_planning = planning_by_seq.get(prev_seq)
+        cur_planning = planning_by_seq.get(cur_seq)
+        if prev_planning is None or cur_planning is None:
+            buckets["planning_debug_missing_for_sequence"] += 1
+        else:
+            _compare_planning_trajectory_transition(
+                buckets,
+                prev_planning=prev_planning,
+                cur_planning=cur_planning,
+            )
+
+        prev_route = route_by_seq.get(prev_seq)
+        cur_route = route_by_seq.get(cur_seq)
+        if prev_route is not None and cur_route is not None:
+            if (
+                prev_route.get("reference_line_provider_status")
+                != cur_route.get("reference_line_provider_status")
+                or prev_route.get("lane_follow_map_status")
+                != cur_route.get("lane_follow_map_status")
+                or prev_route.get("create_route_segments_status")
+                != cur_route.get("create_route_segments_status")
+            ):
+                buckets["route_segment_status_changed"] += 1
+
+        if len(examples) < 5:
+            examples.append(
+                _planning_trajectory_transition_example(
+                    index=index,
+                    prev_trace=prev_trace,
+                    cur_trace=cur_trace,
+                    prev_consume=prev_consume,
+                    cur_consume=cur_consume,
+                    prev_planning=prev_planning,
+                    cur_planning=cur_planning,
+                    prev_route=prev_route,
+                    cur_route=cur_route,
+                )
+            )
+
+    transition_count = len(transition_indices)
+    aligned_count = len(aligned_transition_indices)
+    suspected_factors: list[str] = []
+    if aligned_count and buckets["trajectory_path_length_delta_gt_5m"] / aligned_count >= 0.4:
+        suspected_factors.append("planning_trajectory_length_switching")
+    if aligned_count and buckets["trajectory_last_point_jump_gt_5m"] / aligned_count >= 0.4:
+        suspected_factors.append("planning_trajectory_endpoint_jump")
+    if aligned_count and buckets["speed_fallback_involved"] / aligned_count >= 0.25:
+        suspected_factors.append("planning_speed_fallback_involved")
+    if aligned_count and buckets["same_planning_sequence"] > 0:
+        suspected_factors.append("same_trajectory_longitudinal_control_switching")
+    if aligned_count and buckets["route_segment_status_changed"] / aligned_count >= 0.25:
+        suspected_factors.append("route_segment_status_switching")
+
+    return {
+        "available": bool(consume_rows and planning_rows),
+        "paths": {
+            "control_trajectory_consume_debug": str(trajectory_consume_path),
+            "planning_topic_debug": str(planning_topic_debug_path),
+            "planning_route_segment_debug": (
+                str(planning_route_segment_debug_path)
+                if planning_route_segment_debug_path
+                else None
+            ),
+        },
+        "trace_row_count": len(trace_rows),
+        "consume_row_count": len(consume_rows),
+        "planning_row_count": len(planning_rows),
+        "route_segment_row_count": len(route_rows),
+        "malformed_line_count": consume_malformed + planning_malformed + route_malformed,
+        "transition_count": transition_count,
+        "aligned_transition_count": aligned_count,
+        "transition_buckets": buckets,
+        "suspected_factors": suspected_factors,
+        "dominant_suspected_factor": suspected_factors[0] if suspected_factors else None,
+        "interpretation_caveat": (
+            "This correlates Apollo raw longitudinal command switches with planning "
+            "trajectory debug rows. It is not a standalone root-cause proof; inspect "
+            "localization, HDMap projection, reference-line contract, and control debug together."
+        ),
+        "thresholds": {
+            "trajectory_path_length_delta_m": 5.0,
+            "trajectory_point_jump_m": 5.0,
+            "trajectory_total_time_delta_s": 1.0,
+        },
+        "examples": examples,
+    }
+
+
+def _planning_log_fallback_diagnostics(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {"available": False, "missing_inputs": ["apollo_planning.INFO"]}
+    patterns = {
+        "reference_line_latest_history_fail_count": "Failed to use reference line latest history",
+        "control_interactive_timeout_count": "control_interactive_msg time out",
+        "large_station_error_replan_count": "replan to avoid large station error",
+        "matched_point_lon_diff_replan_count": "the distance between matched point and actual position is too large",
+        "piecewise_jerk_speed_optimizer_fail_count": "Piecewise jerk speed optimizer failed",
+        "lane_follow_piecewise_jerk_task_fail_count": "Failed to run tasks[PIECEWISE_JERK_SPEED]",
+        "speed_fallback_due_to_algorithm_failure_count": "Speed fallback due to algorithm failure",
+        "fallback_using_piecewise_jerk_speed_count": "Fallback using piecewise jerk speed",
+    }
+    counts = {key: 0 for key in patterns}
+    lon_diffs: list[float] = []
+    examples: list[dict[str, Any]] = []
+    line_count = 0
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                line_count += 1
+                matched_any = False
+                for key, pattern in patterns.items():
+                    if pattern in line:
+                        counts[key] += 1
+                        matched_any = True
+                lon_match = re.search(r"lon_diff\s*=\s*([-+]?[0-9]*\.?[0-9]+)", line)
+                lon_diff = _num(lon_match.group(1)) if lon_match else None
+                if lon_diff is not None:
+                    lon_diffs.append(lon_diff)
+                    matched_any = True
+                if matched_any and len(examples) < 8:
+                    examples.append(
+                        {
+                            "line_number": line_number,
+                            "lon_diff": lon_diff,
+                            "message": line.strip()[:280],
+                        }
+                    )
+    except OSError as exc:
+        return {
+            "available": False,
+            "path": str(path),
+            "read_error": str(exc),
+        }
+
+    suspected_factors: list[str] = []
+    if counts["matched_point_lon_diff_replan_count"]:
+        suspected_factors.append("trajectory_stitcher_matched_point_lon_diff_replans")
+    if counts["piecewise_jerk_speed_optimizer_fail_count"]:
+        suspected_factors.append("piecewise_jerk_speed_optimizer_failures")
+    if counts["speed_fallback_due_to_algorithm_failure_count"]:
+        suspected_factors.append("planning_speed_fallback_due_to_algorithm_failure")
+    if counts["control_interactive_timeout_count"]:
+        suspected_factors.append("planning_control_interactive_timeout")
+
+    return {
+        "available": True,
+        "path": str(path),
+        "line_count": line_count,
+        **counts,
+        "matched_point_lon_diff_sample_count": len(lon_diffs),
+        "matched_point_lon_diff_p95_m": _percentile(lon_diffs, 0.95),
+        "matched_point_lon_diff_max_m": max(lon_diffs) if lon_diffs else None,
+        "suspected_factors": suspected_factors,
+        "dominant_suspected_factor": suspected_factors[0] if suspected_factors else None,
+        "examples": examples,
+        "interpretation_caveat": (
+            "Planning log fallback diagnostics identify Apollo planning/stitcher messages "
+            "that correlate with control oscillation. They do not prove actuator mapping "
+            "or Apollo algorithm fault without trajectory, localization, and HDMap evidence."
+        ),
+    }
+
+
+def _compare_planning_trajectory_transition(
+    buckets: dict[str, int],
+    *,
+    prev_planning: Mapping[str, Any],
+    cur_planning: Mapping[str, Any],
+) -> None:
+    if prev_planning.get("trajectory_point_count") != cur_planning.get("trajectory_point_count"):
+        buckets["trajectory_point_count_changed"] += 1
+    if _abs_delta(prev_planning, cur_planning, "trajectory_total_path_length") > 5.0:
+        buckets["trajectory_path_length_delta_gt_5m"] += 1
+    if _abs_delta(prev_planning, cur_planning, "trajectory_total_time") > 1.0:
+        buckets["trajectory_total_time_delta_gt_1s"] += 1
+    if (
+        prev_planning.get("trajectory_relative_time_min_sec")
+        != cur_planning.get("trajectory_relative_time_min_sec")
+        or prev_planning.get("trajectory_relative_time_max_sec")
+        != cur_planning.get("trajectory_relative_time_max_sec")
+    ):
+        buckets["trajectory_relative_window_changed"] += 1
+    first_jump = _xy_distance(
+        prev_planning,
+        cur_planning,
+        left_x="first_trajectory_point_x",
+        left_y="first_trajectory_point_y",
+        right_x="first_trajectory_point_x",
+        right_y="first_trajectory_point_y",
+    )
+    if first_jump is not None and first_jump > 5.0:
+        buckets["trajectory_first_point_jump_gt_5m"] += 1
+    last_jump = _xy_distance(
+        prev_planning,
+        cur_planning,
+        left_x="last_trajectory_point_x",
+        left_y="last_trajectory_point_y",
+        right_x="last_trajectory_point_x",
+        right_y="last_trajectory_point_y",
+    )
+    if last_jump is not None and last_jump > 5.0:
+        buckets["trajectory_last_point_jump_gt_5m"] += 1
+    if prev_planning.get("trajectory_type") != cur_planning.get("trajectory_type"):
+        buckets["trajectory_type_changed"] += 1
+    if "SPEED_FALLBACK" in {
+        str(prev_planning.get("trajectory_type") or ""),
+        str(cur_planning.get("trajectory_type") or ""),
+    }:
+        buckets["speed_fallback_involved"] += 1
+    if (
+        prev_planning.get("scenario_plugin_type") != cur_planning.get("scenario_plugin_type")
+        or prev_planning.get("stage_plugin_type") != cur_planning.get("stage_plugin_type")
+    ):
+        buckets["scenario_or_stage_changed"] += 1
+    if prev_planning.get("routing_lane_window_signature") != cur_planning.get(
+        "routing_lane_window_signature"
+    ):
+        buckets["route_signature_changed"] += 1
+    if prev_planning.get("reference_line_count") != cur_planning.get("reference_line_count"):
+        buckets["reference_line_count_changed"] += 1
+
+
+def _planning_trajectory_transition_example(
+    *,
+    index: int,
+    prev_trace: Mapping[str, Any],
+    cur_trace: Mapping[str, Any],
+    prev_consume: Mapping[str, Any],
+    cur_consume: Mapping[str, Any],
+    prev_planning: Mapping[str, Any] | None,
+    cur_planning: Mapping[str, Any] | None,
+    prev_route: Mapping[str, Any] | None,
+    cur_route: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "row_index": [index - 1, index],
+        "state": [_longitudinal_command_state(prev_trace), _longitudinal_command_state(cur_trace)],
+        "planning_sequence_num": [
+            _int(prev_consume.get("planning_header_sequence_num_used")),
+            _int(cur_consume.get("planning_header_sequence_num_used")),
+        ],
+        "effective_planning_source": [
+            prev_consume.get("effective_planning_source"),
+            cur_consume.get("effective_planning_source"),
+        ],
+        "planning_age_ms": [
+            _num(prev_consume.get("latest_planning_msg_age_ms")),
+            _num(cur_consume.get("latest_planning_msg_age_ms")),
+        ],
+        "path_remain_m": [
+            _num(prev_trace.get("debug_simple_lon_path_remain_m")),
+            _num(cur_trace.get("debug_simple_lon_path_remain_m")),
+        ],
+        "speed_reference_mps": [
+            _num(prev_trace.get("debug_simple_lon_speed_reference_mps")),
+            _num(cur_trace.get("debug_simple_lon_speed_reference_mps")),
+        ],
+        "acceleration_cmd_mps2": [
+            _num(prev_trace.get("debug_simple_lon_acceleration_cmd_mps2")),
+            _num(cur_trace.get("debug_simple_lon_acceleration_cmd_mps2")),
+        ],
+        "planning_trajectory": _planning_transition_payload(prev_planning, cur_planning),
+        "route_segment_status": _route_segment_transition_payload(prev_route, cur_route),
+    }
+
+
+def _planning_transition_payload(
+    prev_planning: Mapping[str, Any] | None,
+    cur_planning: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if prev_planning is None or cur_planning is None:
+        return None
+    return {
+        "trajectory_point_count": [
+            _int(prev_planning.get("trajectory_point_count")),
+            _int(cur_planning.get("trajectory_point_count")),
+        ],
+        "trajectory_total_path_length_m": [
+            _num(prev_planning.get("trajectory_total_path_length")),
+            _num(cur_planning.get("trajectory_total_path_length")),
+        ],
+        "trajectory_total_time_s": [
+            _num(prev_planning.get("trajectory_total_time")),
+            _num(cur_planning.get("trajectory_total_time")),
+        ],
+        "trajectory_relative_time_window_s": [
+            [
+                _num(prev_planning.get("trajectory_relative_time_min_sec")),
+                _num(prev_planning.get("trajectory_relative_time_max_sec")),
+            ],
+            [
+                _num(cur_planning.get("trajectory_relative_time_min_sec")),
+                _num(cur_planning.get("trajectory_relative_time_max_sec")),
+            ],
+        ],
+        "first_point_jump_m": _xy_distance(
+            prev_planning,
+            cur_planning,
+            left_x="first_trajectory_point_x",
+            left_y="first_trajectory_point_y",
+            right_x="first_trajectory_point_x",
+            right_y="first_trajectory_point_y",
+        ),
+        "last_point_jump_m": _xy_distance(
+            prev_planning,
+            cur_planning,
+            left_x="last_trajectory_point_x",
+            left_y="last_trajectory_point_y",
+            right_x="last_trajectory_point_x",
+            right_y="last_trajectory_point_y",
+        ),
+        "first_trajectory_point_v_mps": [
+            _num(prev_planning.get("first_trajectory_point_v")),
+            _num(cur_planning.get("first_trajectory_point_v")),
+        ],
+        "trajectory_type": [
+            prev_planning.get("trajectory_type"),
+            cur_planning.get("trajectory_type"),
+        ],
+        "scenario_plugin_type": [
+            prev_planning.get("scenario_plugin_type"),
+            cur_planning.get("scenario_plugin_type"),
+        ],
+        "stage_plugin_type": [
+            prev_planning.get("stage_plugin_type"),
+            cur_planning.get("stage_plugin_type"),
+        ],
+        "reference_line_count": [
+            _int(prev_planning.get("reference_line_count")),
+            _int(cur_planning.get("reference_line_count")),
+        ],
+        "routing_lane_window_signature": [
+            prev_planning.get("routing_lane_window_signature"),
+            cur_planning.get("routing_lane_window_signature"),
+        ],
+    }
+
+
+def _route_segment_transition_payload(
+    prev_route: Mapping[str, Any] | None,
+    cur_route: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if prev_route is None or cur_route is None:
+        return None
+    return {
+        "reference_line_provider_status": [
+            prev_route.get("reference_line_provider_status"),
+            cur_route.get("reference_line_provider_status"),
+        ],
+        "lane_follow_map_status": [
+            prev_route.get("lane_follow_map_status"),
+            cur_route.get("lane_follow_map_status"),
+        ],
+        "create_route_segments_status": [
+            prev_route.get("create_route_segments_status"),
+            cur_route.get("create_route_segments_status"),
+        ],
+        "planning_empty_reason_guess": [
+            prev_route.get("planning_empty_reason_guess"),
+            cur_route.get("planning_empty_reason_guess"),
+        ],
+    }
+
+
+def _read_jsonl_mappings(path: Path) -> tuple[list[Mapping[str, Any]], int]:
+    rows: list[Mapping[str, Any]] = []
+    malformed_count = 0
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    malformed_count += 1
+                    continue
+                if isinstance(payload, Mapping):
+                    rows.append(payload)
+                else:
+                    malformed_count += 1
+    except OSError:
+        return [], 0
+    return rows, malformed_count
+
+
+def _index_by_sequence(rows: Sequence[Mapping[str, Any]], sequence_field: str) -> dict[int, Mapping[str, Any]]:
+    indexed: dict[int, Mapping[str, Any]] = {}
+    for row in rows:
+        sequence = _int(row.get(sequence_field))
+        if sequence is not None:
+            indexed[sequence] = row
+    return indexed
+
+
+def _abs_delta(left: Mapping[str, Any], right: Mapping[str, Any], field: str) -> float:
+    left_value = _num(left.get(field))
+    right_value = _num(right.get(field))
+    if left_value is None or right_value is None:
+        return 0.0
+    return abs(right_value - left_value)
+
+
+def _xy_distance(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+    *,
+    left_x: str,
+    left_y: str,
+    right_x: str,
+    right_y: str,
+) -> float | None:
+    lx = _num(left.get(left_x))
+    ly = _num(left.get(left_y))
+    rx = _num(right.get(right_x))
+    ry = _num(right.get(right_y))
+    if lx is None or ly is None or rx is None or ry is None:
+        return None
+    return math.hypot(rx - lx, ry - ly)
+
+
+def _longitudinal_transition_indices(rows: Sequence[Mapping[str, Any]]) -> list[int]:
+    transitions: list[int] = []
+    previous_state: str | None = None
+    for index, row in enumerate(rows):
+        state = _longitudinal_command_state(row)
+        if state not in {"throttle", "brake", "coast"}:
+            continue
+        if previous_state is not None and state != previous_state:
+            transitions.append(index)
+        previous_state = state
+    return transitions
+
+
+def _longitudinal_command_state(row: Mapping[str, Any]) -> str | None:
+    throttle = _first_row_number(row, "throttle_raw")
+    brake = _first_row_number(row, "brake_raw")
+    throttle_active = throttle is not None and throttle > 0.05
+    brake_active = brake is not None and brake > 0.05
+    if throttle is None and brake is None:
+        throttle_pct = _num(row.get("debug_simple_lon_throttle_cmd_pct"))
+        brake_pct = _num(row.get("debug_simple_lon_brake_cmd_pct"))
+        throttle_active = throttle_pct is not None and throttle_pct > 1.0
+        brake_active = brake_pct is not None and brake_pct > 1.0
+        if throttle_pct is None and brake_pct is None:
+            return None
+    if throttle_active and brake_active:
+        return "conflict"
+    if throttle_active:
+        return "throttle"
+    if brake_active:
+        return "brake"
+    return "coast"
+
+
+def _count_large_delta(
+    buckets: dict[str, int],
+    prev_row: Mapping[str, Any],
+    cur_row: Mapping[str, Any],
+    *,
+    field: str,
+    drop_key: str,
+    jump_key: str,
+    threshold: float,
+) -> None:
+    prev_value = _num(prev_row.get(field))
+    cur_value = _num(cur_row.get(field))
+    if prev_value is None or cur_value is None:
+        return
+    delta = cur_value - prev_value
+    if delta <= -threshold:
+        buckets[drop_key] += 1
+    elif delta >= threshold:
+        buckets[jump_key] += 1
+
+
+def _longitudinal_transition_example(
+    *,
+    prev_index: int,
+    prev_row: Mapping[str, Any],
+    prev_state: str,
+    cur_index: int,
+    cur_row: Mapping[str, Any],
+    cur_state: str,
+) -> dict[str, Any]:
+    return {
+        "row_index": [prev_index, cur_index],
+        "state": [prev_state, cur_state],
+        "dt_s": _delta(prev_row.get("ts_sec"), cur_row.get("ts_sec")),
+        "sequence_num": [
+            _int(prev_row.get("control_header_sequence_num")),
+            _int(cur_row.get("control_header_sequence_num")),
+        ],
+        "path_remain_m": [
+            _num(prev_row.get("debug_simple_lon_path_remain_m")),
+            _num(cur_row.get("debug_simple_lon_path_remain_m")),
+        ],
+        "station_error_m": [
+            _num(prev_row.get("debug_simple_lon_station_error_m")),
+            _num(cur_row.get("debug_simple_lon_station_error_m")),
+        ],
+        "speed_reference_mps": [
+            _num(prev_row.get("debug_simple_lon_speed_reference_mps")),
+            _num(cur_row.get("debug_simple_lon_speed_reference_mps")),
+        ],
+        "current_speed_mps": [
+            _num(prev_row.get("debug_simple_lon_current_speed_mps")),
+            _num(cur_row.get("debug_simple_lon_current_speed_mps")),
+        ],
+        "speed_error_mps": [
+            _num(prev_row.get("debug_simple_lon_speed_error_mps")),
+            _num(cur_row.get("debug_simple_lon_speed_error_mps")),
+        ],
+        "acceleration_cmd_mps2": [
+            _num(prev_row.get("debug_simple_lon_acceleration_cmd_mps2")),
+            _num(cur_row.get("debug_simple_lon_acceleration_cmd_mps2")),
+        ],
+        "throttle_cmd_pct": [
+            _num(prev_row.get("debug_simple_lon_throttle_cmd_pct")),
+            _num(cur_row.get("debug_simple_lon_throttle_cmd_pct")),
+        ],
+        "brake_cmd_pct": [
+            _num(prev_row.get("debug_simple_lon_brake_cmd_pct")),
+            _num(cur_row.get("debug_simple_lon_brake_cmd_pct")),
+        ],
+        "is_full_stop": [
+            _parse_bool(prev_row.get("debug_simple_lon_is_full_stop")),
+            _parse_bool(cur_row.get("debug_simple_lon_is_full_stop")),
+        ],
+    }
+
+
+def _delta(left: Any, right: Any) -> float | None:
+    left_num = _num(left)
+    right_num = _num(right)
+    if left_num is None or right_num is None:
+        return None
+    return right_num - left_num
+
+
+def _nested_raw(payload: Mapping[str, Any], path: Sequence[str]) -> Any:
+    current: Any = payload
+    for item in path:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(item)
+    return current
+
+
+def _percent_to_unit(value: Any) -> float | None:
+    number = _num(value)
+    if number is None:
+        return None
+    return number / 100.0
 
 
 _CONTROL_LATENCY_PATHS = (
@@ -1668,6 +3133,15 @@ def _safe_div(numerator: float | None, denominator: float | None) -> float | Non
     if numerator is None or denominator in {None, 0}:
         return None
     return numerator / denominator
+
+
+def _nested(payload: Mapping[str, Any], path: str) -> Any:
+    current: Any = payload
+    for part in path.split("."):
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(part)
+    return current
 
 
 def _int(value: Any) -> int | None:
@@ -1796,6 +3270,16 @@ def _first_number(*values: Any) -> float | None:
         number = _num(value)
         if number is not None:
             return number
+    return None
+
+
+def _first_raw(*args: Any) -> Any:
+    pairs = list(zip(args[0::2], args[1::2]))
+    for mapping, key in pairs:
+        if isinstance(mapping, Mapping):
+            value = mapping.get(str(key))
+            if value not in {None, ""}:
+                return value
     return None
 
 

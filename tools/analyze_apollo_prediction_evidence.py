@@ -27,14 +27,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--planning-topic-debug-summary", help="planning_topic_debug_summary.json.")
     parser.add_argument("--obstacle-gt-contract", help="obstacle_gt_contract_report.json.")
     parser.add_argument("--prediction-log", action="append", default=[], help="Prediction log file.")
+    parser.add_argument(
+        "--replacement-matrix",
+        default="configs/reference/apollo_gt_replacement_matrix.yaml",
+        help="GT replacement matrix used to resolve explicit scenario-scoped prediction bypass.",
+    )
+    parser.add_argument(
+        "--no-replacement-matrix",
+        action="store_true",
+        help="Disable replacement-matrix bypass lookup; useful for negative tests.",
+    )
     parser.add_argument("--out", required=True, help="Output directory.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    replacement_matrix = None if args.no_replacement_matrix else args.replacement_matrix
     if args.run_dir:
-        report = analyze_prediction_evidence_run_dir(args.run_dir)
+        report = analyze_prediction_evidence_run_dir(
+            args.run_dir,
+            replacement_matrix_path=replacement_matrix,
+        )
     else:
         report = analyze_prediction_evidence_files(
             channel_stats=args.channel_stats,
@@ -44,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
             planning_topic_debug_summary=args.planning_topic_debug_summary,
             obstacle_gt_contract=args.obstacle_gt_contract,
             prediction_logs=args.prediction_log,
+            replacement_matrix_path=replacement_matrix,
         )
     outputs = write_prediction_evidence_report(report, args.out)
     print(

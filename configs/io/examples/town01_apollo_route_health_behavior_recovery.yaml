@@ -74,6 +74,7 @@ algo:
       defer_control_until_planning_ready: true
       control_start_gate: planning_ready
       deferred_control_start_mode: dag
+      deferred_control_start_async: true
       deferred_control_disable_bvar_dump: false
       control_runtime_overlay_source_dirs:
         - /opt/apollo/neo/.codex_backup/20260331_004431/control_runtime_refresh/control_component

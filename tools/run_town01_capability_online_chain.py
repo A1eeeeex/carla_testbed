@@ -483,28 +483,82 @@ _FOLLOWSTOP_PROGRESS_RE = re.compile(
 )
 
 
-def _extract_followstop_progress(batch_root_path: Path) -> Dict[str, Any]:
-    candidates = sorted(batch_root_path.glob("*/artifacts/followstop_child.stdout.log"))
+def _safe_resolve_path(path: Path) -> Path:
+    try:
+        return path.expanduser().resolve()
+    except Exception:
+        return path.expanduser()
+
+
+def _planned_run_dir_for_effective_run(effective_run_dir: Path) -> Path | None:
+    match = re.match(r"^(?P<base>.+)__\d+$", effective_run_dir.name)
+    if not match:
+        return None
+    return effective_run_dir.with_name(match.group("base"))
+
+
+def _followstop_progress_candidates(
+    batch_root_path: Path,
+    effective_run_dir: Path | None = None,
+) -> List[Path]:
+    candidates: List[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        key = str(_safe_resolve_path(path))
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(path)
+
+    if effective_run_dir is not None:
+        add(effective_run_dir / "artifacts" / "followstop_child.stdout.log")
+        planned_run_dir = _planned_run_dir_for_effective_run(effective_run_dir)
+        if planned_run_dir is not None:
+            add(planned_run_dir / "artifacts" / "followstop_child.stdout.log")
+        for redirect_path in sorted(batch_root_path.glob("*/RUN_DIR_REDIRECT.txt")):
+            try:
+                redirect_target_raw = redirect_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                continue
+            if not redirect_target_raw:
+                continue
+            redirect_target = _safe_resolve_path(Path(redirect_target_raw))
+            if redirect_target == _safe_resolve_path(effective_run_dir):
+                add(redirect_path.parent / "artifacts" / "followstop_child.stdout.log")
+        return candidates
+
+    for path in reversed(sorted(batch_root_path.glob("*/artifacts/followstop_child.stdout.log"))):
+        add(path)
+    return candidates
+
+
+def _extract_followstop_progress(
+    batch_root_path: Path,
+    effective_run_dir: Path | None = None,
+) -> Dict[str, Any]:
+    candidates = _followstop_progress_candidates(batch_root_path, effective_run_dir)
     if not candidates:
         return {}
-    log_path = candidates[-1]
-    try:
-        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except Exception:
-        return {}
-    for line in reversed(lines):
-        match = _FOLLOWSTOP_PROGRESS_RE.match(line.strip())
-        if not match:
+    for log_path in candidates:
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
             continue
-        current = int(match.group("current"))
-        total = max(int(match.group("total")), 1)
-        remaining_sec = float(match.group("remaining"))
-        return {
-            "scenario_progress_current": current,
-            "scenario_progress_total": total,
-            "scenario_progress_fraction": min(max(current / total, 0.0), 1.0),
-            "scenario_progress_remaining_sec": max(remaining_sec, 0.0),
-        }
+        for line in reversed(lines):
+            match = _FOLLOWSTOP_PROGRESS_RE.match(line.strip())
+            if not match:
+                continue
+            current = int(match.group("current"))
+            total = max(int(match.group("total")), 1)
+            remaining_sec = float(match.group("remaining"))
+            return {
+                "scenario_progress_current": current,
+                "scenario_progress_total": total,
+                "scenario_progress_fraction": min(max(current / total, 0.0), 1.0),
+                "scenario_progress_remaining_sec": max(remaining_sec, 0.0),
+                "scenario_progress_source": str(log_path),
+            }
     return {}
 
 
@@ -525,7 +579,7 @@ def _collect_step_live_snapshot(item: Dict[str, Any]) -> Dict[str, Any]:
         "manifest_status": str(current_item.get("status") or ""),
         "effective_run_dir": str(effective_run_dir) if effective_run_dir is not None else "",
     }
-    snapshot.update(_extract_followstop_progress(batch_root_path))
+    snapshot.update(_extract_followstop_progress(batch_root_path, effective_run_dir))
     startup_probe = _load_json_if_exists(batch_root_path / "carla_boot" / "carla_startup_probe.json")
     attempts = startup_probe.get("attempts") if isinstance(startup_probe.get("attempts"), list) else []
     final_attempt = attempts[-1] if attempts and isinstance(attempts[-1], dict) else {}

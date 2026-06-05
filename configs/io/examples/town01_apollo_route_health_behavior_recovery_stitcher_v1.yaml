@@ -6,17 +6,40 @@
 # 说明：
 # - 保持 Dreamview-on + planning_ready + dag + legacy control runtime overlay；
 # - 不改横向增益、不改 routing 速度，只改 planning stitcher 语义；
-# - 默认仍保留 700 ticks，在线短 probe 通过 CLI 覆盖到 420 ticks。
+# - 默认仍保留 700 ticks，在线短 probe 通过 CLI 覆盖到 420 ticks；
+# - 使用显式 wall-time pacing，避免 camera PNG capture 偶然成为 Apollo wall-clock 节奏源。
 # -----------------------------------------------------------------------------
 run:
   seed: 1
   ticks: 700
+  fixed_delta_seconds: 0.05
+  wall_time_pacing:
+    enabled: true
+    target_interval_s: 0.05
+    max_sleep_s: 0.05
   fail_strategy: log_and_continue
   post_fail_steps: 300
   ego_id: hero
   map: Town01
   weather: ClearNoon
   profile_name: town01_apollo_route_health_behavior_recovery_stitcher_v1
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: true
+  notes:
+    - Claim-grade profile declares no intentional runtime assist; analyzers still infer blocking assists from summary and bridge stats.
+recording:
+  artifacts:
+    algorithm_variant_id: apollo_10_0_carla_gt_town01_reference
+    algorithm_variant_manifest_path: configs/algorithms/apollo_variant.carla_gt.example.yaml
+    backend: apollo_cyberrt
+    truth_input: true
+record:
+  sensors:
+    enable: false
 scenario:
   driver: carla_town01_route_health
   traffic_lights:
@@ -74,6 +97,7 @@ algo:
       defer_control_until_planning_ready: true
       control_start_gate: planning_ready
       deferred_control_start_mode: dag
+      deferred_control_start_async: true
       deferred_control_disable_bvar_dump: false
       control_runtime_overlay_source_dirs:
         - /opt/apollo/neo/.codex_backup/20260331_004431/control_runtime_refresh/control_component
@@ -108,11 +132,26 @@ algo:
       auto_calib: false
     bridge:
       publish_rate_hz: 20.0
+      artifact_async_write_enabled: true
+      artifact_async_queue_max_rows: 0
+      artifact_flush_interval_s: 0.0
+      artifact_flush_max_pending_rows: 0
+      artifact_stats_flush_interval_s: 0.0
+      claim_grade:
+        enabled: true
+        stale_world_frame_policy: skip
+        localization_publish_policy: once_per_new_sim_frame
+        chassis_publish_policy: once_per_new_sim_frame
       max_obstacles: 64
       radius_m: 120.0
       localization_back_offset_m: 1.4235
       map_file: ${APOLLO_MAP_ROOT}/carla_town01/base_map.txt
       debug_dump_control_raw: true
+      front_obstacle_behavior:
+        # lane_keep has no claim-grade dynamic obstacle target; avoid per-frame
+        # CARLA actor probes so GT localization/chassis cadence is not coupled
+        # to obstacle diagnostics.
+        actor_probe_enabled: false
     planning:
       acc_only_mode: false
       longitudinal_only_pipeline: false

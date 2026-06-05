@@ -9,6 +9,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import html
 from pathlib import Path
@@ -60,6 +61,9 @@ class CyberRTBackend(Backend):
         self._deferred_control_last_poll_sec: float = 0.0
         self._deferred_control_snapshots: list[str] = []
         self._deferred_control_failure: Optional[str] = None
+        self._deferred_control_start_thread: Optional[threading.Thread] = None
+        self._deferred_control_start_in_progress = False
+        self._deferred_control_start_async_failure: Optional[str] = None
         self._control_runtime_overlay_active = False
 
     def _apollo_cfg(self) -> Dict[str, Any]:
@@ -2977,6 +2981,12 @@ class CyberRTBackend(Backend):
             return "launch"
         return "launch"
 
+    def _docker_deferred_control_start_async(self) -> bool:
+        cfg = self._docker_cfg()
+        if "deferred_control_start_async" in cfg:
+            return bool(cfg.get("deferred_control_start_async"))
+        return True
+
     def _docker_disable_deferred_control_bvar_dump(self) -> bool:
         cfg = self._docker_cfg()
         if "deferred_control_disable_bvar_dump" in cfg:
@@ -3831,6 +3841,56 @@ PY"""
             "Deferred Apollo control start finished but control process was not found; "
             f"see {status_path}"
         )
+
+    def _start_deferred_control_module(self, artifacts: Path) -> None:
+        if self._deferred_control_started or self._deferred_control_start_in_progress:
+            return
+        if not self._docker_deferred_control_start_async():
+            self._docker_start_control_module(artifacts)
+            self._deferred_control_started = True
+            self._deferred_control_pending = False
+            return
+
+        self._deferred_control_start_in_progress = True
+        self._deferred_control_start_async_failure = None
+        self._write_backend_startup_trace(
+            "deferred_control_start_async_scheduled",
+            control_start_gate=self._docker_control_start_gate(),
+            preferred_deferred_control_start_mode=self._docker_deferred_control_start_mode(),
+        )
+
+        def _run() -> None:
+            try:
+                self._docker_start_control_module(artifacts)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                self._deferred_control_failure = error
+                self._deferred_control_start_async_failure = error
+                self._deferred_control_pending = False
+                self._write_backend_startup_trace(
+                    "deferred_control_start_async_failed",
+                    error=error,
+                    error_type=type(exc).__name__,
+                )
+                print(f"[cyberrt][warn] deferred control async start failed: {error}")
+            else:
+                self._deferred_control_started = True
+                self._deferred_control_pending = False
+                self._write_backend_startup_trace(
+                    "deferred_control_start_async_done",
+                    control_start_gate=self._docker_control_start_gate(),
+                    preferred_deferred_control_start_mode=self._docker_deferred_control_start_mode(),
+                )
+            finally:
+                self._deferred_control_start_in_progress = False
+
+        thread = threading.Thread(
+            target=_run,
+            name="apollo-deferred-control-start",
+            daemon=True,
+        )
+        self._deferred_control_start_thread = thread
+        thread.start()
 
     def _docker_probe_deferred_control_survival(
         self,
@@ -5700,7 +5760,12 @@ PY"""
         }
 
     def on_sim_tick(self, frame_id: int, timestamp: Optional[float] = None, step: Optional[int] = None) -> None:
-        if self._docker_enabled() and self._deferred_control_pending and not self._deferred_control_started:
+        if (
+            self._docker_enabled()
+            and self._deferred_control_pending
+            and not self._deferred_control_started
+            and not self._deferred_control_start_in_progress
+        ):
             now = time.time()
             poll_sec = self._docker_control_planning_ready_poll_sec()
             if (now - self._deferred_control_last_poll_sec) >= max(0.1, poll_sec):
@@ -5708,9 +5773,7 @@ PY"""
                 artifacts = self._artifacts_dir()
                 status, error = self._docker_probe_planning_ready_before_control(artifacts)
                 if status == "ready":
-                    self._docker_start_control_module(artifacts)
-                    self._deferred_control_started = True
-                    self._deferred_control_pending = False
+                    self._start_deferred_control_module(artifacts)
                 elif status == "error":
                     self._deferred_control_failure = error
                     self._deferred_control_pending = False
@@ -5767,6 +5830,9 @@ PY"""
             "deferred_control_pending": self._deferred_control_pending,
             "deferred_control_started": self._deferred_control_started,
             "deferred_control_failure": self._deferred_control_failure,
+            "deferred_control_start_in_progress": self._deferred_control_start_in_progress,
+            "deferred_control_start_async": self._docker_deferred_control_start_async(),
+            "deferred_control_start_async_failure": self._deferred_control_start_async_failure,
             "bridge_runtime_preflight_status": bridge_runtime_preflight.get("bridge_runtime_preflight_status") or "unknown",
             "bridge_runtime_import_ok": bridge_runtime_preflight.get("bridge_runtime_import_ok"),
             "bridge_runtime_import_error": bridge_runtime_preflight.get("bridge_runtime_import_error"),
@@ -5837,6 +5903,11 @@ PY"""
         control_bridge_cfg = apollo_cfg.get("carla_control_bridge", {}) or {}
         topic = str(control_bridge_cfg.get("control_topic", "/tb/ego/control_cmd"))
         self._snapshot_docker_modules_status(artifacts, "apollo_modules_status_final.log")
+        if self._deferred_control_start_thread is not None and self._deferred_control_start_thread.is_alive():
+            try:
+                self._deferred_control_start_thread.join(timeout=0.2)
+            except Exception:
+                pass
         self._terminate(self.control_proc)
         self._terminate(self.bridge_proc)
         self._cleanup_stale_control_bridge(topic)

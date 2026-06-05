@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib
 import math
+import queue
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -54,6 +56,24 @@ class _Localization:
         self.header = _Header()
         self.pose = _Pose()
         self.measurement_time = 0.0
+
+
+class _Stamp:
+    def __init__(self, sec: int, nanosec: int = 0) -> None:
+        self.sec = sec
+        self.nanosec = nanosec
+
+
+class _OdomHeader:
+    def __init__(self, timestamp_sec: float, seq: int = 0) -> None:
+        sec = int(timestamp_sec)
+        self.stamp = _Stamp(sec, int(round((timestamp_sec - sec) * 1_000_000_000)))
+        self.seq = seq
+
+
+class _Odom:
+    def __init__(self, timestamp_sec: float, seq: int = 0) -> None:
+        self.header = _OdomHeader(timestamp_sec, seq=seq)
 
 
 def test_canonical_localization_dict_writes_header_frame_and_measurement_time() -> None:
@@ -137,6 +157,237 @@ def test_bridge_fill_header_writes_frame_id_when_supported() -> None:
     assert header.module_name == "tb_apollo10_gt_bridge"
     assert header.sequence_num == 1
     assert header.frame_id == "map"
+
+
+def test_bridge_claim_grade_skips_duplicate_gt_sample() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+    adapter.claim_grade_enabled = True
+    adapter.gt_stale_sample_policy = "skip"
+    adapter._last_gt_publish_sample_key = None
+    odom = _Odom(10.0, seq=123)
+
+    first, first_key, first_reason = adapter._should_publish_gt_sample(odom)
+    second, second_key, second_reason = adapter._should_publish_gt_sample(odom)
+
+    assert first is True
+    assert first_reason == "fresh_sample"
+    assert first_key == second_key
+    assert second is False
+    assert second_reason == "stale_sample_skipped"
+    assert adapter.stats["gt_stale_sample_duplicate_count"] == 1
+    assert adapter.stats["gt_stale_sample_skip_count"] == 1
+
+
+def test_bridge_artifact_writers_reuse_handles_and_flush(tmp_path: Path) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter._split_csv_headers_written = {}
+    adapter.stats = {}
+
+    jsonl_path = tmp_path / "artifact.jsonl"
+    csv_path = tmp_path / "artifact.csv"
+
+    adapter._append_jsonl(jsonl_path, {"sample": 1})
+    adapter._append_jsonl(jsonl_path, {"sample": 2})
+    adapter._write_csv_row(csv_path, {"ts": 1.0, "value": 3})
+    adapter._write_csv_row(csv_path, {"ts": 2.0, "value": 4})
+    adapter._flush_artifact_buffers(close=False)
+
+    assert len(adapter._jsonl_artifact_handles) == 1
+    assert len(adapter._csv_artifact_states) == 1
+    assert adapter.stats["artifact_buffering"]["flush_count"] >= 2
+    assert jsonl_path.read_text(encoding="utf-8").count("\n") == 2
+    assert csv_path.read_text(encoding="utf-8").splitlines() == [
+        "ts,value",
+        "1.0,3",
+        "2.0,4",
+    ]
+
+    adapter._flush_artifact_buffers(close=True)
+
+
+def test_bridge_async_artifact_writer_drains_on_flush(tmp_path: Path) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+    adapter.artifact_async_write_enabled = True
+    adapter._artifact_write_queue = queue.Queue()
+    adapter._artifact_writer_thread = None
+    adapter._artifact_writer_started = False
+    adapter._jsonl_artifact_handles = {}
+    adapter._csv_artifact_states = {}
+    adapter._artifact_pending_rows = {}
+    adapter._artifact_last_flush_sec = {}
+    adapter._artifact_write_lock = bridge.threading.Lock()
+    adapter._split_csv_headers_written = {}
+    adapter.artifact_flush_interval_s = 0.0
+    adapter.artifact_flush_max_pending_rows = 0
+
+    jsonl_path = tmp_path / "async.jsonl"
+    csv_path = tmp_path / "async.csv"
+
+    adapter._append_jsonl(jsonl_path, {"sample": 1})
+    adapter._write_csv_row(csv_path, {"ts": 1.0, "value": 3})
+
+    assert adapter.stats["artifact_buffering"]["async_enqueued_count"] == 2
+
+    adapter._flush_artifact_buffers(close=True)
+
+    assert jsonl_path.read_text(encoding="utf-8").strip() == '{"sample": 1}'
+    assert csv_path.read_text(encoding="utf-8").splitlines() == ["ts,value", "1.0,3"]
+    assert adapter.stats["artifact_buffering"]["async_written_count"] == 2
+
+
+def test_bridge_debug_timeseries_uses_buffered_csv_writer(tmp_path: Path) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+    adapter.artifact_async_write_enabled = False
+    adapter.debug_csv_path = tmp_path / "debug_timeseries.csv"
+    adapter._debug_csv_header_written = False
+    adapter._split_csv_headers_written = {}
+    adapter._csv_artifact_states = {}
+    adapter._jsonl_artifact_handles = {}
+    adapter._artifact_pending_rows = {}
+    adapter._artifact_last_flush_sec = {}
+    adapter._artifact_write_lock = bridge.threading.Lock()
+    adapter.artifact_flush_interval_s = 0.0
+    adapter.artifact_flush_max_pending_rows = 0
+
+    adapter._write_debug_row({"ts": 1.0, "speed": 2.0})
+    adapter._write_debug_row({"ts": 2.0, "speed": 3.0})
+    adapter._flush_artifact_buffers(close=True)
+
+    assert adapter.debug_csv_path.read_text(encoding="utf-8").splitlines() == [
+        "ts,speed",
+        "1.0,2.0",
+        "2.0,3.0",
+    ]
+
+
+def test_bridge_publish_loop_timing_records_overruns() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+
+    adapter._record_publish_loop_timing(
+        start_wall_s=10.0,
+        end_wall_s=10.08,
+        target_period_s=0.05,
+        published_gt=True,
+        phase="publish_gt",
+    )
+
+    timing = adapter.stats["publish_loop_timing"]
+    assert timing["last_phase"] == "publish_gt"
+    assert timing["last_duration_s"] == pytest.approx(0.08)
+    assert timing["published_gt_iteration_count"] == 1
+    assert timing["over_target_period_count"] == 1
+
+
+def test_bridge_publish_phase_timing_records_stage_overruns() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+
+    adapter._record_publish_phase_timing(
+        "artifact_trace_writes",
+        start_wall_s=1.0,
+        end_wall_s=1.07,
+        target_period_s=0.05,
+    )
+
+    phase = adapter.stats["publish_loop_phase_timing"]["artifact_trace_writes"]
+    assert phase["recent_sample_count"] == 1
+    assert phase["last_duration_s"] == pytest.approx(0.07)
+    assert phase["recent_duration_p95_s"] == pytest.approx(0.07)
+    assert phase["over_target_period_count"] == 1
+
+
+def test_bridge_front_obstacle_status_exposes_actor_probe_boundary() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.front_obstacle_behavior_mode = "normal"
+    adapter.front_obstacle_role_names = ["front"]
+    adapter.front_obstacle_actor_probe_enabled = False
+    adapter.front_obstacle_activate_distance_m = 18.0
+    adapter.front_obstacle_release_distance_m = 24.0
+    adapter.front_obstacle_min_longitudinal_m = 2.0
+    adapter.front_obstacle_max_lateral_m = 3.5
+    adapter.front_obstacle_latch_enabled = True
+    adapter._front_obstacle_visible = True
+    adapter._front_obstacle_suppressed_frames = 0
+    adapter._front_obstacle_state_changed_ts = 0.0
+    adapter._front_obstacle_last_gap = {}
+    adapter.front_obstacle_cache_enabled = True
+    adapter.front_obstacle_cache_ttl_sec = 0.5
+    adapter._obstacle_cache_hit_count = 0
+    adapter._obstacle_cache_last_hit_ts_sec = 0.0
+
+    status = adapter._front_obstacle_behavior_status()
+
+    assert status["mode"] == "normal"
+    assert status["actor_probe_enabled"] is False
+
+
+def test_bridge_extracts_simple_lon_debug_context_for_control_attribution() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    simple_lon_debug = types.SimpleNamespace(
+        current_speed=3.2,
+        speed_reference=8.0,
+        speed_error=4.8,
+        acceleration_cmd=0.6,
+        acceleration_cmd_closeloop=0.5,
+        acceleration_lookup=0.4,
+        acceleration_reference=0.7,
+        current_acceleration=0.2,
+        acceleration_error=0.5,
+        path_remain=42.0,
+        station_error=-1.0,
+        preview_station_error=-0.5,
+        throttle_cmd=12.0,
+        brake_cmd=0.0,
+        is_full_stop=False,
+    )
+    cmd = types.SimpleNamespace(
+        throttle=12.0,
+        brake=0.0,
+        speed=3.2,
+        acceleration=0.6,
+        debug=types.SimpleNamespace(simple_lon_debug=simple_lon_debug),
+    )
+
+    raw = adapter._extract_raw_control_fields(cmd)
+
+    assert raw["debug_simple_lon_current_speed"] == pytest.approx(3.2)
+    assert raw["debug_simple_lon_speed_reference"] == pytest.approx(8.0)
+    assert raw["debug_simple_lon_speed_error"] == pytest.approx(4.8)
+    assert raw["debug_simple_lon_acceleration_cmd"] == pytest.approx(0.6)
+    assert raw["debug_simple_lon_acceleration_cmd_closeloop"] == pytest.approx(0.5)
+    assert raw["debug_simple_lon_acceleration_lookup"] == pytest.approx(0.4)
+    assert raw["debug_simple_lon_current_acceleration"] == pytest.approx(0.2)
+    assert raw["debug_simple_lon_path_remain"] == pytest.approx(42.0)
+    assert raw["debug_simple_lon_throttle_cmd"] == pytest.approx(12.0)
+    assert raw["debug_simple_lon_is_full_stop"] is False
 
 
 def _install_fake_protobuf() -> None:

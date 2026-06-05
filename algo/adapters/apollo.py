@@ -805,6 +805,8 @@ PY
             bridge["debug_pose_print"] = bool(apollo_bridge_cfg["debug_pose_print"])
         if "debug_dump_control_raw" in apollo_bridge_cfg:
             bridge["debug_dump_control_raw"] = bool(apollo_bridge_cfg["debug_dump_control_raw"])
+        if isinstance(apollo_bridge_cfg.get("claim_grade"), dict):
+            bridge["claim_grade"] = dict(apollo_bridge_cfg["claim_grade"])
         if "map_file" in apollo_bridge_cfg:
             bridge["map_file"] = str(apollo_bridge_cfg["map_file"])
         if "map_bounds_file" in apollo_bridge_cfg:

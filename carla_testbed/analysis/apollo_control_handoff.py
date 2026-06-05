@@ -39,7 +39,18 @@ RAW_FIELDS = (
     "brake_raw",
     "raw_brake",
 )
-MAPPED_FIELDS = ("bridge_steer_mapped", "mapped_steer", "throttle_mapped", "brake_mapped")
+MAPPED_FIELDS = (
+    "bridge_steer_mapped",
+    "mapped_steer",
+    "throttle_mapped",
+    "brake_mapped",
+    "mapped_carla_steer_cmd",
+    "mapped_throttle_cmd",
+    "mapped_brake_cmd",
+    "commanded_steer",
+    "commanded_throttle",
+    "commanded_brake",
+)
 APPLIED_FIELDS = ("carla_steer_applied", "applied_steer", "throttle_applied", "brake_applied")
 
 
@@ -686,7 +697,30 @@ def _mapping_and_apply(
         attribution = {}
     mapped_fields = _row_fields_seen(rows, MAPPED_FIELDS) | _fields_seen(decode_rows, MAPPED_FIELDS)
     applied_fields = _row_fields_seen(rows, APPLIED_FIELDS) | _fields_seen(apply_rows, APPLIED_FIELDS)
-    mapped_count = _nonzero_row_count(rows, "bridge_steer_mapped", "throttle_mapped", "brake_mapped")
+    timeseries_mapped_count = _nonzero_row_count(rows, "bridge_steer_mapped", "throttle_mapped", "brake_mapped")
+    decoded_mapped_count = _first_number(
+        _nested_number(metrics, "control_decode_debug", "nonzero_mapped_control_frames"),
+        _nonzero_flat_row_count(
+            decode_rows,
+            "bridge_steer_mapped",
+            "mapped_steer",
+            "mapped_carla_steer_cmd",
+            "commanded_steer",
+            "throttle_mapped",
+            "mapped_throttle_cmd",
+            "commanded_throttle",
+            "brake_mapped",
+            "mapped_brake_cmd",
+            "commanded_brake",
+        ),
+    )
+    mapped_count = timeseries_mapped_count
+    mapped_count_source = "timeseries" if timeseries_mapped_count is not None else None
+    if (mapped_count is None or mapped_count <= 0) and decoded_mapped_count is not None:
+        mapped_count = decoded_mapped_count
+        mapped_count_source = "control_decode_debug.jsonl"
+        if not mapped_fields:
+            mapped_fields.add("control_decode_debug.mapped_control")
     applied_count = _first_number(
         cyber_bridge_stats.get("control_tx_count"),
         bridge_log.get("final_applied_count"),
@@ -724,6 +758,7 @@ def _mapping_and_apply(
         "mapped_control_fields": sorted(mapped_fields),
         "applied_control_fields": sorted(applied_fields),
         "nonzero_mapped_frames": mapped_count,
+        "nonzero_mapped_frames_source": mapped_count_source,
         "apply_control_count": int(applied_count) if applied_count is not None else None,
         "mapped_applied_steer_abs_error_p95": mapped_applied_steer_error,
         "control_latency_p95_ms": _first_number(metrics.get("control_latency_p95_ms"), _percentile(_series(rows, "control_latency_ms"), 0.95)),
@@ -1055,6 +1090,21 @@ def _nonzero_row_count(rows: Sequence[Mapping[str, Any]], *fields: str) -> int |
     seen = False
     for row in rows:
         values = [_num(row.get(field)) for field in fields]
+        if any(value is not None for value in values):
+            seen = True
+        if any(value is not None and abs(value) > 1e-6 for value in values):
+            count += 1
+    return count if seen else None
+
+
+def _nonzero_flat_row_count(rows: Sequence[Mapping[str, Any]], *fields: str) -> int | None:
+    if not rows:
+        return None
+    count = 0
+    seen = False
+    for row in rows:
+        flattened = _flatten(row)
+        values = [_num(flattened.get(field)) for field in fields]
         if any(value is not None for value in values):
             seen = True
         if any(value is not None and abs(value) > 1e-6 for value in values):

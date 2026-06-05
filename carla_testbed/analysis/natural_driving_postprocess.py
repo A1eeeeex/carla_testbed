@@ -15,6 +15,10 @@ from carla_testbed.analysis.apollo_channel_health import (
 from carla_testbed.analysis.apollo_control_handoff import (
     ensure_apollo_control_handoff_report,
 )
+from carla_testbed.analysis.apollo_hdmap_projection import (
+    analyze_apollo_hdmap_projection_file,
+    write_apollo_hdmap_projection_report,
+)
 from carla_testbed.analysis.apollo_reference_line_contract import (
     ensure_apollo_reference_line_contract_report,
 )
@@ -161,6 +165,7 @@ def _postprocess_run_dir(
     route_health_result = _ensure_route_health(run_dir, refresh=refresh)
     route_curve_artifact_gap_result = _ensure_route_curve_artifact_gap(run_dir, refresh=refresh)
     apollo_control_handoff_result = _ensure_apollo_control_handoff(run_dir, refresh=refresh)
+    apollo_hdmap_projection_result = _ensure_apollo_hdmap_projection(run_dir, refresh=refresh)
     localization_contract_result = _ensure_localization_contract(run_dir, refresh=refresh)
     apollo_reference_line_contract_result = _ensure_apollo_reference_line_contract(
         run_dir,
@@ -217,6 +222,7 @@ def _postprocess_run_dir(
         "route_curve_artifact_gap": route_curve_artifact_gap_result,
         "standardization": standardization,
         "apollo_control_handoff": apollo_control_handoff_result,
+        "apollo_hdmap_projection": apollo_hdmap_projection_result,
         "localization_contract": localization_contract_result,
         "apollo_reference_line_contract": apollo_reference_line_contract_result,
         "control_health": control_health_result,
@@ -242,6 +248,48 @@ def _postprocess_run_dir(
 
 def _ensure_apollo_control_handoff(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
     return ensure_apollo_control_handoff_report(run_dir, refresh=refresh)
+
+
+def _ensure_apollo_hdmap_projection(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    existing = _find_first(
+        run_dir,
+        [
+            "analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json",
+            "apollo_hdmap_projection_report.json",
+        ],
+    )
+    if existing is not None and not refresh:
+        report = _read_json(existing)
+        return {
+            "status": "existing",
+            "path": str(existing),
+            "summary_path": str(existing.with_name("apollo_hdmap_projection_summary.md")),
+            "report_status": report.get("status"),
+            "claim_grade": bool(report.get("claim_grade")),
+            "artifact_path": report.get("artifact_path"),
+        }
+    projection = _find_first(
+        run_dir,
+        [
+            "artifacts/apollo_hdmap_projection.jsonl",
+            "apollo_hdmap_projection.jsonl",
+            "analysis/apollo_hdmap_projection/apollo_hdmap_projection.json",
+        ],
+    )
+    expected_projection = projection or (run_dir / "artifacts" / "apollo_hdmap_projection.jsonl")
+    report = analyze_apollo_hdmap_projection_file(expected_projection)
+    outputs = write_apollo_hdmap_projection_report(
+        report,
+        run_dir / "analysis" / "apollo_hdmap_projection",
+    )
+    return {
+        "status": "generated",
+        "path": outputs["apollo_hdmap_projection_report"],
+        "summary_path": outputs["apollo_hdmap_projection_summary"],
+        "report_status": report.get("status"),
+        "claim_grade": bool(report.get("claim_grade")),
+        "artifact_path": report.get("artifact_path"),
+    }
 
 
 def _ensure_localization_contract(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
@@ -1098,13 +1146,14 @@ def _write_markdown(path: Path, report: Mapping[str, Any]) -> None:
         f"- route_start_probe_plan_status: `{probe_plan.get('status')}`",
         f"- route_start_probe_count: `{probe_plan.get('probe_count')}`",
         "",
-        "| run_id | scenario_class | artifact_status | route_health | route_curve_gap | apollo_reference_line | failure_timeline | route_start_alignment | channel_health | traffic_light_contract | traffic_light_behavior |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| run_id | scenario_class | artifact_status | route_health | route_curve_gap | apollo_hdmap_projection | apollo_reference_line | failure_timeline | route_start_alignment | channel_health | traffic_light_contract | traffic_light_behavior |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for run in report.get("runs") or []:
         completeness = run.get("artifact_completeness") or {}
         route_health = run.get("route_health") or {}
         route_curve = run.get("route_curve_artifact_gap") or {}
+        hdmap_projection = run.get("apollo_hdmap_projection") or {}
         reference_line = run.get("apollo_reference_line_contract") or {}
         timeline = run.get("failure_timeline") or {}
         route_start = run.get("route_start_alignment") or {}
@@ -1115,6 +1164,7 @@ def _write_markdown(path: Path, report: Mapping[str, Any]) -> None:
             f"| {run.get('run_id')} | {run.get('scenario_class')} | "
             f"{completeness.get('status')} | {route_health.get('status')} | "
             f"{route_curve.get('status')} | "
+            f"{hdmap_projection.get('report_status') or hdmap_projection.get('status')} | "
             f"{reference_line.get('status')} | "
             f"{timeline.get('status')} | "
             f"{route_start.get('status')} | "

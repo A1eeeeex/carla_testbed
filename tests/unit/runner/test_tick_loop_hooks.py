@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from carla_testbed.runner.hooks import FrameContext, RunHook
-from carla_testbed.runner.tick_loop import HookDispatcher, adapt_tick_callbacks, hook_error_summaries
+from carla_testbed.runner.tick_loop import (
+    HookDispatcher,
+    adapt_tick_callbacks,
+    compute_wall_time_pacing_sleep,
+    hook_error_summaries,
+)
 
 
 class RecordingHook(RunHook):
@@ -88,6 +93,34 @@ def test_hook_dispatcher_records_errors_and_continues() -> None:
     assert hook_error_summaries(dispatcher.errors)[0]["error_type"] == "RuntimeError"
 
 
+def test_hook_dispatcher_returns_per_hook_timings() -> None:
+    calls: list[str] = []
+    dispatcher = HookDispatcher(
+        [
+            RecordingHook("first hook", calls),
+            RecordingHook("second", calls),
+        ]
+    )
+
+    timings = dispatcher.notify("after_world_tick", FrameContext(frame_id=3, sim_time_s=0.15))
+
+    assert [timing.hook_name for timing in timings] == ["first hook", "second"]
+    assert [timing.method_name for timing in timings] == ["after_world_tick", "after_world_tick"]
+    assert all(timing.duration_s >= 0.0 for timing in timings)
+    assert all(timing.error is False for timing in timings)
+
+
+def test_legacy_tick_callback_adapter_names_callback_source() -> None:
+    def sample_callback(frame_id, timestamp) -> None:
+        pass
+
+    hooks = adapt_tick_callbacks([sample_callback])
+
+    assert len(hooks) == 1
+    assert hooks[0].name.startswith("tick_callback_0:")
+    assert "sample_callback" in hooks[0].name
+
+
 def test_legacy_tick_callback_adapter_supports_keyword_and_positional_callbacks() -> None:
     calls: list[tuple] = []
 
@@ -104,3 +137,32 @@ def test_legacy_tick_callback_adapter_supports_keyword_and_positional_callbacks(
         ("keyword", 9, 0.45, 4),
         ("positional", 9, 0.45),
     ]
+
+
+def test_compute_wall_time_pacing_sleep_fills_remaining_tick_interval() -> None:
+    sleep_s = compute_wall_time_pacing_sleep(
+        frame_loop_start_wall_s=10.0,
+        now_wall_s=10.012,
+        target_interval_s=0.05,
+        max_sleep_s=0.05,
+    )
+
+    assert abs(sleep_s - 0.038) < 1e-9
+
+
+def test_compute_wall_time_pacing_sleep_caps_and_skips_when_late() -> None:
+    capped = compute_wall_time_pacing_sleep(
+        frame_loop_start_wall_s=10.0,
+        now_wall_s=10.001,
+        target_interval_s=0.05,
+        max_sleep_s=0.01,
+    )
+    late = compute_wall_time_pacing_sleep(
+        frame_loop_start_wall_s=10.0,
+        now_wall_s=10.08,
+        target_interval_s=0.05,
+        max_sleep_s=0.05,
+    )
+
+    assert abs(capped - 0.01) < 1e-9
+    assert late == 0.0

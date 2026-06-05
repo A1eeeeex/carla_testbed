@@ -79,6 +79,7 @@ algo:
       defer_control_until_planning_ready: true
       control_start_gate: planning_ready
       deferred_control_start_mode: dag
+      deferred_control_start_async: true
       deferred_control_disable_bvar_dump: true
       control_planning_ready_min_nonempty_count: 1
       control_planning_ready_min_sequence_num: 5

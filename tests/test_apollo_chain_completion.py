@@ -340,6 +340,69 @@ def test_chain_completion_reads_prediction_evidence_report(tmp_path: Path) -> No
     assert report["module_statuses"]["prediction"]["hard_gate_eligible"] is True
 
 
+def test_prediction_evidence_report_overrides_default_matrix_blocking_scope(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/prediction_evidence/prediction_evidence_report.json",
+        {
+            "schema_version": "prediction_evidence.v1",
+            "prediction_mode": "bypassed_with_gt_obstacles",
+            "bypass_reason": "static lane_keep route-only diagnostic",
+            "hard_gate_eligible": True,
+            "blocking_capabilities": [],
+            "verdict": "warn",
+            "warnings": ["prediction_bypassed_with_reason"],
+        },
+    )
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=DEFAULT_REPLACEMENT,
+    )
+
+    prediction = report["module_statuses"]["prediction"]
+    assert prediction["evidence_status"] == "warn"
+    assert prediction["hard_gate_eligible"] is True
+    assert prediction["blocking_capabilities"] == []
+    assert prediction["observed_evidence"]["prediction_mode native_observed or bypassed_with_gt_obstacles"] == (
+        "bypassed_with_gt_obstacles"
+    )
+    assert prediction["observed_evidence"]["bypass_reason when prediction is bypassed"]
+
+
+def test_lane_keep_failure_stage_does_not_prioritize_non_applicable_traffic_light(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path, scenario_class="lane_keep")
+    (run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json").unlink()
+    (run_dir / "analysis/traffic_light_contract/traffic_light_contract_report.json").unlink()
+    (run_dir / "analysis/traffic_light_evidence/traffic_light_evidence_report.json").unlink()
+    (run_dir / "analysis/traffic_light_behavior/traffic_light_behavior_report.json").unlink()
+    _write_json(
+        run_dir / "analysis/prediction_evidence/prediction_evidence_report.json",
+        {
+            "schema_version": "prediction_evidence.v1",
+            "prediction_mode": "bypassed_with_gt_obstacles",
+            "bypass_reason": "static lane_keep route-only diagnostic",
+            "hard_gate_eligible": True,
+            "blocking_capabilities": [],
+            "verdict": "warn",
+            "warnings": ["prediction_bypassed_with_reason"],
+        },
+    )
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=DEFAULT_REPLACEMENT,
+    )
+
+    assert report["target_capability"] == "lane_keep"
+    assert report["module_statuses"]["traffic_light_perception"]["blocking_capabilities"] == [
+        "traffic_light"
+    ]
+    assert report["failure_stage"] == "planning_materialization"
+
+
 def test_route_health_without_reference_line_blocks_curve_and_junction(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     replacement = _claim_grade_replacement_matrix(tmp_path)
@@ -363,6 +426,84 @@ def test_route_health_without_reference_line_blocks_curve_and_junction(tmp_path:
     assert report["capability_status"]["curve"] == "insufficient_data"
     assert report["capability_status"]["junction"] == "insufficient_data"
     assert report["module_statuses"]["planning"]["evidence_status"] == "missing"
+
+
+def test_planning_channel_gap_does_not_mark_chassis_module_failed(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    _write_json(
+        run_dir / "analysis/apollo_channel_health/apollo_channel_health_report.json",
+        {
+            "schema_version": "apollo_channel_health_report.v1",
+            "status": "fail",
+            "channel_results": {
+                "chassis": {
+                    "name": "chassis",
+                    "channel": "/apollo/canbus/chassis",
+                    "status": "pass",
+                },
+                "planning": {
+                    "name": "planning",
+                    "channel": "/apollo/planning",
+                    "status": "fail",
+                    "issues": ["message_gap_too_large"],
+                },
+            },
+            "missing_required_channels": [],
+            "warnings": [],
+        },
+    )
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["module_statuses"]["chassis"]["evidence_status"] == "pass"
+    assert report["module_statuses"]["cyberrt"]["evidence_status"] == "fail"
+
+
+def test_channel_health_failure_is_reported_before_vehicle_interface(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    _write_json(
+        run_dir / "analysis/apollo_channel_health/apollo_channel_health_report.json",
+        {
+            "schema_version": "apollo_channel_health_report.v1",
+            "status": "fail",
+            "channel_results": {
+                "planning": {
+                    "name": "planning",
+                    "channel": "/apollo/planning",
+                    "status": "fail",
+                    "issues": ["message_gap_too_large"],
+                }
+            },
+            "missing_required_channels": [],
+            "warnings": [],
+        },
+    )
+    _write_json(
+        run_dir / "analysis/control_health/control_health_report.json",
+        {
+            "schema_version": "control_health_report.v1",
+            "status": "fail",
+            "failure_reason": "control_bridge_world_frame_cadence_low",
+            "metrics": {},
+            "warnings": [],
+        },
+    )
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert "channel_health" in report["blocking_layers"]
+    assert "vehicle_interface" in report["blocking_modules"]
+    assert report["failure_stage"] == "channel_health"
 
 
 def test_localization_fail_blocks_driving_capabilities(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 OFFICIAL_SOURCE = "apollo_hdmap_api"
+HDMAP_PROJECTION_REPORT_SCHEMA_VERSION = "apollo_hdmap_projection_report.v1"
 
 HDMAP_HEADING_WARN_RAD = 0.10
 HDMAP_HEADING_FAIL_RAD = 0.20
@@ -25,6 +26,68 @@ def read_apollo_hdmap_projection(path: str | Path | None) -> list[dict[str, Any]
     payload = _read_json(file_path)
     rows = payload.get("rows") or payload.get("projection_rows") or payload.get("samples") or []
     return [dict(row) for row in rows if isinstance(row, Mapping)]
+
+
+def analyze_apollo_hdmap_projection_file(path: str | Path | None) -> dict[str, Any]:
+    artifact_path = Path(path).expanduser() if path else None
+    rows = read_apollo_hdmap_projection(artifact_path)
+    summary = summarize_apollo_hdmap_projection(rows)
+    return {
+        "schema_version": HDMAP_PROJECTION_REPORT_SCHEMA_VERSION,
+        "status": summary["status"],
+        "claim_grade": summary["claim_grade"],
+        "artifact_path": str(artifact_path) if artifact_path else None,
+        "artifact_file_exists": bool(artifact_path and artifact_path.exists()),
+        "projection": summary,
+        "blocking_reasons": list(summary.get("blocking_reasons") or []),
+        "warnings": list(summary.get("warnings") or []),
+        "missing_fields": list(summary.get("missing_fields") or []),
+        "suspected_failure_layers": list(summary.get("suspected_failure_layers") or []),
+        "interpretation_boundary": (
+            "This report only verifies Apollo HDMap API projection evidence. "
+            "It does not prove Planning, Control, perception, or closed-loop behavior."
+        ),
+    }
+
+
+def write_apollo_hdmap_projection_report(report: Mapping[str, Any], out_dir: str | Path) -> dict[str, str]:
+    output_dir = Path(out_dir).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "apollo_hdmap_projection_report.json"
+    summary_path = output_dir / "apollo_hdmap_projection_summary.md"
+    json_path.write_text(json.dumps(dict(report), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    summary_path.write_text(apollo_hdmap_projection_summary_md(report), encoding="utf-8")
+    return {
+        "apollo_hdmap_projection_report": str(json_path),
+        "apollo_hdmap_projection_summary": str(summary_path),
+    }
+
+
+def apollo_hdmap_projection_summary_md(report: Mapping[str, Any]) -> str:
+    projection = report.get("projection") if isinstance(report.get("projection"), Mapping) else {}
+    return "\n".join(
+        [
+            "# Apollo HDMap Projection Summary",
+            "",
+            f"- Status: `{report.get('status')}`",
+            f"- Claim-grade: `{report.get('claim_grade')}`",
+            f"- Artifact: `{report.get('artifact_path')}`",
+            f"- Artifact exists: `{report.get('artifact_file_exists')}`",
+            f"- Official source available: `{projection.get('official_source_available')}`",
+            f"- Row count: `{projection.get('row_count')}`",
+            f"- Official row count: `{projection.get('official_row_count')}`",
+            f"- OK row count: `{projection.get('ok_row_count')}`",
+            f"- OK ratio: `{projection.get('ok_ratio')}`",
+            f"- Heading error p95 rad: `{projection.get('heading_error_p95_rad')}`",
+            f"- Lateral error p95 m: `{projection.get('lateral_error_p95_m')}`",
+            f"- Nearest lane ids: `{', '.join(projection.get('nearest_lane_id_topk') or []) or 'none'}`",
+            f"- Warnings: `{', '.join(report.get('warnings') or []) or 'none'}`",
+            f"- Blocking reasons: `{', '.join(report.get('blocking_reasons') or []) or 'none'}`",
+            "",
+            str(report.get("interpretation_boundary") or ""),
+            "",
+        ]
+    )
 
 
 def summarize_apollo_hdmap_projection(rows: Sequence[Mapping[str, Any]] | None) -> dict[str, Any]:

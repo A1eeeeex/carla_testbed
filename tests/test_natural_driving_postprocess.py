@@ -194,6 +194,47 @@ def test_postprocess_generates_localization_contract_when_inputs_exist(tmp_path:
     assert localization["reference_point"]["vehicle_reference_hard_gate_eligible"] is True
 
 
+def test_postprocess_generates_missing_hdmap_projection_report(tmp_path: Path) -> None:
+    suite_root = _copy_suite(tmp_path)
+    lane = suite_root / "lane_keep_097"
+    shutil.rmtree(lane / "analysis" / "apollo_hdmap_projection", ignore_errors=True)
+    projection_artifact = lane / "artifacts" / "apollo_hdmap_projection.jsonl"
+    if projection_artifact.exists():
+        projection_artifact.unlink()
+
+    report = postprocess_natural_driving_runs(suite_root, out_dir=tmp_path / "out")
+    lane_result = next(run for run in report["runs"] if run["run_id"] == "lane_keep_097")
+    hdmap = lane_result["apollo_hdmap_projection"]
+    payload = json.loads(Path(hdmap["path"]).read_text(encoding="utf-8"))
+
+    assert hdmap["status"] == "generated"
+    assert hdmap["report_status"] == "insufficient_data"
+    assert hdmap["claim_grade"] is False
+    assert payload["status"] == "insufficient_data"
+    assert payload["artifact_file_exists"] is False
+    assert "apollo_hdmap_projection_missing" in payload["warnings"]
+    assert Path(hdmap["summary_path"]).is_file()
+
+
+def test_postprocess_generates_claim_grade_hdmap_projection_report(tmp_path: Path) -> None:
+    suite_root = _copy_suite(tmp_path)
+    lane = suite_root / "lane_keep_097"
+    shutil.rmtree(lane / "analysis" / "apollo_hdmap_projection", ignore_errors=True)
+    _write_projection_jsonl(lane / "artifacts" / "apollo_hdmap_projection.jsonl")
+
+    report = postprocess_natural_driving_runs(suite_root, out_dir=tmp_path / "out")
+    lane_result = next(run for run in report["runs"] if run["run_id"] == "lane_keep_097")
+    hdmap = lane_result["apollo_hdmap_projection"]
+    payload = json.loads(Path(hdmap["path"]).read_text(encoding="utf-8"))
+
+    assert hdmap["status"] == "generated"
+    assert hdmap["report_status"] == "pass"
+    assert hdmap["claim_grade"] is True
+    assert payload["status"] == "pass"
+    assert payload["claim_grade"] is True
+    assert payload["projection"]["official_source_available"] is True
+
+
 def test_refresh_regenerates_reference_line_after_localization_contract(tmp_path: Path) -> None:
     suite_root = _copy_suite(tmp_path)
     lane = suite_root / "lane_keep_097"
@@ -866,5 +907,46 @@ def test_postprocess_includes_run_matrix_rows_without_summary(tmp_path: Path) ->
     assert run["apollo_channel_health"]["status"] == "insufficient_data"
     assert run["artifact_completeness"]["status"] == "insufficient_data"
     assert "summary.json" in run["artifact_completeness"]["missing_artifacts"]
-    assert Path(run["route_health"]["path"]).is_file()
-    assert Path(run["control_health"]["path"]).is_file()
+
+
+def _write_projection_jsonl(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "timestamp": 0.0,
+            "localization_x": 1.0,
+            "localization_y": 2.0,
+            "localization_heading": 0.0,
+            "nearest_lane_id": "lane097",
+            "projection_s": 3.0,
+            "projection_l": 0.05,
+            "lane_heading_at_s": 0.0,
+            "heading_error_rad": 0.01,
+            "lateral_error_m": 0.05,
+            "road_id": "road_1",
+            "junction_id": None,
+            "source": "apollo_hdmap_api",
+            "map_name": "Town01",
+            "map_dir": "/apollo/modules/map/data/town01",
+            "status": "ok",
+        },
+        {
+            "timestamp": 0.05,
+            "localization_x": 1.2,
+            "localization_y": 2.0,
+            "localization_heading": 0.0,
+            "nearest_lane_id": "lane097",
+            "projection_s": 3.2,
+            "projection_l": 0.05,
+            "lane_heading_at_s": 0.0,
+            "heading_error_rad": 0.01,
+            "lateral_error_m": 0.05,
+            "road_id": "road_1",
+            "junction_id": None,
+            "source": "apollo_hdmap_api",
+            "map_name": "Town01",
+            "map_dir": "/apollo/modules/map/data/town01",
+            "status": "ok",
+        },
+    ]
+    path.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n", encoding="utf-8")

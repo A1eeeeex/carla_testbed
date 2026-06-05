@@ -51,6 +51,33 @@ def test_lane_keep_missing_traffic_light_warns_only() -> None:
     assert report["channel_results"]["traffic_light"]["issues"] == ["missing_channel"]
 
 
+def test_lane_keep_zero_traffic_light_messages_warns_only() -> None:
+    config, stats = load_fixture()
+    stats = deepcopy(stats)
+    stats["channels"]["/apollo/perception/traffic_light"].update(
+        {
+            "message_count": 0,
+            "hz": 0.0,
+            "max_gap_ms": None,
+            "timestamp_monotonic": None,
+            "sequence_monotonic": None,
+            "stale_count": 0,
+            "derived_from_bridge_counters": True,
+            "max_gap_ms_estimated": True,
+        }
+    )
+
+    report = analyze_apollo_channel_health(config, stats, scenario_class="lane_keep")
+
+    traffic_light = report["channel_results"]["traffic_light"]
+    assert traffic_light["required"] is False
+    assert traffic_light["status"] == "warn"
+    assert traffic_light["issues"] == ["no_messages"]
+    assert "traffic_light" not in report["low_rate_channels"]
+    assert "traffic_light" not in report["timestamp_failures"]
+    assert "traffic_light" not in report["sequence_failures"]
+
+
 def test_lane_keep_missing_obstacles_warns_only_for_no_obstacle_probe() -> None:
     config, stats = load_fixture()
     stats = deepcopy(stats)
@@ -106,6 +133,26 @@ def test_low_rate_and_large_gap_fail_for_required_planning() -> None:
     assert "planning" in report["gap_failures"]
     assert "low_rate" in planning["issues"]
     assert "message_gap_too_large" in planning["issues"]
+
+
+def test_planning_large_header_gap_with_small_sim_gap_is_diagnosed_but_still_fails() -> None:
+    config, stats = load_fixture()
+    stats = deepcopy(stats)
+    stats["channels"]["/apollo/planning"].update(
+        {
+            "max_gap_ms": 2000.0,
+            "sim_time_max_gap_ms": 50.0,
+            "primary_time_axis": "planning_header_timestamp_sec",
+        }
+    )
+
+    report = analyze_apollo_channel_health(config, stats, scenario_class="lane_keep")
+
+    planning = report["channel_results"]["planning"]
+    assert report["status"] == "fail"
+    assert planning["time_axis_diagnosis"] == "header_or_wall_time_gap_large_sim_time_gap_ok"
+    assert "planning_header_or_wall_gap_large_but_sim_time_gap_within_limit" in planning["warnings"]
+    assert planning["sim_time_max_gap_ms"] == 50.0
 
 
 def test_timestamp_and_sequence_non_monotonic_fail() -> None:
@@ -179,6 +226,33 @@ def test_channel_result_preserves_evidence_source() -> None:
     assert control["source"] == "control_decode_debug.jsonl"
     assert control["evidence_source"] == "row_level_artifact"
     assert control["derived_from_bridge_counters"] is False
+
+
+def test_channel_result_preserves_topic_publish_claim_grade_fields() -> None:
+    config, stats = load_fixture()
+    stats = deepcopy(stats)
+    stats["channels"]["/apollo/localization/pose"].update(
+        {
+            "source": "topic_publish_stats.jsonl",
+            "evidence_source": "topic_publish_stats",
+            "promotion_grade_evidence": True,
+            "fresh_message_count": 20,
+            "fresh_world_frame_hz": 20.0,
+            "delivery_wall_hz": 19.8,
+            "header_sim_hz": 20.0,
+            "duplicate_timestamp_count": 0,
+            "derived_from_bridge_counters": False,
+        }
+    )
+
+    report = analyze_apollo_channel_health(config, stats, scenario_class="lane_keep")
+
+    loc = report["channel_results"]["localization"]
+    assert loc["source"] == "topic_publish_stats.jsonl"
+    assert loc["evidence_source"] == "topic_publish_stats"
+    assert loc["promotion_grade_evidence"] is True
+    assert loc["fresh_world_frame_hz"] == 20.0
+    assert loc["duplicate_timestamp_count"] == 0
 
 
 def test_channel_result_preserves_gap_location_fields() -> None:

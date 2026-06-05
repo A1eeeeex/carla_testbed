@@ -59,7 +59,36 @@ This report does not change `steer_scale`, does not enable physical mapping, and
 
 `control_health_report.json` decomposes oscillation into Apollo raw command, bridge mapped command, CARLA applied command, vehicle response, and bridge apply cadence. Applied actuation oscillation is only claim-grade control evidence after `localization_contract_report.json` and `apollo_reference_line_contract_report.json` are `pass` or `warn` with no blocking reasons. If those upstream contracts are missing or blocking, applied oscillation remains secondary evidence and should not be hidden with smoothing or PID changes.
 
+For Apollo CyberRT truth-input runs, `artifacts/control_apply_trace.jsonl` is
+the preferred row-level control-chain evidence. It records Apollo raw command,
+bridge mapped command, CARLA applied command, vehicle response, route progress,
+latency, actuator mapping mode, calibration profile, steering sign/scale, and
+apply-cadence diagnostics in the same row. This lets the handoff and
+control-health analyzers attribute breakpoints without smoothing away the raw
+source command.
+
+When P0 `timeseries.csv` lacks raw or mapped command fields, and
+`control_apply_trace.jsonl` is not available, the analyzers may use
+`artifacts/control_decode_debug.jsonl` or `artifacts/bridge_control_decode.jsonl`
+as fallback evidence for the Apollo raw command and bridge mapped command
+layers. That fallback can clear the handoff
+`mapping_and_apply.mapped_control` gap, but it does not by itself prove
+mapped-to-applied correctness; CARLA applied fields,
+`control_apply_trace.jsonl`, direct apply rows, or vehicle response fields are
+still required for the applied and response layers.
+
 Bridge apply cadence and same-frame drop are checked before actuation tuning. If `apply_hz` is not met, or same-frame drops are not explained by CARLA synchronous world ticks, fix the tick/apply scheduling evidence first. Legacy `actuator_mapping_mode` remains smoke/debug evidence; claim-grade control mapping requires physical/calibrated mapping or an explicit calibration profile, and the report must preserve raw -> mapped -> applied command fields.
+
+Apollo Docker deferred Control startup can be gated on `planning_ready`. The
+startup is asynchronous by default (`deferred_control_start_async=true`) so the
+blocking Docker/CyberRT module launch and survival probe do not stall CARLA
+world-tick cadence. Operators should verify
+`artifacts/carla_tick_health_summary.json` and
+`artifacts/carla_tick_health.jsonl`: a healthy async startup should leave
+`CyberRTBackend.on_sim_tick` as a sub-second hook, with the actual Control
+startup sequence recorded in `artifacts/apollo_backend_startup_trace.jsonl` and
+`artifacts/apollo_control_deferred_*.log`. This only proves handoff scheduling
+is observable; it does not prove Apollo Control behavior is correct.
 
 If the dominant issue appears to be source control semantics, this still does not by itself prove an Apollo algorithm limitation. Check route/reference-line, matched point, target point, localization contract, and lateral semantics reports before making that claim.
 

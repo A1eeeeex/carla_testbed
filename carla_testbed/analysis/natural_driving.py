@@ -1100,14 +1100,6 @@ def _control_source(
     apollo_control_handoff: Mapping[str, Any],
     control_health: Mapping[str, Any],
 ) -> str | None:
-    source = _first_recursive_text(
-        summary,
-        manifest,
-        control_health,
-        keys={"control_source", "source_control_channel", "control_channel_name"},
-    )
-    if source:
-        return source
     control_channel = apollo_control_handoff.get("control_channel")
     if isinstance(control_channel, Mapping):
         value = _first_text(
@@ -1124,6 +1116,21 @@ def _control_source(
         # counts. Keep them usable, but require those counts to be positive.
         if (_num(control_channel.get("message_count")) or 0.0) > 0:
             return APOLLO_CONTROL_SOURCE
+    claim_grade_source = _first_recursive_text(
+        manifest,
+        control_health,
+        keys={"control_source", "source_control_channel", "control_channel_name"},
+    )
+    if claim_grade_source == APOLLO_CONTROL_SOURCE:
+        return APOLLO_CONTROL_SOURCE
+    source = _first_recursive_text(
+        summary,
+        manifest,
+        control_health,
+        keys={"control_source", "source_control_channel", "control_channel_name"},
+    )
+    if source:
+        return source
     return None
 
 
@@ -1151,6 +1158,11 @@ def _planning_nonempty_ratio(
     apollo_reference_line_contract: Mapping[str, Any],
     apollo_control_handoff: Mapping[str, Any],
 ) -> float | None:
+    evidence = apollo_reference_line_contract.get("evidence")
+    if isinstance(evidence, Mapping):
+        value = _num(evidence.get("planning_claim_window_nonempty_trajectory_ratio"))
+        if value is not None:
+            return value
     value = _first_recursive_number(
         summary,
         manifest,
@@ -2249,7 +2261,8 @@ def _apollo_reference_line_contract_verdict(
             "apollo_reference_line_contract_missing",
             ["apollo_reference_line_contract_report.json"],
         )
-    status = _apollo_reference_line_contract_status(report)
+    raw_status = _report_status(report)
+    status = raw_status if raw_status is not None else "insufficient_data"
     blocking = _apollo_reference_line_blocking_reasons(report)
     if status == "fail" or blocking:
         fields = [f"apollo_reference_line_contract.blocking_reasons.{reason}" for reason in blocking]
@@ -2269,9 +2282,15 @@ def _apollo_reference_line_contract_verdict(
                 "apollo_reference_line_contract_insufficient_curve_diagnostic",
                 ["apollo_reference_line_contract.status"],
             )
+        if raw_status is None:
+            return (
+                "insufficient_data",
+                "apollo_reference_line_contract_missing_status",
+                ["apollo_reference_line_contract.status"],
+            )
         return (
             "insufficient_data",
-            "apollo_reference_line_contract_missing_status",
+            "apollo_reference_line_contract_insufficient",
             ["apollo_reference_line_contract.status"],
         )
     evidence = report.get("evidence")
@@ -2988,11 +3007,18 @@ def _route_health_source_evidence_verdict(
     ]
     route_path = source.get("route_path")
     route_source = str(route_health.get("route_source") or source.get("route_source") or "")
+    evidence_level = str(route_health.get("evidence_level") or "")
+    hard_gate_eligible = route_health.get("hard_gate_eligible") is True
     reconstructed = "route reconstructed from timeseries P0 route_curve fields" in {
         str(item) for item in (route_health.get("warnings") or [])
     }
     if route_path in {None, ""}:
-        if route_source != "inline_route" and not reconstructed:
+        source_is_claim_grade_manifest_route = (
+            route_source in {"configured_route_file", "manifest_route", "manifest_route_trace"}
+            and evidence_level.startswith("claim_grade")
+            and hard_gate_eligible
+        )
+        if route_source != "inline_route" and not reconstructed and not source_is_claim_grade_manifest_route:
             missing_source.append("route_health.source.route_path")
     elif not _source_path_exists(str(route_path), run_dir=run_dir, report_path=report_path):
         missing_source_artifacts.append("route_path")

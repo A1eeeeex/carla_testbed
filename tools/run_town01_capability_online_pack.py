@@ -81,7 +81,7 @@ def _config_run_defaults(config_path_raw: str) -> Dict[str, Any]:
 
 def _default_runtime_flags_for_capability(capability_profile: str) -> Dict[str, bool]:
     normalized = str(capability_profile or "").strip()
-    if normalized in {"curve_lane_follow", "junction_traverse", "traffic_light_actual"}:
+    if normalized in {"lane_keep", "curve_lane_follow", "junction_traverse", "traffic_light_actual"}:
         return {"enable_lateral": True, "enable_guard": True}
     return {"enable_lateral": False, "enable_guard": True}
 

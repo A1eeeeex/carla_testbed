@@ -55,6 +55,7 @@ from carla_testbed.analysis.autoware_control_diagnostics import (
     write_autoware_control_diagnostics,
 )
 from carla_testbed.record import RecordManager, RecordOptions
+from carla_testbed.record.manifest_metadata import online_claim_manifest_updates
 from carla_testbed.record.monitor import SignalMonitor
 from carla_testbed.record.rviz.launcher import RvizLauncher
 from carla_testbed.runner import TestHarness
@@ -1996,6 +1997,23 @@ def main():
         # Keep adapter/backend timing aligned with the actual simulator step.
         effective_cfg.setdefault("run", {})["dt"] = float(cfg.dt)
     run_cfg = effective_cfg.get("run", {}) if effective_cfg else {}
+    pacing_cfg = run_cfg.get("wall_time_pacing", {}) if isinstance(run_cfg, dict) else {}
+    if isinstance(pacing_cfg, dict):
+        cfg.wall_time_pacing_enabled = bool(pacing_cfg.get("enabled", cfg.wall_time_pacing_enabled))
+        target_interval = pacing_cfg.get("target_interval_s", pacing_cfg.get("target_dt_s"))
+        if target_interval is None and cfg.wall_time_pacing_enabled:
+            target_interval = run_cfg.get("fixed_delta_seconds", cfg.dt)
+        if target_interval is not None:
+            try:
+                cfg.wall_time_pacing_target_interval_s = max(0.0, float(target_interval))
+            except Exception:
+                print(f"[WARN] invalid run.wall_time_pacing.target_interval_s={target_interval!r}; pacing target ignored")
+        max_sleep = pacing_cfg.get("max_sleep_s")
+        if max_sleep is not None:
+            try:
+                cfg.wall_time_pacing_max_sleep_s = max(0.0, float(max_sleep))
+            except Exception:
+                print(f"[WARN] invalid run.wall_time_pacing.max_sleep_s={max_sleep!r}; pacing sleep cap ignored")
     fail_strategy = str(run_cfg.get("fail_strategy", "")).strip().lower()
     if fail_strategy in {"fail_fast", "log_and_continue"}:
         cfg.fail_strategy = fail_strategy
@@ -2992,6 +3010,9 @@ def main():
         rig_final = apply_overrides(rig_raw, args.rig_override)
         rig_label = args.rig if not args.rig_file else Path(args.rig_file).stem
         sensor_specs, events_cfg = rig_to_specs(rig_final)
+        if effective_cfg.get("record", {}).get("sensors", {}).get("enable") is False:
+            sensor_specs = None
+            rig_final = {**(rig_final or {}), "sensors": []}
         rviz_launcher = None
         if args.enable_ros2_native and args.enable_rviz:
             rviz_rig_path = out_run_dir / "config" / f"{rig_label}_rviz.yaml"
@@ -3859,6 +3880,22 @@ def main():
             summary_data["route_health_label"] = acceptance["checks"].get("route_health", {}).get("label")
             if isinstance(scenario_meta.get("traffic_light_control"), dict):
                 summary_data["traffic_light_control"] = scenario_meta["traffic_light_control"]
+        try:
+            manifest_path = out_run_dir / "manifest.json"
+            if manifest_path.exists():
+                manifest_data = _load_json_if_exists(manifest_path)
+                manifest_data.update(
+                    online_claim_manifest_updates(
+                        effective_config=effective_cfg,
+                        scenario_metadata=scenario_meta,
+                        summary=summary_data,
+                        config_path=profile_config_path,
+                        profile_name=profile_name,
+                    )
+                )
+                manifest_path.write_text(json.dumps(manifest_data, indent=2))
+        except Exception as exc:
+            print(f"[WARN] failed to update standard run manifest metadata: {exc}")
         provisional_summary_path.write_text(json.dumps(summary_data, indent=2))
         summary_path.write_text(json.dumps(summary_data, indent=2))
         (out_run_dir / "artifacts" / "profile_info.json").write_text(json.dumps(profile_info, indent=2))

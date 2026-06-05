@@ -74,6 +74,8 @@ EVIDENCE_PATTERNS = {
     "obstacle_gt_contract_report.json": (
         "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json",
         "obstacle_gt_contract_report.json",
+        "artifacts/obstacle_gt_contract.jsonl",
+        "obstacle_gt_contract.jsonl",
     ),
     "traffic_light_contract_report.json": (
         "analysis/traffic_light_contract/traffic_light_contract_report.json",
@@ -103,6 +105,8 @@ EVIDENCE_PATTERNS = {
     "direct_bridge_control_apply.jsonl": (
         "artifacts/direct_bridge_control_apply.jsonl",
         "direct_bridge_control_apply.jsonl",
+        "artifacts/control_apply_trace.jsonl",
+        "control_apply_trace.jsonl",
     ),
 }
 
@@ -153,6 +157,12 @@ def analyze_apollo_chain_completion_run_dir(
         link_layers=link_layers,
     )
     capability_status = _capability_status(reference_chain, module_statuses)
+    target_capability = _target_capability(link_health)
+    target_required_modules = {
+        str(module.get("name"))
+        for module in required_modules_for_capability(reference_chain, target_capability)
+        if module.get("name")
+    }
     missing_required_evidence = _missing_required_evidence(module_statuses)
     blocking_modules = _blocking_modules(module_statuses)
     blocking_layers = _blocking_layers(link_layers)
@@ -160,6 +170,8 @@ def analyze_apollo_chain_completion_run_dir(
         module_statuses=module_statuses,
         link_layers=link_layers,
         capability_status=capability_status,
+        target_capability=target_capability,
+        target_required_modules=target_required_modules,
     )
     verdict = _overall_verdict(capability_status, module_statuses, missing_required_evidence)
     can_claim_closed_loop = capability_status.get("closed_loop") in {"pass", "warn"} and not blocking_modules
@@ -179,6 +191,7 @@ def analyze_apollo_chain_completion_run_dir(
         "run_id": link_health.get("run_id"),
         "variant_id": _variant_id(root),
         "scenario_id": link_health.get("scenario_id"),
+        "target_capability": target_capability,
         "route_id": link_health.get("route_id"),
         "reference_chain_path": str(Path(reference_path)),
         "replacement_matrix_path": str(Path(replacement_path)),
@@ -352,6 +365,8 @@ def _build_module_statuses(
         layer_name = MODULE_LAYER_MAP.get(name)
         layer = link_layers.get(layer_name) if layer_name else None
         prediction_report = _read_json_path(observed.get("prediction_evidence_report.json"))
+        if name == "prediction" and prediction_report:
+            observed = _augment_prediction_observed_evidence(observed, prediction_report)
         evidence_status = _module_evidence_status(
             name=name,
             matrix_module=matrix_module,
@@ -376,7 +391,7 @@ def _build_module_statuses(
             if evidence_status in BLOCKING or replacement_status in {"bypassed", "missing", "mock", "unknown"}
             else []
         )
-        if name == "prediction" and prediction_report.get("blocking_capabilities"):
+        if name == "prediction" and prediction_report:
             blocked = list(prediction_report.get("blocking_capabilities") or [])
         if not hard_gate_eligible and not blocked and evidence_status in BLOCKING:
             blocked = _capabilities_from_reference_module(reference_module)
@@ -405,6 +420,14 @@ def _module_evidence_status(
 ) -> str:
     if name == "prediction" and prediction_report:
         return _normalize_status(prediction_report.get("verdict"))
+    if name in {"chassis", "localization", "planning", "control"} and layer:
+        channel_status = _channel_result_status(layer, name)
+        if channel_status is not None:
+            return channel_status
+    if name == "vehicle_interface":
+        control_health_status = _control_health_status(observed_evidence)
+        if control_health_status is not None:
+            return control_health_status
     replacement_status = str(matrix_module.get("replacement_status") or "")
     if replacement_status == "bypassed":
         return "warn" if matrix_module.get("bypass_reason") else "insufficient_data"
@@ -441,6 +464,64 @@ def _has_required_artifact_gaps(
     if not required_tokens:
         return False
     return not any(observed_evidence.get(token) for token in required_tokens)
+
+
+def _augment_prediction_observed_evidence(
+    observed: Mapping[str, Any],
+    prediction_report: Mapping[str, Any],
+) -> dict[str, Any]:
+    augmented = dict(observed)
+    mode = prediction_report.get("prediction_mode")
+    bypass_reason = prediction_report.get("bypass_reason")
+    for key, value in list(augmented.items()):
+        lowered = str(key).lower()
+        if value:
+            continue
+        if "prediction_mode" in lowered and mode in {
+            "native_observed",
+            "bypassed_with_gt_obstacles",
+            "not_required_for_case",
+        }:
+            augmented[key] = str(mode)
+        elif "bypass_reason" in lowered:
+            augmented[key] = str(bypass_reason) if bypass_reason else f"not_applicable:{mode}"
+    return augmented
+
+
+def _channel_result_status(layer: Mapping[str, Any], module_name: str) -> str | None:
+    aliases = {
+        "chassis": {"chassis", "/apollo/canbus/chassis"},
+        "localization": {"localization", "/apollo/localization/pose"},
+        "planning": {"planning", "/apollo/planning"},
+        "control": {"control", "/apollo/control"},
+    }.get(module_name, set())
+    channel_results = _nested(layer, "key_metrics.channel_results")
+    if not isinstance(channel_results, Mapping):
+        channel_results = _nested(layer, "channel_results")
+    if isinstance(channel_results, Mapping):
+        for key, value in channel_results.items():
+            if not isinstance(value, Mapping):
+                continue
+            name = str(value.get("name") or key)
+            channel = str(value.get("channel") or "")
+            if name in aliases or channel in aliases:
+                return _normalize_status(value.get("status"))
+    failed_channels = _nested(layer, "key_metrics.failed_channels")
+    if isinstance(failed_channels, list):
+        failed = {str(item) for item in failed_channels}
+        if failed & aliases:
+            return "fail"
+        if _normalize_status(layer.get("status")) == "fail":
+            return "pass"
+    return None
+
+
+def _control_health_status(observed_evidence: Mapping[str, Any]) -> str | None:
+    path = observed_evidence.get("control_health_report.json")
+    if not path:
+        return None
+    report = _read_json_path(path)
+    return _normalize_status(report.get("status")) if report else None
 
 
 def _matrix_status(matrix_module: Mapping[str, Any]) -> str:
@@ -504,6 +585,15 @@ def _read_json_path(path: Any) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _nested(payload: Mapping[str, Any], path: str) -> Any:
+    current: Any = payload
+    for part in path.split("."):
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(part)
+    return current
 
 
 def _capability_status(
@@ -575,32 +665,50 @@ def _failure_stage(
     module_statuses: Mapping[str, Mapping[str, Any]],
     link_layers: Mapping[str, Any],
     capability_status: Mapping[str, str],
+    target_capability: str,
+    target_required_modules: set[str],
 ) -> str:
-    if _module_blocking(module_statuses, "hdmap") or _layer_blocking(link_layers, "hdmap_projection"):
+    if _module_blocking_for_target(
+        module_statuses, "hdmap", target_capability, target_required_modules
+    ) or _layer_blocking(link_layers, "hdmap_projection"):
         return "hdmap_or_route_contract"
-    if _module_blocking(module_statuses, "localization") or _layer_blocking(
+    if _module_blocking_for_target(
+        module_statuses, "localization", target_capability, target_required_modules
+    ) or _layer_blocking(
         link_layers, "localization_gt_contract"
     ):
         return "localization_contract"
-    if _module_blocking(module_statuses, "chassis"):
+    if _module_blocking_for_target(module_statuses, "chassis", target_capability, target_required_modules):
         return "chassis_contract"
-    if _module_blocking(module_statuses, "perception_obstacles") or _module_blocking(
-        module_statuses, "prediction"
+    if _layer_blocking(link_layers, "channel_health"):
+        return "channel_health"
+    if _module_blocking_for_target(
+        module_statuses, "perception_obstacles", target_capability, target_required_modules
+    ) or _module_blocking_for_target(
+        module_statuses, "prediction", target_capability, target_required_modules
     ):
         return "obstacle_or_prediction_contract"
-    if _module_blocking(module_statuses, "traffic_light_perception") or _layer_blocking(
-        link_layers, "traffic_light_gt"
+    if _module_blocking_for_target(
+        module_statuses, "traffic_light_perception", target_capability, target_required_modules
+    ) or (
+        target_capability == "traffic_light" and _layer_blocking(link_layers, "traffic_light_gt")
     ):
         return "traffic_light_contract"
-    if _module_blocking(module_statuses, "planning") or _layer_blocking(
+    if _module_blocking_for_target(
+        module_statuses, "planning", target_capability, target_required_modules
+    ) or _layer_blocking(
         link_layers, "planning_reference_line"
     ):
         return "planning_materialization"
-    if _module_blocking(module_statuses, "control") or _layer_blocking(
+    if _module_blocking_for_target(
+        module_statuses, "control", target_capability, target_required_modules
+    ) or _layer_blocking(
         link_layers, "routing_planning_control_handoff"
     ):
         return "control_handoff"
-    if _module_blocking(module_statuses, "vehicle_interface") or _layer_blocking(
+    if _module_blocking_for_target(
+        module_statuses, "vehicle_interface", target_capability, target_required_modules
+    ) or _layer_blocking(
         link_layers, "control_mapping_apply"
     ):
         return "vehicle_interface"
@@ -614,6 +722,18 @@ def _failure_stage(
 def _module_blocking(module_statuses: Mapping[str, Mapping[str, Any]], name: str) -> bool:
     module = module_statuses.get(name, {})
     return bool(module.get("evidence_status") in BLOCKING or module.get("blocking_capabilities"))
+
+
+def _module_blocking_for_target(
+    module_statuses: Mapping[str, Mapping[str, Any]],
+    name: str,
+    target_capability: str,
+    target_required_modules: set[str],
+) -> bool:
+    module = module_statuses.get(name, {})
+    if target_capability in set(module.get("blocking_capabilities") or []):
+        return True
+    return bool(name in target_required_modules and module.get("evidence_status") in BLOCKING)
 
 
 def _layer_blocking(link_layers: Mapping[str, Any], name: str) -> bool:
@@ -680,6 +800,22 @@ def _variant_id(run_dir: Path) -> str | None:
             if value:
                 return str(value)
     return None
+
+
+def _target_capability(link_health: Mapping[str, Any]) -> str:
+    text = " ".join(
+        str(link_health.get(key) or "")
+        for key in ("scenario_class", "scenario_id")
+    ).lower()
+    if "traffic_light" in text:
+        return "traffic_light"
+    if "junction" in text:
+        return "junction"
+    if "curve" in text:
+        return "curve"
+    if "lane_keep" in text:
+        return "lane_keep"
+    return "closed_loop"
 
 
 def _capabilities_from_reference_module(module: Mapping[str, Any]) -> list[str]:

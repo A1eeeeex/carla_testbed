@@ -60,6 +60,7 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
         "enabled": False,
         "artifacts": {},
     },
+    "assist_ledger": {},
 }
 
 TOP_LEVEL_KEYS = set(BUILTIN_DEFAULTS) | {"output"}
@@ -207,5 +208,6 @@ def _to_dataclass(data: Mapping[str, Any], source_path: Path) -> TestbedConfig:
         sensors=SensorRigConfig(**sensors),
         backend=BackendConfig(**backend),
         recording=RecordingConfig(**recording),
+        assist_ledger=dict(data.get("assist_ledger") or {}),
         source_path=source_path,
     )

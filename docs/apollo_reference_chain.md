@@ -194,6 +194,15 @@ python tools/analyze_apollo_prediction_evidence.py \
   --out <run_dir>/analysis/prediction_evidence
 ```
 
+By default this analyzer also reads
+`configs/reference/apollo_gt_replacement_matrix.yaml` so static lane-keep runs can
+record the project-scoped `bypassed_with_gt_obstacles` reason without pretending
+that `/apollo/prediction` was observed. Use `--no-replacement-matrix` when testing
+the negative case where no explicit bypass evidence should be available. Dynamic
+obstacle, junction, and traffic-light claims still require native prediction or
+an explicit scenario override; `/apollo/perception/obstacles` is not counted as
+`/apollo/prediction`.
+
 ## Chain Completion
 
 `carla_testbed.analysis.apollo_chain_completion` is the reference-chain-aware
@@ -234,6 +243,16 @@ Important boundaries:
 - traffic-light behavior cannot be used to infer Planning consumed the
   traffic-light message; planning-consumed evidence must be explicit.
 - missing artifacts become `insufficient_data` or `missing`, not pass.
+- Module statuses must use module-specific evidence. For example, if
+  `apollo_channel_health_report.json` fails only because `/apollo/planning` has
+  a large gap, the `chassis` module must remain governed by the chassis channel
+  sub-result rather than inheriting the overall channel-health failure. The
+  overall channel failure still blocks the CyberRT/channel layer and downstream
+  closed-loop claim until resolved.
+- Current CARLA apply evidence may appear as `control_apply_trace.jsonl` rather
+  than the older `direct_bridge_control_apply.jsonl`; both are row-level vehicle
+  interface evidence, while `control_health_report.json` still decides whether
+  cadence/apply/mapping is pass, warn, or fail.
 
 ## Claim Boundary
 

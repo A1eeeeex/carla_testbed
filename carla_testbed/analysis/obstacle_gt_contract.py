@@ -80,6 +80,8 @@ def analyze_obstacle_gt_contract_records(
     object_results: list[dict[str, Any]] = []
     id_map: dict[str, str] = {}
     tracking_by_apollo_id: dict[str, float] = {}
+    message_count = len(records)
+    empty_message_count = 0
 
     if not records:
         missing_fields.append("obstacle_gt_contract.records")
@@ -88,6 +90,9 @@ def analyze_obstacle_gt_contract_records(
         objects = _record_objects(record)
         if not objects and _looks_like_object(record):
             objects = [record]
+        if not objects and _record_declares_empty_obstacle_message(record):
+            empty_message_count += 1
+            continue
         timestamp = _num(record.get("timestamp"))
         ego_actor_id = _optional_text(record.get("ego_actor_id"))
         for object_index, obstacle in enumerate(objects):
@@ -106,21 +111,35 @@ def analyze_obstacle_gt_contract_records(
             warnings.extend(result["warnings"])
             missing_fields.extend(result["missing_fields"])
 
-    if missing_fields and not object_results:
+    if object_results:
+        if errors:
+            status = "fail"
+        elif missing_fields:
+            status = "insufficient_data"
+        elif warnings:
+            status = "warn"
+        else:
+            status = "pass"
+    elif records and empty_message_count == message_count:
+        if dynamic_required:
+            status = "fail"
+            errors.append("required_dynamic_obstacle_missing")
+        else:
+            status = "pass_empty"
+    elif missing_fields and not object_results:
         status = "insufficient_data"
-    elif errors:
-        status = "fail"
-    elif missing_fields:
-        status = "insufficient_data"
-    elif warnings:
-        status = "warn"
     else:
-        status = "pass"
+        status = "insufficient_data"
     return {
         "schema_version": OBSTACLE_GT_CONTRACT_SCHEMA_VERSION,
         "status": status,
         "scenario_class": scenario_class,
         "dynamic_obstacle_required": dynamic_required,
+        "message_count": message_count,
+        "empty_message_count": empty_message_count,
+        "empty_obstacle_messages_healthy": bool(
+            records and empty_message_count == message_count and not dynamic_required
+        ),
         "object_count": len(object_results),
         "object_results": object_results,
         "errors": sorted(set(errors)),
@@ -267,7 +286,19 @@ def _record_objects(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 
 def _looks_like_object(record: Mapping[str, Any]) -> bool:
-    return any(key in record for key in ("carla_actor_id", "actor_id", "apollo_perception_id", "perception_id"))
+    return any(_optional_text(record.get(key)) for key in ("carla_actor_id", "actor_id", "apollo_perception_id", "perception_id"))
+
+
+def _record_declares_empty_obstacle_message(record: Mapping[str, Any]) -> bool:
+    published_count = _num(record.get("published_obstacle_count"))
+    if published_count is not None:
+        return published_count <= 0
+    payload_count = _num(record.get("payload_count"))
+    if payload_count is not None:
+        return payload_count <= 0
+    if _boolish(record.get("empty_message")):
+        return True
+    return False
 
 
 def _scenario_requires_dynamic_obstacle(scenario_class: str | None) -> bool:

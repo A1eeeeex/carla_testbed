@@ -87,12 +87,25 @@ def test_missing_prediction_without_bypass_is_insufficient_or_fail(tmp_path: Pat
     run_dir = _run_dir(tmp_path, scenario_class="lane_keep")
     _channel_stats(run_dir, prediction_count=0)
 
-    report = analyze_prediction_evidence_run_dir(run_dir)
+    report = analyze_prediction_evidence_run_dir(run_dir, replacement_matrix_path=None)
 
     assert report["prediction_mode"] == "missing"
     assert report["verdict"] == "insufficient_data"
     assert "closed_loop" in report["blocking_capabilities"]
     assert report["hard_gate_eligible"] is False
+
+
+def test_static_lane_keep_uses_default_matrix_bypass_reason(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path, scenario_class="lane_keep")
+    _channel_stats(run_dir, prediction_count=0, obstacle_count=4)
+
+    report = analyze_prediction_evidence_run_dir(run_dir)
+
+    assert report["prediction_mode"] == "bypassed_with_gt_obstacles"
+    assert report["verdict"] == "warn"
+    assert report["hard_gate_eligible"] is True
+    assert report["bypass_reason_source"] == "replacement_matrix"
+    assert report["bypass_reason"]
 
 
 def test_bypassed_with_reason_lane_keep_warns(tmp_path: Path) -> None:

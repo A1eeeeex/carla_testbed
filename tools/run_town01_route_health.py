@@ -972,11 +972,78 @@ def _connect_world(
             )
             _maybe_fail_fast()
 
+    def _local_get_world_with_retry(client, *, deadline_s: float):
+        last_exc = None
+        for attempt in range(1, GET_WORLD_RETRY_ATTEMPTS + 1):
+            timeout_value = _remaining_call_timeout(deadline_s, manager.timeout)
+            _bringup_attempt_callback(
+                "get_world_attempt_start",
+                {"attempt": attempt, "attempts": GET_WORLD_RETRY_ATTEMPTS, "timeout_sec": timeout_value},
+            )
+            try:
+                setter = getattr(client, "set_timeout", None)
+                if callable(setter):
+                    setter(float(timeout_value))
+                return client.get_world()
+            except Exception as exc:
+                last_exc = exc
+                _bringup_attempt_callback(
+                    "get_world_attempt_failed",
+                    {
+                        "attempt": attempt,
+                        "attempts": GET_WORLD_RETRY_ATTEMPTS,
+                        "error": repr(exc),
+                    },
+                )
+                if attempt < GET_WORLD_RETRY_ATTEMPTS:
+                    time.sleep(GET_WORLD_RETRY_DELAY_S)
+        raise last_exc or RuntimeError("get_world failed")
+
+    def _local_load_world_with_retry(client, *, previous_timeout: float, deadline_s: float):
+        last_exc = None
+        setter = getattr(client, "set_timeout", None)
+        for attempt in range(1, LOAD_WORLD_RETRY_ATTEMPTS + 1):
+            timeout_value = _remaining_call_timeout(deadline_s, LOAD_WORLD_DEFAULT_TIMEOUT_S)
+            _bringup_attempt_callback(
+                "load_world_attempt_start",
+                {"attempt": attempt, "attempts": LOAD_WORLD_RETRY_ATTEMPTS, "timeout_sec": timeout_value},
+            )
+            try:
+                if callable(setter):
+                    setter(float(timeout_value))
+                world = client.load_world("Town01")
+                if callable(setter):
+                    setter(float(previous_timeout))
+                return world
+            except Exception as exc:
+                last_exc = exc
+                _bringup_attempt_callback(
+                    "load_world_attempt_failed",
+                    {
+                        "attempt": attempt,
+                        "attempts": LOAD_WORLD_RETRY_ATTEMPTS,
+                        "error": repr(exc),
+                    },
+                )
+                if attempt < LOAD_WORLD_RETRY_ATTEMPTS:
+                    time.sleep(LOAD_WORLD_RETRY_DELAY_S)
+        if callable(setter):
+            setter(float(previous_timeout))
+        raise last_exc or RuntimeError("load_world failed")
+
     def _load_town01_world(client, *, previous_timeout: float, deadline_s: float):
         nonlocal last_err
         try:
-            from carla_testbed.sim.bringup import load_world_with_retry
-
+            try:
+                from carla_testbed.sim.bringup import load_world_with_retry
+            except Exception:
+                load_world_with_retry = None
+            if load_world_with_retry is None:
+                return _local_load_world_with_retry(
+                    client,
+                    previous_timeout=previous_timeout,
+                    deadline_s=deadline_s,
+                )
             return load_world_with_retry(
                 client,
                 "Town01",
@@ -1014,15 +1081,20 @@ def _connect_world(
 
     world = None
     try:
-        from carla_testbed.sim.bringup import get_world_with_retry
-
-        world = get_world_with_retry(
-            client,
-            attempts=GET_WORLD_RETRY_ATTEMPTS,
-            delay_s=GET_WORLD_RETRY_DELAY_S,
-            timeout_s=_remaining_call_timeout(deadline, manager.timeout),
-            attempt_callback=_bringup_attempt_callback,
-        )
+        try:
+            from carla_testbed.sim.bringup import get_world_with_retry
+        except Exception:
+            get_world_with_retry = None
+        if get_world_with_retry is None:
+            world = _local_get_world_with_retry(client, deadline_s=deadline)
+        else:
+            world = get_world_with_retry(
+                client,
+                attempts=GET_WORLD_RETRY_ATTEMPTS,
+                delay_s=GET_WORLD_RETRY_DELAY_S,
+                timeout_s=_remaining_call_timeout(deadline, manager.timeout),
+                attempt_callback=_bringup_attempt_callback,
+            )
     except Exception as exc:
         last_err = exc
         print(

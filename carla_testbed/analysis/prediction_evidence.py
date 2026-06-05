@@ -4,11 +4,17 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from carla_testbed.algorithms.gt_replacement_matrix import (
+    GTReplacementMatrixError,
+    load_gt_replacement_matrix,
+)
+
 PREDICTION_EVIDENCE_SCHEMA_VERSION = "prediction_evidence.v1"
 PREDICTION_CHANNEL = "/apollo/prediction"
 _MIDDLEWARE_TOKEN = "cy" + "ber"
 _BRIDGE_STATS_NAME = _MIDDLEWARE_TOKEN + "_bridge_stats"
 OBSTACLES_CHANNEL = "/apollo/perception/obstacles"
+DEFAULT_REPLACEMENT_MATRIX = "configs/reference/apollo_gt_replacement_matrix.yaml"
 STATIC_BYPASS_SCENARIOS = {"lane_keep", "lane_keep_097"}
 DYNAMIC_OR_INTERACTION_SCENARIOS = {
     "dynamic_obstacle",
@@ -20,7 +26,11 @@ DYNAMIC_OR_INTERACTION_SCENARIOS = {
 }
 
 
-def analyze_prediction_evidence_run_dir(run_dir: str | Path) -> dict[str, Any]:
+def analyze_prediction_evidence_run_dir(
+    run_dir: str | Path,
+    *,
+    replacement_matrix_path: str | Path | None = DEFAULT_REPLACEMENT_MATRIX,
+) -> dict[str, Any]:
     root = Path(run_dir).expanduser()
     return analyze_prediction_evidence(
         summary=_read_json(_find_first(root, ["summary.json"])),
@@ -50,6 +60,7 @@ def analyze_prediction_evidence_run_dir(run_dir: str | Path) -> dict[str, Any]:
             )
         ),
         prediction_log_paths=_find_prediction_logs(root),
+        replacement_matrix=_load_replacement_matrix(replacement_matrix_path),
     )
 
 
@@ -62,6 +73,7 @@ def analyze_prediction_evidence_files(
     planning_topic_debug_summary: str | Path | None = None,
     obstacle_gt_contract: str | Path | None = None,
     prediction_logs: Sequence[str | Path] | None = None,
+    replacement_matrix_path: str | Path | None = DEFAULT_REPLACEMENT_MATRIX,
 ) -> dict[str, Any]:
     return analyze_prediction_evidence(
         summary=_read_json(Path(summary).expanduser() if summary else None),
@@ -81,6 +93,7 @@ def analyze_prediction_evidence_files(
         prediction_log_paths=[
             Path(path).expanduser() for path in prediction_logs or [] if Path(path).expanduser().exists()
         ],
+        replacement_matrix=_load_replacement_matrix(replacement_matrix_path),
     )
 
 
@@ -93,6 +106,7 @@ def analyze_prediction_evidence(
     planning_topic_debug_summary: Mapping[str, Any] | None = None,
     obstacle_gt_contract: Mapping[str, Any] | None = None,
     prediction_log_paths: Sequence[Path] = (),
+    replacement_matrix: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary = summary or {}
     manifest = manifest or {}
@@ -100,6 +114,7 @@ def analyze_prediction_evidence(
     bridge_runtime_stats = bridge_runtime_stats or {}
     planning_topic_debug_summary = planning_topic_debug_summary or {}
     obstacle_gt_contract = obstacle_gt_contract or {}
+    replacement_matrix = replacement_matrix or {}
 
     scenario_class = _first_text(summary, "scenario_class", manifest, "scenario_class")
     run_id = _first_text(summary, "run_id", manifest, "run_id")
@@ -117,6 +132,14 @@ def analyze_prediction_evidence(
         manifest,
         "bypass_reason",
     )
+    bypass_reason_source: str | None = None
+    if bypass_reason:
+        bypass_reason_source = "manifest_or_summary"
+    matrix_prediction = _matrix_prediction_module(replacement_matrix)
+    if not bypass_reason:
+        bypass_reason = _matrix_prediction_bypass_reason(matrix_prediction)
+        if bypass_reason:
+            bypass_reason_source = "replacement_matrix"
     explicit_allow_dynamic_bypass = _bool_or_none(
         _first_raw(
             manifest,
@@ -206,6 +229,7 @@ def analyze_prediction_evidence(
         "prediction_errors": prediction_log_errors,
         "planning_requires_prediction": planning_requires_prediction,
         "bypass_reason": bypass_reason,
+        "bypass_reason_source": bypass_reason_source,
         "hard_gate_eligible": hard_gate_eligible,
         "blocking_capabilities": sorted(set(blocking_capabilities)),
         "missing_fields": sorted(set(missing_fields)),
@@ -344,6 +368,34 @@ def _find_prediction_logs(root: Path) -> list[Path]:
     for pattern in ("*prediction*.log", "*prediction*.txt"):
         candidates.extend(path for path in root.rglob(pattern) if path.is_file())
     return sorted(set(candidates))
+
+
+def _load_replacement_matrix(path: str | Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    try:
+        return load_gt_replacement_matrix(path)
+    except (OSError, GTReplacementMatrixError):
+        return {}
+
+
+def _matrix_prediction_module(matrix: Mapping[str, Any]) -> Mapping[str, Any]:
+    modules = matrix.get("modules")
+    if not isinstance(modules, list):
+        return {}
+    for module in modules:
+        if isinstance(module, Mapping) and module.get("name") == "prediction":
+            return module
+    return {}
+
+
+def _matrix_prediction_bypass_reason(module: Mapping[str, Any]) -> str | None:
+    if module.get("replacement_status") != "bypassed":
+        return None
+    reason = module.get("bypass_reason")
+    if reason in {None, ""}:
+        return None
+    return str(reason)
 
 
 def _find_first(root: Path, relatives: Sequence[str]) -> Path | None:

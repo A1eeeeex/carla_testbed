@@ -246,12 +246,31 @@ def _check_channel(
             "derived_from_bridge_counters": entry.get("derived_from_bridge_counters"),
             "max_gap_ms_estimated": entry.get("max_gap_ms_estimated"),
             "sequence_inferred_from_timestamps": entry.get("sequence_inferred_from_timestamps"),
+            "fresh_message_count": entry.get("fresh_message_count"),
+            "fresh_world_frame_hz": entry.get("fresh_world_frame_hz"),
+            "delivery_wall_hz": entry.get("delivery_wall_hz"),
+            "header_sim_hz": entry.get("header_sim_hz"),
+            "duplicate_timestamp_count": entry.get("duplicate_timestamp_count"),
+            "promotion_grade_evidence": entry.get("promotion_grade_evidence"),
+            "obstacle_count": entry.get("obstacle_count"),
+            "light_count": entry.get("light_count"),
+            "empty_message_count": entry.get("empty_message_count"),
+            "primary_time_axis": entry.get("primary_time_axis"),
+            "sim_time_hz": entry.get("sim_time_hz"),
+            "sim_time_max_gap_ms": entry.get("sim_time_max_gap_ms"),
+            "sim_time_gap_p95_ms": entry.get("sim_time_gap_p95_ms"),
+            "sim_time_gap_count_over_250ms": entry.get("sim_time_gap_count_over_250ms"),
+            "sim_time_gap_count_over_1000ms": entry.get("sim_time_gap_count_over_1000ms"),
+            "sim_time_timestamp_monotonic": entry.get("sim_time_timestamp_monotonic"),
         }
     )
 
     if not isinstance(message_count, (int, float)) or message_count <= 0:
         result["issues"].append("no_messages")
         result["status"] = "fail" if required else _combine_status(result["status"], "warn")
+        if not required:
+            result["warnings"].append(f"{name}_has_no_messages_optional_for_{scenario_class or 'unspecified_scenario'}")
+            return result
 
     min_hz = config.get("min_hz")
     if isinstance(min_hz, (int, float)) and min_hz > 0:
@@ -267,6 +286,10 @@ def _check_channel(
         elif max_gap_ms > max_allowed_gap:
             result["issues"].append("message_gap_too_large")
             result["status"] = "fail" if required else _combine_status(result["status"], "warn")
+            sim_gap_ms = entry.get("sim_time_max_gap_ms")
+            if isinstance(sim_gap_ms, (int, float)) and sim_gap_ms <= max_allowed_gap:
+                result["warnings"].append(f"{name}_header_or_wall_gap_large_but_sim_time_gap_within_limit")
+                result["time_axis_diagnosis"] = "header_or_wall_time_gap_large_sim_time_gap_ok"
 
     max_stale_count = config.get("max_stale_count")
     if isinstance(max_stale_count, (int, float)):

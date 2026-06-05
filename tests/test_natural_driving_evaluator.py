@@ -174,6 +174,45 @@ def test_reconstructed_route_cannot_pass_natural_driving_hard_gate(tmp_path: Pat
     assert "route_health.hard_gate_eligible" in lane_run["missing_fields"]
 
 
+def test_claim_grade_manifest_route_does_not_require_standalone_route_path(tmp_path: Path) -> None:
+    suite_root = copy_fixture(tmp_path)
+    route_health_path = suite_root / "lane_keep_097" / "analysis" / "route_health" / "route_health.json"
+    route_health = json.loads(route_health_path.read_text(encoding="utf-8"))
+    route_health["route_source"] = "manifest_route_trace"
+    route_health["evidence_level"] = "claim_grade_for_carla_route_geometry"
+    route_health["hard_gate_eligible"] = True
+    route_health["source"]["route_path"] = None
+    route_health_path.write_text(json.dumps(route_health, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
+
+    assert "route_health.source.route_path" not in lane_run["invalid_report_source_fields"]
+    assert lane_run["failure_reason"] != "route_health_missing_source_evidence"
+
+
+def test_reference_line_insufficient_status_is_not_reported_as_missing(tmp_path: Path) -> None:
+    suite_root = copy_fixture(tmp_path)
+    report_path = (
+        suite_root
+        / "lane_keep_097"
+        / "analysis"
+        / "apollo_reference_line_contract"
+        / "apollo_reference_line_contract_report.json"
+    )
+    reference_report = json.loads(report_path.read_text(encoding="utf-8"))
+    reference_report["status"] = "insufficient_data"
+    reference_report["warnings"] = ["apollo_hdmap_projection_missing"]
+    report_path.write_text(json.dumps(reference_report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
+
+    assert lane_run["verdict"] == "insufficient_data"
+    assert lane_run["failure_reason"] == "apollo_reference_line_contract_insufficient"
+    assert lane_run["failure_reason"] != "apollo_reference_line_contract_missing_status"
+
+
 def test_terminal_stop_hold_blocks_unassisted_natural_driving_claim(tmp_path: Path) -> None:
     suite_root = copy_fixture(tmp_path)
     lane_dir = suite_root / "lane_keep_097"
@@ -213,6 +252,51 @@ def test_apollo_control_apply_without_assists_can_claim_unassisted(tmp_path: Pat
     assert lane_run["active_assists"] == []
     assert lane_run["can_claim_unassisted_natural_driving"] is True
     assert lane_run["why_not_claimable"] == []
+
+
+def test_planning_claim_window_ratio_prevents_startup_empty_messages_from_blocking_claim(
+    tmp_path: Path,
+) -> None:
+    suite_root = copy_fixture(tmp_path)
+    lane_dir = suite_root / "lane_keep_097"
+    summary_path = lane_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.setdefault("metrics", {})["planning_nonempty_ratio"] = 0.41
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    ref_path = lane_dir / "analysis" / "apollo_reference_line_contract" / "apollo_reference_line_contract_report.json"
+    ref = json.loads(ref_path.read_text(encoding="utf-8"))
+    ref["evidence"]["nonempty_trajectory_ratio"] = 0.41
+    ref["evidence"]["nonempty_trajectory_ratio_after_routing_segment_available"] = 0.95
+    ref["evidence"]["nonempty_trajectory_ratio_after_first_nonempty"] = 1.0
+    ref["evidence"]["planning_claim_window_nonempty_trajectory_ratio"] = 0.95
+    ref["evidence"]["planning_claim_window_source"] = "after_routing_segment_available"
+    ref_path.write_text(json.dumps(ref, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
+
+    assert lane_run["planning_nonempty_ratio"] == 0.95
+    assert "planning_nonempty_ratio_low" not in lane_run["why_not_claimable"]
+    assert lane_run["verdict"] == "pass"
+    assert lane_run["can_claim_unassisted_natural_driving"] is True
+
+
+def test_apollo_control_source_prefers_handoff_artifact_over_summary_label(tmp_path: Path) -> None:
+    suite_root = copy_fixture(tmp_path)
+    lane_dir = suite_root / "lane_keep_097"
+    summary_path = lane_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["control_source"] = "external_stack"
+    summary["controller"] = "external_stack"
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
+
+    assert lane_run["control_source"] == "/apollo/control"
+    assert "control_source_not_apollo_control" not in lane_run["why_not_claimable"]
+    assert lane_run["can_claim_unassisted_natural_driving"] is True
 
 
 def test_missing_assist_evidence_is_insufficient_data_not_default_pass(tmp_path: Path) -> None:

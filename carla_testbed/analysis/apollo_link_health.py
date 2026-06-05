@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping, Sequence
 
+from carla_testbed.analysis.obstacle_gt_contract import analyze_obstacle_gt_contract_file
 from carla_testbed.analysis.assist_ledger import build_runtime_assist_ledger
 
 APOLLO_LINK_HEALTH_SCHEMA_VERSION = "apollo_link_health.v1"
@@ -52,21 +54,24 @@ def analyze_apollo_link_health(
     scenario_class = _first_text(summary, "scenario_class", manifest, "scenario_class")
 
     layers = {
-        "environment_world": _environment_world_layer(summary, manifest, inputs),
+        "environment_world": _environment_world_layer(
+            summary,
+            manifest,
+            payloads.get("carla_world_ready_summary", {}),
+            payloads.get("carla_bootstrap_summary", {}),
+            inputs,
+        ),
         "bridge_runtime": _bridge_runtime_layer(summary, payloads, inputs),
-        "channel_health": _report_layer(
-            name="channel_health",
-            report=payloads.get("apollo_channel_health"),
-            path=inputs.get("apollo_channel_health"),
-            status_keys=("status",),
-            next_action="Generate apollo_channel_health_report.json from channel_stats before behavior claims.",
-            key_metric_fields=("missing_required_channels", "low_rate_channels", "timestamp_failures"),
+        "channel_health": _channel_health_layer(
+            payloads.get("apollo_channel_health"),
+            inputs.get("apollo_channel_health"),
         ),
         "localization_gt_contract": _localization_layer(
             payloads.get("localization_contract"),
             inputs.get("localization_contract"),
         ),
         "hdmap_projection": _hdmap_projection_layer(
+            payloads.get("apollo_hdmap_projection"),
             payloads.get("localization_contract"),
             payloads.get("apollo_reference_line_contract"),
             inputs,
@@ -84,20 +89,21 @@ def analyze_apollo_link_health(
         "routing_planning_control_handoff": _control_handoff_layer(
             payloads.get("apollo_control_handoff"),
             inputs.get("apollo_control_handoff"),
+            summary=summary,
+            bridge_stats=cyber_bridge_stats,
+            planning_topic_debug_summary=payloads.get("planning_topic_debug_summary", {}),
+            command_materialization_summary=payloads.get("command_materialization_summary", {}),
+            command_materialization_path=inputs.get("command_materialization_summary"),
         ),
         "control_mapping_apply": _control_health_layer(
             payloads.get("control_health"),
             inputs.get("control_health"),
         ),
-        "perception_gt_obstacles": _report_layer(
-            name="perception_gt_obstacles",
-            report=payloads.get("obstacle_gt_contract"),
-            path=inputs.get("obstacle_gt_contract"),
-            status_keys=("status",),
-            blocking_keys=("errors", "blocking_reasons"),
-            warning_keys=("warnings",),
-            next_action="Generate obstacle_gt_contract_report.json; verify ego exclusion, ids, frame, dimensions, velocity, and tracking_time.",
-            key_metric_fields=("object_count", "dynamic_obstacle_required", "errors", "missing_fields"),
+        "perception_gt_obstacles": _obstacle_gt_layer(
+            payloads.get("obstacle_gt_contract"),
+            inputs.get("obstacle_gt_contract"),
+            raw_path=inputs.get("obstacle_gt_contract_raw"),
+            scenario_class=scenario_class,
         ),
         "traffic_light_gt": _traffic_light_layer(
             payloads.get("traffic_light_contract"),
@@ -110,6 +116,8 @@ def analyze_apollo_link_health(
             bridge_stats=cyber_bridge_stats,
             control_handoff=payloads.get("apollo_control_handoff", {}),
             control_health=payloads.get("control_health", {}),
+            apollo_reference_line_contract=payloads.get("apollo_reference_line_contract", {}),
+            planning_topic_debug_summary=payloads.get("planning_topic_debug_summary", {}),
             inputs=inputs,
         ),
         "natural_driving_outcome": _natural_driving_layer(
@@ -193,18 +201,109 @@ def apollo_link_health_summary_md(report: Mapping[str, Any]) -> str:
         layer = layers.get(name) if isinstance(layers, Mapping) else {}
         if not isinstance(layer, Mapping):
             layer = {}
+        key_metrics = _summary_key_metrics(name, layer.get("key_metrics"))
         lines.extend(
             [
                 f"### {name}",
                 f"- status: `{layer.get('status')}`",
                 f"- blocking_reasons: `{', '.join(layer.get('blocking_reasons') or []) or 'none'}`",
                 f"- warnings: `{', '.join(layer.get('warnings') or []) or 'none'}`",
+                *([f"- key_metrics: `{key_metrics}`"] if key_metrics else []),
                 f"- next_action: `{layer.get('next_action')}`",
                 "",
             ]
         )
     lines.extend([str(report.get("interpretation_boundary") or ""), ""])
     return "\n".join(lines)
+
+
+def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
+    if not isinstance(metrics, Mapping):
+        return ""
+    preferred_by_layer = {
+        "environment_world": (
+            "runtime_contract_status",
+            "carla_world_ready_status",
+            "loaded_map_name",
+            "carla_tick_max_wall_duration_s",
+            "carla_tick_max_inter_tick_wall_interval_s",
+            "carla_tick_inter_tick_wall_interval_p95_s",
+            "carla_tick_cadence_source",
+            "carla_tick_inter_tick_wall_gap_high",
+            "carla_tick_max_stage_name",
+            "carla_tick_max_stage_duration_s",
+            "carla_tick_max_hook_stage_name",
+            "carla_tick_max_hook_stage_duration_s",
+        ),
+        "channel_health": (
+            "failed_channels",
+            "planning_status",
+            "planning_primary_time_axis",
+            "planning_time_axis_diagnosis",
+            "planning_max_gap_ms",
+            "planning_sim_time_max_gap_ms",
+            "planning_sim_time_gap_p95_ms",
+            "planning_gap_count_over_1000ms",
+            "planning_sim_time_gap_count_over_1000ms",
+        ),
+        "localization_gt_contract": (
+            "channel_status",
+            "heading_error_to_route_p95_rad",
+            "heading_error_to_lane_p95_rad",
+            "position_uses_vrp",
+            "vehicle_reference_hard_gate_eligible",
+            "measurement_header_delta_ms_p95",
+        ),
+        "hdmap_projection": (
+            "official_source_available",
+            "claim_grade",
+            "heading_error_p95_rad",
+            "lateral_error_p95_m",
+        ),
+        "planning_reference_line": (
+            "metrics",
+            "evidence",
+        ),
+        "control_mapping_apply": (
+            "failure_reason",
+            "oscillation_decomposition",
+            "control_mapping_claim_boundary",
+            "route_s_after_first_applied_control_delta_m",
+        ),
+        "no_assist_claim_boundary": (
+            "backend",
+            "control_source",
+            "active_assists",
+            "blocking_assists",
+            "planning_nonempty_ratio",
+            "lateral_guard_apply_count",
+            "force_green",
+        ),
+    }
+    keys = preferred_by_layer.get(layer_name) or tuple(metrics.keys())
+    parts: list[str] = []
+    for key in keys:
+        if key not in metrics:
+            continue
+        value = metrics.get(key)
+        if value is None or value == [] or value == {}:
+            continue
+        parts.append(f"{key}={_summary_metric_value(value)}")
+        if len(parts) >= 8:
+            break
+    text = "; ".join(parts)
+    return text[:900] + ("..." if len(text) > 900 else "")
+
+
+def _summary_metric_value(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    if isinstance(value, (str, int, bool)):
+        return str(value)
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    except TypeError:
+        return str(value)
 
 
 def _resolve_inputs(root: Path) -> dict[str, Path | None]:
@@ -236,6 +335,41 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
                 "planning_topic_debug_summary.json",
             ],
         ),
+        "command_materialization_summary": _find_first(
+            root,
+            [
+                "artifacts/command_materialization_summary.json",
+                "command_materialization_summary.json",
+            ],
+        ),
+        "carla_tick_health_summary": _find_first(
+            root,
+            [
+                "artifacts/carla_tick_health_summary.json",
+                "carla_tick_health_summary.json",
+            ],
+        ),
+        "carla_tick_health_log": _find_first(
+            root,
+            [
+                "artifacts/carla_tick_health.jsonl",
+                "carla_tick_health.jsonl",
+            ],
+        ),
+        "carla_world_ready_summary": _find_first(
+            root,
+            [
+                "artifacts/carla_world_ready_summary.json",
+                "carla_world_ready_summary.json",
+            ],
+        ),
+        "carla_bootstrap_summary": _find_first(
+            root,
+            [
+                "artifacts/carla_bootstrap_summary.json",
+                "carla_bootstrap_summary.json",
+            ],
+        ),
         "apollo_channel_health": _find_first(
             root,
             [
@@ -258,11 +392,19 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
                 "apollo_reference_line_contract_report.json",
             ],
         ),
+        "apollo_hdmap_projection": _find_first(
+            root,
+            [
+                "analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json",
+                "apollo_hdmap_projection_report.json",
+            ],
+        ),
         "apollo_control_handoff": _find_first(
             root,
             [
                 "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
                 "apollo_control_handoff_report.json",
+                "artifacts/control_handoff_summary.json",
             ],
         ),
         "control_health": _find_first(
@@ -286,6 +428,15 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
                 "obstacle_gt_contract_report.json",
             ],
         ),
+        "obstacle_gt_contract_raw": _find_first(
+            root,
+            [
+                "artifacts/obstacle_gt_contract.jsonl",
+                "obstacle_gt_contract.jsonl",
+                "artifacts/obstacle_gt_contract.json",
+                "obstacle_gt_contract.json",
+            ],
+        ),
         "natural_driving_report": _find_first(
             root,
             [
@@ -294,20 +445,37 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
             ],
         )
         or _find_natural_driving_report_in_ancestors(root),
+        "followstop_child_stderr": _find_followstop_child_stderr(root),
     }
 
 
 def _environment_world_layer(
     summary: Mapping[str, Any],
     manifest: Mapping[str, Any],
+    carla_world_ready_summary: Mapping[str, Any],
+    carla_bootstrap_summary: Mapping[str, Any],
     inputs: Mapping[str, Path | None],
 ) -> dict[str, Any]:
     runtime_status = _runtime_contract_status(summary, manifest)
     carla_world = manifest.get("carla_world") if isinstance(manifest.get("carla_world"), Mapping) else {}
+    world_ready_status = _first_text(carla_world_ready_summary, "status")
+    bootstrap_status = _first_text(carla_bootstrap_summary, "carla_bootstrap_status")
+    final_town = _first_text(carla_world_ready_summary, "final_town")
     matches_town = _bool_or_none(carla_world.get("matches_configured_town"))
+    tick_timeout = _detect_carla_world_tick_timeout(summary, inputs)
+    tick_cadence = _carla_tick_cadence(inputs)
     blocking: list[str] = []
     warnings: list[str] = []
-    if not summary and not manifest:
+    if tick_cadence.get("inter_tick_wall_gap_high") is True:
+        warnings.append("carla_inter_tick_wall_interval_high")
+    if world_ready_status and world_ready_status != "world_ready":
+        status = "fail"
+        blocking.append(_world_ready_blocker(world_ready_status))
+    elif tick_timeout["detected"]:
+        status = "fail"
+        blocking.append("carla_world_tick_timeout_before_routing")
+        warnings.append("routing_request_count_zero_is_downstream_of_world_tick_timeout")
+    elif not summary and not manifest:
         status = "insufficient_data"
         blocking.append("summary_or_manifest_missing")
     elif runtime_status and runtime_status != "aligned":
@@ -327,12 +495,44 @@ def _environment_world_layer(
         warnings=warnings,
         key_metrics={
             "runtime_contract_status": runtime_status,
-            "loaded_map_name": carla_world.get("loaded_map_name"),
+            "carla_world_ready_status": world_ready_status,
+            "carla_bootstrap_status": bootstrap_status,
+            "loaded_map_name": carla_world.get("loaded_map_name") or final_town,
             "configured_town": carla_world.get("configured_town"),
+            "carla_final_town": final_town,
             "spawn_point_count": carla_world.get("spawn_point_count"),
+            "carla_world_tick_timeout_detected": tick_timeout["detected"],
+            "carla_world_tick_timeout_artifact": tick_timeout["artifact_path"],
+            "carla_tick_count": tick_timeout.get("tick_count"),
+            "carla_tick_fail_count": tick_timeout.get("tick_fail_count"),
+            "carla_tick_max_wall_duration_s": tick_timeout.get("max_tick_wall_duration_s"),
+            "carla_tick_max_inter_tick_wall_interval_s": tick_cadence.get("max_inter_tick_wall_interval_s"),
+            "carla_tick_inter_tick_wall_interval_p95_s": tick_cadence.get("inter_tick_wall_interval_p95_s"),
+            "carla_tick_inter_tick_wall_interval_count": tick_cadence.get("inter_tick_wall_interval_count"),
+            "carla_tick_cadence_source": tick_cadence.get("source"),
+            "carla_tick_inter_tick_wall_gap_high": tick_cadence.get("inter_tick_wall_gap_high"),
+            "carla_tick_max_frame_post_tick_wall_duration_s": tick_cadence.get("max_frame_post_tick_wall_duration_s"),
+            "carla_tick_max_frame_loop_wall_duration_s": tick_cadence.get("max_frame_loop_wall_duration_s"),
+            "carla_tick_max_stage_name": tick_cadence.get("max_stage_name"),
+            "carla_tick_max_stage_duration_s": tick_cadence.get("max_stage_duration_s"),
+            "carla_tick_max_hook_stage_name": tick_cadence.get("max_hook_stage_name"),
+            "carla_tick_max_hook_stage_duration_s": tick_cadence.get("max_hook_stage_duration_s"),
+            "carla_tick_stage_duration_max_s": tick_cadence.get("stage_duration_max_s"),
+            "summary_fail_reason": summary.get("fail_reason"),
+            "summary_frames": summary.get("frames"),
+            "summary_routing_request_count": summary.get("routing_request_count"),
         },
-        artifact_paths=_paths(inputs, "summary", "manifest"),
-        next_action="Fix CARLA world/runtime contract before interpreting Apollo behavior.",
+        artifact_paths=_paths(
+            inputs,
+            "summary",
+            "manifest",
+            "carla_world_ready_summary",
+            "carla_bootstrap_summary",
+            "carla_tick_health_summary",
+            "carla_tick_health_log",
+            "followstop_child_stderr",
+        ),
+        next_action=_environment_world_next_action(runtime_status, blocking),
     )
 
 
@@ -412,12 +612,18 @@ def _localization_layer(report: Mapping[str, Any] | None, path: Path | None) -> 
 
 
 def _hdmap_projection_layer(
+    projection_report: Mapping[str, Any] | None,
     localization_report: Mapping[str, Any] | None,
     reference_line_report: Mapping[str, Any] | None,
     inputs: Mapping[str, Path | None],
 ) -> dict[str, Any]:
     projection = {}
+    if isinstance(projection_report, Mapping) and projection_report:
+        nested_projection = projection_report.get("projection")
+        projection = dict(nested_projection if isinstance(nested_projection, Mapping) else projection_report)
     for report in (reference_line_report, localization_report):
+        if projection:
+            break
         candidate = report.get("apollo_hdmap_projection") if isinstance(report, Mapping) else None
         if isinstance(candidate, Mapping) and candidate:
             projection = dict(candidate)
@@ -428,7 +634,7 @@ def _hdmap_projection_layer(
             blocking_reasons=[],
             warnings=["apollo_hdmap_projection_missing"],
             key_metrics={"apollo_hdmap_projection_available": False},
-            artifact_paths=_paths(inputs, "localization_contract", "apollo_reference_line_contract"),
+            artifact_paths=_paths(inputs, "apollo_hdmap_projection", "localization_contract", "apollo_reference_line_contract"),
             next_action="Generate artifacts/apollo_hdmap_projection.jsonl using Apollo HDMap API projection evidence.",
         )
     return _layer(
@@ -443,31 +649,122 @@ def _hdmap_projection_layer(
             "lateral_error_p95_m": projection.get("lateral_error_p95_m"),
             "nearest_lane_id_topk": projection.get("nearest_lane_id_topk"),
         },
-        artifact_paths=_paths(inputs, "localization_contract", "apollo_reference_line_contract"),
+        artifact_paths=_paths(inputs, "apollo_hdmap_projection", "localization_contract", "apollo_reference_line_contract"),
         next_action="If projection is high-error, check map alignment, lane direction, lane id, and routing snap.",
     )
 
 
-def _control_handoff_layer(report: Mapping[str, Any] | None, path: Path | None) -> dict[str, Any]:
+def _control_handoff_layer(
+    report: Mapping[str, Any] | None,
+    path: Path | None,
+    *,
+    summary: Mapping[str, Any],
+    bridge_stats: Mapping[str, Any],
+    planning_topic_debug_summary: Mapping[str, Any],
+    command_materialization_summary: Mapping[str, Any],
+    command_materialization_path: Path | None,
+) -> dict[str, Any]:
     if not report:
         return _missing_report_layer(
             path=path,
             next_action="Generate apollo_control_handoff_report.json; inspect process, control channel, bridge receive, raw decode, apply, and response.",
         )
-    status = _normalize_status(report.get("verdict") or report.get("status"))
+    routing_success_count = _first_num(
+        summary.get("routing_success_count"),
+        bridge_stats.get("routing_success_count"),
+        report.get("routing_success_count"),
+    )
+    planning_total = _first_num(
+        planning_topic_debug_summary.get("total_messages_received"),
+        report.get("planning_total_messages"),
+    )
+    planning_nonzero = _first_num(
+        planning_topic_debug_summary.get("messages_with_nonzero_trajectory_points"),
+        report.get("planning_nonempty_messages"),
+        _nested(report, "input_readiness.planning_nonempty_messages"),
+    )
+    control_rx_count = _first_num(
+        bridge_stats.get("control_rx_count"),
+        _nested(report, "bridge_receive.control_rx_count"),
+        _nested(report, "control_channel.message_count"),
+    )
+    control_apply_count = _first_num(
+        bridge_stats.get("apply_control_count"),
+        _nested(report, "mapping_and_apply.apply_control_count"),
+    )
+    control_handoff_status = _first_text(
+        report,
+        "control_handoff_status",
+        report,
+        "failure_stage",
+    )
+    command_gate = command_materialization_summary.get("gate_state")
+    if not isinstance(command_gate, Mapping):
+        command_gate = {}
+    command_path_stage = _first_text(command_materialization_summary, "command_path_stage")
+    command_first_divergence_reason = _first_text(command_materialization_summary, "first_divergence_reason")
+    command_last_blocking_reason = _first_text(command_gate, "last_blocking_reason")
+    apollo_warmup_remaining_sec = _num(command_gate.get("apollo_warmup_remaining_sec"))
+    startup_warmup_incomplete = bool(
+        routing_success_count is not None
+        and routing_success_count < 1
+        and (
+            command_first_divergence_reason == "apollo_startup_warmup"
+            or command_last_blocking_reason == "apollo_startup_warmup"
+        )
+        and (apollo_warmup_remaining_sec is None or apollo_warmup_remaining_sec > 0.0)
+    )
+    blocking = list(report.get("blocking_reasons") or [])
+    if startup_warmup_incomplete:
+        blocking.append("apollo_startup_warmup_incomplete")
+    elif routing_success_count is not None and routing_success_count < 1:
+        blocking.append("routing_success_missing")
+    if not startup_warmup_incomplete and planning_total is not None and planning_total > 0 and planning_nonzero is not None and planning_nonzero < 1:
+        blocking.append("planning_nonempty_missing")
+    if not startup_warmup_incomplete and control_handoff_status in {
+        "control_process_missing",
+        "planning_ready_control_not_consuming",
+        "control_output_stopped_before_nonzero_planning",
+        "control_process_crashed",
+    }:
+        blocking.append(control_handoff_status)
+    if planning_nonzero is not None and planning_nonzero > 0 and control_rx_count is not None and control_rx_count < 1:
+        blocking.append("control_rx_missing")
+    if control_rx_count is not None and control_rx_count > 0 and control_apply_count is not None and control_apply_count < 1:
+        blocking.append("control_apply_missing")
+    explicit_status = report.get("verdict") or report.get("status")
+    if startup_warmup_incomplete:
+        status = "insufficient_data"
+    elif blocking:
+        status = "fail"
+    elif explicit_status not in {None, ""}:
+        status = _normalize_status(explicit_status)
+    else:
+        status = "pass" if control_handoff_status in {"control_consuming_with_nonzero_planning", "pass"} else "insufficient_data"
     return _layer(
         status=status,
-        blocking_reasons=list(report.get("blocking_reasons") or []),
+        blocking_reasons=blocking,
         warnings=list(report.get("warnings") or []),
         key_metrics={
+            "control_handoff_status": control_handoff_status,
             "failure_stage": report.get("failure_stage"),
             "evidence_level": report.get("evidence_level"),
+            "routing_success_count": routing_success_count,
+            "planning_total_messages": planning_total,
+            "planning_nonempty_messages": planning_nonzero,
+            "command_path_stage": command_path_stage,
+            "command_first_divergence_reason": command_first_divergence_reason,
+            "command_last_blocking_reason": command_last_blocking_reason,
+            "apollo_warmup_remaining_sec": apollo_warmup_remaining_sec,
             "control_message_count": _nested(report, "control_channel.message_count"),
-            "control_rx_count": _nested(report, "bridge_receive.control_rx_count"),
-            "apply_control_count": _nested(report, "mapping_and_apply.apply_control_count"),
+            "control_rx_count": control_rx_count,
+            "apply_control_count": control_apply_count,
             "vehicle_response_status": _nested(report, "vehicle_response.status"),
         },
-        artifact_paths={"apollo_control_handoff": str(path) if path else None},
+        artifact_paths={
+            "apollo_control_handoff": str(path) if path else None,
+            "command_materialization_summary": str(command_materialization_path) if command_materialization_path else None,
+        },
         next_action="If failed, follow the handoff stage: process -> input readiness -> control channel -> bridge receive -> raw decode -> apply -> response.",
     )
 
@@ -486,6 +783,26 @@ def _control_health_layer(report: Mapping[str, Any] | None, path: Path | None) -
             "failure_reason": report.get("failure_reason"),
             "control_handoff_status": report.get("control_handoff_status"),
             "oscillation_decomposition": _nested(report, "metrics.oscillation_decomposition"),
+            "longitudinal_oscillation_attribution": _nested(
+                report,
+                "metrics.control_decode_debug.longitudinal_oscillation_attribution",
+            ),
+            "trajectory_consume_correlation": _nested(
+                report,
+                "metrics.control_decode_debug.trajectory_consume_correlation",
+            ),
+            "planning_trajectory_correlation": _nested(
+                report,
+                "metrics.control_decode_debug.planning_trajectory_correlation",
+            ),
+            "planning_log_fallback_diagnostics": _nested(
+                report,
+                "metrics.planning_log_fallback_diagnostics",
+            ),
+            "gt_state_sampling_cadence": _nested(
+                report,
+                "metrics.gt_state_sampling_cadence",
+            ),
             "control_mapping_claim_boundary": _nested(report, "metrics.control_mapping_claim_boundary"),
             "mapped_applied_steer_abs_error_p95": _nested(report, "metrics.mapped_applied_steer_abs_error_p95"),
             "mapped_applied_throttle_abs_error_p95": _nested(report, "metrics.mapped_applied_throttle_abs_error_p95"),
@@ -493,8 +810,84 @@ def _control_health_layer(report: Mapping[str, Any] | None, path: Path | None) -
             "route_s_after_first_applied_control_delta_m": _nested(report, "metrics.route_s_after_first_applied_control_delta_m"),
         },
         artifact_paths={"control_health": str(path) if path else None},
-        next_action="If localization/reference-line is non-blocking, fix cadence/apply/mapping/vehicle-response according to oscillation_decomposition.",
+        next_action=(
+            "If localization/reference-line is non-blocking, inspect longitudinal_oscillation_attribution "
+            "plus trajectory_consume_correlation/planning_trajectory_correlation before tuning bridge "
+            "mapping or actuation."
+        ),
     )
+
+
+def _channel_health_layer(report: Mapping[str, Any] | None, path: Path | None) -> dict[str, Any]:
+    if not report:
+        return _missing_report_layer(
+            path=path,
+            next_action="Generate apollo_channel_health_report.json from channel_stats before behavior claims.",
+        )
+    channel_results = report.get("channel_results") if isinstance(report.get("channel_results"), Mapping) else {}
+    failed_channels: list[str] = []
+    failed_details: dict[str, Any] = {}
+    planning_result: Mapping[str, Any] = {}
+    for key, value in channel_results.items():
+        if not isinstance(value, Mapping):
+            continue
+        name = str(value.get("name") or key)
+        channel = str(value.get("channel") or "")
+        if name == "planning" or channel == "/apollo/planning" or "planning" in str(key):
+            planning_result = value
+        if _normalize_status(value.get("status")) == "fail":
+            failed_channels.append(name)
+            failed_details[name] = _channel_failure_detail(value)
+    return _layer(
+        status=_normalize_status(report.get("status")),
+        blocking_reasons=_collect_lists(report, ("blocking_reasons", "errors")),
+        warnings=_collect_lists(report, ("warnings",)),
+        key_metrics={
+            "missing_required_channels": report.get("missing_required_channels") or [],
+            "low_rate_channels": report.get("low_rate_channels") or [],
+            "timestamp_failures": report.get("timestamp_failures") or [],
+            "failed_channels": failed_channels,
+            "failed_channel_details": failed_details,
+            "planning_status": planning_result.get("status"),
+            "planning_issues": list(planning_result.get("issues") or []),
+            "planning_message_count": planning_result.get("message_count"),
+            "planning_hz": planning_result.get("hz"),
+            "planning_max_gap_ms": planning_result.get("max_gap_ms"),
+            "planning_gap_p95_ms": planning_result.get("gap_p95_ms"),
+            "planning_gap_count_over_1000ms": planning_result.get("gap_count_over_1000ms"),
+            "planning_primary_time_axis": planning_result.get("primary_time_axis"),
+            "planning_time_axis_diagnosis": planning_result.get("time_axis_diagnosis"),
+            "planning_sim_time_hz": planning_result.get("sim_time_hz"),
+            "planning_sim_time_max_gap_ms": planning_result.get("sim_time_max_gap_ms"),
+            "planning_sim_time_gap_p95_ms": planning_result.get("sim_time_gap_p95_ms"),
+            "planning_sim_time_gap_count_over_1000ms": planning_result.get("sim_time_gap_count_over_1000ms"),
+            "planning_sim_time_timestamp_monotonic": planning_result.get("sim_time_timestamp_monotonic"),
+            "planning_source": planning_result.get("source"),
+        },
+        artifact_paths={"channel_health": str(path) if path else None},
+        next_action="Generate/inspect apollo_channel_health_report.json; required channel absence is a transport issue, while planning-only gaps must be interpreted with planning/reference-line artifacts.",
+    )
+
+
+def _channel_failure_detail(channel_result: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "channel": channel_result.get("channel"),
+        "issues": list(channel_result.get("issues") or []),
+        "message_count": channel_result.get("message_count"),
+        "hz": channel_result.get("hz"),
+        "max_gap_ms": channel_result.get("max_gap_ms"),
+        "gap_p95_ms": channel_result.get("gap_p95_ms"),
+        "gap_count_over_1000ms": channel_result.get("gap_count_over_1000ms"),
+        "primary_time_axis": channel_result.get("primary_time_axis"),
+        "time_axis_diagnosis": channel_result.get("time_axis_diagnosis"),
+        "sim_time_hz": channel_result.get("sim_time_hz"),
+        "sim_time_max_gap_ms": channel_result.get("sim_time_max_gap_ms"),
+        "sim_time_gap_p95_ms": channel_result.get("sim_time_gap_p95_ms"),
+        "sim_time_gap_count_over_1000ms": channel_result.get("sim_time_gap_count_over_1000ms"),
+        "sim_time_timestamp_monotonic": channel_result.get("sim_time_timestamp_monotonic"),
+        "promotion_grade_evidence": channel_result.get("promotion_grade_evidence"),
+        "source": channel_result.get("source"),
+    }
 
 
 def _traffic_light_layer(
@@ -531,6 +924,8 @@ def _no_assist_layer(
     bridge_stats: Mapping[str, Any],
     control_handoff: Mapping[str, Any],
     control_health: Mapping[str, Any],
+    apollo_reference_line_contract: Mapping[str, Any],
+    planning_topic_debug_summary: Mapping[str, Any],
     inputs: Mapping[str, Path | None],
 ) -> dict[str, Any]:
     ledger = build_runtime_assist_ledger(
@@ -543,14 +938,16 @@ def _no_assist_layer(
     warnings = list(ledger.get("warnings") or [])
     reasons: list[str] = []
     explicit_blockers: list[str] = []
-    backend = _first_text(summary, "backend", manifest, "backend")
-    control_source = _first_text(summary, "control_source", manifest, "control_source")
+    backend = _infer_backend(summary, manifest, bridge_stats, control_handoff)
+    control_source = _infer_control_source(summary, manifest, control_handoff, bridge_stats)
     routing_success_count = _first_num(summary.get("routing_success_count"), bridge_stats.get("routing_success_count"))
-    planning_nonempty_ratio = _first_num(
-        _nested(summary, "metrics.planning_nonempty_ratio"),
-        summary.get("planning_nonempty_ratio"),
-        _nested(control_handoff, "input_readiness.planning_nonempty_ratio"),
+    planning_nonempty = _planning_nonempty_claim_metric(
+        summary=summary,
+        control_handoff=control_handoff,
+        apollo_reference_line_contract=apollo_reference_line_contract,
+        planning_topic_debug_summary=planning_topic_debug_summary,
     )
+    planning_nonempty_ratio = planning_nonempty["ratio"]
     control_rx_count = _first_num(
         bridge_stats.get("control_rx_count"),
         _nested(control_handoff, "bridge_receive.control_rx_count"),
@@ -560,8 +957,11 @@ def _no_assist_layer(
     control_apply_count = _first_num(
         bridge_stats.get("apply_control_count"),
         _nested(control_handoff, "mapping_and_apply.apply_control_count"),
+        _control_apply_count_from_control_health(control_health),
     )
-    if backend != "apollo_cyberrt":
+    if backend is None:
+        reasons.append("backend_missing")
+    elif backend != "apollo_cyberrt":
         reasons.append("backend_not_apollo_cyberrt")
         explicit_blockers.append("backend_not_apollo_cyberrt")
     if control_source is None:
@@ -621,6 +1021,12 @@ def _no_assist_layer(
             "control_source": control_source,
             "routing_success_count": routing_success_count,
             "planning_nonempty_ratio": planning_nonempty_ratio,
+            "planning_nonempty_ratio_source": planning_nonempty["source"],
+            "planning_nonempty_ratio_overall": planning_nonempty["overall_ratio"],
+            "planning_nonempty_ratio_after_routing_segment_available": planning_nonempty[
+                "after_routing_segment_available"
+            ],
+            "planning_nonempty_ratio_after_first_nonempty": planning_nonempty["after_first_nonempty"],
             "control_rx_count": control_rx_count,
             "control_tx_count": control_tx_count,
             "control_apply_count": control_apply_count,
@@ -666,6 +1072,47 @@ def _natural_driving_layer(
         artifact_paths={"natural_driving_report": str(path) if path else None},
         next_action="Use natural_driving_report.json as the final behavior gate after link evidence is non-blocking.",
     )
+
+
+def _obstacle_gt_layer(
+    report: Mapping[str, Any] | None,
+    path: Path | None,
+    *,
+    raw_path: Path | None,
+    scenario_class: str | None,
+) -> dict[str, Any]:
+    source_report: Mapping[str, Any] | None = report
+    source_path = path
+    source_kind = "report"
+    if not source_report and raw_path is not None and raw_path.exists():
+        source_report = analyze_obstacle_gt_contract_file(raw_path, scenario_class=scenario_class)
+        source_path = raw_path
+        source_kind = "raw_artifact"
+    layer = _report_layer(
+        name="perception_gt_obstacles",
+        report=source_report,
+        path=source_path,
+        status_keys=("status",),
+        blocking_keys=("errors", "blocking_reasons"),
+        warning_keys=("warnings",),
+        next_action=(
+            "Generate obstacle_gt_contract_report.json; verify ego exclusion, ids, "
+            "frame, dimensions, velocity, and tracking_time."
+        ),
+        key_metric_fields=(
+            "object_count",
+            "message_count",
+            "empty_message_count",
+            "empty_obstacle_messages_healthy",
+            "dynamic_obstacle_required",
+            "errors",
+            "missing_fields",
+        ),
+    )
+    layer["artifact_paths"]["source_kind"] = source_kind
+    if raw_path is not None:
+        layer["artifact_paths"]["obstacle_gt_contract_raw"] = str(raw_path)
+    return layer
 
 
 def _report_layer(
@@ -729,22 +1176,33 @@ def _layer(
 
 
 def _blocker_summary(layers: Mapping[str, Mapping[str, Any]]) -> tuple[str | None, list[str]]:
-    special = _reference_line_localization_mismatch(layers)
+    warmup_primary = _startup_warmup_incomplete_primary(layers)
     blockers = _all_blockers(layers)
+    if warmup_primary:
+        secondary = [item for item in blockers if item != warmup_primary]
+        return warmup_primary, secondary
+
+    special = _reference_line_localization_mismatch(layers)
     if special:
         secondary = [item for item in blockers if item != special]
         return special, secondary
 
-    loc_ref_pass = _non_blocking(layers.get("localization_gt_contract", {})) and _non_blocking(
-        layers.get("planning_reference_line", {})
-    )
-    control = layers.get("control_mapping_apply", {})
-    control_is_oscillation = "applied_actuation_oscillation" in set(control.get("blocking_reasons") or [])
+    semantic_primary = _semantic_primary_for_planning_channel_gap(layers)
+    if semantic_primary:
+        secondary = [item for item in blockers if item != semantic_primary]
+        return semantic_primary, secondary
+
+    claim_boundary_primary = _semantic_primary_for_claim_boundary(layers)
+    if claim_boundary_primary:
+        secondary = [item for item in blockers if item != claim_boundary_primary]
+        return claim_boundary_primary, secondary
+
+    defer_control_primary = _defer_control_primary_until_loc_ref_pass(layers)
 
     primary: str | None = None
     for status_group in ({"fail"}, {"insufficient_data"}, {"warn"}):
         for name in LAYER_ORDER:
-            if name == "control_mapping_apply" and control_is_oscillation and not loc_ref_pass:
+            if name == "control_mapping_apply" and defer_control_primary:
                 continue
             layer = layers.get(name, {})
             if layer.get("status") in status_group and layer.get("status") not in PASS_WARN:
@@ -760,6 +1218,73 @@ def _blocker_summary(layers: Mapping[str, Mapping[str, Any]]) -> tuple[str | Non
                 break
     secondary = [item for item in blockers if item != primary]
     return primary, secondary
+
+
+def _defer_control_primary_until_loc_ref_pass(layers: Mapping[str, Mapping[str, Any]]) -> bool:
+    """Control symptoms should not outrank localization/reference-line evidence gaps."""
+    loc_ref_pass = _non_blocking(layers.get("localization_gt_contract", {})) and _non_blocking(
+        layers.get("planning_reference_line", {})
+    )
+    if loc_ref_pass:
+        return False
+    control = layers.get("control_mapping_apply", {})
+    return bool(control.get("status") in BLOCKING_STATUSES or control.get("blocking_reasons"))
+
+
+def _startup_warmup_incomplete_primary(layers: Mapping[str, Mapping[str, Any]]) -> str | None:
+    handoff = layers.get("routing_planning_control_handoff", {})
+    if "apollo_startup_warmup_incomplete" in set(handoff.get("blocking_reasons") or []):
+        return "routing_planning_control_handoff:apollo_startup_warmup_incomplete"
+    return None
+
+
+def _semantic_primary_for_planning_channel_gap(layers: Mapping[str, Mapping[str, Any]]) -> str | None:
+    channel = layers.get("channel_health", {})
+    if not _is_planning_gap_only_channel_failure(channel):
+        return None
+    localization = layers.get("localization_gt_contract", {})
+    if localization.get("status") == "fail" or localization.get("blocking_reasons"):
+        return _layer_blocker_name("localization_gt_contract", localization)
+    reference = layers.get("planning_reference_line", {})
+    if reference.get("status") in BLOCKING_STATUSES or reference.get("blocking_reasons"):
+        return _layer_blocker_name("planning_reference_line", reference)
+    hdmap = layers.get("hdmap_projection", {})
+    if hdmap.get("status") in BLOCKING_STATUSES or hdmap.get("blocking_reasons"):
+        return _layer_blocker_name("hdmap_projection", hdmap)
+    return None
+
+
+def _is_planning_gap_only_channel_failure(channel_layer: Mapping[str, Any]) -> bool:
+    if channel_layer.get("status") != "fail":
+        return False
+    metrics = channel_layer.get("key_metrics") if isinstance(channel_layer.get("key_metrics"), Mapping) else {}
+    if metrics.get("missing_required_channels") or metrics.get("low_rate_channels") or metrics.get("timestamp_failures"):
+        return False
+    failed_channels = [str(item) for item in metrics.get("failed_channels") or []]
+    if failed_channels != ["planning"]:
+        return False
+    issues = {str(item) for item in metrics.get("planning_issues") or []}
+    return bool(issues) and issues.issubset({"message_gap_too_large"})
+
+
+def _semantic_primary_for_claim_boundary(layers: Mapping[str, Mapping[str, Any]]) -> str | None:
+    no_assist = layers.get("no_assist_claim_boundary", {})
+    reasons = set(no_assist.get("blocking_reasons") or [])
+    if "planning_nonempty_ratio_not_claim_grade" not in reasons:
+        return None
+    reference = layers.get("planning_reference_line", {})
+    if reference.get("status") in BLOCKING_STATUSES or reference.get("blocking_reasons"):
+        return _layer_blocker_name("planning_reference_line", reference)
+    hdmap = layers.get("hdmap_projection", {})
+    if hdmap.get("status") in BLOCKING_STATUSES or hdmap.get("blocking_reasons"):
+        return _layer_blocker_name("hdmap_projection", hdmap)
+    handoff = layers.get("routing_planning_control_handoff", {})
+    if handoff.get("status") in BLOCKING_STATUSES or handoff.get("blocking_reasons"):
+        return _layer_blocker_name("routing_planning_control_handoff", handoff)
+    channel = layers.get("channel_health", {})
+    if channel.get("status") in BLOCKING_STATUSES or channel.get("blocking_reasons"):
+        return _layer_blocker_name("channel_health", channel)
+    return None
 
 
 def _all_blockers(layers: Mapping[str, Mapping[str, Any]]) -> list[str]:
@@ -794,6 +1319,21 @@ def _reference_line_localization_mismatch(layers: Mapping[str, Mapping[str, Any]
 
 def _layer_blocker_name(name: str, layer: Mapping[str, Any]) -> str:
     reasons = list(layer.get("blocking_reasons") or [])
+    if name == "routing_planning_control_handoff":
+        preferred = (
+            "apollo_startup_warmup_incomplete",
+            "routing_success_missing",
+            "planning_nonempty_missing",
+            "planning_ready_control_not_consuming",
+            "control_process_missing",
+            "control_rx_missing",
+            "control_apply_missing",
+            "control_process_crashed",
+        )
+        reason_set = set(reasons)
+        for reason in preferred:
+            if reason in reason_set:
+                return f"{name}:{reason}"
     return f"{name}:{reasons[0]}" if reasons else f"{name}:{layer.get('status')}"
 
 
@@ -850,9 +1390,31 @@ def _next_highest_value_validation(primary: str | None, layers: Mapping[str, Map
         return "Run longer route-level validation and natural-driving evaluator with the same artifact set."
     if primary == "reference_line/localization lane-heading mismatch":
         return "Compare localization lane heading, Apollo HDMap projection, and planning/control reference-line heading on the same route_s window."
+    if primary == "channel_health:fail" and _planning_gap_coincides_with_inter_tick_pause(layers):
+        return (
+            "Inspect harness loop cadence and blocking hooks between world ticks. "
+            "The Planning gap is on Apollo header/wall time while sim-time remains near-continuous."
+        )
+    if primary == "no_assist_claim_boundary:planning_nonempty_ratio_not_claim_grade":
+        return (
+            "Inspect Planning availability over the claim window: startup warmup, reference-line provider readiness, "
+            "routing segment continuity, and planning_topic_debug non-empty trajectory ratio. This is not an assist cleanup."
+        )
     layer_name = primary.split(":", 1)[0]
     layer = layers.get(layer_name, {})
     return str(layer.get("next_action") or "Inspect the primary blocker artifact and regenerate missing evidence.")
+
+
+def _planning_gap_coincides_with_inter_tick_pause(layers: Mapping[str, Mapping[str, Any]]) -> bool:
+    channel = layers.get("channel_health", {})
+    if not _is_planning_gap_only_channel_failure(channel):
+        return False
+    metrics = channel.get("key_metrics") if isinstance(channel.get("key_metrics"), Mapping) else {}
+    if metrics.get("planning_time_axis_diagnosis") != "header_or_wall_time_gap_large_sim_time_gap_ok":
+        return False
+    environment = layers.get("environment_world", {})
+    env_metrics = environment.get("key_metrics") if isinstance(environment.get("key_metrics"), Mapping) else {}
+    return env_metrics.get("carla_tick_inter_tick_wall_gap_high") is True
 
 
 def _paths(inputs: Mapping[str, Path | None], *names: str) -> dict[str, str | None]:
@@ -879,6 +1441,249 @@ def _find_natural_driving_report_in_ancestors(root: Path) -> Path | None:
     return None
 
 
+def _find_followstop_child_stderr(root: Path) -> Path | None:
+    direct = root / "artifacts" / "followstop_child.stderr.log"
+    if direct.exists():
+        return direct
+
+    # run_followstop redirects non-empty planned run dirs to suffixed actual
+    # run dirs such as `...__02`, while the child stderr stays in the planned
+    # wrapper dir. Link-health is usually invoked on the actual run dir.
+    planned_name = re.sub(r"__\d+$", "", root.name)
+    if planned_name != root.name:
+        sibling = root.with_name(planned_name) / "artifacts" / "followstop_child.stderr.log"
+        if sibling.exists():
+            return sibling
+
+    try:
+        root_resolved = root.resolve()
+        for redirect in root.parent.glob("*/RUN_DIR_REDIRECT.txt"):
+            try:
+                target = Path(redirect.read_text(encoding="utf-8").strip()).expanduser().resolve()
+            except Exception:
+                continue
+            if target != root_resolved:
+                continue
+            stderr = redirect.parent / "artifacts" / "followstop_child.stderr.log"
+            if stderr.exists():
+                return stderr
+    except Exception:
+        return None
+    return None
+
+
+def _detect_carla_world_tick_timeout(
+    summary: Mapping[str, Any],
+    inputs: Mapping[str, Path | None],
+) -> dict[str, Any]:
+    tick_summary_path = inputs.get("carla_tick_health_summary")
+    tick_summary = _read_json(tick_summary_path)
+    fail_reason = str(summary.get("fail_reason") or "").strip()
+    tick_failure_reason = str(tick_summary.get("last_failure_reason") or "").strip()
+    detected_in_structured_artifact = tick_failure_reason == "CARLA_WORLD_TICK_TIMEOUT" or fail_reason == "CARLA_WORLD_TICK_TIMEOUT"
+
+    stderr_path = inputs.get("followstop_child_stderr")
+    detected_in_stderr = False
+    if stderr_path is not None:
+        try:
+            lowered = stderr_path.read_text(encoding="utf-8", errors="replace").lower()
+        except Exception:
+            lowered = ""
+        detected_in_stderr = (
+            ("world.tick" in lowered or "tick_world" in lowered)
+            and "time-out" in lowered
+            and "waiting for the simulator" in lowered
+        )
+
+    routing_count = _num(summary.get("routing_request_count"))
+    frames = _num(summary.get("frames"))
+    detected = bool(
+        (detected_in_structured_artifact or detected_in_stderr)
+        and (routing_count is None or routing_count <= 0)
+        and (
+            fail_reason in {"", "ROUTING_REQUEST_COUNT", "CARLA_WORLD_TICK_TIMEOUT"}
+            or frames is None
+            or frames <= 2
+        )
+    )
+    artifact_path = str(tick_summary_path) if tick_summary_path else str(stderr_path) if stderr_path else None
+    return {
+        "detected": detected,
+        "artifact_path": artifact_path,
+        "tick_count": tick_summary.get("tick_count"),
+        "tick_fail_count": tick_summary.get("tick_fail_count"),
+        "max_tick_wall_duration_s": tick_summary.get("max_tick_wall_duration_s"),
+    }
+
+
+def _carla_tick_cadence(inputs: Mapping[str, Path | None]) -> dict[str, Any]:
+    tick_summary_path = inputs.get("carla_tick_health_summary")
+    tick_summary = _read_json(tick_summary_path)
+    max_interval = _num(tick_summary.get("max_inter_tick_wall_interval_s"))
+    p95_interval = _num(tick_summary.get("inter_tick_wall_interval_p95_s"))
+    interval_count = _num(tick_summary.get("inter_tick_wall_interval_count"))
+    if max_interval is not None or p95_interval is not None:
+        stage_duration_max_s = (
+            dict(tick_summary.get("stage_duration_max_s"))
+            if isinstance(tick_summary.get("stage_duration_max_s"), Mapping)
+            else {}
+        )
+        max_hook_stage_name, max_hook_stage_duration_s = _max_hook_stage(stage_duration_max_s)
+        return {
+            "source": "carla_tick_health_summary",
+            "max_inter_tick_wall_interval_s": max_interval,
+            "inter_tick_wall_interval_p95_s": p95_interval,
+            "inter_tick_wall_interval_count": interval_count,
+            "inter_tick_wall_gap_high": _is_inter_tick_gap_high(max_interval),
+            "max_frame_post_tick_wall_duration_s": _num(tick_summary.get("max_frame_post_tick_wall_duration_s")),
+            "max_frame_loop_wall_duration_s": _num(tick_summary.get("max_frame_loop_wall_duration_s")),
+            "max_stage_name": tick_summary.get("max_stage_name"),
+            "max_stage_duration_s": _num(tick_summary.get("max_stage_duration_s")),
+            "max_hook_stage_name": max_hook_stage_name,
+            "max_hook_stage_duration_s": max_hook_stage_duration_s,
+            "stage_duration_max_s": stage_duration_max_s,
+        }
+
+    tick_log_path = inputs.get("carla_tick_health_log")
+    rows = _read_jsonl(tick_log_path)
+    timing_rows = [row for row in rows if isinstance(row, Mapping) and row.get("event_type") == "frame_loop_timing"]
+    if timing_rows:
+        intervals = [
+            value
+            for value in (_num(row.get("inter_tick_wall_interval_s")) for row in timing_rows)
+            if value is not None
+        ]
+        frame_post = [
+            value
+            for value in (_num(row.get("frame_post_tick_wall_duration_s")) for row in timing_rows)
+            if value is not None
+        ]
+        frame_loop = [
+            value for value in (_num(row.get("frame_loop_wall_duration_s")) for row in timing_rows) if value is not None
+        ]
+        stage_max: dict[str, float] = {}
+        for row in timing_rows:
+            stages = row.get("stage_durations_s")
+            if not isinstance(stages, Mapping):
+                continue
+            for stage, raw_duration in stages.items():
+                duration = _num(raw_duration)
+                if duration is None:
+                    continue
+                stage_name = str(stage)
+                stage_max[stage_name] = max(stage_max.get(stage_name, 0.0), duration)
+        max_stage_name = None
+        max_stage_duration = None
+        if stage_max:
+            max_stage_name, max_stage_duration = max(stage_max.items(), key=lambda item: item[1])
+        max_hook_stage_name, max_hook_stage_duration_s = _max_hook_stage(stage_max)
+        max_interval = max(intervals) if intervals else None
+        return {
+            "source": "carla_tick_health_frame_loop_timing",
+            "max_inter_tick_wall_interval_s": max_interval,
+            "inter_tick_wall_interval_p95_s": _percentile(intervals, 95.0),
+            "inter_tick_wall_interval_count": len(intervals),
+            "inter_tick_wall_gap_high": _is_inter_tick_gap_high(max_interval),
+            "max_frame_post_tick_wall_duration_s": max(frame_post) if frame_post else None,
+            "max_frame_loop_wall_duration_s": max(frame_loop) if frame_loop else None,
+            "max_stage_name": max_stage_name,
+            "max_stage_duration_s": max_stage_duration,
+            "max_hook_stage_name": max_hook_stage_name,
+            "max_hook_stage_duration_s": max_hook_stage_duration_s,
+            "stage_duration_max_s": stage_max,
+        }
+
+    wall_times: list[float] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        if row.get("event_type") != "world_tick":
+            continue
+        wall_time = _num(row.get("wall_time_s"))
+        if wall_time is not None:
+            wall_times.append(wall_time)
+    wall_times.sort()
+    intervals = [b - a for a, b in zip(wall_times, wall_times[1:]) if b >= a]
+    if not intervals:
+        return {
+            "source": None,
+            "max_inter_tick_wall_interval_s": None,
+            "inter_tick_wall_interval_p95_s": None,
+            "inter_tick_wall_interval_count": 0,
+            "inter_tick_wall_gap_high": None,
+            "max_frame_post_tick_wall_duration_s": None,
+            "max_frame_loop_wall_duration_s": None,
+            "max_stage_name": None,
+            "max_stage_duration_s": None,
+            "max_hook_stage_name": None,
+            "max_hook_stage_duration_s": None,
+            "stage_duration_max_s": {},
+        }
+    max_interval = max(intervals)
+    p95_interval = _percentile(intervals, 95.0)
+    return {
+        "source": "carla_tick_health_jsonl_sparse",
+        "max_inter_tick_wall_interval_s": max_interval,
+        "inter_tick_wall_interval_p95_s": p95_interval,
+        "inter_tick_wall_interval_count": len(intervals),
+        "inter_tick_wall_gap_high": _is_inter_tick_gap_high(max_interval),
+        "max_frame_post_tick_wall_duration_s": None,
+        "max_frame_loop_wall_duration_s": None,
+        "max_stage_name": None,
+        "max_stage_duration_s": None,
+        "max_hook_stage_name": None,
+        "max_hook_stage_duration_s": None,
+        "stage_duration_max_s": {},
+    }
+
+
+def _max_hook_stage(stage_duration_max_s: Mapping[str, Any]) -> tuple[str | None, float | None]:
+    candidates: list[tuple[str, float]] = []
+    for stage, raw_duration in stage_duration_max_s.items():
+        stage_name = str(stage)
+        if not stage_name.startswith("hook."):
+            continue
+        duration = _num(raw_duration)
+        if duration is None:
+            continue
+        candidates.append((stage_name, duration))
+    if not candidates:
+        return None, None
+    return max(candidates, key=lambda item: item[1])
+
+
+def _is_inter_tick_gap_high(max_interval_s: float | None) -> bool | None:
+    if max_interval_s is None:
+        return None
+    return max_interval_s >= 2.0
+
+
+def _world_ready_blocker(status: str) -> str:
+    if status == "external_carla_missing":
+        return "external_carla_missing"
+    if status in {"rpc_not_ready", "world_not_ready", "carla_failed_to_become_ready"}:
+        return "carla_world_not_ready"
+    if "crash" in status or "sig11" in status:
+        return "carla_process_crashed"
+    return f"carla_world_ready_{status}"
+
+
+def _environment_world_next_action(runtime_status: str | None, blocking: Sequence[str]) -> str:
+    blockers = {str(item) for item in blocking}
+    if runtime_status == "not_required":
+        return (
+            "Rerun the capability sample with true-lateral runtime enabled "
+            "(for example --enable-lateral); runtime_contract=not_required is diagnostic-only."
+        )
+    if runtime_status == "misconfigured":
+        return "Fix runtime contract blockers before interpreting Apollo behavior."
+    if "carla_world_not_matching_configured_town" in blockers:
+        return "Fix CARLA loaded map/configured town identity before interpreting Apollo behavior."
+    if blockers:
+        return "Fix CARLA world/runtime contract before interpreting Apollo behavior."
+    return "Environment/world contract is non-blocking; continue with bridge, channel, localization, and reference-line evidence."
+
+
 def _read_json(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {}
@@ -889,10 +1694,46 @@ def _read_json(path: Path | None) -> dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
+def _read_jsonl(path: Path | None) -> list[dict[str, Any]]:
+    if path is None or not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    rows.append(payload)
+    except OSError:
+        return []
+    return rows
+
+
+def _percentile(values: Sequence[float], percentile: float) -> float | None:
+    finite = sorted(value for value in (_num(v) for v in values) if value is not None)
+    if not finite:
+        return None
+    if len(finite) == 1:
+        return float(finite[0])
+    rank = (len(finite) - 1) * max(0.0, min(100.0, percentile)) / 100.0
+    lower = int(rank)
+    upper = min(lower + 1, len(finite) - 1)
+    fraction = rank - lower
+    return float(finite[lower] * (1.0 - fraction) + finite[upper] * fraction)
+
+
 def _normalize_status(value: Any) -> str:
     text = str(value or "insufficient_data").strip()
     if text in {"pass", "warn", "fail", "insufficient_data", "not_applicable"}:
         return text
+    if text == "pass_empty":
+        return "pass"
     if text in {"candidate_positive", "success", "ok"}:
         return "pass"
     if text in {"candidate_negative", "failed"}:
@@ -995,6 +1836,109 @@ def _first_num(*values: Any) -> float | None:
         if number is not None:
             return number
     return None
+
+
+def _infer_backend(
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    bridge_stats: Mapping[str, Any],
+    control_handoff: Mapping[str, Any],
+) -> str | None:
+    explicit = _first_text(summary, "backend", manifest, "backend")
+    if explicit:
+        return explicit
+    if bridge_stats or control_handoff:
+        control_channel = _nested(control_handoff, "control_channel.name")
+        if control_channel == "/apollo/control" or bridge_stats.get("control_rx_count") not in {None, ""}:
+            return "apollo_cyberrt"
+    return None
+
+
+def _infer_control_source(
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    control_handoff: Mapping[str, Any],
+    bridge_stats: Mapping[str, Any] | None = None,
+) -> str | None:
+    control_channel = _nested(control_handoff, "control_channel.name")
+    if control_channel == "/apollo/control":
+        return "/apollo/control"
+    manifest_source = _first_text(manifest, "control_source")
+    if manifest_source == "/apollo/control":
+        return "/apollo/control"
+    if bridge_stats and _num(bridge_stats.get("control_rx_count")) and _num(bridge_stats.get("control_rx_count")) > 0:
+        return "/apollo/control"
+    explicit = _first_text(summary, "control_source", manifest, "control_source")
+    if explicit:
+        return explicit
+    return None
+
+
+def _control_apply_count_from_control_health(control_health: Mapping[str, Any]) -> float | None:
+    metrics = control_health.get("metrics") if isinstance(control_health.get("metrics"), Mapping) else {}
+    candidates = (
+        _nested(control_health, "mapping_and_apply.apply_control_count"),
+        metrics.get("nonzero_applied_control_frames"),
+        metrics.get("applied_control_frames"),
+        _nested(metrics, "control_bridge_log.final_applied_count"),
+        _nested(metrics, "control_bridge_log.max_applied_count"),
+    )
+    return _first_num(*candidates)
+
+
+def _planning_nonempty_ratio(planning_topic_debug_summary: Mapping[str, Any]) -> float | None:
+    total = _num(planning_topic_debug_summary.get("total_messages_received"))
+    nonzero = _num(planning_topic_debug_summary.get("messages_with_nonzero_trajectory_points"))
+    if total is None or nonzero is None or total <= 0:
+        return None
+    return nonzero / total
+
+
+def _planning_nonempty_claim_metric(
+    *,
+    summary: Mapping[str, Any],
+    control_handoff: Mapping[str, Any],
+    apollo_reference_line_contract: Mapping[str, Any],
+    planning_topic_debug_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    evidence = (
+        apollo_reference_line_contract.get("evidence")
+        if isinstance(apollo_reference_line_contract.get("evidence"), Mapping)
+        else {}
+    )
+    claim_ratio = _num(evidence.get("planning_claim_window_nonempty_trajectory_ratio"))
+    claim_source = str(evidence.get("planning_claim_window_source") or "").strip()
+    after_routing = _num(evidence.get("nonempty_trajectory_ratio_after_routing_segment_available"))
+    after_first_nonempty = _num(evidence.get("nonempty_trajectory_ratio_after_first_nonempty"))
+    reference_overall = _num(evidence.get("nonempty_trajectory_ratio"))
+    topic_overall = _planning_nonempty_ratio(planning_topic_debug_summary)
+    summary_ratio = _first_num(
+        _nested(summary, "metrics.planning_nonempty_ratio"),
+        summary.get("planning_nonempty_ratio"),
+        _nested(control_handoff, "input_readiness.planning_nonempty_ratio"),
+    )
+    fallback = _first_num(summary_ratio, topic_overall, reference_overall)
+    ratio = _first_num(claim_ratio, fallback)
+    source = (
+        f"apollo_reference_line_contract.{claim_source}"
+        if claim_ratio is not None and claim_source
+        else (
+            "summary_or_control_handoff"
+            if summary_ratio is not None
+            else (
+                "planning_topic_debug_summary.overall"
+                if topic_overall is not None
+                else ("apollo_reference_line_contract.overall" if reference_overall is not None else None)
+            )
+        )
+    )
+    return {
+        "ratio": ratio,
+        "source": source,
+        "overall_ratio": _first_num(topic_overall, reference_overall, summary_ratio),
+        "after_routing_segment_available": after_routing,
+        "after_first_nonempty": after_first_nonempty,
+    }
 
 
 def _force_green_enabled(*payloads: Mapping[str, Any]) -> bool:

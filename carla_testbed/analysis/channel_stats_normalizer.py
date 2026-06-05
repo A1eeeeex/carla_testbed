@@ -11,7 +11,7 @@ CHANNEL_STATS_SCHEMA_VERSION = "channel_stats.v1"
 CHANNEL_MAP = {
     "localization": ("/apollo/localization/pose", "loc_count"),
     "chassis": ("/apollo/canbus/chassis", "chassis_count"),
-    "obstacles": ("/apollo/perception/obstacles", "obstacles_count"),
+    "obstacles": ("/apollo/perception/obstacles", "obstacle_message_count"),
     "planning": ("/apollo/planning", ("planning", "msg_count")),
     "control": ("/apollo/control", "control_rx_count"),
     "routing_response": ("/apollo/routing_response", "routing_response_count"),
@@ -47,11 +47,20 @@ def bridge_stats_to_channel_stats(
     channels: dict[str, dict[str, Any]] = {}
     for _name, (channel, count_path) in CHANNEL_MAP.items():
         count = _count_at(bridge_stats, count_path)
+        if _name == "obstacles" and count <= 0:
+            count = _int_or_zero(bridge_stats.get("obstacles_count"))
         channels[channel] = _channel_entry(
             count,
             duration_s=resolved_duration_s,
             source="cyber_bridge_stats",
         )
+        if _name == "obstacles":
+            channels[channel]["obstacle_count"] = _int_or_zero(
+                bridge_stats.get("obstacle_object_count", bridge_stats.get("obstacles_count"))
+            )
+            channels[channel]["empty_message_count"] = _int_or_zero(
+                bridge_stats.get("obstacle_empty_message_count")
+            )
 
     traffic_light = bridge_stats.get("traffic_light")
     if isinstance(traffic_light, Mapping):
@@ -167,6 +176,15 @@ def _merge_row_level_artifact_stats(run_dir: Path, stats: dict[str, Any]) -> Non
             source="planning_topic_debug.jsonl",
         )
         if entry is not None:
+            entry["primary_time_axis"] = "planning_header_timestamp_sec"
+            sim_entry = _channel_entry_from_jsonl(
+                planning,
+                timestamp_paths=(("sim_time_sec",),),
+                sequence_paths=(("planning_header_sequence_num",),),
+                source="planning_topic_debug.jsonl.sim_time_sec",
+            )
+            if sim_entry is not None:
+                _merge_secondary_time_axis(entry, "sim_time", sim_entry)
             channels["/apollo/planning"] = entry
             _append_row_level_artifact(source, planning)
 
@@ -201,6 +219,17 @@ def _merge_row_level_artifact_stats(run_dir: Path, stats: dict[str, Any]) -> Non
         if entry is not None:
             channels["/apollo/control"] = entry
             _append_row_level_artifact(source, control)
+
+    topic_publish_stats = _find_first(
+        run_dir,
+        ("artifacts/topic_publish_stats.jsonl", "topic_publish_stats.jsonl"),
+    )
+    if topic_publish_stats is not None:
+        entries = _channel_entries_from_topic_publish_stats(topic_publish_stats)
+        for channel, entry in entries.items():
+            channels[channel] = entry
+        if entries:
+            _append_row_level_artifact(source, topic_publish_stats)
 
     if isinstance(source, dict) and source.get("row_level_artifacts"):
         source["type"] = "mixed_bridge_and_row_level_artifacts"
@@ -328,6 +357,125 @@ def _channel_entry_from_series(
         "evidence_source": "row_level_artifact",
         "sequence_inferred_from_timestamps": sequence_inferred,
     }
+
+
+def _merge_secondary_time_axis(entry: dict[str, Any], prefix: str, axis_entry: Mapping[str, Any]) -> None:
+    mapping = {
+        "hz": f"{prefix}_hz",
+        "first_timestamp": f"{prefix}_first_timestamp",
+        "last_timestamp": f"{prefix}_last_timestamp",
+        "max_gap_ms": f"{prefix}_max_gap_ms",
+        "gap_p95_ms": f"{prefix}_gap_p95_ms",
+        "gap_count_over_250ms": f"{prefix}_gap_count_over_250ms",
+        "gap_count_over_1000ms": f"{prefix}_gap_count_over_1000ms",
+        "timestamp_monotonic": f"{prefix}_timestamp_monotonic",
+        "sequence_monotonic": f"{prefix}_sequence_monotonic",
+    }
+    for source_key, target_key in mapping.items():
+        if source_key in axis_entry:
+            entry[target_key] = axis_entry[source_key]
+
+
+def _channel_entries_from_topic_publish_stats(path: Path) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, Mapping):
+                    continue
+                channel = str(payload.get("channel") or "").strip()
+                if not channel:
+                    continue
+                grouped.setdefault(channel, []).append(payload)
+    except OSError:
+        return {}
+
+    entries: dict[str, dict[str, Any]] = {}
+    for channel, rows in grouped.items():
+        timestamps: list[float] = []
+        wall_times: list[float] = []
+        sequences: list[float] = []
+        sample_keys: list[tuple[str, Any]] = []
+        duplicate_timestamp_count = 0
+        previous_timestamp: float | None = None
+        payload_counts: list[int] = []
+        empty_message_count = 0
+        for row in rows:
+            timestamp = _float_or_none(row.get("header_timestamp_sec"))
+            if timestamp is None:
+                timestamp = _float_or_none(row.get("sim_time_sec"))
+            if timestamp is not None:
+                timestamps.append(timestamp)
+                if previous_timestamp == timestamp:
+                    duplicate_timestamp_count += 1
+                previous_timestamp = timestamp
+                world_frame = row.get("carla_world_frame")
+                sample_keys.append(("world_frame", world_frame) if world_frame is not None else ("timestamp", timestamp))
+            wall_time = _float_or_none(row.get("wall_time_sec"))
+            if wall_time is not None:
+                wall_times.append(wall_time)
+            sequence = _float_or_none(row.get("sequence_num"))
+            if sequence is not None:
+                sequences.append(sequence)
+            payload_count = _int_or_none(row.get("payload_count"))
+            if payload_count is not None:
+                payload_counts.append(payload_count)
+            if bool(row.get("empty_message")):
+                empty_message_count += 1
+        entry = _channel_entry_from_series(
+            timestamps,
+            sequences=sequences,
+            duplicate_timestamp_count=duplicate_timestamp_count,
+            source="topic_publish_stats.jsonl",
+            sequence_inferred=not sequences,
+        )
+        if entry is None:
+            continue
+        fresh_count = len(dict.fromkeys(sample_keys)) if sample_keys else len(timestamps)
+        fresh_hz = _rate_from_span(fresh_count, timestamps)
+        delivery_wall_hz = _rate_from_span(len(wall_times), wall_times)
+        header_sim_hz = _rate_from_span(len(timestamps), timestamps)
+        if fresh_hz is not None:
+            entry["hz"] = fresh_hz
+        entry.update(
+            {
+                "message_count": len(rows),
+                "fresh_message_count": fresh_count,
+                "fresh_world_frame_hz": fresh_hz,
+                "delivery_wall_hz": delivery_wall_hz,
+                "header_sim_hz": header_sim_hz,
+                "duplicate_timestamp_count": duplicate_timestamp_count,
+                "stale_count": duplicate_timestamp_count,
+                "derived_from_bridge_counters": False,
+                "max_gap_ms_estimated": False,
+                "evidence_source": "topic_publish_stats",
+                "promotion_grade_evidence": True,
+            }
+        )
+        if channel == "/apollo/perception/obstacles":
+            entry["obstacle_count"] = sum(payload_counts)
+            entry["empty_message_count"] = empty_message_count
+        if channel == "/apollo/perception/traffic_light":
+            entry["light_count"] = sum(payload_counts)
+            entry["empty_message_count"] = empty_message_count
+        entries[channel] = entry
+    return entries
+
+
+def _rate_from_span(count: int, timestamps: list[float]) -> float | None:
+    if count <= 0 or len(timestamps) < 2:
+        return None
+    first = timestamps[0]
+    last = timestamps[-1]
+    if last <= first:
+        return None
+    return float(count) / (last - first)
 
 
 def _monotonic(values: list[float]) -> bool:
@@ -504,3 +652,10 @@ def _int_or_zero(value: Any) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None

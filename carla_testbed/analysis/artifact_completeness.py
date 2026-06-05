@@ -552,11 +552,19 @@ def _invalid_route_health_source_fields(
             )
         )
     route_path = source.get("route_path")
+    route_source = str(report.get("route_source") or source.get("route_source") or "")
+    evidence_level = str(report.get("evidence_level") or "")
+    hard_gate_eligible = report.get("hard_gate_eligible") is True
     reconstructed = "route reconstructed from timeseries P0 route_curve fields" in {
         str(item) for item in (report.get("warnings") or [])
     }
     if route_path in {None, ""}:
-        if not reconstructed:
+        source_is_claim_grade_manifest_route = (
+            route_source in {"configured_route_file", "manifest_route", "manifest_route_trace"}
+            and evidence_level.startswith("claim_grade")
+            and hard_gate_eligible
+        )
+        if not reconstructed and not source_is_claim_grade_manifest_route:
             invalid.append(f"{report_name}.source.route_path")
     else:
         invalid.extend(

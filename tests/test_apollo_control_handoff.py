@@ -211,6 +211,46 @@ def test_mapped_control_without_applied_control_fails_mapping_and_apply(tmp_path
     assert report["mapping_and_apply"]["apply_control_count"] == 0
 
 
+def test_bridge_decode_mapped_control_counts_when_timeseries_raw_mapped_missing(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_case(tmp_path)
+    rows = _read_csv(run_dir / "timeseries.csv")
+    for row in rows:
+        for field in ("bridge_steer_mapped", "throttle_mapped", "brake_mapped"):
+            row[field] = ""
+        row["throttle_applied"] = "0.2"
+        row["brake_applied"] = "0.0"
+        row["carla_steer_applied"] = "0.0"
+    _write_csv(run_dir / "timeseries.csv", rows)
+
+    (run_dir / "artifacts" / "control_decode_debug.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "parsed_control": {"throttle": 0.2, "brake": 0.0, "steer": 0.0},
+                    "output_to_carla": {
+                        "mapped_throttle_cmd": 0.2,
+                        "mapped_brake_cmd": 0.0,
+                        "mapped_carla_steer_cmd": 0.0,
+                    },
+                }
+            )
+            for _ in rows
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "artifacts" / "bridge_control_decode.jsonl").unlink(missing_ok=True)
+
+    report = analyze_apollo_control_handoff(run_dir=run_dir)
+
+    assert report["mapping_and_apply"]["status"] == "pass"
+    assert report["mapping_and_apply"]["nonzero_mapped_frames"] == len(rows)
+    assert report["mapping_and_apply"]["nonzero_mapped_frames_source"] == "control_decode_debug.jsonl"
+    assert "mapping_and_apply.mapped_control" not in report["missing_fields"]
+
+
 def test_applied_control_without_vehicle_response_fails_vehicle_response(tmp_path: Path) -> None:
     run_dir = _copy_case(tmp_path)
     rows = _read_csv(run_dir / "timeseries.csv")

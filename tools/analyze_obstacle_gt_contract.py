@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from carla_testbed.analysis.obstacle_gt_contract import (
     analyze_obstacle_gt_contract_file,
@@ -34,7 +39,7 @@ def main() -> int:
             dynamic_obstacle_required=args.dynamic_obstacle_required,
         )
     write_obstacle_gt_contract_report(report, Path(args.out))
-    return 0 if report["status"] in {"pass", "warn"} else 1
+    return 0 if report["status"] in {"pass", "pass_empty", "warn"} else 1
 
 
 if __name__ == "__main__":

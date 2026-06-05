@@ -44,7 +44,12 @@ from carla_testbed.schemas import ControlCommand, Event, FramePacket, GroundTrut
 from carla_testbed.sensors import CollisionEventSource, LaneInvasionEventSource, SensorRig
 from carla_testbed.sim import tick_world
 from carla_testbed.runner.hooks import FrameContext, RunHook
-from carla_testbed.runner.tick_loop import HookDispatcher, adapt_tick_callbacks, hook_error_summaries
+from carla_testbed.runner.tick_loop import (
+    HookDispatcher,
+    adapt_tick_callbacks,
+    compute_wall_time_pacing_sleep,
+    hook_error_summaries,
+)
 from tbio.backends.ros2_native import Ros2NativePublisher
 
 
@@ -71,6 +76,98 @@ def _cleanup_error_summaries(errors: Tuple[CleanupError, ...]) -> List[dict]:
         }
         for err in errors
     ]
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str), encoding="utf-8")
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    finite = sorted(value for value in values if _finite_float(value) is not None)
+    if not finite:
+        return None
+    if len(finite) == 1:
+        return float(finite[0])
+    rank = (len(finite) - 1) * max(0.0, min(100.0, percentile)) / 100.0
+    lower = int(math.floor(rank))
+    upper = min(lower + 1, len(finite) - 1)
+    fraction = rank - lower
+    return float(finite[lower] * (1.0 - fraction) + finite[upper] * fraction)
+
+
+def _timed_stage(stage_durations_s: dict[str, float], name: str, start_wall_s: float) -> float:
+    duration_s = max(0.0, time.time() - start_wall_s)
+    stage_durations_s[name] = duration_s
+    return duration_s
+
+
+def _record_hook_timings(stage_durations_s: dict[str, float], timings: Any) -> None:
+    for timing in timings or []:
+        hook_name = str(getattr(timing, "hook_name", "unknown_hook") or "unknown_hook")
+        method_name = str(getattr(timing, "method_name", "unknown_method") or "unknown_method")
+        duration_s = _finite_float(getattr(timing, "duration_s", None))
+        if duration_s is None:
+            continue
+        safe_hook_name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in hook_name)
+        safe_method_name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in method_name)
+        stage_durations_s[f"hook.{safe_method_name}.{safe_hook_name}"] = duration_s
+
+
+def _update_tick_loop_timing_summary(
+    summary: dict[str, Any],
+    *,
+    stage_durations_s: dict[str, float],
+    frame_post_tick_wall_duration_s: float,
+    frame_loop_wall_duration_s: float,
+    stage_duration_samples_s: dict[str, list[float]],
+) -> None:
+    summary["max_frame_post_tick_wall_duration_s"] = max(
+        float(summary.get("max_frame_post_tick_wall_duration_s") or 0.0),
+        frame_post_tick_wall_duration_s,
+    )
+    summary["max_frame_loop_wall_duration_s"] = max(
+        float(summary.get("max_frame_loop_wall_duration_s") or 0.0),
+        frame_loop_wall_duration_s,
+    )
+    stage_max = summary.setdefault("stage_duration_max_s", {})
+    stage_p95 = summary.setdefault("stage_duration_p95_s", {})
+    if not isinstance(stage_max, dict):
+        stage_max = {}
+        summary["stage_duration_max_s"] = stage_max
+    if not isinstance(stage_p95, dict):
+        stage_p95 = {}
+        summary["stage_duration_p95_s"] = stage_p95
+    for stage, duration_s in stage_durations_s.items():
+        stage_duration_samples_s.setdefault(stage, []).append(duration_s)
+        stage_max[stage] = max(float(stage_max.get(stage) or 0.0), duration_s)
+        stage_p95[stage] = _percentile(stage_duration_samples_s[stage], 95.0)
+        if duration_s > float(summary.get("max_stage_duration_s") or 0.0):
+            summary["max_stage_duration_s"] = duration_s
+            summary["max_stage_name"] = stage
+    if frame_post_tick_wall_duration_s >= 1.0:
+        summary["slow_frame_count"] = int(summary.get("slow_frame_count") or 0) + 1
+
+
+def _tick_failure_reason(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "time-out" in text and "waiting for the simulator" in text:
+        return "CARLA_WORLD_TICK_TIMEOUT"
+    return "CARLA_WORLD_TICK_FAILED"
 
 
 def _runtime_carla_world_identity(
@@ -378,6 +475,8 @@ class TestHarness:
                     "record_modes": list(self.cfg.record_modes) if hasattr(self.cfg, "record_modes") else [],
                     "ros2_native_enabled": bool(self.cfg.enable_ros2_native),
                     "ros2_gt_enabled": bool(self.cfg.enable_ros2_gt),
+                    "harness_control_disabled": bool(disable_control),
+                    "control_source": "external_stack" if disable_control else "harness_controller",
                     "scenario_metadata": json.loads(json.dumps(scenario_metadata or {}, default=str)),
                 },
             )
@@ -527,6 +626,45 @@ class TestHarness:
             "missing_ego_pose": 0,
             "external_control_trace_unavailable": 0,
         }
+        tick_health_path = out_dir / "artifacts" / "carla_tick_health.jsonl"
+        tick_health_summary_path = out_dir / "artifacts" / "carla_tick_health_summary.json"
+        tick_health_summary: dict[str, Any] = {
+            "schema_version": "carla_tick_health.v1",
+            "tick_owner": "runner_harness_world_tick",
+            "tick_count": 0,
+            "tick_fail_count": 0,
+            "first_tick_wall_time_s": None,
+            "last_tick_wall_time_s": None,
+            "first_sim_time_s": None,
+            "last_sim_time_s": None,
+            "max_tick_wall_duration_s": 0.0,
+            "max_inter_tick_wall_interval_s": 0.0,
+            "inter_tick_wall_interval_p95_s": None,
+            "inter_tick_wall_interval_count": 0,
+            "max_frame_post_tick_wall_duration_s": 0.0,
+            "max_frame_loop_wall_duration_s": 0.0,
+            "slow_frame_count": 0,
+            "max_stage_name": None,
+            "max_stage_duration_s": 0.0,
+            "stage_duration_max_s": {},
+            "stage_duration_p95_s": {},
+            "wall_time_pacing_enabled": bool(getattr(self.cfg, "wall_time_pacing_enabled", False)),
+            "wall_time_pacing_target_interval_s": (
+                getattr(self.cfg, "wall_time_pacing_target_interval_s", None) or self.cfg.dt
+            )
+            if bool(getattr(self.cfg, "wall_time_pacing_enabled", False))
+            else None,
+            "wall_time_pacing_max_sleep_s": getattr(self.cfg, "wall_time_pacing_max_sleep_s", None),
+            "wall_time_pacing_sleep_count": 0,
+            "wall_time_pacing_total_sleep_s": 0.0,
+            "wall_time_pacing_max_sleep_observed_s": 0.0,
+            "last_error": None,
+            "last_error_type": None,
+            "last_failure_step": None,
+            "last_failure_reason": None,
+        }
+        inter_tick_wall_intervals_s: list[float] = []
+        stage_duration_samples_s: dict[str, list[float]] = {}
         route_curve_route = route_definition_from_metadata(scenario_metadata)
         hook_dispatcher = HookDispatcher(list(hooks or []) + adapt_tick_callbacks(tick_callbacks), warn=print)
         run_hook_context: dict[str, Any] = {
@@ -559,19 +697,118 @@ class TestHarness:
         try:
             hook_dispatcher.notify("on_run_start", run_hook_context)
             for step in range(self.cfg.max_steps):
+                frame_loop_start_wall_s = time.time()
+                stage_durations_s: dict[str, float] = {}
                 frame_ctx = FrameContext(step=step, metadata={"progress_interval": progress_interval})
 
                 # Stage 1: advance CARLA exactly once through the harness tick owner.
-                hook_dispatcher.notify("before_tick", frame_ctx)
-                frame_id, timestamp, _ = tick_world(world)
+                before_tick_hooks_start_s = time.time()
+                _record_hook_timings(stage_durations_s, hook_dispatcher.notify("before_tick", frame_ctx))
+                _timed_stage(stage_durations_s, "before_tick_hooks", before_tick_hooks_start_s)
+                tick_start_wall_s = time.time()
+                inter_tick_interval_s = None
+                try:
+                    frame_id, timestamp, _ = tick_world(world)
+                except Exception as exc:
+                    tick_end_wall_s = time.time()
+                    reason = _tick_failure_reason(exc)
+                    tick_health_summary["tick_fail_count"] = int(tick_health_summary.get("tick_fail_count") or 0) + 1
+                    tick_health_summary["last_error"] = str(exc)
+                    tick_health_summary["last_error_type"] = type(exc).__name__
+                    tick_health_summary["last_failure_step"] = step
+                    tick_health_summary["last_failure_reason"] = reason
+                    tick_health_summary["last_tick_wall_time_s"] = tick_end_wall_s
+                    _append_jsonl(
+                        tick_health_path,
+                        {
+                            "schema_version": "carla_tick_health.v1",
+                            "event_type": "world_tick_failed",
+                            "step": step,
+                            "wall_time_s": tick_end_wall_s,
+                            "tick_wall_duration_s": tick_end_wall_s - tick_start_wall_s,
+                            "reason": reason,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                            "last_frame_id": self.state.frame_id,
+                            "last_sim_time_s": self.state.timestamp,
+                        },
+                    )
+                    _write_json(tick_health_summary_path, tick_health_summary)
+                    if self.state.fail_reason is None:
+                        self.state.fail_reason = reason
+                        self.state.first_failure_step = step
+                    artifact_events.append(
+                        {
+                            "event_type": "failure",
+                            "frame": self.state.frame_id,
+                            "t": self.state.timestamp,
+                            "step": step,
+                            "reason": reason,
+                            "scope": "carla_world_tick",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        }
+                    )
+                    print(f"[ERROR] CARLA world tick failed step={step} reason={reason}: {exc}")
+                    break
+                tick_end_wall_s = time.time()
+                tick_wall_duration_s = tick_end_wall_s - tick_start_wall_s
+                stage_durations_s["world_tick"] = tick_wall_duration_s
+                previous_tick_wall_s = _finite_float(tick_health_summary.get("last_tick_wall_time_s"))
+                if previous_tick_wall_s is not None and tick_start_wall_s >= previous_tick_wall_s:
+                    inter_tick_interval_s = tick_start_wall_s - previous_tick_wall_s
+                    inter_tick_wall_intervals_s.append(inter_tick_interval_s)
+                    tick_health_summary["inter_tick_wall_interval_count"] = len(inter_tick_wall_intervals_s)
+                    tick_health_summary["max_inter_tick_wall_interval_s"] = max(
+                        float(tick_health_summary.get("max_inter_tick_wall_interval_s") or 0.0),
+                        inter_tick_interval_s,
+                    )
+                    tick_health_summary["inter_tick_wall_interval_p95_s"] = _percentile(
+                        inter_tick_wall_intervals_s,
+                        95.0,
+                    )
+                tick_count = int(tick_health_summary.get("tick_count") or 0) + 1
+                tick_health_summary["tick_count"] = tick_count
+                tick_health_summary["first_tick_wall_time_s"] = (
+                    tick_start_wall_s
+                    if tick_health_summary.get("first_tick_wall_time_s") is None
+                    else tick_health_summary.get("first_tick_wall_time_s")
+                )
+                tick_health_summary["last_tick_wall_time_s"] = tick_end_wall_s
+                tick_health_summary["first_sim_time_s"] = (
+                    timestamp
+                    if tick_health_summary.get("first_sim_time_s") is None
+                    else tick_health_summary.get("first_sim_time_s")
+                )
+                tick_health_summary["last_sim_time_s"] = timestamp
+                tick_health_summary["max_tick_wall_duration_s"] = max(
+                    float(tick_health_summary.get("max_tick_wall_duration_s") or 0.0),
+                    tick_wall_duration_s,
+                )
+                if step < 5 or step % progress_interval == 0:
+                    _append_jsonl(
+                        tick_health_path,
+                        {
+                            "schema_version": "carla_tick_health.v1",
+                            "event_type": "world_tick",
+                            "step": step,
+                            "frame_id": frame_id,
+                            "sim_time_s": timestamp,
+                            "wall_time_s": tick_end_wall_s,
+                            "tick_wall_duration_s": tick_wall_duration_s,
+                        },
+                    )
                 self.state.step = step
                 self.state.frame_id = frame_id
                 self.state.timestamp = timestamp
                 frame_ctx.frame_id = frame_id
                 frame_ctx.sim_time_s = timestamp
-                hook_dispatcher.notify("after_world_tick", frame_ctx)
+                after_world_tick_hooks_start_s = time.time()
+                _record_hook_timings(stage_durations_s, hook_dispatcher.notify("after_world_tick", frame_ctx))
+                _timed_stage(stage_durations_s, "after_world_tick_hooks", after_world_tick_hooks_start_s)
 
                 # Stage 2: collect simulation state for this frame.
+                state_collect_start_s = time.time()
                 v = (ego.get_velocity().length())
                 route_curve_ego_pose = self._route_curve_ego_pose(ego)
                 route_curve_ego_yaw_rate = self._route_curve_ego_yaw_rate(ego)
@@ -607,8 +844,10 @@ class TestHarness:
                     "new_collisions": len(collisions),
                     "new_lane_invasions": len(invasions),
                 }
+                _timed_stage(stage_durations_s, "state_collect", state_collect_start_s)
 
                 # Stage 3: capture configured sensors for the current frame.
+                sensor_capture_start_s = time.time()
                 if rig and sensor_capture_enabled:
                     rig.capture(frame_id, timestamp=timestamp, return_samples=False)
                     frame_ctx.metadata["rig_capture"] = True
@@ -616,9 +855,11 @@ class TestHarness:
                         monitor.record_sensor("rig_capture", timestamp)
                 else:
                     frame_ctx.metadata["rig_capture"] = False
+                _timed_stage(stage_durations_s, "sensor_capture", sensor_capture_start_s)
 
                 # Stage 4: publish ground truth and notify integrations.
-                hook_dispatcher.notify("after_state_collect", frame_ctx)
+                gt_publish_start_s = time.time()
+                _record_hook_timings(stage_durations_s, hook_dispatcher.notify("after_state_collect", frame_ctx))
                 if gt_pub is not None:
                     try:
                         extra_actors = []
@@ -642,8 +883,10 @@ class TestHarness:
                     except Exception as exc:
                         print(f"[WARN] GT publish tick failed: {exc}")
                         gt_pub = None
+                _timed_stage(stage_durations_s, "gt_publish_and_hooks", gt_publish_start_s)
 
                 # Stage 5: compute or poll control.
+                control_compute_start_s = time.time()
                 cmd: ControlCommand = controller.step(
                     t=step * self.cfg.dt,
                     dt=self.cfg.dt,
@@ -653,9 +896,13 @@ class TestHarness:
                     front=front,
                 )
                 frame_ctx.control_command = cmd
-                hook_dispatcher.notify("before_control_apply", frame_ctx)
+                _timed_stage(stage_durations_s, "control_compute", control_compute_start_s)
+                before_control_apply_hooks_start_s = time.time()
+                _record_hook_timings(stage_durations_s, hook_dispatcher.notify("before_control_apply", frame_ctx))
+                _timed_stage(stage_durations_s, "before_control_apply_hooks", before_control_apply_hooks_start_s)
 
                 # Stage 6: apply control to CARLA, unless an external stack owns actuation.
+                control_apply_start_s = time.time()
                 control_apply_result = None
                 if not disable_control:
                     control_apply_result = apply_control_to_vehicle(
@@ -690,9 +937,13 @@ class TestHarness:
                             "applied_ok": control_apply_result.applied_ok if control_apply_result is not None else None,
                         },
                     )
-                hook_dispatcher.notify("after_control_apply", frame_ctx)
+                _timed_stage(stage_durations_s, "control_apply", control_apply_start_s)
+                after_control_apply_hooks_start_s = time.time()
+                _record_hook_timings(stage_durations_s, hook_dispatcher.notify("after_control_apply", frame_ctx))
+                _timed_stage(stage_durations_s, "after_control_apply_hooks", after_control_apply_hooks_start_s)
 
                 # Stage 7: record artifacts and evaluate run termination.
+                record_eval_start_s = time.time()
                 applied_throttle = float(applied_snapshot.get("throttle", 0.0))
                 applied_brake = float(applied_snapshot.get("brake", 0.0))
                 applied_steer = float(applied_snapshot.get("steer", 0.0))
@@ -841,18 +1092,78 @@ class TestHarness:
                 ):
                     self.state.success = True
                     break
+                _timed_stage(stage_durations_s, "record_and_eval", record_eval_start_s)
                 # Keep the local CARLA UI useful for demo recording. Previously
                 # spectator updates happened only on progress logs, which made
                 # screen-captured demos stay at a stale or first-person-like view.
+                demo_capture_start_s = time.time()
                 self._spectator_follow(world, ego)
                 if record_mgr:
                     record_mgr.capture(frame_id, timestamp)
+                _timed_stage(stage_durations_s, "demo_capture", demo_capture_start_s)
 
+                progress_persist_start_s = time.time()
                 if step % progress_interval == 0:
                     remaining = (self.cfg.max_steps - step - 1) * self.cfg.dt
                     pct = step / float(self.cfg.max_steps) * 100.0
                     print(f"[progress] {step}/{self.cfg.max_steps} ({pct:.0f}%), est remaining {remaining:.1f}s")
                     _persist_gt_stats()
+                _timed_stage(stage_durations_s, "progress_persist", progress_persist_start_s)
+
+                pacing_sleep_s = 0.0
+                if bool(getattr(self.cfg, "wall_time_pacing_enabled", False)):
+                    pacing_target_s = (
+                        getattr(self.cfg, "wall_time_pacing_target_interval_s", None) or self.cfg.dt
+                    )
+                    pacing_sleep_s = compute_wall_time_pacing_sleep(
+                        frame_loop_start_wall_s=frame_loop_start_wall_s,
+                        now_wall_s=time.time(),
+                        target_interval_s=pacing_target_s,
+                        max_sleep_s=getattr(self.cfg, "wall_time_pacing_max_sleep_s", None),
+                    )
+                    if pacing_sleep_s > 0.0:
+                        time.sleep(pacing_sleep_s)
+                        tick_health_summary["wall_time_pacing_sleep_count"] = (
+                            int(tick_health_summary.get("wall_time_pacing_sleep_count") or 0) + 1
+                        )
+                        tick_health_summary["wall_time_pacing_total_sleep_s"] = (
+                            float(tick_health_summary.get("wall_time_pacing_total_sleep_s") or 0.0)
+                            + pacing_sleep_s
+                        )
+                        tick_health_summary["wall_time_pacing_max_sleep_observed_s"] = max(
+                            float(tick_health_summary.get("wall_time_pacing_max_sleep_observed_s") or 0.0),
+                            pacing_sleep_s,
+                        )
+                    stage_durations_s["wall_time_pacing_sleep"] = pacing_sleep_s
+                frame_loop_end_wall_s = time.time()
+                frame_post_tick_wall_duration_s = frame_loop_end_wall_s - tick_end_wall_s
+                frame_loop_wall_duration_s = frame_loop_end_wall_s - frame_loop_start_wall_s
+                _update_tick_loop_timing_summary(
+                    tick_health_summary,
+                    stage_durations_s=stage_durations_s,
+                    frame_post_tick_wall_duration_s=frame_post_tick_wall_duration_s,
+                    frame_loop_wall_duration_s=frame_loop_wall_duration_s,
+                    stage_duration_samples_s=stage_duration_samples_s,
+                )
+                _append_jsonl(
+                    tick_health_path,
+                    {
+                        "schema_version": "carla_tick_health.v1",
+                        "event_type": "frame_loop_timing",
+                        "step": step,
+                        "frame_id": frame_id,
+                        "sim_time_s": timestamp,
+                        "wall_time_s": frame_loop_end_wall_s,
+                        "tick_start_wall_time_s": tick_start_wall_s,
+                        "tick_end_wall_time_s": tick_end_wall_s,
+                        "inter_tick_wall_interval_s": inter_tick_interval_s,
+                        "tick_wall_duration_s": tick_wall_duration_s,
+                        "wall_time_pacing_sleep_s": pacing_sleep_s,
+                        "frame_post_tick_wall_duration_s": frame_post_tick_wall_duration_s,
+                        "frame_loop_wall_duration_s": frame_loop_wall_duration_s,
+                        "stage_durations_s": stage_durations_s,
+                    },
+                )
         finally:
             run_hook_context["state"] = self.state
             hook_dispatcher.notify("on_run_end", run_hook_context)
@@ -868,6 +1179,7 @@ class TestHarness:
                 }
             )
             _persist_gt_stats()
+            _write_json(tick_health_summary_path, tick_health_summary)
             cleanup_errors = lifecycle.cleanup_all()
             for err in cleanup_errors:
                 print(
@@ -892,6 +1204,15 @@ class TestHarness:
             else self.state.fail_reason
             or ("max_steps_reached" if frames >= self.cfg.max_steps else "stopped")
         )
+        control_source = "external_stack" if disable_control else "harness_controller"
+        legacy_controller_state = {
+            "controller": controller_cfg.controller_mode,
+            "lateral_mode": controller_cfg.lateral_mode,
+            "policy_mode": controller_cfg.policy_mode,
+            "agent_type": controller_cfg.agent_type,
+            "applied": not disable_control,
+            "role": "compatibility_placeholder" if disable_control else "active_harness_controller",
+        }
         summary = {
             "success": success,
             "exit_reason": exit_reason,
@@ -904,10 +1225,15 @@ class TestHarness:
             "max_speed_mps": self.state.max_speed_mps,
             "first_failure_step": self.state.first_failure_step,
             "continued_steps_after_failure": self.state.continued_steps_after_failure,
-            "controller": controller_cfg.controller_mode,
-            "lateral_mode": controller_cfg.lateral_mode,
-            "policy_mode": controller_cfg.policy_mode,
-            "agent_type": controller_cfg.agent_type,
+            "controller": "external_stack" if disable_control else controller_cfg.controller_mode,
+            "lateral_mode": None if disable_control else controller_cfg.lateral_mode,
+            "policy_mode": None if disable_control else controller_cfg.policy_mode,
+            "agent_type": None if disable_control else controller_cfg.agent_type,
+            "control_source": control_source,
+            "harness_control_disabled": bool(disable_control),
+            "legacy_controller_role": legacy_controller_state["role"],
+            "legacy_controller_applied": bool(legacy_controller_state["applied"]),
+            "legacy_controller_placeholder": legacy_controller_state if disable_control else None,
             "fail_strategy": self.cfg.fail_strategy,
             "post_fail_steps": self.cfg.post_fail_steps,
             "sensors_enabled": sensor_specs is not None,
@@ -921,6 +1247,7 @@ class TestHarness:
             "ros2_gt": gt_pub.get_stats() if gt_pub is not None else None,
             "ros2_bag_enabled": self.cfg.enable_ros2_bag if hasattr(self.cfg, "enable_ros2_bag") else False,
             "carla_world": carla_world_identity,
+            "carla_tick_health": dict(tick_health_summary),
             "cleanup_error_count": len(cleanup_errors),
             "cleanup_errors_count": len(cleanup_errors),
             "cleanup_errors": _cleanup_error_summaries(cleanup_errors),

@@ -85,81 +85,66 @@ def analyze_apollo_reference_line_contract(
     source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized = [dict(row) for row in rows]
-    warnings: list[str] = []
-    blocking: list[str] = []
     hdmap_projection = summarize_apollo_hdmap_projection(hdmap_projection_rows or [])
-    if hdmap_projection["file_present"]:
-        warnings.extend(str(item) for item in hdmap_projection.get("warnings", []) if item)
-        blocking.extend(str(item) for item in hdmap_projection.get("blocking_reasons", []) if item)
     if not normalized:
+        contracts = _contracts(
+            rows=[],
+            evidence=_evidence([], hdmap_projection),
+            metrics=_metrics([]),
+            hdmap_projection=hdmap_projection,
+        )
+        warnings, blocking = _contract_messages(contracts)
+        warnings.append("reference_line_evidence_missing")
         return _report(
-            status="fail" if blocking else "insufficient_data",
+            status=_overall_status(contracts, extra_blocking=blocking, extra_warnings=warnings),
             blocking_reasons=blocking,
-            warnings=warnings + ["reference_line_evidence_missing"],
+            warnings=warnings,
             rows=[],
             localization_contract=localization_contract,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
+            contracts=contracts,
         )
 
     evidence = _evidence(normalized, hdmap_projection)
     metrics = _metrics(normalized)
+    contracts = _contracts(
+        rows=normalized,
+        evidence=evidence,
+        metrics=metrics,
+        hdmap_projection=hdmap_projection,
+    )
+    warnings, blocking = _contract_messages(contracts)
     if not evidence["planning_reference_available"] and not evidence["control_reference_available"]:
+        warnings.append("planning_control_reference_evidence_missing")
         return _report(
-            status="fail" if blocking else "insufficient_data",
+            status=_overall_status(contracts, extra_blocking=blocking, extra_warnings=warnings),
             blocking_reasons=blocking,
-            warnings=warnings + ["planning_control_reference_evidence_missing"],
+            warnings=warnings,
             rows=normalized,
             localization_contract=localization_contract,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
+            contracts=contracts,
         )
-    if not evidence["planning_reference_available"]:
-        warnings.append("planning_reference_missing_control_debug_only")
-    if not evidence["control_reference_available"]:
-        warnings.append("control_reference_missing_planning_debug_only")
-
-    if evidence["nonempty_trajectory_ratio"] is not None and evidence["nonempty_trajectory_ratio"] < MIN_NONEMPTY_TRAJECTORY_RATIO:
-        if (metrics["reference_line_count_zero_ratio"] or 0.0) >= 0.50:
-            blocking.append("reference_line_count_zero_with_empty_trajectory")
-        else:
-            warnings.append("nonempty_trajectory_ratio_low")
-    ready_ratio = evidence["reference_line_provider_ready_ratio"]
-    if ready_ratio is not None and ready_ratio < MIN_PROVIDER_READY_RATIO:
-        if not (evidence["control_reference_available"] and (evidence["nonempty_trajectory_ratio"] or 0.0) >= MIN_NONEMPTY_TRAJECTORY_RATIO):
-            warnings.append("reference_line_provider_ready_ratio_low")
-
-    _apply_heading_threshold(
-        metrics["planning_ref_heading_error_p95_rad"],
-        warnings=warnings,
-        blocking=blocking,
-        warn_reason="planning_reference_heading_error_elevated",
-        fail_reason="planning_reference_heading_error_high",
-    )
-    _apply_heading_threshold(
-        metrics["control_ref_heading_error_p95_rad"],
-        warnings=warnings,
-        blocking=blocking,
-        warn_reason="control_reference_heading_error_elevated",
-        fail_reason="reference_line_heading_error_high",
-    )
-    _apply_lateral_threshold(metrics["control_lateral_error_p95_m"], warnings=warnings, blocking=blocking)
 
     required_metrics_available = (
         metrics["planning_ref_heading_error_p95_rad"] is not None
         or metrics["control_ref_heading_error_p95_rad"] is not None
     )
     if not required_metrics_available:
+        warnings.append("reference_heading_metrics_missing")
         return _report(
-            status="insufficient_data",
+            status=_overall_status(contracts, extra_blocking=blocking, extra_warnings=warnings),
             blocking_reasons=blocking,
-            warnings=warnings + ["reference_heading_metrics_missing"],
+            warnings=warnings,
             rows=normalized,
             localization_contract=localization_contract,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
+            contracts=contracts,
         )
-    status = "fail" if blocking else ("warn" if warnings else "pass")
+    status = _overall_status(contracts, extra_blocking=blocking, extra_warnings=warnings)
     return _report(
         status=status,
         blocking_reasons=blocking,
@@ -168,6 +153,7 @@ def analyze_apollo_reference_line_contract(
         localization_contract=localization_contract,
         hdmap_projection_rows=hdmap_projection_rows,
         source=source,
+        contracts=contracts,
     )
 
 
@@ -362,6 +348,10 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     evidence = _mapping(report.get("evidence"))
     metrics = _mapping(report.get("metrics"))
     hdmap_projection = _mapping(report.get("apollo_hdmap_projection"))
+    contracts = _mapping(report.get("contracts"))
+    planning_contract = _mapping(contracts.get("planning_trajectory"))
+    control_contract = _mapping(contracts.get("control_reference"))
+    projection_contract = _mapping(contracts.get("apollo_hdmap_projection"))
     return "\n".join(
         [
             "# Apollo Reference-Line Contract Summary",
@@ -371,6 +361,9 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Warnings: `{', '.join(report.get('warnings') or []) or 'none'}`",
             f"- Planning reference available: `{evidence.get('planning_reference_available')}`",
             f"- Control reference available: `{evidence.get('control_reference_available')}`",
+            f"- Planning trajectory contract: `{planning_contract.get('status')}`",
+            f"- Control reference contract: `{control_contract.get('status')}`",
+            f"- Apollo HDMap projection contract: `{projection_contract.get('status')}`",
             f"- Non-empty trajectory ratio: `{evidence.get('nonempty_trajectory_ratio')}`",
             f"- Reference-line provider ready ratio: `{evidence.get('reference_line_provider_ready_ratio')}`",
             f"- Planning ref heading p95 rad: `{metrics.get('planning_ref_heading_error_p95_rad')}`",
@@ -396,21 +389,242 @@ def _report(
     localization_contract: Mapping[str, Any] | None,
     hdmap_projection_rows: Sequence[Mapping[str, Any]] | None,
     source: Mapping[str, Any] | None,
+    contracts: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     hdmap_projection = summarize_apollo_hdmap_projection(hdmap_projection_rows or [])
+    evidence = _evidence(rows, hdmap_projection)
+    metrics = _metrics(rows)
+    report_contracts = dict(contracts or _contracts(rows=rows, evidence=evidence, metrics=metrics, hdmap_projection=hdmap_projection))
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "status": status,
         "blocking_reasons": sorted(set(blocking_reasons)),
         "warnings": sorted(set(warnings)),
-        "evidence": _evidence(rows, hdmap_projection),
-        "metrics": _metrics(rows),
+        "evidence": evidence,
+        "metrics": metrics,
+        "contracts": report_contracts,
+        "planning_trajectory_contract": report_contracts.get("planning_trajectory") or {},
+        "control_reference_contract": report_contracts.get("control_reference") or {},
+        "apollo_hdmap_projection_contract": report_contracts.get("apollo_hdmap_projection") or {},
         "lane_ids": _lane_ids(rows),
         "apollo_hdmap_projection": hdmap_projection,
         "localization_contract_status": _report_status(localization_contract),
         "source": dict(source or {}),
         "interpretation_boundary": INTERPRETATION_BOUNDARY,
     }
+
+
+def _contracts(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    evidence: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+    hdmap_projection: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "planning_trajectory": _planning_trajectory_contract(rows, evidence, metrics),
+        "control_reference": _control_reference_contract(evidence, metrics),
+        "apollo_hdmap_projection": _apollo_hdmap_projection_contract(hdmap_projection),
+    }
+
+
+def _planning_trajectory_contract(
+    rows: Sequence[Mapping[str, Any]],
+    evidence: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    blocking: list[str] = []
+    missing: list[str] = []
+    available = bool(evidence.get("planning_reference_available"))
+    nonempty_ratio = _num(evidence.get("nonempty_trajectory_ratio"))
+    claim_window_ratio = _num(evidence.get("planning_claim_window_nonempty_trajectory_ratio"))
+    reference_line_zero_ratio = _num(metrics.get("reference_line_count_zero_ratio"))
+    ready_ratio = _num(evidence.get("reference_line_provider_ready_ratio"))
+    planning_heading_p95 = _num(metrics.get("planning_ref_heading_error_p95_rad"))
+
+    if not rows:
+        missing.append("planning_trajectory_rows")
+    if not available:
+        missing.append("planning_trajectory_reference")
+    if available and nonempty_ratio is not None and nonempty_ratio < MIN_NONEMPTY_TRAJECTORY_RATIO:
+        if nonempty_ratio <= 0.0 and (reference_line_zero_ratio or 0.0) >= 0.50:
+            blocking.append("planning_trajectory_empty_with_zero_reference_line_count")
+        else:
+            warnings.append("nonempty_trajectory_ratio_low")
+    if available and reference_line_zero_ratio is not None and reference_line_zero_ratio >= 0.50:
+        if nonempty_ratio is not None and nonempty_ratio > 0.0:
+            warnings.append("reference_line_count_zero_debug_counter_with_nonempty_trajectory")
+    if ready_ratio is not None and ready_ratio < MIN_PROVIDER_READY_RATIO:
+        warnings.append("reference_line_provider_ready_ratio_low")
+    _apply_heading_threshold(
+        planning_heading_p95,
+        warnings=warnings,
+        blocking=blocking,
+        warn_reason="planning_reference_heading_error_elevated",
+        fail_reason="planning_reference_heading_error_high",
+    )
+    if available and planning_heading_p95 is None:
+        missing.append("planning_ref_heading_error_p95_rad")
+    status = _contract_status(
+        available=available,
+        blocking=blocking,
+        warnings=warnings,
+        missing=missing,
+    )
+    return {
+        "status": status,
+        "available": available,
+        "blocking_reasons": sorted(set(blocking)),
+        "warnings": sorted(set(warnings)),
+        "missing_fields": sorted(set(missing)),
+        "key_metrics": {
+            "nonempty_trajectory_ratio": nonempty_ratio,
+            "planning_claim_window_nonempty_trajectory_ratio": claim_window_ratio,
+            "planning_claim_window_source": evidence.get("planning_claim_window_source"),
+            "nonempty_trajectory_ratio_after_routing_segment_available": evidence.get(
+                "nonempty_trajectory_ratio_after_routing_segment_available"
+            ),
+            "nonempty_trajectory_ratio_after_first_nonempty": evidence.get(
+                "nonempty_trajectory_ratio_after_first_nonempty"
+            ),
+            "reference_line_provider_ready_ratio": ready_ratio,
+            "planning_ref_heading_error_p95_rad": planning_heading_p95,
+            "reference_line_count_zero_ratio": reference_line_zero_ratio,
+            "routing_segment_count_zero_ratio": metrics.get("routing_segment_count_zero_ratio"),
+            "trajectory_first_theta_vs_segment_heading_p95_rad": metrics.get("trajectory_first_theta_vs_segment_heading_p95_rad"),
+        },
+        "interpretation": (
+            "Planning trajectory evidence checks Apollo trajectory continuity and heading semantics. "
+            "It does not by itself prove Apollo HDMap lane projection is verified."
+        ),
+    }
+
+
+def _control_reference_contract(
+    evidence: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    blocking: list[str] = []
+    missing: list[str] = []
+    available = bool(evidence.get("control_reference_available"))
+    control_heading_p95 = _num(metrics.get("control_ref_heading_error_p95_rad"))
+    lateral_p95 = _num(metrics.get("control_lateral_error_p95_m"))
+    if not available:
+        missing.append("control_reference_debug")
+    _apply_heading_threshold(
+        control_heading_p95,
+        warnings=warnings,
+        blocking=blocking,
+        warn_reason="control_reference_heading_error_elevated",
+        fail_reason="reference_line_heading_error_high",
+    )
+    _apply_lateral_threshold(lateral_p95, warnings=warnings, blocking=blocking)
+    if available and control_heading_p95 is None:
+        missing.append("control_ref_heading_error_p95_rad")
+    status = _contract_status(
+        available=available,
+        blocking=blocking,
+        warnings=warnings,
+        missing=missing,
+    )
+    return {
+        "status": status,
+        "available": available,
+        "blocking_reasons": sorted(set(blocking)),
+        "warnings": sorted(set(warnings)),
+        "missing_fields": sorted(set(missing)),
+        "key_metrics": {
+            "control_ref_heading_error_p95_rad": control_heading_p95,
+            "control_lateral_error_p95_m": lateral_p95,
+        },
+        "interpretation": (
+            "Control reference evidence checks Apollo control debug reference semantics. "
+            "Missing control reference does not prove Planning failed, but it blocks claim-grade attribution."
+        ),
+    }
+
+
+def _apollo_hdmap_projection_contract(hdmap_projection: Mapping[str, Any]) -> dict[str, Any]:
+    status = str(hdmap_projection.get("status") or "insufficient_data")
+    warnings = list(hdmap_projection.get("warnings") or [])
+    blocking = list(hdmap_projection.get("blocking_reasons") or [])
+    missing = list(hdmap_projection.get("missing_fields") or [])
+    available = bool(hdmap_projection.get("official_source_available"))
+    return {
+        "status": status,
+        "available": available,
+        "claim_grade": bool(hdmap_projection.get("claim_grade")),
+        "blocking_reasons": sorted(set(blocking)),
+        "warnings": sorted(set(warnings)),
+        "missing_fields": sorted(set(missing)),
+        "key_metrics": {
+            "file_present": hdmap_projection.get("file_present"),
+            "official_source_available": hdmap_projection.get("official_source_available"),
+            "ok_ratio": hdmap_projection.get("ok_ratio"),
+            "heading_error_p95_rad": hdmap_projection.get("heading_error_p95_rad"),
+            "lateral_error_p95_m": hdmap_projection.get("lateral_error_p95_m"),
+            "nearest_lane_id_topk": hdmap_projection.get("nearest_lane_id_topk"),
+        },
+        "interpretation": (
+            "Claim-grade HDMap projection requires source=apollo_hdmap_api. "
+            "Planner trajectory evidence or CARLA route projection cannot substitute for this layer."
+        ),
+    }
+
+
+def _contract_status(
+    *,
+    available: bool,
+    blocking: Sequence[str],
+    warnings: Sequence[str],
+    missing: Sequence[str],
+) -> str:
+    if blocking:
+        return "fail"
+    if not available or missing:
+        return "insufficient_data"
+    return "warn" if warnings else "pass"
+
+
+def _contract_messages(contracts: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    warnings: list[str] = []
+    blocking: list[str] = []
+    for name, contract in contracts.items():
+        if not isinstance(contract, Mapping):
+            continue
+        warnings.extend(str(item) for item in contract.get("warnings") or [] if item)
+        if contract.get("status") == "insufficient_data":
+            for item in contract.get("missing_fields") or []:
+                if not item:
+                    continue
+                if name == "apollo_hdmap_projection" and item == "apollo_hdmap_projection":
+                    warnings.append("apollo_hdmap_projection_missing")
+                else:
+                    warnings.append(f"{name}.{item}")
+        blocking.extend(str(item) for item in contract.get("blocking_reasons") or [] if item)
+    return warnings, blocking
+
+
+def _overall_status(
+    contracts: Mapping[str, Any],
+    *,
+    extra_blocking: Sequence[str],
+    extra_warnings: Sequence[str],
+) -> str:
+    statuses = [
+        str(contract.get("status") or "insufficient_data")
+        for contract in contracts.values()
+        if isinstance(contract, Mapping)
+    ]
+    if extra_blocking or "fail" in statuses:
+        return "fail"
+    if "insufficient_data" in statuses:
+        return "insufficient_data"
+    if extra_warnings or "warn" in statuses:
+        return "warn"
+    return "pass"
 
 
 def _evidence(rows: Sequence[Mapping[str, Any]], hdmap_projection: Mapping[str, Any]) -> dict[str, Any]:
@@ -424,12 +638,23 @@ def _evidence(rows: Sequence[Mapping[str, Any]], hdmap_projection: Mapping[str, 
             "apollo_hdmap_projection_claim_grade": bool(hdmap_projection.get("claim_grade")),
             "reference_line_provider_ready_ratio": None,
             "nonempty_trajectory_ratio": None,
+            "nonempty_trajectory_ratio_after_routing_segment_available": None,
+            "nonempty_trajectory_ratio_after_first_nonempty": None,
+            "planning_claim_window_nonempty_trajectory_ratio": None,
+            "planning_claim_window_source": "missing",
         }
     planning_available = any(_bool_value(_nested(row, "computed.planning_reference_available")) or _planning_reference_available(row) for row in rows)
     control_available = any(_bool_value(_nested(row, "computed.control_reference_available")) or _control_reference_available(row) for row in rows)
     nonempty_count = sum(1 for row in rows if (_num(_nested(row, "planning.trajectory_point_count")) or 0.0) > 0.0)
     ready_count = sum(1 for row in rows if str(_nested(row, "planning.reference_line_provider_status") or "").lower() in {"ready", "pass", "ok"})
     provider_known = sum(1 for row in rows if _nested(row, "planning.reference_line_provider_status") not in {None, ""})
+    after_routing_ratio = _tail_nonempty_ratio(rows, predicate=_routing_segment_available)
+    after_first_nonempty_ratio = _tail_nonempty_ratio(rows, predicate=_planning_trajectory_nonempty)
+    claim_ratio, claim_source = _planning_claim_window_ratio(
+        overall_ratio=nonempty_count / total,
+        after_routing_ratio=after_routing_ratio,
+        after_first_nonempty_ratio=after_first_nonempty_ratio,
+    )
     return {
         "planning_reference_available": planning_available,
         "control_reference_available": control_available,
@@ -438,6 +663,10 @@ def _evidence(rows: Sequence[Mapping[str, Any]], hdmap_projection: Mapping[str, 
         "apollo_hdmap_projection_claim_grade": bool(hdmap_projection.get("claim_grade")),
         "reference_line_provider_ready_ratio": ready_count / provider_known if provider_known else None,
         "nonempty_trajectory_ratio": nonempty_count / total,
+        "nonempty_trajectory_ratio_after_routing_segment_available": after_routing_ratio,
+        "nonempty_trajectory_ratio_after_first_nonempty": after_first_nonempty_ratio,
+        "planning_claim_window_nonempty_trajectory_ratio": claim_ratio,
+        "planning_claim_window_source": claim_source,
     }
 
 
@@ -468,6 +697,55 @@ def _metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:
     }
 
 
+def _tail_nonempty_ratio(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    predicate,
+) -> float | None:
+    start_index = None
+    for index, row in enumerate(rows):
+        if predicate(row):
+            start_index = index
+            break
+    if start_index is None:
+        return None
+    tail = list(rows[start_index:])
+    if not tail:
+        return None
+    nonempty = sum(1 for row in tail if _planning_trajectory_nonempty(row))
+    return nonempty / len(tail)
+
+
+def _planning_claim_window_ratio(
+    *,
+    overall_ratio: float | None,
+    after_routing_ratio: float | None,
+    after_first_nonempty_ratio: float | None,
+) -> tuple[float | None, str]:
+    if after_routing_ratio is not None:
+        return after_routing_ratio, "after_routing_segment_available"
+    if after_first_nonempty_ratio is not None:
+        return after_first_nonempty_ratio, "after_first_nonempty_trajectory"
+    if overall_ratio is not None:
+        return overall_ratio, "overall"
+    return None, "missing"
+
+
+def _routing_segment_available(row: Mapping[str, Any]) -> bool:
+    return any(
+        (value is not None and value > 0.0)
+        for value in (
+            _num(_nested(row, "planning.routing_segment_count")),
+            _num(_nested(row, "routing.routing_segment_count")),
+            _num(_nested(row, "routing.routing_road_count")),
+        )
+    )
+
+
+def _planning_trajectory_nonempty(row: Mapping[str, Any]) -> bool:
+    return (_num(_nested(row, "planning.trajectory_point_count")) or 0.0) > 0.0
+
+
 def _lane_ids(rows: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
     return {
         "planning_lane_id_first_topk": _topk(row_value for row in rows for row_value in _list_value(_nested(row, "planning.lane_ids"))),
@@ -485,7 +763,7 @@ def _normalized_rows(
     timeseries_rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     if contract_rows:
-        return [dict(row) for row in contract_rows]
+        return _augment_contract_rows_with_control_debug(contract_rows, control_rows)
     rows: list[dict[str, Any]] = []
     max_len = max(len(planning_rows), len(route_segment_rows), len(control_rows), len(timeseries_rows), 0)
     for index in range(max_len):
@@ -496,6 +774,63 @@ def _normalized_rows(
         if flat:
             rows.append(build_reference_line_contract_event(flat, source_confidence="fallback_artifacts"))
     return rows
+
+
+def _augment_contract_rows_with_control_debug(
+    contract_rows: Sequence[Mapping[str, Any]],
+    control_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = [dict(row) for row in contract_rows]
+    if not rows or not control_rows:
+        return rows
+    if any(_bool_value(_nested(row, "computed.control_reference_available")) or _control_reference_available(row) for row in rows):
+        return rows
+
+    control_events = [
+        _control_debug_contract_event(row)
+        for row in control_rows
+    ]
+    control_events = [event for event in control_events if _control_reference_available(event)]
+    if not control_events:
+        return rows
+
+    for index, row in enumerate(rows):
+        control_event = control_events[_resampled_index(index, len(rows), len(control_events))]
+        control_payload = _mapping(control_event.get("control"))
+        computed_payload = _mapping(control_event.get("computed"))
+        row_control = dict(_mapping(row.get("control")))
+        row_computed = dict(_mapping(row.get("computed")))
+        for key, value in control_payload.items():
+            if value not in {None, ""} and row_control.get(key) in {None, ""}:
+                row_control[key] = value
+        for key in (
+            "localization_to_control_ref_heading_error_rad",
+            "localization_to_control_lateral_error_m",
+            "control_reference_available",
+        ):
+            value = computed_payload.get(key)
+            if value not in {None, ""} and row_computed.get(key) in {None, ""}:
+                row_computed[key] = value
+        row_computed["control_reference_source_confidence"] = "control_decode_debug"
+        row["control"] = row_control
+        row["computed"] = row_computed
+    return rows
+
+
+def _control_debug_contract_event(row: Mapping[str, Any]) -> dict[str, Any]:
+    flat = dict(row)
+    nested_control = row.get("apollo_control_raw")
+    if isinstance(nested_control, Mapping):
+        flat.update(nested_control)
+        if "timestamp" not in flat and row.get("ts_sec") not in {None, ""}:
+            flat["timestamp"] = row.get("ts_sec")
+    return build_reference_line_contract_event(flat, source_confidence="control_decode_debug")
+
+
+def _resampled_index(index: int, target_len: int, source_len: int) -> int:
+    if source_len <= 1 or target_len <= 1:
+        return 0
+    return min(source_len - 1, round(index * (source_len - 1) / (target_len - 1)))
 
 
 def _apply_heading_threshold(value: float | None, *, warnings: list[str], blocking: list[str], warn_reason: str, fail_reason: str) -> None:
@@ -519,11 +854,72 @@ def _resolve_run_sources(root: Path) -> dict[str, Path | None]:
         "contract_path": _find_first(root, ["artifacts/apollo_reference_line_contract.jsonl", "apollo_reference_line_contract.jsonl"]),
         "planning_topic_debug_path": _find_first(root, ["artifacts/planning_topic_debug.jsonl", "planning_topic_debug.jsonl"]),
         "planning_route_segment_debug_path": _find_first(root, ["artifacts/planning_route_segment_debug.jsonl", "planning_route_segment_debug.jsonl"]),
-        "control_decode_debug_path": _find_first(root, ["artifacts/control_decode_debug.jsonl", "artifacts/bridge_control_decode.jsonl", "control_decode_debug.jsonl"]),
+        "control_decode_debug_path": _find_control_decode_source(
+            root,
+            [
+                "artifacts/control_decode_debug.jsonl",
+                "artifacts/bridge_control_decode.jsonl",
+                "artifacts/apollo_control_raw.jsonl",
+                "control_decode_debug.jsonl",
+                "bridge_control_decode.jsonl",
+                "apollo_control_raw.jsonl",
+            ],
+        ),
         "debug_timeseries_path": _find_first(root, ["artifacts/debug_timeseries.csv", "debug_timeseries.csv", "timeseries.csv"]),
         "localization_contract_path": _find_first(root, ["analysis/localization_contract/localization_contract_report.json", "localization_contract_report.json"]),
         "hdmap_projection_path": _find_first(root, ["artifacts/apollo_hdmap_projection.jsonl", "analysis/apollo_hdmap_projection/apollo_hdmap_projection.json"]),
     }
+
+
+def _find_control_decode_source(root: Path, relatives: Sequence[str]) -> Path | None:
+    candidates: list[Path] = []
+    for relative in relatives:
+        path = root / relative
+        if path.exists():
+            candidates.append(path)
+    basenames = {Path(relative).name for relative in relatives}
+    for candidate in sorted(root.rglob("*")):
+        if candidate.is_file() and candidate.name in basenames and candidate not in candidates:
+            candidates.append(candidate)
+    for candidate in candidates:
+        if _jsonl_has_control_reference(candidate):
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _jsonl_has_control_reference(path: Path) -> bool:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        nested_control = payload.get("apollo_control_raw")
+        if _flat_row_has_control_reference(payload):
+            return True
+        if isinstance(nested_control, Mapping) and _flat_row_has_control_reference(nested_control):
+            return True
+    return False
+
+
+def _flat_row_has_control_reference(row: Mapping[str, Any]) -> bool:
+    return any(
+        row.get(key) not in {None, ""}
+        for key in (
+            "debug_simple_lat_ref_heading",
+            "debug_simple_lat_heading_error",
+            "debug_simple_lat_current_reference_point_theta",
+            "debug_simple_lat_current_target_point_theta",
+            "debug_simple_mpc_current_reference_point_theta",
+        )
+    )
 
 
 def _read_jsonl(path: str | Path | None) -> list[dict[str, Any]]:

@@ -8,6 +8,7 @@ import importlib.util
 import json
 import math
 import os
+import queue
 import re
 import signal
 import sys
@@ -1314,6 +1315,9 @@ class ApolloGtBridge:
                 "objects_json": 0,
             },
             "last_obstacles_count": 0,
+            "obstacle_message_count": 0,
+            "obstacle_object_count": 0,
+            "obstacle_empty_message_count": 0,
             "last_control_raw": {},
             "last_control_in": {},
             "last_control_out": {},
@@ -1353,6 +1357,14 @@ class ApolloGtBridge:
             "direct_stale_world_frame_skip_count": 0,
             "direct_stale_world_frame_republish_count": 0,
             "direct_stale_world_frame_policy": "",
+            "gt_stale_sample_policy": "",
+            "gt_stale_sample_skip_count": 0,
+            "gt_stale_sample_republish_count": 0,
+            "gt_stale_sample_duplicate_count": 0,
+            "localization_fresh_publish_count": 0,
+            "localization_duplicate_timestamp_count": 0,
+            "chassis_fresh_publish_count": 0,
+            "chassis_duplicate_timestamp_count": 0,
         }
 
         bridge_cfg = (cfg.get("bridge", {}) or {})
@@ -1368,6 +1380,41 @@ class ApolloGtBridge:
             yaw_deg=float(tf_cfg.get("yaw_deg", 0.0)),
         )
         self.publish_rate_hz = float(bridge_cfg.get("publish_rate_hz", 20.0))
+        claim_grade_cfg = bridge_cfg.get("claim_grade", {}) or {}
+        self.claim_grade_enabled = bool(claim_grade_cfg.get("enabled", False))
+        self.gt_stale_sample_policy = str(
+            claim_grade_cfg.get(
+                "stale_world_frame_policy",
+                bridge_cfg.get(
+                    "stale_world_frame_policy",
+                    "skip" if self.claim_grade_enabled else "republish_debug",
+                ),
+            )
+            or ""
+        ).strip().lower()
+        if self.gt_stale_sample_policy not in {"skip", "republish_debug", "always_republish"}:
+            self.gt_stale_sample_policy = "skip" if self.claim_grade_enabled else "republish_debug"
+        self.localization_publish_policy = str(
+            claim_grade_cfg.get(
+                "localization_publish_policy",
+                "once_per_new_sim_frame" if self.claim_grade_enabled else "allow_cached_republish",
+            )
+            or ""
+        )
+        self.chassis_publish_policy = str(
+            claim_grade_cfg.get(
+                "chassis_publish_policy",
+                "once_per_new_sim_frame" if self.claim_grade_enabled else "allow_cached_republish",
+            )
+            or ""
+        )
+        self._last_gt_publish_sample_key: Optional[Tuple[Any, ...]] = None
+        self.stats["gt_stale_sample_policy"] = self.gt_stale_sample_policy
+        self.stats["claim_grade_publish_policy"] = {
+            "enabled": self.claim_grade_enabled,
+            "localization_publish_policy": self.localization_publish_policy,
+            "chassis_publish_policy": self.chassis_publish_policy,
+        }
         self.max_obstacles = int(bridge_cfg.get("max_obstacles", 64))
         self.radius_m = float(bridge_cfg.get("radius_m", 120.0))
         self.localization_back_offset_m = float(
@@ -1457,6 +1504,8 @@ class ApolloGtBridge:
             self.artifacts_dir / "stage5_reroute_decision_debug.jsonl"
         )
         self.goal_validity_debug_path = self.artifacts_dir / "goal_validity_debug.jsonl"
+        self.topic_publish_stats_path = self.artifacts_dir / "topic_publish_stats.jsonl"
+        self.control_apply_trace_path = self.artifacts_dir / "control_apply_trace.jsonl"
         self.obstacle_gt_contract_path = self.artifacts_dir / "obstacle_gt_contract.jsonl"
         self.obstacle_contract_debug_path = self.obstacle_gt_contract_path
         self.lateral_guard_debug_path = self.artifacts_dir / "lateral_guard_debug.jsonl"
@@ -1468,6 +1517,55 @@ class ApolloGtBridge:
         self.carla_vehicle_path = self.artifacts_dir / "carla_vehicle_characteristics.json"
         self._debug_csv_header_written = False
         self._split_csv_headers_written: Dict[str, bool] = {}
+        self._jsonl_artifact_handles: Dict[str, Any] = {}
+        self._csv_artifact_states: Dict[str, Dict[str, Any]] = {}
+        self._artifact_write_lock = threading.Lock()
+        self.artifact_async_write_enabled = bool(bridge_cfg.get("artifact_async_write_enabled", True))
+        artifact_async_queue_max = max(
+            0,
+            int(bridge_cfg.get("artifact_async_queue_max_rows", 0) or 0),
+        )
+        self._artifact_write_queue: Optional[queue.Queue[Any]] = (
+            queue.Queue(maxsize=artifact_async_queue_max)
+            if self.artifact_async_write_enabled
+            else None
+        )
+        self._artifact_writer_thread: Optional[threading.Thread] = None
+        self._artifact_writer_started = False
+        self.artifact_flush_interval_s = max(
+            0.0,
+            float(bridge_cfg.get("artifact_flush_interval_s", 0.0) or 0.0),
+        )
+        self.artifact_flush_max_pending_rows = max(
+            0,
+            int(bridge_cfg.get("artifact_flush_max_pending_rows", 0) or 0),
+        )
+        self.artifact_stats_flush_interval_s = max(
+            0.0,
+            float(bridge_cfg.get("artifact_stats_flush_interval_s", 0.0) or 0.0),
+        )
+        self._last_artifact_stats_flush_sec = time.time()
+        self._artifact_pending_rows: Dict[str, int] = {}
+        self._artifact_last_flush_sec: Dict[str, float] = {}
+        self.stats["artifact_buffering"] = {
+            "enabled": True,
+            "async_write_enabled": self.artifact_async_write_enabled,
+            "async_queue_max_rows": artifact_async_queue_max,
+            "async_enqueued_count": 0,
+            "async_written_count": 0,
+            "async_write_error_count": 0,
+            "flush_interval_s": self.artifact_flush_interval_s,
+            "flush_max_pending_rows": self.artifact_flush_max_pending_rows,
+            "stats_flush_interval_s": self.artifact_stats_flush_interval_s,
+            "flush_count": 0,
+        }
+        self._start_artifact_writer()
+        self._publish_loop_duration_window: deque[float] = deque(maxlen=2000)
+        self._publish_phase_duration_windows: Dict[str, deque[float]] = {}
+        self._publish_phase_overrun_counts: Counter[str] = Counter()
+        self._publish_loop_overrun_count = 0
+        self._publish_loop_iteration_count = 0
+        self._publish_loop_publish_count = 0
         self._carla_vehicle_written = False
         self._debug_window: deque[Dict[str, Any]] = deque()
         self._debug_window_sec = 5.0
@@ -1862,6 +1960,12 @@ class ApolloGtBridge:
         self._front_obstacle_state_changed_ts = 0.0
         self.front_obstacle_cache_enabled = bool(front_obstacle_cfg.get("cache_enabled", True))
         self.front_obstacle_cache_ttl_sec = float(front_obstacle_cfg.get("cache_ttl_sec", 0.5))
+        self.front_obstacle_actor_probe_enabled = bool(
+            front_obstacle_cfg.get(
+                "actor_probe_enabled",
+                self.front_obstacle_behavior_mode != "normal",
+            )
+        )
         self._obstacle_cache_payload: Optional[bytes] = None
         self._obstacle_cache_count = 0
         self._obstacle_cache_ts_sec = 0.0
@@ -2454,21 +2558,431 @@ class ApolloGtBridge:
             self._warn_bad_value(field, value, source)
             return float(default)
 
+    def _start_artifact_writer(self) -> None:
+        if not bool(getattr(self, "artifact_async_write_enabled", False)):
+            return
+        if getattr(self, "_artifact_writer_started", False):
+            return
+        write_queue = getattr(self, "_artifact_write_queue", None)
+        if write_queue is None:
+            return
+        thread = threading.Thread(
+            target=self._artifact_writer_loop,
+            name="apollo-bridge-artifact-writer",
+            daemon=True,
+        )
+        self._artifact_writer_thread = thread
+        self._artifact_writer_started = True
+        thread.start()
+
+    def _artifact_writer_loop(self) -> None:
+        write_queue = getattr(self, "_artifact_write_queue", None)
+        if write_queue is None:
+            return
+        while True:
+            item = write_queue.get()
+            try:
+                if item is None:
+                    return
+                kind, path, payload = item
+                if kind == "jsonl":
+                    self._append_jsonl_direct(Path(path), payload)
+                elif kind == "csv":
+                    self._write_csv_row_direct(Path(path), payload)
+                buffering = self.stats.setdefault("artifact_buffering", {})
+                buffering["async_written_count"] = int(buffering.get("async_written_count", 0) or 0) + 1
+            except Exception as exc:
+                if not hasattr(self, "stats") or getattr(self, "stats", None) is None:
+                    self.stats = {}
+                buffering = self.stats.setdefault("artifact_buffering", {})
+                buffering["async_write_error_count"] = int(
+                    buffering.get("async_write_error_count", 0) or 0
+                ) + 1
+                buffering["last_async_write_error"] = f"{type(exc).__name__}:{exc}"
+            finally:
+                write_queue.task_done()
+
+    def _enqueue_artifact_write(self, kind: str, path: Path, payload: Dict[str, Any]) -> bool:
+        if not bool(getattr(self, "artifact_async_write_enabled", False)):
+            return False
+        write_queue = getattr(self, "_artifact_write_queue", None)
+        if write_queue is None:
+            return False
+        self._start_artifact_writer()
+        try:
+            write_queue.put_nowait((kind, str(path), dict(payload)))
+        except queue.Full:
+            # Do not drop claim/debug evidence. The queue should normally be
+            # unbounded; if an operator sets a cap, back-pressure is explicit.
+            write_queue.put((kind, str(path), dict(payload)), timeout=1.0)
+        buffering = self.stats.setdefault("artifact_buffering", {})
+        buffering["async_enqueued_count"] = int(buffering.get("async_enqueued_count", 0) or 0) + 1
+        try:
+            buffering["async_queue_size"] = int(write_queue.qsize())
+        except Exception:
+            pass
+        return True
+
     def _append_jsonl(self, path: Path, payload: Dict[str, Any]) -> None:
+        if self._enqueue_artifact_write("jsonl", path, payload):
+            return
+        self._append_jsonl_direct(path, payload)
+
+    def _append_jsonl_direct(self, path: Path, payload: Dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as fp:
+        key = str(path)
+        handles = getattr(self, "_jsonl_artifact_handles", None)
+        if handles is None:
+            handles = {}
+            self._jsonl_artifact_handles = handles
+        with getattr(self, "_artifact_write_lock", threading.Lock()):
+            fp = handles.get(key)
+            if fp is None or getattr(fp, "closed", False):
+                fp = path.open("a")
+                handles[key] = fp
+                getattr(self, "_artifact_last_flush_sec", {}).setdefault(key, time.time())
             fp.write(json.dumps(payload, ensure_ascii=True) + "\n")
+            self._maybe_flush_artifact_buffer(key, fp)
+
+    def _maybe_flush_artifact_buffer(self, key: str, fp: Any, *, force: bool = False) -> None:
+        pending_rows = getattr(self, "_artifact_pending_rows", None)
+        if pending_rows is None:
+            pending_rows = {}
+            self._artifact_pending_rows = pending_rows
+        last_flush = getattr(self, "_artifact_last_flush_sec", None)
+        if last_flush is None:
+            last_flush = {}
+            self._artifact_last_flush_sec = last_flush
+        if not force:
+            pending_rows[key] = int(pending_rows.get(key, 0) or 0) + 1
+        pending = int(pending_rows.get(key, 0) or 0)
+        now = time.time()
+        interval_s = max(0.0, float(getattr(self, "artifact_flush_interval_s", 0.5) or 0.0))
+        max_pending = max(1, int(getattr(self, "artifact_flush_max_pending_rows", 100) or 100))
+        previous_flush = float(last_flush.get(key, now) or now)
+        due = force or (
+            (max_pending > 0 and pending >= max_pending)
+            or (interval_s > 0.0 and pending > 0 and (now - previous_flush) >= interval_s)
+        )
+        if not due:
+            return
+        fp.flush()
+        pending_rows[key] = 0
+        last_flush[key] = now
+        if not hasattr(self, "stats") or getattr(self, "stats", None) is None:
+            self.stats = {}
+        buffering = self.stats.setdefault("artifact_buffering", {})
+        buffering["flush_count"] = int(buffering.get("flush_count", 0) or 0) + 1
+        buffering["last_flush_path"] = key
+        buffering["last_flush_pending_rows"] = pending
+
+    def _flush_artifact_buffers(self, *, close: bool = False) -> None:
+        write_queue = getattr(self, "_artifact_write_queue", None)
+        if write_queue is not None:
+            try:
+                write_queue.join()
+            except Exception:
+                pass
+        for handles in (
+            getattr(self, "_jsonl_artifact_handles", {}) or {},
+            {
+                key: state.get("fp")
+                for key, state in (getattr(self, "_csv_artifact_states", {}) or {}).items()
+                if isinstance(state, dict)
+            },
+        ):
+            with getattr(self, "_artifact_write_lock", threading.Lock()):
+                for key, fp in list(handles.items()):
+                    try:
+                        self._maybe_flush_artifact_buffer(key, fp, force=True)
+                    except Exception:
+                        pass
+                    if close:
+                        try:
+                            fp.close()
+                        except Exception:
+                            pass
+                        try:
+                            handles.pop(key, None)
+                        except Exception:
+                            pass
+                        try:
+                            self._artifact_pending_rows.pop(key, None)
+                            self._artifact_last_flush_sec.pop(key, None)
+                        except Exception:
+                            pass
+        if close and write_queue is not None:
+            try:
+                write_queue.put(None, timeout=1.0)
+                writer_thread = getattr(self, "_artifact_writer_thread", None)
+                if writer_thread is not None:
+                    writer_thread.join(timeout=5.0)
+            except Exception:
+                pass
+
+    def _record_publish_loop_timing(
+        self,
+        *,
+        start_wall_s: float,
+        end_wall_s: float,
+        target_period_s: float,
+        published_gt: bool,
+        phase: str,
+    ) -> None:
+        duration_s = max(0.0, float(end_wall_s) - float(start_wall_s))
+        window = getattr(self, "_publish_loop_duration_window", None)
+        if window is None:
+            window = deque(maxlen=2000)
+            self._publish_loop_duration_window = window
+        window.append(duration_s)
+        self._publish_loop_iteration_count = int(getattr(self, "_publish_loop_iteration_count", 0) or 0) + 1
+        if published_gt:
+            self._publish_loop_publish_count = int(getattr(self, "_publish_loop_publish_count", 0) or 0) + 1
+        if target_period_s > 0.0 and duration_s > target_period_s:
+            self._publish_loop_overrun_count = int(getattr(self, "_publish_loop_overrun_count", 0) or 0) + 1
+        ordered = sorted(float(item) for item in window)
+        p95 = ordered[int(round((len(ordered) - 1) * 0.95))] if ordered else None
+        self.stats["publish_loop_timing"] = {
+            "mode": "deadline",
+            "last_phase": phase,
+            "target_period_s": float(target_period_s),
+            "last_duration_s": duration_s,
+            "recent_sample_count": len(window),
+            "recent_duration_p95_s": p95,
+            "iteration_count": int(getattr(self, "_publish_loop_iteration_count", 0) or 0),
+            "published_gt_iteration_count": int(getattr(self, "_publish_loop_publish_count", 0) or 0),
+            "over_target_period_count": int(getattr(self, "_publish_loop_overrun_count", 0) or 0),
+        }
+
+    def _record_publish_phase_timing(
+        self,
+        phase: str,
+        *,
+        start_wall_s: float,
+        end_wall_s: float,
+        target_period_s: float,
+    ) -> None:
+        phase_name = str(phase or "unknown")
+        duration_s = max(0.0, float(end_wall_s) - float(start_wall_s))
+        windows = getattr(self, "_publish_phase_duration_windows", None)
+        if windows is None:
+            windows = {}
+            self._publish_phase_duration_windows = windows
+        window = windows.get(phase_name)
+        if window is None:
+            window = deque(maxlen=2000)
+            windows[phase_name] = window
+        window.append(duration_s)
+        overrun_counts = getattr(self, "_publish_phase_overrun_counts", None)
+        if overrun_counts is None:
+            overrun_counts = Counter()
+            self._publish_phase_overrun_counts = overrun_counts
+        if target_period_s > 0.0 and duration_s > target_period_s:
+            overrun_counts[phase_name] += 1
+        phase_stats: Dict[str, Any] = {}
+        for name, values in sorted(windows.items()):
+            ordered = sorted(float(item) for item in values)
+            if not ordered:
+                continue
+            p95 = ordered[int(round((len(ordered) - 1) * 0.95))]
+            phase_stats[name] = {
+                "recent_sample_count": len(ordered),
+                "last_duration_s": float(values[-1]),
+                "recent_duration_p95_s": p95,
+                "recent_duration_max_s": ordered[-1],
+                "over_target_period_count": int(overrun_counts.get(name, 0)),
+            }
+        self.stats["publish_loop_phase_timing"] = phase_stats
+
+    def _record_topic_publish_stats(
+        self,
+        *,
+        channel: str,
+        msg: Any,
+        sim_time_sec: Optional[float],
+        payload_count: Optional[int],
+        source: str,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        path = getattr(self, "topic_publish_stats_path", None)
+        if path is None:
+            return
+        header = getattr(msg, "header", None)
+        frame_id = getattr(header, "frame_id", None) if header is not None else None
+        row: Dict[str, Any] = {
+            "channel": str(channel),
+            "wall_time_sec": time.time(),
+            "sim_time_sec": _finite_or_none(sim_time_sec),
+            "header_timestamp_sec": _finite_or_none(self._header_timestamp_sec(msg)),
+            "sequence_num": self._header_sequence_num(msg),
+            "frame_id": None if frame_id is None else str(frame_id),
+            "carla_world_frame": self._latest_world_frame,
+            "payload_count": payload_count,
+            "source": source,
+            "message_count_increment": 1,
+        }
+        if extra:
+            row.update(extra)
+        self._append_jsonl(Path(path), row)
+
+    def _record_control_apply_trace(self, row: Dict[str, Any], measured: Dict[str, Any]) -> None:
+        path = getattr(self, "control_apply_trace_path", None)
+        if path is None:
+            return
+        payload = {
+            "schema_version": "control_apply_trace.v1",
+            "event_type": "control_apply",
+            "timestamp": _finite_or_none(row.get("ts_sec")),
+            "sim_time": _finite_or_none(row.get("sim_time")),
+            "world_frame": _finite_or_none(row.get("frame_id")),
+            "route_id": row.get("route_id"),
+            "route_s": _finite_or_none(row.get("route_s")),
+            "actuator_mapping_mode": row.get("actuator_mapping_mode"),
+            "calibration_profile_id": row.get("calibration_profile_id"),
+            "steer_scale": _finite_or_none(row.get("steer_scale")),
+            "steering_sign": _finite_or_none(row.get("steering_sign")),
+            "control_latency_ms": _finite_or_none(row.get("control_latency_ms")),
+            "control_message_age_ms": _finite_or_none(row.get("control_message_age_ms")),
+            "planning_message_age_ms": _finite_or_none(row.get("planning_message_age_ms")),
+            "apollo_raw": {
+                "throttle": _finite_or_none(row.get("throttle_raw")),
+                "brake": _finite_or_none(row.get("brake_raw")),
+                "steer": _finite_or_none(row.get("apollo_steer_raw")),
+                "gear": row.get("apollo_gear"),
+                "estop": row.get("apollo_estop"),
+            },
+            "bridge_mapped": {
+                "throttle": _finite_or_none(row.get("throttle_mapped")),
+                "brake": _finite_or_none(row.get("brake_mapped")),
+                "steer": _finite_or_none(row.get("bridge_steer_mapped")),
+                "mapped_throttle_cmd": _finite_or_none(row.get("mapped_throttle_cmd")),
+                "mapped_brake_cmd": _finite_or_none(row.get("mapped_brake_cmd")),
+                "mapped_carla_steer_cmd": _finite_or_none(row.get("mapped_carla_steer_cmd")),
+                "throttle_brake_mutual_exclusion_applied": bool(
+                    row.get("throttle_brake_mutual_exclusion_applied")
+                ),
+                "throttle_brake_hysteresis_held": bool(row.get("throttle_brake_hysteresis_held")),
+            },
+            "carla_applied": {
+                "throttle": _finite_or_none(row.get("throttle_applied")),
+                "brake": _finite_or_none(row.get("brake_applied")),
+                "steer": _finite_or_none(row.get("carla_steer_applied")),
+                "reverse": measured.get("reverse", False),
+                "hand_brake": measured.get("hand_brake", False),
+            },
+            "vehicle_response": {
+                "speed_mps": _finite_or_none(row.get("speed_mps")),
+                "yaw_rate_rad_s": _finite_or_none(measured.get("yaw_rate_rps")),
+                "forward_accel_mps2": _finite_or_none(row.get("measured_forward_accel_mps2")),
+                "pose_x": _finite_or_none(measured.get("pose_x")),
+                "pose_y": _finite_or_none(measured.get("pose_y")),
+                "pose_yaw_deg": _finite_or_none(measured.get("pose_yaw_deg")),
+            },
+            "diagnostics": {
+                "planning_lateral_contract_valid": row.get("planning_lateral_contract_valid"),
+                "planning_lateral_contract_reason": row.get("planning_lateral_contract_reason"),
+                "lateral_guard_applied": row.get("lateral_guard_applied"),
+                "trajectory_contract_guard_applied": row.get("trajectory_contract_guard_applied"),
+            },
+        }
+        self._append_jsonl(Path(path), payload)
+
+    def _gt_sample_key_from_odom(
+        self,
+        odom: Any,
+        *,
+        direct_world_frame: Optional[int] = None,
+    ) -> Optional[Tuple[Any, ...]]:
+        sim_time_sec = self._extract_ros_stamp_sec(odom)
+        world_frame: Optional[int] = None
+        try:
+            if direct_world_frame is not None:
+                world_frame = int(direct_world_frame)
+            else:
+                direct_frame = getattr(odom, "_tb_world_frame", None)
+                if direct_frame is not None:
+                    world_frame = int(direct_frame)
+        except Exception:
+            world_frame = None
+        if world_frame is None:
+            header = getattr(odom, "header", None)
+            try:
+                seq_value = getattr(header, "seq", None) if header is not None else None
+                if seq_value is not None:
+                    world_frame = int(seq_value)
+            except Exception:
+                world_frame = None
+        if sim_time_sec is not None:
+            return ("sim_time", round(float(sim_time_sec), 9), "world_frame", world_frame)
+        if world_frame is not None:
+            return ("world_frame", world_frame)
+        return None
+
+    def _should_publish_gt_sample(
+        self,
+        odom: Any,
+        *,
+        direct_world_frame: Optional[int] = None,
+    ) -> Tuple[bool, Optional[Tuple[Any, ...]], str]:
+        key = self._gt_sample_key_from_odom(odom, direct_world_frame=direct_world_frame)
+        if key is None:
+            return True, None, "sample_identity_missing_publish_for_diagnostic"
+        previous = getattr(self, "_last_gt_publish_sample_key", None)
+        if previous != key:
+            self._last_gt_publish_sample_key = key
+            return True, key, "fresh_sample"
+
+        self.stats["gt_stale_sample_duplicate_count"] = int(
+            self.stats.get("gt_stale_sample_duplicate_count", 0) or 0
+        ) + 1
+        policy = str(getattr(self, "gt_stale_sample_policy", "") or "").strip().lower()
+        self.stats["gt_stale_sample_policy"] = policy
+        if policy == "skip" or bool(getattr(self, "claim_grade_enabled", False)):
+            self.stats["gt_stale_sample_skip_count"] = int(
+                self.stats.get("gt_stale_sample_skip_count", 0) or 0
+            ) + 1
+            return False, key, "stale_sample_skipped"
+        self.stats["gt_stale_sample_republish_count"] = int(
+            self.stats.get("gt_stale_sample_republish_count", 0) or 0
+        ) + 1
+        return True, key, "stale_sample_republished_for_debug"
 
     def _write_csv_row(self, path: Path, row: Dict[str, Any]) -> None:
+        if self._enqueue_artifact_write("csv", path, row):
+            return
+        self._write_csv_row_direct(path, row)
+
+    def _write_csv_row_direct(self, path: Path, row: Dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         fieldnames = list(row.keys())
-        mode = "a" if self._split_csv_headers_written.get(str(path)) and path.exists() else "w"
-        with path.open(mode, newline="") as fp:
-            writer = csv.DictWriter(fp, fieldnames=fieldnames)
-            if mode == "w" or not self._split_csv_headers_written.get(str(path), False):
-                writer.writeheader()
-                self._split_csv_headers_written[str(path)] = True
+        key = str(path)
+        states = getattr(self, "_csv_artifact_states", None)
+        if states is None:
+            states = {}
+            self._csv_artifact_states = states
+        with getattr(self, "_artifact_write_lock", threading.Lock()):
+            state = states.get(key)
+            if state is not None and state.get("fieldnames") != fieldnames:
+                try:
+                    state.get("fp").flush()
+                    state.get("fp").close()
+                except Exception:
+                    pass
+                states.pop(key, None)
+                state = None
+            if state is None:
+                mode = "a" if self._split_csv_headers_written.get(key) and path.exists() else "w"
+                fp = path.open(mode, newline="")
+                writer = csv.DictWriter(fp, fieldnames=fieldnames)
+                if mode == "w" or not self._split_csv_headers_written.get(key, False):
+                    writer.writeheader()
+                    self._split_csv_headers_written[key] = True
+                state = {"fp": fp, "writer": writer, "fieldnames": fieldnames}
+                states[key] = state
+                getattr(self, "_artifact_last_flush_sec", {}).setdefault(key, time.time())
+            writer = state["writer"]
             writer.writerow(row)
+            self._maybe_flush_artifact_buffer(key, state["fp"])
 
     def _write_json_file(self, path: Path, payload: Dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -4005,6 +4519,7 @@ class ApolloGtBridge:
         return {
             "mode": self.front_obstacle_behavior_mode,
             "role_names": list(self.front_obstacle_role_names),
+            "actor_probe_enabled": self.front_obstacle_actor_probe_enabled,
             "activate_distance_m": self.front_obstacle_activate_distance_m,
             "release_distance_m": self.front_obstacle_release_distance_m,
             "min_longitudinal_m": self.front_obstacle_min_longitudinal_m,
@@ -4789,6 +5304,20 @@ class ApolloGtBridge:
                 if hasattr(light, "tracking_time"):
                     light.tracking_time = 0.1
             self.traffic_light_writer.write(msg)
+            self._record_topic_publish_stats(
+                channel=self.traffic_light_channel,
+                msg=msg,
+                sim_time_sec=ts_sec,
+                payload_count=len(entries),
+                source="bridge_writer",
+                extra={
+                    "light_count": len(entries),
+                    "contain_lights": bool(entries),
+                    "color_source": color_source,
+                    "traffic_light_policy": self.traffic_light_policy,
+                    "empty_message": not bool(entries),
+                },
+            )
             self._last_traffic_light_publish_ts = ts_sec
             self._traffic_light_last_publish_ts = ts_sec
             self._traffic_light_publish_count += 1
@@ -5000,19 +5529,35 @@ class ApolloGtBridge:
             for key in (
                 "station_reference",
                 "station_error",
-                "current_station",
-                "path_remain",
-                "acceleration_cmd",
-                "acceleration_cmd_closeloop",
-                "acceleration_lookup",
-                "acceleration_reference",
-                "current_acceleration",
+                "station_error_limited",
+                "preview_station_error",
                 "speed_reference",
-                "current_speed",
+                "speed_error",
+                "speed_controller_input_limited",
+                "preview_speed_reference",
+                "preview_speed_error",
+                "preview_acceleration_reference",
+                "acceleration_cmd_closeloop",
+                "acceleration_cmd",
+                "acceleration_lookup",
+                "speed_lookup",
+                "calibration_value",
                 "throttle_cmd",
                 "brake_cmd",
-                "calibration_value",
                 "is_full_stop",
+                "slope_offset_compensation",
+                "current_station",
+                "path_remain",
+                "acceleration_reference",
+                "current_acceleration",
+                "acceleration_error",
+                "jerk_reference",
+                "current_jerk",
+                "jerk_error",
+                "pid_saturation_status",
+                "leadlag_saturation_status",
+                "speed_offset",
+                "current_speed",
                 "is_full_stop_soft",
                 "is_stop_reason_by_destination",
                 "is_stop_reason_by_prdestrian",
@@ -5778,15 +6323,8 @@ class ApolloGtBridge:
         out.write_text(json.dumps(payload, indent=2))
 
     def _write_debug_row(self, row: Dict[str, Any]) -> None:
-        self.debug_csv_path.parent.mkdir(parents=True, exist_ok=True)
-        fieldnames = list(row.keys())
-        mode = "a" if self._debug_csv_header_written and self.debug_csv_path.exists() else "w"
-        with self.debug_csv_path.open(mode, newline="") as fp:
-            writer = csv.DictWriter(fp, fieldnames=fieldnames)
-            if not self._debug_csv_header_written or mode == "w":
-                writer.writeheader()
-                self._debug_csv_header_written = True
-            writer.writerow(row)
+        self._write_csv_row(self.debug_csv_path, row)
+        self._debug_csv_header_written = True
 
     def _record_apollo_reference_line_contract_event(self, row: Dict[str, Any]) -> None:
         payload: Dict[str, Any] = {}
@@ -6328,11 +6866,80 @@ class ApolloGtBridge:
             "steering_normalized_for_mapping": raw_steer,
             "acceleration_mps2": _safe_float(raw_fields.get("acceleration"), float("nan")),
             "speed_mps": _safe_float(raw_fields.get("speed"), float("nan")),
+            "debug_simple_lon_station_reference_m": _safe_float(
+                raw_fields.get("debug_simple_lon_station_reference"), float("nan")
+            ),
+            "debug_simple_lon_station_error_m": _safe_float(
+                raw_fields.get("debug_simple_lon_station_error"), float("nan")
+            ),
+            "debug_simple_lon_station_error_limited_m": _safe_float(
+                raw_fields.get("debug_simple_lon_station_error_limited"), float("nan")
+            ),
+            "debug_simple_lon_preview_station_error_m": _safe_float(
+                raw_fields.get("debug_simple_lon_preview_station_error"), float("nan")
+            ),
+            "debug_simple_lon_current_station_m": _safe_float(
+                raw_fields.get("debug_simple_lon_current_station"), float("nan")
+            ),
+            "debug_simple_lon_path_remain_m": _safe_float(
+                raw_fields.get("debug_simple_lon_path_remain"), float("nan")
+            ),
+            "debug_simple_lon_speed_reference_mps": _safe_float(
+                raw_fields.get("debug_simple_lon_speed_reference"), float("nan")
+            ),
+            "debug_simple_lon_speed_error_mps": _safe_float(
+                raw_fields.get("debug_simple_lon_speed_error"), float("nan")
+            ),
+            "debug_simple_lon_speed_controller_input_limited": _safe_float(
+                raw_fields.get("debug_simple_lon_speed_controller_input_limited"), float("nan")
+            ),
+            "debug_simple_lon_preview_speed_reference_mps": _safe_float(
+                raw_fields.get("debug_simple_lon_preview_speed_reference"), float("nan")
+            ),
+            "debug_simple_lon_preview_speed_error_mps": _safe_float(
+                raw_fields.get("debug_simple_lon_preview_speed_error"), float("nan")
+            ),
+            "debug_simple_lon_current_speed_mps": _safe_float(
+                raw_fields.get("debug_simple_lon_current_speed"), float("nan")
+            ),
+            "debug_simple_lon_speed_lookup_mps": _safe_float(
+                raw_fields.get("debug_simple_lon_speed_lookup"), float("nan")
+            ),
+            "debug_simple_lon_speed_offset_mps": _safe_float(
+                raw_fields.get("debug_simple_lon_speed_offset"), float("nan")
+            ),
             "debug_simple_lon_acceleration_cmd_mps2": _safe_float(
                 raw_fields.get("debug_simple_lon_acceleration_cmd"), float("nan")
             ),
+            "debug_simple_lon_acceleration_cmd_closeloop_mps2": _safe_float(
+                raw_fields.get("debug_simple_lon_acceleration_cmd_closeloop"), float("nan")
+            ),
             "debug_simple_lon_acceleration_lookup_mps2": _safe_float(
                 raw_fields.get("debug_simple_lon_acceleration_lookup"), float("nan")
+            ),
+            "debug_simple_lon_acceleration_lookup_limit_mps2": _safe_float(
+                raw_fields.get("debug_simple_lon_acceleration_lookup_limit"), float("nan")
+            ),
+            "debug_simple_lon_acceleration_reference_mps2": _safe_float(
+                raw_fields.get("debug_simple_lon_acceleration_reference"), float("nan")
+            ),
+            "debug_simple_lon_preview_acceleration_reference_mps2": _safe_float(
+                raw_fields.get("debug_simple_lon_preview_acceleration_reference"), float("nan")
+            ),
+            "debug_simple_lon_current_acceleration_mps2": _safe_float(
+                raw_fields.get("debug_simple_lon_current_acceleration"), float("nan")
+            ),
+            "debug_simple_lon_acceleration_error_mps2": _safe_float(
+                raw_fields.get("debug_simple_lon_acceleration_error"), float("nan")
+            ),
+            "debug_simple_lon_jerk_reference_mps3": _safe_float(
+                raw_fields.get("debug_simple_lon_jerk_reference"), float("nan")
+            ),
+            "debug_simple_lon_current_jerk_mps3": _safe_float(
+                raw_fields.get("debug_simple_lon_current_jerk"), float("nan")
+            ),
+            "debug_simple_lon_jerk_error_mps3": _safe_float(
+                raw_fields.get("debug_simple_lon_jerk_error"), float("nan")
             ),
             "debug_simple_lon_throttle_cmd_pct": _safe_float(
                 raw_fields.get("debug_simple_lon_throttle_cmd"), float("nan")
@@ -6340,6 +6947,35 @@ class ApolloGtBridge:
             "debug_simple_lon_brake_cmd_pct": _safe_float(
                 raw_fields.get("debug_simple_lon_brake_cmd"), float("nan")
             ),
+            "debug_simple_lon_calibration_value": _safe_float(
+                raw_fields.get("debug_simple_lon_calibration_value"), float("nan")
+            ),
+            "debug_simple_lon_pid_saturation_status": _safe_float(
+                raw_fields.get("debug_simple_lon_pid_saturation_status"), float("nan")
+            ),
+            "debug_simple_lon_leadlag_saturation_status": _safe_float(
+                raw_fields.get("debug_simple_lon_leadlag_saturation_status"), float("nan")
+            ),
+            "debug_simple_lon_slope_offset_compensation": _safe_float(
+                raw_fields.get("debug_simple_lon_slope_offset_compensation"), float("nan")
+            ),
+            "debug_simple_lon_vehicle_pitch": _safe_float(
+                raw_fields.get("debug_simple_lon_vehicle_pitch"), float("nan")
+            ),
+            "debug_simple_lon_current_steer_interval": _safe_float(
+                raw_fields.get("debug_simple_lon_current_steer_interval"), float("nan")
+            ),
+            "debug_simple_lon_is_full_stop": bool(raw_fields.get("debug_simple_lon_is_full_stop", False)),
+            "debug_simple_lon_is_full_stop_soft": bool(
+                raw_fields.get("debug_simple_lon_is_full_stop_soft", False)
+            ),
+            "debug_simple_lon_is_stop_reason_by_destination": bool(
+                raw_fields.get("debug_simple_lon_is_stop_reason_by_destination", False)
+            ),
+            "debug_simple_lon_is_stop_reason_by_prdestrian": bool(
+                raw_fields.get("debug_simple_lon_is_stop_reason_by_prdestrian", False)
+            ),
+            "debug_simple_lon_is_wait_steer": bool(raw_fields.get("debug_simple_lon_is_wait_steer", False)),
             "debug_simple_lat_lateral_error_m": _safe_float(
                 raw_fields.get("debug_simple_lat_lateral_error"), float("nan")
             ),
@@ -8931,6 +9567,18 @@ class ApolloGtBridge:
             self.auto_routing_active_goal = (x1, y1, z1)
 
     def _write_stats(self) -> None:
+        try:
+            stats_flush_interval_s = max(
+                0.0,
+                float(getattr(self, "artifact_stats_flush_interval_s", 5.0) or 0.0),
+            )
+            last_flush = float(getattr(self, "_last_artifact_stats_flush_sec", 0.0) or 0.0)
+            now = time.time()
+            if stats_flush_interval_s > 0.0 and (now - last_flush) >= stats_flush_interval_s:
+                self._flush_artifact_buffers(close=False)
+                self._last_artifact_stats_flush_sec = now
+        except Exception:
+            pass
         self._write_health_summary()
         self._write_startup_geometry_summary()
         self._write_planning_topic_debug_summary()
@@ -8947,17 +9595,55 @@ class ApolloGtBridge:
             self.cyber_spin_thread.start()
 
         period = 1.0 / max(self.publish_rate_hz, 1e-3)
+        next_publish_wall_s = time.time()
+
+        def sleep_until_next_publish_cycle() -> None:
+            nonlocal next_publish_wall_s
+            next_publish_wall_s += period
+            now_sleep = time.time()
+            overrun_s = max(0.0, now_sleep - next_publish_wall_s)
+            sleep_s = max(0.0, next_publish_wall_s - now_sleep)
+            if sleep_s > 0.0:
+                time.sleep(sleep_s)
+            else:
+                # If the bridge loop overruns, do not add another full-period
+                # sleep. Re-anchor so configured publish_rate_hz is a target
+                # cadence rather than processing_time + period.
+                next_publish_wall_s = now_sleep
+            self.stats["publish_loop_rate_limiter"] = {
+                "target_period_s": period,
+                "last_sleep_s": sleep_s,
+                "last_overrun_s": overrun_s,
+                "mode": "deadline",
+            }
+
         last_stats_flush = 0.0
         while not self.stop_event.is_set():
+            loop_start_wall_s = time.time()
+            loop_published_gt = False
             if hasattr(self.cyber, "is_shutdown") and self.cyber.is_shutdown():
                 break
             try:
+                phase_start_wall_s = time.time()
                 if hasattr(self.node, "tick"):
                     try:
                         self.node.tick()
                     except Exception:
                         pass
+                self._record_publish_phase_timing(
+                    "node_tick",
+                    start_wall_s=phase_start_wall_s,
+                    end_wall_s=time.time(),
+                    target_period_s=period,
+                )
+                phase_start_wall_s = time.time()
                 snapshot = self.node.snapshot()
+                self._record_publish_phase_timing(
+                    "ros_snapshot",
+                    start_wall_s=phase_start_wall_s,
+                    end_wall_s=time.time(),
+                    target_period_s=period,
+                )
                 self.stats["ros_input_counts"] = snapshot.get("rx_counts", self.stats["ros_input_counts"])
                 odom = snapshot.get("odom")
                 if (
@@ -8988,26 +9674,163 @@ class ApolloGtBridge:
                         if (now - last_stats_flush) >= 1.0:
                             self._write_stats()
                             last_stats_flush = now
-                        time.sleep(period)
+                        self._record_publish_loop_timing(
+                            start_wall_s=loop_start_wall_s,
+                            end_wall_s=time.time(),
+                            target_period_s=period,
+                            published_gt=False,
+                            phase="direct_stale_world_frame_skip",
+                        )
+                        sleep_until_next_publish_cycle()
                         continue
                 if odom is not None:
                     direct_world_frame = snapshot.get("world_frame")
+                    phase_start_wall_s = time.time()
+                    should_publish_gt, _sample_key, sample_reason = self._should_publish_gt_sample(
+                        odom,
+                        direct_world_frame=direct_world_frame,
+                    )
+                    self._record_publish_phase_timing(
+                        "gt_sample_freshness_check",
+                        start_wall_s=phase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    if not should_publish_gt:
+                        now = time.time()
+                        if (now - last_stats_flush) >= 1.0:
+                            self._write_stats()
+                            last_stats_flush = now
+                        self._record_publish_loop_timing(
+                            start_wall_s=loop_start_wall_s,
+                            end_wall_s=time.time(),
+                            target_period_s=period,
+                            published_gt=False,
+                            phase="gt_stale_sample_skip",
+                        )
+                        sleep_until_next_publish_cycle()
+                        continue
+                    phase_start_wall_s = time.time()
                     loc, ts_sec, vel_xyz, pose_debug, pose_info = self._odom_to_loc(
                         odom,
                         direct_world_frame=direct_world_frame,
                     )
+                    self._record_publish_phase_timing(
+                        "odom_to_localization",
+                        start_wall_s=phase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    phase_start_wall_s = time.time()
                     self.loc_writer.write(loc)
+                    self._record_publish_phase_timing(
+                        "cyber_write_localization",
+                        start_wall_s=phase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
                     self.stats["loc_count"] += 1
+                    if sample_reason == "fresh_sample":
+                        self.stats["localization_fresh_publish_count"] = int(
+                            self.stats.get("localization_fresh_publish_count", 0) or 0
+                        ) + 1
+                    else:
+                        self.stats["localization_duplicate_timestamp_count"] = int(
+                            self.stats.get("localization_duplicate_timestamp_count", 0) or 0
+                        ) + 1
+                    self._record_topic_publish_stats(
+                        channel=self.localization_channel,
+                        msg=loc,
+                        sim_time_sec=ts_sec,
+                        payload_count=1,
+                        source="bridge_writer",
+                        extra={
+                            "fresh_sample": sample_reason == "fresh_sample",
+                            "sample_reason": sample_reason,
+                        },
+                    )
+                    phase_start_wall_s = time.time()
                     measured = self._read_measured_control()
+                    self._record_publish_phase_timing(
+                        "carla_feedback_read_control",
+                        start_wall_s=phase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    phase_start_wall_s = time.time()
                     ch = self._odom_to_chassis(ts_sec, vel_xyz, measured)
                     self.chassis_writer.write(ch)
+                    self._record_publish_phase_timing(
+                        "chassis_build_and_write",
+                        start_wall_s=phase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
                     self.stats["chassis_count"] += 1
+                    if sample_reason == "fresh_sample":
+                        self.stats["chassis_fresh_publish_count"] = int(
+                            self.stats.get("chassis_fresh_publish_count", 0) or 0
+                        ) + 1
+                    else:
+                        self.stats["chassis_duplicate_timestamp_count"] = int(
+                            self.stats.get("chassis_duplicate_timestamp_count", 0) or 0
+                        ) + 1
+                    self._record_topic_publish_stats(
+                        channel=self.chassis_channel,
+                        msg=ch,
+                        sim_time_sec=ts_sec,
+                        payload_count=1,
+                        source="bridge_writer",
+                        extra={
+                            "fresh_sample": sample_reason == "fresh_sample",
+                            "sample_reason": sample_reason,
+                        },
+                    )
                     ex = float(pose_info["map_x"])
                     ey = float(pose_info["map_y"])
+                    phase_start_wall_s = time.time()
                     obs_msg, obs_count = self._objects_to_obstacles(snapshot, ts_sec, (ex, ey))
+                    self._record_publish_phase_timing(
+                        "objects_to_obstacles",
+                        start_wall_s=phase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    phase_start_wall_s = time.time()
                     self.obs_writer.write(obs_msg)
-                    self.stats["obstacles_count"] += int(obs_count)
+                    self._record_publish_phase_timing(
+                        "cyber_write_obstacles",
+                        start_wall_s=phase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    self.stats["obstacle_message_count"] = int(
+                        self.stats.get("obstacle_message_count", 0) or 0
+                    ) + 1
+                    self.stats["obstacle_object_count"] = int(
+                        self.stats.get("obstacle_object_count", 0) or 0
+                    ) + int(obs_count)
+                    if int(obs_count) <= 0:
+                        self.stats["obstacle_empty_message_count"] = int(
+                            self.stats.get("obstacle_empty_message_count", 0) or 0
+                        ) + 1
+                    self.stats["obstacles_count"] = int(self.stats.get("obstacle_object_count", 0) or 0)
                     self.stats["last_obstacles_count"] = int(obs_count)
+                    self._record_topic_publish_stats(
+                        channel=self.obstacles_channel,
+                        msg=obs_msg,
+                        sim_time_sec=ts_sec,
+                        payload_count=int(obs_count),
+                        source="bridge_writer",
+                        extra={
+                            "obstacle_count": int(obs_count),
+                            "empty_message": int(obs_count) <= 0,
+                            "fresh_sample": sample_reason == "fresh_sample",
+                            "sample_reason": sample_reason,
+                        },
+                    )
+                    loop_published_gt = True
+                    debug_row_build_start_wall_s = time.time()
                     desired_in = self.stats.get("last_control_in", {}) or {}
                     desired_out = self.stats.get("last_control_out", {}) or {}
                     speed_mps = math.sqrt(sum(v * v for v in vel_xyz))
@@ -9030,10 +9853,26 @@ class ApolloGtBridge:
                             "localization_chassis_timestamp_delta_ms": 0.0,
                         }
                     )
+                    phase_start_wall_s = time.time()
                     nearest_obs = self._nearest_obstacle_distance(snapshot, (ex, ey))
+                    self._record_publish_phase_timing(
+                        "nearest_obstacle_distance",
+                        start_wall_s=phase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
                     front_status = self._front_obstacle_behavior_status()
                     front_gap = front_status.get("last_gap", {}) or {}
-                    front_actor = self.carla_feedback.find_vehicle_by_roles(self.front_obstacle_role_names)
+                    front_actor = None
+                    if self.front_obstacle_actor_probe_enabled and self.carla_feedback is not None:
+                        phase_start_wall_s = time.time()
+                        front_actor = self.carla_feedback.find_vehicle_by_roles(self.front_obstacle_role_names)
+                        self._record_publish_phase_timing(
+                            "front_obstacle_actor_probe",
+                            start_wall_s=phase_start_wall_s,
+                            end_wall_s=time.time(),
+                            target_period_s=period,
+                        )
                     front_actor_id = None
                     front_actor_role = ""
                     front_actor_x = None
@@ -9365,6 +10204,141 @@ class ApolloGtBridge:
                             "desired_in.debug_simple_lat_target_point_kappa",
                             "publish_row",
                         ),
+                        "apollo_debug_simple_lon_station_reference_m": self._coerce_float(
+                            desired_in.get("debug_simple_lon_station_reference_m"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_station_reference_m",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_station_error_m": self._coerce_float(
+                            desired_in.get("debug_simple_lon_station_error_m"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_station_error_m",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_station_error_limited_m": self._coerce_float(
+                            desired_in.get("debug_simple_lon_station_error_limited_m"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_station_error_limited_m",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_preview_station_error_m": self._coerce_float(
+                            desired_in.get("debug_simple_lon_preview_station_error_m"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_preview_station_error_m",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_current_station_m": self._coerce_float(
+                            desired_in.get("debug_simple_lon_current_station_m"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_current_station_m",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_path_remain_m": self._coerce_float(
+                            desired_in.get("debug_simple_lon_path_remain_m"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_path_remain_m",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_speed_reference_mps": self._coerce_float(
+                            desired_in.get("debug_simple_lon_speed_reference_mps"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_speed_reference_mps",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_speed_error_mps": self._coerce_float(
+                            desired_in.get("debug_simple_lon_speed_error_mps"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_speed_error_mps",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_current_speed_mps": self._coerce_float(
+                            desired_in.get("debug_simple_lon_current_speed_mps"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_current_speed_mps",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_speed_lookup_mps": self._coerce_float(
+                            desired_in.get("debug_simple_lon_speed_lookup_mps"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_speed_lookup_mps",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_speed_offset_mps": self._coerce_float(
+                            desired_in.get("debug_simple_lon_speed_offset_mps"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_speed_offset_mps",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_acceleration_cmd_closeloop_mps2": self._coerce_float(
+                            desired_in.get("debug_simple_lon_acceleration_cmd_closeloop_mps2"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_acceleration_cmd_closeloop_mps2",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_acceleration_cmd_mps2": self._coerce_float(
+                            desired_in.get("debug_simple_lon_acceleration_cmd_mps2"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_acceleration_cmd_mps2",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_acceleration_lookup_mps2": self._coerce_float(
+                            desired_in.get("debug_simple_lon_acceleration_lookup_mps2"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_acceleration_lookup_mps2",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_acceleration_reference_mps2": self._coerce_float(
+                            desired_in.get("debug_simple_lon_acceleration_reference_mps2"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_acceleration_reference_mps2",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_current_acceleration_mps2": self._coerce_float(
+                            desired_in.get("debug_simple_lon_current_acceleration_mps2"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_current_acceleration_mps2",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_acceleration_error_mps2": self._coerce_float(
+                            desired_in.get("debug_simple_lon_acceleration_error_mps2"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_acceleration_error_mps2",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_jerk_reference_mps3": self._coerce_float(
+                            desired_in.get("debug_simple_lon_jerk_reference_mps3"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_jerk_reference_mps3",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_current_jerk_mps3": self._coerce_float(
+                            desired_in.get("debug_simple_lon_current_jerk_mps3"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_current_jerk_mps3",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_jerk_error_mps3": self._coerce_float(
+                            desired_in.get("debug_simple_lon_jerk_error_mps3"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_jerk_error_mps3",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_throttle_cmd_pct": self._coerce_float(
+                            desired_in.get("debug_simple_lon_throttle_cmd_pct"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_throttle_cmd_pct",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_brake_cmd_pct": self._coerce_float(
+                            desired_in.get("debug_simple_lon_brake_cmd_pct"),
+                            float("nan"),
+                            "desired_in.debug_simple_lon_brake_cmd_pct",
+                            "publish_row",
+                        ),
+                        "apollo_debug_simple_lon_is_full_stop": bool(
+                            desired_in.get("debug_simple_lon_is_full_stop", False)
+                        ),
                         "apollo_debug_simple_lon_matched_point_s": self._coerce_float(
                             desired_in.get("debug_simple_lon_matched_point_s"),
                             float("nan"),
@@ -9583,6 +10557,14 @@ class ApolloGtBridge:
                         "control_rx_count": self.stats.get("control_rx_count", 0),
                         "control_tx_count": self.stats.get("control_tx_count", 0),
                     }
+                    self._record_publish_phase_timing(
+                        "debug_row_build",
+                        start_wall_s=debug_row_build_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    phase_start_wall_s = time.time()
+                    artifact_subphase_start_wall_s = time.time()
                     self._record_obstacle_contract_event(
                         {
                             "timestamp": ts_sec,
@@ -9591,6 +10573,7 @@ class ApolloGtBridge:
                             "front_obstacle_mode": front_status.get("mode"),
                             "front_obstacle_role_names": list(front_status.get("role_names", []) or []),
                             "front_obstacle_actor_found": front_actor is not None,
+                            "front_obstacle_actor_probe_enabled": self.front_obstacle_actor_probe_enabled,
                             "front_obstacle_actor_id": front_actor_id,
                             "front_obstacle_actor_role": front_actor_role,
                             "ego_actor_id": self._ego_actor_id_for_obstacle_contract(),
@@ -9625,8 +10608,37 @@ class ApolloGtBridge:
                             "published_obstacle_count": int(obs_count),
                         }
                     )
+                    self._record_publish_phase_timing(
+                        "artifact_obstacle_contract",
+                        start_wall_s=artifact_subphase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    artifact_subphase_start_wall_s = time.time()
                     self._write_debug_row(row)
+                    self._record_publish_phase_timing(
+                        "artifact_debug_timeseries",
+                        start_wall_s=artifact_subphase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    artifact_subphase_start_wall_s = time.time()
+                    self._record_control_apply_trace(row, measured)
+                    self._record_publish_phase_timing(
+                        "artifact_control_apply_trace",
+                        start_wall_s=artifact_subphase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    artifact_subphase_start_wall_s = time.time()
                     self._record_apollo_reference_line_contract_event(row)
+                    self._record_publish_phase_timing(
+                        "artifact_reference_line_contract",
+                        start_wall_s=artifact_subphase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    artifact_subphase_start_wall_s = time.time()
                     self._write_csv_row(
                         self.vehicle_response_csv_path,
                         {
@@ -9694,6 +10706,13 @@ class ApolloGtBridge:
                             "measured_source": row["measured_source"],
                         },
                     )
+                    self._record_publish_phase_timing(
+                        "artifact_vehicle_response_csv",
+                        start_wall_s=artifact_subphase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    artifact_subphase_start_wall_s = time.time()
                     self._write_csv_row(
                         self.geometry_debug_csv_path,
                         {
@@ -9718,6 +10737,18 @@ class ApolloGtBridge:
                             "front_obstacle_gap_distance_m": row["front_obstacle_gap_distance_m"],
                         },
                     )
+                    self._record_publish_phase_timing(
+                        "artifact_geometry_debug_csv",
+                        start_wall_s=artifact_subphase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    self._record_publish_phase_timing(
+                        "artifact_trace_writes",
+                        start_wall_s=phase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
                     self._update_steer_sign_auto_check(row)
                     self._maybe_dump_saturation_snapshot(row)
                     self._maybe_dump_control_anomaly(row, snapshot, measured)
@@ -9737,8 +10768,22 @@ class ApolloGtBridge:
                                 measured.get("source", "unavailable"),
                             )
                         )
+                    phase_start_wall_s = time.time()
                     self._maybe_publish_traffic_lights(ts_sec)
+                    self._record_publish_phase_timing(
+                        "traffic_light_publish",
+                        start_wall_s=phase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
+                    phase_start_wall_s = time.time()
                     self._maybe_send_routing_request(snapshot, odom, ts_sec, pose_info, speed_mps=speed_mps)
+                    self._record_publish_phase_timing(
+                        "routing_request_check",
+                        start_wall_s=phase_start_wall_s,
+                        end_wall_s=time.time(),
+                        target_period_s=period,
+                    )
                     if not float(self.stats.get("first_publish_ts_sec", 0.0) or 0.0):
                         self.stats["first_publish_ts_sec"] = ts_sec
                     if not float(self.stats.get("first_publish_wall_ts_sec", 0.0) or 0.0):
@@ -9763,16 +10808,31 @@ class ApolloGtBridge:
                     print(f"[bridge][warn] {msg}")
 
             now = time.time()
+            self._record_publish_loop_timing(
+                start_wall_s=loop_start_wall_s,
+                end_wall_s=now,
+                target_period_s=period,
+                published_gt=loop_published_gt,
+                phase="publish_gt" if loop_published_gt else "idle_or_error",
+            )
             if (now - last_stats_flush) >= 1.0:
                 self._write_stats()
                 last_stats_flush = now
-            time.sleep(period)
+            sleep_until_next_publish_cycle()
 
         self._write_stats()
+        try:
+            self._flush_artifact_buffers(close=True)
+        except Exception:
+            pass
         return 0
 
     def shutdown(self) -> None:
         self.stop_event.set()
+        try:
+            self._flush_artifact_buffers(close=True)
+        except Exception:
+            pass
         try:
             self.executor.shutdown(timeout_sec=1.0)
         except Exception:

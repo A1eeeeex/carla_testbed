@@ -127,8 +127,20 @@ def test_normalize_channel_stats_prefers_row_level_artifacts_when_available(tmp_
     (artifacts / "planning_topic_debug.jsonl").write_text(
         "\n".join(
             [
-                json.dumps({"planning_header_timestamp_sec": 1000.0, "planning_header_sequence_num": 1}),
-                json.dumps({"planning_header_timestamp_sec": 1000.5, "planning_header_sequence_num": 2}),
+                json.dumps(
+                    {
+                        "planning_header_timestamp_sec": 1000.0,
+                        "planning_header_sequence_num": 1,
+                        "sim_time_sec": 10.0,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "planning_header_timestamp_sec": 1000.5,
+                        "planning_header_sequence_num": 2,
+                        "sim_time_sec": 10.05,
+                    }
+                ),
             ]
         )
         + "\n",
@@ -173,9 +185,77 @@ def test_normalize_channel_stats_prefers_row_level_artifacts_when_available(tmp_
     assert channels["/apollo/localization/pose"]["gap_count_over_250ms"] == 0
     assert channels["/apollo/planning"]["source"] == "planning_topic_debug.jsonl"
     assert channels["/apollo/planning"]["message_count"] == 2
+    assert channels["/apollo/planning"]["primary_time_axis"] == "planning_header_timestamp_sec"
+    assert channels["/apollo/planning"]["sim_time_max_gap_ms"] == pytest.approx(50.0)
     assert channels["/apollo/control"]["source"] == "control_decode_debug.jsonl"
     assert channels["/apollo/control"]["sequence_monotonic"] is True
     assert str(artifacts / "planning_topic_debug.jsonl") in stats["source"]["row_level_artifacts"]
+
+
+def test_normalize_channel_stats_prefers_topic_publish_stats_for_claim_grade_rows(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    bridge_stats = _bridge_stats()
+    bridge_stats["loc_count"] = 999
+    bridge_stats["chassis_count"] = 999
+    bridge_stats["obstacles_count"] = 0
+    (artifacts / "cyber_bridge_stats.json").write_text(json.dumps(bridge_stats), encoding="utf-8")
+    rows = [
+        {
+            "channel": "/apollo/localization/pose",
+            "wall_time_sec": 100.0,
+            "sim_time_sec": 10.0,
+            "header_timestamp_sec": 10.0,
+            "sequence_num": 1,
+            "frame_id": "map",
+            "carla_world_frame": 100,
+            "payload_count": 1,
+            "source": "bridge_writer",
+        },
+        {
+            "channel": "/apollo/localization/pose",
+            "wall_time_sec": 100.05,
+            "sim_time_sec": 10.05,
+            "header_timestamp_sec": 10.05,
+            "sequence_num": 2,
+            "frame_id": "map",
+            "carla_world_frame": 101,
+            "payload_count": 1,
+            "source": "bridge_writer",
+        },
+        {
+            "channel": "/apollo/perception/obstacles",
+            "wall_time_sec": 100.0,
+            "sim_time_sec": 10.0,
+            "header_timestamp_sec": 10.0,
+            "sequence_num": 3,
+            "frame_id": "map",
+            "carla_world_frame": 100,
+            "payload_count": 0,
+            "empty_message": True,
+            "source": "bridge_writer",
+        },
+    ]
+    (artifacts / "topic_publish_stats.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    stats = normalize_channel_stats_for_run(run_dir)
+
+    assert stats is not None
+    loc = stats["channels"]["/apollo/localization/pose"]
+    assert loc["source"] == "topic_publish_stats.jsonl"
+    assert loc["evidence_source"] == "topic_publish_stats"
+    assert loc["promotion_grade_evidence"] is True
+    assert loc["message_count"] == 2
+    assert loc["fresh_message_count"] == 2
+    assert loc["fresh_world_frame_hz"] == pytest.approx(40.0)
+    obstacles = stats["channels"]["/apollo/perception/obstacles"]
+    assert obstacles["message_count"] == 1
+    assert obstacles["obstacle_count"] == 0
+    assert obstacles["empty_message_count"] == 1
 
 
 def test_bridge_stats_to_channel_stats_prefers_publish_elapsed_wall_time() -> None:

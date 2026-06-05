@@ -6,6 +6,7 @@ from pathlib import Path
 from carla_testbed.analysis.assist_ledger import (
     ASSIST_LEDGER_SCHEMA_VERSION,
     build_assist_ledger,
+    build_runtime_assist_ledger,
     classify_assists,
     read_assist_ledger_from_run_dir,
 )
@@ -64,6 +65,142 @@ def test_legacy_and_manual_assists_block_unassisted_claims() -> None:
         "route_follower",
     ]
     assert ledger["blocking_assists"] == ledger["active_assists"]
+    assert ledger["can_claim_unassisted_natural_driving"] is False
+
+
+def test_runtime_count_fields_infer_blocking_assists() -> None:
+    ledger = build_assist_ledger(
+        bridge_stats={
+            "legacy_followstop_apply_count": 1,
+            "route_follower_apply_count": 2,
+            "direct_autopilot_apply_count": 3,
+            "manual_intervention_count": 4,
+        }
+    )
+
+    assert ledger["active_assists"] == [
+        "direct_autopilot",
+        "legacy_followstop",
+        "manual_intervention",
+        "route_follower",
+    ]
+    assert ledger["blocking_assists"] == ledger["active_assists"]
+    assert ledger["assist_confidence"] == "inferred"
+    assert ledger["can_claim_unassisted_natural_driving"] is False
+
+
+def test_runtime_mode_fields_infer_blocking_assists() -> None:
+    route = build_assist_ledger(summary={"control_source": "route_follower"})
+    auto = build_assist_ledger(summary={"controller": "carla_autopilot"})
+    manual = build_assist_ledger(summary={"controller": "manual_control"})
+    force_green = build_assist_ledger(summary={"traffic_light_expectation": {"stimulus_mode": "force_green"}})
+
+    assert route["blocking_assists"] == ["route_follower"]
+    assert auto["blocking_assists"] == ["direct_autopilot"]
+    assert manual["blocking_assists"] == ["manual_intervention"]
+    assert force_green["blocking_assists"] == ["force_green"]
+
+
+def test_online_summary_lateral_mode_dummy_blocks_unassisted_claim() -> None:
+    ledger = build_assist_ledger(
+        summary={
+            "lateral_mode": "dummy",
+            "controller": "composite",
+            "policy_mode": "acc",
+        }
+    )
+
+    assert ledger["active_assists"] == ["dummy_lateral"]
+    assert ledger["blocking_assists"] == ["dummy_lateral"]
+    assert ledger["assist_sources"] == {"dummy_lateral": "summary"}
+    assert ledger["assist_confidence"] == "inferred"
+    assert ledger["can_claim_unassisted_natural_driving"] is False
+
+
+def test_external_stack_legacy_placeholder_does_not_create_dummy_assist() -> None:
+    ledger = build_runtime_assist_ledger(
+        config={
+            "assist_ledger": {
+                "schema_version": ASSIST_LEDGER_SCHEMA_VERSION,
+                "active_assists": [],
+                "assist_confidence": "explicit",
+                "can_claim_unassisted_natural_driving": True,
+            }
+        },
+        summary={
+            "controller": "external_stack",
+            "lateral_mode": "dummy",
+            "control_source": "external_stack",
+            "harness_control_disabled": True,
+            "legacy_controller_role": "compatibility_placeholder",
+            "legacy_controller_applied": False,
+        },
+    )
+
+    assert ledger["active_assists"] == []
+    assert ledger["blocking_assists"] == []
+    assert ledger["assist_confidence"] == "explicit"
+    assert ledger["source_artifact"] == "config"
+    assert ledger["can_claim_unassisted_natural_driving"] is True
+    assert "assist_ledger_unknown_unassisted_claim_not_allowed" not in ledger.get("warnings", [])
+
+
+def test_nested_legacy_placeholder_does_not_create_dummy_assist() -> None:
+    ledger = build_runtime_assist_ledger(
+        config={
+            "assist_ledger": {
+                "schema_version": ASSIST_LEDGER_SCHEMA_VERSION,
+                "active_assists": [],
+                "assist_confidence": "explicit",
+                "can_claim_unassisted_natural_driving": True,
+            }
+        },
+        summary={
+            "controller": "external_stack",
+            "control_source": "external_stack",
+            "harness_control_disabled": True,
+            "legacy_controller_applied": False,
+            "legacy_controller_placeholder": {
+                "controller": "composite",
+                "lateral_mode": "dummy",
+                "policy_mode": "acc",
+                "role": "compatibility_placeholder",
+                "applied": False,
+            },
+        },
+    )
+
+    assert ledger["active_assists"] == []
+    assert ledger["blocking_assists"] == []
+    assert ledger["assist_confidence"] == "explicit"
+    assert ledger["can_claim_unassisted_natural_driving"] is True
+
+
+def test_runtime_without_assist_declaration_cannot_claim_even_without_active_assists() -> None:
+    ledger = build_runtime_assist_ledger(
+        summary={
+            "controller": "external_stack",
+            "control_source": "external_stack",
+            "harness_control_disabled": True,
+            "legacy_controller_applied": False,
+        }
+    )
+
+    assert ledger["active_assists"] == []
+    assert ledger["assist_confidence"] == "unknown"
+    assert ledger["can_claim_unassisted_natural_driving"] is False
+    assert "assist_ledger_unknown_unassisted_claim_not_allowed" in ledger["warnings"]
+
+
+def test_force_green_is_blocking_assist_for_claim_boundary() -> None:
+    ledger = build_assist_ledger(
+        manifest={
+            "traffic_light": {"policy": "force_green"},
+        }
+    )
+
+    assert ledger["active_assists"] == ["force_green"]
+    assert ledger["blocking_assists"] == ["force_green"]
     assert ledger["can_claim_unassisted_natural_driving"] is False
 
 

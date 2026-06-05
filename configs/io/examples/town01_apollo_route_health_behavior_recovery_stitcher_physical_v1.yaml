@@ -18,6 +18,14 @@ run:
   map: Town01
   weather: ClearNoon
   profile_name: town01_apollo_route_health_behavior_recovery_stitcher_physical_v1
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: true
+  notes:
+    - Claim-grade profile declares no intentional runtime assist; analyzers still infer blocking assists from summary and bridge stats.
 scenario:
   driver: carla_town01_route_health
   traffic_lights:
@@ -75,6 +83,7 @@ algo:
       defer_control_until_planning_ready: true
       control_start_gate: planning_ready
       deferred_control_start_mode: dag
+      deferred_control_start_async: true
       deferred_control_disable_bvar_dump: false
       control_runtime_overlay_source_dirs:
         - /opt/apollo/neo/.codex_backup/20260331_004431/control_runtime_refresh/control_component
@@ -109,6 +118,11 @@ algo:
       auto_calib: false
     bridge:
       publish_rate_hz: 20.0
+      claim_grade:
+        enabled: true
+        stale_world_frame_policy: skip
+        localization_publish_policy: once_per_new_sim_frame
+        chassis_publish_policy: once_per_new_sim_frame
       max_obstacles: 64
       radius_m: 120.0
       localization_back_offset_m: 1.4235

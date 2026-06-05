@@ -126,11 +126,19 @@ run-local diagnostics include:
 - `analysis/route_health/route_health.csv`
 - `analysis/route_health/curve_segments.csv`
 - `analysis/route_health/route_health_summary.md`
+- `artifacts/carla_tick_health.jsonl`
+- `artifacts/carla_tick_health_summary.json`
+- `artifacts/topic_publish_stats.jsonl`
 - `analysis/apollo_channel_health/apollo_channel_health_report.json`
 - `analysis/localization_contract/localization_contract_report.json`
 - `analysis/localization_contract/localization_contract_summary.md`
+- `analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json` when
+  `artifacts/apollo_hdmap_projection.jsonl` is exported from Apollo HDMap API
+- `analysis/apollo_hdmap_projection/apollo_hdmap_projection_summary.md` when
+  the projection report is generated
 - `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`
+- `artifacts/control_apply_trace.jsonl`
 - `analysis/control_health/control_health_report.json`
 - `analysis/apollo_link_health/apollo_link_health_report.json`
 - `analysis/apollo_link_health/apollo_link_health_summary.md`
@@ -155,6 +163,30 @@ check or visual observation.
 `Town01` in config, but capability evidence should separately record the CARLA
 map that was actually loaded.
 
+`carla_tick_health_summary.json` records the harness world-tick owner,
+successful tick count, tick failures, and maximum wall-time tick duration. If
+it reports `last_failure_reason=CARLA_WORLD_TICK_TIMEOUT` before routing
+materializes, the run is an environment/world blocker. Do not rewrite that as
+Apollo routing failure or natural-driving behavior evidence.
+
+The same artifact also distinguishes `max_tick_wall_duration_s`, the duration
+of a single `world.tick()` call, from `max_inter_tick_wall_interval_s`, the
+wall-time interval between harness ticks. A run can have no CARLA
+`world.tick()` timeout while still showing a long inter-tick wall pause. When a
+Planning channel gap appears on Apollo header/wall time but not on sim time,
+check the inter-tick interval before blaming CARLA map semantics or control
+mapping. New runs also write `frame_loop_timing` rows in
+`artifacts/carla_tick_health.jsonl`; these rows expose the slowest harness stage
+between ticks, such as GT publish hooks, artifact recording, or demo capture.
+Legacy tick callbacks are expanded into `hook.<method>.<callback_source>`
+entries so a long aggregate hook stage can be attributed to the specific
+scenario or Apollo backend callback. For Apollo CyberRT runs, deferred Control
+startup is scheduled asynchronously by default; startup evidence remains in
+`artifacts/apollo_backend_startup_trace.jsonl` and
+`artifacts/apollo_control_deferred_*.log`, while tick-health should no longer
+show a multi-second `CyberRTBackend.on_sim_tick` wall pause. This cadence
+evidence is not behavior success evidence.
+
 For no-interference Apollo truth-input claims, `apollo_link_health_report.json`
 is the first triage index, while `natural_driving_report.json` is the final
 suite gate. Missing localization, reference-line, control-handoff,
@@ -168,6 +200,51 @@ routing/planning/control handoff, control mapping/apply, obstacle GT,
 traffic-light GT, no-assist boundary, and natural-driving outcome layers. A
 missing applicable layer blocks `can_claim_unassisted_natural_driving`; traffic
 light evidence may be `not_applicable` only for non-traffic-light scenarios.
+`apollo_reference_line_contract_report.json` should be read as three layers:
+planning trajectory, control reference, and official Apollo HDMap projection.
+The first two are diagnostic/reference-line semantics evidence; the HDMap
+projection layer is required before a lane/reference-line hard gate can become
+claim-grade.
+
+`apollo_hdmap_projection_report.json` is a direct inspection report for
+`artifacts/apollo_hdmap_projection.jsonl`. It is useful for checking whether
+the artifact is official Apollo HDMap API evidence before the broader
+reference-line and localization contracts consume it. A missing projection
+report or missing JSONL should remain `insufficient_data`; do not substitute
+bridge nearest-lane diagnostics or CARLA waypoint projection.
+
+`artifacts/topic_publish_stats.jsonl` is row-level bridge publish evidence for
+claim-grade Apollo channel health. It records each published channel with wall
+time, sim/header timestamp, sequence number, frame id, CARLA world frame, and
+payload counts such as obstacle or traffic-light count. Channel health should
+prefer this artifact over aggregate bridge counters when it is present, because
+aggregate counters cannot distinguish repeated cached publish attempts from
+fresh CARLA world-frame samples.
+
+For Apollo planning, `channel_stats.json` may record both the primary Apollo
+header/wall-time axis and a secondary `sim_time_*` axis when
+`planning_topic_debug.jsonl` contains `sim_time_sec`. A small sim-time gap does
+not erase a large Apollo header/wall-time gap: if Control consumes expired
+trajectories or Planning pauses in wall time, channel health must remain a
+blocking failure and should report the time-axis diagnosis explicitly.
+
+`artifacts/control_apply_trace.jsonl` is the preferred row-level control-chain
+evidence for Apollo CyberRT truth-input runs. Each row preserves Apollo raw
+control, bridge mapped control, CARLA applied control, vehicle response,
+latency, route progress, actuator mapping mode, calibration profile, steering
+sign/scale, and apply-cadence diagnostics. It exists to make
+raw -> mapped -> applied -> response attribution auditable; it must not be used
+to hide raw Apollo command oscillation or to bypass localization/reference-line
+failures.
+
+`artifacts/control_decode_debug.jsonl` and
+`artifacts/bridge_control_decode.jsonl` remain fallback row-level Apollo control
+decode evidence. They may supply Apollo raw command and bridge mapped command
+layers when P0 `timeseries.csv` does not contain external-stack raw/mapped
+fields or when `control_apply_trace.jsonl` is unavailable. They do not replace
+CARLA applied-control evidence; mapped-to-applied and vehicle response checks
+still need `control_apply_trace.jsonl`, applied-control timeseries, direct apply
+rows, or vehicle response artifacts.
 
 Postprocess may regenerate `analysis/localization_contract/` only when strong
 localization fields or bridge localization stats are present. Plain ego P0

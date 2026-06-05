@@ -9,6 +9,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -282,6 +284,7 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
             self.assertTrue(docker_cfg["defer_control_until_planning_ready"], rel_path)
             self.assertEqual(docker_cfg["control_start_gate"], "planning_ready", rel_path)
             self.assertEqual(docker_cfg["deferred_control_start_mode"], "dag", rel_path)
+            self.assertTrue(docker_cfg["deferred_control_start_async"], rel_path)
             self.assertFalse(docker_cfg["deferred_control_disable_bvar_dump"], rel_path)
             self.assertEqual(docker_cfg["control_planning_ready_min_nonempty_count"], 1, rel_path)
             self.assertEqual(docker_cfg["control_planning_ready_min_sequence_num"], 5, rel_path)
@@ -294,12 +297,24 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
         self.assertTrue(probe_cfg["algo"]["apollo"]["docker"]["defer_control_until_planning_ready"])
         self.assertEqual(probe_cfg["algo"]["apollo"]["docker"]["control_start_gate"], "planning_ready")
         self.assertEqual(probe_cfg["algo"]["apollo"]["docker"]["deferred_control_start_mode"], "dag")
+        self.assertTrue(probe_cfg["algo"]["apollo"]["docker"]["deferred_control_start_async"])
         self.assertTrue(probe_cfg["algo"]["apollo"]["docker"]["deferred_control_disable_bvar_dump"])
         self.assertTrue(probe_cfg["algo"]["apollo"]["docker"]["control_require_chassis_ready"])
         self.assertEqual(probe_cfg["algo"]["apollo"]["docker"]["control_chassis_ready_min_count"], 20)
         self.assertHostPythonExecIsPortable(probe_cfg["algo"]["apollo"]["docker"]["host_python_exec"])
         self.assertEqual(probe_cfg["run"]["ticks"], 320)
         self.assertEqual(probe_cfg["run"]["post_fail_steps"], 120)
+
+    def test_planning_ready_docker_profiles_declare_async_deferred_control_start(self) -> None:
+        for path in sorted((Path.cwd() / "configs" / "io" / "examples").glob("*.yaml")):
+            cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            docker_cfg = (((cfg.get("algo") or {}).get("apollo") or {}).get("docker") or {})
+            if docker_cfg.get("control_start_gate") != "planning_ready":
+                continue
+            self.assertTrue(
+                docker_cfg.get("deferred_control_start_async"),
+                str(path.relative_to(Path.cwd())),
+            )
 
     def test_mainline_configs_disable_dreamview_by_default(self) -> None:
         for rel_path in (
@@ -1193,6 +1208,106 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
             log_text = (artifacts / "apollo_control_deferred_start.log").read_text(encoding="utf-8")
             self.assertIn("APOLLO_DISABLE_BVAR_DUMP=1", log_text)
 
+    def test_on_sim_tick_schedules_deferred_control_start_without_blocking_tick(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifacts = Path(tmpdir)
+            backend = CyberRTBackend(
+                {
+                    "artifacts": {"dir": str(artifacts)},
+                    "algo": {
+                        "apollo": {
+                            "docker": {
+                                "container": "apollo_neo_dev_10.0.0_pkg",
+                                "control_start_gate": "planning_ready",
+                                "deferred_control_start_async": True,
+                            }
+                        }
+                    },
+                }
+            )
+            backend._deferred_control_pending = True
+            backend._deferred_control_started = False
+            backend._deferred_control_last_poll_sec = -999.0
+            started = threading.Event()
+            release = threading.Event()
+
+            def slow_start(_artifacts: Path) -> None:
+                started.set()
+                self.assertTrue(release.wait(timeout=2.0))
+
+            with (
+                mock.patch.object(backend, "_docker_probe_planning_ready_before_control", return_value=("ready", None)),
+                mock.patch.object(backend, "_docker_start_control_module", side_effect=slow_start) as mock_start,
+            ):
+                begin = time.perf_counter()
+                backend.on_sim_tick(frame_id=10, timestamp=1.0, step=3)
+                elapsed = time.perf_counter() - begin
+                self.assertLess(elapsed, 0.5)
+                self.assertTrue(started.wait(timeout=1.0))
+                self.assertTrue(backend._deferred_control_start_in_progress)
+                self.assertTrue(backend._deferred_control_pending)
+                release.set()
+                self.assertIsNotNone(backend._deferred_control_start_thread)
+                backend._deferred_control_start_thread.join(timeout=2.0)
+
+            mock_start.assert_called_once_with(artifacts)
+            self.assertTrue(backend._deferred_control_started)
+            self.assertFalse(backend._deferred_control_pending)
+            self.assertFalse(backend._deferred_control_start_in_progress)
+            trace_rows = [
+                json.loads(line)
+                for line in (artifacts / "apollo_backend_startup_trace.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(trace_rows[0]["step"], "deferred_control_start_async_scheduled")
+            self.assertEqual(trace_rows[-1]["step"], "deferred_control_start_async_done")
+
+    def test_on_sim_tick_records_deferred_control_async_start_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifacts = Path(tmpdir)
+            backend = CyberRTBackend(
+                {
+                    "artifacts": {"dir": str(artifacts)},
+                    "algo": {
+                        "apollo": {
+                            "docker": {
+                                "container": "apollo_neo_dev_10.0.0_pkg",
+                                "control_start_gate": "planning_ready",
+                                "deferred_control_start_async": True,
+                            }
+                        }
+                    },
+                }
+            )
+            backend._deferred_control_pending = True
+            backend._deferred_control_started = False
+            backend._deferred_control_last_poll_sec = -999.0
+
+            with (
+                mock.patch.object(backend, "_docker_probe_planning_ready_before_control", return_value=("ready", None)),
+                mock.patch.object(
+                    backend,
+                    "_docker_start_control_module",
+                    side_effect=RuntimeError("control start failed"),
+                ),
+                mock.patch("builtins.print"),
+            ):
+                backend.on_sim_tick(frame_id=11, timestamp=1.1, step=4)
+                self.assertIsNotNone(backend._deferred_control_start_thread)
+                backend._deferred_control_start_thread.join(timeout=2.0)
+
+            self.assertFalse(backend._deferred_control_started)
+            self.assertFalse(backend._deferred_control_pending)
+            self.assertFalse(backend._deferred_control_start_in_progress)
+            self.assertIn("control start failed", backend._deferred_control_failure or "")
+            self.assertIn("control start failed", backend._deferred_control_start_async_failure or "")
+            trace_rows = [
+                json.loads(line)
+                for line in (artifacts / "apollo_backend_startup_trace.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(trace_rows[-1]["step"], "deferred_control_start_async_failed")
+
     def test_evaluate_capture_validity_surfaces_startup_stuck_family(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             run_dir = Path(tmpdir) / "lat_straight_track__02"
@@ -1845,7 +1960,7 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
         args = parser.parse_args(["lane_keep", "--post-fail-steps", "120"])
         self.assertEqual(args.post_fail_steps, 120)
 
-    def test_default_runtime_flags_for_capability_enable_lateral_for_curve_and_traffic(self) -> None:
+    def test_default_runtime_flags_for_capability_enable_lateral_for_claim_profiles(self) -> None:
         self.assertEqual(
             _default_runtime_flags_for_capability("curve_lane_follow"),
             {"enable_lateral": True, "enable_guard": True},
@@ -1856,7 +1971,7 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
         )
         self.assertEqual(
             _default_runtime_flags_for_capability("lane_keep"),
-            {"enable_lateral": False, "enable_guard": True},
+            {"enable_lateral": True, "enable_guard": True},
         )
 
     def test_resolve_startup_profile_sequence_supports_adaptive_probe_fallback(self) -> None:
@@ -2837,6 +2952,38 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
         self.assertEqual(snapshot["scenario_progress_total"], 320)
         self.assertAlmostEqual(snapshot["scenario_progress_fraction"], 0.95, places=3)
         self.assertAlmostEqual(snapshot["scenario_progress_remaining_sec"], 0.8, places=3)
+
+    def test_online_chain_extract_followstop_progress_prefers_current_redirected_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            batch_root = Path(tmpdir)
+            stale_log = batch_root / "zz_old_run" / "artifacts" / "followstop_child.stdout.log"
+            stale_log.parent.mkdir(parents=True, exist_ok=True)
+            stale_log.write_text("[progress] 399/420 (95%), est remaining 1.0s\n", encoding="utf-8")
+
+            effective_run_dir = batch_root / "aa_current_run__02"
+            effective_run_dir.mkdir(parents=True, exist_ok=True)
+            planned_run_dir = batch_root / "aa_current_run"
+            planned_log = planned_run_dir / "artifacts" / "followstop_child.stdout.log"
+            planned_log.parent.mkdir(parents=True, exist_ok=True)
+            planned_log.write_text("[progress] 3/160 (1%), est remaining 45.0s\n", encoding="utf-8")
+            (planned_run_dir / "RUN_DIR_REDIRECT.txt").write_text(str(effective_run_dir), encoding="utf-8")
+            (batch_root / "LATEST.txt").write_text(str(effective_run_dir), encoding="utf-8")
+
+            snapshot = capability_online_chain._collect_step_live_snapshot(
+                {
+                    "command_argv": [
+                        "python3",
+                        "/tmp/run_town01_route_health.py",
+                        "--batch-root",
+                        str(batch_root),
+                    ]
+                }
+            )
+
+        self.assertEqual(snapshot["scenario_progress_current"], 3)
+        self.assertEqual(snapshot["scenario_progress_total"], 160)
+        self.assertIn("aa_current_run", snapshot["scenario_progress_source"])
+        self.assertNotIn("zz_old_run", snapshot["scenario_progress_source"])
 
     def test_collect_step_live_snapshot_exposes_carla_startup_probe_before_internal_run_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -11750,6 +11897,9 @@ class ApolloBridgeSteeringFieldTests(unittest.TestCase):
                 steer_scale=0.25,
                 steer_sign=1.0,
                 brake_deadzone=0.0,
+                throttle_brake_mutual_exclusion_enabled=True,
+                throttle_brake_hysteresis_frames=2,
+                throttle_brake_min_command=0.01,
                 physical_allow_legacy_fallback=True,
                 physical_apollo_max_steer_angle_deg=8.203,
                 physical_apollo_max_accel_mps2=3.0,

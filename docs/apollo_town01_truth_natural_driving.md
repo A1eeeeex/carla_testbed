@@ -27,6 +27,10 @@ Apollo Control handoff evidence:
 
 - analyzer: `carla_testbed.analysis.apollo_control_handoff`
 - report: `apollo_control_handoff_report.json`
+- row-level trace: `artifacts/control_apply_trace.jsonl` is preferred for
+  Apollo raw -> bridge mapped -> CARLA applied -> vehicle response attribution;
+  `control_decode_debug.jsonl` / `bridge_control_decode.jsonl` are fallback
+  raw/mapped decode evidence only.
 - gate: Control process, `/apollo/control`, bridge receive, raw decode, mapped/applied control, and vehicle response must be non-blocking for hard natural-driving pass in `natural_driving_report.json`.
 
 Apollo reference-line contract evidence:
@@ -34,10 +38,22 @@ Apollo reference-line contract evidence:
 - analyzer: `carla_testbed.analysis.apollo_reference_line_contract`
 - report: `apollo_reference_line_contract_report.json`
 - gate: lane-keep, curve, junction, and traffic-light hard passes require
-  Apollo planning/control reference-line evidence with status `pass` or `warn`
-  and no blocking reasons. Route heading agreement or bridge nearest-lane
-  diagnostics are useful context, but they cannot replace this report for
-  claim-grade natural-driving evidence.
+  explicit Apollo reference-line evidence with no blocking reasons. The report
+  separates `contracts.planning_trajectory`,
+  `contracts.control_reference`, and `contracts.apollo_hdmap_projection`.
+  Planning trajectory and control reference can pass independently, but a
+  claim-grade lane/reference-line pass also requires Apollo HDMap API projection
+  evidence. Route heading agreement or bridge nearest-lane diagnostics are
+  useful context, but they cannot replace `apollo_hdmap_projection.jsonl`.
+
+Apollo HDMap projection evidence:
+
+- analyzer: `carla_testbed.analysis.apollo_hdmap_projection`
+- report: `apollo_hdmap_projection_report.json`
+- gate: this report is optional only in diagnostic/smoke mode. A claim-grade
+  lane/reference-line pass requires official `source="apollo_hdmap_api"`
+  projection rows with bounded heading and lateral error. Missing projection
+  remains `insufficient_data`, not an Apollo behavior failure.
 
 ## Scope
 
@@ -284,6 +300,15 @@ position/theta/velocity frame evidence is declared, length/width/height are
 positive, tracking time is monotonic, and dynamic actors are not represented by
 zero-filled velocity unless they are actually stationary.
 
+Lane-keep routes may legitimately publish empty
+`/apollo/perception/obstacles` messages when no non-ego actor is part of the
+scenario. In that case the obstacle contract report should record
+`status=pass_empty`, `message_count>0`, `object_count=0`, and
+`empty_obstacle_messages_healthy=true`. This is healthy lane-keep no-object
+transport evidence, not proof that dynamic-obstacle behavior works. Follow-stop
+or other dynamic-obstacle scenarios still require actual obstacle objects with
+stable ids, frame/size/velocity evidence, and monotonic tracking time.
+
 `Detection3DArray` or `MarkerArray` fallback sources often do not carry
 velocity. Those artifacts are still useful recording evidence, but the report
 marks them with `velocity_source_missing_or_zero_filled`; dynamic-obstacle
@@ -334,6 +359,7 @@ Recorded assists include:
 - `route_follower`
 - `direct_autopilot`
 - `manual_intervention`
+- `force_green`
 
 `carla_direct_transport` is recorded as a non-blocking transport candidate.
 The other assists are blocking for unassisted natural-driving claims unless a
@@ -343,6 +369,16 @@ should produce a `warn`/diagnostic result such as
 natural-driving pass. `natural_driving_report.json` must carry the
 `assisted_pass` verdict for runs that satisfy behavior metrics only with a
 blocking assist active.
+
+Legacy harness fields require one extra check. A summary field such as
+`lateral_mode=dummy` is a blocking `dummy_lateral` assist only when that
+controller was actually applied. In Apollo CyberRT truth-input runs where the
+harness control path is disabled and CARLA actuation comes from
+`/apollo/control`, the run must explicitly record
+`control_source=external_stack`, `harness_control_disabled=true`,
+`legacy_controller_applied=false`, and an explicit clean `assist_ledger`.
+Without those fields, the evaluator keeps the run non-claim-grade rather than
+guessing that the dummy controller was harmless.
 
 ### Unassisted Apollo control claim gate
 
@@ -362,7 +398,9 @@ blocking assist active.
   `apollo_control_handoff_report.json` are `pass` or `warn` with no blocking
   stage/reason.
 - `control_health_report.json` has no blocking failure.
-- `assist_ledger.active_assists=[]` with explicit or inferred confidence.
+- `assist_ledger.active_assists=[]` with explicit artifact evidence, or
+  artifact-grade inference that no legacy controller/manual assist was applied;
+  `assist_confidence=unknown` is insufficient for a hard claim.
 - `lateral_guard_apply_count=0` and
   `trajectory_contract_guard_apply_count=0`; any replacement control remains a
   blocker unless explicitly diagnostic-only and not used for capability claim.
@@ -482,7 +520,11 @@ This gate proves control is observable and not obviously contradictory:
 - `control_health_report.json` generated from `summary.json` and
   `timeseries.csv/jsonl`;
 - `control_handoff_status = control_consuming_with_nonzero_planning`
-- raw/mapped/applied throttle, brake, and steer are present;
+- raw/mapped/applied throttle, brake, and steer are present. If P0
+  `timeseries.csv` lacks raw/mapped external-stack fields, analyzers may use
+  `control_decode_debug.jsonl` or `bridge_control_decode.jsonl` for the
+  Apollo raw and bridge mapped layers, but CARLA applied control and vehicle
+  response still require applied/runtime artifacts;
 - brake/throttle conflicts are bounded;
 - mapped vs applied throttle/brake/steer mismatch is bounded;
 - control latency is present, with high latency treated as warning evidence;
@@ -594,9 +636,23 @@ Required run artifacts:
   `artifacts/bridge_health_summary.json`,
   `artifacts/bridge_transport_summary.json`, and
   `artifacts/planning_topic_debug_summary.json` when available.
+- `artifacts/carla_tick_health_summary.json` and
+  `artifacts/carla_tick_health.jsonl` for harness world-tick cadence. A
+  `CARLA_WORLD_TICK_TIMEOUT` before routing is an environment/world blocker,
+  not Apollo routing or planning behavior evidence. A high inter-tick wall
+  interval with low `max_tick_wall_duration_s` indicates harness loop cadence
+  or wall-time pause evidence, not a single CARLA `world.tick()` timeout.
+  `frame_loop_timing` rows identify the slowest harness stage between ticks.
+- `artifacts/topic_publish_stats.jsonl` for claim-grade channel evidence. This
+  row-level artifact distinguishes delivery wall rate, header sim-time rate,
+  fresh CARLA world-frame rate, and payload counts for localization, chassis,
+  obstacles, and traffic lights.
 - `analysis/route_health/route_health.json`.
 - `analysis/apollo_channel_health/apollo_channel_health_report.json`.
 - `analysis/localization_contract/localization_contract_report.json`.
+- `analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json` when
+  `artifacts/apollo_hdmap_projection.jsonl` is available; otherwise
+  reference-line hard gates remain `insufficient_data`.
 - `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`.
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`.
 - `analysis/control_health/control_health_report.json`.
@@ -613,6 +669,16 @@ Required analyzers for a single online run:
 
 ```bash
 RUN=runs/<run_id>
+python tools/export_apollo_hdmap_projection.py \
+  --run-dir "$RUN" \
+  --container apollo_neo_dev_10.0.0_pkg \
+  --map-dir /apollo/modules/map/data/carla_town01 \
+  --base-map-filename base_map.txt \
+  --map-name Town01 \
+  --analyze
+python tools/analyze_apollo_hdmap_projection.py \
+  --projection "$RUN/artifacts/apollo_hdmap_projection.jsonl" \
+  --out "$RUN/analysis/apollo_hdmap_projection"
 python tools/analyze_apollo_localization_contract.py --run-dir "$RUN"
 python tools/analyze_apollo_reference_line_contract.py --run-dir "$RUN"
 python tools/analyze_apollo_control_handoff.py --run-dir "$RUN"
@@ -646,7 +712,8 @@ Minimum pass thresholds for a claim-grade packet:
   an empty `why_not_claimable`.
 - `localization_contract_report.json` is `pass` or non-blocking `warn`,
   claim-grade, uses sim-time, writes `header.frame_id=map`, uses verified VRP /
-  rear-axle evidence, and has no blocking reasons.
+  rear-axle evidence, skips stale GT sample republish for claim-grade runs, and
+  has no blocking reasons.
 - `apollo_reference_line_contract_report.json`,
   `apollo_control_handoff_report.json`, `apollo_channel_health_report.json`,
   and `control_health_report.json` are `pass` or non-blocking `warn`.

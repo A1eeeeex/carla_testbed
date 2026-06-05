@@ -14,6 +14,9 @@ class HarnessConfig:
     out_dir: Path = Path("runs/default")
     fail_strategy: str = "fail_fast"  # or log_and_continue
     post_fail_steps: int = 400
+    wall_time_pacing_enabled: bool = False
+    wall_time_pacing_target_interval_s: Optional[float] = None
+    wall_time_pacing_max_sleep_s: Optional[float] = None
     record_modes: List[str] = field(default_factory=list)
     record_output: Optional[Path] = None
     record_fps: Optional[float] = None

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+import time
 from typing import Any, Callable, Iterable
 
 from .hooks import FrameContext, RunHook
@@ -11,6 +13,14 @@ class RunHookError:
     hook_name: str
     method_name: str
     error: Exception
+
+
+@dataclass(frozen=True)
+class RunHookTiming:
+    hook_name: str
+    method_name: str
+    duration_s: float
+    error: bool = False
 
 
 class CallbackRunHook(RunHook):
@@ -48,16 +58,29 @@ class HookDispatcher:
     def add(self, hook: RunHook) -> None:
         self.hooks.append(hook)
 
-    def notify(self, method_name: str, context: Any) -> None:
+    def notify(self, method_name: str, context: Any) -> list[RunHookTiming]:
+        timings: list[RunHookTiming] = []
         for idx, hook in enumerate(self.hooks):
             method = getattr(hook, method_name, None)
             if method is None:
                 continue
             hook_name = getattr(hook, "name", f"{hook.__class__.__name__}#{idx}")
+            started = time.perf_counter()
+            error = False
             try:
                 method(context)
             except Exception as exc:
+                error = True
                 self._record_error(hook_name=hook_name, method_name=method_name, error=exc)
+            timings.append(
+                RunHookTiming(
+                    hook_name=str(hook_name),
+                    method_name=str(method_name),
+                    duration_s=max(0.0, time.perf_counter() - started),
+                    error=error,
+                )
+            )
+        return timings
 
     def close(self) -> None:
         for idx, hook in enumerate(self.hooks):
@@ -87,8 +110,44 @@ def adapt_tick_callbacks(callbacks: Iterable[Callable[..., None]] | None) -> lis
     for idx, callback in enumerate(callbacks or []):
         if callback is None:
             continue
-        hooks.append(CallbackRunHook(callback, name=f"tick_callback_{idx}"))
+        module_name = getattr(callback, "__module__", "") or ""
+        qualname = getattr(callback, "__qualname__", "") or getattr(callback, "__name__", "") or ""
+        source_name = ".".join(part for part in (module_name, qualname) if part)
+        callback_name = f"tick_callback_{idx}"
+        if source_name:
+            callback_name = f"{callback_name}:{source_name}"
+        hooks.append(CallbackRunHook(callback, name=callback_name))
     return hooks
+
+
+def compute_wall_time_pacing_sleep(
+    *,
+    frame_loop_start_wall_s: float,
+    now_wall_s: float,
+    target_interval_s: float | None,
+    max_sleep_s: float | None = None,
+) -> float:
+    """Return how long to sleep to keep one sim tick near a wall-clock interval."""
+    try:
+        frame_start = float(frame_loop_start_wall_s)
+        now = float(now_wall_s)
+        target = float(target_interval_s)
+    except (TypeError, ValueError):
+        return 0.0
+    if not (math.isfinite(frame_start) and math.isfinite(now) and math.isfinite(target)):
+        return 0.0
+    if target <= 0.0:
+        return 0.0
+    elapsed = max(0.0, now - frame_start)
+    sleep_s = max(0.0, target - elapsed)
+    if max_sleep_s is not None:
+        try:
+            cap = float(max_sleep_s)
+        except (TypeError, ValueError):
+            cap = None
+        if cap is not None and math.isfinite(cap) and cap >= 0.0:
+            sleep_s = min(sleep_s, cap)
+    return sleep_s
 
 
 def hook_error_summaries(errors: Iterable[RunHookError]) -> list[dict[str, str]]:

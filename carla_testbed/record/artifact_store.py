@@ -180,7 +180,7 @@ class RunArtifactStore:
             manifest = dict(payload)
         elif payload_role == "summary":
             summary = dict(payload)
-        config = _read_yaml_mapping(self.resolved_config_path)
+        config = self._assist_ledger_config_payload()
         bridge_stats = self._first_existing_json_mapping(
             "artifacts/direct_bridge_stats.json",
             "artifacts/cyber_bridge_stats.json",
@@ -193,6 +193,18 @@ class RunArtifactStore:
             summary=summary or None,
             manifest=manifest or None,
         )
+
+    def _assist_ledger_config_payload(self) -> dict[str, Any]:
+        fallback = _read_yaml_mapping(self.resolved_config_path)
+        if isinstance(fallback.get("assist_ledger"), Mapping):
+            return fallback
+        for relative in ("effective_config.yaml", "effective.yaml"):
+            payload = _read_yaml_mapping(self.run_dir / relative)
+            if isinstance(payload.get("assist_ledger"), Mapping):
+                return payload
+            if payload and not fallback:
+                fallback = payload
+        return fallback
 
     def _with_runtime_assist_ledger(
         self,

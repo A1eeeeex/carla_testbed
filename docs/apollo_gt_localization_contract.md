@@ -119,7 +119,9 @@ Claim-grade online localization evidence now requires:
 - RFU quaternion decoded heading p95 difference below `1e-3 rad`;
 - declared velocity/acceleration/angular-velocity frames and units;
 - `vehicle_reference_confidence=verified` and
-  `vehicle_reference_hard_gate_eligible=true`.
+  `vehicle_reference_hard_gate_eligible=true`;
+- bridge claim-grade publish policy configured to skip stale GT samples instead
+  of republishing cached localization/chassis samples as fresh evidence.
 
 Stale republish rows may still be useful diagnostic evidence, but duplicate
 localization timestamps block claim-grade natural-driving evidence unless the
@@ -153,19 +155,22 @@ are not modeled, the bridge should record explicit policy fields such as
 `not_modelled_gt_truth` or `not_applicable_gt_truth`. The checklist then remains
 `warn`, not `pass`, but the gap is no longer an unexplained missing field.
 
-Channel health separates publish rate from fresh-sample rate. The bridge may
-republish the latest localization sample multiple times while waiting for a new
-CARLA/ROS2 odometry stamp. Therefore `loc_count` or raw publish count is not
-automatically the number of fresh localization samples. The analyzer reports
-`publish_message_count`, `fresh_sample_count`, `unique_timestamp_count`,
-`duplicate_timestamp_count`, `publish_hz`, and `fresh_sample_hz`. Duplicate
-timestamps are allowed as diagnostic evidence of republish behavior. If
-timestamps are non-decreasing and `fresh_sample_hz` is sufficient, the report records
-`republish_policy=stale_republish_allowed_when_fresh_sample_rate_ok` rather
-than treating duplicate timestamps as a channel fault. Duplicate rows must
-still not be counted as fresh samples, and claim-grade hard pass remains blocked
-when `duplicate_timestamp_ratio >= 0.01` unless the run is explicitly marked as
-non-claim/debug.
+Channel health separates publish rate from fresh-sample rate. Claim-grade
+online runs should set `bridge.claim_grade.enabled=true` and
+`stale_world_frame_policy=skip`, so localization/chassis/obstacle messages are
+published once per new CARLA world frame or odometry timestamp. The bridge
+writes `artifacts/topic_publish_stats.jsonl` with `channel`, wall time,
+sim/header timestamp, sequence, frame id, CARLA world frame, and payload counts.
+The channel-health normalizer uses this row-level evidence to compute
+`delivery_wall_hz`, `header_sim_hz`, and `fresh_world_frame_hz`.
+
+Legacy or diagnostic bridge modes may still republish the latest localization
+sample while waiting for a new CARLA/ROS2 odometry stamp. Therefore `loc_count`
+or raw publish count is not automatically the number of fresh localization
+samples. Duplicate timestamps are allowed as diagnostic evidence of republish
+behavior, but duplicate rows must not be counted as fresh samples, and
+claim-grade hard pass remains blocked when `duplicate_timestamp_ratio >= 0.01`
+unless the run is explicitly marked as non-claim/debug.
 
 The reference-point check distinguishes configured intent from runtime evidence.
 `vehicle_reference.yaml` can say the configured Apollo reference point should be
@@ -207,6 +212,40 @@ localization/reference-line reports fail and prioritize map alignment, lane
 direction, lane id, or routing snap investigation before any Apollo behavior
 claim.
 
+Operators can inspect the artifact directly before running the broader
+reference-line or natural-driving gates:
+
+```bash
+python tools/export_apollo_hdmap_projection.py \
+  --run-dir "$RUN" \
+  --container apollo_neo_dev_10.0.0_pkg \
+  --map-dir /apollo/modules/map/data/carla_town01 \
+  --base-map-filename base_map.txt \
+  --map-name Town01 \
+  --analyze
+
+python tools/analyze_apollo_hdmap_projection.py \
+  --projection "$RUN/artifacts/apollo_hdmap_projection.jsonl" \
+  --out "$RUN/analysis/apollo_hdmap_projection"
+```
+
+The exporter reads actual Apollo-map localization samples from
+`artifacts/apollo_reference_line_contract.jsonl` and invokes Apollo's
+`/opt/apollo/neo/bin/map_xysl` inside the package container. `map_xysl` calls
+Apollo HDMap nearest-lane and lane-heading APIs, so rows emitted by this wrapper
+may use `source="apollo_hdmap_api"`. If the wrapper cannot run, keep the
+projection layer as `insufficient_data`; do not substitute CARLA waypoint or
+bridge nearest-lane diagnostics for claim-grade projection evidence.
+Use bounded sampling and a per-sample timeout for online runs. A timed-out
+`map_xysl` call should become a row with `status="error"` /
+`command_timeout=true`, not a skipped row and not a pass.
+
+`analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json` is a
+projection evidence report only. A `pass` result can support
+`contracts.apollo_hdmap_projection`; it does not replace
+`apollo_reference_line_contract_report.json`, `localization_contract_report.json`,
+or `natural_driving_report.json`.
+
 `manifest.scenario_metadata.route_trace` or
 `manifest.metadata.scenario_metadata.route_trace` may provide claim-grade CARLA
 route geometry for route-health. That is still not Apollo reference-line
@@ -222,9 +261,14 @@ frame transform, VRP/rear-axle reference, heading, quaternion, velocity,
 yaw-rate, and route/lane diagnostic consistency. It must not treat a bridge
 nearest-lane diagnostic as proof that Apollo Planning and Control are using a
 compatible reference line. That claim is carried by
-`apollo_reference_line_contract_report.json`, which checks planning trajectory
-heading, control reference heading, lateral error, non-empty trajectory ratio,
-reference-line provider readiness, and routing/reference-line availability.
+`apollo_reference_line_contract_report.json`, which now records three separate
+subcontracts: `contracts.planning_trajectory` for non-empty trajectory and
+trajectory heading semantics, `contracts.control_reference` for Control debug
+reference heading/lateral semantics, and
+`contracts.apollo_hdmap_projection` for official Apollo HDMap API lane
+projection. A run may have usable planning trajectory evidence while remaining
+`insufficient_data` for claim-grade reference-line verification if the control
+reference or Apollo HDMap projection artifact is missing.
 If the localization route-heading error is small but the Apollo reference-line
 contract fails or is missing, `natural_driving_report.json` must remain
 `insufficient_data` or diagnostic-only rather than claiming Apollo natural
@@ -443,6 +487,9 @@ Operator sequence:
 
 ```bash
 RUN=runs/<run_id>
+python tools/analyze_apollo_hdmap_projection.py \
+  --projection "$RUN/artifacts/apollo_hdmap_projection.jsonl" \
+  --out "$RUN/analysis/apollo_hdmap_projection"
 python tools/analyze_apollo_localization_contract.py --run-dir "$RUN"
 python tools/analyze_apollo_reference_line_contract.py --run-dir "$RUN"
 python tools/analyze_apollo_link_health.py --run-dir "$RUN"

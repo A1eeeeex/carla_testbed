@@ -89,6 +89,31 @@ backend:
     assert cfg.backend.params == {"control_topic": "/tb/ego/control_cmd"}
 
 
+def test_top_level_assist_ledger_is_a_known_contract_section(tmp_path: Path) -> None:
+    config_path = tmp_path / "assist_ledger.yaml"
+    config_path.write_text(
+        """
+scenario:
+  name: follow_stop
+backend:
+  name: dummy
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: true
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg.assist_ledger["schema_version"] == "assist_ledger.v1"
+    assert cfg.assist_ledger["active_assists"] == []
+    assert cfg.assist_ledger["assist_confidence"] == "explicit"
+
+
 def test_env_var_expansion_preserves_unset_vars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CARLA_TESTBED_TMP_OUTPUT", "runs/from-env")
     monkeypatch.delenv("CARLA_TESTBED_UNSET_OUTPUT", raising=False)

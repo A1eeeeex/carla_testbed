@@ -64,6 +64,7 @@ class TestbedConfig:
     sensors: SensorRigConfig = field(default_factory=SensorRigConfig)
     backend: BackendConfig = field(default_factory=BackendConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
+    assist_ledger: Dict[str, Any] = field(default_factory=dict)
     source_path: Path | None = None
 
     def validate_basic(self) -> None:

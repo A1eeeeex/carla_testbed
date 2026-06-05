@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -160,6 +161,79 @@ def test_detection3d_velocity_missing_warns_when_dynamic_behavior_not_claimed() 
 
     assert report["status"] == "warn"
     assert "velocity_source_missing_or_zero_filled" in report["warnings"]
+
+
+def test_lane_keep_empty_obstacle_messages_are_pass_empty() -> None:
+    records = [
+        {
+            "timestamp": 1.0,
+            "published_obstacle_count": 0,
+            "carla_actor_id": None,
+            "apollo_perception_id": None,
+            "is_ego": False,
+        },
+        {
+            "timestamp": 1.05,
+            "published_obstacle_count": 0,
+            "carla_actor_id": None,
+            "apollo_perception_id": None,
+            "is_ego": False,
+        },
+    ]
+
+    report = analyze_obstacle_gt_contract_records(records, scenario_class="lane_keep")
+
+    assert report["status"] == "pass_empty"
+    assert report["message_count"] == 2
+    assert report["empty_message_count"] == 2
+    assert report["object_count"] == 0
+    assert report["empty_obstacle_messages_healthy"] is True
+    assert report["errors"] == []
+    assert report["missing_fields"] == []
+
+
+def test_cli_accepts_lane_keep_empty_obstacle_messages(tmp_path: Path) -> None:
+    artifact = tmp_path / "obstacle_gt_contract.jsonl"
+    artifact.write_text(
+        "\n".join(
+            json.dumps({"timestamp": 1.0 + index * 0.05, "published_obstacle_count": 0})
+            for index in range(2)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/analyze_obstacle_gt_contract.py",
+            "--input",
+            str(artifact),
+            "--scenario-class",
+            "lane_keep",
+            "--out",
+            str(out_dir),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    report = json.loads((out_dir / "obstacle_gt_contract_report.json").read_text(encoding="utf-8"))
+
+    assert result.returncode == 0
+    assert report["status"] == "pass_empty"
+    assert report["empty_obstacle_messages_healthy"] is True
+
+
+def test_dynamic_scenario_empty_obstacle_messages_fail_when_required() -> None:
+    report = analyze_obstacle_gt_contract_records(
+        [{"timestamp": 1.0, "published_obstacle_count": 0}],
+        scenario_class="follow_stop",
+    )
+
+    assert report["status"] == "fail"
+    assert "required_dynamic_obstacle_missing" in report["errors"]
 
 
 def test_run_dir_obstacle_contract_generates_report_from_artifact(tmp_path: Path) -> None:

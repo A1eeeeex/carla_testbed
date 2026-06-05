@@ -1,8 +1,8 @@
 # Export Apollo HDMap Projection Probe
 
-This is an operator instruction file, not an executable script. The repository
-does not require local Apollo C++ builds in CI, so the CARLA testbed only
-consumes `artifacts/apollo_hdmap_projection.jsonl`.
+This is an operator instruction file. The repository does not require local
+Apollo C++ builds in CI, so the CARLA testbed only consumes
+`artifacts/apollo_hdmap_projection.jsonl`.
 
 ## Goal
 
@@ -15,6 +15,34 @@ Output path inside a run directory:
 ```text
 artifacts/apollo_hdmap_projection.jsonl
 ```
+
+## Preferred Apollo 10 Package Wrapper
+
+For the Apollo 10 package container, use the repository wrapper before writing a
+custom probe:
+
+```bash
+RUN=runs/<run_id>
+
+python tools/export_apollo_hdmap_projection.py \
+  --run-dir "$RUN" \
+  --container apollo_neo_dev_10.0.0_pkg \
+  --map-dir /apollo/modules/map/data/carla_town01 \
+  --base-map-filename base_map.txt \
+  --map-name Town01 \
+  --analyze
+```
+
+The wrapper reads the actual Apollo-map localization samples from
+`$RUN/artifacts/apollo_reference_line_contract.jsonl`, invokes
+`/opt/apollo/neo/bin/map_xysl` inside the Apollo container, and writes
+`$RUN/artifacts/apollo_hdmap_projection.jsonl`. `map_xysl` is acceptable for
+`source="apollo_hdmap_api"` because its source calls Apollo HDMap
+`HDMapUtil::BaseMap().GetNearestLane()` and lane heading APIs.
+
+If this command fails, keep projection evidence as `insufficient_data`; do not
+substitute CARLA waypoint projection or bridge-side nearest-lane diagnostics for
+claim-grade evidence.
 
 ## Required Fields
 
@@ -43,7 +71,9 @@ Each row should include:
 
 ## Apollo-Side Probe Sketch
 
-Inside the Apollo 10 container:
+If `map_xysl` is unavailable or too slow for a large batch, implement a
+dedicated Apollo-side C++ probe with the same semantics. Inside the Apollo 10
+container:
 
 1. Load the same map directory used by Planning, for example
    `/apollo/modules/map/data/town01`.

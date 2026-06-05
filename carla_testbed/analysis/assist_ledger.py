@@ -17,6 +17,7 @@ ASSIST_NAMES = {
     "planning_common_dynamics_override",
     "speed_feedback_bridge_profile",
     "dummy_lateral",
+    "force_green",
     "legacy_followstop",
     "route_follower",
     "direct_autopilot",
@@ -31,6 +32,7 @@ DEFAULT_BLOCKING_ASSISTS = {
     "planning_common_dynamics_override",
     "speed_feedback_bridge_profile",
     "dummy_lateral",
+    "force_green",
     "legacy_followstop",
     "route_follower",
     "direct_autopilot",
@@ -289,12 +291,32 @@ def _collect_inferred_assists(
             } and _boolish(value):
                 _record_assist(active, assist_sources, "dummy_lateral", source)
                 inferred = True
+            if key_text == "lateral_mode" and str(value).strip().lower() == "dummy":
+                if not _legacy_controller_placeholder_not_applied(item):
+                    _record_assist(active, assist_sources, "dummy_lateral", source)
+                    inferred = True
+            if key_text in {"force_green", "traffic_light_force_green"} and _boolish(value):
+                _record_assist(active, assist_sources, "force_green", source)
+                inferred = True
+            if key_text in {"traffic_light_policy", "policy"} and str(value).strip().lower() == "force_green":
+                _record_assist(active, assist_sources, "force_green", source)
+                inferred = True
+            if key_text in {"stimulus_mode", "traffic_light_stimulus_mode"} and str(value).strip().lower() == "force_green":
+                _record_assist(active, assist_sources, "force_green", source)
+                inferred = True
             if key_text in {
                 "legacy_followstop",
                 "legacy_followstop_enabled",
                 "legacy_follow_stop",
                 "legacy_follow_stop_enabled",
             } and _boolish(value):
+                _record_assist(active, assist_sources, "legacy_followstop", source)
+                inferred = True
+            if key_text in {
+                "legacy_followstop_apply_count",
+                "legacy_follow_stop_apply_count",
+                "followstop_legacy_apply_count",
+            } and (_num(value) or 0.0) > 0:
                 _record_assist(active, assist_sources, "legacy_followstop", source)
                 inferred = True
             if key_text in {
@@ -305,10 +327,24 @@ def _collect_inferred_assists(
                 _record_assist(active, assist_sources, "route_follower", source)
                 inferred = True
             if key_text in {
+                "route_follower_apply_count",
+                "route_follower_override_count",
+            } and (_num(value) or 0.0) > 0:
+                _record_assist(active, assist_sources, "route_follower", source)
+                inferred = True
+            if key_text in {
                 "direct_autopilot",
                 "direct_autopilot_enabled",
                 "carla_autopilot_enabled",
+                "autopilot_enabled",
             } and _boolish(value):
+                _record_assist(active, assist_sources, "direct_autopilot", source)
+                inferred = True
+            if key_text in {
+                "direct_autopilot_apply_count",
+                "autopilot_apply_count",
+                "carla_autopilot_apply_count",
+            } and (_num(value) or 0.0) > 0:
                 _record_assist(active, assist_sources, "direct_autopilot", source)
                 inferred = True
             if key_text in {
@@ -319,7 +355,43 @@ def _collect_inferred_assists(
             } and _boolish(value):
                 _record_assist(active, assist_sources, "manual_intervention", source)
                 inferred = True
+            if key_text in {
+                "manual_intervention_count",
+                "manual_override_count",
+                "manual_control_apply_count",
+            } and (_num(value) or 0.0) > 0:
+                _record_assist(active, assist_sources, "manual_intervention", source)
+                inferred = True
+            if key_text in {"control_source", "controller"}:
+                mode = str(value).strip().lower()
+                if mode in {"route_follower", "route-following", "route_following"}:
+                    _record_assist(active, assist_sources, "route_follower", source)
+                    inferred = True
+                if mode in {"direct_autopilot", "carla_autopilot", "autopilot"}:
+                    _record_assist(active, assist_sources, "direct_autopilot", source)
+                    inferred = True
+                if mode in {"manual", "manual_control", "manual_intervention"}:
+                    _record_assist(active, assist_sources, "manual_intervention", source)
+                    inferred = True
     return inferred
+
+
+def _legacy_controller_placeholder_not_applied(item: Mapping[str, Any]) -> bool:
+    role = str(item.get("legacy_controller_role") or item.get("controller_role") or item.get("role") or "").strip().lower()
+    if role in {"compatibility_placeholder", "external_stack_placeholder"}:
+        return True
+    control_source = str(item.get("control_source") or "").strip().lower()
+    if control_source == "external_stack":
+        return True
+    if _boolish(item.get("harness_control_disabled")):
+        return True
+    if item.get("legacy_controller_applied") is False:
+        return True
+    if item.get("applied") is False:
+        return True
+    if item.get("control_applied") is False and "lateral_mode" in item:
+        return True
+    return False
 
 
 def build_assist_ledger(
@@ -332,6 +404,7 @@ def build_assist_ledger(
     active: set[str] = set()
     assist_sources: dict[str, str] = {}
     diagnostic_only: set[str] = set()
+    explicit_sources: set[str] = set()
     explicit_seen = False
     inferred_seen = False
     for source, payload in (
@@ -340,16 +413,16 @@ def build_assist_ledger(
         ("bridge_stats", _as_mapping(bridge_stats)),
         ("config", _as_mapping(config)),
     ):
-        explicit_seen = (
-            _collect_explicit_assists(
-                payload,
-                active=active,
-                assist_sources=assist_sources,
-                diagnostic_only=diagnostic_only,
-                source=source,
-            )
-            or explicit_seen
+        source_explicit = _collect_explicit_assists(
+            payload,
+            active=active,
+            assist_sources=assist_sources,
+            diagnostic_only=diagnostic_only,
+            source=source,
         )
+        if source_explicit:
+            explicit_sources.add(source)
+        explicit_seen = source_explicit or explicit_seen
         inferred_seen = (
             _collect_inferred_assists(
                 payload,
@@ -373,6 +446,9 @@ def build_assist_ledger(
         notes.append("carla_direct_transport is recorded as a non-blocking transport candidate")
     if confidence == "unknown":
         notes.append("no assist declaration found; ledger assumes no active assists for offline analysis")
+    source_artifact = _source_artifact(assist_sources)
+    if source_artifact == "unknown" and explicit_sources:
+        source_artifact = _source_artifact({source: source for source in explicit_sources})
     return {
         "schema_version": ASSIST_LEDGER_SCHEMA_VERSION,
         "active_assists": classified["active_assists"],
@@ -380,7 +456,7 @@ def build_assist_ledger(
         "non_blocking_assists": classified["non_blocking_assists"],
         "assist_sources": {name: assist_sources.get(name, "unknown") for name in classified["active_assists"]},
         "assist_confidence": confidence,
-        "source_artifact": _source_artifact(assist_sources),
+        "source_artifact": source_artifact,
         "can_claim_unassisted_natural_driving": classified["can_claim_unassisted_natural_driving"],
         "notes": notes,
     }
@@ -453,6 +529,20 @@ def _first_existing(root: Path, *relative_paths: str) -> Path | None:
     return None
 
 
+def _read_config_with_assist_ledger(root: Path) -> dict[str, Any]:
+    fallback: dict[str, Any] = {}
+    for relative in ("config.resolved.yaml", "effective_config.yaml", "effective.yaml"):
+        path = root / relative
+        if not path.exists():
+            continue
+        payload = _read_yaml(path)
+        if not fallback:
+            fallback = payload
+        if isinstance(payload.get("assist_ledger"), Mapping):
+            return payload
+    return fallback
+
+
 def read_assist_ledger_from_run_dir(run_dir: str | Path) -> dict[str, Any]:
     root = Path(run_dir).expanduser()
     explicit_path = _first_existing(
@@ -469,7 +559,6 @@ def read_assist_ledger_from_run_dir(run_dir: str | Path) -> dict[str, Any]:
     manifest_payload = _read_json(root / "manifest.json")
     if _embedded_ledger(summary_payload) is not None or _embedded_ledger(manifest_payload) is not None:
         return build_runtime_assist_ledger(summary=summary_payload, manifest=manifest_payload)
-    config_path = _first_existing(root, "config.resolved.yaml", "effective_config.yaml", "effective.yaml")
     bridge_stats_path = _first_existing(
         root,
         "artifacts/direct_bridge_stats.json",
@@ -478,7 +567,7 @@ def read_assist_ledger_from_run_dir(run_dir: str | Path) -> dict[str, Any]:
         "cyber_bridge_stats.json",
     )
     return build_assist_ledger(
-        config=_read_yaml(config_path) if config_path is not None else None,
+        config=_read_config_with_assist_ledger(root),
         bridge_stats=_read_json(bridge_stats_path) if bridge_stats_path is not None else None,
         summary=summary_payload,
         manifest=manifest_payload,
