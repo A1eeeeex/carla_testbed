@@ -30,6 +30,7 @@ The minimal backend lifecycle is:
 | `carla_testbed/adapters/base.py` | canonical contract | New backend-facing code should start here. |
 | `tbio/` | transition implementation layer | Still used by current runnable ROS2/native and backend launch paths. |
 | `carla_testbed.ros2` | transitional ROS2 support | Existing ROS2 GT publisher and utilities; not platform core. |
+| `carla_builtin` backend facade | diagnostic CARLA-only backend | Runs fixed scenes with the built-in ego controller; not Apollo/Autoware evidence. |
 | `tools/apollo10_cyber_bridge/` | Apollo MVP experimental bridge | Current Apollo/CyberRT work area until promoted behind the adapter contract. |
 | `io/` | deprecated compatibility wrapper | Kept for legacy scripts/contracts; do not add new platform logic. |
 
@@ -47,6 +48,17 @@ remain under `tools/apollo10_cyber_bridge/`. When promoted, Apollo-specific
 code should implement `ADStackBackend` while keeping CyberRT channels and
 protobuf conversion out of core runner, scenarios, sensors, recording, and
 evaluation.
+
+## CARLA Builtin Diagnostic Backend
+
+`carla_builtin` is a local CARLA-only diagnostic backend. It controls ego with
+`carla_testbed_builtin_controller` and lets `fixed_scene_player` control key
+scenario actors. It exists to check scenario geometry and playback quickly
+before connecting Apollo or Autoware.
+
+`carla_builtin` can be selected in RunPlan compilation like Apollo or Autoware,
+but its claim boundary is always diagnostic-only. A successful builtin run does
+not prove Apollo or Autoware natural-driving capability.
 
 ## Legacy IO
 

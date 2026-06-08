@@ -1,0 +1,11 @@
+schema_version: algorithm_variant.v2
+variant_id: simple_route_follower
+stack: builtin
+modules:
+  route_following:
+    source: carla_testbed_builtin
+forbidden_assists: []
+truth_input: {}
+claim_boundary:
+  full_stack_reproduction: false
+  label: CARLA built-in route follower baseline; not Apollo/Autoware natural-driving evidence.

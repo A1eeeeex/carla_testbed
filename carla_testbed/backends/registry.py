@@ -9,6 +9,7 @@ from carla_testbed.platform.plan import RunPlan
 from .apollo_cyberrt import ApolloCyberRTBackend
 from .autoware_ros2 import AutowareRos2Backend
 from .base import StackBackend
+from .carla_builtin import CarlaBuiltinBackend
 from .carla_direct import CarlaDirectBackend
 from .dummy import DummyBackend
 from .replay import ReplayBackend
@@ -53,6 +54,7 @@ def default_backend_registry() -> BackendRegistry:
     registry = BackendRegistry()
     registry.register(BackendRegistryEntry("dummy", DummyBackend, aliases=("in_process",)))
     registry.register(BackendRegistryEntry("replay", ReplayBackend, aliases=("offline_replay",)))
+    registry.register(BackendRegistryEntry("carla_builtin", CarlaBuiltinBackend, aliases=("builtin",)))
     registry.register(BackendRegistryEntry("apollo_cyberrt", ApolloCyberRTBackend, aliases=("apollo",)))
     registry.register(BackendRegistryEntry("carla_direct", CarlaDirectBackend, aliases=("direct",)))
     registry.register(BackendRegistryEntry("autoware_ros2", AutowareRos2Backend, aliases=("autoware",)))
@@ -72,6 +74,11 @@ def backend_preflight_for_plan(plan: RunPlan) -> dict:
 def backend_diagnostics_for_plan(plan: RunPlan, run_dir: str | Path) -> dict:
     backend = default_backend_registry().for_plan(plan)
     return backend.diagnostics(run_dir).to_dict()
+
+
+def backend_launch_plan_for_plan(plan: RunPlan) -> dict:
+    backend = default_backend_registry().for_plan(plan)
+    return backend.build_launch_plan(plan).to_dict()
 
 
 def _key(value: str) -> str:

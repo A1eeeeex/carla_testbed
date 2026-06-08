@@ -97,3 +97,32 @@ def test_cli_plan_writes_resolved_yaml(tmp_path: Path) -> None:
     payload = yaml.safe_load(out.read_text(encoding="utf-8"))
     assert payload["platform"]["name"] == "apollo_cyberrt"
     assert payload["recording"]["profile"] == "demo"
+
+
+def test_cli_plan_carla_builtin_baguang_scenario_shows_launch() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "carla_testbed",
+            "plan",
+            "--platform",
+            "carla_builtin",
+            "--algorithm",
+            "builtin/simple_acc_route_follower",
+            "--scenario",
+            "baguang/follow_stop_static_300m",
+            "--record",
+            "demo",
+            "--gate",
+            "scenario_validation",
+            "--show-launch",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "tools/run_builtin_ego_fixed_scene.py" in result.stdout
+    assert "baguang_follow_stop_static_300m" in result.stdout
+    assert "carla_testbed_builtin_controller" in result.stdout

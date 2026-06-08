@@ -31,7 +31,7 @@ MODULE_LAYER_MAP = {
     "hdmap": "hdmap_projection",
     "routing": "bridge_runtime",
     "localization": "localization_gt_contract",
-    "chassis": "channel_health",
+    "chassis": "chassis_gt_contract",
     "perception_obstacles": "perception_gt_obstacles",
     "prediction": "obstacle_or_prediction_contract",
     "traffic_light_perception": "traffic_light_gt",
@@ -54,6 +54,14 @@ EVIDENCE_PATTERNS = {
     "localization_contract_report.json": (
         "analysis/localization_contract/localization_contract_report.json",
         "localization_contract_report.json",
+    ),
+    "chassis_gt_contract_report.json": (
+        "analysis/chassis_gt_contract/chassis_gt_contract_report.json",
+        "chassis_gt_contract_report.json",
+    ),
+    "chassis_contract_report.json": (
+        "analysis/chassis_gt_contract/chassis_gt_contract_report.json",
+        "chassis_gt_contract_report.json",
     ),
     "apollo_reference_line_contract_report.json": (
         "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",

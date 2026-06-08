@@ -250,6 +250,45 @@ def test_run_dir_obstacle_contract_generates_report_from_artifact(tmp_path: Path
     assert Path(outputs["obstacle_gt_contract_report"]).exists()
 
 
+def test_fixed_scene_actor_must_appear_in_obstacle_gt(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "fixed_scene_runtime_state.json").write_text(
+        json.dumps({"schema_version": "fixed_scene_runtime_state.v1", "actor_roles": {"lead_vehicle": 101}}),
+        encoding="utf-8",
+    )
+    (artifacts / "obstacle_gt_contract.jsonl").write_text(
+        json.dumps(_obstacle(carla_actor_id="other_actor", apollo_perception_id="other_actor")) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="follow_stop")
+
+    assert report["status"] == "fail"
+    assert "fixed_scene_actor_missing_from_obstacle_gt" in report["errors"]
+    assert report["fixed_scene_actor_linkage"]["missing_actor_ids"] == ["101"]
+
+
+def test_fixed_scene_actor_linkage_passes_when_obstacle_present(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "fixed_scene_runtime_state.json").write_text(
+        json.dumps({"schema_version": "fixed_scene_runtime_state.v1", "actor_roles": {"lead_vehicle": 101}}),
+        encoding="utf-8",
+    )
+    (artifacts / "obstacle_gt_contract.jsonl").write_text(
+        json.dumps(_obstacle(carla_actor_id="101", apollo_perception_id="lead_vehicle_101")) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="follow_stop")
+
+    assert report["status"] == "pass"
+    assert report["fixed_scene_actor_linkage"]["status"] == "pass"
+
+
 def test_tracking_time_non_monotonic_fails() -> None:
     report = analyze_obstacle_gt_contract_records(
         [

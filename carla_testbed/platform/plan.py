@@ -38,6 +38,7 @@ class ScenarioPlan:
     actors: dict[str, Any] = field(default_factory=dict)
     requirements: dict[str, Any] = field(default_factory=dict)
     success_intent: dict[str, Any] = field(default_factory=dict)
+    fixed_scene: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
 
 
@@ -84,10 +85,24 @@ class RecordingPlan:
 
 
 @dataclass(frozen=True)
+class TrafficFlowPlan:
+    profile: str = "none"
+    enabled: bool = False
+    provider: str = "none"
+    seed: int | None = None
+    traffic_manager: dict[str, Any] = field(default_factory=dict)
+    vehicles: dict[str, Any] = field(default_factory=dict)
+    walkers: dict[str, Any] = field(default_factory=dict)
+    lifecycle: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class EvidencePlan:
     profile: str
     required_analyzers: list[str] = field(default_factory=list)
     optional_analyzers: list[str] = field(default_factory=list)
+    not_applicable_analyzers: list[str] = field(default_factory=list)
     expected_artifacts: list[str] = field(default_factory=list)
 
 
@@ -97,6 +112,7 @@ class GatePlan:
     can_claim_natural_driving: bool = False
     claim_requires: list[str] = field(default_factory=list)
     fail_on_status: list[str] = field(default_factory=list)
+    rules: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -115,6 +131,7 @@ class RunPlan:
     )
     truth_input: TruthInputPlan = field(default_factory=TruthInputPlan)
     recording: RecordingPlan = field(default_factory=lambda: RecordingPlan(profile="none"))
+    traffic_flow: TrafficFlowPlan = field(default_factory=TrafficFlowPlan)
     evidence: EvidencePlan = field(default_factory=lambda: EvidencePlan(profile="smoke"))
     gate: GatePlan = field(default_factory=lambda: GatePlan(profile="smoke"))
     source_profiles: dict[str, str | None] = field(default_factory=dict)
@@ -134,6 +151,7 @@ class RunPlan:
             algorithm=AlgorithmPlan(**dict(payload.get("algorithm") or {})),
             truth_input=TruthInputPlan(**dict(payload.get("truth_input") or {})),
             recording=RecordingPlan(**dict(payload.get("recording") or {})),
+            traffic_flow=TrafficFlowPlan(**dict(payload.get("traffic_flow") or {})),
             evidence=EvidencePlan(**dict(payload.get("evidence") or {})),
             gate=GatePlan(**dict(payload.get("gate") or {})),
             source_profiles=dict(payload.get("source_profiles") or {}),

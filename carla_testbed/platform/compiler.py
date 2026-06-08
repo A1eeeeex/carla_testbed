@@ -6,6 +6,7 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
+from .evidence_resolver import resolve_evidence_for_plan
 from .plan import (
     AlgorithmPlan,
     EvidencePlan,
@@ -16,6 +17,7 @@ from .plan import (
     RunPlan,
     ScenarioPlan,
     TruthInputPlan,
+    TrafficFlowPlan,
     WorldPlan,
 )
 from .registry import PlatformRegistry, RegistryEntry, default_platform_registry
@@ -32,6 +34,7 @@ def compile_run_plan(
     algorithm: str | Path | None = None,
     scenario: str | Path | None = None,
     recording: str | Path | None = None,
+    traffic: str | Path | None = None,
     gate: str | Path | None = None,
     registry: PlatformRegistry | None = None,
 ) -> RunPlan:
@@ -49,12 +52,18 @@ def compile_run_plan(
         "recording",
         recording or include.get("recording") or include.get("record") or "none",
     )
+    traffic_entry = _resolve_profile(
+        registry,
+        "traffic",
+        traffic or include.get("traffic") or include.get("traffic_flow") or "none",
+    )
     gate_entry = _resolve_profile(registry, "gate", gate or include.get("gate") or "smoke")
 
     scenario_plan = _scenario_plan(scenario_entry.payload)
     platform_plan = _platform_plan(platform_entry.payload)
     algorithm_plan = _algorithm_plan(algorithm_entry.payload)
     recording_plan = _recording_plan(recording_entry.payload, platform_name=platform_plan.name)
+    traffic_plan = _traffic_flow_plan(traffic_entry.payload)
     evidence_plan = _evidence_plan(gate_entry.payload)
     gate_plan = _gate_plan(gate_entry.payload)
     world_plan = _world_plan(
@@ -69,11 +78,12 @@ def compile_run_plan(
         platform=platform_plan,
         algorithm=algorithm_plan,
         recording=recording_plan,
+        traffic=traffic_plan,
         gate=gate_plan,
     )
     truth_input = _truth_input_plan(algorithm_entry.payload, scenario=scenario_plan)
 
-    return RunPlan(
+    plan = RunPlan(
         identity=identity,
         world=world_plan,
         scenario=scenario_plan,
@@ -81,6 +91,7 @@ def compile_run_plan(
         algorithm=algorithm_plan,
         truth_input=truth_input,
         recording=recording_plan,
+        traffic_flow=traffic_plan,
         evidence=evidence_plan,
         gate=gate_plan,
         source_profiles={
@@ -89,17 +100,20 @@ def compile_run_plan(
             "algorithm": str(algorithm_entry.path),
             "scenario": str(scenario_entry.path),
             "recording": str(recording_entry.path),
+            "traffic": str(traffic_entry.path),
             "gate": str(gate_entry.path),
         },
         compatibility={
             "runtime_dispatched": False,
             "legacy_entrypoints_preserved": True,
+            "output_root": str(run_request.get("output_root") or "runs"),
             "notes": (
                 "RunPlan compilation is offline. Runtime backends may wrap legacy "
                 "tools/configs until they are migrated."
             ),
         },
     )
+    return _resolve_plan_evidence(plan)
 
 
 def compile_suite_matrix(
@@ -115,6 +129,7 @@ def compile_suite_matrix(
     scenarios = _as_list(matrix.get("scenarios"))
     platforms = _as_list(matrix.get("platforms"))
     recordings = _as_list(matrix.get("recording") or matrix.get("recordings") or "none")
+    traffics = _as_list(matrix.get("traffic") or matrix.get("traffics") or "none")
     gates = _as_list(matrix.get("gate") or matrix.get("gates") or "smoke")
     if not scenarios or not platforms:
         raise PlatformCompileError("suite matrix requires scenarios and platforms")
@@ -123,10 +138,10 @@ def compile_suite_matrix(
     suite_id = str(payload.get("suite_id") or payload.get("name") or "suite")
     for scenario, platform in itertools.product(scenarios, platforms):
         algorithm_values = _algorithms_for_platform(matrix.get("algorithms"), platform)
-        for algorithm, recording, gate in itertools.product(algorithm_values, recordings, gates):
+        for algorithm, recording, traffic, gate in itertools.product(algorithm_values, recordings, traffics, gates):
             request = {
                 "run": {
-                    "id": _run_id_from_parts(suite_id, platform, algorithm, scenario, recording, gate),
+                    "id": _run_id_from_parts(suite_id, platform, algorithm, scenario, traffic, recording, gate),
                     "seed": payload.get("seed", 1),
                     "max_ticks": payload.get("max_ticks"),
                     "output_root": payload.get("output_root", "runs"),
@@ -136,6 +151,7 @@ def compile_suite_matrix(
                     "algorithm": algorithm,
                     "scenario": scenario,
                     "recording": recording,
+                    "traffic": traffic,
                     "gate": gate,
                 },
             }
@@ -205,6 +221,7 @@ def _identity_plan(
     platform: PlatformPlan,
     algorithm: AlgorithmPlan,
     recording: RecordingPlan,
+    traffic: TrafficFlowPlan,
     gate: GatePlan,
 ) -> IdentityPlan:
     run_id = str(
@@ -213,6 +230,7 @@ def _identity_plan(
             platform.name,
             algorithm.variant_id,
             scenario.scenario_id,
+            traffic.profile,
             recording.profile,
             gate.profile,
         )
@@ -244,6 +262,7 @@ def _world_plan(
 
 def _scenario_plan(payload: Mapping[str, Any]) -> ScenarioPlan:
     route = payload.get("route") if isinstance(payload.get("route"), Mapping) else {}
+    fixed_scene = payload.get("fixed_scene") if isinstance(payload.get("fixed_scene"), Mapping) else {}
     return ScenarioPlan(
         scenario_id=str(payload.get("scenario_id") or payload.get("name") or "unknown"),
         scenario_class=str(payload.get("scenario_class") or payload.get("class") or "unknown"),
@@ -254,6 +273,7 @@ def _scenario_plan(payload: Mapping[str, Any]) -> ScenarioPlan:
         actors=dict(payload.get("actors") or {}),
         requirements=dict(payload.get("requirements") or {}),
         success_intent=dict(payload.get("success_intent") or payload.get("success_criteria") or {}),
+        fixed_scene=dict(fixed_scene),
         tags=[str(item) for item in payload.get("tags") or []],
     )
 
@@ -313,12 +333,28 @@ def _recording_plan(payload: Mapping[str, Any], *, platform_name: str) -> Record
     )
 
 
+def _traffic_flow_plan(payload: Mapping[str, Any]) -> TrafficFlowPlan:
+    traffic = payload.get("traffic_flow") if isinstance(payload.get("traffic_flow"), Mapping) else {}
+    return TrafficFlowPlan(
+        profile=str(payload.get("name") or payload.get("profile") or "none"),
+        enabled=bool(traffic.get("enabled", False)),
+        provider=str(traffic.get("provider") or "none"),
+        seed=int(traffic["seed"]) if traffic.get("seed") is not None else None,
+        traffic_manager=dict(traffic.get("traffic_manager") or {}),
+        vehicles=dict(traffic.get("vehicles") or {}),
+        walkers=dict(traffic.get("walkers") or {}),
+        lifecycle=dict(traffic.get("lifecycle") or {}),
+        raw=dict(traffic),
+    )
+
+
 def _evidence_plan(payload: Mapping[str, Any]) -> EvidencePlan:
     evidence = payload.get("evidence") if isinstance(payload.get("evidence"), Mapping) else payload
     return EvidencePlan(
         profile=str(payload.get("name") or payload.get("profile") or "smoke"),
         required_analyzers=[str(item) for item in evidence.get("required_analyzers") or []],
         optional_analyzers=[str(item) for item in evidence.get("optional_analyzers") or []],
+        not_applicable_analyzers=[str(item) for item in evidence.get("not_applicable_analyzers") or []],
         expected_artifacts=[str(item) for item in evidence.get("expected_artifacts") or []],
     )
 
@@ -330,7 +366,24 @@ def _gate_plan(payload: Mapping[str, Any]) -> GatePlan:
         can_claim_natural_driving=bool(gate.get("can_claim_natural_driving", False)),
         claim_requires=[str(item) for item in gate.get("claim_requires") or []],
         fail_on_status=[str(item) for item in gate.get("fail_on_status") or []],
+        rules=[dict(item) for item in gate.get("rules") or [] if isinstance(item, Mapping)],
     )
+
+
+def _resolve_plan_evidence(plan: RunPlan) -> RunPlan:
+    resolution = resolve_evidence_for_plan(plan)
+    payload = plan.to_dict()
+    payload["evidence"] = {
+        **payload.get("evidence", {}),
+        "required_analyzers": resolution.required_analyzers,
+        "optional_analyzers": resolution.optional_analyzers,
+        "not_applicable_analyzers": resolution.not_applicable_analyzers,
+    }
+    payload["gate"] = {
+        **payload.get("gate", {}),
+        "rules": resolution.rules,
+    }
+    return RunPlan.from_dict(payload)
 
 
 def _truth_value(

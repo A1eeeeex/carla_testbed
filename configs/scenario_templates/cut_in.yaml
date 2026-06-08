@@ -1,0 +1,24 @@
+schema_version: fixed_scene_template.v1
+template: cut_in
+scenario_id: cut_in_template
+scenario_class: cut_in
+gate_role: diagnostic_gate
+roles:
+  ego:
+    control_owner: backend
+  lead_vehicle:
+    control_owner: fixed_scene_player
+    blueprint: vehicle.lincoln.mkz_2020
+    spawn:
+      relative_to: ego
+      lane: adjacent
+      s_offset_m: 35.0
+params:
+  duration_s: 30.0
+  lead_speed_mps: 10.0
+  lane_change_start_s: 4.0
+  lane_change_duration_s: 3.0
+  target_lane_offset: 1
+success_criteria:
+  lane_change_completed: true
+notes: "Template only. Requires lane availability validation before claim-grade use."

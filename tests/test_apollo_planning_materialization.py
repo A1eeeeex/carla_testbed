@@ -97,6 +97,52 @@ def test_high_nonempty_ratio_passes_materialization(tmp_path: Path) -> None:
 
     assert report["verdict"] == "pass"
     assert report["nonempty_trajectory_ratio"] == 0.9
+    assert report["metrics"]["nonempty_trajectory_ratio"] == 0.9
+
+
+def test_empty_trajectory_rows_include_asof_input_evidence(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path)
+    _write_jsonl(
+        run_dir / "artifacts/planning_topic_debug.jsonl",
+        [
+            {"timestamp": 1.0, "planning_header_sequence_num": 1, "trajectory_point_count": 0},
+            {"timestamp": 2.0, "planning_header_sequence_num": 2, "trajectory_point_count": 0},
+            {"timestamp": 3.0, "planning_header_sequence_num": 3, "trajectory_point_count": 12},
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/topic_publish_stats.jsonl",
+        [
+            {"timestamp": 1.02, "channel": "/apollo/localization/pose", "header_timestamp_sec": 1.02},
+            {"timestamp": 1.03, "channel": "/apollo/canbus/chassis", "header_timestamp_sec": 1.03},
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/apollo_reference_line_contract.jsonl",
+        [
+            {"timestamp": 1.01, "status": "ok", "reference_line_count": 1},
+            {"timestamp": 2.01, "status": "failed", "reference_line_count": 0},
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/apollo_hdmap_projection.jsonl",
+        [
+            {"timestamp": 1.01, "status": "ok"},
+            {"timestamp": 2.01, "status": "no_lane"},
+        ],
+    )
+
+    report = analyze_planning_materialization_run_dir(run_dir)
+    asof = report["empty_asof_join"]
+
+    assert asof["empty_row_count"] == 2
+    assert asof["localization_join_coverage_ratio"] == 0.5
+    assert asof["chassis_join_coverage_ratio"] == 0.5
+    assert asof["reference_line_join_coverage_ratio"] == 1.0
+    assert asof["hdmap_projection_join_coverage_ratio"] == 1.0
+    assert asof["stale_localization_empty_count"] == 1
+    assert asof["reference_line_not_ok_empty_count"] == 1
+    assert asof["hdmap_non_ok_empty_count"] == 1
 
 
 def test_missing_planning_artifacts_is_insufficient_data(tmp_path: Path) -> None:

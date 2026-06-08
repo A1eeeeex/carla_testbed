@@ -88,7 +88,7 @@ modules:
     expected_official_source: Apollo canbus module publishing /apollo/canbus/chassis.
     output_contract: /apollo/canbus/chassis speed, drive mode, throttle/brake/steer feedback, timestamp, and vehicle state.
     required_evidence:
-      - chassis_contract_report.json or channel_stats/control_feedback evidence
+    - chassis_gt_contract_report.json
       - control_health_report.json
       - channel_stats.json /apollo/canbus/chassis
     current_evidence_status: insufficient_data

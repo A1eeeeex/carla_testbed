@@ -3,6 +3,7 @@ from __future__ import annotations
 from .applicator import ControlApplicator, ControlApplyResult, ControlLimits, apply_control_to_vehicle
 from .base import Controller
 from .dummy import DummyController, ManualSequenceController
+from .simple_acc_route_follower import SimpleAccRouteFollowerConfig, SimpleAccRouteFollowerController
 
 
 _LAZY_EXPORTS = {
@@ -35,5 +36,7 @@ __all__ = [
     "LegacyControllerConfig",
     "LegacyFollowStopController",
     "ManualSequenceController",
+    "SimpleAccRouteFollowerConfig",
+    "SimpleAccRouteFollowerController",
     "apply_control_to_vehicle",
 ]

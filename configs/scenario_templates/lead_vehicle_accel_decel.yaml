@@ -1,0 +1,25 @@
+schema_version: fixed_scene_template.v1
+template: lead_vehicle_accel_decel
+scenario_id: lead_vehicle_accel_decel_template
+scenario_class: lead_vehicle_accel_decel
+gate_role: diagnostic_gate
+roles:
+  ego:
+    control_owner: backend
+  lead_vehicle:
+    control_owner: fixed_scene_player
+    blueprint: vehicle.lincoln.mkz_2020
+    spawn:
+      relative_to: ego
+      lane: same
+      s_offset_m: 80.0
+params:
+  duration_s: 35.0
+  speed_profile:
+    - {t: 0.0, speed_mps: 0.0}
+    - {t: 5.0, speed_mps: 10.0}
+    - {t: 15.0, speed_mps: 4.0}
+    - {t: 25.0, speed_mps: 12.0}
+success_criteria:
+  speed_profile_executed: true
+notes: "Template only. It validates scene actor behavior, not ego autonomy."

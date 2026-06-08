@@ -2590,12 +2590,19 @@ class ApolloGtBridge:
                 if item is None:
                     return
                 kind, path, payload = item
+                write_start_s = time.time()
                 if kind == "jsonl":
                     self._append_jsonl_direct(Path(path), payload)
                 elif kind == "csv":
                     self._write_csv_row_direct(Path(path), payload)
+                write_duration_s = max(0.0, time.time() - write_start_s)
                 buffering = self.stats.setdefault("artifact_buffering", {})
                 buffering["async_written_count"] = int(buffering.get("async_written_count", 0) or 0) + 1
+                buffering["last_writer_write_duration_s"] = write_duration_s
+                buffering["writer_write_duration_s_max"] = max(
+                    float(buffering.get("writer_write_duration_s_max", 0.0) or 0.0),
+                    write_duration_s,
+                )
             except Exception as exc:
                 if not hasattr(self, "stats") or getattr(self, "stats", None) is None:
                     self.stats = {}
@@ -2618,11 +2625,17 @@ class ApolloGtBridge:
         try:
             write_queue.put_nowait((kind, str(path), dict(payload)))
         except queue.Full:
-            # Do not drop claim/debug evidence. The queue should normally be
-            # unbounded; if an operator sets a cap, back-pressure is explicit.
-            blocked_start_s = time.time()
-            write_queue.put((kind, str(path), dict(payload)), timeout=1.0)
-            blocked_duration_s = max(0.0, time.time() - blocked_start_s)
+            # Never let diagnostic artifact IO block the publish loop. Queue
+            # saturation is explicit evidence that the run is not claim-grade.
+            buffering = self.stats.setdefault("artifact_buffering", {})
+            buffering["async_queue_full_count"] = int(
+                buffering.get("async_queue_full_count", 0) or 0
+            ) + 1
+            buffering["async_dropped_count"] = int(buffering.get("async_dropped_count", 0) or 0) + 1
+            buffering["last_async_drop_kind"] = str(kind)
+            buffering["last_async_drop_path"] = str(path)
+            buffering["artifact_backpressure_claim_blocking"] = True
+            return True
         buffering = self.stats.setdefault("artifact_buffering", {})
         buffering["async_enqueued_count"] = int(buffering.get("async_enqueued_count", 0) or 0) + 1
         if blocked_duration_s > 0.0:
@@ -3131,6 +3144,51 @@ class ApolloGtBridge:
         world_frame = snapshot.get("world_frame")
         if world_frame is None:
             world_frame = getattr(self, "_latest_world_frame", None)
+        snapshot_wall_s = self._first_number_from_mapping(
+            snapshot,
+            (
+                "snapshot_wall_time_sec",
+                "snapshot_wall_time_s",
+                "created_wall_time_sec",
+                "created_wall_time_s",
+                "wall_time_sec",
+                "wall_time_s",
+            ),
+        )
+        snapshot_age_ms = None
+        if snapshot_wall_s is not None and snapshot_wall_s > 1_000_000_000.0:
+            snapshot_age_ms = max(0.0, (now_wall_s - snapshot_wall_s) * 1000.0)
+        carla_tick_gap_ms = self._first_number_from_mapping(
+            snapshot,
+            (
+                "carla_tick_gap_ms",
+                "world_tick_gap_ms",
+                "inter_tick_wall_interval_ms",
+            ),
+        )
+        if carla_tick_gap_ms is None:
+            carla_tick_gap_s = self._first_number_from_mapping(
+                snapshot,
+                (
+                    "carla_tick_gap_s",
+                    "world_tick_gap_s",
+                    "inter_tick_wall_interval_s",
+                    "world_tick_wall_interval_s",
+                ),
+            )
+            if carla_tick_gap_s is not None:
+                carla_tick_gap_ms = carla_tick_gap_s * 1000.0
+        payload_build_ms = self._first_number_from_mapping(
+            snapshot,
+            ("artifact_payload_build_ms", "payload_build_ms"),
+        )
+        if payload_build_ms is None:
+            payload_build_s = self._first_number_from_mapping(
+                snapshot,
+                ("artifact_payload_build_s", "payload_build_s"),
+            )
+            if payload_build_s is not None:
+                payload_build_ms = payload_build_s * 1000.0
         self._append_jsonl(
             self.publish_gap_trace_path,
             {
@@ -3143,13 +3201,24 @@ class ApolloGtBridge:
                 "published_chassis": bool(published_chassis),
                 "skip_reason": str(skip_reason or "unknown"),
                 "latest_odom_age_ms": latest_odom_age_ms,
-                "snapshot_age_ms": None,
+                "snapshot_age_ms": snapshot_age_ms,
+                "carla_tick_gap_ms": carla_tick_gap_ms,
                 "publish_loop_duration_ms": (
                     publish_loop_duration_s * 1000.0
                     if publish_loop_duration_s is not None
                     else None
                 ),
-                "artifact_payload_build_ms": None,
+                "artifact_payload_build_ms": payload_build_ms,
+                "writer_write_duration_ms": (
+                    float(buffering.get("last_writer_write_duration_s", 0.0) or 0.0) * 1000.0
+                    if buffering
+                    else None
+                ),
+                "writer_write_duration_ms_max": (
+                    float(buffering.get("writer_write_duration_s_max", 0.0) or 0.0) * 1000.0
+                    if buffering
+                    else None
+                ),
                 "stats_write_ms": (
                     float(buffering.get("stats_write_duration_s", 0.0) or 0.0) * 1000.0
                     if buffering
@@ -3158,11 +3227,33 @@ class ApolloGtBridge:
                 "async_queue_depth": buffering.get("async_queue_size"),
                 "async_queue_depth_max": buffering.get("async_queue_size_max"),
                 "async_queue_full_count": buffering.get("async_queue_full_count"),
+                "async_dropped_count": buffering.get("async_dropped_count"),
+                "artifact_backpressure_s": buffering.get("async_queue_blocked_duration_s"),
                 "artifact_backpressure": bool(
                     int(buffering.get("async_queue_full_count", 0) or 0) > 0
+                    or int(buffering.get("async_dropped_count", 0) or 0) > 0
                 ),
             },
         )
+
+    def _first_number_from_mapping(
+        self,
+        mapping: Mapping[str, Any],
+        keys: Sequence[str],
+    ) -> Optional[float]:
+        if not isinstance(mapping, Mapping):
+            return None
+        for key in keys:
+            try:
+                value = mapping.get(key)
+                if value is None:
+                    continue
+                number = float(value)
+            except Exception:
+                continue
+            if number == number:
+                return number
+        return None
 
     def _record_obstacle_contract_event(self, payload: Dict[str, Any]) -> None:
         self._append_jsonl(self.obstacle_contract_debug_path, payload)

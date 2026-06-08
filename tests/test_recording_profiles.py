@@ -61,4 +61,23 @@ def test_recording_registry_resolves_expected_artifacts_without_runtime() -> Non
 
     assert "video/rviz/autoware_rviz.mp4" in resolved.expected_artifacts
     assert "rosbag2/autoware_demo/" in resolved.expected_artifacts
+    assert resolved.record_manager_modes == ["dual_cam", "hud"]
+    assert "autoware_rviz_capture" in resolved.external_recorders
+    assert "autoware_rosbag2" in resolved.external_recorders
     assert resolved.warnings == []
+
+
+def test_none_recording_profile_has_no_runtime_recording_modes() -> None:
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="town01/lane_keep_097",
+        recording="none",
+        gate="smoke",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    resolved = default_recorder_registry().resolve_plan(plan)
+
+    assert resolved.record_manager_modes == []
+    assert resolved.external_recorders == []

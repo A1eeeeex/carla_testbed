@@ -306,11 +306,11 @@ def test_bridge_enqueue_artifact_write_records_backpressure(tmp_path: Path) -> N
     assert adapter._enqueue_artifact_write("jsonl", tmp_path / "artifact.jsonl", {"sample": 1})
 
     buffering = adapter.stats["artifact_buffering"]
-    assert buffering["async_enqueued_count"] == 1
     assert buffering["async_queue_full_count"] == 1
-    assert buffering["async_queue_blocked_duration_s"] >= 0.0
-    assert buffering["async_queue_size"] == 1
-    assert buffering["async_queue_size_max"] == 1
+    assert buffering["async_dropped_count"] == 1
+    assert buffering["artifact_backpressure_claim_blocking"] is True
+    assert buffering["last_async_drop_kind"] == "jsonl"
+    assert fake_queue.items == []
 
 
 def test_bridge_write_stats_records_diagnostic_write_durations(tmp_path: Path) -> None:
@@ -352,6 +352,8 @@ def test_bridge_publish_gap_trace_records_skip_reason_and_queue_depth(tmp_path: 
     adapter.stats = {
         "artifact_buffering": {
             "stats_write_duration_s": 0.012,
+            "last_writer_write_duration_s": 0.004,
+            "writer_write_duration_s_max": 0.007,
             "async_queue_size": 3,
             "async_queue_size_max": 5,
             "async_queue_full_count": 1,
@@ -371,7 +373,12 @@ def test_bridge_publish_gap_trace_records_skip_reason_and_queue_depth(tmp_path: 
     odom = _Odom(1780600000.0)
 
     adapter._record_publish_gap_trace(
-        snapshot={"world_frame": 456},
+        snapshot={
+            "world_frame": 456,
+            "snapshot_wall_time_sec": bridge.time.time() - 0.1,
+            "carla_tick_gap_s": 0.05,
+            "artifact_payload_build_ms": 2.5,
+        },
         odom=odom,
         published_localization=False,
         published_chassis=False,
@@ -385,6 +392,11 @@ def test_bridge_publish_gap_trace_records_skip_reason_and_queue_depth(tmp_path: 
     assert row["world_frame"] == 456
     assert row["skip_reason"] == "stale_sample_skipped"
     assert row["published_localization"] is False
+    assert row["snapshot_age_ms"] >= 0.0
+    assert row["carla_tick_gap_ms"] == 50.0
+    assert row["artifact_payload_build_ms"] == 2.5
+    assert row["writer_write_duration_ms"] == 4.0
+    assert row["writer_write_duration_ms_max"] == 7.0
     assert row["stats_write_ms"] == 12.0
     assert row["async_queue_depth"] == 3
     assert row["artifact_backpressure"] is True

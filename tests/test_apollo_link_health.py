@@ -129,6 +129,36 @@ def _base_run(tmp_path: Path) -> Path:
         },
     )
     _write_json(
+        run_dir / "analysis/chassis_gt_contract/chassis_gt_contract_report.json",
+        {
+            "schema_version": "chassis_gt_contract.v1",
+            "status": "pass",
+            "claim_grade": True,
+            "channel": {
+                "status": "pass",
+                "message_count": 100,
+                "hz": 20.0,
+                "max_gap_ms": 80.0,
+                "timestamp_monotonic": True,
+                "sequence_monotonic": True,
+            },
+            "speed_consistency": {
+                "status": "pass",
+                "sample_count": 100,
+                "speed_delta_p95_mps": 0.02,
+            },
+            "state": {
+                "status": "pass",
+                "driving_modes": ["COMPLETE_AUTO_DRIVE"],
+                "gear_locations": ["GEAR_DRIVE"],
+                "error_codes": ["NO_ERROR"],
+            },
+            "warnings": [],
+            "blocking_reasons": [],
+            "verdict": {"status": "pass", "blocking_reasons": []},
+        },
+    )
+    _write_json(
         run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
         {
             "schema_version": "apollo_reference_line_contract.v1",

@@ -45,12 +45,13 @@
 16. `calibration_pipeline.md`
 17. `autoware_recording.md`
 18. `run_artifacts.md`
-19. `testing.md`
-20. `legacy.md`
-21. `dual_machine_workflow.md`
-22. `migration_followstop_playbook.md`
-23. `apollo10_gt_sim.md`
-24. `gt_truth_simulation_pipeline.md`
+19. `scenario_player.md`
+20. `testing.md`
+21. `legacy.md`
+22. `dual_machine_workflow.md`
+23. `migration_followstop_playbook.md`
+24. `apollo10_gt_sim.md`
+25. `gt_truth_simulation_pipeline.md`
 
 ## 主要文档分组
 - 展示与总览:
@@ -100,6 +101,11 @@
   - `gt_followstop_apollo_baseline.md`
   - `gt_profile_matrix.md`
   - `gt_reference_line_rootcause.md`
+- fixed scene playback:
+  - `scenario_player.md`
+  - key non-ego actor playback for follow-stop / cut-in / cut-out style
+    scenarios; ego autonomy claims still require the Apollo/Autoware evidence
+    gates, not just scene playback artifacts
 - workflow companions:
   - `actuator_regression_workflow.md`
   - `apollo_carla_semantic_and_calibration_workflow.md`

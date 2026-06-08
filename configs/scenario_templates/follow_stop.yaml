@@ -1,0 +1,25 @@
+schema_version: fixed_scene_template.v1
+template: follow_stop
+scenario_id: follow_stop_template
+scenario_class: follow_stop
+gate_role: diagnostic_gate
+roles:
+  ego:
+    control_owner: backend
+  lead_vehicle:
+    control_owner: fixed_scene_player
+    blueprint: vehicle.lincoln.mkz_2020
+    spawn:
+      relative_to: ego
+      lane: same
+      s_offset_m: 300.0
+params:
+  duration_s: 45.0
+  lead_cruise_speed_mps: 16.0
+  brake_trigger_gap_m: 80.0
+  target_stop_gap_m: 12.0
+  hold_s: 5.0
+success_criteria:
+  lead_vehicle_stops: true
+  min_stop_gap_m: 8.0
+notes: "Template only. Ego success requires separate autonomy/evidence gates."

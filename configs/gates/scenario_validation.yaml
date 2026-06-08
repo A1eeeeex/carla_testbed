@@ -1,0 +1,66 @@
+schema_version: gate_profile.v1
+name: scenario_validation
+description: >
+  Validate CARLA scenario, built-in ego driver, scripted actors, traffic flow,
+  recording, and basic route health without requiring Apollo or Autoware.
+gate:
+  can_claim_natural_driving: false
+  fail_on_status:
+    - fail
+    - insufficient_data
+  rules:
+    - id: traffic_flow_spawned_requested_count
+      when: traffic_flow.enabled == true
+      report: traffic_flow_contract
+      path: metrics.spawned_vehicle_count
+      op: "=="
+      value_from: traffic_flow.vehicles.count
+      required_for: scenario_validation
+    - id: traffic_flow_tm_sync_matches_world
+      when: traffic_flow.provider == "carla_traffic_manager"
+      report: traffic_flow_contract
+      path: metrics.tm_sync_matches_world
+      op: "=="
+      value: true
+      required_for: scenario_validation
+    - id: ego_not_registered_to_tm
+      when: traffic_flow.enabled == true
+      report: traffic_flow_contract
+      path: metrics.ego_registered_to_tm
+      op: "=="
+      value: false
+      required_for: scenario_validation
+    - id: pedestrian_flow_spawned_requested_count
+      when: traffic_flow.walkers.enabled == true
+      report: pedestrian_flow_contract
+      path: metrics.spawned_walker_count
+      op: "=="
+      value_from: traffic_flow.walkers.count
+      required_for: scenario_validation
+    - id: pedestrian_controllers_started
+      when: traffic_flow.walkers.enabled == true
+      report: pedestrian_flow_contract
+      path: metrics.controller_started_count
+      op: "=="
+      value_from: traffic_flow.walkers.count
+      required_for: scenario_validation
+    - id: fixed_scene_contract_pass
+      when: scenario.fixed_scene.enabled == true
+      report: fixed_scene_contract
+      path: status
+      op: in
+      value: [pass, warn]
+      required_for: scenario_validation
+    - id: scenario_actor_contract_pass
+      when: scenario.fixed_scene.enabled == true
+      report: scenario_actor_contract
+      path: status
+      op: in
+      value: [pass, warn]
+      required_for: scenario_validation
+evidence:
+  required_analyzers:
+    - artifact_completeness
+    - route_health
+    - control_health
+  optional_analyzers: []

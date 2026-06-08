@@ -30,6 +30,7 @@ from carla_testbed.platform.compiler import (
     plan_to_yaml,
     write_run_plan,
 )
+from carla_testbed.platform.executor import execute_run_plan
 from carla_testbed.platform.plan import RunPlan
 from carla_testbed.platform.registry import PlatformRegistry, PlatformRegistryError
 from carla_testbed.record import RunArtifactStore, build_manifest, build_summary
@@ -101,7 +102,18 @@ def build_parser() -> argparse.ArgumentParser:
     list_p = sub.add_parser("list", help="list platform profile registry entries")
     list_p.add_argument(
         "kind",
-        choices=("platforms", "algorithms", "scenarios", "recording", "recorders", "gates", "suites", "backends"),
+        choices=(
+            "platforms",
+            "algorithms",
+            "scenarios",
+            "recording",
+            "recorders",
+            "traffic",
+            "gates",
+            "suites",
+            "fixed-scenes",
+            "backends",
+        ),
     )
     list_p.add_argument("--json", action="store_true", help="emit JSON instead of text")
 
@@ -110,11 +122,13 @@ def build_parser() -> argparse.ArgumentParser:
     plan_p.add_argument("--platform")
     plan_p.add_argument("--algorithm")
     plan_p.add_argument("--scenario")
+    plan_p.add_argument("--traffic", default="none")
     plan_p.add_argument("--record", "--recording", dest="recording", default="none")
     plan_p.add_argument("--gate", default="smoke")
     plan_p.add_argument("--suite", type=Path, help="compile suite matrix instead of a single run")
     plan_p.add_argument("--out", type=Path, help="output plan YAML path or directory for suite matrix")
     plan_p.add_argument("--print", action="store_true", dest="print_plan")
+    plan_p.add_argument("--show-launch", action="store_true", help="include backend LaunchPlan preview")
 
     suite_p = sub.add_parser("suite", help="compile or dry-run a RunPlan suite matrix")
     suite_p.add_argument("action", nargs="?", default="dry-run", choices=("dry-run", "run"))
@@ -347,6 +361,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             return 2
         backend = default_backend_registry().for_plan(plan)
         preflight = backend.preflight(plan).to_dict()
+        launch_plan = backend.build_launch_plan(plan).to_dict()
         print(
             json.dumps(
                 {
@@ -358,20 +373,24 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     "dry_run": bool(args.dry_run),
                     "legacy_dispatch": bool(args.legacy_dispatch),
                     "preflight": preflight,
+                    "launch_plan": launch_plan,
                     "legacy_dispatch_hint": dict(backend.legacy_dispatch_hint(plan)),
                 },
                 indent=2,
                 sort_keys=True,
             )
         )
-        if args.plan_only or args.dry_run:
+        if args.plan_only:
             return 0
-        if args.legacy_dispatch:
-            print(
-                "[run] legacy dispatch from RunPlan is not wired yet; use the hint above.",
-                file=sys.stderr,
+        if args.dry_run or args.legacy_dispatch:
+            result = execute_run_plan(
+                plan,
+                run_dir=args.run_dir,
+                dry_run=bool(args.dry_run),
+                legacy_dispatch=bool(args.legacy_dispatch),
             )
-            return 2
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return result.exit_code
         print(
             "[run] RunPlan runtime dispatch is not implemented yet. "
             "Use --plan-only/--dry-run or legacy configs/io commands.",
@@ -487,6 +506,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
             platform=args.platform,
             algorithm=args.algorithm,
             scenario=args.scenario,
+            traffic=args.traffic,
             recording=args.recording,
             gate=args.gate,
             registry=registry,
@@ -494,6 +514,15 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         if args.out:
             write_run_plan(plan, args.out)
             print(f"[plan] wrote {args.out}")
+        if args.show_launch:
+            launch = default_backend_registry().for_plan(plan).build_launch_plan(plan).to_dict()
+            print(
+                json.dumps(
+                    {"schema_version": "launch_plan_preview.v1", "launch_plan": launch},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
         if args.print_plan or not args.out:
             print(plan_to_yaml(plan))
         return 0

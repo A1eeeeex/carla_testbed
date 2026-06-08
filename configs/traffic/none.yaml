@@ -1,0 +1,5 @@
+schema_version: traffic_flow_profile.v1
+name: none
+traffic_flow:
+  enabled: false
+  provider: none

@@ -1,0 +1,33 @@
+schema_version: scenario_spec.v1
+scenario_id: cut_out_097
+map: Town01
+route_id: town01_rh_spawn097_goal046
+scenario_class: cut_out
+gate_role: diagnostic_gate
+fixed_scene:
+  schema_version: fixed_scene_template.v1
+  template: cut_out
+  roles:
+    ego:
+      control_owner: backend
+      spawn_ref: spawn_097
+    lead_vehicle:
+      control_owner: fixed_scene_player
+      blueprint: vehicle.lincoln.mkz_2020
+      spawn:
+        relative_to: ego
+        lane: same
+        s_offset_m: 25.0
+  params:
+    duration_s: 30.0
+    target_gap_m: 25.0
+    lane_change_start_s: 5.0
+    lane_change_duration_s: 3.0
+    target_lane_offset: -1
+  success_criteria:
+    lead_vehicle_exits_ego_lane: true
+required_artifacts:
+  - fixed_scene_resolved.json
+  - scenario_actor_trace.jsonl
+  - scenario_phase_events.jsonl
+notes: "Requires lane availability/reference-line evidence before claim-grade use."

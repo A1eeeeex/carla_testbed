@@ -1,0 +1,34 @@
+schema_version: scenario_spec.v1
+scenario_id: follow_stop_097
+map: Town01
+route_id: town01_rh_spawn097_goal046
+scenario_class: follow_stop
+gate_role: diagnostic_gate
+fixed_scene:
+  schema_version: fixed_scene_template.v1
+  template: follow_stop
+  roles:
+    ego:
+      control_owner: backend
+      spawn_ref: spawn_097
+    lead_vehicle:
+      control_owner: fixed_scene_player
+      blueprint: vehicle.lincoln.mkz_2020
+      spawn:
+        relative_to: ego
+        lane: same
+        s_offset_m: 300.0
+  params:
+    duration_s: 45.0
+    lead_cruise_speed_mps: 16.0
+    brake_trigger_gap_m: 80.0
+    target_stop_gap_m: 12.0
+    hold_s: 5.0
+  success_criteria:
+    lead_vehicle_stops: true
+    min_stop_gap_m: 8.0
+required_artifacts:
+  - fixed_scene_resolved.json
+  - scenario_actor_trace.jsonl
+  - scenario_phase_events.jsonl
+notes: "Fixed-scene setup only; ego natural-driving claim requires separate Apollo evidence gates."

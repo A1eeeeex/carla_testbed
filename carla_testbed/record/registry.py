@@ -13,6 +13,8 @@ class RecordingResolution:
     profile: str
     recorders: list[RecorderSpec]
     expected_artifacts: list[str]
+    record_manager_modes: list[str]
+    external_recorders: list[str]
     warnings: list[str]
 
     def to_dict(self) -> dict:
@@ -20,6 +22,8 @@ class RecordingResolution:
             "profile": self.profile,
             "recorders": [spec.to_dict() for spec in self.recorders],
             "expected_artifacts": list(self.expected_artifacts),
+            "record_manager_modes": list(self.record_manager_modes),
+            "external_recorders": list(self.external_recorders),
             "warnings": list(self.warnings),
         }
 
@@ -51,10 +55,18 @@ class RecorderRegistry:
             except RecordingProfileError as exc:
                 warnings.append(str(exc))
         artifacts = recording_artifacts_for_plan(plan, self._specs)
+        modes = _record_manager_modes(spec.name for spec in specs)
+        external = [
+            spec.name
+            for spec in specs
+            if spec.name not in RECORDER_TO_RECORD_MANAGER_MODE and spec.starts_runtime_process
+        ]
         return RecordingResolution(
             profile=plan.recording.profile,
             recorders=specs,
             expected_artifacts=artifacts,
+            record_manager_modes=modes,
+            external_recorders=external,
             warnings=warnings,
         )
 
@@ -64,6 +76,20 @@ class RecorderRegistry:
 
 def default_recorder_registry() -> RecorderRegistry:
     return RecorderRegistry()
+
+
+RECORDER_TO_RECORD_MANAGER_MODE = {
+    "carla_dual_cam": "dual_cam",
+    "carla_hud": "hud",
+}
+
+
+def record_manager_modes_for_plan(plan: RunPlan) -> list[str]:
+    return default_recorder_registry().resolve_plan(plan).record_manager_modes
+
+
+def external_recorders_for_plan(plan: RunPlan) -> list[str]:
+    return default_recorder_registry().resolve_plan(plan).external_recorders
 
 
 def default_recorder_specs() -> dict[str, RecorderSpec]:
@@ -142,3 +168,12 @@ def default_recorder_specs() -> dict[str, RecorderSpec]:
 
 def _key(value: str) -> str:
     return str(value).strip().lower().replace("-", "_")
+
+
+def _record_manager_modes(names) -> list[str]:
+    modes: list[str] = []
+    for name in names:
+        mode = RECORDER_TO_RECORD_MANAGER_MODE.get(str(name))
+        if mode and mode not in modes:
+            modes.append(mode)
+    return modes

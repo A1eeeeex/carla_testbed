@@ -146,6 +146,12 @@ run-local diagnostics include:
 - `analysis/route_start_alignment/route_start_alignment_report.json`
 - `analysis/artifact_completeness/artifact_completeness_report.json`
 - `analysis/obstacle_gt_contract/obstacle_gt_contract_report.json` for obstacle or follow-stop scenarios
+- `artifacts/fixed_scene_resolved.json` for scripted non-ego scenario actors
+- `artifacts/fixed_scene_runtime_state.json` for runtime spawn/control adapter state
+- `artifacts/scenario_actor_trace.jsonl` when fixed scene playback is enabled
+- `artifacts/scenario_phase_events.jsonl` when fixed scene playback is enabled
+- `analysis/fixed_scene_contract/fixed_scene_contract_report.json` when fixed scene playback is enabled
+- `analysis/scenario_actor_contract/scenario_actor_contract_report.json` when fixed scene playback is enabled
 - `analysis/traffic_light_contract/traffic_light_contract_report.json` for traffic-light scenarios
 - `analysis/traffic_light_behavior/traffic_light_behavior_report.json` or legacy
   `analysis/traffic_light/traffic_light_behavior_report.json` for traffic-light scenarios
@@ -157,6 +163,12 @@ run-local diagnostics include:
 `artifact_completeness_report.json` as `insufficient_data`. This keeps the
 evidence chain persisted in the run directory instead of relying on an in-memory
 check or visual observation.
+
+Fixed-scene artifacts describe scripted non-ego actor setup and behavior.
+They are useful for follow-stop, cut-in, cut-out, and lead-vehicle diagnostic
+cases, but they do not prove ego natural-driving success. Ego capability claims
+still require the Apollo/Autoware control, localization, reference-line,
+perception, no-assist, and natural-driving gates.
 
 `artifact_completeness_report.json` also treats missing or mismatched
 `manifest.json.carla_world` identity as `insufficient_data`. A run may request
@@ -238,7 +250,8 @@ fresh CARLA world-frame samples.
 `artifacts/publish_gap_trace.jsonl` is bridge-side attribution evidence for
 missed expected GT publishes or publish-loop overruns. It records world frame,
 sim time, localization/chassis publish flags, skip reason, publish-loop
-duration, stats-write duration, and async artifact queue depth. It is
+duration, snapshot age, CARLA tick gap, payload-build duration, stats-write
+duration, writer write duration, and async artifact queue depth. It is
 diagnostic evidence only: a gap with a clear reason is still a channel-health
 finding until the run satisfies the configured max-gap threshold.
 
@@ -254,9 +267,74 @@ explains whether Apollo Planning actually materialized non-empty
 `ADCTrajectory` output after routing and required channel evidence. It reports
 the non-empty trajectory ratio, longest empty streak, route-establishment
 status, and an empty-reason histogram from planning route-segment/reference-line
-debug artifacts when present. Control rx/tx evidence must not override a
+debug artifacts when present. It also includes `empty_asof_join`, which aligns
+empty Planning rows to nearest localization, chassis, reference-line, and HDMap
+projection evidence within the configured tolerance; missing row-level joins
+keep the interpretation diagnostic. Control rx/tx evidence must not override a
 `planning_trajectory_materialization_low` or `route_establishment_latency`
 blocker.
+
+`analysis/chassis_gt_contract/chassis_gt_contract_report.json` checks the GT
+replacement contract for `/apollo/canbus/chassis`: channel count/rate/gaps,
+timestamp/sequence monotonicity, chassis speed versus ego/localization speed,
+driving mode, gear, error code, and available throttle/brake/steer feedback.
+Missing chassis contract evidence is `insufficient_data`; it cannot be replaced
+by a generic channel-health pass when making no-interference Apollo claims.
+
+`analysis/traffic_flow_contract/traffic_flow_contract_report.json` checks
+optional CARLA Traffic Manager background traffic. It verifies seed recording,
+requested/spawned vehicle count, TM/world synchronous mode consistency, unique
+`background_vehicle_*` role names, and that ego or scripted scenario actors were
+not registered to TM. Passing this report only validates background traffic
+setup; it is not an Apollo/Autoware behavior pass.
+
+`analysis/pedestrian_flow_contract/pedestrian_flow_contract_report.json` checks
+optional CARLA WalkerAIController background pedestrians. It verifies seed
+recording, requested/spawned walker count, controller startup, unique
+`background_walker_*` role names, and that ego or scripted scenario actors were
+not registered as background walkers. Passing this report only validates
+background pedestrian setup; pedestrian perception/avoidance claims still need
+`obstacle_gt_contract_report.json` with a pedestrian section.
+
+## Platform Evidence Bundle And Claim Package
+
+RunPlan-driven postprocess can write:
+
+- `analysis/evidence_bundle/evidence_bundle.json`
+- `analysis/gate/gate_report.json`
+- `analysis/gate/gate_summary.md`
+- `launch_plan.json` for `run --plan --dry-run`
+- `platform_execution_result.json` for platform executor previews
+
+`evidence_bundle.json` is an index over existing reports and raw artifacts. It
+does not run analyzers by itself and does not convert missing reports into
+success. `gate_report.json` evaluates both report status and structured rules.
+For claim-grade gates, metric rules can fail even when a report advertises
+`status=pass`; examples include low Planning non-empty trajectory ratio, missing
+route establishment, missing HDMap projection claim grade, non-Apollo applied
+control source, or blocking assists.
+
+`python -m carla_testbed pack --profile claim` packages review evidence without
+large media by default. Claim packages should include row-level evidence when
+available:
+
+- `artifacts/topic_publish_stats.jsonl`
+- `artifacts/publish_gap_trace.jsonl`
+- `artifacts/control_apply_trace.jsonl`
+- `artifacts/planning_topic_debug.jsonl`
+- `artifacts/control_decode_debug.jsonl`
+- `artifacts/apollo_reference_line_contract.jsonl`
+- `artifacts/apollo_hdmap_projection.jsonl`
+- `artifacts/obstacle_gt_contract.jsonl`
+- `artifacts/traffic_light_contract.jsonl`
+- `artifacts/traffic_flow_events.jsonl`
+- `artifacts/walker_spawn_candidates.jsonl`
+
+The archive contains `package_manifest.json`, which records included files,
+omitted large artifacts, missing required row-level evidence, and
+`claim_reproducibility_level`. Missing row-level evidence keeps a claim package
+at summary-only review level; it must not be described as claim-grade natural
+driving evidence.
 
 Operator workflow should generate this report before interpreting control
 behavior:

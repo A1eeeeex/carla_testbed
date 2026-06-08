@@ -15,6 +15,7 @@ LAYER_ORDER = (
     "bridge_runtime",
     "channel_health",
     "localization_gt_contract",
+    "chassis_gt_contract",
     "hdmap_projection",
     "planning_reference_line",
     "route_establishment",
@@ -71,6 +72,16 @@ def analyze_apollo_link_health(
         "localization_gt_contract": _localization_layer(
             payloads.get("localization_contract"),
             inputs.get("localization_contract"),
+        ),
+        "chassis_gt_contract": _report_layer(
+            name="chassis_gt_contract",
+            report=payloads.get("chassis_gt_contract"),
+            path=inputs.get("chassis_gt_contract"),
+            status_keys=("status",),
+            blocking_keys=("blocking_reasons",),
+            warning_keys=("warnings",),
+            next_action="Generate chassis_gt_contract_report.json and verify chassis speed, driving mode, gear, and error-code semantics.",
+            key_metric_fields=("channel", "speed_consistency", "state", "claim_grade"),
         ),
         "hdmap_projection": _hdmap_projection_layer(
             payloads.get("apollo_hdmap_projection"),
@@ -268,6 +279,12 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
             "vehicle_reference_hard_gate_eligible",
             "measurement_header_delta_ms_p95",
         ),
+        "chassis_gt_contract": (
+            "claim_grade",
+            "channel",
+            "speed_consistency",
+            "state",
+        ),
         "hdmap_projection": (
             "official_source_available",
             "claim_grade",
@@ -422,6 +439,13 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
             [
                 "analysis/localization_contract/localization_contract_report.json",
                 "localization_contract_report.json",
+            ],
+        ),
+        "chassis_gt_contract": _find_first(
+            root,
+            [
+                "analysis/chassis_gt_contract/chassis_gt_contract_report.json",
+                "chassis_gt_contract_report.json",
             ],
         ),
         "apollo_reference_line_contract": _find_first(
@@ -1588,6 +1612,7 @@ def _can_claim_unassisted(layers: Mapping[str, Mapping[str, Any]]) -> bool:
         "bridge_runtime",
         "channel_health",
         "localization_gt_contract",
+        "chassis_gt_contract",
         "hdmap_projection",
         "planning_reference_line",
         "route_establishment",

@@ -1,0 +1,195 @@
+from __future__ import annotations
+
+import json
+import math
+
+from carla_testbed.scenario_player.carla_runtime import CarlaFixedSceneRuntime
+from carla_testbed.scenario_player.compiler import compile_fixed_scene_template
+from carla_testbed.scenario_player.schema import load_fixed_scene_template
+
+
+def test_carla_runtime_spawns_lead_actor_and_writes_artifacts(tmp_path) -> None:
+    world = _FakeWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    storyboard = compile_fixed_scene_template(load_fixed_scene_template("configs/scenarios/town01/follow_stop_097.yaml"))
+    runtime = CarlaFixedSceneRuntime()
+
+    state = runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+
+    assert state.errors == []
+    assert state.spawned_count == 1
+    assert "lead_vehicle" in runtime.active_roles()
+    assert world.spawned[0].blueprint.attributes["role_name"] == "lead_vehicle"
+    assert math.isclose(world.spawned[0].transform.location.x, 300.0)
+    assert (tmp_path / "fixed_scene_resolved.json").exists()
+    assert (tmp_path / "fixed_scene_runtime_state.json").exists()
+
+
+def test_carla_runtime_applies_follow_stop_controls(tmp_path) -> None:
+    world = _FakeWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    storyboard = compile_fixed_scene_template(load_fixed_scene_template("configs/scenarios/town01/follow_stop_097.yaml"))
+    runtime = CarlaFixedSceneRuntime()
+    runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+    lead = runtime.actors["lead_vehicle"]
+
+    result = runtime.tick({"ego_actor": ego, "sim_time_sec": 0.0, "world_frame": 1})
+    applied = result["applied_controls"]["lead_vehicle"]["clamped_command"]
+    assert applied["throttle"] > 0.0
+    assert applied["brake"] == 0.0
+
+    ego.transform.location.x = 230.0
+    lead.velocity = _Vector(8.0, 0.0, 0.0)
+    result = runtime.tick({"ego_actor": ego, "sim_time_sec": 10.0, "world_frame": 2})
+    applied = result["applied_controls"]["lead_vehicle"]["clamped_command"]
+    assert applied["throttle"] == 0.0
+    assert applied["brake"] == 1.0
+    assert applied["hand_brake"] is False
+
+    lead.velocity = _Vector(0.0, 0.0, 0.0)
+    result = runtime.tick({"ego_actor": ego, "sim_time_sec": 15.0, "world_frame": 3})
+    applied = result["applied_controls"]["lead_vehicle"]["clamped_command"]
+    assert applied["brake"] == 1.0
+    assert applied["hand_brake"] is True
+
+    trace_rows = [json.loads(line) for line in (tmp_path / "scenario_actor_trace.jsonl").read_text().splitlines()]
+    event_rows = [json.loads(line) for line in (tmp_path / "scenario_phase_events.jsonl").read_text().splitlines()]
+    assert trace_rows[-1]["actor_role"] == "lead_vehicle"
+    assert trace_rows[-1]["phase"] == "lead_hold_stop"
+    assert [row["phase"] for row in event_rows if row["event"] == "phase_started"] == [
+        "lead_cruise",
+        "lead_brake_to_stop",
+        "lead_hold_stop",
+    ]
+
+
+def test_carla_runtime_static_lead_stays_held(tmp_path) -> None:
+    world = _FakeWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    template = load_fixed_scene_template("configs/scenarios/baguang/follow_stop_static_300m.yaml")
+    template["roles"]["lead_vehicle"]["spawn"]["feasibility"]["require_waypoint"] = False
+    storyboard = compile_fixed_scene_template(template)
+    runtime = CarlaFixedSceneRuntime()
+    runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+
+    result = runtime.tick({"ego_actor": ego, "sim_time_sec": 0.0, "world_frame": 1})
+
+    applied = result["applied_controls"]["lead_vehicle"]["clamped_command"]
+    assert result["current_phase"] == "lead_hold_stop"
+    assert applied["throttle"] == 0.0
+    assert applied["brake"] == 1.0
+    assert applied["hand_brake"] is True
+
+
+def test_carla_runtime_spawn_feasibility_blocks_required_waypoint_fallback(tmp_path) -> None:
+    world = _FakeWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    storyboard = compile_fixed_scene_template(
+        load_fixed_scene_template("configs/scenarios/baguang/follow_stop_static_300m.yaml")
+    )
+    runtime = CarlaFixedSceneRuntime()
+
+    state = runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+
+    assert any("waypoint_spawn_required_but_fallback_used" in error for error in state.errors)
+    assert state.spawn_feasibility["lead_vehicle"]["status"] == "fail"
+
+
+def test_carla_runtime_module_does_not_import_carla_runtime() -> None:
+    import carla_testbed.scenario_player.carla_runtime as module
+
+    assert hasattr(module, "CarlaFixedSceneRuntime")
+
+
+class _FakeWorld:
+    def __init__(self) -> None:
+        self.blueprints = _BlueprintLibrary()
+        self.spawned: list[_FakeActor] = []
+
+    def get_blueprint_library(self):
+        return self.blueprints
+
+    def try_spawn_actor(self, blueprint, transform):
+        actor = _FakeActor(actor_id=100 + len(self.spawned), transform=transform, blueprint=blueprint)
+        self.spawned.append(actor)
+        return actor
+
+
+class _BlueprintLibrary:
+    def find(self, blueprint_id):
+        return _Blueprint(blueprint_id)
+
+    def filter(self, pattern):
+        return [_Blueprint(pattern.replace("*", "lincoln.mkz_2020"))]
+
+
+class _Blueprint:
+    def __init__(self, blueprint_id):
+        self.id = blueprint_id
+        self.attributes = {}
+
+    def has_attribute(self, name):
+        return name == "role_name"
+
+    def set_attribute(self, name, value):
+        self.attributes[name] = value
+
+
+class _FakeActor:
+    def __init__(self, *, actor_id, transform, blueprint=None):
+        self.id = actor_id
+        self.transform = transform
+        self.blueprint = blueprint
+        self.velocity = _Vector(0.0, 0.0, 0.0)
+        self.last_control = None
+        self.target_velocity = None
+        self.autopilot = None
+        self.destroyed = False
+
+    def get_transform(self):
+        return self.transform
+
+    def get_velocity(self):
+        return self.velocity
+
+    def apply_control(self, control):
+        self.last_control = control
+
+    def get_control(self):
+        return self.last_control
+
+    def set_autopilot(self, enabled):
+        self.autopilot = enabled
+
+    def set_target_velocity(self, velocity):
+        self.target_velocity = velocity
+
+    def destroy(self):
+        self.destroyed = True
+
+
+class _Location:
+    def __init__(self, x, y, z):
+        self.x = x
+        self.y = y
+        self.z = z
+
+
+class _Rotation:
+    def __init__(self, *, yaw=0.0, pitch=0.0, roll=0.0):
+        self.yaw = yaw
+        self.pitch = pitch
+        self.roll = roll
+
+
+class _Transform:
+    def __init__(self, location, rotation):
+        self.location = location
+        self.rotation = rotation
+
+
+class _Vector:
+    def __init__(self, x, y, z):
+        self.x = x
+        self.y = y
+        self.z = z

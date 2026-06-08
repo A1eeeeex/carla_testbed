@@ -32,8 +32,10 @@ class PlatformRegistry:
         "algorithm": ("configs/algorithms",),
         "scenario": ("configs/scenarios",),
         "recording": ("configs/recording",),
+        "traffic": ("configs/traffic",),
         "gate": ("configs/gates",),
         "suite": ("configs/suites",),
+        "fixed_scene": ("configs/scenario_templates",),
     }
 
     KIND_ALIASES = {
@@ -43,8 +45,12 @@ class PlatformRegistry:
         "record": "recording",
         "records": "recording",
         "recordings": "recording",
+        "traffic_flow": "traffic",
+        "traffics": "traffic",
         "gates": "gate",
         "suites": "suite",
+        "fixed-scenes": "fixed_scene",
+        "fixed_scenes": "fixed_scene",
     }
 
     def __init__(self, *, repo_root: str | Path = ".") -> None:
@@ -137,6 +143,8 @@ def _normalize_key(value: str) -> str:
 
 
 def _profile_name(kind: str, payload: Mapping[str, Any], path: Path) -> str:
+    if kind == "fixed_scene" and payload.get("template"):
+        return str(payload["template"])
     for key in ("name", "profile", "variant_id", "scenario_id", "suite_id"):
         value = payload.get(key)
         if value:

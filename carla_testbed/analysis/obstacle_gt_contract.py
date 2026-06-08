@@ -20,6 +20,8 @@ def analyze_obstacle_gt_contract_file(
     *,
     scenario_class: str | None = None,
     dynamic_obstacle_required: bool | None = None,
+    pedestrian_required: bool | None = None,
+    fixed_scene_actor_roles: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_path = Path(path).expanduser()
     records = _read_records(source_path)
@@ -27,7 +29,9 @@ def analyze_obstacle_gt_contract_file(
         records,
         scenario_class=scenario_class,
         dynamic_obstacle_required=dynamic_obstacle_required,
+        pedestrian_required=pedestrian_required,
         source_path=source_path,
+        fixed_scene_actor_roles=fixed_scene_actor_roles,
     )
 
 
@@ -36,8 +40,12 @@ def analyze_obstacle_gt_contract_run_dir(
     *,
     scenario_class: str | None = None,
     dynamic_obstacle_required: bool | None = None,
+    pedestrian_required: bool | None = None,
 ) -> dict[str, Any]:
     root = Path(run_dir).expanduser()
+    if pedestrian_required is None:
+        pedestrian_required = _run_dir_declares_walkers(root)
+    fixed_scene_actor_roles = _fixed_scene_actor_roles(root)
     source_path = _find_first(
         root,
         [
@@ -53,12 +61,16 @@ def analyze_obstacle_gt_contract_run_dir(
             [],
             scenario_class=scenario_class,
             dynamic_obstacle_required=dynamic_obstacle_required,
+            pedestrian_required=pedestrian_required,
             source_path=None,
+            fixed_scene_actor_roles=fixed_scene_actor_roles,
         )
     return analyze_obstacle_gt_contract_file(
         source_path,
         scenario_class=scenario_class,
         dynamic_obstacle_required=dynamic_obstacle_required,
+        pedestrian_required=pedestrian_required,
+        fixed_scene_actor_roles=fixed_scene_actor_roles,
     )
 
 
@@ -67,12 +79,19 @@ def analyze_obstacle_gt_contract_records(
     *,
     scenario_class: str | None = None,
     dynamic_obstacle_required: bool | None = None,
+    pedestrian_required: bool | None = None,
     source_path: str | Path | None = None,
+    fixed_scene_actor_roles: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     dynamic_required = (
         _scenario_requires_dynamic_obstacle(scenario_class)
         if dynamic_obstacle_required is None
         else bool(dynamic_obstacle_required)
+    )
+    pedestrian_required = (
+        _scenario_requires_pedestrian_obstacle(scenario_class)
+        if pedestrian_required is None
+        else bool(pedestrian_required)
     )
     errors: list[str] = []
     warnings: list[str] = []
@@ -82,9 +101,17 @@ def analyze_obstacle_gt_contract_records(
     tracking_by_apollo_id: dict[str, float] = {}
     message_count = len(records)
     empty_message_count = 0
+    pedestrian_results: list[dict[str, Any]] = []
+    expected_fixed_scene_actor_ids = {
+        str(actor_id)
+        for actor_id in (fixed_scene_actor_roles or {}).values()
+        if actor_id not in {None, ""}
+    }
 
     if not records:
         missing_fields.append("obstacle_gt_contract.records")
+        if pedestrian_required:
+            missing_fields.append("pedestrian_obstacle_records")
 
     for index, record in enumerate(records):
         objects = _record_objects(record)
@@ -105,11 +132,25 @@ def analyze_obstacle_gt_contract_records(
                 dynamic_required=dynamic_required,
                 id_map=id_map,
                 tracking_by_apollo_id=tracking_by_apollo_id,
+                pedestrian_required=pedestrian_required,
             )
             object_results.append(result)
+            if result.get("is_pedestrian"):
+                pedestrian_results.append(result)
             errors.extend(result["errors"])
             warnings.extend(result["warnings"])
             missing_fields.extend(result["missing_fields"])
+
+    if pedestrian_required and records and not pedestrian_results:
+        errors.append("pedestrian_obstacle_section_missing")
+    observed_carla_actor_ids = {
+        str(result.get("carla_actor_id"))
+        for result in object_results
+        if result.get("carla_actor_id") not in {None, ""}
+    }
+    missing_fixed_scene_actor_ids = sorted(expected_fixed_scene_actor_ids - observed_carla_actor_ids)
+    if missing_fixed_scene_actor_ids:
+        errors.append("fixed_scene_actor_missing_from_obstacle_gt")
 
     if object_results:
         if errors:
@@ -124,17 +165,23 @@ def analyze_obstacle_gt_contract_records(
         if dynamic_required:
             status = "fail"
             errors.append("required_dynamic_obstacle_missing")
+        elif pedestrian_required:
+            status = "fail"
+            errors.append("required_pedestrian_obstacle_missing")
         else:
             status = "pass_empty"
     elif missing_fields and not object_results:
         status = "insufficient_data"
     else:
         status = "insufficient_data"
+    if errors:
+        status = "fail"
     return {
         "schema_version": OBSTACLE_GT_CONTRACT_SCHEMA_VERSION,
         "status": status,
         "scenario_class": scenario_class,
         "dynamic_obstacle_required": dynamic_required,
+        "pedestrian_required": pedestrian_required,
         "message_count": message_count,
         "empty_message_count": empty_message_count,
         "empty_obstacle_messages_healthy": bool(
@@ -142,6 +189,52 @@ def analyze_obstacle_gt_contract_records(
         ),
         "object_count": len(object_results),
         "object_results": object_results,
+        "fixed_scene_actor_linkage": {
+            "required": bool(expected_fixed_scene_actor_ids),
+            "expected_actor_roles": dict(fixed_scene_actor_roles or {}),
+            "observed_carla_actor_ids": sorted(observed_carla_actor_ids),
+            "missing_actor_ids": missing_fixed_scene_actor_ids,
+            "status": (
+                "fail"
+                if missing_fixed_scene_actor_ids
+                else ("pass" if expected_fixed_scene_actor_ids else "not_applicable")
+            ),
+        },
+        "pedestrians": {
+            "required": pedestrian_required,
+            "object_count": len(pedestrian_results),
+            "carla_actor_ids": sorted(
+                {
+                    str(item.get("carla_actor_id"))
+                    for item in pedestrian_results
+                    if item.get("carla_actor_id") not in {None, ""}
+                }
+            ),
+            "status": _pedestrian_status(
+                pedestrian_required=pedestrian_required,
+                pedestrian_results=pedestrian_results,
+                errors=errors,
+            ),
+            "errors": sorted(
+                {
+                    error
+                    for item in pedestrian_results
+                    for error in item.get("errors", [])
+                }
+                | (
+                    {"pedestrian_obstacle_section_missing"}
+                    if "pedestrian_obstacle_section_missing" in errors
+                    else set()
+                )
+            ),
+            "warnings": sorted(
+                {
+                    warning
+                    for item in pedestrian_results
+                    for warning in item.get("warnings", [])
+                }
+            ),
+        },
         "errors": sorted(set(errors)),
         "warnings": sorted(set(warnings)),
         "missing_fields": sorted(set(missing_fields)),
@@ -174,12 +267,14 @@ def _check_obstacle(
     dynamic_required: bool,
     id_map: dict[str, str],
     tracking_by_apollo_id: dict[str, float],
+    pedestrian_required: bool,
 ) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
     missing_fields: list[str] = []
     carla_actor_id = _first_text(obstacle, "carla_actor_id", obstacle, "actor_id")
     apollo_id = _first_text(obstacle, "apollo_perception_id", obstacle, "perception_id", obstacle, "id")
+    is_pedestrian = _is_pedestrian_obstacle(obstacle)
 
     if not carla_actor_id:
         missing_fields.append("carla_actor_id")
@@ -213,10 +308,23 @@ def _check_obstacle(
     velocity = _velocity_tuple(obstacle)
     velocity_norm = math.sqrt(sum(component * component for component in velocity)) if velocity else None
     dynamic = _boolish(obstacle.get("dynamic")) or _boolish(obstacle.get("is_dynamic"))
-    if velocity_source in {"", "missing", "zero_filled", "Detection3DArray_missing_velocity", "MarkerArray_missing_velocity"}:
+    if velocity_source in {
+        "",
+        "missing",
+        "zero_filled",
+        "Detection3DArray_missing_velocity",
+        "MarkerArray_missing_velocity",
+    }:
         warnings.append("velocity_source_missing_or_zero_filled")
         if dynamic_required and dynamic:
             errors.append("dynamic_actor_velocity_zero_filled")
+        if (
+            pedestrian_required
+            and is_pedestrian
+            and dynamic
+            and not _boolish(obstacle.get("actually_stationary"))
+        ):
+            errors.append("pedestrian_dynamic_velocity_zero_filled")
     elif velocity_norm is None:
         missing_fields.append("velocity")
     elif dynamic_required and dynamic and velocity_norm <= 1e-3 and not _boolish(obstacle.get("actually_stationary")):
@@ -236,6 +344,7 @@ def _check_obstacle(
         "object_index": object_index,
         "carla_actor_id": carla_actor_id,
         "apollo_perception_id": apollo_id,
+        "is_pedestrian": is_pedestrian,
         "timestamp": timestamp,
         "velocity_source": velocity_source or None,
         "velocity_norm_mps": velocity_norm,
@@ -277,6 +386,38 @@ def _find_first(root: Path, relatives: Sequence[str]) -> Path | None:
     return None
 
 
+def _run_dir_declares_walkers(root: Path) -> bool:
+    manifest_path = _find_first(root, ["artifacts/traffic_flow_manifest.json", "traffic_flow_manifest.json"])
+    if manifest_path is None:
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(manifest, Mapping):
+        return False
+    try:
+        return int(manifest.get("requested_walker_count", 0) or 0) > 0 or int(
+            manifest.get("spawned_walker_count", 0) or 0
+        ) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _fixed_scene_actor_roles(root: Path) -> dict[str, Any]:
+    path = _find_first(root, ["artifacts/fixed_scene_runtime_state.json", "fixed_scene_runtime_state.json"])
+    if path is None:
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    roles = payload.get("actor_roles")
+    return dict(roles) if isinstance(roles, Mapping) else {}
+
+
 def _record_objects(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     for key in ("objects", "obstacles", "perception_obstacles"):
         value = record.get(key)
@@ -286,7 +427,10 @@ def _record_objects(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 
 def _looks_like_object(record: Mapping[str, Any]) -> bool:
-    return any(_optional_text(record.get(key)) for key in ("carla_actor_id", "actor_id", "apollo_perception_id", "perception_id"))
+    return any(
+        _optional_text(record.get(key))
+        for key in ("carla_actor_id", "actor_id", "apollo_perception_id", "perception_id")
+    )
 
 
 def _record_declares_empty_obstacle_message(record: Mapping[str, Any]) -> bool:
@@ -304,6 +448,38 @@ def _record_declares_empty_obstacle_message(record: Mapping[str, Any]) -> bool:
 def _scenario_requires_dynamic_obstacle(scenario_class: str | None) -> bool:
     text = str(scenario_class or "").strip()
     return text in DYNAMIC_SCENARIO_CLASSES or "follow" in text or "obstacle" in text
+
+
+def _scenario_requires_pedestrian_obstacle(scenario_class: str | None) -> bool:
+    text = str(scenario_class or "").strip().lower()
+    return "pedestrian" in text or "walker" in text
+
+
+def _pedestrian_status(
+    *,
+    pedestrian_required: bool,
+    pedestrian_results: Sequence[Mapping[str, Any]],
+    errors: Sequence[str],
+) -> str:
+    if not pedestrian_required:
+        return "not_applicable"
+    if errors:
+        return "fail"
+    if pedestrian_results:
+        return "pass"
+    return "insufficient_data"
+
+
+def _is_pedestrian_obstacle(obstacle: Mapping[str, Any]) -> bool:
+    fields = [
+        obstacle.get("object_type"),
+        obstacle.get("type"),
+        obstacle.get("classification"),
+        obstacle.get("label"),
+        obstacle.get("sub_type"),
+        obstacle.get("blueprint_id"),
+    ]
+    return any("pedestrian" in str(value).lower() or "walker" in str(value).lower() for value in fields if value)
 
 
 def _velocity_tuple(obstacle: Mapping[str, Any]) -> tuple[float, float, float] | None:

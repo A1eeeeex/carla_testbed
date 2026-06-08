@@ -13,7 +13,9 @@ def test_platform_registry_lists_core_profile_kinds_without_runtime_imports() ->
 
     assert "apollo_cyberrt" in registry.names("platforms")
     assert "autoware_ros2" in registry.names("platforms")
+    assert "carla_builtin" in registry.names("platforms")
     assert "town01_lane_keep_097" in registry.names("scenarios")
+    assert "baguang_follow_stop_static_300m" in registry.names("scenarios")
     assert "demo" in registry.names("recording")
     assert "claim_natural_driving" in registry.names("gates")
 

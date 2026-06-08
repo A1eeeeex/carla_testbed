@@ -8,12 +8,68 @@ gate:
     - planning_nonempty_ratio>=0.8
     - channel_health_pass
     - localization_contract_claim_grade
+    - chassis_gt_contract_claim_grade
     - hdmap_projection_claim_grade
     - reference_line_contract_pass
     - control_handoff_pass
     - control_attribution_pass
     - prediction_evidence_explicit
     - natural_driving_report
+  rules:
+    - id: planning_nonempty_ratio
+      report: planning_materialization
+      path: metrics.nonempty_trajectory_ratio
+      op: ">="
+      value: 0.8
+      required_for: claim
+    - id: route_established
+      report: planning_materialization
+      path: route_establishment.route_established
+      op: "=="
+      value: true
+      required_for: claim
+    - id: hdmap_projection_claim_grade
+      report: apollo_hdmap_projection
+      path: claim_grade
+      op: "=="
+      value: true
+      required_for: claim
+    - id: localization_contract_claim_grade
+      report: localization_contract
+      path: claim_grade
+      op: "=="
+      value: true
+      required_for: claim
+    - id: chassis_gt_contract_claim_grade
+      report: chassis_gt_contract
+      path: claim_grade
+      op: "=="
+      value: true
+      required_for: claim
+    - id: reference_line_contract_pass
+      report: apollo_reference_line_contract
+      path: status
+      op: in
+      value: [pass]
+      required_for: claim
+    - id: control_handoff_pass
+      report: apollo_control_handoff
+      path: status
+      op: in
+      value: [pass, warn]
+      required_for: claim
+    - id: applied_control_source_apollo
+      report: control_attribution
+      path: applied_control_source
+      op: "=="
+      value: apollo
+      required_for: claim
+    - id: no_blocking_assists
+      report: assist_ledger
+      path: blocking_assists
+      op: "=="
+      value: []
+      required_for: claim
   fail_on_status:
     - fail
     - warn
@@ -24,6 +80,7 @@ evidence:
     - route_health
     - channel_health
     - localization_contract
+    - chassis_gt_contract
     - apollo_hdmap_projection
     - apollo_reference_line_contract
     - planning_materialization

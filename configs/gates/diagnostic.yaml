@@ -12,11 +12,11 @@ evidence:
   required_analyzers:
     - artifact_completeness
     - route_health
-    - channel_health
     - control_health
     - control_attribution
-    - apollo_link_health
   optional_analyzers:
+    - channel_health
+    - apollo_link_health
     - apollo_hdmap_projection
     - prediction_evidence
   expected_artifacts:

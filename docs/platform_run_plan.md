@@ -14,11 +14,15 @@ Current scope:
 - Build an evidence bundle and gate summary from existing run artifacts.
 - Package small run evidence for review without copying large videos or bags by
   default.
+- Resolve scenario/platform-specific evidence requirements and claim rules.
+- Write conservative `run --plan --dry-run` runtime context artifacts.
 - Keep existing Apollo/Town01 legacy runtime entrypoints unchanged.
 
 Current non-scope:
 
-- It does not start CARLA, Apollo, Autoware, ROS2, or CyberRT.
+- It does not start CARLA, Apollo, Autoware, ROS2, or CyberRT unless an
+  operator explicitly enables guarded legacy dispatch with
+  `CARLA_TESTBED_ALLOW_LEGACY_DISPATCH=1`.
 - It does not replace `tools/run_town01_*` yet.
 - It does not make a behavior or natural-driving claim.
 - It does not infer missing evidence as success.
@@ -49,6 +53,19 @@ python -m carla_testbed plan \
   --out /tmp/plan.resolved.yaml
 ```
 
+Show the backend launch description without starting runtime:
+
+```bash
+python -m carla_testbed plan \
+  --platform apollo_cyberrt \
+  --algorithm apollo/apollo10_carla_gt \
+  --scenario town01/lane_keep_097 \
+  --traffic none \
+  --record claim \
+  --gate claim_natural_driving \
+  --show-launch
+```
+
 Compile a suite matrix:
 
 ```bash
@@ -73,6 +90,20 @@ python -m carla_testbed run \
   --plan-only
 ```
 
+Write dry-run runtime context artifacts:
+
+```bash
+python -m carla_testbed run \
+  --plan /tmp/town01_platform_suite/plans/<run_id>.plan.resolved.yaml \
+  --run-dir /tmp/<run_id> \
+  --dry-run
+```
+
+This writes `plan.resolved.yaml`, `launch_plan.json`, `manifest.json`,
+`summary.json`, and `platform_execution_result.json`. The non-dry-run legacy
+dispatch path is guarded; without `CARLA_TESTBED_ALLOW_LEGACY_DISPATCH=1` it
+writes a blocked dispatch result instead of starting CARLA/Apollo/Autoware.
+
 Build evidence and gate reports from an existing run directory:
 
 ```bash
@@ -95,6 +126,25 @@ python -m carla_testbed pack \
   --out /tmp/<run_id>_evidence.tar.gz
 ```
 
+For `--profile claim`, the packager includes row-level JSONL evidence such as
+`topic_publish_stats.jsonl`, `publish_gap_trace.jsonl`,
+`control_apply_trace.jsonl`, and `planning_topic_debug.jsonl` when present. It
+writes `package_manifest.json` inside the archive with included files, omitted
+large artifacts, missing required row-level evidence, and
+`claim_reproducibility_level`.
+
+Apollo claim gates require separate GT localization and GT chassis contracts.
+`localization_contract_report.json` proves pose/time/frame/VRP semantics;
+`chassis_gt_contract_report.json` proves chassis channel, speed, driving mode,
+gear, and error-code semantics. A generic channel-health pass is not enough for
+either contract.
+
+Traffic flow is a first-class RunPlan profile. Use `--traffic none` for no
+background traffic or profiles such as `--traffic town01/random_tm_2` for
+deterministic CARLA Traffic Manager background vehicles. When enabled, evidence
+resolution requires `traffic_flow_contract`; this validates background traffic
+setup only and does not count as Apollo/Autoware natural-driving evidence.
+
 ## Profile Boundary
 
 Profiles are composable:
@@ -105,6 +155,8 @@ Profiles are composable:
 - `configs/scenarios/` describes map, route, actors, requirements, and success
   intent.
 - `configs/recording/` chooses neutral and platform-specific recorders.
+- `configs/traffic/` chooses no background traffic or deterministic CARLA
+  Traffic Manager profiles.
 - `configs/gates/` chooses required analyzers and claim requirements.
 - `configs/suites/` expands scenarios x platforms x algorithms x recording x
   gates into multiple RunPlans.
@@ -122,6 +174,23 @@ reference-line contract, planning materialization, control handoff/control
 health, prediction/obstacle/traffic-light evidence when applicable, assist
 ledger, and `natural_driving_report.json`.
 
+Gate profiles are resolved through `carla_testbed.platform.evidence_resolver`.
+The resolver combines platform, algorithm, scenario requirements, recording
+profile, and gate profile into:
+
+- required analyzers
+- optional analyzers
+- not-applicable analyzers
+- structured claim rules
+
+For example, an Autoware diagnostic RunPlan does not require
+`apollo_link_health`, while an Apollo traffic-light claim RunPlan requires
+traffic-light contract and behavior evidence. Structured gate rules check
+specific metrics such as Planning non-empty trajectory ratio, route
+establishment, HDMap projection claim grade, localization claim grade, control
+source, and blocking assists. Report `status=pass` alone is not sufficient if a
+rule metric fails.
+
 ## Migration Rule
 
 Existing legacy tools remain compatibility entrypoints. New platform work
@@ -134,7 +203,9 @@ profile.
 
 - `python -m carla_testbed run --plan ... --plan-only` only previews the
   backend contract.
-- Real online execution still uses the existing operational runners until a
-  backend wrapper owns that runtime path.
+- `python -m carla_testbed run --plan ... --dry-run` writes runtime context
+  artifacts without starting runtime.
+- Real online execution still uses guarded compatibility commands until a
+  backend wrapper fully owns that runtime path.
 - Legacy fallback is compatibility behavior; it is not evidence that the new
   platform dispatch layer is complete.

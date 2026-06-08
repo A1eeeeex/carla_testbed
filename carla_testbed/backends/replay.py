@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 from carla_testbed.platform.plan import RunPlan
 
-from .base import BackendDiagnostics, BackendPreflightResult, StackContract
+from .base import BackendDiagnostics, BackendPreflightResult, LaunchPlan, StackContract
 
 
 class ReplayBackend:
@@ -35,3 +35,15 @@ class ReplayBackend:
 
     def legacy_dispatch_hint(self, plan: RunPlan) -> Mapping[str, Any]:
         return {"runtime_dispatched": False, "legacy_dispatch": None}
+
+    def build_launch_plan(self, plan: RunPlan) -> LaunchPlan:
+        return LaunchPlan(
+            backend=self.name,
+            mode="offline_replay",
+            starts_runtime=False,
+            expected_artifacts=["manifest.json", "summary.json", "analysis/evidence_bundle/evidence_bundle.json"],
+            postprocess_commands=[
+                ["python", "-m", "carla_testbed", "analyze", "--run-dir", f"runs/{plan.identity.run_id}"]
+            ],
+            compatibility_source="offline_replay",
+        )

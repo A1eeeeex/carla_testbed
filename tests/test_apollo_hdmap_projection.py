@@ -277,44 +277,29 @@ def test_export_projection_jsonl_records_map_xysl_timeout(tmp_path: Path) -> Non
 
 
 def _projection_rows(*, heading_error_rad: float, lateral_error_m: float) -> list[dict]:
-    return [
-        {
-            "timestamp": 0.0,
-            "localization_x": 10.0,
-            "localization_y": 2.0,
-            "localization_heading": 0.0,
-            "nearest_lane_id": "lane_097",
-            "projection_s": 3.0,
-            "projection_l": lateral_error_m,
-            "lane_heading_at_s": 0.0,
-            "heading_error_rad": heading_error_rad,
-            "lateral_error_m": lateral_error_m,
-            "road_id": "road_1",
-            "junction_id": None,
-            "source": "apollo_hdmap_api",
-            "map_name": "Town01",
-            "map_dir": "/apollo/modules/map/data/town01",
-            "status": "ok",
-        },
-        {
-            "timestamp": 0.05,
-            "localization_x": 10.5,
-            "localization_y": 2.0,
-            "localization_heading": 0.0,
-            "nearest_lane_id": "lane_097",
-            "projection_s": 3.5,
-            "projection_l": lateral_error_m,
-            "lane_heading_at_s": 0.0,
-            "heading_error_rad": heading_error_rad,
-            "lateral_error_m": lateral_error_m,
-            "road_id": "road_1",
-            "junction_id": None,
-            "source": "apollo_hdmap_api",
-            "map_name": "Town01",
-            "map_dir": "/apollo/modules/map/data/town01",
-            "status": "ok",
-        },
-    ]
+    rows = []
+    for index in range(60):
+        rows.append(
+            {
+                "timestamp": index * 0.05,
+                "localization_x": 10.0 + index * 0.5,
+                "localization_y": 2.0,
+                "localization_heading": 0.0,
+                "nearest_lane_id": "lane_097",
+                "projection_s": 3.0 + index * 0.5,
+                "projection_l": lateral_error_m,
+                "lane_heading_at_s": 0.0,
+                "heading_error_rad": heading_error_rad,
+                "lateral_error_m": lateral_error_m,
+                "road_id": "road_1",
+                "junction_id": None,
+                "source": "apollo_hdmap_api",
+                "map_name": "Town01",
+                "map_dir": "/apollo/modules/map/data/town01",
+                "status": "ok",
+            }
+        )
+    return rows
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:

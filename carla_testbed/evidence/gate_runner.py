@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from carla_testbed.platform.plan import GatePlan, RunPlan
 
 from .bundle import build_evidence_bundle
+from .rules import evaluate_rules
 
 GATE_REPORT_SCHEMA_VERSION = "platform_gate_report.v1"
 
@@ -49,11 +50,25 @@ def run_gate(
                 "path": None,
             }
         )
+    rules = list(gate_payload.get("rules") or [])
+    rule_results = evaluate_rules(rules, bundle=bundle) if rules else []
+    for rule_result in rule_results:
+        if rule_result.get("status") in {"fail", "insufficient_data"}:
+            checks.append(
+                {
+                    "name": f"rule:{rule_result.get('id')}",
+                    "status": rule_result.get("status"),
+                    "reason": rule_result.get("blocking_reason") or "rule did not pass",
+                    "path": f"{rule_result.get('report')}:{rule_result.get('path')}",
+                    "actual": rule_result.get("actual"),
+                    "expected": rule_result.get("expected"),
+                }
+            )
 
     status = "pass"
     if checks:
         status = "fail" if any(check["status"] == "fail" for check in checks) else "insufficient_data"
-    if can_claim_profile and missing_required:
+    if can_claim_profile and missing_required and status != "fail":
         status = "insufficient_data"
 
     can_claim = can_claim_profile and status == "pass" and not missing_required
@@ -73,6 +88,16 @@ def run_gate(
         "scenario_class": bundle.get("scenario_class"),
         "route_id": bundle.get("route_id"),
         "backend": bundle.get("backend"),
+        "ego_control_source": bundle.get("ego_control_source"),
+        "scenario_actor_control_source": bundle.get("scenario_actor_control_source"),
+        "background_traffic_control_source": bundle.get("background_traffic_control_source"),
+        "background_walker_control_source": bundle.get("background_walker_control_source"),
+        "control_source_boundary": {
+            "ego_control_source": bundle.get("ego_control_source"),
+            "scenario_actor_control_source": bundle.get("scenario_actor_control_source"),
+            "background_traffic_control_source": bundle.get("background_traffic_control_source"),
+            "background_walker_control_source": bundle.get("background_walker_control_source"),
+        },
         "gate_profile": gate_payload.get("profile") or gate_payload.get("name") or "unknown",
         "status": status,
         "can_claim_unassisted_natural_driving": can_claim,
@@ -80,6 +105,7 @@ def run_gate(
         "claim_requires": required,
         "fail_on_status": sorted(fail_on),
         "checks": checks,
+        "rules": rule_results,
         "evidence_bundle_status": bundle.get("status"),
         "missing_required_evidence": missing_required,
         "interpretation_boundary": (
@@ -120,6 +146,10 @@ def gate_summary_md(report: Mapping[str, Any]) -> str:
         f"- Scenario: `{report.get('scenario_id')}` / `{report.get('scenario_class')}`",
         f"- Gate profile: `{report.get('gate_profile')}`",
         f"- Status: `{report.get('status')}`",
+        f"- Control sources: ego=`{report.get('ego_control_source')}`, "
+        f"scenario=`{report.get('scenario_actor_control_source')}`, "
+        f"background_vehicles=`{report.get('background_traffic_control_source')}`, "
+        f"background_walkers=`{report.get('background_walker_control_source')}`",
         f"- Can claim unassisted natural driving: `{report.get('can_claim_unassisted_natural_driving')}`",
         f"- Why not claimable: `{', '.join(report.get('why_not_claimable') or []) or 'none'}`",
         "",
@@ -134,6 +164,14 @@ def gate_summary_md(report: Mapping[str, Any]) -> str:
             lines.append(
                 f"- `{check.get('name')}`: `{check.get('status')}` - {check.get('reason')}"
             )
+    rules = report.get("rules") or []
+    if rules:
+        lines.extend(["", "## Rules", ""])
+        for rule in rules:
+            lines.append(
+                f"- `{rule.get('id')}`: `{rule.get('status')}` actual=`{rule.get('actual')}` "
+                f"expected `{rule.get('op')}` `{rule.get('expected')}`"
+            )
     lines.append("")
     lines.append(str(report.get("interpretation_boundary") or ""))
     lines.append("")
@@ -147,6 +185,7 @@ def _gate_payload(gate: GatePlan | Mapping[str, Any] | None, plan_payload: Mappi
             "can_claim_natural_driving": gate.can_claim_natural_driving,
             "claim_requires": list(gate.claim_requires),
             "fail_on_status": list(gate.fail_on_status),
+            "rules": [dict(rule) for rule in gate.rules],
         }
     if isinstance(gate, Mapping):
         return dict(gate)

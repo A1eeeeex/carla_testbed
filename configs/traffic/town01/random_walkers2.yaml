@@ -1,0 +1,37 @@
+schema_version: traffic_flow_profile.v1
+name: town01_random_walkers2
+aliases:
+  - town01/random_walkers2
+traffic_flow:
+  enabled: true
+  provider: carla_walker_ai_controller
+  seed: 52
+  walkers:
+    enabled: true
+    count: 2
+    role_name_prefix: background_walker
+    cross_factor: 0.0
+    max_speed_mps_range: [1.0, 1.8]
+    blueprints:
+      include:
+        - walker.pedestrian.*
+      exclude: []
+    spawn_policy:
+      type: navigation_random_near_route
+      route_ref: ego_route
+      min_distance_from_ego_m: 10.0
+      max_distance_from_ego_m: 140.0
+      route_near_preferred: true
+      route_near_threshold_m: 90.0
+      avoid_existing_actor_radius_m: 2.0
+      max_spawn_attempts: 100
+    controller:
+      type: walker_ai_controller
+      destination_policy: random_navigation
+  lifecycle:
+    destroy_on_teardown: true
+    stuck_detection:
+      enabled: true
+      speed_threshold_mps: 0.1
+      duration_s: 10.0
+    respawn_when_stuck: false

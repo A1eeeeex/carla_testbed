@@ -1,0 +1,33 @@
+schema_version: scenario_spec.v1
+scenario_id: lead_vehicle_accel_decel_097
+map: Town01
+route_id: town01_rh_spawn097_goal046
+scenario_class: lead_vehicle_accel_decel
+gate_role: diagnostic_gate
+fixed_scene:
+  schema_version: fixed_scene_template.v1
+  template: lead_vehicle_accel_decel
+  roles:
+    ego:
+      control_owner: backend
+      spawn_ref: spawn_097
+    lead_vehicle:
+      control_owner: fixed_scene_player
+      blueprint: vehicle.lincoln.mkz_2020
+      spawn:
+        relative_to: ego
+        lane: same
+        s_offset_m: 80.0
+  params:
+    duration_s: 35.0
+    speed_profile:
+      - {t: 0.0, speed_mps: 0.0}
+      - {t: 5.0, speed_mps: 10.0}
+      - {t: 15.0, speed_mps: 4.0}
+      - {t: 25.0, speed_mps: 12.0}
+  success_criteria:
+    speed_profile_executed: true
+required_artifacts:
+  - fixed_scene_resolved.json
+  - scenario_actor_trace.jsonl
+  - scenario_phase_events.jsonl

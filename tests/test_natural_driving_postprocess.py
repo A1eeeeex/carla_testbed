@@ -911,42 +911,26 @@ def test_postprocess_includes_run_matrix_rows_without_summary(tmp_path: Path) ->
 
 def _write_projection_jsonl(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    rows = [
-        {
-            "timestamp": 0.0,
-            "localization_x": 1.0,
-            "localization_y": 2.0,
-            "localization_heading": 0.0,
-            "nearest_lane_id": "lane097",
-            "projection_s": 3.0,
-            "projection_l": 0.05,
-            "lane_heading_at_s": 0.0,
-            "heading_error_rad": 0.01,
-            "lateral_error_m": 0.05,
-            "road_id": "road_1",
-            "junction_id": None,
-            "source": "apollo_hdmap_api",
-            "map_name": "Town01",
-            "map_dir": "/apollo/modules/map/data/town01",
-            "status": "ok",
-        },
-        {
-            "timestamp": 0.05,
-            "localization_x": 1.2,
-            "localization_y": 2.0,
-            "localization_heading": 0.0,
-            "nearest_lane_id": "lane097",
-            "projection_s": 3.2,
-            "projection_l": 0.05,
-            "lane_heading_at_s": 0.0,
-            "heading_error_rad": 0.01,
-            "lateral_error_m": 0.05,
-            "road_id": "road_1",
-            "junction_id": None,
-            "source": "apollo_hdmap_api",
-            "map_name": "Town01",
-            "map_dir": "/apollo/modules/map/data/town01",
-            "status": "ok",
-        },
-    ]
+    rows = []
+    for index in range(60):
+        rows.append(
+            {
+                "timestamp": index * 0.05,
+                "localization_x": 1.0 + index * 0.2,
+                "localization_y": 2.0,
+                "localization_heading": 0.0,
+                "nearest_lane_id": "lane097",
+                "projection_s": 3.0 + index * 0.2,
+                "projection_l": 0.05,
+                "lane_heading_at_s": 0.0,
+                "heading_error_rad": 0.01,
+                "lateral_error_m": 0.05,
+                "road_id": "road_1",
+                "junction_id": None,
+                "source": "apollo_hdmap_api",
+                "map_name": "Town01",
+                "map_dir": "/apollo/modules/map/data/town01",
+                "status": "ok",
+            }
+        )
     path.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n", encoding="utf-8")

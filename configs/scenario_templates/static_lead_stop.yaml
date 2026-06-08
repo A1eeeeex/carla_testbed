@@ -1,0 +1,30 @@
+schema_version: fixed_scene_template.v1
+template: static_lead_stop
+scenario_id: static_lead_stop_template
+scenario_class: follow_stop_static
+gate_role: diagnostic_gate
+roles:
+  ego:
+    control_owner: backend
+  lead_vehicle:
+    control_owner: fixed_scene_player
+    blueprint: vehicle.lincoln.mkz_2020
+    spawn:
+      relative_to: ego
+      lane: same
+      s_offset_m: 300.0
+      feasibility:
+        enabled: true
+        s_offset_tolerance_m: 10.0
+        max_lateral_m: 4.0
+        require_waypoint: true
+params:
+  duration_s: 90.0
+  ego_target_speed_mps: 22.22
+  lead_initial_state: stopped
+  hold_s: 90.0
+success_criteria:
+  lead_vehicle_initial_state: stopped
+  lead_vehicle_stays_stopped: true
+  min_stop_gap_m: 8.0
+notes: "Template only. Fixed lead playback is scenario setup, not ego autonomy evidence."

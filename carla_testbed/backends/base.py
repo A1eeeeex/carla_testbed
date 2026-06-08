@@ -75,6 +75,46 @@ class BackendDiagnostics:
         }
 
 
+@dataclass(frozen=True)
+class LaunchPlan:
+    """Dry-run-safe launch description for a backend.
+
+    A LaunchPlan is not process execution. It is the resolved contract that an
+    executor or legacy wrapper can use to decide what to run locally.
+    """
+
+    backend: str
+    mode: str
+    commands: list[list[str]] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    required_ports: list[int] = field(default_factory=list)
+    required_volumes: list[str] = field(default_factory=list)
+    expected_topics: list[str] = field(default_factory=list)
+    expected_artifacts: list[str] = field(default_factory=list)
+    shutdown_hooks: list[str] = field(default_factory=list)
+    postprocess_commands: list[list[str]] = field(default_factory=list)
+    starts_runtime: bool = False
+    compatibility_source: str | None = None
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "backend": self.backend,
+            "mode": self.mode,
+            "commands": [list(command) for command in self.commands],
+            "env": dict(self.env),
+            "required_ports": list(self.required_ports),
+            "required_volumes": list(self.required_volumes),
+            "expected_topics": list(self.expected_topics),
+            "expected_artifacts": list(self.expected_artifacts),
+            "shutdown_hooks": list(self.shutdown_hooks),
+            "postprocess_commands": [list(command) for command in self.postprocess_commands],
+            "starts_runtime": self.starts_runtime,
+            "compatibility_source": self.compatibility_source,
+            "warnings": list(self.warnings),
+        }
+
+
 class StackBackend(Protocol):
     """Backend facade used by platform planning.
 
@@ -95,4 +135,7 @@ class StackBackend(Protocol):
         ...
 
     def legacy_dispatch_hint(self, plan: RunPlan) -> Mapping[str, Any]:
+        ...
+
+    def build_launch_plan(self, plan: RunPlan) -> LaunchPlan:
         ...

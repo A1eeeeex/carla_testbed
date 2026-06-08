@@ -1,0 +1,21 @@
+schema_version: algorithm_variant.v2
+variant_id: simple_acc_route_follower
+stack: builtin
+modules:
+  route_following:
+    source: carla_testbed_builtin
+    controller: simple_acc_route_follower
+  longitudinal:
+    source: carla_testbed_builtin
+    controller: acc_gap_controller
+forbidden_assists: []
+truth_input: {}
+claim_boundary:
+  full_stack_reproduction: false
+  natural_driving_claim_eligible: false
+  label: CARLA built-in diagnostic ego controller; not Apollo/Autoware natural-driving evidence.
+params:
+  target_speed_mps: 19.44
+  target_speed_kph: 70.0
+  target_gap_m: 20.0
+  diagnostic_only: true

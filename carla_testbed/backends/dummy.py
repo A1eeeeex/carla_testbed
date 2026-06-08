@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 from carla_testbed.platform.plan import RunPlan
 
-from .base import BackendDiagnostics, BackendPreflightResult, StackContract
+from .base import BackendDiagnostics, BackendPreflightResult, LaunchPlan, StackContract
 
 
 class DummyBackend:
@@ -36,3 +36,32 @@ class DummyBackend:
 
     def legacy_dispatch_hint(self, plan: RunPlan) -> Mapping[str, Any]:
         return {"runtime_dispatched": False, "legacy_dispatch": None}
+
+    def build_launch_plan(self, plan: RunPlan) -> LaunchPlan:
+        expected = ["manifest.json", "summary.json"]
+        if plan.traffic_flow.enabled:
+            expected.extend(["artifacts/traffic_flow_manifest.json", "artifacts/traffic_flow_events.jsonl"])
+            if int(plan.traffic_flow.vehicles.get("count", 0) or 0) > 0:
+                expected.extend(
+                    [
+                        "artifacts/traffic_spawn_candidates.jsonl",
+                        "analysis/traffic_flow_contract/traffic_flow_contract_report.json",
+                    ]
+                )
+            if int(plan.traffic_flow.walkers.get("count", 0) or 0) > 0:
+                expected.extend(
+                    [
+                        "artifacts/walker_spawn_candidates.jsonl",
+                        "analysis/pedestrian_flow_contract/pedestrian_flow_contract_report.json",
+                    ]
+                )
+        return LaunchPlan(
+            backend=self.name,
+            mode="in_process_dummy",
+            starts_runtime=False,
+            expected_artifacts=expected,
+            postprocess_commands=[
+                ["python", "-m", "carla_testbed", "analyze", "--run-dir", f"runs/{plan.identity.run_id}"]
+            ],
+            compatibility_source="dummy_backend",
+        )

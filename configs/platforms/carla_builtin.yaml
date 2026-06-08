@@ -1,0 +1,20 @@
+schema_version: platform_profile.v1
+name: carla_builtin
+adapter: carla_builtin
+runtime_mode: carla_builtin_driver
+middleware: none
+launch_profile: legacy_compat
+expected_outputs:
+  - manifest.json
+  - summary.json
+  - artifacts/traffic_flow_manifest.json
+supported_recorders:
+  - neutral_manifest
+  - neutral_events
+  - neutral_timeseries
+  - carla_dual_cam
+params:
+  starts_carla: true
+  starts_external_stack: false
+  ego_control_source: carla_testbed_builtin_controller
+  claim_boundary: diagnostic_only

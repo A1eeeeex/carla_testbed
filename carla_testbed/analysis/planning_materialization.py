@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 PLANNING_MATERIALIZATION_SCHEMA_VERSION = "planning_materialization.v1"
+EMPTY_ASOF_TOLERANCE_S = 0.10
 
 
 def analyze_planning_materialization_run_dir(run_dir: str | Path) -> dict[str, Any]:
@@ -164,6 +165,13 @@ def analyze_planning_materialization_files(
     projection_status_counts = Counter(
         str(row.get("status") or "unknown") for row in projection_rows if isinstance(row, Mapping)
     )
+    empty_asof_join = _empty_asof_join(
+        planning_rows=planning_rows,
+        topic_rows=topic_rows,
+        reference_rows=reference_rows,
+        projection_rows=projection_rows,
+        tolerance_s=EMPTY_ASOF_TOLERANCE_S,
+    )
     if projection_status_counts and any(
         status not in {"ok", "pass"} and count > 0
         for status, count in projection_status_counts.items()
@@ -218,9 +226,19 @@ def analyze_planning_materialization_files(
         "nonempty_trajectory_ratio": nonempty_ratio,
         "after_routing_success_nonempty_ratio": after_routing_ratio,
         "after_localization_chassis_ready_nonempty_ratio": after_loc_chassis_ready_ratio,
+        "metrics": {
+            "planning_message_count": planning_message_count,
+            "nonempty_trajectory_count": nonempty_count,
+            "empty_trajectory_count": empty_count,
+            "nonempty_trajectory_ratio": nonempty_ratio,
+            "after_routing_success_nonempty_ratio": after_routing_ratio,
+            "after_localization_chassis_ready_nonempty_ratio": after_loc_chassis_ready_ratio,
+            "longest_empty_streak": longest_empty_streak,
+        },
         "localization_channel_ready": loc_ready,
         "chassis_channel_ready": chassis_ready,
         "empty_reason_histogram": dict(sorted(empty_reason_histogram.items())),
+        "empty_asof_join": empty_asof_join,
         "first_planning_message_time_sec": first_msg_ts,
         "first_nonempty_planning_time_sec": first_nonempty_ts,
         "last_nonempty_planning_time_sec": _last_nonempty_timestamp(planning_rows),
@@ -280,6 +298,7 @@ def planning_materialization_summary_md(report: Mapping[str, Any]) -> str:
         f"- Route established: {route_establishment.get('route_established')}",
         f"- Blocking reasons: {', '.join(report.get('blocking_reasons') or []) or 'none'}",
         f"- Warnings: {', '.join(report.get('warnings') or []) or 'none'}",
+        f"- Empty as-of join: {_fmt_asof(report.get('empty_asof_join'))}",
         "",
         "## Empty Reason Histogram",
     ]
@@ -288,6 +307,114 @@ def planning_materialization_summary_md(report: Mapping[str, Any]) -> str:
         for key, value in histogram.items():
             lines.append(f"- {key}: {value}")
     return "\n".join(lines) + "\n"
+
+
+def _empty_asof_join(
+    *,
+    planning_rows: Sequence[Mapping[str, Any]],
+    topic_rows: Sequence[Mapping[str, Any]],
+    reference_rows: Sequence[Mapping[str, Any]],
+    projection_rows: Sequence[Mapping[str, Any]],
+    tolerance_s: float,
+) -> dict[str, Any]:
+    empty_times = [
+        row_time
+        for row in planning_rows
+        if _trajectory_point_count(row) <= 0 and (row_time := _row_time(row)) is not None
+    ]
+    empty_count = len(empty_times)
+    localization_rows = [
+        row
+        for row in topic_rows
+        if str(row.get("channel") or "") == "/apollo/localization/pose"
+    ]
+    chassis_rows = [
+        row
+        for row in topic_rows
+        if str(row.get("channel") or "") == "/apollo/canbus/chassis"
+    ]
+    loc_matches = _asof_matches(empty_times, localization_rows, tolerance_s=tolerance_s)
+    chassis_matches = _asof_matches(empty_times, chassis_rows, tolerance_s=tolerance_s)
+    reference_matches = _asof_matches(empty_times, reference_rows, tolerance_s=tolerance_s)
+    projection_matches = _asof_matches(empty_times, projection_rows, tolerance_s=tolerance_s)
+    hdmap_non_ok_count = sum(
+        1
+        for match in projection_matches
+        if isinstance(match, Mapping)
+        and str(match.get("status") or "unknown") not in {"ok", "pass"}
+    )
+    reference_not_ok_count = sum(
+        1
+        for match in reference_matches
+        if isinstance(match, Mapping)
+        and _reference_row_not_ok(match)
+    )
+    return {
+        "tolerance_s": tolerance_s,
+        "empty_row_count": empty_count,
+        "localization_join_coverage_ratio": _coverage_ratio(loc_matches, empty_count),
+        "chassis_join_coverage_ratio": _coverage_ratio(chassis_matches, empty_count),
+        "reference_line_join_coverage_ratio": _coverage_ratio(reference_matches, empty_count),
+        "hdmap_projection_join_coverage_ratio": _coverage_ratio(projection_matches, empty_count),
+        "stale_localization_empty_count": empty_count - sum(1 for match in loc_matches if match is not None),
+        "stale_chassis_empty_count": empty_count - sum(1 for match in chassis_matches if match is not None),
+        "reference_line_not_ok_empty_count": reference_not_ok_count,
+        "hdmap_non_ok_empty_count": hdmap_non_ok_count,
+    }
+
+
+def _asof_matches(
+    event_times: Sequence[float],
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    tolerance_s: float,
+) -> list[Mapping[str, Any] | None]:
+    timed_rows = [
+        (row_time, row)
+        for row in rows
+        if isinstance(row, Mapping) and (row_time := _event_time(row)) is not None
+    ]
+    result: list[Mapping[str, Any] | None] = []
+    for event_time in event_times:
+        best_row: Mapping[str, Any] | None = None
+        best_delta: float | None = None
+        for row_time, row in timed_rows:
+            delta = abs(row_time - event_time)
+            if best_delta is None or delta < best_delta:
+                best_delta = delta
+                best_row = row
+        result.append(best_row if best_delta is not None and best_delta <= tolerance_s else None)
+    return result
+
+
+def _coverage_ratio(matches: Sequence[Mapping[str, Any] | None], denominator: int) -> float | None:
+    if denominator <= 0:
+        return None
+    return float(sum(1 for match in matches if match is not None)) / float(denominator)
+
+
+def _event_time(row: Mapping[str, Any]) -> float | None:
+    return _number(
+        row.get("timestamp")
+        or row.get("header_timestamp_sec")
+        or row.get("sim_time_sec")
+        or row.get("wall_time_sec")
+        or row.get("planning_header_timestamp_sec")
+    )
+
+
+def _reference_row_not_ok(row: Mapping[str, Any]) -> bool:
+    for key in (
+        "status",
+        "reference_line_status",
+        "reference_line_provider_status",
+        "lane_follow_map_status",
+    ):
+        value = str(row.get(key) or "").strip().lower()
+        if value and value not in {"ok", "pass", "valid", "ready"}:
+            return True
+    count = _int_or_none(row.get("reference_line_count"))
+    return count == 0
 
 
 def _classify_empty_row(
@@ -590,3 +717,17 @@ def _text(value: Any) -> str | None:
 def _fmt_ratio(value: Any) -> str:
     number = _number(value)
     return "null" if number is None else f"{number:.3f}"
+
+
+def _fmt_asof(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "not evaluated"
+    empty_count = value.get("empty_row_count")
+    loc = _fmt_ratio(value.get("localization_join_coverage_ratio"))
+    chassis = _fmt_ratio(value.get("chassis_join_coverage_ratio"))
+    reference = _fmt_ratio(value.get("reference_line_join_coverage_ratio"))
+    hdmap = _fmt_ratio(value.get("hdmap_projection_join_coverage_ratio"))
+    return (
+        f"empty={empty_count}, loc={loc}, chassis={chassis}, "
+        f"reference_line={reference}, hdmap={hdmap}"
+    )

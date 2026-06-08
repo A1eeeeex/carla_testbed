@@ -24,6 +24,7 @@ def main() -> int:
     parser.add_argument("--out", required=True, help="Output directory")
     parser.add_argument("--scenario-class", default=None)
     parser.add_argument("--dynamic-obstacle-required", action="store_true", default=None)
+    parser.add_argument("--pedestrian-required", action="store_true", default=None)
     args = parser.parse_args()
 
     if args.run_dir:
@@ -31,12 +32,14 @@ def main() -> int:
             args.run_dir,
             scenario_class=args.scenario_class,
             dynamic_obstacle_required=args.dynamic_obstacle_required,
+            pedestrian_required=args.pedestrian_required,
         )
     else:
         report = analyze_obstacle_gt_contract_file(
             args.input,
             scenario_class=args.scenario_class,
             dynamic_obstacle_required=args.dynamic_obstacle_required,
+            pedestrian_required=args.pedestrian_required,
         )
     write_obstacle_gt_contract_report(report, Path(args.out))
     return 0 if report["status"] in {"pass", "pass_empty", "warn"} else 1

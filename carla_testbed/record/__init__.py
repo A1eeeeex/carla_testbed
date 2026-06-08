@@ -18,7 +18,13 @@ from .route_curve_context import route_definition_from_metadata
 from .timeseries_recorder import TimeseriesRecorder
 from .summary_recorder import SummaryRecorder
 from .base import RecorderSpec, RecordingProfileError, recording_artifacts_for_plan
-from .registry import RecorderRegistry, RecordingResolution, default_recorder_registry
+from .registry import (
+    RecorderRegistry,
+    RecordingResolution,
+    default_recorder_registry,
+    external_recorders_for_plan,
+    record_manager_modes_for_plan,
+)
 
 _LAZY_EXPORTS = {
     "FailFrameCapture": ("carla_testbed.record.fail_capture", "FailFrameCapture"),
@@ -78,4 +84,6 @@ __all__ = [
     "RecorderRegistry",
     "RecordingResolution",
     "default_recorder_registry",
+    "external_recorders_for_plan",
+    "record_manager_modes_for_plan",
 ]
