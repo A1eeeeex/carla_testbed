@@ -65,7 +65,18 @@ def run_builtin_ego_fixed_scene(
     ego = None
     runtime = CarlaFixedSceneRuntime()
     controller = SimpleAccRouteFollowerController(
-        SimpleAccRouteFollowerConfig(target_speed_mps=target_speed)
+        SimpleAccRouteFollowerConfig(
+            target_speed_mps=target_speed,
+            max_throttle=float(params.get("ego_max_throttle", 0.7) or 0.7),
+            max_brake=float(params.get("ego_max_brake", 1.0) or 1.0),
+            speed_kp=float(params.get("ego_speed_kp", 0.16) or 0.16),
+            brake_kp=float(params.get("ego_brake_kp", 0.24) or 0.24),
+            lead_lateral_gate_m=float(params.get("ego_lead_lateral_gate_m", 4.0) or 4.0),
+            target_gap_m=float(params.get("ego_target_gap_m", 20.0) or 20.0),
+            min_gap_m=float(params.get("ego_min_gap_m", 8.0) or 8.0),
+            time_headway_s=float(params.get("ego_time_headway_s", 0.9) or 0.9),
+            emergency_gap_m=float(params.get("ego_emergency_gap_m", 6.0) or 6.0),
+        )
     )
     cleanup_errors: list[str] = []
     trace_path = artifacts / "ego_control_trace.jsonl"

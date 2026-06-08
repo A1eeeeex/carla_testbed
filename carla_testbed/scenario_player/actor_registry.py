@@ -59,6 +59,25 @@ class ScenarioActorRegistry:
             return None
         return math.hypot(a.x - b.x, a.y - b.y)
 
+    def relative_longitudinal_lateral(self, from_role: str, to_role: str) -> tuple[float, float] | None:
+        source = self.get(from_role)
+        target = self.get(to_role)
+        if (
+            source is None
+            or target is None
+            or source.x is None
+            or source.y is None
+            or source.yaw_rad is None
+            or target.x is None
+            or target.y is None
+        ):
+            return None
+        dx = target.x - source.x
+        dy = target.y - source.y
+        longitudinal = dx * math.cos(source.yaw_rad) + dy * math.sin(source.yaw_rad)
+        lateral = -dx * math.sin(source.yaw_rad) + dy * math.cos(source.yaw_rad)
+        return longitudinal, lateral
+
 
 def _optional_float(value: Any) -> float | None:
     if value in {None, ""}:

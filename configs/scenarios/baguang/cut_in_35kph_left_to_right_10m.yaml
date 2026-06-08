@@ -1,0 +1,68 @@
+schema_version: scenario_spec.v1
+scenario_id: baguang_cut_in_35kph_left_to_right_10m
+map: straight_road_for_baguang
+route_id: straight_road_for_baguang_mainline_cut_in_10m
+scenario_class: cut_in
+gate_role: diagnostic_gate
+fixed_scene:
+  schema_version: fixed_scene_template.v1
+  template: cut_in
+  roles:
+    ego:
+      control_owner: backend
+      spawn_ref: carla_spawn_index_0
+      initial_speed_mps: 11.11
+    lead_vehicle:
+      control_owner: fixed_scene_player
+      blueprint: vehicle.lincoln.mkz_2020
+      initial_speed_mps: 9.72
+      spawn:
+        relative_to: ego
+        lane: adjacent
+        s_offset_m: 22.0
+        lateral_offset_m: -3.6
+        feasibility:
+          enabled: true
+          s_offset_tolerance_m: 3.0
+          max_lateral_m: 4.5
+          require_waypoint: true
+  params:
+    duration_s: 29.0
+    duration_policy: lead_reaches_road_end
+    lead_route_end_s_m: 300.0
+    expected_lead_travel_m: 281.9
+    ego_initial_speed_mps: 11.11
+    ego_initial_speed_kph: 40.0
+    ego_target_speed_mps: 11.11
+    ego_target_speed_kph: 40.0
+    ego_max_throttle: 1.0
+    ego_speed_kp: 1.0
+    ego_lead_lateral_gate_m: 2.0
+    lead_initial_speed_mps: 9.72
+    lead_initial_speed_kph: 35.0
+    lead_speed_mps: 9.72
+    lead_speed_kph: 35.0
+    initial_gap_m: 22.0
+    initial_lateral_offset_m: -3.6
+    lane_change_trigger_gap_m: 10.0
+    lane_change_duration_s: 4.0
+    lane_change_direction: right
+    lane_change_lateral_shift_m: 3.6
+    lane_change_easing: cosine
+    lane_change_max_yaw_hint_deg: 5.0
+    target_lane_offset: 1
+  success_criteria:
+    lane_change_completed: true
+    lane_change_start_gap_m: 10.0
+    lane_change_start_gap_tolerance_m: 1.5
+    min_lateral_shift_m: 3.2
+required_artifacts:
+  - fixed_scene_resolved.json
+  - fixed_scene_runtime_state.json
+  - scenario_actor_trace.jsonl
+  - scenario_phase_events.jsonl
+  - ego_control_trace.jsonl
+claim_boundary:
+  fixed_scene_playback_is_not_autonomy_evidence: true
+  builtin_controller_is_diagnostic_only: true
+notes: "Baguang cut-in diagnostic scene: lead starts in the left adjacent lane at 35kph, ego starts in the right lane at 40kph, and the lead performs a cosine-eased 4s right cut-in when longitudinal gap reaches about 10m. Duration is set so the lead reaches the current Baguang straight-road end."

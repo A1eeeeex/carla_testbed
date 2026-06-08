@@ -203,7 +203,22 @@ def _compile_cut_in(template: Mapping[str, Any], scene_id: str) -> dict[str, Any
     params = dict(template.get("params", {}))
     lead_role = str(params.get("lead_role", "lead_vehicle"))
     start_time = float(params.get("lane_change_start_s", 4.0))
+    trigger_gap = params.get("lane_change_trigger_gap_m")
     target_lane_offset = int(params.get("target_lane_offset", 1))
+    lead_speed = float(params.get("lead_speed_mps", 10.0))
+    lane_change_action = {
+        "role": lead_role,
+        "type": "lane_change",
+        "controller": "lane_change",
+        "target_lane_offset": target_lane_offset,
+        "target_speed_mps": lead_speed,
+        "duration_s": float(params.get("lane_change_duration_s", 3.0)),
+        "lateral_shift_m": float(params.get("lane_change_lateral_shift_m", 3.6)),
+        "easing": str(params.get("lane_change_easing", "cosine")),
+        "max_yaw_hint_deg": float(params.get("lane_change_max_yaw_hint_deg", 5.0)),
+    }
+    if "lane_change_direction" in params:
+        lane_change_action["direction"] = str(params["lane_change_direction"])
     storyboard = _base_storyboard(template, scene_id)
     storyboard["storyboard"]["phases"] = [
         {
@@ -214,22 +229,24 @@ def _compile_cut_in(template: Mapping[str, Any], scene_id: str) -> dict[str, Any
                     "role": lead_role,
                     "type": "maintain_speed",
                     "controller": "speed_profile",
-                    "target_speed_mps": float(params.get("lead_speed_mps", 10.0)),
+                    "target_speed_mps": lead_speed,
                 }
             ],
         },
         {
             "id": "cut_in_lane_change",
-            "start": {"type": "simulation_time", "op": ">=", "value": start_time},
-            "actions": [
+            "start": (
                 {
-                    "role": lead_role,
-                    "type": "lane_change",
-                    "controller": "lane_change",
-                    "target_lane_offset": target_lane_offset,
-                    "duration_s": float(params.get("lane_change_duration_s", 3.0)),
+                    "type": "relative_longitudinal_distance",
+                    "from_role": "ego",
+                    "to_role": lead_role,
+                    "op": "<=",
+                    "value_m": float(trigger_gap),
                 }
-            ],
+                if trigger_gap is not None
+                else {"type": "simulation_time", "op": ">=", "value": start_time}
+            ),
+            "actions": [lane_change_action],
         },
     ]
     storyboard["success_criteria"].setdefault("lane_change_completed", True)

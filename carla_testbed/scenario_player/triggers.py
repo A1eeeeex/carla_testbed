@@ -76,6 +76,17 @@ def evaluate_trigger(
             value_keys=("value_m", "value"),
         )
         return False if distance is None else _compare(distance, op, value)
+    if trigger_type == "relative_longitudinal_distance":
+        from_role = str(trigger.get("from_role", trigger.get("from", "ego")))
+        to_role = str(trigger.get("to_role", trigger.get("to", "lead_vehicle")))
+        relative = actors.relative_longitudinal_lateral(from_role, to_role)
+        op, value = _op_value(
+            trigger,
+            default_op="<=",
+            aliases={"lte_m": "<=", "gte_m": ">=", "lt_m": "<", "gt_m": ">"},
+            value_keys=("value_m", "value"),
+        )
+        return False if relative is None else _compare(relative[0], op, value)
     if trigger_type == "actor_speed":
         actor = actors.get(str(trigger.get("role", trigger.get("actor"))))
         op, value = _op_value(

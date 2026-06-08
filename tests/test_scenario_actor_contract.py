@@ -110,6 +110,85 @@ def test_cut_in_actor_contract_passes_with_lane_change_progress(tmp_path) -> Non
     assert report["metrics"]["lane_change_completed"] is True
 
 
+def test_baguang_cut_in_actor_contract_checks_start_gap_and_lateral_shift(tmp_path) -> None:
+    template = load_fixed_scene_template("configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml")
+    storyboard = compile_fixed_scene_template(template)
+    storyboard_path = tmp_path / "fixed_scene_resolved.json"
+    trace_path = tmp_path / "scenario_actor_trace.jsonl"
+    events_path = tmp_path / "scenario_phase_events.jsonl"
+    storyboard_path.write_text(json.dumps(storyboard), encoding="utf-8")
+    rows = [
+        {
+            "actor_role": "lead_vehicle",
+            "phase": "cut_in_lane_change",
+            "action_type": "lane_change",
+            "lane_change_progress": 0.0,
+            "longitudinal_to_ego_m": 9.8,
+            "lateral_to_ego_m": -3.6,
+        },
+        {
+            "actor_role": "lead_vehicle",
+            "phase": "cut_in_lane_change",
+            "action_type": "lane_change",
+            "lane_change_progress": 1.0,
+            "longitudinal_to_ego_m": 10.5,
+            "lateral_to_ego_m": -0.1,
+        },
+    ]
+    events = [{"phase": "cut_in_lane_change", "event": "phase_started"}]
+    trace_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    events_path.write_text("\n".join(json.dumps(row) for row in events) + "\n", encoding="utf-8")
+
+    report = analyze_scenario_actor_contract(
+        storyboard_path=storyboard_path,
+        trace_path=trace_path,
+        events_path=events_path,
+    )
+
+    assert report["status"] == "pass"
+    assert report["behavior"]["lane_change_start_longitudinal_gap_m"] == 9.8
+    assert report["behavior"]["lane_change_lateral_shift_m"] == 3.5
+
+
+def test_baguang_cut_in_actor_contract_fails_when_start_gap_is_wrong(tmp_path) -> None:
+    template = load_fixed_scene_template("configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml")
+    storyboard = compile_fixed_scene_template(template)
+    storyboard_path = tmp_path / "fixed_scene_resolved.json"
+    trace_path = tmp_path / "scenario_actor_trace.jsonl"
+    events_path = tmp_path / "scenario_phase_events.jsonl"
+    storyboard_path.write_text(json.dumps(storyboard), encoding="utf-8")
+    rows = [
+        {
+            "actor_role": "lead_vehicle",
+            "phase": "cut_in_lane_change",
+            "action_type": "lane_change",
+            "lane_change_progress": 1.0,
+            "longitudinal_to_ego_m": 16.0,
+            "lateral_to_ego_m": -3.6,
+        },
+        {
+            "actor_role": "lead_vehicle",
+            "phase": "cut_in_lane_change",
+            "action_type": "lane_change",
+            "lane_change_progress": 1.0,
+            "longitudinal_to_ego_m": 16.5,
+            "lateral_to_ego_m": -0.1,
+        },
+    ]
+    events = [{"phase": "cut_in_lane_change", "event": "phase_started"}]
+    trace_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    events_path.write_text("\n".join(json.dumps(row) for row in events) + "\n", encoding="utf-8")
+
+    report = analyze_scenario_actor_contract(
+        storyboard_path=storyboard_path,
+        trace_path=trace_path,
+        events_path=events_path,
+    )
+
+    assert report["status"] == "fail"
+    assert "lane_change_start_gap_out_of_tolerance" in report["blocking_reasons"]
+
+
 def _write_follow_stop_actor_fixture(tmp_path, *, final_speed: float):
     template = load_fixed_scene_template("configs/scenarios/town01/follow_stop_097.yaml")
     storyboard = compile_fixed_scene_template(template)

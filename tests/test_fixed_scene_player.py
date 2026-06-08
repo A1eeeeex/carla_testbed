@@ -108,3 +108,53 @@ def test_player_records_current_speed_profile_target(tmp_path) -> None:
     assert rows[0]["target_speed_mps"] == 11.11
     assert round(rows[1]["target_speed_mps"], 3) == 12.776
     assert rows[-1]["target_speed_mps"] == 19.44
+
+
+def test_player_triggers_baguang_cut_in_on_longitudinal_gap(tmp_path) -> None:
+    template = load_fixed_scene_template("configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml")
+    storyboard = compile_fixed_scene_template(template)
+    trace_path = tmp_path / "scenario_actor_trace.jsonl"
+    events_path = tmp_path / "scenario_phase_events.jsonl"
+    player = FixedScenePlayer(trace_path=trace_path, phase_events_path=events_path)
+    player.setup({}, storyboard)
+
+    player.tick(
+        {
+            "sim_time_sec": 0.0,
+            "world_frame": 1,
+            "actors": {
+                "ego": {"x": 0.0, "y": 0.0, "yaw_rad": 0.0, "speed_mps": 11.11},
+                "lead_vehicle": {"actor_id": "cutin", "x": 22.0, "y": -3.6, "yaw_rad": 0.0, "speed_mps": 9.72},
+            },
+        }
+    )
+    player.tick(
+        {
+            "sim_time_sec": 8.0,
+            "world_frame": 2,
+            "actors": {
+                "ego": {"x": 11.5, "y": 0.0, "yaw_rad": 0.0, "speed_mps": 11.11},
+                "lead_vehicle": {"actor_id": "cutin", "x": 22.0, "y": -3.6, "yaw_rad": 0.0, "speed_mps": 9.72},
+            },
+        }
+    )
+    player.tick(
+        {
+            "sim_time_sec": 9.0,
+            "world_frame": 3,
+            "actors": {
+                "ego": {"x": 12.1, "y": 0.0, "yaw_rad": 0.0, "speed_mps": 11.11},
+                "lead_vehicle": {"actor_id": "cutin", "x": 22.0, "y": -3.6, "yaw_rad": 0.0, "speed_mps": 9.72},
+            },
+        }
+    )
+
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert [event["phase"] for event in events if event["event"] == "phase_started"] == [
+        "adjacent_lane_prepare",
+        "cut_in_lane_change",
+    ]
+    assert rows[-1]["action_type"] == "lane_change"
+    assert rows[-1]["longitudinal_to_ego_m"] == 9.9
+    assert rows[-1]["lateral_to_ego_m"] == -3.6

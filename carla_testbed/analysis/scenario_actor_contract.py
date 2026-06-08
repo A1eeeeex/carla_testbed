@@ -47,7 +47,7 @@ def analyze_scenario_actor_contract(
     elif template == "lead_vehicle_accel_decel":
         behavior = _analyze_speed_profile(rows, storyboard)
     elif template in {"cut_in", "cut_out"}:
-        behavior = _analyze_lane_change(rows, template=template)
+        behavior = _analyze_lane_change(rows, template=template, storyboard=storyboard)
     else:
         behavior = _analyze_generic(rows, events)
     missing_fields.extend(behavior["missing_fields"])
@@ -232,7 +232,12 @@ def _analyze_speed_profile(rows: Sequence[Mapping[str, Any]], storyboard: Mappin
     }
 
 
-def _analyze_lane_change(rows: Sequence[Mapping[str, Any]], *, template: str) -> dict[str, Any]:
+def _analyze_lane_change(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    template: str,
+    storyboard: Mapping[str, Any],
+) -> dict[str, Any]:
     actor_rows = [
         row
         for row in rows
@@ -254,11 +259,38 @@ def _analyze_lane_change(rows: Sequence[Mapping[str, Any]], *, template: str) ->
     completed = bool(max_progress is not None and max_progress >= 0.95)
     if progress_values and not completed:
         blocking_reasons.append("lane_change_not_completed")
+    lane_rows = [row for row in actor_rows if str(row.get("action_type")) == "lane_change"]
+    start_longitudinal = _num(lane_rows[0].get("longitudinal_to_ego_m")) if lane_rows else None
+    start_lateral = _num(lane_rows[0].get("lateral_to_ego_m")) if lane_rows else None
+    final_lateral = _num(lane_rows[-1].get("lateral_to_ego_m")) if lane_rows else None
+    lateral_shift = (
+        abs(float(final_lateral) - float(start_lateral))
+        if final_lateral is not None and start_lateral is not None
+        else None
+    )
+    criteria = _success_criteria(storyboard)
+    expected_start_gap = _num(criteria.get("lane_change_start_gap_m"))
+    gap_tolerance = _num(criteria.get("lane_change_start_gap_tolerance_m")) or 2.0
+    if expected_start_gap is not None:
+        if start_longitudinal is None:
+            missing_fields.append("longitudinal_to_ego_m")
+        elif abs(start_longitudinal - expected_start_gap) > gap_tolerance:
+            blocking_reasons.append("lane_change_start_gap_out_of_tolerance")
+    min_lateral_shift = _num(criteria.get("min_lateral_shift_m"))
+    if min_lateral_shift is not None:
+        if lateral_shift is None:
+            missing_fields.append("lateral_to_ego_m")
+        elif lateral_shift < min_lateral_shift:
+            blocking_reasons.append("lane_change_lateral_shift_too_small")
     return {
         "type": template,
         "actor_trace_rows": len(actor_rows),
         "lane_change_completed": completed,
         "lane_change_progress_max": max_progress,
+        "lane_change_start_longitudinal_gap_m": start_longitudinal,
+        "lane_change_start_lateral_m": start_lateral,
+        "lane_change_final_lateral_m": final_lateral,
+        "lane_change_lateral_shift_m": lateral_shift,
         "missing_fields": missing_fields,
         "warnings": warnings,
         "blocking_reasons": blocking_reasons,
@@ -297,6 +329,8 @@ def _metrics_from_behavior(
         "phase_completion_ratio": _ratio(len(started), len(phases)),
         "speed_profile_error_p95_mps": behavior.get("speed_profile_error_p95_mps"),
         "lane_change_completed": behavior.get("lane_change_completed"),
+        "lane_change_start_longitudinal_gap_m": behavior.get("lane_change_start_longitudinal_gap_m"),
+        "lane_change_lateral_shift_m": behavior.get("lane_change_lateral_shift_m"),
         "initial_gap_m": behavior.get("initial_gap_m"),
         "min_gap_m": behavior.get("min_gap_m"),
         "lead_stopped": behavior.get("lead_stopped"),

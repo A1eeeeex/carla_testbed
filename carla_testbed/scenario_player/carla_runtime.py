@@ -69,6 +69,7 @@ class CarlaFixedSceneRuntime:
         self.actors: dict[str, Any] = {}
         self.state: CarlaFixedSceneRuntimeState | None = None
         self._artifact_dir: Path | None = None
+        self._lane_change_states: dict[str, dict[str, Any]] = {}
 
     def setup(self, context: Any, storyboard: Mapping[str, Any]) -> CarlaFixedSceneRuntimeState:
         resolved = dict(storyboard)
@@ -135,6 +136,7 @@ class CarlaFixedSceneRuntime:
             except Exception as exc:  # pragma: no cover - defensive runtime cleanup
                 errors.append(f"{getattr(actor, 'id', 'unknown')}: {type(exc).__name__}: {exc}")
         self.actors.clear()
+        self._lane_change_states.clear()
         if self.player is not None:
             self.player.teardown()
         if self.state is not None:
@@ -203,6 +205,8 @@ class CarlaFixedSceneRuntime:
         target_speed = _target_speed_from_action(action, context)
         if action_type in {"gap_control", "maintain_gap"}:
             target_speed = _gap_target_speed(actor=actor, action=action, context=context)
+        if action_type == "lane_change":
+            _apply_lane_change_transform(actor=actor, action=action, context=context, states=self._lane_change_states)
         if target_speed is not None:
             _set_actor_target_velocity(actor, target_speed)
         actual_speed = _actor_speed_mps(actor)
@@ -572,6 +576,102 @@ def _steer_from_action(action: Mapping[str, Any]) -> float:
     if direction in {"right", "adjacent_right"}:
         return abs(magnitude)
     return 0.0
+
+
+def _apply_lane_change_transform(
+    *,
+    actor: Any,
+    action: Mapping[str, Any],
+    context: Any,
+    states: dict[str, dict[str, Any]],
+) -> None:
+    setter = getattr(actor, "set_transform", None)
+    if not callable(setter):
+        return
+    current = _safe_call(actor, "get_transform") or getattr(actor, "transform", None)
+    if current is None or getattr(current, "location", None) is None or getattr(current, "rotation", None) is None:
+        return
+    sim_time = float(_context_attr(context, "sim_time_sec", _context_attr(context, "sim_time", 0.0)) or 0.0)
+    key = f"{getattr(actor, 'id', 'unknown')}:lane_change:{action.get('target_lane_offset', '')}"
+    state = states.get(key)
+    if state is None:
+        state = {
+            "start_time_s": sim_time,
+            "start_x": _float_attr(current.location, "x", 0.0) or 0.0,
+            "start_y": _float_attr(current.location, "y", 0.0) or 0.0,
+            "start_z": _float_attr(current.location, "z", 0.0) or 0.0,
+            "start_yaw_deg": _float_attr(current.rotation, "yaw", 0.0) or 0.0,
+            "start_pitch_deg": _float_attr(current.rotation, "pitch", 0.0) or 0.0,
+            "start_roll_deg": _float_attr(current.rotation, "roll", 0.0) or 0.0,
+        }
+        states[key] = state
+    duration = max(0.01, float(action.get("duration_s", 3.0) or 3.0))
+    raw_progress = max(0.0, min(1.0, (sim_time - float(state["start_time_s"])) / duration))
+    progress = _lane_change_eased_progress(raw_progress, str(action.get("easing") or "cosine"))
+    shift_m = _lane_change_shift_m(action)
+    yaw_rad = math.radians(float(state["start_yaw_deg"]))
+    forward_x = math.cos(yaw_rad)
+    forward_y = math.sin(yaw_rad)
+    right_x = -math.sin(yaw_rad)
+    right_y = math.cos(yaw_rad)
+    current_x = _float_attr(current.location, "x", float(state["start_x"])) or float(state["start_x"])
+    current_y = _float_attr(current.location, "y", float(state["start_y"])) or float(state["start_y"])
+    dx = current_x - float(state["start_x"])
+    dy = current_y - float(state["start_y"])
+    longitudinal = dx * forward_x + dy * forward_y
+    desired_lateral = shift_m * progress
+    x = float(state["start_x"]) + longitudinal * forward_x + desired_lateral * right_x
+    y = float(state["start_y"]) + longitudinal * forward_y + desired_lateral * right_y
+    z = _float_attr(current.location, "z", float(state["start_z"])) or float(state["start_z"])
+    yaw_hint = _lane_change_yaw_hint_deg(action, raw_progress)
+    transform = _make_transform(
+        x=x,
+        y=y,
+        z=z,
+        pitch=float(state["start_pitch_deg"]),
+        yaw=float(state["start_yaw_deg"]) + yaw_hint,
+        roll=float(state["start_roll_deg"]),
+    )
+    try:
+        setter(transform)
+    except Exception:
+        return
+
+
+def _lane_change_shift_m(action: Mapping[str, Any]) -> float:
+    lane_width = float(action.get("lane_width_m", 3.6) or 3.6)
+    offset = int(action.get("target_lane_offset", 1) or 1)
+    shift = float(action.get("lateral_shift_m", abs(offset) * lane_width) or abs(offset) * lane_width)
+    direction = str(action.get("direction") or "").lower()
+    if direction in {"left", "adjacent_left"}:
+        return -abs(shift)
+    if direction in {"right", "adjacent_right"}:
+        return abs(shift)
+    return shift if action.get("lateral_shift_m") is not None else (abs(shift) if offset >= 0 else -abs(shift))
+
+
+def _lane_change_eased_progress(raw_progress: float, easing: str) -> float:
+    progress = max(0.0, min(1.0, float(raw_progress)))
+    if easing == "linear":
+        return progress
+    return 0.5 - 0.5 * math.cos(math.pi * progress)
+
+
+def _lane_change_yaw_hint_deg(action: Mapping[str, Any], raw_progress: float) -> float:
+    max_yaw = abs(float(action.get("max_yaw_hint_deg", 5.0) or 5.0))
+    shift = _lane_change_shift_m(action)
+    sign = 1.0 if shift >= 0.0 else -1.0
+    return sign * max_yaw * math.sin(math.pi * max(0.0, min(1.0, raw_progress)))
+
+
+def _make_transform(*, x: float, y: float, z: float, pitch: float, yaw: float, roll: float) -> Any:
+    carla_mod = _try_import_carla()
+    if carla_mod is not None:
+        return carla_mod.Transform(
+            carla_mod.Location(x=x, y=y, z=z),
+            carla_mod.Rotation(pitch=pitch, yaw=yaw, roll=roll),
+        )
+    return _SimpleTransform(_SimpleLocation(x, y, z), _SimpleRotation(pitch=pitch, yaw=yaw, roll=roll))
 
 
 def _stamp(context: Any) -> Any:

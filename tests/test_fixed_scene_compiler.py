@@ -86,3 +86,26 @@ def test_cut_in_compiles_lane_change_action() -> None:
     ]
     assert "lane_change" in action_types
     assert storyboard["success_criteria"]["lane_change_completed"] is True
+
+
+def test_baguang_cut_in_compiles_longitudinal_gap_trigger() -> None:
+    template = load_fixed_scene_template("configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml")
+
+    storyboard = compile_fixed_scene_template(template)
+
+    phases = storyboard["storyboard"]["phases"]
+    assert phases[1]["id"] == "cut_in_lane_change"
+    assert phases[1]["start"] == {
+        "type": "relative_longitudinal_distance",
+        "from_role": "ego",
+        "to_role": "lead_vehicle",
+        "op": "<=",
+        "value_m": 10.0,
+    }
+    action = phases[1]["actions"][0]
+    assert action["type"] == "lane_change"
+    assert action["direction"] == "right"
+    assert action["target_speed_mps"] == 9.72
+    assert action["duration_s"] == 4.0
+    assert action["lateral_shift_m"] == 3.6
+    assert storyboard["params"]["duration_policy"] == "lead_reaches_road_end"

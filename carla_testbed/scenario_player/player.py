@@ -131,6 +131,7 @@ class FixedScenePlayer:
             action = active_actions.get(role)
             if action is None and phase:
                 action = action_for_role(current.get("actions", []) if current else [], role)
+            relative = self.actors.relative_longitudinal_lateral("ego", role)
             self.trace_writer.write(
                 build_actor_trace_row(
                     scene_id=str(self.storyboard["scene_id"]),
@@ -140,6 +141,8 @@ class FixedScenePlayer:
                     actor=actor,
                     action=action,
                     distance_to_ego_m=self.actors.distance("ego", role),
+                    longitudinal_to_ego_m=relative[0] if relative is not None else None,
+                    lateral_to_ego_m=relative[1] if relative is not None else None,
                     lane_change_progress=_lane_change_progress(
                         action,
                         current,

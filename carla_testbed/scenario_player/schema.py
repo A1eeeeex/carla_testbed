@@ -39,6 +39,7 @@ SUPPORTED_TRIGGER_TYPES = {
     "ego_route_s",
     "phase_completed",
     "relative_distance",
+    "relative_longitudinal_distance",
     "route_s",
     "simulation_time",
     "world_frame",

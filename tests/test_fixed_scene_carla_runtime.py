@@ -95,6 +95,30 @@ def test_carla_runtime_spawn_feasibility_blocks_required_waypoint_fallback(tmp_p
     assert state.spawn_feasibility["lead_vehicle"]["status"] == "fail"
 
 
+def test_carla_runtime_applies_smooth_cut_in_transform(tmp_path) -> None:
+    world = _FakeWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    template = load_fixed_scene_template("configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml")
+    template["roles"]["lead_vehicle"]["spawn"]["feasibility"]["require_waypoint"] = False
+    storyboard = compile_fixed_scene_template(template)
+    runtime = CarlaFixedSceneRuntime()
+    runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+    lead = runtime.actors["lead_vehicle"]
+
+    ego.transform.location.x = 13.0
+    runtime.tick({"ego_actor": ego, "sim_time_sec": 9.0, "world_frame": 1})
+    start_y = lead.transform.location.y
+    runtime.tick({"ego_actor": ego, "sim_time_sec": 11.0, "world_frame": 2})
+    mid_y = lead.transform.location.y
+    runtime.tick({"ego_actor": ego, "sim_time_sec": 13.0, "world_frame": 3})
+    final_y = lead.transform.location.y
+
+    assert math.isclose(start_y, -3.6, abs_tol=0.01)
+    assert start_y < mid_y < final_y
+    assert math.isclose(final_y, 0.0, abs_tol=0.05)
+    assert lead.target_velocity is not None
+
+
 def test_carla_runtime_module_does_not_import_carla_runtime() -> None:
     import carla_testbed.scenario_player.carla_runtime as module
 
@@ -163,6 +187,9 @@ class _FakeActor:
 
     def set_target_velocity(self, velocity):
         self.target_velocity = velocity
+
+    def set_transform(self, transform):
+        self.transform = transform
 
     def destroy(self):
         self.destroyed = True

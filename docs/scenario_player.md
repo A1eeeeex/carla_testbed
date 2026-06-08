@@ -41,6 +41,11 @@ diagnostics on `straight_road_for_baguang`:
   - ego and lead start near 70kph with a 20m gap; after 5s the lead ramps down
     toward 40kph and the scene lasts until the lead reaches the current
     Baguang straight-road end.
+- `configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml`
+  - lead starts in the left adjacent lane at 35kph, ego starts in the right
+    lane at 40kph, and the lead performs a cosine-eased 4s right cut-in when
+    longitudinal gap reaches about 10m. The scene lasts until the lead reaches
+    the current Baguang straight-road end.
 
 These scenes include spawn feasibility checks. If the lead vehicle cannot be
 placed at the requested ahead distance and lane, the fixed-scene contract must
@@ -137,11 +142,13 @@ objects. The adapter currently supports the follow-stop essentials:
 - call `FixedScenePlayer.tick()`
 - apply simple longitudinal controls for `follow_route`, `brake_to_stop`, and
   `hold_stop`
+- apply diagnostic scripted lane-change motion for non-ego cut-in/cut-out
+  actors, using smooth lateral interpolation rather than instant teleport
 - record scenario actor trace and phase events
 
 The runtime adapter intentionally does not control ego. It also does not yet
-implement claim-grade lane-change control for cut-in/cut-out; those templates
-compile for diagnostics and future runtime support.
+implement claim-grade lane-change control for cut-in/cut-out. The scripted
+lane-change support is scenario playback evidence only.
 
 For CARLA-only diagnostic runs, ego control is provided by
 `SimpleAccRouteFollowerController` through the `carla_builtin` backend facade.

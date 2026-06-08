@@ -38,6 +38,8 @@ def build_actor_trace_row(
     actor: ScenarioActorState,
     action: Mapping[str, Any] | None,
     distance_to_ego_m: float | None,
+    longitudinal_to_ego_m: float | None = None,
+    lateral_to_ego_m: float | None = None,
     ttc_s: float | None = None,
     lane_change_progress: float | None = None,
 ) -> dict[str, Any]:
@@ -65,6 +67,8 @@ def build_actor_trace_row(
         "yaw": actor.yaw_rad,
         "yaw_rad": actor.yaw_rad,
         "distance_to_ego_m": distance_to_ego_m,
+        "longitudinal_to_ego_m": longitudinal_to_ego_m,
+        "lateral_to_ego_m": lateral_to_ego_m,
         "ttc_s": ttc_s,
         "applied_control": dict(actor.applied_control) if actor.applied_control else None,
     }
