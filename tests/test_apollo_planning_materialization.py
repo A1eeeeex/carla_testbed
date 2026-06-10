@@ -182,6 +182,34 @@ def test_planning_materialization_prefers_sim_time_over_wall_timestamp(tmp_path:
     assert "derived_latency_outside_reasonable_range" not in report["time_domain"]["warnings"]
 
 
+def test_planning_materialization_nulls_invalid_mixed_time_latency(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path)
+    _write_json(
+        run_dir / "artifacts/cyber_bridge_stats.json",
+        {
+            "routing_success_count": 1,
+            "routing_first_success_response_ts_sec": 1_780_000_000.0,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_topic_debug.jsonl",
+        [
+            {
+                "sim_time_sec": 12.0,
+                "planning_header_sequence_num": 1,
+                "trajectory_point_count": 8,
+            }
+        ],
+    )
+
+    report = analyze_planning_materialization_run_dir(run_dir)
+
+    assert report["first_nonempty_after_routing_latency_s"] is None
+    assert report["time_domain"]["first_nonempty_after_routing_latency_s"] is None
+    assert "first_nonempty_after_routing_latency_s" in report["time_domain"]["invalid_latency_fields"]
+    assert "first_nonempty_after_routing_latency_unusable" in report["warnings"]
+
+
 def test_zero_freshness_join_coverage_is_unverified_not_zero_stale(tmp_path: Path) -> None:
     run_dir = _run_dir(tmp_path)
     _write_jsonl(

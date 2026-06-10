@@ -278,6 +278,7 @@ def analyze_control_health_run_dir(
         ),
         "control_bridge_log": control_bridge_log,
         "control_decode_debug": control_decode_debug,
+        "control_process_health": _control_process_health(apollo_control_handoff),
         "planning_log_fallback_diagnostics": _planning_log_fallback_diagnostics(
             apollo_planning_log_path
         ),
@@ -881,6 +882,50 @@ def write_control_health_report(report: Mapping[str, Any], out_dir: str | Path) 
     }
 
 
+def _control_process_health(apollo_control_handoff: Mapping[str, Any]) -> dict[str, Any]:
+    if not apollo_control_handoff:
+        return {"status": "insufficient_data", "available": False}
+    failure_stage = str(apollo_control_handoff.get("failure_stage") or "").strip()
+    process_health = apollo_control_handoff.get("process_health")
+    process_map = process_health if isinstance(process_health, Mapping) else {}
+    crash_reason = str(
+        process_map.get("crash_reason")
+        or process_map.get("fatal_signal")
+        or process_map.get("failure_reason")
+        or ""
+    ).strip()
+    crash_detected = (
+        _parse_bool(process_map.get("crash_detected")) is True
+        or bool(crash_reason)
+        or "crash" in failure_stage
+    )
+    if failure_stage == "process_health" and crash_detected:
+        return {
+            "status": "fail",
+            "available": True,
+            "failure_reason": "control_process_crash_before_control_output",
+            "failure_stage": failure_stage,
+            "crash_detected": True,
+            "crash_reason": crash_reason or None,
+        }
+    if failure_stage == "process_health":
+        return {
+            "status": "fail",
+            "available": True,
+            "failure_reason": "control_process_failed_before_control_output",
+            "failure_stage": failure_stage,
+            "crash_detected": crash_detected,
+            "crash_reason": crash_reason or None,
+        }
+    return {
+        "status": "pass",
+        "available": True,
+        "failure_stage": failure_stage or None,
+        "crash_detected": crash_detected,
+        "crash_reason": crash_reason or None,
+    }
+
+
 def _verdict(
     *,
     summary: Mapping[str, Any],
@@ -893,6 +938,13 @@ def _verdict(
 ) -> tuple[str, str | None, list[str], list[str]]:
     verdict_missing: list[str] = []
     warnings: list[str] = []
+    control_decode = metrics.get("control_decode_debug")
+    if (
+        missing_fields
+        and isinstance(control_decode, Mapping)
+        and control_decode.get("command_payload_available") is False
+    ):
+        warnings.append("control_row_level_trace_no_command_payload")
     if missing_inputs:
         return "insufficient_data", "missing_control_inputs", verdict_missing, warnings
     runtime_status = _runtime_contract_status(summary, {})
@@ -915,6 +967,10 @@ def _verdict(
         return "fail", "routing_missing", verdict_missing, warnings
     if planning is False:
         return "fail", "planning_missing", verdict_missing, warnings
+    process_health = metrics.get("control_process_health")
+    if isinstance(process_health, Mapping) and process_health.get("status") == "fail":
+        reason = str(process_health.get("failure_reason") or "control_process_failed")
+        return "fail", reason, verdict_missing, warnings
     if handoff_status != EXPECTED_HANDOFF_STATUS:
         return "fail", "control_handoff_not_consuming", verdict_missing, warnings
     if missing_fields:
@@ -1043,6 +1099,8 @@ def _external_control_evidence_available(
     """
 
     decode_available = bool(control_decode_debug.get("available") is True)
+    if control_decode_debug.get("command_payload_available") is False:
+        return False
     decode_rows = _num(control_decode_debug.get("parsed_line_count"))
     if decode_rows is None:
         decode_rows = _num(control_decode_debug.get("line_count"))
@@ -1720,6 +1778,8 @@ def _analyze_control_decode_debug(
     control_message_age_values: list[float] = []
     planning_message_age_values: list[float] = []
     trace_rows: list[dict[str, Any]] = []
+    command_payload_row_count = 0
+    no_command_placeholder_count = 0
     line_count = 0
     parsed_count = 0
     malformed_count = 0
@@ -1746,6 +1806,10 @@ def _analyze_control_decode_debug(
                 if (value := _nested_first_number(payload, _PLANNING_MESSAGE_AGE_PATHS)) is not None:
                     planning_message_age_values.append(value)
                 trace = _control_decode_payload_to_trace_row(payload)
+                if _trace_row_has_command_payload(trace):
+                    command_payload_row_count += 1
+                else:
+                    no_command_placeholder_count += 1
                 if trace:
                     trace_rows.append(trace)
     except OSError as exc:
@@ -1799,6 +1863,9 @@ def _analyze_control_decode_debug(
         "parsed_line_count": parsed_count,
         "malformed_line_count": malformed_count,
         "trace_row_count": len(trace_rows),
+        "command_payload_row_count": command_payload_row_count,
+        "no_command_placeholder_count": no_command_placeholder_count,
+        "command_payload_available": command_payload_row_count > 0,
         "nonzero_mapped_control_frames": nonzero_mapped if trace_rows else None,
         "first_nonzero_mapped_control_ts_sec": first_nonzero_mapped_ts,
         "apollo_raw_command_layer": raw_layer,
@@ -2093,6 +2160,21 @@ def _control_decode_payload_to_trace_row(payload: Mapping[str, Any]) -> dict[str
         ),
     }
     return {key: value for key, value in row.items() if value not in {None, ""}}
+
+
+def _trace_row_has_command_payload(row: Mapping[str, Any]) -> bool:
+    command_fields = (
+        "throttle_raw",
+        "brake_raw",
+        "apollo_steer_raw",
+        "throttle_mapped",
+        "brake_mapped",
+        "bridge_steer_mapped",
+        "throttle_applied",
+        "brake_applied",
+        "carla_steer_applied",
+    )
+    return any(_num(row.get(field)) is not None for field in command_fields)
 
 
 def _longitudinal_debug_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

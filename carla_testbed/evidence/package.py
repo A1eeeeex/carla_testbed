@@ -57,6 +57,8 @@ ROW_LEVEL_EVIDENCE_PATTERNS = (
     "artifacts/publish_gap_trace.jsonl",
     "artifacts/control_apply_trace.jsonl",
     "artifacts/planning_topic_debug.jsonl",
+    "artifacts/routing_event_debug.jsonl",
+    "artifacts/planning_route_segment_debug.jsonl",
     "artifacts/control_decode_debug.jsonl",
     "artifacts/apollo_reference_line_contract.jsonl",
     "artifacts/apollo_hdmap_projection.jsonl",

@@ -977,6 +977,16 @@ def _control_handoff_layer(
         "control_process_crashed",
     }:
         blocking.append(control_handoff_status)
+    process_health = report.get("process_health")
+    if isinstance(process_health, Mapping):
+        crash_reason = str(
+            process_health.get("crash_reason")
+            or process_health.get("fatal_signal")
+            or process_health.get("failure_reason")
+            or ""
+        ).strip()
+        if _bool_or_none(process_health.get("crash_detected")) is True or crash_reason:
+            blocking.append("control_process_crash_before_control_output")
     if planning_nonzero is not None and planning_nonzero > 0 and control_rx_count is not None and control_rx_count < 1:
         blocking.append("control_rx_missing")
     if control_rx_count is not None and control_rx_count > 0 and control_apply_count is not None and control_apply_count < 1:
@@ -1008,6 +1018,7 @@ def _control_handoff_layer(
             "control_message_count": _nested(report, "control_channel.message_count"),
             "control_rx_count": control_rx_count,
             "apply_control_count": control_apply_count,
+            "process_health": process_health if isinstance(process_health, Mapping) else None,
             "vehicle_response_status": _nested(report, "vehicle_response.status"),
         },
         artifact_paths={
@@ -1031,6 +1042,7 @@ def _control_health_layer(report: Mapping[str, Any] | None, path: Path | None) -
         key_metrics={
             "failure_reason": report.get("failure_reason"),
             "control_handoff_status": report.get("control_handoff_status"),
+            "control_process_health": _nested(report, "metrics.control_process_health"),
             "oscillation_decomposition": _nested(report, "metrics.oscillation_decomposition"),
             "longitudinal_oscillation_attribution": _nested(
                 report,
@@ -1679,6 +1691,7 @@ def _layer_blocker_name(name: str, layer: Mapping[str, Any]) -> str:
             "planning_nonempty_missing",
             "planning_ready_control_not_consuming",
             "control_process_missing",
+            "control_process_crash_before_control_output",
             "control_rx_missing",
             "control_apply_missing",
             "control_process_crashed",

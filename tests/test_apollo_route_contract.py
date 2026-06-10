@@ -10,6 +10,20 @@ from carla_testbed.analysis.apollo_route_contract import (
     analyze_apollo_route_contract_run_dir,
 )
 
+FRAME_TRANSFORM = {
+    "map_name": "Town01",
+    "source_frame": "carla_world",
+    "target_frame": "apollo_map",
+    "transform": {
+        "tx": 0.0,
+        "ty": 0.0,
+        "tz": 0.0,
+        "yaw_rad": 0.0,
+        "scale": 1.0,
+        "y_flip": True,
+    },
+}
+
 
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +85,7 @@ def test_route_contract_detects_apollo_routing_length_mismatch(tmp_path: Path) -
         },
     )
 
-    report = analyze_apollo_route_contract_run_dir(run_dir)
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
 
     assert report["schema_version"] == APOLLO_ROUTE_CONTRACT_SCHEMA_VERSION
     assert report["status"] == "fail"
@@ -93,13 +107,16 @@ def test_route_contract_passes_matching_lane_keep_route(tmp_path: Path) -> None:
     )
     _write_jsonl(
         run_dir / "artifacts/routing_event_debug.jsonl",
-        [{"start_raw_x": 2.0, "start_raw_y": 249.0, "goal_raw_x": 2.0, "goal_raw_y": 19.0}],
+        [{"start_raw_x": 2.0, "start_raw_y": -249.0, "goal_raw_x": 2.0, "goal_raw_y": -19.0}],
     )
 
-    report = analyze_apollo_route_contract_run_dir(run_dir)
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
 
-    assert report["status"] == "pass"
+    assert report["status"] == "warn"
     assert report["blocking_reasons"] == []
+    assert report["comparison_frame"] == "apollo_map"
+    assert report["scenario_start_xy_carla"] == {"x": 2.0, "y": 249.0}
+    assert report["scenario_start_xy_apollo"] == {"x": 2.0, "y": -249.0}
 
 
 def test_route_contract_missing_apollo_route_is_insufficient(tmp_path: Path) -> None:
@@ -109,6 +126,62 @@ def test_route_contract_missing_apollo_route_is_insufficient(tmp_path: Path) -> 
 
     assert report["status"] == "insufficient_data"
     assert "apollo_routing_total_length_m" in report["missing_fields"]
+
+
+def test_route_contract_missing_frame_transform_does_not_hard_fail_xy(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "last_routing_total_length": 232.0,
+            "last_routing_lane_window_count": 1,
+            "last_routing_lane_window_signature": "15_1_1@66.9->298.9",
+            "last_routing_unique_lane_signature": "15_1_1",
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [{"start_raw_x": 2.0, "start_raw_y": -249.0, "goal_raw_x": 2.0, "goal_raw_y": -19.0}],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir)
+
+    assert report["status"] == "warn"
+    assert "apollo_routing_goal_mismatch" not in report["blocking_reasons"]
+    assert "apollo_route_xy_comparison_frame_transform_missing" in report["warnings"]
+    assert report["start_xy_error_m"] is None
+
+
+def test_startup_route_cannot_materialize_claim_route(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(run_dir / "artifacts/cyber_bridge_stats.json", {
+        "last_routing_reason": "startup_initial_route",
+        "health": {
+            "routing_goal_mode": "ego_seed_ahead",
+            "routing_goal_dist_m": 30.0,
+            "routing_startup_phase_used": True,
+        },
+    })
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "last_routing_total_length": 30.0,
+            "last_routing_lane_window_count": 1,
+            "last_routing_lane_window_signature": "15_1_1@66.9->96.9",
+            "last_routing_unique_lane_signature": "15_1_1",
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [{"start_raw_x": 2.0, "start_raw_y": -249.0, "goal_raw_x": 2.0, "goal_raw_y": -219.0}],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["routing_phase"] == "startup"
+    assert report["startup_route_contract"]["status"] == "diagnostic_only"
+    assert report["claim_route_contract"]["materialized"] is False
+    assert "claim_route_not_materialized" in report["blocking_reasons"]
 
 
 def test_route_contract_cli_writes_report(tmp_path: Path) -> None:

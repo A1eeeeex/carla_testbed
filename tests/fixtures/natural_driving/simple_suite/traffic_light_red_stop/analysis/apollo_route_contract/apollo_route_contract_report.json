@@ -1,0 +1,23 @@
+{
+  "apollo_routing_total_length_m": 100.0,
+  "blocking_reasons": [],
+  "claim_route_contract": {
+    "apollo_routing_total_length_m": 100.0,
+    "blocking_reasons": [],
+    "materialized": true,
+    "scenario_route_length_m": 100.0,
+    "status": "pass"
+  },
+  "comparison_frame": "apollo_map",
+  "routing_phase": "claim",
+  "routing_phase_reason": "fixture_claim_route",
+  "scenario_route_length_m": 100.0,
+  "schema_version": "apollo_route_contract.v1",
+  "startup_route_contract": {
+    "diagnostic_only": false,
+    "reason": "fixture_claim_route",
+    "status": "not_applicable"
+  },
+  "status": "pass",
+  "warnings": []
+}

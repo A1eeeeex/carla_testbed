@@ -231,15 +231,31 @@ Generate route-contract evidence for a run:
 ```bash
 python tools/analyze_apollo_route_contract.py \
   --run-dir <run_dir> \
+  --frame-transform configs/town01/apollo_frame_transform.example.yaml \
   --out <run_dir>/analysis/apollo_route_contract
 ```
 
 The route contract is the bridge between scenario intent and Apollo Routing
-output. `apollo_link_health` and `apollo_chain_completion` consume it before
-route establishment. If the scenario route is about 230 m but Apollo reports a
-multi-road 648 m routing response, the route layer must fail with
-`apollo_routing_length_mismatch` rather than allowing later control metrics to
-be interpreted as natural driving.
+output. Coordinate comparison must happen in Apollo map frame: the report keeps
+raw scenario CARLA XY as `scenario_*_xy_carla`, transformed scenario XY as
+`scenario_*_xy_apollo`, Apollo Routing XY as `apollo_*_xy`, and records
+`comparison_frame` plus `transform_source`. If the transform is missing, XY
+agreement is `insufficient_data`/warning evidence, not a hard mismatch.
+Length and lane-sequence mismatches remain hard route-contract failures.
+
+`apollo_route_contract_report.json` also separates `startup_route_contract`
+from `claim_route_contract`. An ego-seed startup route can be useful diagnostic
+evidence that Routing answered, but it cannot materialize a 230 m scenario
+claim route. If only the startup route is observed, downstream gates must
+surface `claim_route_not_materialized` before interpreting Planning, Control,
+or actuation metrics as natural driving.
+
+`apollo_link_health`, `apollo_chain_completion`, `apollo_module_consumption`,
+and `natural_driving_report.json` consume this report before route
+establishment. If the scenario route is about 230 m but Apollo reports a short
+startup route or a multi-road 648 m routing response, the route layer must fail
+with `claim_route_not_materialized` or `apollo_routing_length_mismatch` rather
+than allowing later control metrics to be interpreted as natural driving.
 
 Planning materialization reports keep time domains explicit. Latency or
 freshness metrics are valid only when both sides use the same domain

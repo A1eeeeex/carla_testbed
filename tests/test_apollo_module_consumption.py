@@ -78,6 +78,20 @@ def _base_run(tmp_path: Path) -> Path:
             "planning_requires_prediction": True,
         },
     )
+    _write_json(
+        run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json",
+        {
+            "schema_version": "apollo_route_contract.v1",
+            "status": "pass",
+            "routing_phase": "claim",
+            "claim_route_contract": {
+                "status": "pass",
+                "materialized": True,
+                "blocking_reasons": [],
+            },
+            "blocking_reasons": [],
+        },
+    )
     return run_dir
 
 
@@ -160,6 +174,30 @@ def test_module_consumption_missing_planning_materialization_is_insufficient(tmp
 
     assert report["status"] == "insufficient_data"
     assert "planning_materialization_missing" in report["blocking_reasons"]
+
+
+def test_module_consumption_blocks_failed_route_contract(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json",
+        {
+            "schema_version": "apollo_route_contract.v1",
+            "status": "fail",
+            "routing_phase": "startup",
+            "claim_route_contract": {
+                "status": "fail",
+                "materialized": False,
+                "blocking_reasons": ["claim_route_not_materialized"],
+            },
+            "blocking_reasons": ["claim_route_not_materialized"],
+        },
+    )
+
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+
+    assert report["status"] == "fail"
+    assert "route_contract_failed_before_module_consumption_claim" in report["blocking_reasons"]
+    assert "claim_route_consumption_unverified" in report["blocking_reasons"]
 
 
 def test_module_consumption_fails_when_route_not_established_and_reference_line_missing(tmp_path: Path) -> None:

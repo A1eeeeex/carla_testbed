@@ -143,6 +143,16 @@ CSV_FIELDS = [
     "planning_materialized",
     "control_handoff_status",
     "materialization_status",
+    "apollo_route_contract_status",
+    "apollo_route_contract_blocking_reasons",
+    "apollo_route_contract_routing_phase",
+    "apollo_route_contract_report_path",
+    "planning_materialization_status",
+    "planning_materialization_blocking_reasons",
+    "planning_materialization_report_path",
+    "apollo_chain_completion_verdict",
+    "apollo_chain_completion_failure_stage",
+    "apollo_chain_completion_report_path",
     "apollo_channel_health_status",
     "apollo_channel_gap_failures",
     "apollo_channel_low_rate_channels",
@@ -513,6 +523,27 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
             "apollo_control_handoff_report.json",
         ],
     )
+    apollo_route_contract_path = _find_first(
+        run_dir,
+        [
+            "analysis/apollo_route_contract/apollo_route_contract_report.json",
+            "apollo_route_contract_report.json",
+        ],
+    )
+    planning_materialization_path = _find_first(
+        run_dir,
+        [
+            "analysis/planning_materialization/planning_materialization_report.json",
+            "planning_materialization_report.json",
+        ],
+    )
+    apollo_chain_completion_path = _find_first(
+        run_dir,
+        [
+            "analysis/apollo_chain_completion/apollo_chain_completion_report.json",
+            "apollo_chain_completion_report.json",
+        ],
+    )
     control_attribution_path = _find_first(
         run_dir,
         [
@@ -597,6 +628,9 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
     apollo_hdmap_projection = _read_json(apollo_hdmap_projection_path)
     control_health = _read_json(control_health_path)
     apollo_control_handoff = _read_json(apollo_control_handoff_path)
+    apollo_route_contract = _read_json(apollo_route_contract_path)
+    planning_materialization = _read_json(planning_materialization_path)
+    apollo_chain_completion = _read_json(apollo_chain_completion_path)
     control_attribution = _read_json(control_attribution_path)
     apollo_lateral_semantics = _read_json(apollo_lateral_semantics_path)
     autoware_evidence = _read_json(autoware_evidence_path)
@@ -716,6 +750,26 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "planning_materialized": _summary_bool(summary, "planning_materialized"),
         "control_handoff_status": _control_handoff_status(summary),
         "materialization_status": _summary_text(summary, "materialization_status"),
+        "apollo_route_contract_status": apollo_route_contract.get("status"),
+        "apollo_route_contract_blocking_reasons": list(
+            apollo_route_contract.get("blocking_reasons") or []
+        ),
+        "apollo_route_contract_routing_phase": apollo_route_contract.get("routing_phase"),
+        "apollo_route_contract_report_path": (
+            str(apollo_route_contract_path) if apollo_route_contract_path else None
+        ),
+        "planning_materialization_status": planning_materialization.get("verdict"),
+        "planning_materialization_blocking_reasons": list(
+            planning_materialization.get("blocking_reasons") or []
+        ),
+        "planning_materialization_report_path": (
+            str(planning_materialization_path) if planning_materialization_path else None
+        ),
+        "apollo_chain_completion_verdict": apollo_chain_completion.get("verdict"),
+        "apollo_chain_completion_failure_stage": apollo_chain_completion.get("failure_stage"),
+        "apollo_chain_completion_report_path": (
+            str(apollo_chain_completion_path) if apollo_chain_completion_path else None
+        ),
         "control_health_status": control_health.get("status"),
         "control_health_failure_reason": control_health.get("failure_reason"),
         "control_health_warnings": list(control_health.get("warnings") or []),
@@ -825,6 +879,15 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
             "apollo_control_handoff": str(apollo_control_handoff_path)
             if apollo_control_handoff_path
             else None,
+            "apollo_route_contract": (
+                str(apollo_route_contract_path) if apollo_route_contract_path else None
+            ),
+            "planning_materialization": (
+                str(planning_materialization_path) if planning_materialization_path else None
+            ),
+            "apollo_chain_completion": (
+                str(apollo_chain_completion_path) if apollo_chain_completion_path else None
+            ),
             "control_attribution": str(control_attribution_path) if control_attribution_path else None,
             "autoware_evidence": str(autoware_evidence_path) if autoware_evidence_path else None,
             "apollo_lateral_semantics": str(apollo_lateral_semantics_path)
@@ -925,6 +988,9 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         localization_contract=localization_contract,
         apollo_reference_line_contract=apollo_reference_line_contract,
         apollo_hdmap_projection=apollo_hdmap_projection,
+        apollo_route_contract=apollo_route_contract,
+        planning_materialization=planning_materialization,
+        apollo_chain_completion=apollo_chain_completion,
         apollo_control_handoff=apollo_control_handoff,
         control_health=control_health,
         assist_ledger_path=assist_ledger_path,
@@ -991,6 +1057,9 @@ def _unassisted_claimability(
     localization_contract: Mapping[str, Any],
     apollo_reference_line_contract: Mapping[str, Any],
     apollo_hdmap_projection: Mapping[str, Any],
+    apollo_route_contract: Mapping[str, Any],
+    planning_materialization: Mapping[str, Any],
+    apollo_chain_completion: Mapping[str, Any],
     apollo_control_handoff: Mapping[str, Any],
     control_health: Mapping[str, Any],
     assist_ledger_path: Path | None,
@@ -1000,6 +1069,21 @@ def _unassisted_claimability(
 
     if str(run.get("backend") or "").strip() != APOLLO_CYBERRT_BACKEND:
         reasons.append("backend_not_apollo_cyberrt")
+
+    algorithm_variant_id = str(run.get("algorithm_variant_id") or "").strip()
+    algorithm_variant_manifest_path = str(run.get("algorithm_variant_manifest_path") or "").strip()
+    if not algorithm_variant_id:
+        reasons.append("algorithm_variant_id_missing")
+    if not algorithm_variant_manifest_path:
+        reasons.append("algorithm_variant_manifest_path_missing")
+    for field in run.get("invalid_manifest_source_fields") or []:
+        field_text = str(field)
+        if field_text == "algorithm_variant_manifest_path":
+            reasons.append("algorithm_variant_manifest_path_invalid")
+        elif field_text == "algorithm_variant_manifest_path.variant_id_mismatch":
+            reasons.append("algorithm_variant_manifest_id_mismatch")
+        elif field_text == "algorithm_variant_manifest_path.variant_type_not_truth_input_closed_loop":
+            reasons.append("algorithm_variant_not_truth_input_closed_loop")
 
     control_source = str(run.get("control_source") or "").strip()
     if not control_source:
@@ -1019,6 +1103,50 @@ def _unassisted_claimability(
     elif planning_nonempty_ratio < DEFAULT_THRESHOLDS["min_planning_nonempty_ratio"]:
         reasons.append("planning_nonempty_ratio_low")
 
+    route_contract_status = str(apollo_route_contract.get("status") or "").strip()
+    route_contract_blockers = [
+        str(item) for item in (apollo_route_contract.get("blocking_reasons") or []) if item
+    ]
+    claim_route_contract = apollo_route_contract.get("claim_route_contract")
+    if not apollo_route_contract:
+        reasons.append("apollo_route_contract_missing")
+    elif route_contract_status == "fail":
+        reasons.append("apollo_route_contract_failed")
+    elif route_contract_status not in PASS_WARN_STATUSES:
+        reasons.append("apollo_route_contract_not_claim_grade")
+    if isinstance(claim_route_contract, Mapping) and claim_route_contract.get("materialized") is False:
+        reasons.append("claim_route_not_materialized")
+    for blocker in route_contract_blockers:
+        if blocker in {"claim_route_not_materialized", "apollo_routing_length_mismatch"}:
+            reasons.append(blocker)
+
+    planning_materialization_status = str(planning_materialization.get("verdict") or "").strip()
+    planning_materialization_blockers = [
+        str(item) for item in (planning_materialization.get("blocking_reasons") or []) if item
+    ]
+    if not planning_materialization:
+        reasons.append("planning_materialization_missing")
+    elif planning_materialization_status == "fail":
+        reasons.append("planning_materialization_failed")
+    elif planning_materialization_status not in PASS_WARN_STATUSES:
+        reasons.append("planning_materialization_not_pass_warn")
+    if "route_establishment_not_confirmed" in planning_materialization_blockers:
+        reasons.append("route_establishment_not_confirmed")
+
+    chain_verdict = str(apollo_chain_completion.get("verdict") or "").strip()
+    chain_stage = str(apollo_chain_completion.get("failure_stage") or "").strip()
+    if not apollo_chain_completion:
+        reasons.append("apollo_chain_completion_missing")
+    elif chain_verdict == "fail":
+        if chain_stage == "planning_materialization":
+            reasons.append("planning_materialization_failed")
+        elif chain_stage in {"route_establishment", "hdmap_or_route_contract"}:
+            reasons.append("route_establishment_not_confirmed")
+        elif chain_stage in {"control_handoff", "process_health"}:
+            reasons.append("control_process_failed")
+        else:
+            reasons.append(f"apollo_chain_completion_failed:{chain_stage or 'unknown'}")
+
     for field, reason in (
         ("control_rx_count", "control_rx_count_missing_or_zero"),
         ("control_tx_count", "control_tx_count_missing_or_zero"),
@@ -1028,6 +1156,9 @@ def _unassisted_claimability(
         if value is None or value < 1:
             reasons.append(reason)
 
+    localization_blockers = _localization_blocking_reasons(localization_contract)
+    if "duplicate_localization_timestamps_claim_grade_blocked" in localization_blockers:
+        reasons.append("stale_gt_republish_claim_blocked")
     if not _localization_claim_grade(localization_contract):
         reasons.append("localization_contract_not_claim_grade")
 
@@ -1043,6 +1174,21 @@ def _unassisted_claimability(
     handoff_stage = str(apollo_control_handoff.get("failure_stage") or "").strip()
     if handoff_status not in PASS_WARN_STATUSES or handoff_stage not in {"", "none"}:
         reasons.append("control_handoff_not_pass_warn")
+    if handoff_stage in {"process_health", "control_process", "process_crash"}:
+        reasons.append("control_process_failed")
+    handoff_blockers = {str(item) for item in (apollo_control_handoff.get("blocking_reasons") or [])}
+    if any("process" in item or "crash" in item for item in handoff_blockers):
+        reasons.append("control_process_failed")
+    process_health = apollo_control_handoff.get("process_health")
+    if isinstance(process_health, Mapping):
+        crash_reason = str(
+            process_health.get("crash_reason")
+            or process_health.get("fatal_signal")
+            or process_health.get("failure_reason")
+            or ""
+        )
+        if _parse_bool(process_health.get("crash_detected")) is True or crash_reason:
+            reasons.append("control_process_crash_before_control_output")
 
     if _control_health_blocking(control_health):
         reasons.append("control_health_blocking")
@@ -1077,7 +1223,7 @@ def _unassisted_claimability(
 
     return {
         "can_claim_unassisted": not reasons,
-        "why_not_claimable": sorted(set(reasons)),
+        "why_not_claimable": _unique_ordered(reasons),
     }
 
 
@@ -3587,6 +3733,18 @@ def _markdown_list(values: Any) -> str:
     if isinstance(values, (list, tuple, set)):
         return "<br>".join(str(value) for value in values)
     return str(values)
+
+
+def _unique_ordered(values: Sequence[Any]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def _is_relative_to(path: Path, base: Path) -> bool:

@@ -1,0 +1,15 @@
+{
+  "blocking_reasons": [],
+  "first_nonempty_after_routing_latency_s": 0.2,
+  "nonempty_trajectory_ratio": 0.95,
+  "planning_message_count": 100,
+  "route_establishment": {
+    "blocking_reasons": [],
+    "planning_nonempty_after_routing_success_ratio": 0.95,
+    "route_established": true,
+    "routing_success_count": 1
+  },
+  "schema_version": "planning_materialization.v1",
+  "verdict": "pass",
+  "warnings": []
+}

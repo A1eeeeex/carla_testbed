@@ -17,6 +17,10 @@ The analyzer separates seven layers:
 7. `vehicle_response`: after applied control, the vehicle shows speed, route progress, or yaw response evidence.
 
 Failure stages are prioritized upstream first. For example, if Control crashes, downstream bridge/apply layers are not guessed.
+When `process_health` reports a crash before usable control output, downstream
+control-health and link-health reports should surface
+`control_process_crash_before_control_output` before investigating actuation
+oscillation or PID/calibration hypotheses.
 
 ## Gate Usage
 
@@ -66,6 +70,10 @@ latency, actuator mapping mode, calibration profile, steering sign/scale, and
 apply-cadence diagnostics in the same row. This lets the handoff and
 control-health analyzers attribute breakpoints without smoothing away the raw
 source command.
+Trace-file presence alone is not control evidence. Rows whose raw, mapped, and
+applied command fields are all null are treated as no-command placeholders; they
+can document that the bridge loop ran, but they cannot clear raw/mapped/applied
+control gates or support a no-interference claim.
 
 When P0 `timeseries.csv` lacks raw or mapped command fields, and
 `control_apply_trace.jsonl` is not available, the analyzers may use

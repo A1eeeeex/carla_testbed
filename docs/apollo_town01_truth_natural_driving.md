@@ -737,6 +737,10 @@ Minimum pass thresholds for a claim-grade packet:
   `capability_coverage.can_claim_full_natural_driving=true`.
 - Every hard-gate scenario has `can_claim_unassisted_natural_driving=true` and
   an empty `why_not_claimable`.
+- `manifest.json` includes a valid `algorithm_variant_id` and
+  `algorithm_variant_manifest_path`. Missing, unresolved, mismatched, or
+  non-`truth_input_closed_loop` variant metadata appears in
+  `why_not_claimable` and blocks a capability claim.
 - `localization_contract_report.json` is `pass` or non-blocking `warn`,
   claim-grade, uses sim-time, writes `header.frame_id=map`, uses verified VRP /
   rear-axle evidence, skips stale GT sample republish for claim-grade runs, and
@@ -766,6 +770,9 @@ Minimum pass thresholds for a claim-grade packet:
   declarations override bridge `/apollo/control` rx counters. If they conflict
   with Apollo control-topic evidence, the run is `control_source_conflict`, not
   no-interference Apollo control.
+- `control_apply_trace.jsonl` contains real command payloads. All-null
+  raw/mapped/applied trace rows are no-command placeholders and cannot clear the
+  control evidence gate.
 - Traffic-light claim-grade scenarios use `traffic_light_policy=carla_actual`,
   not `force_green`, and include mapped signal/stop-line evidence plus behavior
   evidence.
@@ -780,6 +787,8 @@ Known non-claim-grade modes:
 - diagnostic nearest-lane projection only;
 - stale localization republish used as fresh-sample evidence;
 - missing HDMap / Apollo reference-line evidence;
+- missing, unresolved, or mismatched algorithm variant manifest;
+- all-null `control_apply_trace.jsonl` rows used as control evidence;
 - missing or unknown prediction evidence when the scenario requires prediction;
 - explicit non-Apollo control source conflicting with `/apollo/control` rx/tx.
 
@@ -902,6 +911,15 @@ ROS2, or CyberRT. It attempts to:
 When both legacy root-level reports and regenerated `analysis/...` reports
 exist, the evaluator prefers the standard `analysis/...` artifact. This avoids
 using stale root reports after a refreshed postprocess pass.
+Route-contract postprocess must compare scenario and Apollo Routing XY in the
+Apollo map frame, not by directly comparing raw CARLA world coordinates. The
+report preserves `scenario_*_xy_carla` and writes transformed
+`scenario_*_xy_apollo`; if the frame transform is unavailable, XY agreement is
+warning/insufficient evidence rather than a hard route mismatch. A short
+startup/ego-seed route is recorded as `startup_route_contract` and remains
+diagnostic-only. A hard natural-driving claim requires
+`claim_route_contract.materialized=true`; otherwise
+`why_not_claimable` must include `claim_route_not_materialized`.
 When `--refresh` is used but raw regeneration inputs are absent, postprocess
 standardizes existing pass-level reports instead of overwriting them with
 weaker placeholder-derived evidence. This applies to route-health, Apollo

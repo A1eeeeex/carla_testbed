@@ -955,6 +955,31 @@ def test_reference_line_localization_lane_heading_mismatch_is_primary_blocker(
     assert report["layers"]["control_mapping_apply"]["status"] == "fail"
 
 
+def test_control_process_crash_is_explicit_handoff_blocker(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    handoff_path = run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json"
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    handoff["verdict"] = "fail"
+    handoff["failure_stage"] = "process_health"
+    handoff["blocking_reasons"] = ["process_health_failed"]
+    handoff["process_health"] = {
+        "status": "fail",
+        "crash_detected": True,
+        "crash_reason": "tcmalloc_invalid_free",
+    }
+    _write_json(handoff_path, handoff)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    layer = report["layers"]["routing_planning_control_handoff"]
+
+    assert "control_process_crash_before_control_output" in layer["blocking_reasons"]
+    assert layer["key_metrics"]["process_health"]["crash_reason"] == "tcmalloc_invalid_free"
+    assert (
+        report["primary_blocker"]
+        == "routing_planning_control_handoff:control_process_crash_before_control_output"
+    )
+
+
 def test_control_oscillation_becomes_primary_only_after_localization_and_reference_pass(
     tmp_path: Path,
 ) -> None:

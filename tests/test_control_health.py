@@ -71,6 +71,38 @@ def test_control_health_bad_handoff_fails(tmp_path: Path) -> None:
     assert report["failure_reason"] == "control_handoff_not_consuming"
 
 
+def test_control_health_reports_control_process_crash_before_actuation(tmp_path: Path) -> None:
+    run_dir = _copy_run(tmp_path)
+    handoff_path = run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json"
+    handoff_path.parent.mkdir(parents=True, exist_ok=True)
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_control_handoff.v1",
+                "verdict": "fail",
+                "failure_stage": "process_health",
+                "blocking_reasons": ["process_health_failed"],
+                "process_health": {
+                    "status": "fail",
+                    "crash_detected": True,
+                    "crash_reason": "tcmalloc_invalid_free",
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+
+    assert report["status"] == "fail"
+    assert report["failure_reason"] == "control_process_crash_before_control_output"
+    process = report["metrics"]["control_process_health"]
+    assert process["crash_detected"] is True
+    assert process["crash_reason"] == "tcmalloc_invalid_free"
+
+
 def test_control_health_missing_control_trace_is_insufficient_data(tmp_path: Path) -> None:
     run_dir = _copy_run(tmp_path)
     csv_path = run_dir / "timeseries.csv"
@@ -88,6 +120,65 @@ def test_control_health_missing_control_trace_is_insufficient_data(tmp_path: Pat
     assert {"apollo_steer_raw", "bridge_steer_mapped", "carla_steer_applied"}.issubset(
         set(report["missing_fields"])
     )
+
+
+def test_control_apply_trace_without_command_payload_is_not_control_evidence(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    csv_path = run_dir / "timeseries.csv"
+    rows = _read_csv(csv_path)
+    for row in rows:
+        for field in (
+            "apollo_steer_raw",
+            "bridge_steer_mapped",
+            "throttle_raw",
+            "throttle_mapped",
+            "brake_raw",
+            "brake_mapped",
+            "carla_steer_applied",
+            "throttle_applied",
+            "brake_applied",
+        ):
+            row[field] = ""
+    _write_csv(csv_path, rows)
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    (artifact_dir / "control_apply_trace.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "event_type": "control_apply",
+                    "timestamp": index * 0.05,
+                    "apollo_raw": {"throttle": None, "brake": None, "steer": None},
+                    "bridge_mapped": {"throttle": None, "brake": None, "steer": None},
+                    "carla_applied": {"throttle": None, "brake": None, "steer": None},
+                }
+            )
+            for index in range(3)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifact_dir / "cyber_control_bridge.err.log").write_text(
+        "[INFO] [1002.000000000] [carla_control_bridge]: apply frame=10 source=pending "
+        "actor_id=197 role=hero src_steer=0.000 norm_steer=0.000 carla_steer=0.000 "
+        "clamped=False throttle=0.000 brake=0.000 rx=10 applied=3 drop_same_frame=0\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+
+    assert report["raw_mapped_applied_control_available"] is False
+    assert report["status"] == "insufficient_data"
+    assert report["failure_reason"] == "missing_control_trace_fields"
+    decode = report["metrics"]["control_decode_debug"]
+    assert decode["available"] is True
+    assert decode["trace_row_count"] == 3
+    assert decode["command_payload_row_count"] == 0
+    assert decode["no_command_placeholder_count"] == 3
+    assert decode["command_payload_available"] is False
+    assert "control_row_level_trace_no_command_payload" in report["warnings"]
 
 
 def test_control_health_uses_external_bridge_evidence_when_p0_raw_mapped_is_null(

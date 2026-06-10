@@ -21,13 +21,21 @@ def build_parser() -> argparse.ArgumentParser:
         description="Analyze Apollo routing response compatibility with the scenario route."
     )
     parser.add_argument("--run-dir", required=True, help="Run artifact directory.")
+    parser.add_argument(
+        "--frame-transform",
+        default=None,
+        help="Optional CARLA world to Apollo map transform YAML for XY comparison.",
+    )
     parser.add_argument("--out", required=True, help="Output directory.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    report = analyze_apollo_route_contract_run_dir(args.run_dir)
+    report = analyze_apollo_route_contract_run_dir(
+        args.run_dir,
+        frame_transform=args.frame_transform,
+    )
     outputs = write_apollo_route_contract_report(report, args.out)
     print(
         json.dumps(

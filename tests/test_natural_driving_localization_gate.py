@@ -77,6 +77,28 @@ def test_lane_keep_missing_measurement_time_cannot_hard_pass(tmp_path: Path) -> 
     assert "localization_contract.acceptance_checklist.sim_time_time_base.status" in lane["missing_fields"]
 
 
+def test_lane_keep_stale_republish_blocks_unassisted_claim(tmp_path: Path) -> None:
+    suite_root = _copy_suite(tmp_path)
+    loc_path = _localization_path(suite_root / "lane_keep_097")
+    loc = _read_json(loc_path)
+    loc["verdict"]["status"] = "fail"
+    loc["verdict"]["blocking_reasons"] = [
+        "duplicate_localization_timestamps_claim_grade_blocked"
+    ]
+    loc["channel"]["duplicate_timestamp_ratio"] = 0.25
+    loc["channel"]["stale_republish_detected"] = True
+    loc["channel"]["stale_republish_status"] = "claim_grade_blocked"
+    _write_json(loc_path, loc)
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane = _run(report, "lane_keep_097")
+
+    assert lane["verdict"] == "insufficient_data"
+    assert lane["failure_reason"] == "localization_contract_blocking"
+    assert "duplicate_localization_timestamps_claim_grade_blocked" in lane["localization_blocking_reasons"]
+    assert "stale_gt_republish_claim_blocked" in lane["why_not_claimable"]
+
+
 def test_curve_with_localization_heading_block_is_diagnostic_not_algorithm_fail(tmp_path: Path) -> None:
     suite_root = tmp_path / "suite"
     _make_curve_run(suite_root)

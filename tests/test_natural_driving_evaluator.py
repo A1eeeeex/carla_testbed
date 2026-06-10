@@ -1488,6 +1488,7 @@ def test_missing_algorithm_variant_in_manifest_is_insufficient_data(tmp_path: Pa
     assert lane_run["verdict"] == "insufficient_data"
     assert lane_run["failure_reason"] == "missing_manifest_fields"
     assert "manifest.algorithm_variant_id" in lane_run["missing_fields"]
+    assert "algorithm_variant_id_missing" in lane_run["why_not_claimable"]
 
 
 def test_missing_algorithm_variant_manifest_path_is_insufficient_data(tmp_path: Path) -> None:
@@ -1504,6 +1505,7 @@ def test_missing_algorithm_variant_manifest_path_is_insufficient_data(tmp_path: 
     assert lane_run["verdict"] == "insufficient_data"
     assert lane_run["failure_reason"] == "missing_manifest_fields"
     assert "manifest.algorithm_variant_manifest_path" in lane_run["missing_fields"]
+    assert "algorithm_variant_manifest_path_missing" in lane_run["why_not_claimable"]
 
 
 def test_truth_input_false_is_insufficient_data(tmp_path: Path) -> None:

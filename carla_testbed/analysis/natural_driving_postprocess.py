@@ -93,6 +93,7 @@ DEFAULT_TRAFFIC_LIGHT_MAPPING = Path("configs/town01/traffic_lights.example.yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_APOLLO_REFERENCE_CHAIN = _REPO_ROOT / "configs" / "reference" / "apollo_reference_chain.yaml"
 DEFAULT_APOLLO_GT_REPLACEMENT_MATRIX = _REPO_ROOT / "configs" / "reference" / "apollo_gt_replacement_matrix.yaml"
+DEFAULT_APOLLO_FRAME_TRANSFORM = _REPO_ROOT / "configs" / "town01" / "apollo_frame_transform.example.yaml"
 
 
 def postprocess_natural_driving_runs(
@@ -191,6 +192,12 @@ def _postprocess_run_dir(
     apollo_module_consumption_result = _ensure_apollo_module_consumption(run_dir, refresh=refresh)
     prediction_evidence_result = _ensure_prediction_evidence(run_dir, refresh=refresh)
     apollo_hdmap_projection_result = _ensure_apollo_hdmap_projection(run_dir, refresh=refresh)
+    channel_health_result = _ensure_channel_health(
+        run_dir,
+        channel_config=channel_config,
+        scenario_class=scenario_class,
+        refresh=refresh,
+    )
     localization_contract_result = _ensure_localization_contract(run_dir, refresh=refresh)
     apollo_reference_line_contract_result = _ensure_apollo_reference_line_contract(
         run_dir,
@@ -208,12 +215,6 @@ def _postprocess_run_dir(
     )
     route_start_alignment_result = _ensure_route_start_alignment(
         run_dir,
-        scenario_class=scenario_class,
-        refresh=refresh,
-    )
-    channel_health_result = _ensure_channel_health(
-        run_dir,
-        channel_config=channel_config,
         scenario_class=scenario_class,
         refresh=refresh,
     )
@@ -284,6 +285,7 @@ def _ensure_apollo_control_handoff(run_dir: Path, *, refresh: bool) -> dict[str,
 
 
 def _ensure_apollo_route_contract(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    report_path = run_dir / "analysis" / "apollo_route_contract" / "apollo_route_contract_report.json"
     existing = _find_first(
         run_dir,
         [
@@ -298,7 +300,24 @@ def _ensure_apollo_route_contract(run_dir: Path, *, refresh: bool) -> dict[str, 
             "path": str(existing),
             "report_status": report.get("status"),
         }
-    report = analyze_apollo_route_contract_run_dir(run_dir)
+    if existing is not None and not _apollo_route_contract_raw_inputs_available(run_dir):
+        report = _copy_existing_report(
+            existing,
+            report_path,
+            summary_name="apollo_route_contract_summary.md",
+        )
+        return {
+            "status": "existing_report_copied",
+            "path": str(report_path),
+            "summary_path": str(report_path.with_name("apollo_route_contract_summary.md")),
+            "report_status": report.get("status"),
+            "source_report": str(existing),
+        }
+    frame_transform = DEFAULT_APOLLO_FRAME_TRANSFORM if DEFAULT_APOLLO_FRAME_TRANSFORM.is_file() else None
+    report = analyze_apollo_route_contract_run_dir(
+        run_dir,
+        frame_transform=frame_transform,
+    )
     outputs = write_apollo_route_contract_report(
         report,
         run_dir / "analysis" / "apollo_route_contract",
@@ -312,6 +331,7 @@ def _ensure_apollo_route_contract(run_dir: Path, *, refresh: bool) -> dict[str, 
 
 
 def _ensure_planning_materialization(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    report_path = run_dir / "analysis" / "planning_materialization" / "planning_materialization_report.json"
     existing = _find_first(
         run_dir,
         [
@@ -322,6 +342,19 @@ def _ensure_planning_materialization(run_dir: Path, *, refresh: bool) -> dict[st
     if existing is not None and not refresh:
         report = _read_json(existing)
         return {"status": "existing", "path": str(existing), "report_status": report.get("verdict")}
+    if existing is not None and not _planning_materialization_raw_inputs_available(run_dir):
+        report = _copy_existing_report(
+            existing,
+            report_path,
+            summary_name="planning_materialization_summary.md",
+        )
+        return {
+            "status": "existing_report_copied",
+            "path": str(report_path),
+            "summary_path": str(report_path.with_name("planning_materialization_summary.md")),
+            "report_status": report.get("verdict"),
+            "source_report": str(existing),
+        }
     report = analyze_planning_materialization_run_dir(run_dir)
     outputs = write_planning_materialization_report(
         report,
@@ -333,6 +366,50 @@ def _ensure_planning_materialization(run_dir: Path, *, refresh: bool) -> dict[st
         "summary_path": outputs["planning_materialization_summary"],
         "report_status": report.get("verdict"),
     }
+
+
+def _apollo_route_contract_raw_inputs_available(run_dir: Path) -> bool:
+    return _find_first(
+        run_dir,
+        [
+            "artifacts/routing_event_debug.jsonl",
+            "routing_event_debug.jsonl",
+            "artifacts/planning_route_segment_debug.jsonl",
+            "artifacts/apollo_route_segment_debug.jsonl",
+            "planning_route_segment_debug.jsonl",
+            "artifacts/planning_topic_debug_summary.json",
+            "artifacts/planning_topic_debug_summary.finalized.json",
+            "planning_topic_debug_summary.json",
+        ],
+    ) is not None
+
+
+def _planning_materialization_raw_inputs_available(run_dir: Path) -> bool:
+    return _find_first(
+        run_dir,
+        [
+            "artifacts/planning_topic_debug.jsonl",
+            "planning_topic_debug.jsonl",
+            "artifacts/planning_topic_debug_summary.json",
+            "artifacts/planning_topic_debug_summary.finalized.json",
+            "planning_topic_debug_summary.json",
+            "artifacts/planning_route_segment_debug.jsonl",
+            "artifacts/apollo_route_segment_debug.jsonl",
+            "planning_route_segment_debug.jsonl",
+        ],
+    ) is not None
+
+
+def _copy_existing_report(existing: Path, target: Path, *, summary_name: str) -> dict[str, Any]:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if existing.resolve() != target.resolve():
+        shutil.copy2(existing, target)
+    summary = existing.with_name(summary_name)
+    if summary.exists():
+        target_summary = target.with_name(summary_name)
+        if summary.resolve() != target_summary.resolve():
+            shutil.copy2(summary, target_summary)
+    return _read_json(target)
 
 
 def _ensure_apollo_module_consumption(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
@@ -1006,6 +1083,7 @@ def _ensure_apollo_link_health(run_dir: Path, *, refresh: bool) -> dict[str, Any
 
 
 def _ensure_apollo_chain_completion(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    report_path = run_dir / "analysis" / "apollo_chain_completion" / "apollo_chain_completion_report.json"
     existing = _find_first(
         run_dir,
         [
@@ -1020,6 +1098,20 @@ def _ensure_apollo_chain_completion(run_dir: Path, *, refresh: bool) -> dict[str
             "path": str(existing),
             "report_status": report.get("verdict"),
             "failure_stage": report.get("failure_stage"),
+        }
+    if existing is not None and not _apollo_chain_completion_raw_inputs_available(run_dir):
+        report = _copy_existing_report(
+            existing,
+            report_path,
+            summary_name="apollo_chain_completion_summary.md",
+        )
+        return {
+            "status": "existing_report_copied",
+            "path": str(report_path),
+            "summary_path": str(report_path.with_name("apollo_chain_completion_summary.md")),
+            "report_status": report.get("verdict"),
+            "failure_stage": report.get("failure_stage"),
+            "source_report": str(existing),
         }
     outputs = analyze_and_write_apollo_chain_completion(
         run_dir,
@@ -1036,6 +1128,22 @@ def _ensure_apollo_chain_completion(run_dir: Path, *, refresh: bool) -> dict[str
         "report_status": report.get("verdict"),
         "failure_stage": report.get("failure_stage"),
     }
+
+
+def _apollo_chain_completion_raw_inputs_available(run_dir: Path) -> bool:
+    return _find_first(
+        run_dir,
+        [
+            "artifacts/topic_publish_stats.jsonl",
+            "topic_publish_stats.jsonl",
+            "artifacts/planning_topic_debug.jsonl",
+            "planning_topic_debug.jsonl",
+            "artifacts/control_apply_trace.jsonl",
+            "control_apply_trace.jsonl",
+            "artifacts/routing_event_debug.jsonl",
+            "routing_event_debug.jsonl",
+        ],
+    ) is not None
 
 
 def _ensure_traffic_light_contract_report(

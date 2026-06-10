@@ -64,6 +64,10 @@ def analyze_apollo_module_consumption_run_dir(run_dir: str | Path) -> dict[str, 
             root,
             ["analysis/prediction_evidence/prediction_evidence_report.json", "prediction_evidence_report.json"],
         ),
+        "apollo_route_contract": _find_first(
+            root,
+            ["analysis/apollo_route_contract/apollo_route_contract_report.json", "apollo_route_contract_report.json"],
+        ),
     }
     return analyze_apollo_module_consumption(inputs, run_dir=root)
 
@@ -77,6 +81,7 @@ def analyze_apollo_module_consumption(
     planning_materialization = _read_json(inputs.get("planning_materialization"))
     planning_summary = _read_json(inputs.get("planning_topic_debug_summary"))
     prediction_evidence = _read_json(inputs.get("prediction_evidence"))
+    route_contract = _read_json(inputs.get("apollo_route_contract"))
     planning_rows = _read_jsonl(inputs.get("planning_topic_debug"))
     control_rows = _read_jsonl(inputs.get("control_decode_debug"))
     routing_rows = _read_jsonl(inputs.get("routing_event_debug"))
@@ -129,8 +134,23 @@ def analyze_apollo_module_consumption(
         warnings.append("planning_input_freshness_unverified")
     if pattern_counts["prediction_not_ready"] and prediction_mode not in {"not_required_for_case"}:
         warnings.append("prediction_not_ready_logs_present")
+    if inputs.get("prediction_evidence") is None:
+        warnings.append("prediction_evidence_missing_for_consumption")
+    if route_contract:
+        route_contract_status = str(route_contract.get("status") or "").strip()
+        if route_contract_status == "fail":
+            blocking.append("route_contract_failed_before_module_consumption_claim")
+        elif route_contract_status in {"", "insufficient_data"}:
+            blocking.append("route_contract_unverified_before_module_consumption_claim")
+        claim_route = route_contract.get("claim_route_contract")
+        if isinstance(claim_route, Mapping) and claim_route.get("materialized") is False:
+            blocking.append("claim_route_consumption_unverified")
+    else:
+        blocking.append("apollo_route_contract_missing")
     if not topic_rows:
         warnings.append("topic_publish_stats_missing")
+    elif not publish_coverage.get("has_control"):
+        warnings.append("control_topic_not_observed_for_consumption")
 
     if blocking:
         status = "insufficient_data" if any(item.endswith("_missing") for item in blocking) else "fail"
@@ -148,6 +168,8 @@ def analyze_apollo_module_consumption(
         "routing_response_consumed_by_planning": routing_consumed,
         "planning_requires_prediction": prediction_evidence.get("planning_requires_prediction"),
         "prediction_mode": prediction_mode,
+        "apollo_route_contract_status": route_contract.get("status"),
+        "apollo_route_contract_blocking_reasons": list(route_contract.get("blocking_reasons") or []),
         "pattern_counts": dict(pattern_counts),
         "empty_reason_histogram": empty_reason_histogram,
         "planning_input_age": age_metrics,

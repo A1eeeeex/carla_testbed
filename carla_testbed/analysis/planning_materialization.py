@@ -223,6 +223,10 @@ def analyze_planning_materialization_files(
         first_nonempty_after_routing_latency_s=first_nonempty_after_routing_latency_s,
         planning_summary=planning_summary,
     )
+    if "first_nonempty_after_routing_latency_s" in time_domain.get("invalid_latency_fields", []):
+        first_nonempty_after_routing_latency_s = None
+        route_establishment["first_nonempty_after_routing_latency_s"] = None
+        warnings.append("first_nonempty_after_routing_latency_unusable")
     if time_domain["status"] == "insufficient_data":
         warnings.append("planning_time_domain_mixed_or_unverified")
         route_establishment.setdefault("warnings", []).append(
@@ -416,13 +420,25 @@ def _time_domain_diagnostics(
     if routing_success_ts is not None and planning_domain.get("domain") == "unknown":
         warnings.append("routing_success_time_domain_unverified")
     status = "insufficient_data" if warnings else "pass"
+    reported_first_nonempty_latency = (
+        None
+        if "first_nonempty_after_routing_latency_s" in invalid_latency_fields
+        else first_nonempty_after_routing_latency_s
+    )
+    reported_summary_latency = (
+        None
+        if "routing_first_response_after_last_routing_send_sec" in invalid_latency_fields
+        else summary_latency
+    )
     return {
         "status": status,
         "planning_time_domain": planning_domain,
         "topic_time_domain": topic_domain,
         "routing_success_timestamp_sec": routing_success_ts,
-        "first_nonempty_after_routing_latency_s": first_nonempty_after_routing_latency_s,
-        "summary_routing_latency_s": summary_latency,
+        "first_nonempty_after_routing_latency_s": reported_first_nonempty_latency,
+        "summary_routing_latency_s": reported_summary_latency,
+        "raw_first_nonempty_after_routing_latency_s": first_nonempty_after_routing_latency_s,
+        "raw_summary_routing_latency_s": summary_latency,
         "invalid_latency_fields": invalid_latency_fields,
         "mixed_time_domain_detected": mixed,
         "warnings": sorted(set(warnings)),

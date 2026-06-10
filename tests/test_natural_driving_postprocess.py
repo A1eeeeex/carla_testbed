@@ -466,6 +466,18 @@ def test_refresh_preserves_existing_route_and_channel_reports_when_raw_inputs_ar
     assert traffic_result["traffic_light_contract"]["report_status"] == "pass"
     assert "source_report" in traffic_result["traffic_light_contract"]
     assert traffic_result["traffic_light_behavior"]["report_status"] == "pass"
+    assert lane_result["apollo_route_contract"]["status"] == "existing_report_copied"
+    assert lane_result["apollo_route_contract"]["report_status"] == "pass"
+    assert lane_result["apollo_route_contract"]["path"].endswith(
+        "analysis/apollo_route_contract/apollo_route_contract_report.json"
+    )
+    assert lane_result["apollo_route_contract"]["source_report"] == lane_result["apollo_route_contract"]["path"]
+    assert lane_result["planning_materialization"]["status"] == "existing_report_copied"
+    assert lane_result["planning_materialization"]["report_status"] == "pass"
+    assert lane_result["planning_materialization"]["path"].endswith(
+        "analysis/planning_materialization/planning_materialization_report.json"
+    )
+    assert lane_result["planning_materialization"]["source_report"] == lane_result["planning_materialization"]["path"]
     assert report["natural_driving"]["status"] == "pass"
 
 
@@ -530,6 +542,48 @@ def test_postprocess_derives_channel_stats_from_bridge_counters(tmp_path: Path) 
         run["run_id"] == "lane_keep_097" and run["verdict"] == "warn"
         for run in report["natural_driving"]["problem_runs"]
     )
+
+
+def test_generated_localization_contract_uses_postprocess_channel_stats_source(
+    tmp_path: Path,
+) -> None:
+    suite_root = _copy_suite(tmp_path)
+    lane = suite_root / "lane_keep_097"
+    (lane / "apollo_channel_health_report.json").unlink()
+    shutil.rmtree(lane / "analysis" / "localization_contract")
+    artifacts = lane / "artifacts"
+    artifacts.mkdir()
+    shutil.copy2(LOCALIZATION_FIXTURE_ROOT / "complete_timeseries.csv", artifacts / "debug_timeseries.csv")
+    (artifacts / "cyber_bridge_stats.json").write_text(
+        json.dumps(
+            {
+                "loc_count": 600,
+                "chassis_count": 600,
+                "obstacles_count": 300,
+                "control_rx_count": 300,
+                "routing_response_count": 2,
+                "planning": {"msg_count": 300},
+                "traffic_light": {
+                    "channel": "/apollo/perception/traffic_light",
+                    "publish_count": 0,
+                },
+                "timing": {"sim_time_sec": 30.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = postprocess_natural_driving_runs(suite_root, out_dir=tmp_path / "out")
+    lane_result = next(run for run in report["runs"] if run["run_id"] == "lane_keep_097")
+    localization = json.loads(
+        Path(lane_result["localization_contract"]["path"]).read_text(encoding="utf-8")
+    )
+
+    assert (lane / "channel_stats.json").is_file()
+    assert localization["source"]["channel_stats_path"].endswith("lane_keep_097/channel_stats.json")
+    assert "localization_contract.source.channel_stats_path" not in lane_result["artifact_completeness"][
+        "invalid_report_source_fields"
+    ]
 
 
 def test_refresh_regenerates_mixed_channel_stats_from_row_level_artifacts(tmp_path: Path) -> None:

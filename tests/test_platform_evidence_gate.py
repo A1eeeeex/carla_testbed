@@ -173,6 +173,8 @@ def test_claim_pack_includes_row_level_evidence_when_present(tmp_path: Path) -> 
         "artifacts/publish_gap_trace.jsonl",
         "artifacts/control_apply_trace.jsonl",
         "artifacts/planning_topic_debug.jsonl",
+        "artifacts/routing_event_debug.jsonl",
+        "artifacts/planning_route_segment_debug.jsonl",
     ]:
         path = run_dir / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -201,6 +203,8 @@ def test_claim_pack_includes_row_level_evidence_when_present(tmp_path: Path) -> 
     assert payload["status"] == "pass"
     assert payload["claim_reproducibility_level"] == "row_level_evidence_present"
     assert "artifacts/topic_publish_stats.jsonl" in payload["included_files"]
+    assert "artifacts/routing_event_debug.jsonl" in payload["included_files"]
+    assert "artifacts/planning_route_segment_debug.jsonl" in payload["included_files"]
     assert "package_manifest.json" in payload["included_files"]
     assert "row_level_evidence_index.json" in payload["included_files"]
     assert (
@@ -216,7 +220,19 @@ def test_claim_pack_includes_row_level_evidence_when_present(tmp_path: Path) -> 
             for item in index["files"]
             if item["path"] == "artifacts/topic_publish_stats.jsonl"
         )
+        routing_entry = next(
+            item
+            for item in index["files"]
+            if item["path"] == "artifacts/routing_event_debug.jsonl"
+        )
+        segment_entry = next(
+            item
+            for item in index["files"]
+            if item["path"] == "artifacts/planning_route_segment_debug.jsonl"
+        )
         assert topic_entry["row_count"] == 1
+        assert routing_entry["row_count"] == 1
+        assert segment_entry["row_count"] == 1
         assert topic_entry["sha256"]
         assert topic_entry["head_sample"] == (
             "row_level_samples/artifacts/topic_publish_stats.jsonl.head.jsonl"

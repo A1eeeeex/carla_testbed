@@ -37,6 +37,10 @@ The legacy harness still writes CSV-oriented frame data.
   the world actually loaded by CARLA.
 - `scenario_name`
 - `backend_name`
+- `algorithm_variant_id` and `algorithm_variant_manifest_path` for any
+  capability claim. The variant manifest must resolve inside the package and
+  identify the same variant; missing or mismatched variant metadata keeps the
+  run non-claim-grade.
 - non-critical metadata such as smoke mode or runtime notes
 
 Use the manifest to identify what the run claimed to execute. Do not use it as
@@ -274,6 +278,12 @@ not erase a large Apollo header/wall-time gap: if Control consumes expired
 trajectories or Planning pauses in wall time, channel health must remain a
 blocking failure and should report the time-axis diagnosis explicitly.
 
+`analysis/apollo_route_contract/apollo_route_contract_report.json` checks that
+Apollo Routing materialized the intended scenario route, in Apollo map frame.
+It records raw CARLA scenario coordinates separately from transformed Apollo-map
+coordinates, splits startup routing from claim-route materialization, and
+blocks hard claims when only an ego-seed startup route exists.
+
 `analysis/planning_materialization/planning_materialization_report.json`
 explains whether Apollo Planning actually materialized non-empty
 `ADCTrajectory` output after routing and required channel evidence. It reports
@@ -360,6 +370,8 @@ available:
 - `artifacts/publish_gap_trace.jsonl`
 - `artifacts/control_apply_trace.jsonl`
 - `artifacts/planning_topic_debug.jsonl`
+- `artifacts/routing_event_debug.jsonl`
+- `artifacts/planning_route_segment_debug.jsonl`
 - `artifacts/control_decode_debug.jsonl`
 - `artifacts/apollo_reference_line_contract.jsonl`
 - `artifacts/apollo_hdmap_projection.jsonl`
@@ -407,6 +419,10 @@ sign/scale, and apply-cadence diagnostics. It exists to make
 raw -> mapped -> applied -> response attribution auditable; it must not be used
 to hide raw Apollo command oscillation or to bypass localization/reference-line
 failures.
+If the trace exists but raw, mapped, and applied command fields are all null,
+it is a no-command placeholder. That artifact is useful for loop/cadence
+debugging, but it cannot satisfy raw/mapped/applied control evidence or a
+natural-driving claim.
 
 `artifacts/control_decode_debug.jsonl` and
 `artifacts/bridge_control_decode.jsonl` remain fallback row-level Apollo control
