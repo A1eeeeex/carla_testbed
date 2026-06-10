@@ -5,6 +5,7 @@ gate:
   claim_requires:
     - no_assist
     - route_established
+    - apollo_module_consumption_pass
     - planning_nonempty_ratio>=0.8
     - channel_health_pass
     - localization_contract_claim_grade
@@ -27,6 +28,12 @@ gate:
       path: route_establishment.route_established
       op: "=="
       value: true
+      required_for: claim
+    - id: apollo_module_consumption_pass
+      report: apollo_module_consumption
+      path: status
+      op: in
+      value: [pass, warn]
       required_for: claim
     - id: hdmap_projection_claim_grade
       report: apollo_hdmap_projection
@@ -84,6 +91,7 @@ evidence:
     - apollo_hdmap_projection
     - apollo_reference_line_contract
     - planning_materialization
+    - apollo_module_consumption
     - apollo_control_handoff
     - control_health
     - control_attribution

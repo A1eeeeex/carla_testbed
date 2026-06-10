@@ -1519,6 +1519,7 @@ def _invoke_run(
         "-m",
         "carla_testbed",
         "run",
+        "--legacy-dispatch",
         "--config",
         str(config_path),
         "--run-dir",

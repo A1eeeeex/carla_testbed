@@ -663,6 +663,10 @@ Required run artifacts:
   non-empty `ADCTrajectory` ratio, empty-reason histogram, and
   `route_establishment` status. Control rx/tx evidence does not replace this
   report.
+- `analysis/apollo_module_consumption/apollo_module_consumption_report.json`
+  for Planning/Control consumption evidence, input timeout patterns,
+  reference-line provider failures, prediction-not-ready logs, and empty
+  Planning attribution. Bridge-side publish evidence alone is insufficient.
 - `analysis/prediction_evidence/prediction_evidence_report.json`. Prediction
   may be `native_observed`, explicitly bypassed for a permitted static case, or
   `not_required_for_case`; missing or unknown prediction state cannot silently
@@ -695,6 +699,7 @@ python tools/analyze_apollo_hdmap_projection.py \
 python tools/analyze_apollo_localization_contract.py --run-dir "$RUN"
 python tools/analyze_apollo_reference_line_contract.py --run-dir "$RUN"
 python tools/analyze_apollo_planning_materialization.py --run-dir "$RUN"
+python tools/analyze_apollo_module_consumption.py --run-dir "$RUN" --out "$RUN/analysis/apollo_module_consumption"
 python tools/analyze_apollo_prediction_evidence.py --run-dir "$RUN" --out "$RUN/analysis/prediction_evidence"
 python tools/analyze_apollo_control_handoff.py --run-dir "$RUN"
 python tools/analyze_apollo_link_health.py --run-dir "$RUN"
@@ -731,6 +736,7 @@ Minimum pass thresholds for a claim-grade packet:
   has no blocking reasons.
 - `apollo_reference_line_contract_report.json`,
   `planning_materialization_report.json`,
+  `apollo_module_consumption_report.json`,
   `prediction_evidence_report.json`,
   `apollo_control_handoff_report.json`, `apollo_channel_health_report.json`,
   and `control_health_report.json` are `pass` or non-blocking `warn`.

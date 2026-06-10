@@ -19,6 +19,7 @@ LAYER_ORDER = (
     "hdmap_projection",
     "planning_reference_line",
     "route_establishment",
+    "apollo_module_consumption",
     "routing_planning_control_handoff",
     "control_mapping_apply",
     "perception_gt_obstacles",
@@ -105,6 +106,25 @@ def analyze_apollo_link_health(
             summary=summary,
             bridge_stats=cyber_bridge_stats,
             planning_topic_debug_summary=payloads.get("planning_topic_debug_summary", {}),
+        ),
+        "apollo_module_consumption": _report_layer(
+            name="apollo_module_consumption",
+            report=payloads.get("apollo_module_consumption"),
+            path=inputs.get("apollo_module_consumption"),
+            status_keys=("status",),
+            blocking_keys=("blocking_reasons",),
+            warning_keys=("warnings",),
+            next_action=(
+                "Generate apollo_module_consumption_report.json to prove Apollo Planning/Control "
+                "consumed GT inputs; bridge-side publish stats alone are not enough."
+            ),
+            key_metric_fields=(
+                "routing_response_consumed_by_planning",
+                "pattern_counts",
+                "empty_reason_histogram",
+                "planning_input_age",
+                "prediction_mode",
+            ),
         ),
         "routing_planning_control_handoff": _control_handoff_layer(
             payloads.get("apollo_control_handoff"),
@@ -288,6 +308,9 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
         "hdmap_projection": (
             "official_source_available",
             "claim_grade",
+            "sim_time_coverage_ratio",
+            "projection_s_coverage_m",
+            "route_s_coverage_ratio",
             "heading_error_p95_rad",
             "lateral_error_p95_m",
         ),
@@ -302,6 +325,13 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
             "after_routing_success_nonempty_ratio",
             "route_established",
             "summary_fail_reason",
+        ),
+        "apollo_module_consumption": (
+            "routing_response_consumed_by_planning",
+            "pattern_counts",
+            "empty_reason_histogram",
+            "planning_input_age",
+            "prediction_mode",
         ),
         "control_mapping_apply": (
             "failure_reason",
@@ -460,6 +490,13 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
             [
                 "analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json",
                 "apollo_hdmap_projection_report.json",
+            ],
+        ),
+        "apollo_module_consumption": _find_first(
+            root,
+            [
+                "analysis/apollo_module_consumption/apollo_module_consumption_report.json",
+                "apollo_module_consumption_report.json",
             ],
         ),
         "apollo_control_handoff": _find_first(
@@ -717,6 +754,9 @@ def _hdmap_projection_layer(
             "claim_grade": projection.get("claim_grade"),
             "heading_error_p95_rad": projection.get("heading_error_p95_rad"),
             "lateral_error_p95_m": projection.get("lateral_error_p95_m"),
+            "sim_time_coverage_ratio": projection.get("sim_time_coverage_ratio"),
+            "projection_s_coverage_m": projection.get("projection_s_coverage_m"),
+            "route_s_coverage_ratio": projection.get("route_s_coverage_ratio"),
             "nearest_lane_id_topk": projection.get("nearest_lane_id_topk"),
         },
         artifact_paths=_paths(inputs, "apollo_hdmap_projection", "localization_contract", "apollo_reference_line_contract"),
@@ -1616,6 +1656,7 @@ def _can_claim_unassisted(layers: Mapping[str, Mapping[str, Any]]) -> bool:
         "hdmap_projection",
         "planning_reference_line",
         "route_establishment",
+        "apollo_module_consumption",
         "routing_planning_control_handoff",
         "control_mapping_apply",
         "perception_gt_obstacles",

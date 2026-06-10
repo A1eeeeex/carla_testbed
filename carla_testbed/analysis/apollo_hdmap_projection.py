@@ -15,6 +15,9 @@ HDMAP_LATERAL_WARN_M = 0.30
 HDMAP_LATERAL_FAIL_M = 0.50
 HDMAP_MIN_CLAIM_GRADE_ROWS = 50
 HDMAP_MIN_OK_RATIO = 0.95
+HDMAP_MIN_PROJECTION_COVERAGE_M = 30.0
+HDMAP_MIN_SIM_TIME_COVERAGE_RATIO = 0.80
+HDMAP_MIN_ROUTE_S_COVERAGE_RATIO = 0.50
 
 
 def read_apollo_hdmap_projection(path: str | Path | None) -> list[dict[str, Any]]:
@@ -80,6 +83,9 @@ def apollo_hdmap_projection_summary_md(report: Mapping[str, Any]) -> str:
             f"- Official row count: `{projection.get('official_row_count')}`",
             f"- OK row count: `{projection.get('ok_row_count')}`",
             f"- OK ratio: `{projection.get('ok_ratio')}`",
+            f"- Sim-time coverage ratio: `{projection.get('sim_time_coverage_ratio')}`",
+            f"- Projection-s coverage m: `{projection.get('projection_s_coverage_m')}`",
+            f"- Route-s coverage ratio: `{projection.get('route_s_coverage_ratio')}`",
             f"- Heading error p95 rad: `{projection.get('heading_error_p95_rad')}`",
             f"- Lateral error p95 m: `{projection.get('lateral_error_p95_m')}`",
             f"- Nearest lane ids: `{', '.join(projection.get('nearest_lane_id_topk') or []) or 'none'}`",
@@ -103,6 +109,25 @@ def summarize_apollo_hdmap_projection(rows: Sequence[Mapping[str, Any]] | None) 
     projection_s_values = [_num(row.get("projection_s")) for row in ok_rows]
     sim_time_coverage_s = _span(timestamps)
     projection_s_coverage_m = _span(projection_s_values)
+    expected_duration_s = _first_num(row.get("expected_duration_s") or row.get("run_duration_s") for row in all_rows)
+    expected_route_distance_m = _first_num(
+        row.get("expected_route_distance_m") or row.get("route_length_m") for row in all_rows
+    )
+    sim_time_coverage_ratio = (
+        sim_time_coverage_s / expected_duration_s
+        if sim_time_coverage_s is not None and expected_duration_s and expected_duration_s > 0
+        else None
+    )
+    route_s_coverage_ratio = (
+        projection_s_coverage_m / expected_route_distance_m
+        if projection_s_coverage_m is not None and expected_route_distance_m and expected_route_distance_m > 0
+        else None
+    )
+    route_s_coverage_threshold_m = (
+        min(HDMAP_MIN_PROJECTION_COVERAGE_M, 0.5 * expected_route_distance_m)
+        if expected_route_distance_m and expected_route_distance_m > 0
+        else HDMAP_MIN_PROJECTION_COVERAGE_M
+    )
 
     warnings: list[str] = []
     blocking: list[str] = []
@@ -177,6 +202,19 @@ def summarize_apollo_hdmap_projection(rows: Sequence[Mapping[str, Any]] | None) 
         blocking.append("apollo_hdmap_projection_sample_count_low")
     if ok_ratio is not None and ok_ratio < HDMAP_MIN_OK_RATIO:
         blocking.append("apollo_hdmap_projection_ok_ratio_low")
+    if official_rows and projection_s_coverage_m is None:
+        missing_fields.append("projection_s")
+        blocking.append("apollo_hdmap_projection_route_s_coverage_missing")
+    elif projection_s_coverage_m is not None and projection_s_coverage_m < route_s_coverage_threshold_m:
+        blocking.append("apollo_hdmap_projection_route_s_coverage_low")
+    if sim_time_coverage_ratio is not None and sim_time_coverage_ratio < HDMAP_MIN_SIM_TIME_COVERAGE_RATIO:
+        blocking.append("apollo_hdmap_projection_sim_time_coverage_low")
+    if route_s_coverage_ratio is not None and route_s_coverage_ratio < HDMAP_MIN_ROUTE_S_COVERAGE_RATIO:
+        blocking.append("apollo_hdmap_projection_route_s_coverage_ratio_low")
+    map_names = {str(row.get("map_name") or "") for row in official_rows if str(row.get("map_name") or "").strip()}
+    map_dirs = {str(row.get("map_dir") or "") for row in official_rows if str(row.get("map_dir") or "").strip()}
+    if len(map_names) > 1 or len(map_dirs) > 1:
+        blocking.append("apollo_hdmap_projection_map_identity_inconsistent")
 
     if blocking:
         status = "fail"
@@ -200,8 +238,17 @@ def summarize_apollo_hdmap_projection(rows: Sequence[Mapping[str, Any]] | None) 
         "ok_ratio": ok_ratio,
         "min_claim_grade_rows": HDMAP_MIN_CLAIM_GRADE_ROWS,
         "min_ok_ratio": HDMAP_MIN_OK_RATIO,
+        "min_projection_s_coverage_m": HDMAP_MIN_PROJECTION_COVERAGE_M,
+        "min_sim_time_coverage_ratio": HDMAP_MIN_SIM_TIME_COVERAGE_RATIO,
+        "min_route_s_coverage_ratio": HDMAP_MIN_ROUTE_S_COVERAGE_RATIO,
         "sim_time_coverage_s": sim_time_coverage_s,
+        "expected_duration_s": expected_duration_s,
+        "sim_time_coverage_ratio": sim_time_coverage_ratio,
         "projection_s_coverage_m": projection_s_coverage_m,
+        "expected_route_distance_m": expected_route_distance_m,
+        "route_s_coverage_ratio": route_s_coverage_ratio,
+        "route_s_coverage_threshold_m": route_s_coverage_threshold_m,
+        "map_identity_consistent": len(map_names) <= 1 and len(map_dirs) <= 1,
         "status_counts": dict(status_counts),
         "heading_error_p95_rad": heading_p95,
         "lateral_error_p95_m": lateral_p95,
@@ -270,6 +317,14 @@ def _num(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _first_num(values: Iterable[Any]) -> float | None:
+    for value in values:
+        number = _num(value)
+        if number is not None:
+            return number
+    return None
 
 
 def _topk(values: Iterable[str], *, k: int = 5) -> list[str]:

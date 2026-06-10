@@ -29,6 +29,7 @@ def analyze_obstacle_gt_contract_file(
     pedestrian_required: bool | None = None,
     fixed_scene_actor_roles: Mapping[str, Any] | None = None,
     fixed_scene_context: Mapping[str, Any] | None = None,
+    traffic_flow_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_path = Path(path).expanduser()
     records = _read_records(source_path)
@@ -40,6 +41,7 @@ def analyze_obstacle_gt_contract_file(
         source_path=source_path,
         fixed_scene_actor_roles=fixed_scene_actor_roles,
         fixed_scene_context=fixed_scene_context or _fixed_scene_context_from_roles(fixed_scene_actor_roles),
+        traffic_flow_context=traffic_flow_context,
     )
 
 
@@ -54,6 +56,7 @@ def analyze_obstacle_gt_contract_run_dir(
     if pedestrian_required is None:
         pedestrian_required = _run_dir_declares_walkers(root)
     fixed_scene_context = _fixed_scene_context(root)
+    traffic_flow_context = _traffic_flow_context(root)
     source_path = _find_first(
         root,
         [
@@ -72,6 +75,7 @@ def analyze_obstacle_gt_contract_run_dir(
             pedestrian_required=pedestrian_required,
             source_path=None,
             fixed_scene_context=fixed_scene_context,
+            traffic_flow_context=traffic_flow_context,
         )
     return analyze_obstacle_gt_contract_file(
         source_path,
@@ -79,6 +83,7 @@ def analyze_obstacle_gt_contract_run_dir(
         dynamic_obstacle_required=dynamic_obstacle_required,
         pedestrian_required=pedestrian_required,
         fixed_scene_context=fixed_scene_context,
+        traffic_flow_context=traffic_flow_context,
     )
 
 
@@ -91,6 +96,7 @@ def analyze_obstacle_gt_contract_records(
     source_path: str | Path | None = None,
     fixed_scene_actor_roles: Mapping[str, Any] | None = None,
     fixed_scene_context: Mapping[str, Any] | None = None,
+    traffic_flow_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     dynamic_required = (
         _scenario_requires_dynamic_obstacle(scenario_class)
@@ -126,6 +132,19 @@ def analyze_obstacle_gt_contract_records(
         for actor_id in fixed_scene_actor_roles.values()
         if actor_id not in {None, ""}
     }
+    traffic_flow = dict(traffic_flow_context or {})
+    background_vehicle_actor_ids = {
+        str(actor_id)
+        for actor_id in traffic_flow.get("background_vehicle_actor_ids", [])
+        if actor_id not in {None, ""}
+    }
+    background_walker_actor_ids = {
+        str(actor_id)
+        for actor_id in traffic_flow.get("background_walker_actor_ids", [])
+        if actor_id not in {None, ""}
+    }
+    if background_walker_actor_ids:
+        pedestrian_required = True
 
     if fixed_scene_enabled and fixed_scene.get("runtime_state_missing"):
         missing_fields.append("fixed_scene_runtime_state_missing_for_obstacle_linkage")
@@ -166,6 +185,8 @@ def analyze_obstacle_gt_contract_records(
                 tracking_by_apollo_id=tracking_by_apollo_id,
                 pedestrian_required=pedestrian_required,
                 expected_fixed_scene_actor_ids=expected_fixed_scene_actor_ids,
+                expected_vehicle_actor_ids=expected_fixed_scene_actor_ids | background_vehicle_actor_ids,
+                expected_pedestrian_actor_ids=background_walker_actor_ids,
             )
             object_results.append(result)
             if result.get("is_pedestrian"):
@@ -185,12 +206,20 @@ def analyze_obstacle_gt_contract_records(
     if missing_fixed_scene_actor_ids:
         errors.append("fixed_scene_actor_missing_from_obstacle_gt")
     scenario_actor_obstacle_count = len(expected_fixed_scene_actor_ids & observed_carla_actor_ids)
+    background_vehicle_obstacle_count = len(background_vehicle_actor_ids & observed_carla_actor_ids)
+    background_walker_obstacle_count = len(background_walker_actor_ids & observed_carla_actor_ids)
     if (
         expected_fixed_scene_actor_ids
         and records
         and scenario_actor_obstacle_count != len(expected_fixed_scene_actor_ids)
     ):
         errors.append("fixed_scene_actor_obstacle_count_mismatch")
+    missing_background_vehicle_ids = sorted(background_vehicle_actor_ids - observed_carla_actor_ids)
+    missing_background_walker_ids = sorted(background_walker_actor_ids - observed_carla_actor_ids)
+    if missing_background_vehicle_ids:
+        errors.append("background_vehicle_missing_from_obstacle_gt")
+    if missing_background_walker_ids:
+        errors.append("background_walker_missing_from_obstacle_gt")
 
     if object_results:
         if errors:
@@ -288,6 +317,20 @@ def analyze_obstacle_gt_contract_records(
                 }
             ),
         },
+        "background_traffic_linkage": {
+            "enabled": bool(traffic_flow.get("enabled")),
+            "background_vehicle_count": len(background_vehicle_actor_ids),
+            "background_vehicle_obstacle_count": background_vehicle_obstacle_count,
+            "background_walker_count": len(background_walker_actor_ids),
+            "background_walker_obstacle_count": background_walker_obstacle_count,
+            "missing_background_vehicle_ids": missing_background_vehicle_ids,
+            "missing_background_walker_ids": missing_background_walker_ids,
+            "status": (
+                "fail"
+                if missing_background_vehicle_ids or missing_background_walker_ids
+                else ("pass" if background_vehicle_actor_ids or background_walker_actor_ids else "not_applicable")
+            ),
+        },
         "errors": sorted(set(errors)),
         "warnings": sorted(set(warnings)),
         "missing_fields": sorted(set(missing_fields)),
@@ -322,6 +365,8 @@ def _check_obstacle(
     tracking_by_apollo_id: dict[str, float],
     pedestrian_required: bool,
     expected_fixed_scene_actor_ids: set[str] | None = None,
+    expected_vehicle_actor_ids: set[str] | None = None,
+    expected_pedestrian_actor_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -329,6 +374,7 @@ def _check_obstacle(
     carla_actor_id = _first_text(obstacle, "carla_actor_id", obstacle, "actor_id")
     apollo_id = _first_text(obstacle, "apollo_perception_id", obstacle, "perception_id", obstacle, "id")
     is_pedestrian = _is_pedestrian_obstacle(obstacle)
+    is_vehicle = _is_vehicle_obstacle(obstacle)
 
     if not carla_actor_id:
         missing_fields.append("carla_actor_id")
@@ -338,11 +384,16 @@ def _check_obstacle(
         errors.append("ego_actor_included_as_obstacle")
     if _boolish(obstacle.get("is_ego")):
         errors.append("ego_actor_included_as_obstacle")
-    if carla_actor_id and expected_fixed_scene_actor_ids and carla_actor_id in expected_fixed_scene_actor_ids:
+    if carla_actor_id and expected_vehicle_actor_ids and carla_actor_id in expected_vehicle_actor_ids:
         if not _obstacle_type_declared(obstacle):
-            missing_fields.append("scenario_vehicle_type")
-        elif not _is_vehicle_obstacle(obstacle):
-            errors.append("scenario_vehicle_type_not_vehicle")
+            missing_fields.append("vehicle_type")
+        elif not is_vehicle:
+            errors.append("vehicle_actor_type_not_vehicle")
+    if carla_actor_id and expected_pedestrian_actor_ids and carla_actor_id in expected_pedestrian_actor_ids:
+        if not _obstacle_type_declared(obstacle):
+            missing_fields.append("pedestrian_type")
+        elif not is_pedestrian:
+            errors.append("pedestrian_actor_type_not_pedestrian")
 
     if carla_actor_id and apollo_id:
         previous = id_map.setdefault(carla_actor_id, apollo_id)
@@ -404,6 +455,7 @@ def _check_obstacle(
         "carla_actor_id": carla_actor_id,
         "apollo_perception_id": apollo_id,
         "is_pedestrian": is_pedestrian,
+        "is_vehicle": is_vehicle,
         "timestamp": timestamp,
         "velocity_source": velocity_source or None,
         "velocity_norm_mps": velocity_norm,
@@ -461,6 +513,58 @@ def _run_dir_declares_walkers(root: Path) -> bool:
         ) > 0
     except (TypeError, ValueError):
         return False
+
+
+def _traffic_flow_context(root: Path) -> dict[str, Any]:
+    manifest_path = _find_first(root, ["artifacts/traffic_flow_manifest.json", "traffic_flow_manifest.json"])
+    if manifest_path is None:
+        return {"enabled": False, "background_vehicle_actor_ids": [], "background_walker_actor_ids": []}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"enabled": True, "background_vehicle_actor_ids": [], "background_walker_actor_ids": []}
+    if not isinstance(manifest, Mapping):
+        return {"enabled": True, "background_vehicle_actor_ids": [], "background_walker_actor_ids": []}
+    vehicles = manifest.get("vehicles")
+    if not isinstance(vehicles, list):
+        vehicles = [
+            actor
+            for actor in manifest.get("actors") or []
+            if isinstance(actor, Mapping)
+            and (
+                str(actor.get("control_source") or "") == "carla_traffic_manager"
+                or str(actor.get("role_name") or "").startswith("background_vehicle")
+            )
+        ]
+    walkers = manifest.get("walkers")
+    if not isinstance(walkers, list):
+        walkers = [
+            actor
+            for actor in manifest.get("actors") or []
+            if isinstance(actor, Mapping)
+            and (
+                str(actor.get("control_source") or "") == "carla_walker_ai_controller"
+                or str(actor.get("role_name") or "").startswith("background_walker")
+            )
+        ]
+    return {
+        "enabled": bool(manifest.get("enabled", True)),
+        "background_vehicle_actor_ids": _actor_ids(vehicles),
+        "background_walker_actor_ids": _actor_ids(walkers),
+    }
+
+
+def _actor_ids(items: Any) -> list[str]:
+    ids: list[str] = []
+    if not isinstance(items, list):
+        return ids
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        value = item.get("actor_id")
+        if value not in {None, ""}:
+            ids.append(str(value))
+    return ids
 
 
 def _fixed_scene_context(root: Path) -> dict[str, Any]:

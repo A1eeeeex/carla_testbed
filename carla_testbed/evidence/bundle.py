@@ -58,6 +58,10 @@ REPORT_CANDIDATES = {
         "analysis/planning_materialization/planning_materialization_report.json",
         "planning_materialization_report.json",
     ),
+    "apollo_module_consumption": (
+        "analysis/apollo_module_consumption/apollo_module_consumption_report.json",
+        "apollo_module_consumption_report.json",
+    ),
     "apollo_control_handoff": (
         "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
         "apollo_control_handoff_report.json",

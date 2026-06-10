@@ -203,6 +203,22 @@ obstacle, junction, and traffic-light claims still require native prediction or
 an explicit scenario override; `/apollo/perception/obstacles` is not counted as
 `/apollo/prediction`.
 
+Generate module-consumption evidence for a run:
+
+```bash
+python tools/analyze_apollo_module_consumption.py \
+  --run-dir <run_dir> \
+  --out <run_dir>/analysis/apollo_module_consumption
+```
+
+This report is the explicit bridge-published versus Apollo-consumed check. It
+uses planning materialization, Planning debug summaries, routing/control debug
+rows, topic publish rows, prediction evidence, and Apollo logs to detect input
+timeouts, reference-line provider failures, prediction-not-ready messages, and
+empty Planning attribution. Bridge-side GT publish evidence alone does not
+prove that Planning consumed localization, chassis, obstacles, prediction, or
+routing inputs.
+
 ## Chain Completion
 
 `carla_testbed.analysis.apollo_chain_completion` is the reference-chain-aware
@@ -213,6 +229,8 @@ The chain completion report answers:
 
 - which reference modules have native, GT-replaced, bypassed, missing, or
   operator-only evidence;
+- for each module, the project matrix status, run-level evidence status,
+  run-level claim-grade flag, and effective status used by gates;
 - which required artifacts were observed or missing;
 - which capabilities are blocked by missing or insufficient module evidence;
 - whether truth-input closed-loop and unassisted natural-driving claims are
@@ -243,6 +261,19 @@ Important boundaries:
 - traffic-light behavior cannot be used to infer Planning consumed the
   traffic-light message; planning-consumed evidence must be explicit.
 - missing artifacts become `insufficient_data` or `missing`, not pass.
+- Route establishment is its own chain stage. A run with missing or failed
+  `route_establishment` evidence should attribute the failure to planning
+  materialization/routing consumption before blaming control mapping or total
+  bridge breakage.
+- Apollo HDMap projection must be official `source=apollo_hdmap_api` evidence
+  with sufficient sample, sim-time, route-s/projection-s, lane-id, and
+  map-identity coverage. Sparse startup-only projection rows cannot upgrade
+  reference-line or localization evidence to claim-grade.
+- Background traffic or pedestrian actors require obstacle GT linkage. For
+  Apollo/Autoware runs, each spawned background actor id from
+  `traffic_flow_manifest.json` must appear in `obstacle_gt_contract_report.json`
+  with stable perception id and correct object type before dynamic behavior can
+  be interpreted.
 - Module statuses must use module-specific evidence. For example, if
   `apollo_channel_health_report.json` fails only because `/apollo/planning` has
   a large gap, the `chassis` module must remain governed by the chassis channel

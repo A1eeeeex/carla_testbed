@@ -239,6 +239,27 @@ def _base_run(tmp_path: Path, *, scenario_class: str = "lane_keep") -> Path:
         },
     )
     _write_json(
+        run_dir / "analysis/apollo_module_consumption/apollo_module_consumption_report.json",
+        {
+            "schema_version": "apollo_module_consumption.v1",
+            "status": "pass",
+            "routing_response_consumed_by_planning": True,
+            "prediction_mode": "native_observed",
+            "pattern_counts": {
+                "localization_timeout": 0,
+                "chassis_timeout": 0,
+                "reference_line_provider_failure": 0,
+            },
+            "empty_reason_histogram": {},
+            "planning_input_age": {
+                "localization_age_ms_p95": 10.0,
+                "chassis_age_ms_p95": 10.0,
+            },
+            "blocking_reasons": [],
+            "warnings": [],
+        },
+    )
+    _write_json(
         run_dir / "analysis/natural_driving/natural_driving_report.json",
         {
             "schema_version": "natural_driving_report.v1",
@@ -321,6 +342,11 @@ def test_full_fixture_closed_loop_pass(tmp_path: Path) -> None:
     assert report["can_claim_truth_input_closed_loop"] is True
     assert report["can_claim_unassisted_natural_driving"] is True
     assert "dreamview" not in report["blocking_modules"]
+    localization = report["module_statuses"]["localization"]
+    assert localization["project_matrix_status"] == "pass"
+    assert localization["run_evidence_status"] == "pass"
+    assert localization["run_claim_grade"] is True
+    assert localization["effective_status"] == "pass"
 
 
 def test_missing_control_handoff_blocks_closed_loop(tmp_path: Path) -> None:
@@ -337,6 +363,108 @@ def test_missing_control_handoff_blocks_closed_loop(tmp_path: Path) -> None:
     assert report["module_statuses"]["control"]["evidence_status"] == "missing"
     assert report["capability_status"]["closed_loop"] == "insufficient_data"
     assert report["failure_stage"] == "control_handoff"
+
+
+def test_route_establishment_failure_is_planning_materialization_stage(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "run_id": "run",
+            "route_id": "097",
+            "scenario_class": "lane_keep",
+            "planning_message_count": 550,
+            "nonempty_trajectory_count": 14,
+            "nonempty_trajectory_ratio": 14 / 550,
+            "after_routing_success_nonempty_ratio": 0.03,
+            "route_establishment": {
+                "route_established": False,
+                "blocking_reasons": ["route_establishment_latency"],
+                "route_completion_ratio": 0.0,
+            },
+            "blocking_reasons": ["planning_trajectory_materialization_low"],
+            "warnings": [],
+            "verdict": "fail",
+        },
+    )
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["link_health_layers"]["route_establishment"]["status"] == "fail"
+    assert report["failure_stage"] == "planning_materialization"
+    assert report["can_claim_unassisted_natural_driving"] is False
+
+
+def test_route_establishment_failure_has_priority_over_missing_hdmap_projection(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    localization = json.loads(
+        (run_dir / "analysis/localization_contract/localization_contract_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    localization["apollo_hdmap_projection"] = {
+        "file_present": False,
+        "official_source_available": False,
+        "claim_grade": False,
+        "status": "insufficient_data",
+        "blocking_reasons": [],
+        "warnings": ["apollo_hdmap_projection_missing"],
+    }
+    _write_json(run_dir / "analysis/localization_contract/localization_contract_report.json", localization)
+    reference_line = json.loads(
+        (
+            run_dir
+            / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    reference_line["apollo_hdmap_projection"] = localization["apollo_hdmap_projection"]
+    _write_json(
+        run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
+        reference_line,
+    )
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "run_id": "run",
+            "route_id": "097",
+            "scenario_class": "lane_keep",
+            "planning_message_count": 219,
+            "nonempty_trajectory_count": 0,
+            "nonempty_trajectory_ratio": 0.0,
+            "after_routing_success_nonempty_ratio": None,
+            "longest_empty_streak": 219,
+            "empty_reason_histogram": {"reference_line_provider_not_ready": 219},
+            "route_establishment": {
+                "route_established": False,
+                "blocking_reasons": ["routing_success_missing"],
+                "route_completion_ratio": 0.0,
+            },
+            "blocking_reasons": [
+                "planning_trajectory_materialization_low",
+                "route_establishment_not_confirmed",
+            ],
+            "warnings": ["apollo_hdmap_projection_missing"],
+            "verdict": "fail",
+        },
+    )
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["link_health_layers"]["hdmap_projection"]["status"] == "insufficient_data"
+    assert report["link_health_layers"]["route_establishment"]["status"] == "fail"
+    assert report["failure_stage"] == "planning_materialization"
 
 
 def test_traffic_light_only_schema_blocks_traffic_light_capability(tmp_path: Path) -> None:

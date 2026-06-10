@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from carla_testbed.analysis.apollo_module_consumption import (
+    APOLLO_MODULE_CONSUMPTION_SCHEMA_VERSION,
+    analyze_apollo_module_consumption_run_dir,
+)
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n", encoding="utf-8")
+
+
+def _base_run(tmp_path: Path) -> Path:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "summary.json",
+        {
+            "run_id": "run",
+            "route_id": "097",
+            "scenario_id": "lane_keep_097",
+            "routing_success_count": 1,
+        },
+    )
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "first_nonempty_after_routing_latency_s": 0.2,
+            "route_establishment": {"route_established": True},
+            "empty_reason_histogram": {},
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "total_messages_received": 100,
+            "messages_with_nonzero_trajectory_points": 90,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_topic_debug.jsonl",
+        [
+            {
+                "timestamp": 1.0,
+                "trajectory_point_count": 10,
+                "routing_header_present": True,
+                "localization_age_ms": 10.0,
+                "chassis_age_ms": 12.0,
+                "routing_response_age_ms": 20.0,
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/topic_publish_stats.jsonl",
+        [
+            {"topic": "/apollo/localization/pose"},
+            {"topic": "/apollo/canbus/chassis"},
+            {"topic": "/apollo/planning"},
+            {"topic": "/apollo/control"},
+        ],
+    )
+    _write_json(
+        run_dir / "analysis/prediction_evidence/prediction_evidence_report.json",
+        {
+            "schema_version": "prediction_evidence.v1",
+            "prediction_mode": "native_observed",
+            "planning_requires_prediction": True,
+        },
+    )
+    return run_dir
+
+
+def test_module_consumption_passes_when_routing_and_inputs_are_consumed(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+
+    assert report["schema_version"] == APOLLO_MODULE_CONSUMPTION_SCHEMA_VERSION
+    assert report["status"] == "pass"
+    assert report["routing_response_consumed_by_planning"] is True
+    assert report["planning_input_age"]["localization_age_ms_p95"] == 10.0
+    assert report["topic_publish_coverage"]["has_localization"] is True
+
+
+def test_module_consumption_fails_on_input_timeout_logs(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    (run_dir / "artifacts/apollo.log").write_text(
+        "planning localization timeout\nreference line provider failed\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+
+    assert report["status"] == "fail"
+    assert report["pattern_counts"]["localization_timeout"] == 1
+    assert "planning_input_timeout_logs_present" in report["blocking_reasons"]
+    assert "reference_line_provider_failure_logs_present" in report["blocking_reasons"]
+
+
+def test_module_consumption_missing_planning_materialization_is_insufficient(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    (run_dir / "analysis/planning_materialization/planning_materialization_report.json").unlink()
+
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+
+    assert report["status"] == "insufficient_data"
+    assert "planning_materialization_missing" in report["blocking_reasons"]
+
+
+def test_module_consumption_fails_when_route_not_established_and_reference_line_missing(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "summary.json",
+        {
+            "run_id": "run",
+            "route_id": "097",
+            "scenario_id": "lane_keep_097",
+            "routing_success_count": 0,
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "total_messages_received": 12,
+            "messages_with_nonzero_trajectory_points": 0,
+        },
+    )
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "verdict": "fail",
+            "blocking_reasons": [
+                "planning_trajectory_materialization_low",
+                "route_establishment_not_confirmed",
+            ],
+            "route_establishment": {
+                "route_established": False,
+                "routing_success_count": 0,
+                "blocking_reasons": ["routing_success_missing"],
+            },
+            "empty_reason_histogram": {"reference_line_provider_not_ready": 12},
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_topic_debug.jsonl",
+        [
+            {
+                "timestamp": 1.0,
+                "trajectory_point_count": 0,
+                "empty_reason": "reference_line_provider_not_ready",
+            }
+        ],
+    )
+
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+
+    assert report["status"] == "fail"
+    assert "routing_response_not_consumed_by_planning" in report["blocking_reasons"]
+    assert "reference_line_provider_not_ready_empty_planning" in report["blocking_reasons"]
+
+
+def test_module_consumption_distinguishes_partial_routing_consumption_from_route_establishment_failure(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "verdict": "fail",
+            "first_nonempty_after_routing_latency_s": 2.2,
+            "blocking_reasons": [
+                "planning_trajectory_materialization_low",
+                "route_establishment_not_confirmed",
+            ],
+            "route_establishment": {
+                "route_established": False,
+                "routing_success_count": 2,
+                "planning_nonempty_after_routing_success_ratio": 0.69,
+                "blocking_reasons": [
+                    "planning_nonempty_after_routing_below_threshold",
+                    "route_establishment_latency",
+                ],
+            },
+            "empty_reason_histogram": {"reference_line_provider_not_ready": 528},
+        },
+    )
+
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+
+    assert report["status"] == "fail"
+    assert report["routing_response_consumed_by_planning"] is True
+    assert "routing_response_not_consumed_by_planning" not in report["blocking_reasons"]
+    assert "reference_line_provider_not_ready_empty_planning" in report["blocking_reasons"]
+
+
+def test_module_consumption_cli_writes_report(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    out_dir = tmp_path / "out"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/analyze_apollo_module_consumption.py",
+            "--run-dir",
+            str(run_dir),
+            "--out",
+            str(out_dir),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert (out_dir / "apollo_module_consumption_report.json").is_file()
+    assert (out_dir / "apollo_module_consumption_summary.md").is_file()

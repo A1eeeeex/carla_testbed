@@ -306,7 +306,10 @@ def apollo_chain_completion_summary_md(report: Mapping[str, Any]) -> str:
             [
                 f"### {name}",
                 f"- replacement_status: `{module.get('replacement_status')}`",
+                f"- project_matrix_status: `{module.get('project_matrix_status')}`",
                 f"- evidence_status: `{module.get('evidence_status')}`",
+                f"- run_claim_grade: `{module.get('run_claim_grade')}`",
+                f"- effective_status: `{module.get('effective_status')}`",
                 f"- hard_gate_eligible: `{module.get('hard_gate_eligible')}`",
                 f"- blocking_capabilities: `{', '.join(module.get('blocking_capabilities') or []) or 'none'}`",
                 "",
@@ -383,6 +386,14 @@ def _build_module_statuses(
             prediction_report=prediction_report,
         )
         replacement_status = str(matrix_module.get("replacement_status") or "")
+        project_matrix_status = _matrix_status(matrix_module)
+        run_claim_grade = _run_claim_grade(
+            name=name,
+            observed_evidence=observed,
+            layer=layer if isinstance(layer, Mapping) else None,
+            prediction_report=prediction_report,
+            evidence_status=evidence_status,
+        )
         hard_gate_eligible = evidence_status in {"pass", "warn"} and replacement_status not in {
             "missing",
             "mock",
@@ -394,23 +405,33 @@ def _build_module_statuses(
                 "pass",
                 "warn",
             }
+        effective_status = _effective_module_status(
+            replacement_status=replacement_status,
+            evidence_status=evidence_status,
+            run_claim_grade=run_claim_grade,
+            hard_gate_eligible=hard_gate_eligible,
+        )
         blocked = (
             list(matrix_module.get("blocked_capabilities") or [])
-            if evidence_status in BLOCKING or replacement_status in {"bypassed", "missing", "mock", "unknown"}
+            if effective_status in BLOCKING or replacement_status in {"bypassed", "missing", "mock", "unknown"}
             else []
         )
         if name == "prediction" and prediction_report:
             blocked = list(prediction_report.get("blocking_capabilities") or [])
-        if not hard_gate_eligible and not blocked and evidence_status in BLOCKING:
+        if not hard_gate_eligible and not blocked and effective_status in BLOCKING:
             blocked = _capabilities_from_reference_module(reference_module)
         module_statuses[name] = {
             "reference_module": matrix_module.get("reference_module"),
             "replacement_status": matrix_module.get("replacement_status"),
+            "project_matrix_status": project_matrix_status,
             "required_inputs": list(reference_module.get("required_inputs") or []),
             "expected_outputs": list(reference_module.get("expected_outputs") or []),
             "required_evidence": list(matrix_module.get("required_evidence") or []),
             "observed_evidence": observed,
             "evidence_status": evidence_status,
+            "run_evidence_status": evidence_status,
+            "run_claim_grade": run_claim_grade,
+            "effective_status": effective_status,
             "hard_gate_eligible": hard_gate_eligible,
             "blocking_capabilities": sorted(set(str(item) for item in blocked if item)),
             "notes": matrix_module.get("notes"),
@@ -448,6 +469,84 @@ def _module_evidence_status(
         if status in {"fail", "insufficient_data", "warn", "pass"}:
             return status
     return _matrix_status(matrix_module)
+
+
+def _run_claim_grade(
+    *,
+    name: str,
+    observed_evidence: Mapping[str, Any],
+    layer: Mapping[str, Any] | None,
+    prediction_report: Mapping[str, Any] | None,
+    evidence_status: str,
+) -> bool:
+    if evidence_status not in {"pass", "warn"}:
+        return False
+    if name == "prediction" and prediction_report:
+        return bool(prediction_report.get("hard_gate_eligible"))
+    report = _primary_run_report(name, observed_evidence)
+    if _bool_or_none(report.get("claim_grade")) is True:
+        return True
+    if _bool_or_none(report.get("claim_grade_ready")) is True:
+        return True
+    if name == "localization":
+        verdict = report.get("verdict") if isinstance(report.get("verdict"), Mapping) else {}
+        return bool(
+            _normalize_status(verdict.get("status") or report.get("status")) in {"pass", "warn"}
+            and _nested(report, "reference_point.vehicle_reference_hard_gate_eligible") is True
+            and not (verdict.get("blocking_reasons") or report.get("blocking_reasons"))
+        )
+    if name == "chassis":
+        return _bool_or_none(report.get("claim_grade")) is True
+    if name == "perception_obstacles":
+        return bool(
+            _normalize_status(report.get("status")) in {"pass", "pass_empty", "warn"}
+            and not report.get("errors")
+            and not report.get("missing_fields")
+        )
+    if name == "traffic_light_perception":
+        return _bool_or_none(report.get("claim_grade_ready")) is True
+    if name == "vehicle_interface":
+        control_health = _read_json_path(observed_evidence.get("control_health_report.json"))
+        return bool(
+            _normalize_status(control_health.get("status")) in {"pass", "warn"}
+            and not control_health.get("blocking_reasons")
+        )
+    if layer:
+        metrics = layer.get("key_metrics") if isinstance(layer.get("key_metrics"), Mapping) else {}
+        if _bool_or_none(metrics.get("claim_grade")) is True:
+            return True
+    return True
+
+
+def _effective_module_status(
+    *,
+    replacement_status: str,
+    evidence_status: str,
+    run_claim_grade: bool,
+    hard_gate_eligible: bool,
+) -> str:
+    if evidence_status in BLOCKING:
+        return evidence_status
+    if replacement_status in {"gt_replaced", "carla_replaced"} and evidence_status in {"pass", "warn"}:
+        return evidence_status if run_claim_grade else "insufficient_data"
+    if replacement_status == "bypassed":
+        return evidence_status if hard_gate_eligible else "insufficient_data"
+    return evidence_status
+
+
+def _primary_run_report(name: str, observed_evidence: Mapping[str, Any]) -> dict[str, Any]:
+    preferred = {
+        "localization": ("localization_contract_report.json",),
+        "chassis": ("chassis_gt_contract_report.json", "chassis_contract_report.json"),
+        "perception_obstacles": ("obstacle_gt_contract_report.json",),
+        "traffic_light_perception": ("traffic_light_contract_report.json",),
+        "vehicle_interface": ("control_attribution_report.json", "control_health_report.json"),
+    }.get(name, ())
+    for key in preferred:
+        report = _read_json_path(observed_evidence.get(key))
+        if report:
+            return report
+    return {}
 
 
 def _has_required_artifact_gaps(
@@ -620,7 +719,7 @@ def _capability_status(
             module
             for module in required_statuses
             if capability in set(module.get("blocking_capabilities") or [])
-            or module.get("evidence_status") in {"fail", "missing", "insufficient_data"}
+            or module.get("effective_status", module.get("evidence_status")) in {"fail", "missing", "insufficient_data"}
             and module.get("replacement_status") not in {"operator_evidence"}
         ]
         if not blocking_modules:
@@ -628,7 +727,7 @@ def _capability_status(
             continue
         if capability == "lane_keep" and _only_reference_line_or_projection_missing(blocking_modules):
             statuses[capability] = "warn"
-        elif any(module.get("evidence_status") == "fail" for module in blocking_modules):
+        elif any(module.get("effective_status", module.get("evidence_status")) == "fail" for module in blocking_modules):
             statuses[capability] = "fail"
         else:
             statuses[capability] = "insufficient_data"
@@ -653,7 +752,8 @@ def _missing_required_evidence(module_statuses: Mapping[str, Mapping[str, Any]])
 def _blocking_modules(module_statuses: Mapping[str, Mapping[str, Any]]) -> list[str]:
     blocking: list[str] = []
     for name, module in module_statuses.items():
-        if module.get("evidence_status") in BLOCKING or module.get("blocking_capabilities"):
+        effective = module.get("effective_status", module.get("evidence_status"))
+        if effective == "fail" or module.get("blocking_capabilities"):
             blocking.append(str(name))
     return sorted(set(blocking))
 
@@ -676,6 +776,11 @@ def _failure_stage(
     target_capability: str,
     target_required_modules: set[str],
 ) -> str:
+    # If Planning already proves that a route never materialized, surface that
+    # concrete observed blocker before broader missing-evidence buckets such as
+    # HDMap projection. This keeps online triage focused without relaxing gates.
+    if _layer_blocking(link_layers, "route_establishment"):
+        return "planning_materialization"
     if _module_blocking_for_target(
         module_statuses, "hdmap", target_capability, target_required_modules
     ) or _layer_blocking(link_layers, "hdmap_projection"):
@@ -722,14 +827,14 @@ def _failure_stage(
         return "vehicle_interface"
     if _layer_blocking(link_layers, "no_assist_claim_boundary"):
         return "assist_or_calibration"
-    if any(status in {"fail", "insufficient_data"} for status in capability_status.values()):
+    if capability_status.get(target_capability) in {"fail", "insufficient_data"}:
         return "insufficient_data"
     return "none"
 
 
 def _module_blocking(module_statuses: Mapping[str, Mapping[str, Any]], name: str) -> bool:
     module = module_statuses.get(name, {})
-    return bool(module.get("evidence_status") in BLOCKING or module.get("blocking_capabilities"))
+    return bool(module.get("effective_status", module.get("evidence_status")) in BLOCKING or module.get("blocking_capabilities"))
 
 
 def _module_blocking_for_target(
@@ -741,7 +846,7 @@ def _module_blocking_for_target(
     module = module_statuses.get(name, {})
     if target_capability in set(module.get("blocking_capabilities") or []):
         return True
-    return bool(name in target_required_modules and module.get("evidence_status") in BLOCKING)
+    return bool(name in target_required_modules and module.get("effective_status", module.get("evidence_status")) in BLOCKING)
 
 
 def _layer_blocking(link_layers: Mapping[str, Any], name: str) -> bool:
@@ -762,7 +867,7 @@ def _overall_verdict(
     if missing_required_evidence or any(status == "insufficient_data" for status in capability_status.values()):
         return "insufficient_data"
     if any(status == "warn" for status in capability_status.values()) or any(
-        module.get("evidence_status") == "warn" for module in module_statuses.values()
+        module.get("effective_status", module.get("evidence_status")) == "warn" for module in module_statuses.values()
     ):
         return "warn"
     return "pass"
@@ -773,7 +878,7 @@ def _completion_warnings(module_statuses: Mapping[str, Mapping[str, Any]]) -> li
     prediction = module_statuses.get("prediction", {})
     if prediction.get("replacement_status") == "bypassed":
         warnings.append("prediction_bypassed_requires_explicit_scope_boundary")
-    if any(module.get("evidence_status") == "missing" for module in module_statuses.values()):
+    if any(module.get("effective_status", module.get("evidence_status")) == "missing" for module in module_statuses.values()):
         warnings.append("missing_required_evidence_blocks_claim")
     return warnings
 
@@ -832,6 +937,8 @@ def _capabilities_from_reference_module(module: Mapping[str, Any]) -> list[str]:
 
 def _normalize_status(value: Any) -> str:
     text = str(value or "insufficient_data")
+    if text == "pass_empty":
+        return "pass"
     if text in {"pass", "warn", "fail", "insufficient_data", "missing", "not_applicable"}:
         return text
     if text in {"success", "ok", "candidate_positive"}:
@@ -839,3 +946,16 @@ def _normalize_status(value: Any) -> str:
     if text in {"failed", "candidate_negative"}:
         return "fail"
     return "insufficient_data"
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes"}:
+        return True
+    if text in {"false", "0", "no"}:
+        return False
+    return None

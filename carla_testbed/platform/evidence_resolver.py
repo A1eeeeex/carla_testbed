@@ -21,6 +21,7 @@ APOLLO_ANALYZERS = {
     "apollo_hdmap_projection",
     "apollo_reference_line_contract",
     "planning_materialization",
+    "apollo_module_consumption",
     "apollo_control_handoff",
     "prediction_evidence",
     "apollo_link_health",
@@ -90,11 +91,10 @@ def resolve_evidence_for_plan(plan: RunPlan) -> EvidenceResolution:
         base_required |= PEDESTRIAN_FLOW_ANALYZERS
     if _fixed_scene_enabled(plan):
         base_required |= FIXED_SCENE_ANALYZERS
-        if plan.platform.name in {"apollo_cyberrt", "carla_direct", "autoware_ros2"} or plan.algorithm.stack in {
-            "apollo",
-            "autoware",
-        }:
+        if _apollo_or_autoware_plan(plan):
             base_required |= OBSTACLE_ANALYZERS
+    if (_vehicles_enabled(plan) or _walkers_enabled(plan)) and _apollo_or_autoware_plan(plan):
+        base_required |= OBSTACLE_ANALYZERS
     if requirements.get("dynamic_obstacle_required"):
         base_required |= OBSTACLE_ANALYZERS
     if requirements.get("hdmap_projection_required"):
@@ -145,6 +145,7 @@ def _rules_for_plan(plan: RunPlan) -> list[dict[str, Any]]:
             "==",
             True,
         ),
+        _rule("apollo_module_consumption_pass", "apollo_module_consumption", "status", "in", ["pass", "warn"]),
         _rule("hdmap_projection_claim_grade", "apollo_hdmap_projection", "claim_grade", "==", True),
         _rule("localization_contract_claim_grade", "localization_contract", "claim_grade", "==", True),
         _rule("chassis_gt_contract_claim_grade", "chassis_gt_contract", "claim_grade", "==", True),
@@ -156,7 +157,7 @@ def _rules_for_plan(plan: RunPlan) -> list[dict[str, Any]]:
     requirements = plan.scenario.requirements or {}
     rules.extend(traffic_rules)
     rules.extend(fixed_scene_rules)
-    if requirements.get("prediction_required") or requirements.get("dynamic_obstacle_required"):
+    if _prediction_required_for_plan(plan):
         rules.append(
             _rule(
                 "prediction_evidence_explicit",
@@ -166,6 +167,18 @@ def _rules_for_plan(plan: RunPlan) -> list[dict[str, Any]]:
                 ["native_observed", "bypassed_with_gt_obstacles"],
             )
         )
+    if _dynamic_actor_evidence_required_for_plan(plan):
+        rules.append(_rule("obstacle_gt_contract_pass", "obstacle_gt_contract", "status", "in", ["pass"]))
+        if _vehicles_enabled(plan) or _walkers_enabled(plan):
+            rules.append(
+                _rule(
+                    "background_traffic_obstacle_linkage_pass",
+                    "obstacle_gt_contract",
+                    "background_traffic_linkage.status",
+                    "==",
+                    "pass",
+                )
+            )
     if requirements.get("traffic_light_required"):
         rules.extend(
             [
@@ -291,6 +304,34 @@ def _fixed_scene_enabled(plan: RunPlan) -> bool:
     if not fixed_scene:
         return False
     return bool(fixed_scene.get("enabled", True))
+
+
+def _apollo_or_autoware_plan(plan: RunPlan) -> bool:
+    return plan.platform.name in {"apollo_cyberrt", "carla_direct", "autoware_ros2"} or plan.algorithm.stack in {
+        "apollo",
+        "autoware",
+    }
+
+
+def _dynamic_actor_evidence_required_for_plan(plan: RunPlan) -> bool:
+    requirements = plan.scenario.requirements or {}
+    return bool(
+        requirements.get("dynamic_obstacle_required")
+        or _fixed_scene_enabled(plan)
+        or _vehicles_enabled(plan)
+        or _walkers_enabled(plan)
+    )
+
+
+def _prediction_required_for_plan(plan: RunPlan) -> bool:
+    requirements = plan.scenario.requirements or {}
+    return bool(
+        requirements.get("prediction_required")
+        or requirements.get("dynamic_obstacle_required")
+        or _fixed_scene_enabled(plan)
+        or _vehicles_enabled(plan)
+        or _walkers_enabled(plan)
+    )
 
 
 def _walkers_enabled(plan: RunPlan) -> bool:

@@ -920,7 +920,7 @@ def _write_projection_jsonl(path: Path) -> None:
                 "localization_y": 2.0,
                 "localization_heading": 0.0,
                 "nearest_lane_id": "lane097",
-                "projection_s": 3.0 + index * 0.2,
+                "projection_s": 3.0 + index * 0.6,
                 "projection_l": 0.05,
                 "lane_heading_at_s": 0.0,
                 "heading_error_rad": 0.01,

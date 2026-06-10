@@ -246,6 +246,27 @@ def _base_run(tmp_path: Path) -> Path:
         },
     )
     _write_json(
+        run_dir / "analysis/apollo_module_consumption/apollo_module_consumption_report.json",
+        {
+            "schema_version": "apollo_module_consumption.v1",
+            "status": "pass",
+            "routing_response_consumed_by_planning": True,
+            "prediction_mode": "native_observed",
+            "pattern_counts": {
+                "localization_timeout": 0,
+                "chassis_timeout": 0,
+                "reference_line_provider_failure": 0,
+            },
+            "empty_reason_histogram": {},
+            "planning_input_age": {
+                "localization_age_ms_p95": 10.0,
+                "chassis_age_ms_p95": 10.0,
+            },
+            "blocking_reasons": [],
+            "warnings": [],
+        },
+    )
+    _write_json(
         run_dir / "analysis/natural_driving/natural_driving_report.json",
         {
             "schema_version": "natural_driving_report.v1",
@@ -269,6 +290,7 @@ def test_all_green_link_health_is_claimable(tmp_path: Path) -> None:
     assert report["layers"]["traffic_light_gt"]["status"] == "not_applicable"
     assert report["layers"]["hdmap_projection"]["status"] == "pass"
     assert report["layers"]["route_establishment"]["status"] == "pass"
+    assert report["layers"]["apollo_module_consumption"]["status"] == "pass"
     assert report["layers"]["prediction_evidence"]["status"] == "pass"
 
 
@@ -281,6 +303,17 @@ def test_missing_prediction_evidence_blocks_claim(tmp_path: Path) -> None:
     assert report["can_claim_unassisted_natural_driving"] is False
     assert report["layers"]["prediction_evidence"]["status"] == "insufficient_data"
     assert "prediction_evidence:insufficient_data" in report["why_not_claimable"]
+
+
+def test_missing_module_consumption_blocks_claim(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    (run_dir / "analysis/apollo_module_consumption/apollo_module_consumption_report.json").unlink()
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert report["can_claim_unassisted_natural_driving"] is False
+    assert report["layers"]["apollo_module_consumption"]["status"] == "insufficient_data"
+    assert "apollo_module_consumption:insufficient_data" in report["why_not_claimable"]
 
 
 def test_explicit_non_apollo_control_source_conflicts_with_apollo_control_rx(tmp_path: Path) -> None:

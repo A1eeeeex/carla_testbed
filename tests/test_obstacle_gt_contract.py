@@ -308,6 +308,153 @@ def test_fixed_scene_actor_linkage_passes_when_obstacle_present(tmp_path: Path) 
     assert report["fixed_scene_actor_linkage"]["scenario_actor_obstacle_count"] == 1
 
 
+def test_background_vehicle_from_traffic_flow_must_appear_in_obstacle_gt(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "traffic_flow_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "traffic_flow_manifest.v1",
+                "enabled": True,
+                "vehicles": [
+                    {
+                        "actor_id": 301,
+                        "role_name": "background_vehicle_0",
+                        "control_source": "carla_traffic_manager",
+                    }
+                ],
+                "walkers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "obstacle_gt_contract.jsonl").write_text(
+        json.dumps(_obstacle(carla_actor_id="other", apollo_perception_id="other")) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="lane_keep")
+
+    assert report["status"] == "fail"
+    assert "background_vehicle_missing_from_obstacle_gt" in report["errors"]
+    assert report["background_traffic_linkage"]["missing_background_vehicle_ids"] == ["301"]
+
+
+def test_background_vehicle_from_traffic_flow_linkage_passes_when_vehicle_obstacle_present(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "traffic_flow_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "traffic_flow_manifest.v1",
+                "enabled": True,
+                "vehicles": [
+                    {
+                        "actor_id": 301,
+                        "role_name": "background_vehicle_0",
+                        "control_source": "carla_traffic_manager",
+                    }
+                ],
+                "walkers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "obstacle_gt_contract.jsonl").write_text(
+        json.dumps(_obstacle(carla_actor_id="301", apollo_perception_id="background_vehicle_301")) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="lane_keep")
+
+    assert report["status"] == "pass"
+    assert report["background_traffic_linkage"]["status"] == "pass"
+    assert report["background_traffic_linkage"]["background_vehicle_obstacle_count"] == 1
+
+
+def test_background_walker_from_traffic_flow_must_be_pedestrian_obstacle(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "traffic_flow_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "traffic_flow_manifest.v1",
+                "enabled": True,
+                "vehicles": [],
+                "walkers": [
+                    {
+                        "actor_id": 401,
+                        "role_name": "background_walker_0",
+                        "control_source": "carla_walker_ai_controller",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "obstacle_gt_contract.jsonl").write_text(
+        json.dumps(
+            _obstacle(
+                carla_actor_id="401",
+                apollo_perception_id="walker_401",
+                type="PEDESTRIAN",
+                velocity={"x": 0.6, "y": 0.0, "z": 0.0},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="lane_keep")
+
+    assert report["status"] == "pass"
+    assert report["pedestrians"]["status"] == "pass"
+    assert report["background_traffic_linkage"]["background_walker_obstacle_count"] == 1
+
+
+def test_background_walker_with_vehicle_type_fails_pedestrian_contract(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "traffic_flow_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "traffic_flow_manifest.v1",
+                "enabled": True,
+                "vehicles": [],
+                "walkers": [
+                    {
+                        "actor_id": 401,
+                        "role_name": "background_walker_0",
+                        "control_source": "carla_walker_ai_controller",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "obstacle_gt_contract.jsonl").write_text(
+        json.dumps(
+            _obstacle(
+                carla_actor_id="401",
+                apollo_perception_id="walker_401",
+                type="VEHICLE",
+                velocity={"x": 0.6, "y": 0.0, "z": 0.0},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="lane_keep")
+
+    assert report["status"] == "fail"
+    assert "pedestrian_actor_type_not_pedestrian" in report["errors"]
+
+
 def test_tracking_time_non_monotonic_fails() -> None:
     report = analyze_obstacle_gt_contract_records(
         [

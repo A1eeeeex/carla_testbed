@@ -787,7 +787,7 @@ def _hdmap_projection_rows(*, heading_error_rad: float, lateral_error_m: float) 
                 "localization_y": 2.0,
                 "localization_heading": 0.0,
                 "nearest_lane_id": "lane_097",
-                "projection_s": 3.0 + index * 0.5,
+                "projection_s": 3.0 + index * 0.6,
                 "projection_l": lateral_error_m,
                 "lane_heading_at_s": 0.0,
                 "heading_error_rad": heading_error_rad,

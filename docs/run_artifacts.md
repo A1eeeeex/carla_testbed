@@ -137,6 +137,7 @@ run-local diagnostics include:
 - `analysis/apollo_hdmap_projection/apollo_hdmap_projection_summary.md` when
   the projection report is generated
 - `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`
+- `analysis/apollo_module_consumption/apollo_module_consumption_report.json`
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`
 - `artifacts/control_apply_trace.jsonl`
 - `analysis/control_health/control_health_report.json`
@@ -216,8 +217,9 @@ run to claim-grade evidence.
 
 `apollo_link_health_report.json` aggregates environment/world, bridge runtime,
 channel health, GT localization, HDMap projection, planning reference-line,
-route establishment, routing/planning/control handoff, control mapping/apply,
-obstacle GT, traffic-light GT, no-assist boundary, and natural-driving outcome
+route establishment, Apollo module-consumption, routing/planning/control
+handoff, control mapping/apply, obstacle GT, traffic-light GT, no-assist
+boundary, and natural-driving outcome
 layers. A missing applicable layer blocks
 `can_claim_unassisted_natural_driving`; traffic-light evidence may be
 `not_applicable` only for non-traffic-light scenarios.
@@ -237,8 +239,10 @@ Claim-grade projection evidence requires official `source=apollo_hdmap_api`,
 `ok_ratio >= 0.95`, at least the configured minimum sample count, heading
 `p95 < 0.05 rad`, lateral error `p95 < 0.50 m`, and lane-id compatibility with
 Planning `lane_id` or `target_lane_id` evidence. The report also records
-sim-time and projection-s coverage so scenario gates can require stronger
-coverage later.
+sim-time, projection-s, route-s, and map-identity coverage. Claim-grade
+projection must cover enough of the evaluated run and must not mix map names or
+map directories; a handful of valid points near startup is diagnostic evidence,
+not route-level HDMap projection proof.
 
 When `apollo_reference_line_contract_report.json` is regenerated from fallback
 planning/control/timeseries artifacts, the analyzer uses timestamp/as-of joins
@@ -282,6 +286,15 @@ keep the interpretation diagnostic. Control rx/tx evidence must not override a
 `planning_trajectory_materialization_low` or `route_establishment_latency`
 blocker.
 
+`analysis/apollo_module_consumption/apollo_module_consumption_report.json`
+checks whether Apollo modules appear to consume the GT inputs that the bridge
+publishes. It inspects planning materialization, planning debug summaries,
+planning/control/routing debug rows, topic publish rows, prediction evidence,
+and Apollo logs for input timeouts, reference-line provider failures,
+prediction-not-ready messages, and empty-reason attribution. This is stricter
+than bridge-side publish evidence: a channel can be published while Planning
+still does not consume it.
+
 `analysis/chassis_gt_contract/chassis_gt_contract_report.json` checks the GT
 replacement contract for `/apollo/canbus/chassis`: channel count/rate/gaps,
 timestamp/sequence monotonicity, chassis speed versus ego/localization speed,
@@ -305,9 +318,14 @@ background walkers. Missing movement trace is `insufficient_data`, because a
 started WalkerAIController does not prove that the walker actually moved.
 Passing this report only validates background pedestrian setup; pedestrian
 perception/avoidance claims still need `obstacle_gt_contract_report.json` with
-a pedestrian section. Nonzero `walker_cross_factor` is allowed for smoke/demo
-traffic, but it is reported as a claim blocker unless the run explicitly allows
-random pedestrian road crossing.
+a pedestrian section. For Apollo/Autoware runs with background vehicles or
+walkers, `obstacle_gt_contract_report.json` must link each spawned background
+actor id from `artifacts/traffic_flow_manifest.json` to a stable Apollo
+perception id and the expected object type. Background vehicles or walkers
+missing from GT obstacle evidence block claim-grade behavior interpretation.
+Nonzero `walker_cross_factor` is allowed for smoke/demo traffic, but it is
+reported as a claim blocker unless the run explicitly allows random pedestrian
+road crossing.
 
 ## Platform Evidence Bundle And Claim Package
 

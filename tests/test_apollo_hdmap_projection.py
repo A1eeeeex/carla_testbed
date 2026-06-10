@@ -112,6 +112,32 @@ def test_claim_grade_projection_requires_minimum_sample_count(tmp_path: Path) ->
     assert "apollo_hdmap_projection_sample_count_low" in report["blocking_reasons"]
 
 
+def test_claim_grade_projection_requires_route_s_coverage(tmp_path: Path) -> None:
+    path = tmp_path / "apollo_hdmap_projection.jsonl"
+    rows = _projection_rows(heading_error_rad=0.01, lateral_error_m=0.05)
+    for index, row in enumerate(rows):
+        row["projection_s"] = 10.0 + index * 0.1
+
+    _write_jsonl(path, rows)
+    report = analyze_apollo_hdmap_projection_file(path)
+
+    assert report["status"] == "fail"
+    assert report["claim_grade"] is False
+    assert "apollo_hdmap_projection_route_s_coverage_low" in report["blocking_reasons"]
+
+
+def test_claim_grade_projection_fails_inconsistent_map_identity(tmp_path: Path) -> None:
+    path = tmp_path / "apollo_hdmap_projection.jsonl"
+    rows = _projection_rows(heading_error_rad=0.01, lateral_error_m=0.05)
+    rows[-1]["map_name"] = "Town02"
+
+    _write_jsonl(path, rows)
+    report = analyze_apollo_hdmap_projection_file(path)
+
+    assert report["status"] == "fail"
+    assert "apollo_hdmap_projection_map_identity_inconsistent" in report["blocking_reasons"]
+
+
 def test_cli_writes_projection_report(tmp_path: Path) -> None:
     path = tmp_path / "apollo_hdmap_projection.jsonl"
     out = tmp_path / "out"
@@ -286,7 +312,7 @@ def _projection_rows(*, heading_error_rad: float, lateral_error_m: float) -> lis
                 "localization_y": 2.0,
                 "localization_heading": 0.0,
                 "nearest_lane_id": "lane_097",
-                "projection_s": 3.0 + index * 0.5,
+                "projection_s": 3.0 + index * 0.6,
                 "projection_l": lateral_error_m,
                 "lane_heading_at_s": 0.0,
                 "heading_error_rad": heading_error_rad,

@@ -59,6 +59,44 @@ def test_mixed_traffic_flow_plan_requires_vehicle_and_pedestrian_contracts() -> 
     assert any(rule["id"] == "pedestrian_flow_walkers_moved" for rule in plan.gate.rules)
 
 
+def test_apollo_mixed_traffic_requires_obstacle_and_prediction_evidence() -> None:
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="town01/lane_keep_097",
+        traffic="town01/random_tm2_walkers2",
+        recording="demo",
+        gate="claim_natural_driving",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    assert "traffic_flow_contract" in plan.evidence.required_analyzers
+    assert "pedestrian_flow_contract" in plan.evidence.required_analyzers
+    assert "obstacle_gt_contract" in plan.evidence.required_analyzers
+    assert "prediction_evidence" in plan.evidence.required_analyzers
+    rule_ids = {rule["id"] for rule in plan.gate.rules}
+    assert "prediction_evidence_explicit" in rule_ids
+    assert "obstacle_gt_contract_pass" in rule_ids
+    assert "background_traffic_obstacle_linkage_pass" in rule_ids
+
+
+def test_builtin_mixed_traffic_does_not_require_apollo_obstacle_prediction_gate() -> None:
+    plan = compile_run_plan(
+        platform="carla_builtin",
+        algorithm="simple_route_follower",
+        scenario="town01/lane_keep_097",
+        traffic="town01/random_tm2_walkers2",
+        recording="demo",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    assert "traffic_flow_contract" in plan.evidence.required_analyzers
+    assert "pedestrian_flow_contract" in plan.evidence.required_analyzers
+    assert "obstacle_gt_contract" not in plan.evidence.required_analyzers
+    assert "prediction_evidence" not in plan.evidence.required_analyzers
+
+
 def test_mixed_plan_yaml_preserves_walkers(tmp_path: Path) -> None:
     plan = compile_run_plan(
         platform="carla_builtin",
