@@ -154,6 +154,9 @@ CSV_FIELDS = [
     "apollo_reference_line_contract_status",
     "apollo_reference_line_blocking_reasons",
     "apollo_reference_line_report_path",
+    "apollo_hdmap_projection_status",
+    "apollo_hdmap_projection_claim_grade",
+    "apollo_hdmap_projection_report_path",
     "control_health_status",
     "apollo_control_handoff_status",
     "apollo_control_handoff_failure_stage",
@@ -489,6 +492,13 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
             "apollo_reference_line_contract_report.json",
         ],
     )
+    apollo_hdmap_projection_path = _find_first(
+        run_dir,
+        [
+            "analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json",
+            "apollo_hdmap_projection_report.json",
+        ],
+    )
     control_health_path = _find_first(
         run_dir,
         [
@@ -584,6 +594,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
     channel_health = _read_json(channel_health_path)
     localization_contract = _read_json(localization_contract_path)
     apollo_reference_line_contract = _read_json(apollo_reference_line_contract_path)
+    apollo_hdmap_projection = _read_json(apollo_hdmap_projection_path)
     control_health = _read_json(control_health_path)
     apollo_control_handoff = _read_json(apollo_control_handoff_path)
     control_attribution = _read_json(control_attribution_path)
@@ -770,6 +781,11 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "apollo_reference_line_report_path": (
             str(apollo_reference_line_contract_path) if apollo_reference_line_contract_path else None
         ),
+        "apollo_hdmap_projection_status": _apollo_hdmap_projection_status(apollo_hdmap_projection),
+        "apollo_hdmap_projection_claim_grade": _apollo_hdmap_projection_claim_grade(apollo_hdmap_projection),
+        "apollo_hdmap_projection_report_path": (
+            str(apollo_hdmap_projection_path) if apollo_hdmap_projection_path else None
+        ),
         "failure_timeline_status": failure_timeline.get("status"),
         "failure_timeline_primary_failure": _failure_timeline_primary_failure(failure_timeline),
         "failure_timeline_anchor_event": _failure_timeline_anchor_event(failure_timeline),
@@ -804,6 +820,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
             "apollo_reference_line_contract": (
                 str(apollo_reference_line_contract_path) if apollo_reference_line_contract_path else None
             ),
+            "apollo_hdmap_projection": str(apollo_hdmap_projection_path) if apollo_hdmap_projection_path else None,
             "control_health": str(control_health_path) if control_health_path else None,
             "apollo_control_handoff": str(apollo_control_handoff_path)
             if apollo_control_handoff_path
@@ -907,6 +924,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         manifest=manifest,
         localization_contract=localization_contract,
         apollo_reference_line_contract=apollo_reference_line_contract,
+        apollo_hdmap_projection=apollo_hdmap_projection,
         apollo_control_handoff=apollo_control_handoff,
         control_health=control_health,
         assist_ledger_path=assist_ledger_path,
@@ -920,6 +938,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         channel_health=channel_health,
         localization_contract=localization_contract,
         apollo_reference_line_contract=apollo_reference_line_contract,
+        apollo_hdmap_projection=apollo_hdmap_projection,
         apollo_control_handoff=apollo_control_handoff,
         control_health=control_health,
         traffic_light_contract=traffic_light_contract,
@@ -930,6 +949,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         channel_health_path=channel_health_path,
         localization_contract_path=localization_contract_path,
         apollo_reference_line_contract_path=apollo_reference_line_contract_path,
+        apollo_hdmap_projection_path=apollo_hdmap_projection_path,
         apollo_control_handoff_path=apollo_control_handoff_path,
         control_health_path=control_health_path,
         traffic_light_contract_path=traffic_light_contract_path,
@@ -970,6 +990,7 @@ def _unassisted_claimability(
     manifest: Mapping[str, Any],
     localization_contract: Mapping[str, Any],
     apollo_reference_line_contract: Mapping[str, Any],
+    apollo_hdmap_projection: Mapping[str, Any],
     apollo_control_handoff: Mapping[str, Any],
     control_health: Mapping[str, Any],
     assist_ledger_path: Path | None,
@@ -1015,6 +1036,8 @@ def _unassisted_claimability(
         apollo_reference_line_contract
     ):
         reasons.append("apollo_reference_line_contract_not_pass_warn")
+    if not _apollo_hdmap_projection_claim_grade(apollo_hdmap_projection):
+        reasons.append("apollo_hdmap_projection_not_claim_grade")
 
     handoff_status = str(apollo_control_handoff.get("verdict") or "").strip()
     handoff_stage = str(apollo_control_handoff.get("failure_stage") or "").strip()
@@ -1315,6 +1338,7 @@ def _run_verdict(
     channel_health: Mapping[str, Any],
     localization_contract: Mapping[str, Any],
     apollo_reference_line_contract: Mapping[str, Any],
+    apollo_hdmap_projection: Mapping[str, Any],
     apollo_control_handoff: Mapping[str, Any],
     control_health: Mapping[str, Any],
     traffic_light_contract: Mapping[str, Any],
@@ -1325,6 +1349,7 @@ def _run_verdict(
     channel_health_path: Path | None,
     localization_contract_path: Path | None,
     apollo_reference_line_contract_path: Path | None,
+    apollo_hdmap_projection_path: Path | None,
     apollo_control_handoff_path: Path | None,
     control_health_path: Path | None,
     traffic_light_contract_path: Path | None,
@@ -1419,6 +1444,15 @@ def _run_verdict(
     if reference_status != "pass":
         missing_fields.extend(reference_missing)
         return reference_status, reference_reason, missing_fields
+
+    hdmap_status, hdmap_reason, hdmap_missing = _apollo_hdmap_projection_verdict(
+        apollo_hdmap_projection,
+        scenario_class=scenario_class,
+        report_path=apollo_hdmap_projection_path,
+    )
+    if hdmap_status != "pass":
+        missing_fields.extend(hdmap_missing)
+        return hdmap_status, hdmap_reason, missing_fields
 
     handoff_status, handoff_reason, handoff_missing = _apollo_control_handoff_evidence_verdict(
         apollo_control_handoff,
@@ -2194,6 +2228,27 @@ def _apollo_reference_line_contract_status(report: Mapping[str, Any]) -> str:
     return status if status is not None else "insufficient_data"
 
 
+def _apollo_hdmap_projection_status(report: Mapping[str, Any]) -> str:
+    if not report:
+        return "insufficient_data"
+    status = _report_status(report)
+    if status != "insufficient_data":
+        return status
+    projection = report.get("projection")
+    return _report_status(projection) if isinstance(projection, Mapping) else status
+
+
+def _apollo_hdmap_projection_claim_grade(report: Mapping[str, Any]) -> bool:
+    if not isinstance(report, Mapping) or not report:
+        return False
+    if _apollo_hdmap_projection_status(report) not in PASS_WARN_STATUSES:
+        return False
+    if report.get("claim_grade") is True:
+        return True
+    projection = report.get("projection")
+    return bool(isinstance(projection, Mapping) and projection.get("claim_grade") is True)
+
+
 def _apollo_reference_line_blocking_reasons(report: Mapping[str, Any]) -> list[str]:
     reasons = [str(item) for item in (report.get("blocking_reasons") or []) if item]
     verdict = report.get("verdict")
@@ -2317,6 +2372,56 @@ def _apollo_reference_line_contract_verdict(
                 missing,
             )
         return "insufficient_data", "apollo_reference_line_contract_incomplete", missing
+    return "pass", None, []
+
+
+def _apollo_hdmap_projection_verdict(
+    report: Mapping[str, Any],
+    *,
+    scenario_class: str,
+    report_path: Path | None,
+) -> tuple[str, str | None, list[str]]:
+    if scenario_class not in REFERENCE_LINE_REQUIRED_SCENARIO_CLASSES:
+        return "pass", None, []
+    if report_path is None or not report:
+        if scenario_class == "curve_diagnostic":
+            return (
+                "diagnostic_only",
+                "apollo_hdmap_projection_missing_for_curve_diagnostic",
+                ["apollo_hdmap_projection_report.json"],
+            )
+        return (
+            "insufficient_data",
+            "apollo_hdmap_projection_missing",
+            ["apollo_hdmap_projection_report.json"],
+        )
+    status = _apollo_hdmap_projection_status(report)
+    if status == "fail":
+        return "fail", "apollo_hdmap_projection_failed", ["apollo_hdmap_projection.status"]
+    if status not in PASS_WARN_STATUSES:
+        if scenario_class == "curve_diagnostic":
+            return (
+                "diagnostic_only",
+                "apollo_hdmap_projection_insufficient_curve_diagnostic",
+                ["apollo_hdmap_projection.status"],
+            )
+        return (
+            "insufficient_data",
+            "apollo_hdmap_projection_insufficient",
+            ["apollo_hdmap_projection.status"],
+        )
+    if not _apollo_hdmap_projection_claim_grade(report):
+        if scenario_class == "curve_diagnostic":
+            return (
+                "diagnostic_only",
+                "apollo_hdmap_projection_not_claim_grade_curve_diagnostic",
+                ["apollo_hdmap_projection.claim_grade"],
+            )
+        return (
+            "insufficient_data",
+            "apollo_hdmap_projection_not_claim_grade",
+            ["apollo_hdmap_projection.claim_grade"],
+        )
     return "pass", None, []
 
 

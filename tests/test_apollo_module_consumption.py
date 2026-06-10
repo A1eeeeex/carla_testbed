@@ -108,6 +108,50 @@ def test_module_consumption_fails_on_input_timeout_logs(tmp_path: Path) -> None:
     assert "reference_line_provider_failure_logs_present" in report["blocking_reasons"]
 
 
+def test_module_consumption_flags_apollo_route_reference_line_error_patterns(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "first_nonempty_after_routing_latency_s": 0.2,
+            "route_establishment": {"route_established": True},
+            "empty_reason_histogram": {},
+            "apollo_log_error_topk": [
+                {"message": "Planning failed:PLANNING_ERROR lane_follow_map.cc adc_route_index error"}
+            ],
+        },
+    )
+
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+
+    assert report["status"] == "fail"
+    assert report["pattern_counts"]["route_or_reference_line_failure"] == 1
+    assert "route_or_reference_line_failure_logs_present" in report["blocking_reasons"]
+
+
+def test_module_consumption_warns_when_input_freshness_unverified(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "first_nonempty_after_routing_latency_s": 0.2,
+            "route_establishment": {"route_established": True},
+            "empty_reason_histogram": {},
+            "input_freshness_attribution": {
+                "status": "insufficient_data",
+                "input_freshness_unverified_empty_count": 12,
+            },
+        },
+    )
+
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+
+    assert report["status"] == "warn"
+    assert "planning_input_freshness_unverified" in report["warnings"]
+
+
 def test_module_consumption_missing_planning_materialization_is_insufficient(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     (run_dir / "analysis/planning_materialization/planning_materialization_report.json").unlink()

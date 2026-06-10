@@ -103,7 +103,10 @@ def test_static_lane_keep_uses_default_matrix_bypass_reason(tmp_path: Path) -> N
 
     assert report["prediction_mode"] == "bypassed_with_gt_obstacles"
     assert report["verdict"] == "warn"
-    assert report["hard_gate_eligible"] is True
+    assert report["hard_gate_eligible"] is False
+    assert report["claim_boundary_downgraded"] is True
+    assert report["prediction_bypass_scope"] == "static_lane_keep_diagnostic"
+    assert "closed_loop" in report["blocking_capabilities"]
     assert report["bypass_reason_source"] == "replacement_matrix"
     assert report["bypass_reason"]
 
@@ -120,7 +123,9 @@ def test_bypassed_with_reason_lane_keep_warns(tmp_path: Path) -> None:
 
     assert report["prediction_mode"] == "bypassed_with_gt_obstacles"
     assert report["verdict"] == "warn"
-    assert report["hard_gate_eligible"] is True
+    assert report["hard_gate_eligible"] is False
+    assert report["claim_boundary_downgraded"] is True
+    assert "closed_loop" in report["blocking_capabilities"]
     assert "perception_obstacles_do_not_count_as_prediction" in report["warnings"]
 
 
@@ -136,6 +141,8 @@ def test_bypassed_with_reason_dynamic_obstacle_fails_without_override(tmp_path: 
 
     assert report["prediction_mode"] == "bypassed_with_gt_obstacles"
     assert report["verdict"] == "fail"
+    assert report["hard_gate_eligible"] is False
+    assert report["claim_boundary_downgraded"] is True
     assert "closed_loop" in report["blocking_capabilities"]
 
 

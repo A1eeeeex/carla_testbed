@@ -79,6 +79,7 @@ modules:
       - routing_event_debug.jsonl
       - goal_validity_debug.jsonl
       - summary.json routing_success_count
+      - apollo_route_contract_report.json
     native_evidence_artifacts:
       - /apollo/routing_response channel stats
       - Apollo routing logs

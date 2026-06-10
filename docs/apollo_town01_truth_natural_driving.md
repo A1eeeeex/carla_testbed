@@ -656,6 +656,10 @@ Required run artifacts:
 - `analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json` when
   `artifacts/apollo_hdmap_projection.jsonl` is available; otherwise
   reference-line hard gates remain `insufficient_data`.
+- `analysis/apollo_route_contract/apollo_route_contract_report.json`. The
+  scenario route length/start/goal/lane identity must be compatible with Apollo
+  Routing output. A long warmup/debug route or mismatched Apollo route response
+  blocks route establishment and cannot be hidden by later control activity.
 - `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`.
   Fallback merges from planning/control/timeseries artifacts must be
   timestamp/as-of joins within the configured tolerance, not index joins.
@@ -668,9 +672,11 @@ Required run artifacts:
   reference-line provider failures, prediction-not-ready logs, and empty
   Planning attribution. Bridge-side publish evidence alone is insufficient.
 - `analysis/prediction_evidence/prediction_evidence_report.json`. Prediction
-  may be `native_observed`, explicitly bypassed for a permitted static case, or
-  `not_required_for_case`; missing or unknown prediction state cannot silently
-  pass the chain.
+  may be `native_observed`, explicitly bypassed for a permitted static
+  diagnostic case, or `not_required_for_case`; missing or unknown prediction
+  state cannot silently pass the chain. Static lane-keep bypass with GT
+  obstacles is diagnostic-only for natural-driving claim boundaries unless a
+  scenario-specific override explicitly downgrades the claim.
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`.
 - `analysis/control_health/control_health_report.json`.
 - `analysis/apollo_link_health/apollo_link_health_report.json`.
@@ -697,6 +703,7 @@ python tools/analyze_apollo_hdmap_projection.py \
   --projection "$RUN/artifacts/apollo_hdmap_projection.jsonl" \
   --out "$RUN/analysis/apollo_hdmap_projection"
 python tools/analyze_apollo_localization_contract.py --run-dir "$RUN"
+python tools/analyze_apollo_route_contract.py --run-dir "$RUN" --out "$RUN/analysis/apollo_route_contract"
 python tools/analyze_apollo_reference_line_contract.py --run-dir "$RUN"
 python tools/analyze_apollo_planning_materialization.py --run-dir "$RUN"
 python tools/analyze_apollo_module_consumption.py --run-dir "$RUN" --out "$RUN/analysis/apollo_module_consumption"
@@ -735,11 +742,15 @@ Minimum pass thresholds for a claim-grade packet:
   rear-axle evidence, skips stale GT sample republish for claim-grade runs, and
   has no blocking reasons.
 - `apollo_reference_line_contract_report.json`,
+  `apollo_route_contract_report.json`,
   `planning_materialization_report.json`,
   `apollo_module_consumption_report.json`,
   `prediction_evidence_report.json`,
   `apollo_control_handoff_report.json`, `apollo_channel_health_report.json`,
   and `control_health_report.json` are `pass` or non-blocking `warn`.
+- `planning_materialization_report.json` reports valid same-domain timing:
+  routing/planning latency cannot mix sim-time with wall-time, and input
+  freshness cannot be claimed when topic as-of join coverage is zero.
 - Apollo HDMap projection claim-grade evidence uses official
   `source=apollo_hdmap_api`, `ok_ratio >= 0.95`, heading `p95 < 0.05 rad`,
   lateral error `p95 < 0.50 m`, and lane-id compatibility with Planning

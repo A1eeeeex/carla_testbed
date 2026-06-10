@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import tarfile
 import json
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -119,6 +121,17 @@ def package_run_evidence(
                 continue
             archive.add(path, arcname=str(Path(root.name) / rel))
             included.append(rel_text)
+        row_level_index, row_level_samples = _row_level_evidence_index(root)
+        if row_level_index:
+            _add_bytes(
+                archive,
+                Path(root.name) / "row_level_evidence_index.json",
+                json.dumps(row_level_index, indent=2, sort_keys=True) + "\n",
+            )
+            included.append("row_level_evidence_index.json")
+            for sample_rel, sample_text in sorted(row_level_samples.items()):
+                _add_bytes(archive, Path(root.name) / sample_rel, sample_text)
+                included.append(sample_rel)
         manifest = {
             "schema_version": "evidence_package_manifest.v1",
             "profile": profile,
@@ -129,6 +142,7 @@ def package_run_evidence(
             "omitted_large_artifacts": sorted(omitted_large),
             "claim_reproducibility_level": reproducibility,
             "status": status,
+            "row_level_evidence_index": "row_level_evidence_index.json" if row_level_index else None,
             "claim_boundary": (
                 "Package completeness is review evidence only. It cannot turn a run into "
                 "natural-driving pass without gate_report.json and natural_driving_report.json."
@@ -179,6 +193,114 @@ def _claim_reproducibility_level(profile: str, missing_required: list[str]) -> s
     if missing_required:
         return "summary_only_missing_row_level"
     return "row_level_evidence_present"
+
+
+def _row_level_evidence_index(
+    root: Path,
+    *,
+    sample_lines: int = 5,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    rows: list[dict[str, Any]] = []
+    samples: dict[str, str] = {}
+    seen: set[Path] = set()
+    for pattern in ROW_LEVEL_EVIDENCE_PATTERNS:
+        for path in sorted(root.glob(pattern)):
+            if not path.is_file() or path.suffix != ".jsonl" or path in seen:
+                continue
+            seen.add(path)
+            rel = path.relative_to(root)
+            entry, head, tail = _jsonl_evidence_entry(path, rel, sample_lines=sample_lines)
+            rows.append(entry)
+            sample_base = Path("row_level_samples") / rel
+            if head:
+                head_rel = str(sample_base.with_suffix(sample_base.suffix + ".head.jsonl"))
+                samples[head_rel] = "".join(f"{line}\n" for line in head)
+                entry["head_sample"] = head_rel
+            if tail:
+                tail_rel = str(sample_base.with_suffix(sample_base.suffix + ".tail.jsonl"))
+                samples[tail_rel] = "".join(f"{line}\n" for line in tail)
+                entry["tail_sample"] = tail_rel
+    if not rows:
+        return {}, {}
+    return {
+        "schema_version": "row_level_evidence_index.v1",
+        "sample_line_count": sample_lines,
+        "files": rows,
+        "claim_boundary": (
+            "Head/tail samples and hashes support external review. They summarize row-level evidence "
+            "but do not replace analyzer reports or natural-driving gates."
+        ),
+    }, samples
+
+
+def _jsonl_evidence_entry(
+    path: Path,
+    rel: Path,
+    *,
+    sample_lines: int,
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    digest = hashlib.sha256()
+    head: list[str] = []
+    tail: list[str] = []
+    row_count = 0
+    first_time = None
+    last_time = None
+    fields: set[str] = set()
+    with path.open("rb") as handle:
+        for raw_line in handle:
+            digest.update(raw_line)
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\n")
+            if not line.strip():
+                continue
+            row_count += 1
+            if len(head) < sample_lines:
+                head.append(line)
+            tail.append(line)
+            if len(tail) > sample_lines:
+                tail.pop(0)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                fields.update(str(key) for key in payload.keys())
+                row_time = _row_time(payload)
+                if row_time is not None:
+                    if first_time is None:
+                        first_time = row_time
+                    last_time = row_time
+    return (
+        {
+            "path": str(rel),
+            "sha256": digest.hexdigest(),
+            "size_bytes": path.stat().st_size,
+            "row_count": row_count,
+            "time_start_sec": first_time,
+            "time_end_sec": last_time,
+            "top_level_fields": sorted(fields)[:80],
+        },
+        head,
+        tail,
+    )
+
+
+def _row_time(payload: dict[str, Any]) -> float | None:
+    for key in (
+        "sim_time_sec",
+        "sim_time",
+        "timestamp",
+        "timestamp_sec",
+        "wall_time_sec",
+        "time_sec",
+    ):
+        value = payload.get(key)
+        if value in {None, ""}:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _fixed_scene_enabled(root: Path) -> bool:

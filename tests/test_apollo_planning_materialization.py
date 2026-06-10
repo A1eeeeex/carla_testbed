@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from carla_testbed.analysis.planning_materialization import (
     analyze_planning_materialization_run_dir,
     write_planning_materialization_report,
@@ -143,6 +145,85 @@ def test_empty_trajectory_rows_include_asof_input_evidence(tmp_path: Path) -> No
     assert asof["stale_localization_empty_count"] == 1
     assert asof["reference_line_not_ok_empty_count"] == 1
     assert asof["hdmap_non_ok_empty_count"] == 1
+
+
+def test_planning_materialization_prefers_sim_time_over_wall_timestamp(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path)
+    _write_json(
+        run_dir / "artifacts/cyber_bridge_stats.json",
+        {
+            "routing_success_count": 1,
+            "routing_first_success_response_ts_sec": 12.0,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_topic_debug.jsonl",
+        [
+            {
+                "timestamp": 1_780_000_000.0,
+                "sim_time_sec": 11.0,
+                "planning_header_sequence_num": 1,
+                "trajectory_point_count": 0,
+            },
+            {
+                "timestamp": 1_780_000_001.0,
+                "sim_time_sec": 12.2,
+                "planning_header_sequence_num": 2,
+                "trajectory_point_count": 8,
+            },
+        ],
+    )
+
+    report = analyze_planning_materialization_run_dir(run_dir)
+
+    assert report["first_planning_message_time_sec"] == 11.0
+    assert report["first_nonempty_after_routing_latency_s"] == pytest.approx(0.2)
+    assert report["time_domain"]["planning_time_domain"]["domain"] == "sim_time"
+    assert "derived_latency_outside_reasonable_range" not in report["time_domain"]["warnings"]
+
+
+def test_zero_freshness_join_coverage_is_unverified_not_zero_stale(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path)
+    _write_jsonl(
+        run_dir / "artifacts/planning_topic_debug.jsonl",
+        [
+            {
+                "sim_time_sec": 1.0,
+                "planning_header_sequence_num": 1,
+                "trajectory_point_count": 0,
+            },
+            {
+                "sim_time_sec": 2.0,
+                "planning_header_sequence_num": 2,
+                "trajectory_point_count": 0,
+            },
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/topic_publish_stats.jsonl",
+        [
+            {
+                "wall_time_sec": 1_780_000_000.0,
+                "channel": "/apollo/localization/pose",
+                "header_timestamp_sec": 1_780_000_000.0,
+            },
+            {
+                "wall_time_sec": 1_780_000_000.1,
+                "channel": "/apollo/canbus/chassis",
+                "header_timestamp_sec": 1_780_000_000.1,
+            },
+        ],
+    )
+
+    report = analyze_planning_materialization_run_dir(run_dir)
+    freshness = report["input_freshness_attribution"]
+
+    assert report["empty_asof_join"]["localization_join_coverage_ratio"] == 0.0
+    assert freshness["status"] == "insufficient_data"
+    assert freshness["localization_stale_or_gap_empty_count"] is None
+    assert freshness["chassis_stale_or_gap_empty_count"] is None
+    assert freshness["input_freshness_unverified_empty_count"] == 2
+    assert "planning_input_freshness_unverified" in report["warnings"]
 
 
 def test_missing_planning_artifacts_is_insufficient_data(tmp_path: Path) -> None:

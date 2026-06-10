@@ -12,6 +12,7 @@ from carla_testbed.analysis.apollo_channel_health import (
     analyze_apollo_channel_health_files,
     write_apollo_channel_health_report,
 )
+from carla_testbed.analysis.apollo_chain_completion import analyze_and_write_apollo_chain_completion
 from carla_testbed.analysis.apollo_control_handoff import (
     ensure_apollo_control_handoff_report,
 )
@@ -21,6 +22,15 @@ from carla_testbed.analysis.apollo_hdmap_projection import (
 )
 from carla_testbed.analysis.apollo_reference_line_contract import (
     ensure_apollo_reference_line_contract_report,
+)
+from carla_testbed.analysis.apollo_route_contract import (
+    analyze_apollo_route_contract_run_dir,
+    write_apollo_route_contract_report,
+)
+from carla_testbed.analysis.apollo_link_health import analyze_and_write_apollo_link_health
+from carla_testbed.analysis.apollo_module_consumption import (
+    analyze_apollo_module_consumption_run_dir,
+    write_apollo_module_consumption_report,
 )
 from carla_testbed.analysis.channel_stats_normalizer import normalize_channel_stats_for_run
 from carla_testbed.analysis.artifact_completeness import check_run_artifact_completeness
@@ -43,6 +53,14 @@ from carla_testbed.analysis.natural_driving import (
 from carla_testbed.analysis.obstacle_gt_contract import (
     analyze_obstacle_gt_contract_run_dir,
     write_obstacle_gt_contract_report,
+)
+from carla_testbed.analysis.planning_materialization import (
+    analyze_planning_materialization_run_dir,
+    write_planning_materialization_report,
+)
+from carla_testbed.analysis.prediction_evidence import (
+    analyze_prediction_evidence_run_dir,
+    write_prediction_evidence_report,
 )
 from carla_testbed.analysis.route_health_report import analyze_route_health_run_dir
 from carla_testbed.analysis.route_curve_artifact_gap import (
@@ -72,6 +90,9 @@ NATURAL_DRIVING_POSTPROCESS_SCHEMA_VERSION = "town01_natural_driving_postprocess
 DEFAULT_CHANNEL_HEALTH_CONFIG = Path("configs/algorithms/apollo_natural_driving_channels.yaml")
 DEFAULT_TOWN01_APOLLO_CONTRACT = Path("configs/town01/apollo_contract.example.yaml")
 DEFAULT_TRAFFIC_LIGHT_MAPPING = Path("configs/town01/traffic_lights.example.yaml")
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_APOLLO_REFERENCE_CHAIN = _REPO_ROOT / "configs" / "reference" / "apollo_reference_chain.yaml"
+DEFAULT_APOLLO_GT_REPLACEMENT_MATRIX = _REPO_ROOT / "configs" / "reference" / "apollo_gt_replacement_matrix.yaml"
 
 
 def postprocess_natural_driving_runs(
@@ -165,6 +186,10 @@ def _postprocess_run_dir(
     route_health_result = _ensure_route_health(run_dir, refresh=refresh)
     route_curve_artifact_gap_result = _ensure_route_curve_artifact_gap(run_dir, refresh=refresh)
     apollo_control_handoff_result = _ensure_apollo_control_handoff(run_dir, refresh=refresh)
+    apollo_route_contract_result = _ensure_apollo_route_contract(run_dir, refresh=refresh)
+    planning_materialization_result = _ensure_planning_materialization(run_dir, refresh=refresh)
+    apollo_module_consumption_result = _ensure_apollo_module_consumption(run_dir, refresh=refresh)
+    prediction_evidence_result = _ensure_prediction_evidence(run_dir, refresh=refresh)
     apollo_hdmap_projection_result = _ensure_apollo_hdmap_projection(run_dir, refresh=refresh)
     localization_contract_result = _ensure_localization_contract(run_dir, refresh=refresh)
     apollo_reference_line_contract_result = _ensure_apollo_reference_line_contract(
@@ -209,6 +234,8 @@ def _postprocess_run_dir(
         scenario_class=scenario_class,
         refresh=refresh,
     )
+    apollo_link_health_result = _ensure_apollo_link_health(run_dir, refresh=refresh)
+    apollo_chain_completion_result = _ensure_apollo_chain_completion(run_dir, refresh=refresh)
     completeness = check_run_artifact_completeness(run_dir, scenario_class=scenario_class)
     completeness_outputs = write_run_artifact_completeness_report(
         completeness,
@@ -222,6 +249,10 @@ def _postprocess_run_dir(
         "route_curve_artifact_gap": route_curve_artifact_gap_result,
         "standardization": standardization,
         "apollo_control_handoff": apollo_control_handoff_result,
+        "apollo_route_contract": apollo_route_contract_result,
+        "planning_materialization": planning_materialization_result,
+        "apollo_module_consumption": apollo_module_consumption_result,
+        "prediction_evidence": prediction_evidence_result,
         "apollo_hdmap_projection": apollo_hdmap_projection_result,
         "localization_contract": localization_contract_result,
         "apollo_reference_line_contract": apollo_reference_line_contract_result,
@@ -232,6 +263,8 @@ def _postprocess_run_dir(
         "traffic_light_contract": traffic_light_result,
         "traffic_light_behavior": traffic_light_behavior_result,
         "obstacle_gt_contract": obstacle_gt_contract_result,
+        "apollo_link_health": apollo_link_health_result,
+        "apollo_chain_completion": apollo_chain_completion_result,
         "artifact_completeness": {
             "status": completeness["status"],
             "artifact_complete": completeness["artifact_complete"],
@@ -248,6 +281,106 @@ def _postprocess_run_dir(
 
 def _ensure_apollo_control_handoff(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
     return ensure_apollo_control_handoff_report(run_dir, refresh=refresh)
+
+
+def _ensure_apollo_route_contract(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    existing = _find_first(
+        run_dir,
+        [
+            "analysis/apollo_route_contract/apollo_route_contract_report.json",
+            "apollo_route_contract_report.json",
+        ],
+    )
+    if existing is not None and not refresh:
+        report = _read_json(existing)
+        return {
+            "status": "existing",
+            "path": str(existing),
+            "report_status": report.get("status"),
+        }
+    report = analyze_apollo_route_contract_run_dir(run_dir)
+    outputs = write_apollo_route_contract_report(
+        report,
+        run_dir / "analysis" / "apollo_route_contract",
+    )
+    return {
+        "status": "generated",
+        "path": outputs["apollo_route_contract_report"],
+        "summary_path": outputs["apollo_route_contract_summary"],
+        "report_status": report.get("status"),
+    }
+
+
+def _ensure_planning_materialization(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    existing = _find_first(
+        run_dir,
+        [
+            "analysis/planning_materialization/planning_materialization_report.json",
+            "planning_materialization_report.json",
+        ],
+    )
+    if existing is not None and not refresh:
+        report = _read_json(existing)
+        return {"status": "existing", "path": str(existing), "report_status": report.get("verdict")}
+    report = analyze_planning_materialization_run_dir(run_dir)
+    outputs = write_planning_materialization_report(
+        report,
+        run_dir / "analysis" / "planning_materialization",
+    )
+    return {
+        "status": "generated",
+        "path": outputs["planning_materialization_report"],
+        "summary_path": outputs["planning_materialization_summary"],
+        "report_status": report.get("verdict"),
+    }
+
+
+def _ensure_apollo_module_consumption(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    existing = _find_first(
+        run_dir,
+        [
+            "analysis/apollo_module_consumption/apollo_module_consumption_report.json",
+            "apollo_module_consumption_report.json",
+        ],
+    )
+    if existing is not None and not refresh:
+        report = _read_json(existing)
+        return {"status": "existing", "path": str(existing), "report_status": report.get("status")}
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+    outputs = write_apollo_module_consumption_report(
+        report,
+        run_dir / "analysis" / "apollo_module_consumption",
+    )
+    return {
+        "status": "generated",
+        "path": outputs["apollo_module_consumption_report"],
+        "summary_path": outputs["apollo_module_consumption_summary"],
+        "report_status": report.get("status"),
+    }
+
+
+def _ensure_prediction_evidence(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    existing = _find_first(
+        run_dir,
+        [
+            "analysis/prediction_evidence/prediction_evidence_report.json",
+            "prediction_evidence_report.json",
+        ],
+    )
+    if existing is not None and not refresh:
+        report = _read_json(existing)
+        return {"status": "existing", "path": str(existing), "report_status": report.get("verdict")}
+    report = analyze_prediction_evidence_run_dir(
+        run_dir,
+        replacement_matrix_path=DEFAULT_APOLLO_GT_REPLACEMENT_MATRIX,
+    )
+    outputs = write_prediction_evidence_report(report, run_dir / "analysis" / "prediction_evidence")
+    return {
+        "status": "generated",
+        "path": outputs["prediction_evidence_report"],
+        "summary_path": outputs["prediction_evidence_summary"],
+        "report_status": report.get("verdict"),
+    }
 
 
 def _ensure_apollo_hdmap_projection(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
@@ -276,6 +409,24 @@ def _ensure_apollo_hdmap_projection(run_dir: Path, *, refresh: bool) -> dict[str
             "analysis/apollo_hdmap_projection/apollo_hdmap_projection.json",
         ],
     )
+    if existing is not None and projection is None:
+        report_path = run_dir / "analysis" / "apollo_hdmap_projection" / "apollo_hdmap_projection_report.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        if existing.resolve() != report_path.resolve():
+            shutil.copy2(existing, report_path)
+            summary = existing.with_name("apollo_hdmap_projection_summary.md")
+            if summary.exists():
+                shutil.copy2(summary, report_path.with_name("apollo_hdmap_projection_summary.md"))
+        report = _read_json(report_path)
+        return {
+            "status": "existing_report_copied",
+            "path": str(report_path),
+            "summary_path": str(report_path.with_name("apollo_hdmap_projection_summary.md")),
+            "report_status": report.get("status"),
+            "claim_grade": bool(report.get("claim_grade")),
+            "artifact_path": report.get("artifact_path"),
+            "source_report": str(existing),
+        }
     expected_projection = projection or (run_dir / "artifacts" / "apollo_hdmap_projection.jsonl")
     report = analyze_apollo_hdmap_projection_file(expected_projection)
     outputs = write_apollo_hdmap_projection_report(
@@ -824,6 +975,69 @@ def _ensure_obstacle_gt_contract_report(
     }
 
 
+def _ensure_apollo_link_health(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    existing = _find_first(
+        run_dir,
+        [
+            "analysis/apollo_link_health/apollo_link_health_report.json",
+            "apollo_link_health_report.json",
+        ],
+    )
+    if existing is not None and not refresh:
+        report = _read_json(existing)
+        return {
+            "status": "existing",
+            "path": str(existing),
+            "report_status": report.get("verdict"),
+            "primary_blocker": report.get("primary_blocker"),
+        }
+    outputs = analyze_and_write_apollo_link_health(
+        run_dir,
+        out_dir=run_dir / "analysis" / "apollo_link_health",
+    )
+    report = _read_json(Path(outputs["apollo_link_health_report"]))
+    return {
+        "status": "generated",
+        "path": outputs["apollo_link_health_report"],
+        "summary_path": outputs["apollo_link_health_summary"],
+        "report_status": report.get("verdict"),
+        "primary_blocker": report.get("primary_blocker"),
+    }
+
+
+def _ensure_apollo_chain_completion(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    existing = _find_first(
+        run_dir,
+        [
+            "analysis/apollo_chain_completion/apollo_chain_completion_report.json",
+            "apollo_chain_completion_report.json",
+        ],
+    )
+    if existing is not None and not refresh:
+        report = _read_json(existing)
+        return {
+            "status": "existing",
+            "path": str(existing),
+            "report_status": report.get("verdict"),
+            "failure_stage": report.get("failure_stage"),
+        }
+    outputs = analyze_and_write_apollo_chain_completion(
+        run_dir,
+        reference_path=DEFAULT_APOLLO_REFERENCE_CHAIN,
+        replacement_path=DEFAULT_APOLLO_GT_REPLACEMENT_MATRIX,
+        out_dir=run_dir / "analysis" / "apollo_chain_completion",
+        write_compatible_link_health=False,
+    )
+    report = _read_json(Path(outputs["apollo_chain_completion_report"]))
+    return {
+        "status": "generated",
+        "path": outputs["apollo_chain_completion_report"],
+        "summary_path": outputs["apollo_chain_completion_summary"],
+        "report_status": report.get("verdict"),
+        "failure_stage": report.get("failure_stage"),
+    }
+
+
 def _ensure_traffic_light_contract_report(
     run_dir: Path,
     *,
@@ -1146,15 +1360,21 @@ def _write_markdown(path: Path, report: Mapping[str, Any]) -> None:
         f"- route_start_probe_plan_status: `{probe_plan.get('status')}`",
         f"- route_start_probe_count: `{probe_plan.get('probe_count')}`",
         "",
-        "| run_id | scenario_class | artifact_status | route_health | route_curve_gap | apollo_hdmap_projection | apollo_reference_line | failure_timeline | route_start_alignment | channel_health | traffic_light_contract | traffic_light_behavior |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| run_id | scenario_class | artifact_status | route_health | route_curve_gap | apollo_route_contract | planning_materialization | module_consumption | prediction | apollo_hdmap_projection | apollo_reference_line | link_health | chain_completion | failure_timeline | route_start_alignment | channel_health | traffic_light_contract | traffic_light_behavior |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for run in report.get("runs") or []:
         completeness = run.get("artifact_completeness") or {}
         route_health = run.get("route_health") or {}
         route_curve = run.get("route_curve_artifact_gap") or {}
+        route_contract = run.get("apollo_route_contract") or {}
+        planning_materialization = run.get("planning_materialization") or {}
+        module_consumption = run.get("apollo_module_consumption") or {}
+        prediction = run.get("prediction_evidence") or {}
         hdmap_projection = run.get("apollo_hdmap_projection") or {}
         reference_line = run.get("apollo_reference_line_contract") or {}
+        link_health = run.get("apollo_link_health") or {}
+        chain_completion = run.get("apollo_chain_completion") or {}
         timeline = run.get("failure_timeline") or {}
         route_start = run.get("route_start_alignment") or {}
         channel_health = run.get("apollo_channel_health") or {}
@@ -1164,8 +1384,14 @@ def _write_markdown(path: Path, report: Mapping[str, Any]) -> None:
             f"| {run.get('run_id')} | {run.get('scenario_class')} | "
             f"{completeness.get('status')} | {route_health.get('status')} | "
             f"{route_curve.get('status')} | "
+            f"{route_contract.get('report_status') or route_contract.get('status')} | "
+            f"{planning_materialization.get('report_status') or planning_materialization.get('status')} | "
+            f"{module_consumption.get('report_status') or module_consumption.get('status')} | "
+            f"{prediction.get('report_status') or prediction.get('status')} | "
             f"{hdmap_projection.get('report_status') or hdmap_projection.get('status')} | "
             f"{reference_line.get('status')} | "
+            f"{link_health.get('primary_blocker') or link_health.get('report_status') or link_health.get('status')} | "
+            f"{chain_completion.get('failure_stage') or chain_completion.get('report_status') or chain_completion.get('status')} | "
             f"{timeline.get('status')} | "
             f"{route_start.get('status')} | "
             f"{channel_health.get('status')} | {traffic.get('status') if traffic else 'not_applicable'} | "

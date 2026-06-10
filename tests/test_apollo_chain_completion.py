@@ -147,6 +147,27 @@ def _base_run(tmp_path: Path, *, scenario_class: str = "lane_keep") -> Path:
         },
     )
     _write_json(
+        run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json",
+        {
+            "schema_version": "apollo_route_contract.v1",
+            "status": "pass",
+            "scenario_route": {
+                "route_id": "097",
+                "route_length_m": 230.0,
+                "lane_sequence": ["15_1_1"],
+            },
+            "apollo_route": {
+                "routing_success_count": 1,
+                "routing_total_length_m": 230.0,
+                "lane_window_count": 1,
+                "lane_sequence": ["15_1_1"],
+            },
+            "metrics": {"routing_length_ratio": 1.0},
+            "blocking_reasons": [],
+            "warnings": [],
+        },
+    )
+    _write_json(
         run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
         {
             "schema_version": "apollo_reference_line_contract.v1",
@@ -219,7 +240,11 @@ def _base_run(tmp_path: Path, *, scenario_class: str = "lane_keep") -> Path:
     )
     _write_json(
         run_dir / "analysis/control_attribution/control_attribution_report.json",
-        {"schema_version": "control_attribution.v1", "verdict": "pass"},
+        {
+            "schema_version": "control_attribution.v1",
+            "verdict": "pass",
+            "applied_control_source": "apollo_control",
+        },
     )
     _write_json(
         run_dir / "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json",
@@ -398,6 +423,33 @@ def test_route_establishment_failure_is_planning_materialization_stage(tmp_path:
 
     assert report["link_health_layers"]["route_establishment"]["status"] == "fail"
     assert report["failure_stage"] == "planning_materialization"
+    assert report["can_claim_unassisted_natural_driving"] is False
+
+
+def test_route_contract_mismatch_is_route_establishment_stage(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    replacement = _claim_grade_replacement_matrix(tmp_path)
+    route_contract_path = run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json"
+    route_contract = json.loads(route_contract_path.read_text(encoding="utf-8"))
+    route_contract.update(
+        {
+            "status": "fail",
+            "scenario_route_length_m": 230.0,
+            "apollo_routing_total_length_m": 648.0,
+            "routing_length_ratio": 2.817,
+            "blocking_reasons": ["apollo_routing_length_mismatch"],
+        }
+    )
+    _write_json(route_contract_path, route_contract)
+
+    report = analyze_apollo_chain_completion_run_dir(
+        run_dir,
+        reference_path=REFERENCE,
+        replacement_path=replacement,
+    )
+
+    assert report["link_health_layers"]["route_establishment"]["status"] == "fail"
+    assert report["failure_stage"] == "route_establishment"
     assert report["can_claim_unassisted_natural_driving"] is False
 
 

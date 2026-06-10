@@ -97,6 +97,29 @@ def analyze_control_attribution(
     if latency_p95 is None:
         warnings.append("control_latency_missing")
 
+    control_source = _first_text_from_sources(
+        "applied_control_source",
+        rows,
+        summary,
+        manifest,
+    ) or _first_text_from_sources(
+        "control_source",
+        rows,
+        summary,
+        manifest,
+    ) or _first_text_from_sources(
+        "source_control_channel",
+        rows,
+        summary,
+        manifest,
+    ) or _first_text_from_sources(
+        "control_channel_name",
+        rows,
+        summary,
+        manifest,
+    )
+    applied_control_source = _normalize_applied_control_source(control_source)
+
     dominant = _dominant_breakpoint(
         raw_available=raw_available,
         mapped_available=mapped_available,
@@ -139,6 +162,8 @@ def analyze_control_attribution(
         "steer_scale": steer_scale,
         "steering_sign": steering_sign,
         "calibration_profile_id": _first_text_from_sources("calibration_profile_id", rows, summary, manifest),
+        "control_source": control_source,
+        "applied_control_source": applied_control_source,
         "raw_control_available": raw_available,
         "mapped_control_available": mapped_available,
         "applied_control_available": applied_available,
@@ -480,6 +505,23 @@ def _first_text_from_sources(
     return default
 
 
+def _normalize_applied_control_source(control_source: str | None) -> str | None:
+    if control_source is None:
+        return None
+    normalized = str(control_source).strip().lower()
+    if normalized in {"/apollo/control", "apollo", "apollo_control", "apollo_cyberrt"}:
+        return "apollo_control"
+    if normalized in {"external_stack", "external", "autoware", "autoware_ros2"}:
+        return "external_stack"
+    if normalized in {"carla_builtin", "carla_testbed_builtin_controller", "builtin"}:
+        return "carla_builtin"
+    if normalized in {"manual", "human", "operator"}:
+        return "manual"
+    if normalized in {"route_follower", "legacy_followstop", "dummy_lateral", "direct_autopilot"}:
+        return normalized
+    return normalized or None
+
+
 def _clamp(value: float, low: float, high: float) -> float:
     return min(high, max(low, value))
 
@@ -499,6 +541,8 @@ def _markdown(report: Mapping[str, Any]) -> str:
         f"- route_id: `{report.get('route_id')}`",
         f"- backend: `{report.get('backend')}`",
         f"- actuator_mapping_mode: `{report.get('actuator_mapping_mode')}`",
+        f"- control_source: `{report.get('control_source')}`",
+        f"- applied_control_source: `{report.get('applied_control_source')}`",
         f"- steer_scale: `{report.get('steer_scale')}`",
         f"- steering_sign: `{report.get('steering_sign')}`",
         f"- verdict: `{verdict.get('status')}`",

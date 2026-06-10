@@ -166,6 +166,9 @@ def analyze_prediction_evidence(
     warnings: list[str] = []
     blocking_capabilities: list[str] = []
     hard_gate_eligible = False
+    explicit_scenario_override = bool(explicit_allow_dynamic_bypass)
+    prediction_bypass_scope = "none"
+    claim_boundary_downgraded = False
 
     if not channel_stats:
         missing_fields.append("channel_stats")
@@ -180,15 +183,26 @@ def analyze_prediction_evidence(
         prediction_mode = "not_required_for_case"
         verdict = "warn"
         hard_gate_eligible = True
+        prediction_bypass_scope = "not_required_for_case"
         warnings.append("prediction_not_required_for_case")
     elif bypass_reason and _scenario_allows_bypass(scenario_class, explicit_allow_dynamic_bypass):
         prediction_mode = "bypassed_with_gt_obstacles"
         verdict = "warn"
-        hard_gate_eligible = True
+        # Bypass evidence is useful for static diagnostics, but it is not native
+        # /apollo/prediction evidence and cannot satisfy a claim-grade closed loop gate.
+        hard_gate_eligible = False
+        claim_boundary_downgraded = True
+        prediction_bypass_scope = (
+            "explicit_scenario_override" if explicit_scenario_override else "static_lane_keep_diagnostic"
+        )
+        blocking_capabilities.extend(["closed_loop"])
         warnings.append("prediction_bypassed_with_reason")
     elif bypass_reason:
         prediction_mode = "bypassed_with_gt_obstacles"
         verdict = "fail"
+        hard_gate_eligible = False
+        claim_boundary_downgraded = True
+        prediction_bypass_scope = "blocked_for_scenario"
         blocking_capabilities.extend(["closed_loop", "junction", "traffic_light"])
         warnings.append("prediction_bypass_not_allowed_for_scenario")
     elif planning_requires_prediction:
@@ -230,6 +244,9 @@ def analyze_prediction_evidence(
         "planning_requires_prediction": planning_requires_prediction,
         "bypass_reason": bypass_reason,
         "bypass_reason_source": bypass_reason_source,
+        "prediction_bypass_scope": prediction_bypass_scope,
+        "explicit_scenario_override": explicit_scenario_override,
+        "claim_boundary_downgraded": claim_boundary_downgraded,
         "hard_gate_eligible": hard_gate_eligible,
         "blocking_capabilities": sorted(set(blocking_capabilities)),
         "missing_fields": sorted(set(missing_fields)),

@@ -43,6 +43,7 @@ modules:
       - goal_validity_debug.jsonl
       - summary.json routing_success_count
       - channel_stats.json /apollo/routing_response
+      - apollo_route_contract_report.json
     current_evidence_status: warn
     hard_gate_eligible: true
     allowed_for_capabilities:

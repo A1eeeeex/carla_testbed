@@ -1,0 +1,17 @@
+{
+  "blocking_reasons": [],
+  "claim_grade": true,
+  "projection": {
+    "blocking_reasons": [],
+    "claim_grade": true,
+    "file_present": true,
+    "heading_error_p95_rad": 0.01,
+    "lateral_error_p95_m": 0.05,
+    "official_source_available": true,
+    "status": "pass",
+    "warnings": []
+  },
+  "schema_version": "apollo_hdmap_projection_report.v1",
+  "status": "pass",
+  "warnings": []
+}

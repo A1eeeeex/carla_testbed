@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import yaml
@@ -201,6 +202,28 @@ def test_claim_pack_includes_row_level_evidence_when_present(tmp_path: Path) -> 
     assert payload["claim_reproducibility_level"] == "row_level_evidence_present"
     assert "artifacts/topic_publish_stats.jsonl" in payload["included_files"]
     assert "package_manifest.json" in payload["included_files"]
+    assert "row_level_evidence_index.json" in payload["included_files"]
+    assert (
+        "row_level_samples/artifacts/topic_publish_stats.jsonl.head.jsonl"
+        in payload["included_files"]
+    )
+    with tarfile.open(out, "r:gz") as archive:
+        index_member = archive.extractfile("run/row_level_evidence_index.json")
+        assert index_member is not None
+        index = json.loads(index_member.read().decode("utf-8"))
+        topic_entry = next(
+            item
+            for item in index["files"]
+            if item["path"] == "artifacts/topic_publish_stats.jsonl"
+        )
+        assert topic_entry["row_count"] == 1
+        assert topic_entry["sha256"]
+        assert topic_entry["head_sample"] == (
+            "row_level_samples/artifacts/topic_publish_stats.jsonl.head.jsonl"
+        )
+        sample = archive.extractfile(f"run/{topic_entry['head_sample']}")
+        assert sample is not None
+        assert json.loads(sample.read().decode("utf-8")) == {"ok": True}
 
 
 def test_claim_pack_marks_fixed_scene_summary_only_when_row_level_missing(tmp_path: Path) -> None:

@@ -81,6 +81,30 @@ def test_apollo_hdmap_projection_pass_lifts_claim_grade_evidence(tmp_path: Path)
     assert report["apollo_hdmap_projection"]["claim_grade"] is True
 
 
+def test_planning_materialization_fail_downgrades_reference_line_claim_window(tmp_path: Path) -> None:
+    run_dir = _copy_case(tmp_path, "pass")
+    _write_hdmap_projection(
+        run_dir / "artifacts" / "apollo_hdmap_projection.jsonl",
+        heading_error_rad=0.01,
+        lateral_error_m=0.05,
+    )
+    (run_dir / "analysis" / "planning_materialization").mkdir(parents=True, exist_ok=True)
+    _write_json(
+        run_dir / "analysis" / "planning_materialization" / "planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "verdict": "fail",
+            "blocking_reasons": ["planning_trajectory_materialization_low"],
+        },
+    )
+
+    report = analyze_apollo_reference_line_contract_run_dir(run_dir)
+
+    assert report["status"] == "insufficient_data"
+    assert report["planning_materialization_status"] == "fail"
+    assert "planning_materialization_failed_reference_line_claim_downgraded" in report["warnings"]
+
+
 def test_apollo_hdmap_projection_missing_is_explicit_insufficient_data() -> None:
     report = analyze_apollo_reference_line_contract_run_dir(FIXTURE_ROOT / "pass")
 

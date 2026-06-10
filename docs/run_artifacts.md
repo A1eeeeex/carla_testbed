@@ -370,9 +370,19 @@ available:
 
 The archive contains `package_manifest.json`, which records included files,
 omitted large artifacts, missing required row-level evidence, and
-`claim_reproducibility_level`. Missing row-level evidence keeps a claim package
-at summary-only review level; it must not be described as claim-grade natural
-driving evidence.
+`claim_reproducibility_level`. When row-level JSONL evidence is present, the
+archive also contains `row_level_evidence_index.json` plus
+`row_level_samples/**/*.head.jsonl` and `row_level_samples/**/*.tail.jsonl`.
+The index records each sampled JSONL file's row count, size, sha256, time range,
+and top-level fields so an external reviewer can sanity-check raw evidence
+without unpacking large media or reading every row. Missing row-level evidence
+keeps a claim package at summary-only review level; it must not be described as
+claim-grade natural driving evidence.
+
+The row-level index is review scaffolding, not a pass condition by itself.
+Analyzer reports still decide whether channel health, route contract, HDMap
+projection, control attribution, prediction evidence, and natural-driving gates
+are claim-grade.
 
 Operator workflow should generate this report before interpreting control
 behavior:

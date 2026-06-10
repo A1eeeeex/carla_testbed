@@ -29,7 +29,7 @@ BLOCKING = {"fail", "insufficient_data", "missing"}
 
 MODULE_LAYER_MAP = {
     "hdmap": "hdmap_projection",
-    "routing": "bridge_runtime",
+    "routing": "route_establishment",
     "localization": "localization_gt_contract",
     "chassis": "chassis_gt_contract",
     "perception_obstacles": "perception_gt_obstacles",
@@ -50,6 +50,10 @@ EVIDENCE_PATTERNS = {
     "bridge_transport_summary": (
         "artifacts/bridge_transport_summary.json",
         "bridge_transport_summary.json",
+    ),
+    "apollo_route_contract_report.json": (
+        "analysis/apollo_route_contract/apollo_route_contract_report.json",
+        "apollo_route_contract_report.json",
     ),
     "localization_contract_report.json": (
         "analysis/localization_contract/localization_contract_report.json",
@@ -779,6 +783,8 @@ def _failure_stage(
     # If Planning already proves that a route never materialized, surface that
     # concrete observed blocker before broader missing-evidence buckets such as
     # HDMap projection. This keeps online triage focused without relaxing gates.
+    if _route_contract_layer_blocking(link_layers):
+        return "route_establishment"
     if _layer_blocking(link_layers, "route_establishment"):
         return "planning_materialization"
     if _module_blocking_for_target(
@@ -854,6 +860,22 @@ def _layer_blocking(link_layers: Mapping[str, Any], name: str) -> bool:
     return bool(
         isinstance(layer, Mapping)
         and (layer.get("status") in {"fail", "insufficient_data"} or layer.get("blocking_reasons"))
+    )
+
+
+def _route_contract_layer_blocking(link_layers: Mapping[str, Any]) -> bool:
+    layer = link_layers.get("route_establishment", {})
+    if not isinstance(layer, Mapping):
+        return False
+    reasons = {str(item) for item in layer.get("blocking_reasons") or []}
+    return bool(
+        reasons
+        & {
+            "apollo_routing_length_mismatch",
+            "apollo_routing_lane_sequence_mismatch",
+            "apollo_routing_missing_scenario_lane",
+            "apollo_routing_goal_mismatch",
+        }
     )
 
 

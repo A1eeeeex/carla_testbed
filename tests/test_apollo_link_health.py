@@ -159,6 +159,27 @@ def _base_run(tmp_path: Path) -> Path:
         },
     )
     _write_json(
+        run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json",
+        {
+            "schema_version": "apollo_route_contract.v1",
+            "status": "pass",
+            "scenario_route": {
+                "route_id": "lane097",
+                "route_length_m": 230.0,
+                "lane_sequence": ["15_1_1"],
+            },
+            "apollo_route": {
+                "routing_success_count": 1,
+                "routing_total_length_m": 230.0,
+                "lane_window_count": 1,
+                "lane_sequence": ["15_1_1"],
+            },
+            "metrics": {"routing_length_ratio": 1.0},
+            "blocking_reasons": [],
+            "warnings": [],
+        },
+    )
+    _write_json(
         run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
         {
             "schema_version": "apollo_reference_line_contract.v1",
@@ -356,6 +377,30 @@ def test_low_planning_materialization_is_primary_blocker(tmp_path: Path) -> None
     assert layer["status"] == "fail"
     assert layer["key_metrics"]["nonempty_trajectory_ratio"] == 14 / 550
     assert "route_establishment_latency" in layer["blocking_reasons"]
+
+
+def test_apollo_route_contract_mismatch_is_route_establishment_blocker(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    route_contract_path = run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json"
+    route_contract = json.loads(route_contract_path.read_text(encoding="utf-8"))
+    route_contract.update(
+        {
+            "status": "fail",
+            "scenario_route_length_m": 230.0,
+            "apollo_routing_total_length_m": 648.0,
+            "routing_length_ratio": 2.817,
+            "blocking_reasons": ["apollo_routing_length_mismatch"],
+        }
+    )
+    _write_json(route_contract_path, route_contract)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    layer = report["layers"]["route_establishment"]
+    assert layer["status"] == "fail"
+    assert "apollo_routing_length_mismatch" in layer["blocking_reasons"]
+    assert layer["key_metrics"]["apollo_routing_total_length_m"] == 648.0
+    assert report["primary_blocker"] == "route_establishment:apollo_routing_length_mismatch"
 
 
 def test_independent_hdmap_projection_report_is_consumed(tmp_path: Path) -> None:

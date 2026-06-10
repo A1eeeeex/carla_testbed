@@ -18,6 +18,7 @@ APOLLO_ANALYZERS = {
     "channel_health",
     "localization_contract",
     "chassis_gt_contract",
+    "apollo_route_contract",
     "apollo_hdmap_projection",
     "apollo_reference_line_contract",
     "planning_materialization",
@@ -151,7 +152,13 @@ def _rules_for_plan(plan: RunPlan) -> list[dict[str, Any]]:
         _rule("chassis_gt_contract_claim_grade", "chassis_gt_contract", "claim_grade", "==", True),
         _rule("reference_line_contract_pass", "apollo_reference_line_contract", "status", "in", ["pass"]),
         _rule("control_handoff_pass", "apollo_control_handoff", "status", "in", ["pass", "warn"]),
-        _rule("applied_control_source_apollo", "control_attribution", "applied_control_source", "==", "apollo"),
+        _rule(
+            "applied_control_source_apollo",
+            "control_attribution",
+            "applied_control_source",
+            "==",
+            "apollo_control",
+        ),
         _rule("no_blocking_assists", "assist_ledger", "blocking_assists", "==", []),
     ]
     requirements = plan.scenario.requirements or {}
@@ -163,8 +170,8 @@ def _rules_for_plan(plan: RunPlan) -> list[dict[str, Any]]:
                 "prediction_evidence_explicit",
                 "prediction_evidence",
                 "prediction_mode",
-                "in",
-                ["native_observed", "bypassed_with_gt_obstacles"],
+                "==",
+                "native_observed",
             )
         )
     if _dynamic_actor_evidence_required_for_plan(plan):

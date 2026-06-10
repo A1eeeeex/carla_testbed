@@ -14,6 +14,12 @@ TIMEOUT_PATTERNS = {
     "control_timeout": re.compile(r"control.*(timeout|time out|not ready)", re.I),
     "planning_timeout": re.compile(r"planning.*(timeout|time out|not ready)", re.I),
     "reference_line_provider_failure": re.compile(r"reference.?line.*(fail|error|not ready|empty)", re.I),
+    "route_or_reference_line_failure": re.compile(
+        r"(adc_route_index error|can not get distance|planning failed:planning_error|"
+        r"planner failed|lane_follow_map\.cc|on_lane_planning\.cc|"
+        r"create_route_segments_status failed|reference_line_provider_status failed)",
+        re.I,
+    ),
     "prediction_not_ready": re.compile(r"prediction.*(not ready|timeout|empty|missing)", re.I),
     "obstacle_invalid": re.compile(r"obstacle.*(invalid|missing|empty|error)", re.I),
 }
@@ -77,7 +83,13 @@ def analyze_apollo_module_consumption(
     topic_rows = _read_jsonl(inputs.get("topic_publish_stats"))
     log_lines = _read_lines(inputs.get("apollo_log"))
 
-    text_events = _text_events(planning_rows, control_rows, routing_rows, log_lines)
+    text_events = _text_events(
+        planning_rows,
+        control_rows,
+        routing_rows,
+        log_lines,
+        _planning_materialization_log_errors(planning_materialization),
+    )
     pattern_counts = _pattern_counts(text_events)
     empty_reason_histogram = _empty_reason_histogram(planning_materialization, planning_rows)
     age_metrics = _planning_age_metrics(planning_rows)
@@ -110,6 +122,11 @@ def analyze_apollo_module_consumption(
         blocking.append("planning_input_timeout_logs_present")
     if pattern_counts["reference_line_provider_failure"]:
         blocking.append("reference_line_provider_failure_logs_present")
+    if pattern_counts["route_or_reference_line_failure"]:
+        blocking.append("route_or_reference_line_failure_logs_present")
+    freshness = planning_materialization.get("input_freshness_attribution")
+    if isinstance(freshness, Mapping) and freshness.get("status") == "insufficient_data":
+        warnings.append("planning_input_freshness_unverified")
     if pattern_counts["prediction_not_ready"] and prediction_mode not in {"not_required_for_case"}:
         warnings.append("prediction_not_ready_logs_present")
     if not topic_rows:
@@ -134,6 +151,7 @@ def analyze_apollo_module_consumption(
         "pattern_counts": dict(pattern_counts),
         "empty_reason_histogram": empty_reason_histogram,
         "planning_input_age": age_metrics,
+        "input_freshness_attribution": freshness if isinstance(freshness, Mapping) else {},
         "topic_publish_coverage": publish_coverage,
         "blocking_reasons": sorted(set(blocking)),
         "warnings": sorted(set(warnings)),
@@ -261,6 +279,21 @@ def _topic_publish_coverage(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]
         "has_planning": "/apollo/planning" in topics,
         "has_control": "/apollo/control" in topics,
     }
+
+
+def _planning_materialization_log_errors(report: Mapping[str, Any]) -> list[str]:
+    rows = report.get("apollo_log_error_topk")
+    if not isinstance(rows, list):
+        return []
+    events: list[str] = []
+    for row in rows:
+        if isinstance(row, Mapping):
+            text = row.get("message") or row.get("error") or row.get("status")
+            if text:
+                events.append(str(text))
+        elif row:
+            events.append(str(row))
+    return events
 
 
 def _text_events(*sources: Any) -> list[str]:

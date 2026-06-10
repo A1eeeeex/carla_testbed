@@ -183,6 +183,12 @@ def analyze_planning_materialization_files(
                 if status not in {"ok", "pass"}
             )
         )
+    input_freshness_attribution = _input_freshness_attribution(
+        empty_asof_join,
+        empty_reason_histogram=empty_reason_histogram,
+    )
+    if input_freshness_attribution["status"] == "insufficient_data":
+        warnings.append("planning_input_freshness_unverified")
 
     first_nonempty_ts = _first_nonempty_timestamp(planning_rows)
     first_msg_ts = _first_message_timestamp(planning_rows, planning_summary)
@@ -210,6 +216,23 @@ def analyze_planning_materialization_files(
         nonempty_after_routing_ratio=after_routing_ratio,
         first_nonempty_after_routing_latency_s=first_nonempty_after_routing_latency_s,
     )
+    time_domain = _time_domain_diagnostics(
+        planning_rows=planning_rows,
+        topic_rows=topic_rows,
+        routing_success_ts=routing_success_ts,
+        first_nonempty_after_routing_latency_s=first_nonempty_after_routing_latency_s,
+        planning_summary=planning_summary,
+    )
+    if time_domain["status"] == "insufficient_data":
+        warnings.append("planning_time_domain_mixed_or_unverified")
+        route_establishment.setdefault("warnings", []).append(
+            "routing_planning_latency_time_domain_unverified"
+        )
+        if route_establishment.get("route_established") is True:
+            route_establishment["route_established"] = None
+            route_establishment.setdefault("blocking_reasons", []).append(
+                "route_establishment_time_domain_unverified"
+            )
     if route_establishment["route_established"] is False:
         blocking_reasons.append("route_establishment_not_confirmed")
 
@@ -237,8 +260,11 @@ def analyze_planning_materialization_files(
         },
         "localization_channel_ready": loc_ready,
         "chassis_channel_ready": chassis_ready,
+        "empty_reason_observed_debug": dict(sorted(empty_reason_histogram.items())),
         "empty_reason_histogram": dict(sorted(empty_reason_histogram.items())),
         "empty_asof_join": empty_asof_join,
+        "input_freshness_attribution": input_freshness_attribution,
+        "time_domain": time_domain,
         "first_planning_message_time_sec": first_msg_ts,
         "first_nonempty_planning_time_sec": first_nonempty_ts,
         "last_nonempty_planning_time_sec": _last_nonempty_timestamp(planning_rows),
@@ -299,6 +325,8 @@ def planning_materialization_summary_md(report: Mapping[str, Any]) -> str:
         f"- Blocking reasons: {', '.join(report.get('blocking_reasons') or []) or 'none'}",
         f"- Warnings: {', '.join(report.get('warnings') or []) or 'none'}",
         f"- Empty as-of join: {_fmt_asof(report.get('empty_asof_join'))}",
+        f"- Time domain: {_fmt_time_domain(report.get('time_domain'))}",
+        f"- Input freshness attribution: {_fmt_freshness(report.get('input_freshness_attribution'))}",
         "",
         "## Empty Reason Histogram",
     ]
@@ -307,6 +335,117 @@ def planning_materialization_summary_md(report: Mapping[str, Any]) -> str:
         for key, value in histogram.items():
             lines.append(f"- {key}: {value}")
     return "\n".join(lines) + "\n"
+
+
+def _input_freshness_attribution(
+    empty_asof_join: Mapping[str, Any],
+    *,
+    empty_reason_histogram: Mapping[str, Any],
+) -> dict[str, Any]:
+    empty_count = _int_or_none(empty_asof_join.get("empty_row_count")) or 0
+    loc_cov = _number(empty_asof_join.get("localization_join_coverage_ratio"))
+    chassis_cov = _number(empty_asof_join.get("chassis_join_coverage_ratio"))
+    if empty_count <= 0:
+        return {
+            "status": "not_applicable",
+            "input_freshness_verified_empty_count": 0,
+            "input_freshness_unverified_empty_count": 0,
+            "localization_stale_or_gap_empty_count": 0,
+            "chassis_stale_or_gap_empty_count": 0,
+            "warnings": [],
+        }
+    warnings: list[str] = []
+    loc_stale_count: int | None
+    chassis_stale_count: int | None
+    if loc_cov is None or loc_cov <= 0:
+        loc_stale_count = None
+        warnings.append("localization_freshness_join_unavailable")
+    else:
+        loc_stale_count = _int_or_none(empty_asof_join.get("stale_localization_empty_count"))
+    if chassis_cov is None or chassis_cov <= 0:
+        chassis_stale_count = None
+        warnings.append("chassis_freshness_join_unavailable")
+    else:
+        chassis_stale_count = _int_or_none(empty_asof_join.get("stale_chassis_empty_count"))
+    verified = 0
+    if loc_cov is not None and chassis_cov is not None:
+        verified = int(round(empty_count * min(loc_cov, chassis_cov)))
+    unverified = max(0, empty_count - verified)
+    status = "insufficient_data" if warnings else "pass"
+    return {
+        "status": status,
+        "input_freshness_verified_empty_count": verified,
+        "input_freshness_unverified_empty_count": unverified,
+        "localization_join_coverage_ratio": loc_cov,
+        "chassis_join_coverage_ratio": chassis_cov,
+        "localization_stale_or_gap_empty_count": loc_stale_count,
+        "chassis_stale_or_gap_empty_count": chassis_stale_count,
+        "observed_debug_empty_reason_histogram": dict(empty_reason_histogram),
+        "warnings": sorted(set(warnings)),
+    }
+
+
+def _time_domain_diagnostics(
+    *,
+    planning_rows: Sequence[Mapping[str, Any]],
+    topic_rows: Sequence[Mapping[str, Any]],
+    routing_success_ts: float | None,
+    first_nonempty_after_routing_latency_s: float | None,
+    planning_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    planning_domain = _dominant_time_domain(planning_rows)
+    topic_domain = _dominant_time_domain(topic_rows)
+    summary_latency = _number(planning_summary.get("routing_first_response_after_last_routing_send_sec"))
+    warnings: list[str] = []
+    invalid_latency_fields: list[str] = []
+    if summary_latency is not None and (summary_latency < -1.0 or summary_latency > 300.0):
+        invalid_latency_fields.append("routing_first_response_after_last_routing_send_sec")
+        warnings.append("summary_latency_outside_reasonable_range")
+    if first_nonempty_after_routing_latency_s is not None and (
+        first_nonempty_after_routing_latency_s < -1.0 or first_nonempty_after_routing_latency_s > 300.0
+    ):
+        invalid_latency_fields.append("first_nonempty_after_routing_latency_s")
+        warnings.append("derived_latency_outside_reasonable_range")
+    mixed = bool(
+        planning_domain.get("domain")
+        and topic_domain.get("domain")
+        and planning_domain.get("domain") != topic_domain.get("domain")
+    )
+    if mixed:
+        warnings.append("planning_topic_time_domain_mismatch")
+    if routing_success_ts is not None and planning_domain.get("domain") == "unknown":
+        warnings.append("routing_success_time_domain_unverified")
+    status = "insufficient_data" if warnings else "pass"
+    return {
+        "status": status,
+        "planning_time_domain": planning_domain,
+        "topic_time_domain": topic_domain,
+        "routing_success_timestamp_sec": routing_success_ts,
+        "first_nonempty_after_routing_latency_s": first_nonempty_after_routing_latency_s,
+        "summary_routing_latency_s": summary_latency,
+        "invalid_latency_fields": invalid_latency_fields,
+        "mixed_time_domain_detected": mixed,
+        "warnings": sorted(set(warnings)),
+    }
+
+
+def _dominant_time_domain(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    counts: Counter[str] = Counter()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        source = _time_source(row)
+        if source is not None:
+            counts[source] += 1
+    if not counts:
+        return {"domain": "unknown", "field_counts": {}}
+    if counts.get("sim_time_sec", 0) >= max(counts.values()):
+        return {"domain": "sim_time", "field_counts": dict(sorted(counts.items()))}
+    if counts.get("wall_time_sec", 0) or counts.get("timestamp", 0):
+        return {"domain": "wall_or_ambiguous", "field_counts": dict(sorted(counts.items()))}
+    if counts.get("header_timestamp_sec", 0) or counts.get("planning_header_timestamp_sec", 0):
+        return {"domain": "header_timestamp", "field_counts": dict(sorted(counts.items()))}
+    return {"domain": "unknown", "field_counts": dict(sorted(counts.items()))}
 
 
 def _empty_asof_join(
@@ -394,13 +533,8 @@ def _coverage_ratio(matches: Sequence[Mapping[str, Any] | None], denominator: in
 
 
 def _event_time(row: Mapping[str, Any]) -> float | None:
-    return _number(
-        row.get("timestamp")
-        or row.get("header_timestamp_sec")
-        or row.get("sim_time_sec")
-        or row.get("wall_time_sec")
-        or row.get("planning_header_timestamp_sec")
-    )
+    source = _time_source(row)
+    return _number(row.get(source)) if source else None
 
 
 def _reference_row_not_ok(row: Mapping[str, Any]) -> bool:
@@ -542,12 +676,23 @@ def _sequence(row: Mapping[str, Any]) -> int | None:
 
 
 def _row_time(row: Mapping[str, Any]) -> float | None:
-    return _number(
-        row.get("timestamp")
-        or row.get("wall_time_sec")
-        or row.get("planning_header_timestamp_sec")
-        or row.get("sim_time_sec")
-    )
+    source = _time_source(row)
+    return _number(row.get(source)) if source else None
+
+
+def _time_source(row: Mapping[str, Any]) -> str | None:
+    for key in (
+        "sim_time_sec",
+        "sim_time",
+        "planning_sim_time_sec",
+        "header_timestamp_sec",
+        "planning_header_timestamp_sec",
+        "wall_time_sec",
+        "timestamp",
+    ):
+        if _number(row.get(key)) is not None:
+            return key
+    return None
 
 
 def _trajectory_point_count(row: Mapping[str, Any]) -> int:
@@ -731,3 +876,28 @@ def _fmt_asof(value: Any) -> str:
         f"empty={empty_count}, loc={loc}, chassis={chassis}, "
         f"reference_line={reference}, hdmap={hdmap}"
     )
+
+
+def _fmt_time_domain(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "not evaluated"
+    return (
+        f"status={value.get('status')}, "
+        f"planning={_nested_domain(value.get('planning_time_domain'))}, "
+        f"topic={_nested_domain(value.get('topic_time_domain'))}, "
+        f"mixed={value.get('mixed_time_domain_detected')}"
+    )
+
+
+def _fmt_freshness(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "not evaluated"
+    return (
+        f"status={value.get('status')}, "
+        f"verified={value.get('input_freshness_verified_empty_count')}, "
+        f"unverified={value.get('input_freshness_unverified_empty_count')}"
+    )
+
+
+def _nested_domain(value: Any) -> str:
+    return str(value.get("domain")) if isinstance(value, Mapping) else "unknown"

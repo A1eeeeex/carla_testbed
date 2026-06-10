@@ -32,6 +32,9 @@ class NaturalDrivingEvidence:
     apollo_reference_line_contract_status: str = "insufficient_data"
     apollo_reference_line_blocking_reasons: list[str] = field(default_factory=list)
     apollo_reference_line_report_path: str | None = None
+    apollo_hdmap_projection_status: str = "insufficient_data"
+    apollo_hdmap_projection_claim_grade: bool = False
+    apollo_hdmap_projection_report_path: str | None = None
     apollo_control_handoff_status: str = "insufficient_data"
     apollo_control_handoff_failure_stage: str | None = None
     apollo_control_handoff_report_path: str | None = None
@@ -82,6 +85,13 @@ def build_natural_driving_evidence_from_run_dir(run_dir: str | Path) -> NaturalD
             "apollo_reference_line_contract_report.json",
         ],
     )
+    apollo_hdmap_projection_path = _find_first(
+        root,
+        [
+            "analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json",
+            "apollo_hdmap_projection_report.json",
+        ],
+    )
     control_attribution_path = _find_first(
         root,
         [
@@ -114,6 +124,7 @@ def build_natural_driving_evidence_from_run_dir(run_dir: str | Path) -> NaturalD
         channel_health=_read_json(channel_health_path),
         localization_contract=_read_json(localization_contract_path),
         apollo_reference_line_contract=_read_json(apollo_reference_line_contract_path),
+        apollo_hdmap_projection=_read_json(apollo_hdmap_projection_path),
         control_attribution=_read_json(control_attribution_path),
         apollo_control_handoff=_read_json(apollo_control_handoff_path),
         assist_ledger=assist_ledger,
@@ -121,6 +132,7 @@ def build_natural_driving_evidence_from_run_dir(run_dir: str | Path) -> NaturalD
         channel_health_path=channel_health_path,
         localization_contract_path=localization_contract_path,
         apollo_reference_line_contract_path=apollo_reference_line_contract_path,
+        apollo_hdmap_projection_path=apollo_hdmap_projection_path,
         control_attribution_path=control_attribution_path,
         apollo_control_handoff_path=apollo_control_handoff_path,
         traffic_light_evidence_path=traffic_light_path,
@@ -137,6 +149,7 @@ def build_natural_driving_evidence(
     channel_health: Mapping[str, Any] | None = None,
     localization_contract: Mapping[str, Any] | None = None,
     apollo_reference_line_contract: Mapping[str, Any] | None = None,
+    apollo_hdmap_projection: Mapping[str, Any] | None = None,
     control_attribution: Mapping[str, Any] | None = None,
     apollo_control_handoff: Mapping[str, Any] | None = None,
     assist_ledger: Mapping[str, Any] | None = None,
@@ -144,6 +157,7 @@ def build_natural_driving_evidence(
     channel_health_path: str | Path | None = None,
     localization_contract_path: str | Path | None = None,
     apollo_reference_line_contract_path: str | Path | None = None,
+    apollo_hdmap_projection_path: str | Path | None = None,
     control_attribution_path: str | Path | None = None,
     apollo_control_handoff_path: str | Path | None = None,
     traffic_light_evidence_path: str | Path | None = None,
@@ -156,6 +170,7 @@ def build_natural_driving_evidence(
     channel_health = _as_mapping(channel_health)
     localization_contract = _as_mapping(localization_contract)
     apollo_reference_line_contract = _as_mapping(apollo_reference_line_contract)
+    apollo_hdmap_projection = _as_mapping(apollo_hdmap_projection)
     control_attribution = _as_mapping(control_attribution)
     apollo_control_handoff = _as_mapping(apollo_control_handoff)
     assist_ledger = _as_mapping(assist_ledger)
@@ -174,6 +189,7 @@ def build_natural_driving_evidence(
         apollo_reference_line_contract_path=(
             Path(apollo_reference_line_contract_path) if apollo_reference_line_contract_path else None
         ),
+        apollo_hdmap_projection_path=Path(apollo_hdmap_projection_path) if apollo_hdmap_projection_path else None,
         control_attribution_path=Path(control_attribution_path) if control_attribution_path else None,
         apollo_control_handoff_path=Path(apollo_control_handoff_path) if apollo_control_handoff_path else None,
         traffic_light_evidence_path=Path(traffic_light_evidence_path) if traffic_light_evidence_path else None,
@@ -208,6 +224,13 @@ def build_natural_driving_evidence(
         apollo_reference_status = "insufficient_data"
     if apollo_reference_blocking:
         warnings.append("apollo reference-line contract has blocking reasons")
+
+    hdmap_projection_status = _report_status(apollo_hdmap_projection)
+    if apollo_hdmap_projection_path is None:
+        hdmap_projection_status = "insufficient_data"
+    hdmap_projection_claim_grade = _apollo_hdmap_projection_claim_grade(apollo_hdmap_projection)
+    if not hdmap_projection_claim_grade:
+        warnings.append("apollo hdmap projection is not claim-grade")
 
     handoff_status = _report_status(apollo_control_handoff)
     handoff_stage = str(apollo_control_handoff.get("failure_stage") or "").strip() or None
@@ -263,6 +286,8 @@ def build_natural_driving_evidence(
         and not localization_blocking
         and apollo_reference_status in {"pass", "warn"}
         and not apollo_reference_blocking
+        and hdmap_projection_status in {"pass", "warn"}
+        and hdmap_projection_claim_grade
         and handoff_status in {"pass", "warn"}
         and handoff_stage in {None, "none"}
         and control_attribution_status in {"pass", "warn"}
@@ -285,6 +310,11 @@ def build_natural_driving_evidence(
         apollo_reference_line_blocking_reasons=apollo_reference_blocking,
         apollo_reference_line_report_path=(
             str(apollo_reference_line_contract_path) if apollo_reference_line_contract_path else None
+        ),
+        apollo_hdmap_projection_status=hdmap_projection_status,
+        apollo_hdmap_projection_claim_grade=hdmap_projection_claim_grade,
+        apollo_hdmap_projection_report_path=(
+            str(apollo_hdmap_projection_path) if apollo_hdmap_projection_path else None
         ),
         apollo_control_handoff_status=handoff_status,
         apollo_control_handoff_failure_stage=handoff_stage,
@@ -316,6 +346,7 @@ def _missing_artifacts(
     channel_health_path: Path | None,
     localization_contract_path: Path | None,
     apollo_reference_line_contract_path: Path | None,
+    apollo_hdmap_projection_path: Path | None,
     control_attribution_path: Path | None,
     apollo_control_handoff_path: Path | None,
     traffic_light_evidence_path: Path | None,
@@ -338,6 +369,8 @@ def _missing_artifacts(
         missing.append("localization_contract_report.json")
     if apollo_reference_line_contract_path is None:
         missing.append("apollo_reference_line_contract_report.json")
+    if apollo_hdmap_projection_path is None:
+        missing.append("apollo_hdmap_projection_report.json")
     if apollo_control_handoff_path is None:
         missing.append("apollo_control_handoff_report.json")
     if control_attribution_path is None:
@@ -426,6 +459,20 @@ def _report_status(payload: Mapping[str, Any]) -> str:
     if payload.get("artifact_complete") is True:
         return "pass"
     return "insufficient_data"
+
+
+def _apollo_hdmap_projection_claim_grade(payload: Mapping[str, Any]) -> bool:
+    if not isinstance(payload, Mapping) or not payload:
+        return False
+    status = _report_status(payload)
+    projection = payload.get("projection")
+    if status == "insufficient_data" and isinstance(projection, Mapping):
+        status = _report_status(projection)
+    if status not in {"pass", "warn"}:
+        return False
+    if payload.get("claim_grade") is True:
+        return True
+    return bool(isinstance(projection, Mapping) and projection.get("claim_grade") is True)
 
 
 def _scalar_status_value(value: Any) -> bool:

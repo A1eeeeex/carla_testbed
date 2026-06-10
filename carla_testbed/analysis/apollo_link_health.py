@@ -103,6 +103,8 @@ def analyze_apollo_link_health(
         "route_establishment": _route_establishment_layer(
             payloads.get("planning_materialization"),
             inputs.get("planning_materialization"),
+            route_contract=payloads.get("apollo_route_contract"),
+            route_contract_path=inputs.get("apollo_route_contract"),
             summary=summary,
             bridge_stats=cyber_bridge_stats,
             planning_topic_debug_summary=payloads.get("planning_topic_debug_summary", {}),
@@ -324,6 +326,10 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
             "nonempty_trajectory_ratio",
             "after_routing_success_nonempty_ratio",
             "route_established",
+            "route_contract_status",
+            "scenario_route_length_m",
+            "apollo_routing_total_length_m",
+            "routing_length_ratio",
             "summary_fail_reason",
         ),
         "apollo_module_consumption": (
@@ -490,6 +496,13 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
             [
                 "analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json",
                 "apollo_hdmap_projection_report.json",
+            ],
+        ),
+        "apollo_route_contract": _find_first(
+            root,
+            [
+                "analysis/apollo_route_contract/apollo_route_contract_report.json",
+                "apollo_route_contract_report.json",
             ],
         ),
         "apollo_module_consumption": _find_first(
@@ -768,21 +781,32 @@ def _route_establishment_layer(
     report: Mapping[str, Any] | None,
     path: Path | None,
     *,
+    route_contract: Mapping[str, Any] | None,
+    route_contract_path: Path | None,
     summary: Mapping[str, Any],
     bridge_stats: Mapping[str, Any],
     planning_topic_debug_summary: Mapping[str, Any],
 ) -> dict[str, Any]:
+    route_contract_status = _normalize_status(route_contract.get("status")) if route_contract else "insufficient_data"
+    route_contract_blocking = list(route_contract.get("blocking_reasons") or []) if route_contract else []
+    route_contract_warnings = list(route_contract.get("warnings") or []) if route_contract else ["apollo_route_contract_missing"]
     if report:
         route_establishment = report.get("route_establishment")
         if not isinstance(route_establishment, Mapping):
             route_establishment = {}
         blocking = list(report.get("blocking_reasons") or [])
+        blocking.extend(route_contract_blocking)
         if route_establishment.get("route_established") is False:
             blocking.extend(route_establishment.get("blocking_reasons") or [])
+        status = _normalize_status(report.get("verdict") or report.get("status"))
+        if route_contract_status == "fail":
+            status = "fail"
+        elif route_contract_status == "insufficient_data" and status == "pass":
+            status = "insufficient_data"
         return _layer(
-            status=_normalize_status(report.get("verdict") or report.get("status")),
+            status=status,
             blocking_reasons=blocking,
-            warnings=list(report.get("warnings") or []),
+            warnings=list(report.get("warnings") or []) + route_contract_warnings,
             key_metrics={
                 "planning_message_count": report.get("planning_message_count"),
                 "nonempty_trajectory_count": report.get("nonempty_trajectory_count"),
@@ -797,13 +821,20 @@ def _route_establishment_layer(
                 "route_established": route_establishment.get("route_established"),
                 "route_completion_ratio": route_establishment.get("route_completion_ratio"),
                 "summary_fail_reason": summary.get("fail_reason"),
+                "route_contract_status": route_contract_status,
+                "scenario_route_length_m": route_contract.get("scenario_route_length_m") if route_contract else None,
+                "apollo_routing_total_length_m": route_contract.get("apollo_routing_total_length_m") if route_contract else None,
+                "routing_length_ratio": route_contract.get("routing_length_ratio") if route_contract else None,
+                "apollo_routing_lane_window_count": route_contract.get("apollo_routing_lane_window_count") if route_contract else None,
+                "apollo_routing_lane_signature": route_contract.get("apollo_routing_lane_signature") if route_contract else None,
             },
             artifact_paths={
                 "planning_materialization": str(path) if path else None,
+                "apollo_route_contract": str(route_contract_path) if route_contract_path else None,
             },
             next_action=(
-                "If route establishment fails, inspect planning materialization before "
-                "control tuning; control rx/tx does not prove route progression."
+                "If route establishment fails, inspect Apollo route contract and planning "
+                "materialization before control tuning; control rx/tx does not prove route progression."
             ),
         )
 
@@ -822,7 +853,8 @@ def _route_establishment_layer(
         else None
     )
     blocking: list[str] = []
-    warnings: list[str] = []
+    warnings: list[str] = list(route_contract_warnings)
+    blocking.extend(route_contract_blocking)
     if planning_total is None:
         status = "insufficient_data"
         blocking.append("planning_materialization_report_or_summary_missing")
@@ -837,6 +869,10 @@ def _route_establishment_layer(
         if routing_success_count is None or routing_success_count < 1:
             blocking.append("routing_success_missing")
         warnings.append("planning_materialization_report_missing_using_summary_fallback")
+    if route_contract_status == "fail":
+        status = "fail"
+    elif route_contract_status == "insufficient_data" and status == "pass":
+        status = "insufficient_data"
     route_established = status == "pass"
     return _layer(
         status=status,
@@ -850,13 +886,19 @@ def _route_establishment_layer(
             "route_established": route_established,
             "routing_success_count": routing_success_count,
             "summary_fail_reason": fail_reason,
+            "route_contract_status": route_contract_status,
+            "scenario_route_length_m": route_contract.get("scenario_route_length_m") if route_contract else None,
+            "apollo_routing_total_length_m": route_contract.get("apollo_routing_total_length_m") if route_contract else None,
+            "routing_length_ratio": route_contract.get("routing_length_ratio") if route_contract else None,
         },
         artifact_paths={
             "planning_materialization": str(path) if path else None,
+            "apollo_route_contract": str(route_contract_path) if route_contract_path else None,
         },
         next_action=(
-            "Generate planning_materialization_report.json and align empty trajectory rows "
-            "with routing, localization/chassis freshness, HDMap projection, and planning logs."
+            "Generate planning_materialization_report.json and apollo_route_contract_report.json; "
+            "align empty trajectory rows with routing, localization/chassis freshness, "
+            "HDMap projection, and planning logs."
         ),
     )
 
@@ -1189,6 +1231,7 @@ def _no_assist_layer(
     explicit_blockers: list[str] = []
     backend = _infer_backend(summary, manifest, bridge_stats, control_handoff)
     control_source = _infer_control_source(summary, manifest, control_handoff, bridge_stats)
+    applied_control_source = _normalize_applied_control_source(control_source)
     explicit_control_source = _explicit_control_source(summary, manifest)
     apollo_control_topic_observed = _apollo_control_topic_observed(control_handoff, bridge_stats)
     routing_success_count = _first_num(summary.get("routing_success_count"), bridge_stats.get("routing_success_count"))
@@ -1217,7 +1260,7 @@ def _no_assist_layer(
         explicit_blockers.append("backend_not_apollo_cyberrt")
     if control_source is None:
         reasons.append("control_source_missing")
-    elif control_source != "/apollo/control":
+    elif applied_control_source != "apollo_control":
         reasons.append("control_source_not_apollo_control")
         explicit_blockers.append("control_source_not_apollo_control")
     if (
@@ -1277,6 +1320,7 @@ def _no_assist_layer(
             ),
             "backend": backend,
             "control_source": control_source,
+            "applied_control_source": applied_control_source,
             "explicit_control_source": explicit_control_source,
             "apollo_control_topic_observed": apollo_control_topic_observed,
             "routing_success_count": routing_success_count,
@@ -2182,6 +2226,21 @@ def _infer_control_source(
     if bridge_stats and _num(bridge_stats.get("control_rx_count")) and _num(bridge_stats.get("control_rx_count")) > 0:
         return "/apollo/control"
     return None
+
+
+def _normalize_applied_control_source(control_source: str | None) -> str | None:
+    if control_source is None:
+        return None
+    normalized = str(control_source).strip().lower()
+    if normalized in {"/apollo/control", "apollo", "apollo_control", "apollo_cyberrt"}:
+        return "apollo_control"
+    if normalized in {"external_stack", "external", "autoware", "autoware_ros2"}:
+        return "external_stack"
+    if normalized in {"carla_builtin", "builtin", "carla_testbed_builtin_controller"}:
+        return "carla_testbed_builtin_controller"
+    if normalized in {"route_follower", "legacy_followstop", "manual", "direct_autopilot", "dummy_lateral"}:
+        return normalized
+    return normalized.replace("/", "_").strip("_") or None
 
 
 def _explicit_control_source(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> str | None:

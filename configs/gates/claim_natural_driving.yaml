@@ -10,6 +10,7 @@ gate:
     - channel_health_pass
     - localization_contract_claim_grade
     - chassis_gt_contract_claim_grade
+    - apollo_route_contract_pass
     - hdmap_projection_claim_grade
     - reference_line_contract_pass
     - control_handoff_pass
@@ -31,6 +32,12 @@ gate:
       required_for: claim
     - id: apollo_module_consumption_pass
       report: apollo_module_consumption
+      path: status
+      op: in
+      value: [pass, warn]
+      required_for: claim
+    - id: apollo_route_contract_pass
+      report: apollo_route_contract
       path: status
       op: in
       value: [pass, warn]
@@ -69,7 +76,13 @@ gate:
       report: control_attribution
       path: applied_control_source
       op: "=="
-      value: apollo
+      value: apollo_control
+      required_for: claim
+    - id: prediction_evidence_explicit
+      report: prediction_evidence
+      path: prediction_mode
+      op: "=="
+      value: native_observed
       required_for: claim
     - id: no_blocking_assists
       report: assist_ledger
@@ -88,6 +101,7 @@ evidence:
     - channel_health
     - localization_contract
     - chassis_gt_contract
+    - apollo_route_contract
     - apollo_hdmap_projection
     - apollo_reference_line_contract
     - planning_materialization

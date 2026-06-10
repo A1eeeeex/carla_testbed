@@ -42,6 +42,7 @@ def analyze_apollo_reference_line_contract_files(
     control_decode_debug_path: str | Path | None = None,
     debug_timeseries_path: str | Path | None = None,
     localization_contract_path: str | Path | None = None,
+    planning_materialization_path: str | Path | None = None,
     hdmap_projection_path: str | Path | None = None,
     run_dir: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -53,6 +54,7 @@ def analyze_apollo_reference_line_contract_files(
         "control_decode_debug_path": _path_str(control_decode_debug_path),
         "debug_timeseries_path": _path_str(debug_timeseries_path),
         "localization_contract_path": _path_str(localization_contract_path),
+        "planning_materialization_path": _path_str(planning_materialization_path),
         "hdmap_projection_path": _path_str(hdmap_projection_path),
     }
     contract_rows = _read_jsonl(contract_path)
@@ -61,6 +63,7 @@ def analyze_apollo_reference_line_contract_files(
     control_rows = _read_jsonl(control_decode_debug_path)
     timeseries_rows = _read_csv(debug_timeseries_path)
     localization_contract = _read_json(localization_contract_path)
+    planning_materialization = _read_json(planning_materialization_path)
     hdmap_rows = _read_hdmap_projection(hdmap_projection_path)
 
     rows = _normalized_rows(
@@ -73,6 +76,7 @@ def analyze_apollo_reference_line_contract_files(
     return analyze_apollo_reference_line_contract(
         rows,
         localization_contract=localization_contract,
+        planning_materialization=planning_materialization,
         hdmap_projection_rows=hdmap_rows,
         source=source,
     )
@@ -82,6 +86,7 @@ def analyze_apollo_reference_line_contract(
     rows: Sequence[Mapping[str, Any]],
     *,
     localization_contract: Mapping[str, Any] | None = None,
+    planning_materialization: Mapping[str, Any] | None = None,
     hdmap_projection_rows: Sequence[Mapping[str, Any]] | None = None,
     source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -102,6 +107,7 @@ def analyze_apollo_reference_line_contract(
             warnings=warnings,
             rows=[],
             localization_contract=localization_contract,
+            planning_materialization=planning_materialization,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
             contracts=contracts,
@@ -124,6 +130,7 @@ def analyze_apollo_reference_line_contract(
             warnings=warnings,
             rows=normalized,
             localization_contract=localization_contract,
+            planning_materialization=planning_materialization,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
             contracts=contracts,
@@ -141,6 +148,7 @@ def analyze_apollo_reference_line_contract(
             warnings=warnings,
             rows=normalized,
             localization_contract=localization_contract,
+            planning_materialization=planning_materialization,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
             contracts=contracts,
@@ -152,6 +160,7 @@ def analyze_apollo_reference_line_contract(
         warnings=warnings,
         rows=normalized,
         localization_contract=localization_contract,
+        planning_materialization=planning_materialization,
         hdmap_projection_rows=hdmap_projection_rows,
         source=source,
         contracts=contracts,
@@ -388,6 +397,7 @@ def _report(
     warnings: list[str],
     rows: Sequence[Mapping[str, Any]],
     localization_contract: Mapping[str, Any] | None,
+    planning_materialization: Mapping[str, Any] | None,
     hdmap_projection_rows: Sequence[Mapping[str, Any]] | None,
     source: Mapping[str, Any] | None,
     contracts: Mapping[str, Any] | None = None,
@@ -396,6 +406,11 @@ def _report(
     evidence = _evidence(rows, hdmap_projection)
     metrics = _metrics(rows)
     report_contracts = dict(contracts or _contracts(rows=rows, evidence=evidence, metrics=metrics, hdmap_projection=hdmap_projection))
+    status, warnings = _downgrade_for_planning_materialization(
+        status,
+        warnings=list(warnings),
+        planning_materialization=planning_materialization,
+    )
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "status": status,
@@ -410,6 +425,7 @@ def _report(
         "lane_ids": _lane_ids(rows),
         "apollo_hdmap_projection": hdmap_projection,
         "localization_contract_status": _report_status(localization_contract),
+        "planning_materialization_status": _report_status(planning_materialization),
         "source": dict(source or {}),
         "interpretation_boundary": INTERPRETATION_BOUNDARY,
     }
@@ -683,6 +699,23 @@ def _overall_status(
     if extra_warnings or "warn" in statuses:
         return "warn"
     return "pass"
+
+
+def _downgrade_for_planning_materialization(
+    status: str,
+    *,
+    warnings: list[str],
+    planning_materialization: Mapping[str, Any] | None,
+) -> tuple[str, list[str]]:
+    if not isinstance(planning_materialization, Mapping) or not planning_materialization:
+        return status, warnings
+    materialization_status = _report_status(planning_materialization)
+    if materialization_status != "fail":
+        return status, warnings
+    warnings.append("planning_materialization_failed_reference_line_claim_downgraded")
+    if status in {"pass", "warn"}:
+        return "insufficient_data", warnings
+    return status, warnings
 
 
 def _evidence(rows: Sequence[Mapping[str, Any]], hdmap_projection: Mapping[str, Any]) -> dict[str, Any]:
@@ -1090,6 +1123,13 @@ def _resolve_run_sources(root: Path) -> dict[str, Path | None]:
         ),
         "debug_timeseries_path": _find_first(root, ["artifacts/debug_timeseries.csv", "debug_timeseries.csv", "timeseries.csv"]),
         "localization_contract_path": _find_first(root, ["analysis/localization_contract/localization_contract_report.json", "localization_contract_report.json"]),
+        "planning_materialization_path": _find_first(
+            root,
+            [
+                "analysis/planning_materialization/planning_materialization_report.json",
+                "planning_materialization_report.json",
+            ],
+        ),
         "hdmap_projection_path": _find_first(root, ["artifacts/apollo_hdmap_projection.jsonl", "analysis/apollo_hdmap_projection/apollo_hdmap_projection.json"]),
     }
 
@@ -1331,6 +1371,8 @@ def _report_status(report: Mapping[str, Any] | None) -> str:
     verdict = report.get("verdict")
     if isinstance(verdict, Mapping) and verdict.get("status"):
         return str(verdict.get("status"))
+    if isinstance(verdict, str) and verdict.strip():
+        return verdict.strip()
     return str(report.get("status") or "insufficient_data")
 
 

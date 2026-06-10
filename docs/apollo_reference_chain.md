@@ -61,6 +61,12 @@ traffic-light claims require Apollo HDMap/reference-line/signal evidence.
 
 `routing` cannot be silently bypassed. A route follower or testbed trajectory is
 not native Apollo routing evidence.
+Claim-grade routing also requires `apollo_route_contract_report.json`: the
+scenario route length/start/goal/lane identity must be compatible with the
+Apollo routing response and route segment evidence. A routing response that is
+much longer than the scenario route, or that uses an incompatible lane/window
+sequence, blocks route establishment before planning/control behavior is
+interpreted.
 
 `localization` may be replaced by CARLA GT only with
 `localization_contract_report.json`. The report must cover sim time, frame
@@ -80,9 +86,10 @@ Prediction is an explicit gate, not a background field. The allowed modes are:
 
 - `native_observed`: `/apollo/prediction` has messages and channel evidence.
 - `bypassed_with_gt_obstacles`: allowed only with a scenario-scoped
-  `bypass_reason`; static lane-keep diagnostics may warn, but dynamic obstacle,
-  junction, traffic-light, and closed-loop claims remain blocked unless an
-  explicit override is justified.
+  `bypass_reason`; static lane-keep diagnostics may warn, but natural-driving
+  closed-loop claims require `native_observed` prediction unless an explicit
+  scenario override downgrades the claim boundary. Dynamic obstacle, junction,
+  traffic-light, and closed-loop claims remain blocked by silent bypass.
 - `missing`: no prediction channel and no acceptable bypass evidence.
 - `not_required_for_case`: the case explicitly declares prediction is not part
   of the evaluated contract.
@@ -218,6 +225,28 @@ timeouts, reference-line provider failures, prediction-not-ready messages, and
 empty Planning attribution. Bridge-side GT publish evidence alone does not
 prove that Planning consumed localization, chassis, obstacles, prediction, or
 routing inputs.
+
+Generate route-contract evidence for a run:
+
+```bash
+python tools/analyze_apollo_route_contract.py \
+  --run-dir <run_dir> \
+  --out <run_dir>/analysis/apollo_route_contract
+```
+
+The route contract is the bridge between scenario intent and Apollo Routing
+output. `apollo_link_health` and `apollo_chain_completion` consume it before
+route establishment. If the scenario route is about 230 m but Apollo reports a
+multi-road 648 m routing response, the route layer must fail with
+`apollo_routing_length_mismatch` rather than allowing later control metrics to
+be interpreted as natural driving.
+
+Planning materialization reports keep time domains explicit. Latency or
+freshness metrics are valid only when both sides use the same domain
+(`sim_time` to `sim_time`, or wall time to wall time). Mixed-domain latency,
+zero as-of join coverage, or missing topic rows produces `insufficient_data`
+freshness attribution; analyzers must not report localization/chassis stale
+counts as zero when freshness evidence is unavailable.
 
 ## Chain Completion
 

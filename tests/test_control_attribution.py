@@ -160,6 +160,18 @@ def test_missing_yaw_rate_keeps_mapping_analysis_available(tmp_path: Path) -> No
     assert report["attribution"]["mapped_to_applied_steer_consistency"]["status"] == "pass"
 
 
+def test_apollo_control_source_is_normalized_for_claim_gate(tmp_path: Path) -> None:
+    rows = _base_rows()
+    trace = _write_rows(tmp_path / "timeseries.csv", rows)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"control_source": "/apollo/control"}), encoding="utf-8")
+
+    report = analyze_control_attribution(trace, manifest_json=manifest)
+
+    assert report["control_source"] == "/apollo/control"
+    assert report["applied_control_source"] == "apollo_control"
+
+
 def test_cli_writes_report(tmp_path: Path) -> None:
     out = tmp_path / "cli"
     result = subprocess.run(
