@@ -62,12 +62,29 @@ class AutowareRos2Backend:
 
     def build_launch_plan(self, plan: RunPlan) -> LaunchPlan:
         run_dir = f"runs/{plan.identity.run_id}"
+        fixed_scene_enabled = (
+            bool((plan.scenario.fixed_scene or {}).get("enabled", True))
+            if plan.scenario.fixed_scene
+            else False
+        )
         expected_artifacts = [
             "manifest.json",
             "summary.json",
             "timeseries.csv",
             "analysis/autoware_evidence/autoware_evidence_report.json",
         ]
+        if fixed_scene_enabled:
+            expected_artifacts.extend(
+                [
+                    "artifacts/fixed_scene_resolved.json",
+                    "artifacts/fixed_scene_runtime_state.json",
+                    "artifacts/scenario_actor_trace.jsonl",
+                    "artifacts/obstacle_gt_contract.jsonl",
+                    "analysis/fixed_scene_contract/fixed_scene_contract_report.json",
+                    "analysis/scenario_actor_contract/scenario_actor_contract_report.json",
+                    "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json",
+                ]
+            )
         if plan.traffic_flow.enabled:
             expected_artifacts.extend(["artifacts/traffic_flow_manifest.json", "artifacts/traffic_flow_events.jsonl"])
             if int(plan.traffic_flow.vehicles.get("count", 0) or 0) > 0:
@@ -87,18 +104,22 @@ class AutowareRos2Backend:
         return LaunchPlan(
             backend=self.name,
             mode="legacy_autoware_ros2_compat",
-            commands=[
-                [
-                    "python",
-                    "tools/run_town01_capability_online_chain.py",
-                    "--stack",
-                    "autoware",
-                    "--scenario",
-                    plan.scenario.scenario_id,
-                    "--run-dir",
-                    run_dir,
+            commands=(
+                []
+                if fixed_scene_enabled
+                else [
+                    [
+                        "python",
+                        "tools/run_town01_capability_online_chain.py",
+                        "--stack",
+                        "autoware",
+                        "--scenario",
+                        plan.scenario.scenario_id,
+                        "--run-dir",
+                        run_dir,
+                    ]
                 ]
-            ],
+            ),
             env={
                 "CARLA_TESTBED_RUN_ID": plan.identity.run_id,
                 "ROS_DOMAIN_ID": "0",
@@ -117,9 +138,21 @@ class AutowareRos2Backend:
                 ["python", "tools/analyze_autoware_evidence.py", "--run-dir", run_dir],
                 ["python", "-m", "carla_testbed", "analyze", "--run-dir", run_dir],
             ],
-            starts_runtime=True,
-            compatibility_source="existing Autoware adapter/runner",
+            starts_runtime=not fixed_scene_enabled,
+            compatibility_source=(
+                "fixed-scene Autoware runtime migration required"
+                if fixed_scene_enabled
+                else "existing Autoware adapter/runner"
+            ),
             warnings=[
-                "LaunchPlan is a compatibility description; Autoware runtime dispatch remains legacy."
+                "LaunchPlan is a compatibility description; Autoware runtime dispatch remains legacy.",
+                *(
+                    [
+                        "Autoware fixed-scene runtime is not migrated behind this facade; do not legacy-dispatch this plan as capability evidence.",
+                        "Claim-grade fixed-scene Autoware runs must produce obstacle_gt_contract records linking scenario actor ids to Autoware perception/tracking evidence.",
+                    ]
+                    if fixed_scene_enabled
+                    else []
+                ),
             ],
         )

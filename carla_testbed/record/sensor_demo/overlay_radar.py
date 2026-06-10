@@ -2,7 +2,7 @@ from __future__ import annotations
 
 try:
     import cv2
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover - OpenCV may fail to import with NumPy ABI mismatch
     cv2 = None
 import numpy as np
 

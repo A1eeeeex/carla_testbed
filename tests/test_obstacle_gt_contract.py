@@ -92,6 +92,7 @@ def _obstacle(**updates):
         "ego_actor_id": "ego",
         "carla_actor_id": "front_1",
         "apollo_perception_id": "front_1",
+        "type": "VEHICLE",
         "is_ego": False,
         "frame_transform_checked": True,
         "theta_frame_checked": True,
@@ -270,6 +271,23 @@ def test_fixed_scene_actor_must_appear_in_obstacle_gt(tmp_path: Path) -> None:
     assert report["fixed_scene_actor_linkage"]["missing_actor_ids"] == ["101"]
 
 
+def test_fixed_scene_runtime_state_missing_blocks_obstacle_linkage(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "fixed_scene_resolved.json").write_text(
+        json.dumps({"schema_version": "fixed_scene_storyboard.v1", "roles": {"ego": {}, "lead_vehicle": {}}}),
+        encoding="utf-8",
+    )
+    (artifacts / "obstacle_gt_contract.jsonl").write_text(json.dumps(_obstacle()) + "\n", encoding="utf-8")
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="follow_stop")
+
+    assert report["status"] == "insufficient_data"
+    assert "fixed_scene_runtime_state_missing_for_obstacle_linkage" in report["missing_fields"]
+    assert report["fixed_scene_actor_linkage"]["status"] == "insufficient_data"
+
+
 def test_fixed_scene_actor_linkage_passes_when_obstacle_present(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     artifacts = run_dir / "artifacts"
@@ -287,6 +305,7 @@ def test_fixed_scene_actor_linkage_passes_when_obstacle_present(tmp_path: Path) 
 
     assert report["status"] == "pass"
     assert report["fixed_scene_actor_linkage"]["status"] == "pass"
+    assert report["fixed_scene_actor_linkage"]["scenario_actor_obstacle_count"] == 1
 
 
 def test_tracking_time_non_monotonic_fails() -> None:

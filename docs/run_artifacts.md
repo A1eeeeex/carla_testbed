@@ -170,6 +170,14 @@ cases, but they do not prove ego natural-driving success. Ego capability claims
 still require the Apollo/Autoware control, localization, reference-line,
 perception, no-assist, and natural-driving gates.
 
+For fixed-scene playback, phase start is not enough. Required phases default to
+`required: true`, and `fixed_scene_contract_report.json` must show that they
+started and completed. Cut-in/cut-out traces must also contain observed
+longitudinal/lateral evidence; `lane_change_progress` alone is only scripted
+intent and cannot validate a completed lane change. Scripted CARLA
+`set_transform` lane changes are diagnostic-only unless a future physics
+controller and no-teleport evidence upgrades the contract.
+
 `artifact_completeness_report.json` also treats missing or mismatched
 `manifest.json.carla_world` identity as `insufficient_data`. A run may request
 `Town01` in config, but capability evidence should separately record the CARLA
@@ -290,11 +298,16 @@ setup; it is not an Apollo/Autoware behavior pass.
 
 `analysis/pedestrian_flow_contract/pedestrian_flow_contract_report.json` checks
 optional CARLA WalkerAIController background pedestrians. It verifies seed
-recording, requested/spawned walker count, controller startup, unique
-`background_walker_*` role names, and that ego or scripted scenario actors were
-not registered as background walkers. Passing this report only validates
-background pedestrian setup; pedestrian perception/avoidance claims still need
-`obstacle_gt_contract_report.json` with a pedestrian section.
+recording, requested/spawned walker count, controller startup, movement trace
+rows in `artifacts/walker_flow_trace.jsonl`, unique `background_walker_*` role
+names, and that ego or scripted scenario actors were not registered as
+background walkers. Missing movement trace is `insufficient_data`, because a
+started WalkerAIController does not prove that the walker actually moved.
+Passing this report only validates background pedestrian setup; pedestrian
+perception/avoidance claims still need `obstacle_gt_contract_report.json` with
+a pedestrian section. Nonzero `walker_cross_factor` is allowed for smoke/demo
+traffic, but it is reported as a claim blocker unless the run explicitly allows
+random pedestrian road crossing.
 
 ## Platform Evidence Bundle And Claim Package
 
@@ -313,6 +326,13 @@ For claim-grade gates, metric rules can fail even when a report advertises
 `status=pass`; examples include low Planning non-empty trajectory ratio, missing
 route establishment, missing HDMap projection claim grade, non-Apollo applied
 control source, or blocking assists.
+
+Claim evidence packages include fixed-scene row-level artifacts when a run
+declares fixed-scene playback. If `fixed_scene_resolved.json` is present but
+`fixed_scene_runtime_state.json`, `scenario_actor_trace.jsonl`, or
+`scenario_phase_events.jsonl` is missing, the package manifest reports
+`claim_reproducibility_level=summary_only_missing_fixed_scene_row_level` and
+`status=insufficient_data`.
 
 `python -m carla_testbed pack --profile claim` packages review evidence without
 large media by default. Claim packages should include row-level evidence when

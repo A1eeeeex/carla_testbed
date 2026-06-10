@@ -60,6 +60,24 @@ def test_fixed_scene_contract_fails_on_spawn_feasibility_failure(tmp_path) -> No
     assert report["metrics"]["spawn_feasibility_pass"] is False
 
 
+def test_fixed_scene_contract_fails_when_required_phase_does_not_complete(tmp_path) -> None:
+    storyboard_path, trace_path, events_path = _write_fixed_scene_fixture(tmp_path, include_completed=False)
+
+    report = analyze_fixed_scene_contract(
+        storyboard_path=storyboard_path,
+        trace_path=trace_path,
+        events_path=events_path,
+    )
+
+    assert report["status"] == "fail"
+    assert "fixed_scene_required_phase_not_completed" in report["blocking_reasons"]
+    assert report["missing_completed_required_phases"] == [
+        "lead_brake_to_stop",
+        "lead_cruise",
+        "lead_hold_stop",
+    ]
+
+
 def test_fixed_scene_contract_writes_report_files(tmp_path) -> None:
     storyboard_path, trace_path, events_path = _write_fixed_scene_fixture(tmp_path)
     report = analyze_fixed_scene_contract(storyboard_path=storyboard_path, trace_path=trace_path, events_path=events_path)
@@ -70,7 +88,7 @@ def test_fixed_scene_contract_writes_report_files(tmp_path) -> None:
     assert "fixed_scene_contract_summary.md" in outputs["summary"]
 
 
-def _write_fixed_scene_fixture(tmp_path):
+def _write_fixed_scene_fixture(tmp_path, *, include_completed: bool = True):
     template = load_fixed_scene_template("configs/scenarios/town01/follow_stop_097.yaml")
     storyboard = compile_fixed_scene_template(template)
     storyboard_path = tmp_path / "fixed_scene_resolved.json"
@@ -87,6 +105,14 @@ def _write_fixed_scene_fixture(tmp_path):
         {"schema_version": "scenario_phase_event.v1", "scene_id": "follow_stop_097", "phase": "lead_brake_to_stop", "event": "phase_started"},
         {"schema_version": "scenario_phase_event.v1", "scene_id": "follow_stop_097", "phase": "lead_hold_stop", "event": "phase_started"},
     ]
+    if include_completed:
+        events.extend(
+            [
+                {"schema_version": "scenario_phase_event.v1", "scene_id": "follow_stop_097", "phase": "lead_cruise", "event": "phase_completed"},
+                {"schema_version": "scenario_phase_event.v1", "scene_id": "follow_stop_097", "phase": "lead_brake_to_stop", "event": "phase_completed"},
+                {"schema_version": "scenario_phase_event.v1", "scene_id": "follow_stop_097", "phase": "lead_hold_stop", "event": "phase_completed"},
+            ]
+        )
     trace_path.write_text("\n".join(json.dumps(row) for row in trace_rows) + "\n", encoding="utf-8")
     events_path.write_text("\n".join(json.dumps(row) for row in events) + "\n", encoding="utf-8")
     return storyboard_path, trace_path, events_path

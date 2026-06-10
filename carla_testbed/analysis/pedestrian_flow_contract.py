@@ -15,6 +15,7 @@ def analyze_pedestrian_flow_contract_files(
     manifest_path: str | Path | None = None,
     events_path: str | Path | None = None,
     candidates_path: str | Path | None = None,
+    walker_trace_path: str | Path | None = None,
 ) -> dict[str, Any]:
     root = Path(run_dir).expanduser() if run_dir else None
     if root is not None:
@@ -24,15 +25,21 @@ def analyze_pedestrian_flow_contract_files(
             root,
             ("artifacts/walker_spawn_candidates.jsonl", "walker_spawn_candidates.jsonl"),
         )
+        walker_trace_path = walker_trace_path or _find_first(
+            root,
+            ("artifacts/walker_flow_trace.jsonl", "walker_flow_trace.jsonl"),
+        )
     return analyze_pedestrian_flow_contract(
         manifest=_read_json(Path(manifest_path).expanduser() if manifest_path else None),
         events=_read_jsonl(Path(events_path).expanduser() if events_path else None),
         candidates=_read_jsonl(Path(candidates_path).expanduser() if candidates_path else None),
+        walker_trace=_read_jsonl(Path(walker_trace_path).expanduser() if walker_trace_path else None),
         source={
             "run_dir": str(root) if root is not None else None,
             "manifest_path": str(manifest_path) if manifest_path else None,
             "events_path": str(events_path) if events_path else None,
             "candidates_path": str(candidates_path) if candidates_path else None,
+            "walker_trace_path": str(walker_trace_path) if walker_trace_path else None,
         },
     )
 
@@ -42,12 +49,14 @@ def analyze_pedestrian_flow_contract(
     manifest: Mapping[str, Any] | None = None,
     events: Sequence[Mapping[str, Any]] = (),
     candidates: Sequence[Mapping[str, Any]] = (),
+    walker_trace: Sequence[Mapping[str, Any]] = (),
     source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     manifest = manifest or {}
     source = source or {}
     warnings: list[str] = []
     blocking: list[str] = []
+    claim_blocking: list[str] = []
     missing: list[str] = []
     if not manifest:
         return {
@@ -59,6 +68,7 @@ def analyze_pedestrian_flow_contract(
             "metrics": {},
             "walkers": [],
             "blocking_reasons": ["traffic_flow_manifest_missing"],
+            "claim_blocking_reasons": ["traffic_flow_manifest_missing"],
             "warnings": [],
             "missing_fields": ["traffic_flow_manifest"],
             "source": dict(source),
@@ -82,6 +92,7 @@ def analyze_pedestrian_flow_contract(
     controller_count = controller_count_value if controller_count_value is not None else _count_controllers(walkers)
     controller_started = controller_started_value if controller_started_value is not None else _count_started(walkers)
     cross_factor = _number(manifest.get("walker_cross_factor"))
+    movement = _analyze_walker_trace(walker_trace, walkers)
 
     if not enabled or requested <= 0:
         status = "not_applicable"
@@ -107,6 +118,20 @@ def analyze_pedestrian_flow_contract(
             warnings.append("walker_cross_factor_missing")
         elif cross_factor > 0.0:
             warnings.append("walker_cross_factor_nonzero_builtin_crossing")
+            if not bool(manifest.get("random_pedestrian_road_crossing_allowed")):
+                claim_blocking.append("walker_cross_factor_nonzero_requires_explicit_allowance")
+        if not walker_trace:
+            missing.append("walker_flow_trace")
+            claim_blocking.append("walker_flow_trace_missing")
+        elif movement["walker_movement_sample_count"] <= 0:
+            missing.append("walker_flow_trace_movement_samples")
+            claim_blocking.append("walker_movement_evidence_missing")
+        elif movement["walker_trace_missing_actor_ids"]:
+            warnings.append("walker_flow_trace_missing_manifest_actor_ids")
+            claim_blocking.append("walker_flow_trace_actor_linkage_incomplete")
+        elif movement["moving_walker_count"] < spawned:
+            warnings.append("walker_movement_evidence_below_spawned_count")
+            claim_blocking.append("walker_movement_evidence_incomplete")
 
     role_names = [str(walker.get("role_name") or "") for walker in walkers]
     if len(set(role_names)) != len(role_names):
@@ -122,6 +147,7 @@ def analyze_pedestrian_flow_contract(
     stuck_count = _event_count(events, "walker_stuck_detected")
     if stuck_count:
         warnings.append("pedestrian_flow_stuck_actor_detected")
+        claim_blocking.append("walker_stuck_actor_detected")
     if manifest.get("destroyed_cleanly") is False:
         warnings.append("walkers_not_destroyed_cleanly")
 
@@ -151,6 +177,7 @@ def analyze_pedestrian_flow_contract(
         "stuck_actor_count": stuck_count,
         "selected_spawn_candidate_count": selected_candidates,
         "destroyed_cleanly": manifest.get("destroyed_cleanly"),
+        **movement,
     }
     return {
         "schema_version": PEDESTRIAN_FLOW_CONTRACT_SCHEMA_VERSION,
@@ -161,6 +188,7 @@ def analyze_pedestrian_flow_contract(
         "metrics": metrics,
         "walkers": walkers,
         "blocking_reasons": sorted(set(blocking)),
+        "claim_blocking_reasons": sorted(set(claim_blocking)),
         "warnings": sorted(set(warnings)),
         "missing_fields": sorted(set(missing)),
         "source": dict(source),
@@ -193,7 +221,11 @@ def pedestrian_flow_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Requested walkers: {metrics.get('requested_walker_count')}",
             f"- Spawned walkers: {metrics.get('spawned_walker_count')}",
             f"- Controllers started: {metrics.get('controller_started_count')}",
+            f"- Walker trace rows: {metrics.get('walker_trace_row_count')}",
+            f"- Moving ratio: {metrics.get('walker_moving_ratio')}",
+            f"- Max stationary duration s: {metrics.get('max_stationary_duration_s')}",
             f"- Blocking reasons: {', '.join(report.get('blocking_reasons') or []) or 'none'}",
+            f"- Claim blocking reasons: {', '.join(report.get('claim_blocking_reasons') or []) or 'none'}",
             f"- Warnings: {', '.join(report.get('warnings') or []) or 'none'}",
         ]
     ) + "\n"
@@ -216,6 +248,120 @@ def _count_started(walkers: Sequence[Mapping[str, Any]]) -> int:
 
 def _event_count(events: Sequence[Mapping[str, Any]], name: str) -> int:
     return sum(1 for event in events if str(event.get("event") or "") == name)
+
+
+def _analyze_walker_trace(
+    rows: Sequence[Mapping[str, Any]],
+    walkers: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    expected_ids = {_int(walker.get("actor_id")) for walker in walkers}
+    expected_ids.discard(None)
+    by_actor: dict[int, list[Mapping[str, Any]]] = {}
+    destination_retarget_count = 0
+    for row in rows:
+        event_type = str(row.get("event_type") or row.get("event") or "")
+        if event_type == "walker_destination_retargeted":
+            destination_retarget_count += 1
+        actor_id = _int(row.get("actor_id") or row.get("walker_id"))
+        if actor_id is None:
+            continue
+        if event_type and event_type not in {"walker_state", "walker_destination_retargeted"}:
+            continue
+        by_actor.setdefault(actor_id, []).append(row)
+        destination_retarget_count += _int(row.get("destination_retarget_count")) or 0
+
+    displacement_by_actor: dict[str, float] = {}
+    moving_walker_count = 0
+    moving_samples = 0
+    total_samples = 0
+    max_stationary_duration = 0.0
+    for actor_id, actor_rows in by_actor.items():
+        ordered = sorted(actor_rows, key=_row_time)
+        positions = [_row_position(row) for row in ordered]
+        positions = [position for position in positions if position is not None]
+        if len(positions) >= 2:
+            displacement = _distance_2d(positions[0], positions[-1])
+            displacement_by_actor[str(actor_id)] = displacement
+            if displacement > 0.25:
+                moving_walker_count += 1
+        stationary_start: float | None = None
+        previous_time: float | None = None
+        previous_position: tuple[float, float, float] | None = None
+        actor_moving_samples = 0
+        actor_total_samples = 0
+        for row in ordered:
+            time_sec = _row_time(row)
+            position = _row_position(row)
+            speed = _number(row.get("speed_mps"))
+            if speed is None and previous_position is not None and position is not None and previous_time is not None:
+                dt = max(0.0, time_sec - previous_time)
+                speed = _distance_2d(previous_position, position) / dt if dt > 0 else 0.0
+            if speed is not None:
+                is_moving = speed > 0.05
+                actor_total_samples += 1
+                actor_moving_samples += int(is_moving)
+                if not is_moving:
+                    stationary_start = time_sec if stationary_start is None else stationary_start
+                elif stationary_start is not None:
+                    max_stationary_duration = max(max_stationary_duration, time_sec - stationary_start)
+                    stationary_start = None
+            previous_time = time_sec
+            previous_position = position
+        if stationary_start is not None and previous_time is not None:
+            max_stationary_duration = max(max_stationary_duration, previous_time - stationary_start)
+        total_samples += actor_total_samples
+        moving_samples += actor_moving_samples
+
+    if expected_ids:
+        trace_actor_ids = set(by_actor)
+        missing_ids = sorted(str(actor_id) for actor_id in expected_ids - trace_actor_ids)
+    else:
+        missing_ids = []
+    displacements = list(displacement_by_actor.values())
+    return {
+        "walker_trace_row_count": len(rows),
+        "walker_trace_actor_count": len(by_actor),
+        "walker_trace_missing_actor_ids": missing_ids,
+        "walker_movement_sample_count": total_samples,
+        "walker_moving_sample_count": moving_samples,
+        "walker_moving_ratio": (float(moving_samples) / float(total_samples)) if total_samples else None,
+        "moving_walker_count": moving_walker_count,
+        "walker_displacement_m": (sum(displacements) / len(displacements)) if displacements else None,
+        "walker_displacement_m_min": min(displacements) if displacements else None,
+        "walker_displacement_m_max": max(displacements) if displacements else None,
+        "walker_displacement_m_by_actor": displacement_by_actor,
+        "max_stationary_duration_s": max_stationary_duration if total_samples else None,
+        "destination_retarget_count": destination_retarget_count,
+    }
+
+
+def _row_time(row: Mapping[str, Any]) -> float:
+    for name in ("sim_time_sec", "timestamp", "timestamp_sec", "t"):
+        value = _number(row.get(name))
+        if value is not None:
+            return value
+    return 0.0
+
+
+def _row_position(row: Mapping[str, Any]) -> tuple[float, float, float] | None:
+    for key in ("location", "position"):
+        value = row.get(key)
+        if isinstance(value, Mapping):
+            x = _number(value.get("x"))
+            y = _number(value.get("y"))
+            z = _number(value.get("z")) or 0.0
+            if x is not None and y is not None:
+                return (x, y, z)
+    x = _number(row.get("x"))
+    y = _number(row.get("y"))
+    z = _number(row.get("z")) or 0.0
+    if x is None or y is None:
+        return None
+    return (x, y, z)
+
+
+def _distance_2d(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    return float(((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5)
 
 
 def _read_json(path: Path | None) -> dict[str, Any]:

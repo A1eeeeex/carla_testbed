@@ -24,8 +24,11 @@ Traffic Manager.
 
 When background walkers are enabled, evidence resolution requires
 `pedestrian_flow_contract`. The gate verifies that requested walkers spawned,
-WalkerAIController instances started, role names are unique, and ego/scenario
-actors were not registered as background walkers.
+WalkerAIController instances started, `walker_flow_trace.jsonl` contains
+movement evidence, role names are unique, and ego/scenario actors were not
+registered as background walkers. Random pedestrian road-crossing
+(`walker_cross_factor > 0`) remains a demo/scenario option, but it is reported
+as a claim blocker unless explicitly allowed by the run metadata.
 
 This gate is for scenario health. It must not be used as Apollo/Autoware
 natural-driving evidence.

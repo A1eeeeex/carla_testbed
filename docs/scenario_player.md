@@ -72,6 +72,18 @@ The trace rows record role, controller intent, target speed, observed speed,
 position, route/lane fields when available, distance to ego, and applied
 control if the runtime adapter supplies it.
 
+`fixed_scene_contract_report.json` treats storyboard phases as required by
+default. A required phase that never starts or never completes is a contract
+failure, and stopping the scene before required phases complete is reported as
+`stop_before_required_phase_completed`. Optional phases must be marked with
+`required: false` in the storyboard.
+
+For `duration_policy: lead_reaches_road_end`, the compiler emits an
+`actor_route_s` stop condition plus a simulation-time fallback. Claim-grade
+verification requires `route_s` rows for the lead actor; if those rows are
+missing, the contract reports `duration_policy_not_verified_by_actor_route_s`
+instead of pretending that the road-end condition was observed.
+
 ## Offline Commands
 
 Compile a template or concrete scenario:
@@ -148,7 +160,14 @@ objects. The adapter currently supports the follow-stop essentials:
 
 The runtime adapter intentionally does not control ego. It also does not yet
 implement claim-grade lane-change control for cut-in/cut-out. The scripted
-lane-change support is scenario playback evidence only.
+lane-change support is scenario playback evidence only. Trace/runtime metadata
+therefore records `lane_change_runtime_mode=set_transform_interpolation`,
+`physics_controlled_lane_change=false`, and `claim_grade_lane_change=false`.
+The scenario actor contract uses `lane_change_progress` only as intent evidence;
+cut-in/cut-out pass also requires observed longitudinal/lateral rows, sufficient
+lateral shift, and a no-teleport check. Relative longitudinal triggers are
+recorded in `trigger_frame=ego_body`; curved-road or junction claims need a
+separate route/Frenet projection contract and `route_health.json`.
 
 For CARLA-only diagnostic runs, ego control is provided by
 `SimpleAccRouteFollowerController` through the `carla_builtin` backend facade.
@@ -179,6 +198,12 @@ obstacle GT evidence, and prediction evidence where applicable. A lead vehicle
 or cut-in vehicle that exists only in CARLA but is missing from
 `/apollo/perception/obstacles` or the Autoware equivalent invalidates the
 scenario as autonomy evidence.
+
+If fixed-scene playback is enabled, evidence packages for claim/debug review
+must include row-level playback artifacts: `fixed_scene_resolved.json`,
+`fixed_scene_runtime_state.json`, `scenario_actor_trace.jsonl`, and
+`scenario_phase_events.jsonl`. Packages missing those files are marked
+`summary_only_missing_fixed_scene_row_level`.
 
 `scenario_validation` checks scene playback and actor behavior. It does not
 require Apollo/Autoware link health. `claim_natural_driving` may consume the

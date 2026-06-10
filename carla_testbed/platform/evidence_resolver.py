@@ -214,6 +214,7 @@ def _traffic_flow_rules(plan: RunPlan) -> list[dict[str, Any]]:
             ]
         )
     if _walkers_enabled(plan):
+        walker_count = int(plan.traffic_flow.walkers.get("count", 0) or 0)
         rules.extend(
             [
                 _rule(
@@ -221,14 +222,28 @@ def _traffic_flow_rules(plan: RunPlan) -> list[dict[str, Any]]:
                     "pedestrian_flow_contract",
                     "metrics.spawned_walker_count",
                     "==",
-                    int(plan.traffic_flow.walkers.get("count", 0) or 0),
+                    walker_count,
                 ),
                 _rule(
                     "pedestrian_controllers_started",
                     "pedestrian_flow_contract",
                     "metrics.controller_started_count",
                     "==",
-                    int(plan.traffic_flow.walkers.get("count", 0) or 0),
+                    walker_count,
+                ),
+                _rule(
+                    "pedestrian_flow_trace_rows_present",
+                    "pedestrian_flow_contract",
+                    "metrics.walker_trace_row_count",
+                    ">=",
+                    walker_count,
+                ),
+                _rule(
+                    "pedestrian_flow_walkers_moved",
+                    "pedestrian_flow_contract",
+                    "metrics.moving_walker_count",
+                    "==",
+                    walker_count,
                 ),
                 _rule(
                     "ego_not_registered_as_walker",
@@ -239,6 +254,16 @@ def _traffic_flow_rules(plan: RunPlan) -> list[dict[str, Any]]:
                 ),
             ]
         )
+        if plan.gate.can_claim_natural_driving:
+            rules.append(
+                _rule(
+                    "pedestrian_flow_no_claim_blockers",
+                    "pedestrian_flow_contract",
+                    "claim_blocking_reasons",
+                    "==",
+                    [],
+                )
+            )
     return rules
 
 
@@ -246,8 +271,8 @@ def _fixed_scene_rules(plan: RunPlan) -> list[dict[str, Any]]:
     if not _fixed_scene_enabled(plan):
         return []
     return [
-        _rule("fixed_scene_contract_pass", "fixed_scene_contract", "status", "in", ["pass", "warn"]),
-        _rule("scenario_actor_contract_pass", "scenario_actor_contract", "status", "in", ["pass", "warn"]),
+        _rule("fixed_scene_contract_pass", "fixed_scene_contract", "status", "in", ["pass"]),
+        _rule("scenario_actor_contract_pass", "scenario_actor_contract", "status", "in", ["pass"]),
     ]
 
 

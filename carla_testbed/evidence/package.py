@@ -44,6 +44,13 @@ DEFAULT_INCLUDE_PATTERNS = (
 )
 
 ROW_LEVEL_EVIDENCE_PATTERNS = (
+    "artifacts/fixed_scene_resolved.json",
+    "artifacts/fixed_scene_runtime_state.json",
+    "artifacts/scenario_actor_trace.jsonl",
+    "artifacts/scenario_phase_events.jsonl",
+    "artifacts/ego_control_trace.jsonl",
+    "artifacts/traffic_spawn_candidates.jsonl",
+    "artifacts/walker_flow_trace.jsonl",
     "artifacts/topic_publish_stats.jsonl",
     "artifacts/publish_gap_trace.jsonl",
     "artifacts/control_apply_trace.jsonl",
@@ -66,6 +73,13 @@ CLAIM_REQUIRED_ROW_LEVEL = (
     "artifacts/publish_gap_trace.jsonl",
     "artifacts/control_apply_trace.jsonl",
     "artifacts/planning_topic_debug.jsonl",
+)
+
+FIXED_SCENE_CLAIM_REQUIRED_ROW_LEVEL = (
+    "artifacts/fixed_scene_resolved.json",
+    "artifacts/fixed_scene_runtime_state.json",
+    "artifacts/scenario_actor_trace.jsonl",
+    "artifacts/scenario_phase_events.jsonl",
 )
 
 LOG_INDEX_PATTERNS = (
@@ -151,15 +165,41 @@ def _candidate_files(root: Path, *, profile: str) -> list[Path]:
 def _missing_required(root: Path, *, profile: str) -> list[str]:
     if profile != "claim":
         return []
-    return [pattern for pattern in CLAIM_REQUIRED_ROW_LEVEL if not (root / pattern).exists()]
+    required = list(CLAIM_REQUIRED_ROW_LEVEL)
+    if _fixed_scene_enabled(root):
+        required.extend(FIXED_SCENE_CLAIM_REQUIRED_ROW_LEVEL)
+    return [pattern for pattern in required if not (root / pattern).exists()]
 
 
 def _claim_reproducibility_level(profile: str, missing_required: list[str]) -> str:
     if profile != "claim":
         return f"{profile}_evidence"
+    if any(pattern in FIXED_SCENE_CLAIM_REQUIRED_ROW_LEVEL for pattern in missing_required):
+        return "summary_only_missing_fixed_scene_row_level"
     if missing_required:
         return "summary_only_missing_row_level"
     return "row_level_evidence_present"
+
+
+def _fixed_scene_enabled(root: Path) -> bool:
+    if (root / "artifacts" / "fixed_scene_resolved.json").exists() or (root / "fixed_scene_resolved.json").exists():
+        return True
+    for rel in ("manifest.json", "summary.json"):
+        path = root / rel
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        fixed_scene = payload.get("fixed_scene")
+        if isinstance(fixed_scene, dict) and fixed_scene.get("enabled", True):
+            return True
+        if payload.get("fixed_scene_enabled") is True:
+            return True
+    return False
 
 
 def _add_bytes(archive: tarfile.TarFile, arcname: Path, text: str) -> None:

@@ -33,6 +33,7 @@ Required artifacts when traffic is enabled:
 - `artifacts/traffic_flow_events.jsonl`
 - `artifacts/traffic_spawn_candidates.jsonl` for vehicle Traffic Manager flow
 - `artifacts/walker_spawn_candidates.jsonl` for WalkerAIController flow
+- `artifacts/walker_flow_trace.jsonl` for WalkerAIController movement evidence
 - `analysis/traffic_flow_contract/traffic_flow_contract_report.json` when
   background vehicles are enabled
 - `analysis/pedestrian_flow_contract/pedestrian_flow_contract_report.json` when
@@ -42,8 +43,13 @@ Required artifacts when traffic is enabled:
 reproducibly, controlled by Traffic Manager, and did not register ego or
 scripted scenario actors. It does not prove Apollo or Autoware natural driving.
 `pedestrian_flow_contract` passing only proves background walkers were spawned,
-AI controllers started, and actor-control boundaries were recorded. It does not
-prove Apollo/Autoware pedestrian perception, prediction, planning, or avoidance.
+AI controllers started, movement trace rows show WalkerAIController-driven
+motion, and actor-control boundaries were recorded. Missing
+`walker_flow_trace.jsonl` is `insufficient_data`. A nonzero
+`walker_cross_factor` is a scenario/demo feature but a claim blocker unless the
+run explicitly allows random pedestrian road crossing. The report still does
+not prove Apollo/Autoware pedestrian perception, prediction, planning, or
+avoidance.
 `analysis/gate/gate_report.json` echoes `ego_control_source`,
 `scenario_actor_control_source`, `background_traffic_control_source`, and
 `background_walker_control_source` so actor-control domains remain auditable.

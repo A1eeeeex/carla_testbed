@@ -201,3 +201,46 @@ def test_claim_pack_includes_row_level_evidence_when_present(tmp_path: Path) -> 
     assert payload["claim_reproducibility_level"] == "row_level_evidence_present"
     assert "artifacts/topic_publish_stats.jsonl" in payload["included_files"]
     assert "package_manifest.json" in payload["included_files"]
+
+
+def test_claim_pack_marks_fixed_scene_summary_only_when_row_level_missing(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_fake_run(run_dir)
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "fixed_scene_resolved.json").write_text(json.dumps({"scene_id": "fixed_scene"}), encoding="utf-8")
+    for rel in [
+        "artifacts/topic_publish_stats.jsonl",
+        "artifacts/publish_gap_trace.jsonl",
+        "artifacts/control_apply_trace.jsonl",
+        "artifacts/planning_topic_debug.jsonl",
+    ]:
+        path = run_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"ok": true}\n', encoding="utf-8")
+    out = tmp_path / "fixed_scene_claim.tar.gz"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "carla_testbed",
+            "pack",
+            "--run-dir",
+            str(run_dir),
+            "--out",
+            str(out),
+            "--profile",
+            "claim",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["status"] == "insufficient_data"
+    assert payload["claim_reproducibility_level"] == "summary_only_missing_fixed_scene_row_level"
+    assert "artifacts/fixed_scene_runtime_state.json" in payload["missing_required_files"]
+    assert "artifacts/scenario_actor_trace.jsonl" in payload["missing_required_files"]
+    assert "artifacts/scenario_phase_events.jsonl" in payload["missing_required_files"]

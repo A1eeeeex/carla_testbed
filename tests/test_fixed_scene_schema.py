@@ -71,3 +71,59 @@ def test_trigger_dsl_aliases_match_proposed_yaml_shape() -> None:
         world_frame=1,
         actors=actors,
     )
+
+
+def test_relative_longitudinal_trigger_uses_ego_body_frame_yaw_zero() -> None:
+    actors = ScenarioActorRegistry()
+    actors.update(
+        {
+            "ego": {"x": 0.0, "y": 0.0, "yaw_rad": 0.0},
+            "lead_vehicle": {"x": 10.0, "y": 3.0},
+        }
+    )
+
+    relative = actors.relative_longitudinal_lateral("ego", "lead_vehicle")
+
+    assert relative == (10.0, 3.0)
+    assert evaluate_trigger(
+        {
+            "type": "relative_longitudinal_distance",
+            "from_role": "ego",
+            "to_role": "lead_vehicle",
+            "frame": "ego_body",
+            "op": "<=",
+            "value_m": 10.0,
+        },
+        sim_time_sec=0.0,
+        world_frame=1,
+        actors=actors,
+    )
+
+
+def test_relative_longitudinal_trigger_uses_ego_body_frame_yaw_ninety() -> None:
+    actors = ScenarioActorRegistry()
+    actors.update(
+        {
+            "ego": {"x": 0.0, "y": 0.0, "yaw_rad": 1.5707963267948966},
+            "lead_vehicle": {"x": 3.0, "y": 10.0},
+        }
+    )
+
+    relative = actors.relative_longitudinal_lateral("ego", "lead_vehicle")
+
+    assert relative is not None
+    assert relative[0] == pytest.approx(10.0)
+    assert relative[1] == pytest.approx(-3.0)
+    assert evaluate_trigger(
+        {
+            "type": "relative_longitudinal_distance",
+            "from_role": "ego",
+            "to_role": "lead_vehicle",
+            "frame": "ego_body",
+            "op": "<=",
+            "value_m": 10.0,
+        },
+        sim_time_sec=0.0,
+        world_frame=1,
+        actors=actors,
+    )

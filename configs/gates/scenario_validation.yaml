@@ -44,19 +44,33 @@ gate:
       op: "=="
       value_from: traffic_flow.walkers.count
       required_for: scenario_validation
+    - id: pedestrian_flow_trace_rows_present
+      when: traffic_flow.walkers.enabled == true
+      report: pedestrian_flow_contract
+      path: metrics.walker_trace_row_count
+      op: ">="
+      value_from: traffic_flow.walkers.count
+      required_for: scenario_validation
+    - id: pedestrian_flow_walkers_moved
+      when: traffic_flow.walkers.enabled == true
+      report: pedestrian_flow_contract
+      path: metrics.moving_walker_count
+      op: "=="
+      value_from: traffic_flow.walkers.count
+      required_for: scenario_validation
     - id: fixed_scene_contract_pass
       when: scenario.fixed_scene.enabled == true
       report: fixed_scene_contract
       path: status
       op: in
-      value: [pass, warn]
+      value: [pass]
       required_for: scenario_validation
     - id: scenario_actor_contract_pass
       when: scenario.fixed_scene.enabled == true
       report: scenario_actor_contract
       path: status
       op: in
-      value: [pass, warn]
+      value: [pass]
       required_for: scenario_validation
 evidence:
   required_analyzers:

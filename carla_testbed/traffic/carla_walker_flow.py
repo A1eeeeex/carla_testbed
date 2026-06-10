@@ -156,7 +156,21 @@ class CarlaWalkerFlow:
         return state
 
     def tick(self, context: Any) -> None:
-        del context
+        root = _artifact_root(context)
+        if root is None or not self._walkers:
+            return
+        artifacts = root / "artifacts"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        role_by_id = _role_by_actor_id(self._state)
+        rows = [
+            _walker_trace_row(
+                walker,
+                context=context,
+                role_name=role_by_id.get(int(getattr(walker, "id", -1)), "background_walker_unknown"),
+            )
+            for walker in self._walkers
+        ]
+        _append_jsonl(artifacts / "walker_flow_trace.jsonl", rows)
 
     def teardown(self, context: Any) -> None:
         del context
@@ -413,6 +427,101 @@ def _actor_info_to_dict(actor: TrafficActorInfo) -> dict[str, Any]:
     payload = dict(actor.__dict__)
     payload.setdefault("control_source", actor.control_source or actor.provider)
     return payload
+
+
+def _role_by_actor_id(state: TrafficFlowState | None) -> dict[int, str]:
+    if state is None:
+        return {}
+    return {int(actor.actor_id): actor.role_name for actor in state.actors}
+
+
+def _walker_trace_row(walker: Any, *, context: Any, role_name: str) -> dict[str, Any]:
+    location = _actor_location(walker)
+    velocity = _actor_velocity(walker)
+    speed = _vector_norm(velocity)
+    return {
+        "schema_version": "walker_flow_trace.v1",
+        "event_type": "walker_state",
+        "sim_time_sec": _context_sim_time(context),
+        "world_frame": _context_world_frame(context),
+        "wall_time_sec": time.time(),
+        "actor_id": int(getattr(walker, "id", -1)),
+        "role_name": role_name,
+        "x": _coord(location, "x"),
+        "y": _coord(location, "y"),
+        "z": _coord(location, "z"),
+        "velocity_x": _coord(velocity, "x"),
+        "velocity_y": _coord(velocity, "y"),
+        "velocity_z": _coord(velocity, "z"),
+        "speed_mps": speed,
+        "velocity_source": "carla_actor_velocity" if velocity is not None else "missing",
+        "destination_retarget_count": 0,
+    }
+
+
+def _actor_location(actor: Any) -> Any | None:
+    try:
+        if hasattr(actor, "get_transform"):
+            transform = actor.get_transform()
+            return getattr(transform, "location", None)
+        return getattr(actor, "location", None)
+    except Exception:
+        return None
+
+
+def _actor_velocity(actor: Any) -> Any | None:
+    try:
+        if hasattr(actor, "get_velocity"):
+            return actor.get_velocity()
+        return getattr(actor, "velocity", None)
+    except Exception:
+        return None
+
+
+def _vector_norm(vector: Any | None) -> float | None:
+    if vector is None:
+        return None
+    x = _coord(vector, "x")
+    y = _coord(vector, "y")
+    z = _coord(vector, "z")
+    if x is None or y is None or z is None:
+        return None
+    return float((x * x + y * y + z * z) ** 0.5)
+
+
+def _coord(obj: Any | None, name: str) -> float | None:
+    if obj is None:
+        return None
+    try:
+        if isinstance(obj, Mapping):
+            value = obj.get(name)
+        else:
+            value = getattr(obj, name)
+        return float(value)
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _context_sim_time(context: Any) -> float | None:
+    for name in ("sim_time_sec", "sim_time", "timestamp_sec", "timestamp"):
+        value = getattr(context, name, None)
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _context_world_frame(context: Any) -> int | None:
+    for name in ("world_frame", "frame", "frame_id"):
+        value = getattr(context, name, None)
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def _artifact_root(context: Any) -> Path | None:

@@ -248,6 +248,11 @@ def _analyze_lane_change(
     blocking_reasons: list[str] = []
     if not actor_rows:
         missing_fields.append("lane_change_actor_trace")
+    lane_rows = [row for row in actor_rows if str(row.get("action_type")) == "lane_change"]
+    if not lane_rows:
+        missing_fields.append("lane_change_action_rows")
+        if actor_rows:
+            missing_fields.extend(["longitudinal_to_ego_m", "lateral_to_ego_m"])
     progress_values = [
         value
         for value in (_num(row.get("lane_change_progress")) for row in actor_rows)
@@ -256,10 +261,9 @@ def _analyze_lane_change(
     if not progress_values:
         missing_fields.append("lane_change_progress")
     max_progress = max(progress_values) if progress_values else None
-    completed = bool(max_progress is not None and max_progress >= 0.95)
-    if progress_values and not completed:
+    intent_completed = bool(max_progress is not None and max_progress >= 0.95)
+    if progress_values and not intent_completed:
         blocking_reasons.append("lane_change_not_completed")
-    lane_rows = [row for row in actor_rows if str(row.get("action_type")) == "lane_change"]
     start_longitudinal = _num(lane_rows[0].get("longitudinal_to_ego_m")) if lane_rows else None
     start_lateral = _num(lane_rows[0].get("lateral_to_ego_m")) if lane_rows else None
     final_lateral = _num(lane_rows[-1].get("lateral_to_ego_m")) if lane_rows else None
@@ -269,28 +273,58 @@ def _analyze_lane_change(
         else None
     )
     criteria = _success_criteria(storyboard)
+    params = storyboard.get("params") if isinstance(storyboard.get("params"), Mapping) else {}
     expected_start_gap = _num(criteria.get("lane_change_start_gap_m"))
     gap_tolerance = _num(criteria.get("lane_change_start_gap_tolerance_m")) or 2.0
+    if start_longitudinal is None and lane_rows:
+        missing_fields.append("longitudinal_to_ego_m")
+    if start_lateral is None or final_lateral is None:
+        if lane_rows:
+            missing_fields.append("lateral_to_ego_m")
     if expected_start_gap is not None:
         if start_longitudinal is None:
             missing_fields.append("longitudinal_to_ego_m")
         elif abs(start_longitudinal - expected_start_gap) > gap_tolerance:
             blocking_reasons.append("lane_change_start_gap_out_of_tolerance")
-    min_lateral_shift = _num(criteria.get("min_lateral_shift_m"))
-    if min_lateral_shift is not None:
-        if lateral_shift is None:
-            missing_fields.append("lateral_to_ego_m")
-        elif lateral_shift < min_lateral_shift:
-            blocking_reasons.append("lane_change_lateral_shift_too_small")
+    min_lateral_shift = _lane_change_min_lateral_shift(criteria, params, lane_rows)
+    if lateral_shift is None:
+        if lane_rows:
+            missing_fields.append("lane_change_lateral_shift_m")
+    elif lateral_shift < min_lateral_shift:
+        blocking_reasons.append("lane_change_lateral_shift_too_small")
+    lateral_dynamics = _lane_change_lateral_dynamics(lane_rows)
+    if lateral_dynamics["no_teleport_check"] is False:
+        blocking_reasons.append("lane_change_teleport_detected")
+    observed_completed = bool(intent_completed and lateral_shift is not None and lateral_shift >= min_lateral_shift)
+    runtime_modes = sorted(
+        {
+            str(row.get("lane_change_runtime_mode"))
+            for row in lane_rows
+            if row.get("lane_change_runtime_mode") not in {None, ""}
+        }
+    )
     return {
         "type": template,
         "actor_trace_rows": len(actor_rows),
-        "lane_change_completed": completed,
+        "lane_change_completed": observed_completed,
+        "lane_change_intent_completed": intent_completed,
         "lane_change_progress_max": max_progress,
         "lane_change_start_longitudinal_gap_m": start_longitudinal,
         "lane_change_start_lateral_m": start_lateral,
         "lane_change_final_lateral_m": final_lateral,
         "lane_change_lateral_shift_m": lateral_shift,
+        "lane_change_min_lateral_shift_m": min_lateral_shift,
+        "lane_change_runtime_modes": runtime_modes,
+        "physics_controlled_lane_change": _all_true(row.get("physics_controlled_lane_change") for row in lane_rows),
+        "claim_grade_lane_change": _all_true(row.get("claim_grade_lane_change") for row in lane_rows),
+        "velocity_sources": sorted(
+            {
+                str(row.get("velocity_source"))
+                for row in lane_rows
+                if row.get("velocity_source") not in {None, ""}
+            }
+        ),
+        "lateral_dynamics": lateral_dynamics,
         "missing_fields": missing_fields,
         "warnings": warnings,
         "blocking_reasons": blocking_reasons,
@@ -331,6 +365,9 @@ def _metrics_from_behavior(
         "lane_change_completed": behavior.get("lane_change_completed"),
         "lane_change_start_longitudinal_gap_m": behavior.get("lane_change_start_longitudinal_gap_m"),
         "lane_change_lateral_shift_m": behavior.get("lane_change_lateral_shift_m"),
+        "lane_change_no_teleport_check": (behavior.get("lateral_dynamics") or {}).get("no_teleport_check")
+        if isinstance(behavior.get("lateral_dynamics"), Mapping)
+        else None,
         "initial_gap_m": behavior.get("initial_gap_m"),
         "min_gap_m": behavior.get("min_gap_m"),
         "lead_stopped": behavior.get("lead_stopped"),
@@ -343,6 +380,69 @@ def _metrics_from_behavior(
 def _success_criteria(storyboard: Mapping[str, Any]) -> Mapping[str, Any]:
     criteria = storyboard.get("success_criteria")
     return criteria if isinstance(criteria, Mapping) else {}
+
+
+def _lane_change_min_lateral_shift(
+    criteria: Mapping[str, Any],
+    params: Mapping[str, Any],
+    lane_rows: Sequence[Mapping[str, Any]],
+) -> float:
+    configured = _num(criteria.get("min_lateral_shift_m"))
+    if configured is not None:
+        return configured
+    lane_width = _num(params.get("lane_width_m"))
+    if lane_width is None:
+        lane_width = _num(params.get("lane_change_lateral_shift_m"))
+    if lane_width is None and lane_rows:
+        lane_width = _num(lane_rows[0].get("lateral_shift_m"))
+    if lane_width is None:
+        lane_width = 3.6
+    return 0.8 * abs(lane_width)
+
+
+def _lane_change_lateral_dynamics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    samples: list[tuple[float, float]] = []
+    for row in rows:
+        t = _num(row.get("sim_time_sec"))
+        lateral = _num(row.get("lateral_to_ego_m"))
+        if t is not None and lateral is not None:
+            samples.append((t, lateral))
+    samples = sorted(samples, key=lambda item: item[0])
+    lateral_speeds: list[float] = []
+    lateral_accels: list[float] = []
+    previous_speed: tuple[float, float] | None = None
+    max_step = 0.0
+    for (t0, l0), (t1, l1) in zip(samples, samples[1:]):
+        dt = t1 - t0
+        if dt <= 0:
+            continue
+        dl = l1 - l0
+        max_step = max(max_step, abs(dl))
+        speed = dl / dt
+        lateral_speeds.append(speed)
+        if previous_speed is not None:
+            prev_t, prev_speed = previous_speed
+            accel_dt = t1 - prev_t
+            if accel_dt > 0:
+                lateral_accels.append((speed - prev_speed) / accel_dt)
+        previous_speed = (t1, speed)
+    max_lateral_speed = max((abs(value) for value in lateral_speeds), default=None)
+    max_lateral_accel = max((abs(value) for value in lateral_accels), default=None)
+    no_teleport = None if len(samples) < 2 else max_step <= 1.0
+    return {
+        "sample_count": len(samples),
+        "max_lateral_step_m": max_step if samples else None,
+        "max_lateral_speed_mps": max_lateral_speed,
+        "max_lateral_accel_mps2": max_lateral_accel,
+        "no_teleport_check": no_teleport,
+    }
+
+
+def _all_true(values: Any) -> bool | None:
+    normalized = [value for value in values if value is not None]
+    if not normalized:
+        return None
+    return all(bool(value) for value in normalized)
 
 
 def _summary(report: Mapping[str, Any]) -> str:

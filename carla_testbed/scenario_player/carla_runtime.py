@@ -18,6 +18,7 @@ class CarlaFixedSceneRuntimeState:
     scene_id: str
     actor_roles: dict[str, int | str | None] = field(default_factory=dict)
     spawn_feasibility: dict[str, dict[str, Any]] = field(default_factory=dict)
+    lane_change_runtime: dict[str, dict[str, Any]] = field(default_factory=dict)
     spawned_count: int = 0
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -29,6 +30,7 @@ class CarlaFixedSceneRuntimeState:
             "scene_id": self.scene_id,
             "actor_roles": dict(self.actor_roles),
             "spawn_feasibility": dict(self.spawn_feasibility),
+            "lane_change_runtime": dict(self.lane_change_runtime),
             "spawned_count": int(self.spawned_count),
             "warnings": list(self.warnings),
             "errors": list(self.errors),
@@ -83,6 +85,7 @@ class CarlaFixedSceneRuntime:
         )
         self.player.setup({}, resolved)
         state = CarlaFixedSceneRuntimeState(scene_id=str(resolved["scene_id"]), artifact_paths=paths)
+        state.lane_change_runtime = _lane_change_runtime_metadata(resolved)
         world = _context_attr(context, "world")
         ego = _ego_actor(context)
         if world is None:
@@ -109,9 +112,10 @@ class CarlaFixedSceneRuntime:
         if self.storyboard is None or self.player is None:
             raise RuntimeError("CarlaFixedSceneRuntime.setup() must be called before tick()")
         ego = _ego_actor(context)
-        actors = {"ego": _actor_state("ego", ego)}
+        world = _context_attr(context, "world", None)
+        actors = {"ego": _actor_state("ego", ego, world=world)}
         for role, actor in self.actors.items():
-            actors[role] = _actor_state(role, actor)
+            actors[role] = _actor_state(role, actor, world=world)
         frame = FixedSceneFrameContext(
             sim_time_sec=float(_context_attr(context, "sim_time_sec", _context_attr(context, "sim_time", 0.0)) or 0.0),
             world_frame=int(_context_attr(context, "world_frame", _context_attr(context, "frame", 0)) or 0),
@@ -263,6 +267,27 @@ def _artifact_dir(context: Any) -> Path | None:
         if run_dir is not None:
             value = Path(run_dir) / "artifacts"
     return Path(value).expanduser() if value is not None else None
+
+
+def _lane_change_runtime_metadata(storyboard: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    phases = storyboard.get("storyboard", {}).get("phases", []) if isinstance(storyboard.get("storyboard"), Mapping) else []
+    for phase in (phases if isinstance(phases, list) else []):
+        if not isinstance(phase, Mapping):
+            continue
+        actions = phase.get("actions", [])
+        for action in (actions if isinstance(actions, list) else []):
+            if not isinstance(action, Mapping) or action.get("type") != "lane_change":
+                continue
+            role = str(action.get("role", "unknown"))
+            result[role] = {
+                "lane_change_runtime_mode": str(action.get("lane_change_runtime_mode") or "set_transform_interpolation"),
+                "physics_controlled_lane_change": bool(action.get("physics_controlled_lane_change", False)),
+                "claim_grade_lane_change": bool(action.get("claim_grade_lane_change", False)),
+                "velocity_source": str(action.get("velocity_source") or "carla_get_velocity"),
+                "interpretation_boundary": "diagnostic_scripted_lane_change_not_physics_controlled",
+            }
+    return result
 
 
 def _context_attr(context: Any, name: str, default: Any = None) -> Any:
@@ -507,7 +532,7 @@ def _fallback_transform_ahead(base_transform: Any, spawn_cfg: Mapping[str, Any])
     return _SimpleTransform(_SimpleLocation(x, y, z), _SimpleRotation(yaw=yaw_deg))
 
 
-def _actor_state(role: str, actor: Any | None) -> ScenarioActorState:
+def _actor_state(role: str, actor: Any | None, *, world: Any | None = None) -> ScenarioActorState:
     if actor is None:
         return ScenarioActorState(role=role)
     transform = _safe_call(actor, "get_transform") or getattr(actor, "transform", None)
@@ -515,6 +540,7 @@ def _actor_state(role: str, actor: Any | None) -> ScenarioActorState:
     control = _safe_call(actor, "get_control")
     location = getattr(transform, "location", None)
     rotation = getattr(transform, "rotation", None)
+    route_projection = _actor_route_projection(world, transform)
     return ScenarioActorState(
         role=role,
         actor_id=getattr(actor, "id", None),
@@ -523,8 +549,31 @@ def _actor_state(role: str, actor: Any | None) -> ScenarioActorState:
         z=_float_attr(location, "z"),
         yaw_rad=math.radians(_float_attr(rotation, "yaw", 0.0) or 0.0),
         speed_mps=_vector_norm(velocity),
+        route_s=route_projection.get("route_s"),
+        lane_id=route_projection.get("lane_id"),
         applied_control=_control_dict(control),
     )
+
+
+def _actor_route_projection(world: Any | None, transform: Any | None) -> dict[str, Any]:
+    carla_map = world.get_map() if world is not None and hasattr(world, "get_map") else None
+    if carla_map is None or transform is None or not hasattr(carla_map, "get_waypoint"):
+        return {}
+    try:
+        waypoint = carla_map.get_waypoint(getattr(transform, "location"))
+    except Exception:
+        return {}
+    if waypoint is None:
+        return {}
+    lane_id = getattr(waypoint, "lane_id", None)
+    road_id = getattr(waypoint, "road_id", None)
+    section_id = getattr(waypoint, "section_id", None)
+    route_s = _optional_float(getattr(waypoint, "s", None))
+    lane_parts = [road_id, section_id, lane_id]
+    return {
+        "route_s": route_s,
+        "lane_id": ":".join(str(part) for part in lane_parts) if all(part is not None for part in lane_parts) else None,
+    }
 
 
 def _actor_speed_mps(actor: Any) -> float:
@@ -719,6 +768,15 @@ def _float_attr(obj: Any, name: str, default: float | None = None) -> float | No
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _optional_float(value: Any) -> float | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _control_dict(control: Any) -> dict[str, Any] | None:

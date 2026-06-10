@@ -63,14 +63,19 @@ class ApolloCyberRTBackend:
 
     def build_launch_plan(self, plan: RunPlan) -> LaunchPlan:
         run_dir = f"runs/{plan.identity.run_id}"
-        command = [
-            "python",
-            "tools/run_town01_capability_online_chain.py",
-            "--scenario",
-            plan.scenario.scenario_id,
-            "--run-dir",
-            run_dir,
-        ]
+        fixed_scene_enabled = (
+            bool((plan.scenario.fixed_scene or {}).get("enabled", True))
+            if plan.scenario.fixed_scene
+            else False
+        )
+        command = (
+            []
+            if fixed_scene_enabled
+            else [
+                "python",
+                "tools/run_town01_capability_online_chain.py",
+            ]
+        )
         expected_topics = [
             "/apollo/localization/pose",
             "/apollo/canbus/chassis",
@@ -87,6 +92,18 @@ class ApolloCyberRTBackend:
             "artifacts/cyber_bridge_stats.json",
             "analysis/apollo_link_health/apollo_link_health_report.json",
         ]
+        if fixed_scene_enabled:
+            expected_artifacts.extend(
+                [
+                    "artifacts/fixed_scene_resolved.json",
+                    "artifacts/fixed_scene_runtime_state.json",
+                    "artifacts/scenario_actor_trace.jsonl",
+                    "artifacts/obstacle_gt_contract.jsonl",
+                    "analysis/fixed_scene_contract/fixed_scene_contract_report.json",
+                    "analysis/scenario_actor_contract/scenario_actor_contract_report.json",
+                    "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json",
+                ]
+            )
         if plan.traffic_flow.enabled:
             expected_artifacts.extend(["artifacts/traffic_flow_manifest.json", "artifacts/traffic_flow_events.jsonl"])
             if int(plan.traffic_flow.vehicles.get("count", 0) or 0) > 0:
@@ -106,7 +123,7 @@ class ApolloCyberRTBackend:
         return LaunchPlan(
             backend=self.name,
             mode="legacy_apollo_cyberrt_compat",
-            commands=[command],
+            commands=[] if fixed_scene_enabled else [command],
             env={
                 "CARLA_TESTBED_RUN_ID": plan.identity.run_id,
                 "CARLA_TESTBED_PLAN_SCHEMA_VERSION": plan.schema_version,
@@ -119,9 +136,21 @@ class ApolloCyberRTBackend:
                 ["python", "tools/analyze_apollo_link_health.py", "--run-dir", run_dir],
                 ["python", "-m", "carla_testbed", "analyze", "--run-dir", run_dir],
             ],
-            starts_runtime=True,
-            compatibility_source="tools/run_town01_capability_online_chain.py",
+            starts_runtime=not fixed_scene_enabled,
+            compatibility_source=(
+                "fixed-scene Apollo runtime migration required"
+                if fixed_scene_enabled
+                else "tools/run_town01_capability_online_chain.py"
+            ),
             warnings=[
-                "LaunchPlan is a compatibility description; executor does not rewrite Apollo bridge runtime."
+                "LaunchPlan is a compatibility description; executor does not rewrite Apollo bridge runtime.",
+                *(
+                    [
+                        "Apollo fixed-scene runtime is not migrated behind this facade; do not legacy-dispatch this plan as capability evidence.",
+                        "Claim-grade fixed-scene Apollo runs must produce obstacle_gt_contract records linking scenario actor ids to /apollo/perception/obstacles.",
+                    ]
+                    if fixed_scene_enabled
+                    else []
+                ),
             ],
         )

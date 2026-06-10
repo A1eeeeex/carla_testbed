@@ -99,7 +99,13 @@ def analyze_fixed_scene_contract(
     elif non_ego_roles and not trace_rows:
         warnings.append("scenario_actor_trace_not_available")
 
-    phase_ids = [str(phase.get("id")) for phase in storyboard_phases(storyboard or {})]
+    phases = storyboard_phases(storyboard or {})
+    phase_ids = [str(phase.get("id")) for phase in phases]
+    required_phases = [
+        str(phase.get("id"))
+        for phase in phases
+        if phase.get("id") is not None and bool(phase.get("required", True))
+    ]
     started_phases = sorted(
         {
             str(row.get("phase"))
@@ -107,9 +113,33 @@ def analyze_fixed_scene_contract(
             if row.get("event") == "phase_started" and row.get("phase") is not None
         }
     )
+    completed_phases = sorted(
+        {
+            str(row.get("phase"))
+            for row in event_rows
+            if row.get("event") == "phase_completed" and row.get("phase") is not None
+        }
+    )
     missing_started_phases = sorted(set(phase_ids) - set(started_phases))
+    missing_required_phases = sorted(set(required_phases) - set(started_phases))
+    missing_completed_required_phases = sorted(set(required_phases) - set(completed_phases))
+    stop_before_required_phase_completed = bool(
+        event_rows
+        and trace_rows
+        and missing_completed_required_phases
+        and _trace_reaches_stop_condition(storyboard or {}, trace_rows)
+    )
     if event_rows and missing_started_phases:
         warnings.append("not_all_phases_observed_started")
+    if missing_required_phases and event_rows:
+        blocking_reasons.append("fixed_scene_required_phase_not_started")
+    if missing_completed_required_phases and event_rows:
+        blocking_reasons.append("fixed_scene_required_phase_not_completed")
+    if stop_before_required_phase_completed:
+        blocking_reasons.append("stop_before_required_phase_completed")
+    duration_policy = _duration_policy_check(storyboard or {}, trace_rows)
+    warnings.extend(duration_policy["warnings"])
+    blocking_reasons.extend(duration_policy["blocking_reasons"])
 
     if blocking_reasons:
         status = "fail"
@@ -127,20 +157,36 @@ def analyze_fixed_scene_contract(
         "template": storyboard.get("template") if storyboard else None,
         "roles": roles,
         "phase_ids": phase_ids,
+        "required_phases": required_phases,
         "action_types": phase_action_types(storyboard or {}),
         "trace_row_count": len(trace_rows),
         "phase_event_count": len(event_rows),
         "traced_roles": traced_roles,
         "started_phases": started_phases,
+        "completed_phases": completed_phases,
         "missing_trace_roles": missing_trace_roles,
         "missing_started_phases": missing_started_phases,
+        "missing_required_phases": missing_required_phases,
+        "missing_completed_required_phases": missing_completed_required_phases,
+        "stop_before_required_phase_completed": stop_before_required_phase_completed,
         "metrics": {
             "required_roles_spawned": bool(non_ego_roles and not missing_trace_roles) if trace_rows else False,
             "phase_completion_ratio": _ratio(len(started_phases), len(phase_ids)),
+            "required_phase_start_ratio": _ratio(
+                len(set(required_phases) & set(started_phases)),
+                len(required_phases),
+            ),
+            "required_phase_completion_ratio": _ratio(
+                len(set(required_phases) & set(completed_phases)),
+                len(required_phases),
+            ),
             "trace_row_count": len(trace_rows),
             "phase_event_count": len(event_rows),
             "spawn_feasibility_pass": _spawn_feasibility_pass(spawn_feasibility),
+            "duration_policy_verified": duration_policy["verified"],
+            "lead_route_s_max_m": duration_policy["lead_route_s_max_m"],
         },
+        "duration_policy": duration_policy,
         "spawn_feasibility": spawn_feasibility if isinstance(spawn_feasibility, Mapping) else {},
         "missing_artifacts": missing_artifacts,
         "blocking_reasons": blocking_reasons,
@@ -231,3 +277,155 @@ def _spawn_feasibility_pass(spawn_feasibility: Any) -> bool | None:
         isinstance(item, Mapping) and item.get("status") in {"pass", "not_applicable"}
         for item in spawn_feasibility.values()
     )
+
+
+def _duration_policy_check(storyboard: Mapping[str, Any], trace_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    params = storyboard.get("params") if isinstance(storyboard.get("params"), Mapping) else {}
+    policy = params.get("duration_policy")
+    lead_role = str(params.get("lead_role", "lead_vehicle"))
+    route_end = _num(params.get("lead_route_end_s_m"))
+    warnings: list[str] = []
+    blocking: list[str] = []
+    if policy != "lead_reaches_road_end":
+        return {
+            "policy": policy,
+            "required": False,
+            "lead_role": lead_role,
+            "lead_route_end_s_m": route_end,
+            "lead_route_s_max_m": None,
+            "actor_route_s_available": False,
+            "verified": None,
+            "warnings": warnings,
+            "blocking_reasons": blocking,
+        }
+    route_values = [
+        value
+        for value in (
+            _num(row.get("route_s"))
+            for row in trace_rows
+            if str(row.get("actor_role")) == lead_role
+        )
+        if value is not None
+    ]
+    route_s_max = max(route_values) if route_values else None
+    if route_end is None:
+        warnings.append("duration_policy_route_end_missing")
+        verified = False
+    elif route_s_max is None:
+        warnings.append("duration_policy_not_verified_by_actor_route_s")
+        verified = False
+    elif route_s_max < route_end:
+        blocking.append("duration_policy_route_end_not_reached")
+        verified = False
+    else:
+        verified = True
+    return {
+        "policy": policy,
+        "required": True,
+        "lead_role": lead_role,
+        "lead_route_end_s_m": route_end,
+        "lead_route_s_max_m": route_s_max,
+        "actor_route_s_available": bool(route_values),
+        "verified": verified,
+        "warnings": warnings,
+        "blocking_reasons": blocking,
+    }
+
+
+def _trace_reaches_stop_condition(storyboard: Mapping[str, Any], trace_rows: Sequence[Mapping[str, Any]]) -> bool:
+    stop = (storyboard.get("storyboard") or {}).get("stop") if isinstance(storyboard.get("storyboard"), Mapping) else None
+    if not trace_rows:
+        return False
+    time_values = [value for value in (_num(row.get("sim_time_sec")) for row in trace_rows) if value is not None]
+    frame_values = [value for value in (_num(row.get("world_frame")) for row in trace_rows) if value is not None]
+    route_s_by_role: dict[str, float] = {}
+    for row in trace_rows:
+        role = str(row.get("actor_role") or "")
+        route_s = _num(row.get("route_s"))
+        if not role or route_s is None:
+            continue
+        route_s_by_role[role] = max(route_s_by_role.get(role, route_s), route_s)
+    max_time = max(time_values) if time_values else None
+    max_frame = max(frame_values) if frame_values else None
+    return _stop_condition_reached(
+        stop,
+        max_time=max_time,
+        max_frame=max_frame,
+        route_s_by_role=route_s_by_role,
+    )
+
+
+def _stop_condition_reached(
+    stop: Any,
+    *,
+    max_time: float | None,
+    max_frame: float | None,
+    route_s_by_role: Mapping[str, float] | None = None,
+) -> bool:
+    if not isinstance(stop, Mapping):
+        return False
+    if "all" in stop:
+        conditions = stop.get("all")
+        return bool(isinstance(conditions, list) and conditions and all(
+            _stop_condition_reached(
+                condition,
+                max_time=max_time,
+                max_frame=max_frame,
+                route_s_by_role=route_s_by_role,
+            )
+            for condition in conditions
+        ))
+    if "any" in stop:
+        conditions = stop.get("any")
+        return bool(isinstance(conditions, list) and any(
+            _stop_condition_reached(
+                condition,
+                max_time=max_time,
+                max_frame=max_frame,
+                route_s_by_role=route_s_by_role,
+            )
+            for condition in conditions
+        ))
+    if stop.get("type") == "all":
+        conditions = stop.get("conditions")
+        return bool(isinstance(conditions, list) and conditions and all(
+            _stop_condition_reached(
+                condition,
+                max_time=max_time,
+                max_frame=max_frame,
+                route_s_by_role=route_s_by_role,
+            )
+            for condition in conditions
+        ))
+    if stop.get("type") == "any":
+        conditions = stop.get("conditions")
+        return bool(isinstance(conditions, list) and any(
+            _stop_condition_reached(
+                condition,
+                max_time=max_time,
+                max_frame=max_frame,
+                route_s_by_role=route_s_by_role,
+            )
+            for condition in conditions
+        ))
+    if stop.get("type") == "simulation_time":
+        value = _num(stop.get("value", stop.get("gte_s", stop.get("value_s"))))
+        return bool(max_time is not None and value is not None and max_time >= value)
+    if stop.get("type") == "world_frame":
+        value = _num(stop.get("value", stop.get("gte")))
+        return bool(max_frame is not None and value is not None and max_frame >= value)
+    if stop.get("type") in {"actor_route_s", "ego_route_s", "route_s"}:
+        role = "ego" if stop.get("type") == "ego_route_s" else str(stop.get("role", stop.get("actor", "ego")))
+        route_s = (route_s_by_role or {}).get(role)
+        value = _num(stop.get("value_m", stop.get("value", stop.get("gte_m"))))
+        return bool(route_s is not None and value is not None and route_s >= value)
+    return False
+
+
+def _num(value: Any) -> float | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

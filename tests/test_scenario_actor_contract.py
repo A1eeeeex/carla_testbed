@@ -81,7 +81,7 @@ def test_scenario_actor_contract_writes_report_files(tmp_path) -> None:
     assert "scenario_actor_contract_summary.md" in outputs["summary"]
 
 
-def test_cut_in_actor_contract_passes_with_lane_change_progress(tmp_path) -> None:
+def test_cut_in_actor_contract_requires_observed_lateral_evidence_not_only_progress(tmp_path) -> None:
     template = load_fixed_scene_template("configs/scenario_templates/cut_in.yaml")
     storyboard = compile_fixed_scene_template(template)
     storyboard_path = tmp_path / "fixed_scene_resolved.json"
@@ -106,8 +106,11 @@ def test_cut_in_actor_contract_passes_with_lane_change_progress(tmp_path) -> Non
         events_path=events_path,
     )
 
-    assert report["status"] == "pass"
-    assert report["metrics"]["lane_change_completed"] is True
+    assert report["status"] == "insufficient_data"
+    assert report["behavior"]["lane_change_intent_completed"] is True
+    assert report["metrics"]["lane_change_completed"] is False
+    assert "lateral_to_ego_m" in report["missing_fields"]
+    assert "longitudinal_to_ego_m" in report["missing_fields"]
 
 
 def test_baguang_cut_in_actor_contract_checks_start_gap_and_lateral_shift(tmp_path) -> None:
@@ -125,6 +128,50 @@ def test_baguang_cut_in_actor_contract_checks_start_gap_and_lateral_shift(tmp_pa
             "lane_change_progress": 0.0,
             "longitudinal_to_ego_m": 9.8,
             "lateral_to_ego_m": -3.6,
+            "sim_time_sec": 5.0,
+            "lane_change_runtime_mode": "set_transform_interpolation",
+            "physics_controlled_lane_change": False,
+            "claim_grade_lane_change": False,
+            "velocity_source": "carla_get_velocity",
+        },
+        {
+            "actor_role": "lead_vehicle",
+            "phase": "cut_in_lane_change",
+            "action_type": "lane_change",
+            "lane_change_progress": 0.25,
+            "longitudinal_to_ego_m": 10.0,
+            "lateral_to_ego_m": -2.7,
+            "sim_time_sec": 6.0,
+            "lane_change_runtime_mode": "set_transform_interpolation",
+            "physics_controlled_lane_change": False,
+            "claim_grade_lane_change": False,
+            "velocity_source": "carla_get_velocity",
+        },
+        {
+            "actor_role": "lead_vehicle",
+            "phase": "cut_in_lane_change",
+            "action_type": "lane_change",
+            "lane_change_progress": 0.5,
+            "longitudinal_to_ego_m": 10.2,
+            "lateral_to_ego_m": -1.8,
+            "sim_time_sec": 7.0,
+            "lane_change_runtime_mode": "set_transform_interpolation",
+            "physics_controlled_lane_change": False,
+            "claim_grade_lane_change": False,
+            "velocity_source": "carla_get_velocity",
+        },
+        {
+            "actor_role": "lead_vehicle",
+            "phase": "cut_in_lane_change",
+            "action_type": "lane_change",
+            "lane_change_progress": 0.75,
+            "longitudinal_to_ego_m": 10.4,
+            "lateral_to_ego_m": -0.9,
+            "sim_time_sec": 8.0,
+            "lane_change_runtime_mode": "set_transform_interpolation",
+            "physics_controlled_lane_change": False,
+            "claim_grade_lane_change": False,
+            "velocity_source": "carla_get_velocity",
         },
         {
             "actor_role": "lead_vehicle",
@@ -133,6 +180,11 @@ def test_baguang_cut_in_actor_contract_checks_start_gap_and_lateral_shift(tmp_pa
             "lane_change_progress": 1.0,
             "longitudinal_to_ego_m": 10.5,
             "lateral_to_ego_m": -0.1,
+            "sim_time_sec": 9.0,
+            "lane_change_runtime_mode": "set_transform_interpolation",
+            "physics_controlled_lane_change": False,
+            "claim_grade_lane_change": False,
+            "velocity_source": "carla_get_velocity",
         },
     ]
     events = [{"phase": "cut_in_lane_change", "event": "phase_started"}]
@@ -148,6 +200,9 @@ def test_baguang_cut_in_actor_contract_checks_start_gap_and_lateral_shift(tmp_pa
     assert report["status"] == "pass"
     assert report["behavior"]["lane_change_start_longitudinal_gap_m"] == 9.8
     assert report["behavior"]["lane_change_lateral_shift_m"] == 3.5
+    assert report["behavior"]["lane_change_runtime_modes"] == ["set_transform_interpolation"]
+    assert report["behavior"]["claim_grade_lane_change"] is False
+    assert report["behavior"]["lateral_dynamics"]["no_teleport_check"] is True
 
 
 def test_baguang_cut_in_actor_contract_fails_when_start_gap_is_wrong(tmp_path) -> None:

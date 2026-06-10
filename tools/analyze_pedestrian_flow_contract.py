@@ -21,6 +21,7 @@ def main() -> int:
     parser.add_argument("--manifest", help="artifacts/traffic_flow_manifest.json path.")
     parser.add_argument("--events", help="artifacts/traffic_flow_events.jsonl path.")
     parser.add_argument("--candidates", help="artifacts/walker_spawn_candidates.jsonl path.")
+    parser.add_argument("--walker-trace", help="artifacts/walker_flow_trace.jsonl path.")
     parser.add_argument("--out", required=True, help="Output directory.")
     args = parser.parse_args()
 
@@ -29,6 +30,7 @@ def main() -> int:
         manifest_path=args.manifest,
         events_path=args.events,
         candidates_path=args.candidates,
+        walker_trace_path=args.walker_trace,
     )
     outputs = write_pedestrian_flow_contract_report(report, args.out)
     print(outputs["pedestrian_flow_contract_report"])

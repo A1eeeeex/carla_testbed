@@ -8,8 +8,14 @@ from typing import Any, Mapping, Sequence
 OBSTACLE_GT_CONTRACT_SCHEMA_VERSION = "obstacle_gt_contract.v1"
 
 DYNAMIC_SCENARIO_CLASSES = {
+    "cut_in",
+    "cut_out",
     "follow_stop",
     "followstop",
+    "lead_vehicle_accel",
+    "lead_vehicle_accel_decel",
+    "lead_vehicle_decel",
+    "static_lead_stop",
     "dynamic_obstacle",
     "traffic_light_red_stop_with_lead",
 }
@@ -22,6 +28,7 @@ def analyze_obstacle_gt_contract_file(
     dynamic_obstacle_required: bool | None = None,
     pedestrian_required: bool | None = None,
     fixed_scene_actor_roles: Mapping[str, Any] | None = None,
+    fixed_scene_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_path = Path(path).expanduser()
     records = _read_records(source_path)
@@ -32,6 +39,7 @@ def analyze_obstacle_gt_contract_file(
         pedestrian_required=pedestrian_required,
         source_path=source_path,
         fixed_scene_actor_roles=fixed_scene_actor_roles,
+        fixed_scene_context=fixed_scene_context or _fixed_scene_context_from_roles(fixed_scene_actor_roles),
     )
 
 
@@ -45,7 +53,7 @@ def analyze_obstacle_gt_contract_run_dir(
     root = Path(run_dir).expanduser()
     if pedestrian_required is None:
         pedestrian_required = _run_dir_declares_walkers(root)
-    fixed_scene_actor_roles = _fixed_scene_actor_roles(root)
+    fixed_scene_context = _fixed_scene_context(root)
     source_path = _find_first(
         root,
         [
@@ -63,14 +71,14 @@ def analyze_obstacle_gt_contract_run_dir(
             dynamic_obstacle_required=dynamic_obstacle_required,
             pedestrian_required=pedestrian_required,
             source_path=None,
-            fixed_scene_actor_roles=fixed_scene_actor_roles,
+            fixed_scene_context=fixed_scene_context,
         )
     return analyze_obstacle_gt_contract_file(
         source_path,
         scenario_class=scenario_class,
         dynamic_obstacle_required=dynamic_obstacle_required,
         pedestrian_required=pedestrian_required,
-        fixed_scene_actor_roles=fixed_scene_actor_roles,
+        fixed_scene_context=fixed_scene_context,
     )
 
 
@@ -82,6 +90,7 @@ def analyze_obstacle_gt_contract_records(
     pedestrian_required: bool | None = None,
     source_path: str | Path | None = None,
     fixed_scene_actor_roles: Mapping[str, Any] | None = None,
+    fixed_scene_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     dynamic_required = (
         _scenario_requires_dynamic_obstacle(scenario_class)
@@ -102,11 +111,34 @@ def analyze_obstacle_gt_contract_records(
     message_count = len(records)
     empty_message_count = 0
     pedestrian_results: list[dict[str, Any]] = []
+    fixed_scene = dict(fixed_scene_context or _fixed_scene_context_from_roles(fixed_scene_actor_roles))
+    fixed_scene_enabled = bool(fixed_scene.get("enabled"))
+    fixed_scene_actor_roles = (
+        fixed_scene.get("actor_roles") if isinstance(fixed_scene.get("actor_roles"), Mapping) else {}
+    )
+    fixed_scene_expected_roles = [
+        str(role)
+        for role in (fixed_scene.get("expected_roles") or fixed_scene_actor_roles.keys())
+        if str(role) != "ego"
+    ]
     expected_fixed_scene_actor_ids = {
         str(actor_id)
-        for actor_id in (fixed_scene_actor_roles or {}).values()
+        for actor_id in fixed_scene_actor_roles.values()
         if actor_id not in {None, ""}
     }
+
+    if fixed_scene_enabled and fixed_scene.get("runtime_state_missing"):
+        missing_fields.append("fixed_scene_runtime_state_missing_for_obstacle_linkage")
+    if fixed_scene_enabled and fixed_scene_expected_roles and not fixed_scene_actor_roles:
+        missing_fields.append("fixed_scene_actor_roles")
+    if fixed_scene_enabled:
+        missing_id_roles = [
+            role
+            for role in fixed_scene_expected_roles
+            if fixed_scene_actor_roles.get(role) in {None, ""}
+        ]
+        if missing_id_roles:
+            missing_fields.append("fixed_scene_actor_id_missing")
 
     if not records:
         missing_fields.append("obstacle_gt_contract.records")
@@ -133,6 +165,7 @@ def analyze_obstacle_gt_contract_records(
                 id_map=id_map,
                 tracking_by_apollo_id=tracking_by_apollo_id,
                 pedestrian_required=pedestrian_required,
+                expected_fixed_scene_actor_ids=expected_fixed_scene_actor_ids,
             )
             object_results.append(result)
             if result.get("is_pedestrian"):
@@ -151,6 +184,13 @@ def analyze_obstacle_gt_contract_records(
     missing_fixed_scene_actor_ids = sorted(expected_fixed_scene_actor_ids - observed_carla_actor_ids)
     if missing_fixed_scene_actor_ids:
         errors.append("fixed_scene_actor_missing_from_obstacle_gt")
+    scenario_actor_obstacle_count = len(expected_fixed_scene_actor_ids & observed_carla_actor_ids)
+    if (
+        expected_fixed_scene_actor_ids
+        and records
+        and scenario_actor_obstacle_count != len(expected_fixed_scene_actor_ids)
+    ):
+        errors.append("fixed_scene_actor_obstacle_count_mismatch")
 
     if object_results:
         if errors:
@@ -190,14 +230,27 @@ def analyze_obstacle_gt_contract_records(
         "object_count": len(object_results),
         "object_results": object_results,
         "fixed_scene_actor_linkage": {
-            "required": bool(expected_fixed_scene_actor_ids),
+            "enabled": fixed_scene_enabled,
+            "required": bool(fixed_scene_enabled),
             "expected_actor_roles": dict(fixed_scene_actor_roles or {}),
+            "expected_roles": sorted(fixed_scene_expected_roles),
+            "scenario_actor_count": len(expected_fixed_scene_actor_ids),
+            "scenario_actor_obstacle_count": scenario_actor_obstacle_count,
             "observed_carla_actor_ids": sorted(observed_carla_actor_ids),
             "missing_actor_ids": missing_fixed_scene_actor_ids,
+            "runtime_state_missing": bool(fixed_scene.get("runtime_state_missing")),
             "status": (
                 "fail"
                 if missing_fixed_scene_actor_ids
-                else ("pass" if expected_fixed_scene_actor_ids else "not_applicable")
+                else (
+                    "insufficient_data"
+                    if fixed_scene_enabled and (
+                        fixed_scene.get("runtime_state_missing")
+                        or not fixed_scene_actor_roles
+                        or not expected_fixed_scene_actor_ids
+                    )
+                    else ("pass" if expected_fixed_scene_actor_ids else "not_applicable")
+                )
             ),
         },
         "pedestrians": {
@@ -268,6 +321,7 @@ def _check_obstacle(
     id_map: dict[str, str],
     tracking_by_apollo_id: dict[str, float],
     pedestrian_required: bool,
+    expected_fixed_scene_actor_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -284,6 +338,11 @@ def _check_obstacle(
         errors.append("ego_actor_included_as_obstacle")
     if _boolish(obstacle.get("is_ego")):
         errors.append("ego_actor_included_as_obstacle")
+    if carla_actor_id and expected_fixed_scene_actor_ids and carla_actor_id in expected_fixed_scene_actor_ids:
+        if not _obstacle_type_declared(obstacle):
+            missing_fields.append("scenario_vehicle_type")
+        elif not _is_vehicle_obstacle(obstacle):
+            errors.append("scenario_vehicle_type_not_vehicle")
 
     if carla_actor_id and apollo_id:
         previous = id_map.setdefault(carla_actor_id, apollo_id)
@@ -404,18 +463,71 @@ def _run_dir_declares_walkers(root: Path) -> bool:
         return False
 
 
-def _fixed_scene_actor_roles(root: Path) -> dict[str, Any]:
-    path = _find_first(root, ["artifacts/fixed_scene_runtime_state.json", "fixed_scene_runtime_state.json"])
-    if path is None:
-        return {}
+def _fixed_scene_context(root: Path) -> dict[str, Any]:
+    storyboard_path = _find_first(root, ["artifacts/fixed_scene_resolved.json", "fixed_scene_resolved.json"])
+    runtime_path = _find_first(root, ["artifacts/fixed_scene_runtime_state.json", "fixed_scene_runtime_state.json"])
+    expected_roles = _fixed_scene_expected_roles(storyboard_path)
+    enabled = storyboard_path is not None or runtime_path is not None
+    if runtime_path is None:
+        return {
+            "enabled": enabled,
+            "runtime_state_missing": enabled,
+            "expected_roles": expected_roles,
+            "actor_roles": {},
+        }
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(runtime_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        return {
+            "enabled": True,
+            "runtime_state_missing": True,
+            "expected_roles": expected_roles,
+            "actor_roles": {},
+        }
     if not isinstance(payload, Mapping):
-        return {}
+        return {
+            "enabled": True,
+            "runtime_state_missing": True,
+            "expected_roles": expected_roles,
+            "actor_roles": {},
+        }
     roles = payload.get("actor_roles")
-    return dict(roles) if isinstance(roles, Mapping) else {}
+    actor_roles = dict(roles) if isinstance(roles, Mapping) else {}
+    if not expected_roles:
+        expected_roles = [str(role) for role in actor_roles if str(role) != "ego"]
+    return {
+        "enabled": True,
+        "runtime_state_missing": False,
+        "expected_roles": expected_roles,
+        "actor_roles": actor_roles,
+    }
+
+
+def _fixed_scene_context_from_roles(actor_roles: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not actor_roles:
+        return {"enabled": False, "runtime_state_missing": False, "expected_roles": [], "actor_roles": {}}
+    roles = [str(role) for role in actor_roles if str(role) != "ego"]
+    return {
+        "enabled": True,
+        "runtime_state_missing": False,
+        "expected_roles": roles,
+        "actor_roles": dict(actor_roles),
+    }
+
+
+def _fixed_scene_expected_roles(storyboard_path: Path | None) -> list[str]:
+    if storyboard_path is None:
+        return []
+    try:
+        payload = json.loads(storyboard_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, Mapping):
+        return []
+    roles = payload.get("roles")
+    if not isinstance(roles, Mapping):
+        return []
+    return sorted(str(role) for role in roles if str(role) != "ego")
 
 
 def _record_objects(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -480,6 +592,26 @@ def _is_pedestrian_obstacle(obstacle: Mapping[str, Any]) -> bool:
         obstacle.get("blueprint_id"),
     ]
     return any("pedestrian" in str(value).lower() or "walker" in str(value).lower() for value in fields if value)
+
+
+def _obstacle_type_declared(obstacle: Mapping[str, Any]) -> bool:
+    return any(
+        obstacle.get(key) not in {None, ""}
+        for key in ("object_type", "type", "classification", "label", "sub_type", "blueprint_id")
+    )
+
+
+def _is_vehicle_obstacle(obstacle: Mapping[str, Any]) -> bool:
+    fields = [
+        obstacle.get("object_type"),
+        obstacle.get("type"),
+        obstacle.get("classification"),
+        obstacle.get("label"),
+        obstacle.get("sub_type"),
+        obstacle.get("blueprint_id"),
+    ]
+    text = " ".join(str(value).lower() for value in fields if value)
+    return any(token in text for token in ("vehicle", "car", "truck", "bus", "van", "motorcycle", "bicycle"))
 
 
 def _velocity_tuple(obstacle: Mapping[str, Any]) -> tuple[float, float, float] | None:

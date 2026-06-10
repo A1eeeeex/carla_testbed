@@ -4,6 +4,7 @@ import json
 import math
 
 from carla_testbed.scenario_player.carla_runtime import CarlaFixedSceneRuntime
+from carla_testbed.scenario_player import carla_runtime as carla_runtime_module
 from carla_testbed.scenario_player.compiler import compile_fixed_scene_template
 from carla_testbed.scenario_player.schema import load_fixed_scene_template
 
@@ -119,10 +120,65 @@ def test_carla_runtime_applies_smooth_cut_in_transform(tmp_path) -> None:
     assert lead.target_velocity is not None
 
 
+def test_actor_state_records_route_s_and_lane_id_from_carla_waypoint() -> None:
+    world = _FakeProjectionWorld(s=123.4, road_id=7, section_id=1, lane_id=-2)
+    actor = _FakeActor(actor_id=20, transform=_Transform(_Location(1.0, 2.0, 0.0), _Rotation(yaw=0.0)))
+
+    state = carla_runtime_module._actor_state("lead_vehicle", actor, world=world)
+
+    assert state.route_s == 123.4
+    assert state.lane_id == "7:1:-2"
+
+
+def test_lane_change_direction_sign_yaw_zero_left_and_right() -> None:
+    right_actor = _FakeActor(actor_id=10, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    left_actor = _FakeActor(actor_id=11, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+
+    _run_lane_change_to_completion(right_actor, direction="right")
+    _run_lane_change_to_completion(left_actor, direction="left")
+
+    assert math.isclose(right_actor.transform.location.y, 3.6, abs_tol=0.01)
+    assert math.isclose(left_actor.transform.location.y, -3.6, abs_tol=0.01)
+
+
+def test_lane_change_direction_sign_yaw_ninety_left_and_right() -> None:
+    right_actor = _FakeActor(actor_id=12, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=90.0)))
+    left_actor = _FakeActor(actor_id=13, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=90.0)))
+
+    _run_lane_change_to_completion(right_actor, direction="right")
+    _run_lane_change_to_completion(left_actor, direction="left")
+
+    assert math.isclose(right_actor.transform.location.x, -3.6, abs_tol=0.01)
+    assert math.isclose(left_actor.transform.location.x, 3.6, abs_tol=0.01)
+
+
 def test_carla_runtime_module_does_not_import_carla_runtime() -> None:
     import carla_testbed.scenario_player.carla_runtime as module
 
     assert hasattr(module, "CarlaFixedSceneRuntime")
+
+
+def _run_lane_change_to_completion(actor, *, direction: str) -> None:
+    action = {
+        "type": "lane_change",
+        "direction": direction,
+        "duration_s": 2.0,
+        "lateral_shift_m": 3.6,
+        "easing": "linear",
+    }
+    states: dict[str, dict] = {}
+    carla_runtime_module._apply_lane_change_transform(
+        actor=actor,
+        action=action,
+        context={"sim_time_sec": 0.0},
+        states=states,
+    )
+    carla_runtime_module._apply_lane_change_transform(
+        actor=actor,
+        action=action,
+        context={"sim_time_sec": 2.0},
+        states=states,
+    )
 
 
 class _FakeWorld:
@@ -137,6 +193,30 @@ class _FakeWorld:
         actor = _FakeActor(actor_id=100 + len(self.spawned), transform=transform, blueprint=blueprint)
         self.spawned.append(actor)
         return actor
+
+
+class _FakeProjectionWorld:
+    def __init__(self, *, s, road_id, section_id, lane_id):
+        self.map = _FakeProjectionMap(s=s, road_id=road_id, section_id=section_id, lane_id=lane_id)
+
+    def get_map(self):
+        return self.map
+
+
+class _FakeProjectionMap:
+    def __init__(self, *, s, road_id, section_id, lane_id):
+        self.waypoint = _FakeWaypoint(s=s, road_id=road_id, section_id=section_id, lane_id=lane_id)
+
+    def get_waypoint(self, location):
+        return self.waypoint
+
+
+class _FakeWaypoint:
+    def __init__(self, *, s, road_id, section_id, lane_id):
+        self.s = s
+        self.road_id = road_id
+        self.section_id = section_id
+        self.lane_id = lane_id
 
 
 class _BlueprintLibrary:

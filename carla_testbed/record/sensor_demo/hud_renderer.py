@@ -5,9 +5,13 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional, Tuple
 
-import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+try:
+    import cv2
+except Exception:  # pragma: no cover - OpenCV may fail to import with NumPy ABI mismatch
+    cv2 = None
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -85,6 +89,8 @@ def rgba_panel_with_blur(
     radius: int,
     outline_rgba: Tuple[int, int, int, int],
 ) -> np.ndarray:
+    if cv2 is None:
+        return frame_bgr
     h, w = frame_bgr.shape[:2]
     x1, y1, x2, y2 = rect
     x1 = int(max(0, min(w - 1, x1)))
@@ -513,6 +519,8 @@ class HUDRenderer:
 
     def render(self, frame_bgr: np.ndarray, metrics: Optional[Dict[str, Any]]) -> np.ndarray:
         if frame_bgr is None or frame_bgr.size == 0:
+            return frame_bgr
+        if cv2 is None:
             return frame_bgr
 
         m = self._normalize_metrics(metrics)

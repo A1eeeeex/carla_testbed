@@ -99,6 +99,7 @@ def test_baguang_cut_in_compiles_longitudinal_gap_trigger() -> None:
         "type": "relative_longitudinal_distance",
         "from_role": "ego",
         "to_role": "lead_vehicle",
+        "frame": "ego_body",
         "op": "<=",
         "value_m": 10.0,
     }
@@ -108,4 +109,5 @@ def test_baguang_cut_in_compiles_longitudinal_gap_trigger() -> None:
     assert action["target_speed_mps"] == 9.72
     assert action["duration_s"] == 4.0
     assert action["lateral_shift_m"] == 3.6
+    assert action["trigger_frame"] == "ego_body"
     assert storyboard["params"]["duration_policy"] == "lead_reaches_road_end"

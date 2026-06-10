@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 import carla
 try:
     import cv2
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover - OpenCV may fail to import with NumPy ABI mismatch
     cv2 = None
 
 from carla_testbed.record.sensor_demo.hud_renderer import HUDRenderer
