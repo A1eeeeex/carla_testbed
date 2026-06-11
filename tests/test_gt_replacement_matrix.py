@@ -141,3 +141,18 @@ def test_load_rejects_planning_gt_replacement(tmp_path: Path) -> None:
 
     with pytest.raises(GTReplacementMatrixError, match="planning: replacement_status"):
         load_gt_replacement_matrix(path)
+
+
+def test_required_evidence_collapsed_yaml_list_item_fails(tmp_path: Path) -> None:
+    matrix = deepcopy(_load_matrix())
+    module_replacement(matrix, "chassis")["required_evidence"] = [
+        "chassis_gt_contract_report.json - control_health_report.json",
+    ]
+    path = tmp_path / "bad_gt_replacement_matrix.yaml"
+
+    import yaml
+
+    path.write_text(yaml.safe_dump(matrix), encoding="utf-8")
+
+    with pytest.raises(GTReplacementMatrixError, match="collapsed YAML list item"):
+        load_gt_replacement_matrix(path)

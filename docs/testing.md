@@ -14,6 +14,12 @@ python -m pytest -m "not carla and not apollo and not autoware and not integrati
 This includes unit tests, config/schema tests, contract tests, mock backend
 tests, artifact writers, and runtime import guards.
 
+The default pytest collection also includes the selected structure regression
+file `tools/test_first_wave_structure.py`. Other historical `tools/test_*.py`
+files remain outside the default test path until they are either migrated under
+`tests/`, marked as local/integration, or retired. This prevents hidden operator
+surface regressions without suddenly promoting all legacy tools tests to CI.
+
 Use the project conda environment when running locally on the development
 machine:
 

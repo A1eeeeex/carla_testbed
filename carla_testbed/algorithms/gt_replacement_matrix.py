@@ -42,6 +42,7 @@ REQUIRED_MODULES = {
 MODULE_REQUIRED_FIELDS = {
     "name",
     "reference_module",
+    "owner",
     "replacement_status",
     "current_source",
     "current_runtime_path",
@@ -103,8 +104,17 @@ def _evidence_text(module: Mapping[str, Any]) -> str:
 
 def _validate_list_field(module: Mapping[str, Any], field: str, errors: list[str]) -> None:
     name = str(module.get("name") or "<missing name>")
-    if not isinstance(module.get(field), list):
+    value = module.get(field)
+    if not isinstance(value, list):
         errors.append(f"{name}: {field} must be a list")
+        return
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            errors.append(f"{name}: {field}[{index}] must be a string")
+        elif field.endswith("evidence") and " - " in item:
+            errors.append(
+                f"{name}: {field}[{index}] looks like a collapsed YAML list item: {item!r}"
+            )
 
 
 def _validate_non_empty_list_field(
@@ -173,6 +183,7 @@ def validate_gt_replacement_matrix(
             errors.append(f"{name or '<missing name>'}: missing fields {', '.join(missing_fields)}")
         for field in ("required_evidence", "allowed_for_capabilities"):
             _validate_non_empty_list_field(module, field, errors)
+            _validate_list_field(module, field, errors)
         for field in ("blocked_capabilities",):
             _validate_list_field(module, field, errors)
         if not isinstance(module.get("hard_gate_eligible"), bool):

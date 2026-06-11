@@ -45,7 +45,7 @@ markers = [
     "smoke: lightweight executable smoke checks",
     "local: local-machine checks that are not expected to run in CI",
 ]
-testpaths = ["tests"]
+testpaths = ["tests", "tools/test_first_wave_structure.py"]
 
 [tool.ruff]
 line-length = 120

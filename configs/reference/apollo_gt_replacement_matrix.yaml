@@ -10,6 +10,7 @@ description: >
 modules:
   - name: hdmap
     reference_module: hdmap
+    owner: apollo_gt_contract
     replacement_status: native
     current_source: Apollo HDMap files loaded for the target map.
     current_runtime_path: Apollo map directory and Dreamview selected map.
@@ -33,6 +34,7 @@ modules:
 
   - name: routing
     reference_module: routing
+    owner: apollo_gt_contract
     replacement_status: native
     current_source: Apollo routing receives bridge-issued routing or lane-follow commands.
     current_runtime_path: tools/apollo10_cyber_bridge/bridge.py routing command path.
@@ -58,6 +60,7 @@ modules:
 
   - name: localization
     reference_module: localization
+    owner: apollo_gt_contract
     replacement_status: gt_replaced
     current_source: CARLA ego truth converted to Apollo LocalizationEstimate semantics.
     current_runtime_path: carla_testbed/adapters/apollo/localization_gt.py and tools/apollo10_cyber_bridge/bridge.py.
@@ -83,13 +86,14 @@ modules:
 
   - name: chassis
     reference_module: chassis
+    owner: apollo_gt_contract
     replacement_status: gt_replaced
     current_source: CARLA ego state and applied control feedback converted to Apollo chassis.
     current_runtime_path: tools/apollo10_cyber_bridge/bridge.py chassis publisher path.
     expected_official_source: Apollo canbus module publishing /apollo/canbus/chassis.
     output_contract: /apollo/canbus/chassis speed, drive mode, throttle/brake/steer feedback, timestamp, and vehicle state.
     required_evidence:
-    - chassis_gt_contract_report.json
+      - chassis_gt_contract_report.json
       - control_health_report.json
       - channel_stats.json /apollo/canbus/chassis
     current_evidence_status: insufficient_data
@@ -107,6 +111,7 @@ modules:
 
   - name: perception_obstacles
     reference_module: perception_obstacles
+    owner: apollo_gt_contract
     replacement_status: gt_replaced
     current_source: CARLA actor truth converted to Apollo perception obstacles.
     current_runtime_path: tools/apollo10_cyber_bridge/bridge.py obstacle publisher and obstacle contract artifacts.
@@ -128,6 +133,7 @@ modules:
 
   - name: prediction
     reference_module: prediction
+    owner: apollo_gt_contract
     replacement_status: bypassed
     current_source: Explicit prediction_evidence_report.json; native /apollo/prediction when observed, otherwise bypassed_with_gt_obstacles only with scenario-scoped reason.
     current_runtime_path: Apollo prediction channel, channel_stats.json, and analysis/prediction_evidence/prediction_evidence_report.json.
@@ -151,6 +157,7 @@ modules:
 
   - name: traffic_light_perception
     reference_module: traffic_light_perception
+    owner: apollo_gt_contract
     replacement_status: gt_replaced
     current_source: CARLA traffic-light state mapped to Apollo signal IDs when mapping exists.
     current_runtime_path: carla_testbed/adapters/apollo/traffic_light_gt.py and tools/apollo10_cyber_bridge/bridge.py traffic-light publisher.
@@ -174,6 +181,7 @@ modules:
 
   - name: planning
     reference_module: planning
+    owner: apollo_gt_contract
     replacement_status: native
     current_source: Native Apollo planning.
     current_runtime_path: Apollo planning module publishing /apollo/planning.
@@ -198,6 +206,7 @@ modules:
 
   - name: control
     reference_module: control
+    owner: apollo_gt_contract
     replacement_status: native
     current_source: Native Apollo control.
     current_runtime_path: Apollo control module publishing /apollo/control.
@@ -222,6 +231,7 @@ modules:
 
   - name: vehicle_interface
     reference_module: vehicle_interface
+    owner: apollo_gt_contract
     replacement_status: carla_replaced
     current_source: Apollo raw control mapped to CARLA VehicleControl.
     current_runtime_path: tools/apollo10_cyber_bridge/control_mapping.py and CARLA apply loop.
@@ -247,6 +257,7 @@ modules:
 
   - name: cyberrt
     reference_module: cyberrt
+    owner: apollo_gt_contract
     replacement_status: native
     current_source: Apollo CyberRT runtime and bridge channel writers/readers.
     current_runtime_path: Apollo container runtime plus tools/apollo10_cyber_bridge.
@@ -266,6 +277,7 @@ modules:
 
   - name: dreamview
     reference_module: dreamview
+    owner: apollo_gt_contract
     replacement_status: operator_evidence
     current_source: Apollo Dreamview operator UI when launched.
     current_runtime_path: Dreamview browser/operator recording path.

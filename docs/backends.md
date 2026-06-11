@@ -49,6 +49,13 @@ code should implement `ADStackBackend` while keeping CyberRT channels and
 protobuf conversion out of core runner, scenarios, sensors, recording, and
 evaluation.
 
+`carla_testbed.adapters.apollo.cyber_gt_bridge` is the adapter-side facade for
+the current bridge entrypoint. New launch/orchestration code should depend on
+that facade instead of hard-coding `tools/apollo10_cyber_bridge/bridge.py`.
+This does not mean the large bridge runtime has been migrated; it only creates
+the seam for moving publishers, subscribers, transforms, and diagnostics into
+package modules in small PRs.
+
 ## CARLA Builtin Diagnostic Backend
 
 `carla_builtin` is a local CARLA-only diagnostic backend. It controls ego with

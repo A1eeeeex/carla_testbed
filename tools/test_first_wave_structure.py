@@ -97,7 +97,7 @@ class FirstWaveStructureTests(unittest.TestCase):
         callback_rows = []
 
         with mock.patch(
-            "carla_testbed.sim.bringup.CarlaClientManager.create_client",
+            "carla_testbed.sim.carla_client.CarlaClientManager.create_client",
             return_value=fake_client,
         ):
             result = connect_world_with_retry(

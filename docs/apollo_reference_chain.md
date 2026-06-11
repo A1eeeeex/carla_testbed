@@ -270,6 +270,28 @@ than allowing later control metrics to be interpreted as natural driving.
 some routing response; that is module-consumption evidence, not proof that the
 configured scenario route was consumed.
 
+For review and CI-friendly postprocess, route identity and routing are also
+available as standalone reports:
+
+```bash
+python tools/analyze_route_identity.py \
+  --run-dir <run_dir> \
+  --frame-transform configs/town01/apollo_frame_transform.example.yaml \
+  --out <run_dir>/analysis/route_identity
+
+python tools/analyze_routing_contract.py \
+  --run-dir <run_dir> \
+  --frame-transform configs/town01/apollo_frame_transform.example.yaml \
+  --out <run_dir>/analysis/routing_contract
+```
+
+`route_identity_report.json` is the route oracle surface. It keeps configured
+scenario route identity, Apollo Routing lane sequence, Planning reference-line
+lane sequence, start/goal poses, and length agreement in one artifact. It is
+allowed to fail before Planning or Control are interpreted. `routing_contract`
+is narrower: it checks routing request/response compatibility and whether the
+claim route, not only a startup or helper route, materialized.
+
 Planning materialization reports keep time domains explicit. Latency or
 freshness metrics are valid only when both sides use the same domain
 (`sim_time` to `sim_time`, or wall time to wall time). Mixed-domain latency,

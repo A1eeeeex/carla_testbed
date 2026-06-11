@@ -300,6 +300,17 @@ surface `route_identity_inconsistent` rather than allowing later control
 activity to imply the intended route was consumed. A near-threshold goal XY
 match is only a warning unless lane/Frenet snap evidence is compatible.
 
+`analysis/route_identity/route_identity_report.json` and
+`analysis/routing_contract/routing_contract_report.json` are narrower
+postprocess views derived from the same evidence. `route_identity_report.json`
+is the oracle-style artifact for scenario route, Apollo routing lane sequence,
+Planning reference-line lane sequence, start/goal pose, and route length
+agreement. `routing_contract_report.json` focuses on routing request/response
+compatibility and whether the claim route materialized. These reports are
+allowed to fail before Planning or Control are interpreted; a failed route
+identity contract means later movement/control evidence is not evidence for the
+configured route.
+
 `analysis/planning_materialization/planning_materialization_report.json`
 explains whether Apollo Planning actually materialized non-empty
 `ADCTrajectory` output after routing and required channel evidence. It reports

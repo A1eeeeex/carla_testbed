@@ -17,6 +17,8 @@ from typing import Any, Dict, Optional
 
 import yaml
 
+from carla_testbed.adapters.apollo.cyber_gt_bridge import default_apollo_cyber_gt_bridge_entrypoint
+
 from .base import Backend
 
 
@@ -5136,7 +5138,7 @@ PY"""
             if setup.exists():
                 parts.append(f"source {shlex.quote(str(setup))}")
         pb_root = self._pb_root()
-        bridge_root = self.repo_root / "tools" / "apollo10_cyber_bridge"
+        bridge_root = default_apollo_cyber_gt_bridge_entrypoint(self.repo_root).bridge_package_dir
         py_parts = [
             str(self.repo_root),
             str(bridge_root),
@@ -5339,7 +5341,7 @@ PY"""
                 raise RuntimeError(
                     f"unsupported algo.apollo.transport_mode={transport_mode}; expected ros2_gt|carla_direct"
                 )
-            bridge_py = self.repo_root / "tools" / "apollo10_cyber_bridge" / "bridge.py"
+            bridge_py = default_apollo_cyber_gt_bridge_entrypoint(self.repo_root).bridge_script
             if not bridge_py.exists():
                 raise RuntimeError(f"bridge.py not found: {bridge_py}")
             self._write_backend_startup_trace(
