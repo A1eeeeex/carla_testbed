@@ -9,6 +9,7 @@
 extends: town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml
 
 run:
+  claim_profile: true
   profile_name: town01_apollo_route_only_claim_probe
 
 algo:

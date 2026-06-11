@@ -50,6 +50,16 @@ REPORT_CANDIDATES = {
         "analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json",
         "apollo_hdmap_projection_report.json",
     ),
+    "apollo_route_contract": (
+        "analysis/apollo_route_contract/apollo_route_contract_report.json",
+        "apollo_route_contract_report.json",
+    ),
+    "routing_response_decoded": (
+        "analysis/routing_response_decoded/routing_response_decoded_report.json",
+        "routing_response_decoded_report.json",
+        "artifacts/routing_response_decoded.json",
+        "routing_response_decoded.json",
+    ),
     "apollo_reference_line_contract": (
         "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
         "apollo_reference_line_contract_report.json",
@@ -170,6 +180,7 @@ def build_evidence_bundle(
             },
         )
     ]
+    artifacts.append(_runtime_claim_boundary_artifact(root, manifest, summary))
     artifacts.extend(_artifact_summary(root, name, candidates) for name, candidates in REPORT_CANDIDATES.items())
     missing = [artifact.name for artifact in artifacts if artifact.status == "missing"]
     present = [artifact.name for artifact in artifacts if artifact.status != "missing"]
@@ -269,6 +280,58 @@ def _artifact_summary(root: Path, name: str, candidates: tuple[str, ...]) -> Evi
     )
 
 
+def _runtime_claim_boundary_artifact(
+    root: Path,
+    manifest: Mapping[str, Any],
+    summary: Mapping[str, Any],
+) -> EvidenceArtifact:
+    typed_loaded = _first_recursive_bool(manifest, summary, keys=("typed_config_loaded",))
+    legacy_fallback = _first_recursive_bool(
+        manifest,
+        summary,
+        keys=("legacy_fallback_used", "legacy_runner_fallback_used", "legacy_dispatch_used"),
+    )
+    aliases = _first_recursive_value(manifest, summary, keys=("config_aliases_used", "config_compatibility_aliases_used"))
+    warnings: list[str] = []
+    blocking: list[str] = []
+    missing: list[str] = []
+    if typed_loaded is None:
+        missing.append("typed_config_loaded")
+    elif typed_loaded is not True:
+        blocking.append("typed_config_not_loaded")
+    if legacy_fallback is None:
+        missing.append("legacy_fallback_used")
+    elif legacy_fallback is True:
+        blocking.append("legacy_fallback_used")
+    if aliases:
+        warnings.append("config_compatibility_aliases_used")
+    if blocking:
+        status = "fail"
+    elif missing:
+        status = "insufficient_data"
+    else:
+        status = "pass"
+    return EvidenceArtifact(
+        name="runtime_claim_boundary",
+        path=str(root / "manifest.json") if (root / "manifest.json").exists() else None,
+        status=status,
+        summary={
+            "status": status,
+            "typed_config_loaded": typed_loaded,
+            "legacy_fallback_used": legacy_fallback,
+            "config_aliases_used": aliases or [],
+            "blocking_reasons": blocking,
+            "warnings": warnings,
+            "missing_fields": missing,
+            "claim_boundary": (
+                "Claim-grade runs must prove typed config loaded successfully and "
+                "legacy fallback was not used. Diagnostic legacy fallback remains allowed "
+                "outside claim gates."
+            ),
+        },
+    )
+
+
 def _status_from_report(payload: Mapping[str, Any]) -> str | None:
     verdict = payload.get("verdict")
     if isinstance(verdict, Mapping):
@@ -322,6 +385,48 @@ def _first(payload: Mapping[str, Any], *keys: str) -> Any:
         if value not in {None, ""}:
             return value
     return None
+
+
+def _first_recursive_bool(*payloads: Mapping[str, Any], keys: tuple[str, ...]) -> bool | None:
+    value = _first_recursive_value(*payloads, keys=keys)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+    return None
+
+
+def _first_recursive_value(*payloads: Mapping[str, Any], keys: tuple[str, ...]) -> Any:
+    for payload in payloads:
+        value = _search_keys(payload, keys)
+        if _present(value):
+            return value
+    return None
+
+
+def _search_keys(value: Any, keys: tuple[str, ...]) -> Any:
+    if isinstance(value, Mapping):
+        for key in keys:
+            if key in value and _present(value[key]):
+                return value[key]
+        for child in value.values():
+            found = _search_keys(child, keys)
+            if _present(found):
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = _search_keys(child, keys)
+            if _present(found):
+                return found
+    return None
+
+
+def _present(value: Any) -> bool:
+    return value is not None and value != ""
 
 
 def _control_source(

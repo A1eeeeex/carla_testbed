@@ -1499,6 +1499,8 @@ class ApolloGtBridge:
         )
         self.control_publish_error_path = self.artifacts_dir / "control_publish_errors.jsonl"
         self.routing_event_debug_path = self.artifacts_dir / "routing_event_debug.jsonl"
+        self.routing_response_decoded_path = self.artifacts_dir / "routing_response_decoded.json"
+        self.routing_response_decoded_jsonl_path = self.artifacts_dir / "routing_response_decoded.jsonl"
         self.reroute_decision_debug_path = self.artifacts_dir / "reroute_decision_debug.jsonl"
         self.stage5_reroute_decision_debug_path = (
             self.artifacts_dir / "stage5_reroute_decision_debug.jsonl"
@@ -4182,6 +4184,114 @@ class ApolloGtBridge:
         except Exception:
             return rows
         return rows
+
+    def _routing_response_lane_windows(self, msg: Any) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        roads = getattr(msg, "road", None)
+        try:
+            for road_index, road in enumerate(list(roads or [])):
+                road_id = self._proto_scalar(self._resolve_nested_value(road, (("id",),)))
+                passages = getattr(road, "passage", None)
+                if passages is None:
+                    continue
+                for passage_index, passage in enumerate(list(passages)):
+                    segments = getattr(passage, "segment", None)
+                    if segments is None:
+                        continue
+                    for segment_index, segment in enumerate(list(segments)):
+                        lane_id = self._proto_scalar(self._resolve_nested_value(segment, (("id",),)))
+                        start_s = self._resolve_nested_float(segment, (("start_s",),))
+                        end_s = self._resolve_nested_float(segment, (("end_s",),))
+                        length = self._resolve_nested_float(segment, (("length",),))
+                        if length is None and start_s is not None and end_s is not None:
+                            length = max(0.0, float(end_s) - float(start_s))
+                        rows.append(
+                            {
+                                "road_index": int(road_index),
+                                "road_id": road_id,
+                                "passage_index": int(passage_index),
+                                "segment_index": int(segment_index),
+                                "lane_id": lane_id,
+                                "start_s": start_s,
+                                "end_s": end_s,
+                                "length_m": length,
+                            }
+                        )
+        except Exception:
+            return rows
+        return rows
+
+    def _routing_response_decoded_payload(self, msg: Any, *, now_sec: float) -> Dict[str, Any]:
+        lane_segments = self._routing_response_lane_windows(msg)
+        road_segments: List[Dict[str, Any]] = []
+        roads = getattr(msg, "road", None)
+        try:
+            for road_index, road in enumerate(list(roads or [])):
+                road_id = self._proto_scalar(self._resolve_nested_value(road, (("id",),)))
+                road_payload: Dict[str, Any] = {"road_index": int(road_index), "road_id": road_id, "passages": []}
+                passages = getattr(road, "passage", None)
+                for passage_index, passage in enumerate(list(passages or [])):
+                    passage_payload: Dict[str, Any] = {
+                        "passage_index": int(passage_index),
+                        "segments": [],
+                    }
+                    segments = getattr(passage, "segment", None)
+                    for segment_index, segment in enumerate(list(segments or [])):
+                        lane_id = self._proto_scalar(self._resolve_nested_value(segment, (("id",),)))
+                        start_s = self._resolve_nested_float(segment, (("start_s",),))
+                        end_s = self._resolve_nested_float(segment, (("end_s",),))
+                        length = self._resolve_nested_float(segment, (("length",),))
+                        if length is None and start_s is not None and end_s is not None:
+                            length = max(0.0, float(end_s) - float(start_s))
+                        passage_payload["segments"].append(
+                            {
+                                "segment_index": int(segment_index),
+                                "lane_id": lane_id,
+                                "start_s": start_s,
+                                "end_s": end_s,
+                                "length_m": length,
+                            }
+                        )
+                    road_payload["passages"].append(passage_payload)
+                road_segments.append(road_payload)
+        except Exception:
+            road_segments = []
+        total_length = 0.0
+        has_length = False
+        lane_sequence: List[str] = []
+        seen_lanes = set()
+        for row in lane_segments:
+            length = row.get("length_m")
+            if length is not None:
+                try:
+                    if math.isfinite(float(length)):
+                        total_length += float(length)
+                        has_length = True
+                except Exception:
+                    pass
+            lane_id = str(row.get("lane_id") or "").strip()
+            if lane_id and lane_id not in seen_lanes:
+                seen_lanes.add(lane_id)
+                lane_sequence.append(lane_id)
+        return {
+            "schema_version": "routing_response_decoded.v1",
+            "source": "/apollo/routing_response",
+            "timestamp_sec": _finite_or_none(now_sec),
+            "header_timestamp_sec": _finite_or_none(self._header_timestamp_sec(msg)),
+            "response_sequence": self._header_sequence_num(msg),
+            "road_count": len(list(roads or [])) if roads is not None else 0,
+            "passage_count": sum(len(road.get("passages") or []) for road in road_segments),
+            "lane_segment_count": len(lane_segments),
+            "road_segments": road_segments,
+            "lane_segments": lane_segments,
+            "total_length_m": total_length if has_length else None,
+            "lane_sequence_signature": lane_sequence,
+            "claim_boundary": (
+                "This artifact decodes the RoutingResponse on /apollo/routing_response. "
+                "It does not by itself prove route identity, HDMap projection, Planning "
+                "materialization, or Control handoff."
+            ),
+        }
 
     def _planning_routing_lane_window_summary(
         self,
@@ -8235,6 +8345,22 @@ class ApolloGtBridge:
         roads = getattr(msg, "road", None)
         road_count = len(roads) if roads is not None else 0
         self.stats["routing_last_road_count"] = int(road_count)
+        try:
+            decoded_payload = self._routing_response_decoded_payload(msg, now_sec=now_sec)
+            self._append_jsonl(self.routing_response_decoded_jsonl_path, decoded_payload)
+            self._write_json_file(self.routing_response_decoded_path, decoded_payload)
+            self.stats["routing_response_decoded_path"] = str(self.routing_response_decoded_path)
+            self.stats["routing_response_decoded_jsonl_path"] = str(
+                self.routing_response_decoded_jsonl_path
+            )
+            self.stats["routing_response_decoded_lane_segment_count"] = int(
+                decoded_payload.get("lane_segment_count") or 0
+            )
+            self.stats["routing_response_decoded_total_length_m"] = _finite_or_none(
+                decoded_payload.get("total_length_m")
+            )
+        except Exception as exc:
+            self.stats["routing_response_decode_error"] = f"{type(exc).__name__}: {exc}"
         if road_count > 0:
             self.stats["routing_success_count"] += 1
             self._routing_last_success_response_ts_sec = now_sec

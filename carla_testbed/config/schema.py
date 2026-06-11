@@ -12,6 +12,7 @@ class RunConfig:
     fixed_dt_s: float = 0.05
     seed: int = 1
     output_root: str = "runs"
+    claim_profile: bool = False
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,7 @@ class TestbedConfig:
     backend: BackendConfig = field(default_factory=BackendConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     assist_ledger: Dict[str, Any] = field(default_factory=dict)
+    config_aliases_used: list[dict[str, Any]] = field(default_factory=list)
     source_path: Path | None = None
 
     def validate_basic(self) -> None:

@@ -1161,7 +1161,7 @@ def _unassisted_claimability(
         reasons.append("apollo_route_contract_missing")
     elif route_contract_status == "fail":
         reasons.append("apollo_route_contract_failed")
-    elif route_contract_status not in PASS_WARN_STATUSES:
+    elif route_contract_status != "pass":
         reasons.append("apollo_route_contract_not_claim_grade")
     if isinstance(claim_route_contract, Mapping) and claim_route_contract.get("materialized") is False:
         reasons.append("claim_route_not_materialized")
@@ -1215,17 +1215,17 @@ def _unassisted_claimability(
         reasons.append("chassis_gt_contract_not_claim_grade")
 
     reference_status = _apollo_reference_line_contract_status(apollo_reference_line_contract)
-    if reference_status not in PASS_WARN_STATUSES or _apollo_reference_line_blocking_reasons(
+    if reference_status != "pass" or _apollo_reference_line_blocking_reasons(
         apollo_reference_line_contract
     ):
-        reasons.append("apollo_reference_line_contract_not_pass_warn")
+        reasons.append("apollo_reference_line_contract_not_pass")
     if not _apollo_hdmap_projection_claim_grade(apollo_hdmap_projection):
         reasons.append("apollo_hdmap_projection_not_claim_grade")
 
     handoff_status = str(apollo_control_handoff.get("verdict") or "").strip()
     handoff_stage = str(apollo_control_handoff.get("failure_stage") or "").strip()
-    if handoff_status not in PASS_WARN_STATUSES or handoff_stage not in {"", "none"}:
-        reasons.append("control_handoff_not_pass_warn")
+    if handoff_status != "pass" or handoff_stage not in {"", "none"}:
+        reasons.append("control_handoff_not_pass")
     if handoff_stage in {"process_health", "control_process", "process_crash"}:
         reasons.append("control_process_failed")
     handoff_blockers = {str(item) for item in (apollo_control_handoff.get("blocking_reasons") or [])}
@@ -1280,7 +1280,7 @@ def _unassisted_claimability(
 
 
 def _localization_claim_grade(report: Mapping[str, Any]) -> bool:
-    if _localization_contract_status(report) not in PASS_WARN_STATUSES:
+    if _localization_contract_status(report) != "pass":
         return False
     if _localization_blocking_reasons(report):
         return False
@@ -2495,7 +2495,7 @@ def _chassis_gt_contract_status(report: Mapping[str, Any]) -> str:
 def _chassis_gt_contract_claim_grade(report: Mapping[str, Any]) -> bool:
     if not isinstance(report, Mapping) or not report:
         return False
-    if _chassis_gt_contract_status(report) not in PASS_WARN_STATUSES:
+    if _chassis_gt_contract_status(report) != "pass":
         return False
     if _chassis_gt_contract_blocking_reasons(report):
         return False
@@ -2526,7 +2526,7 @@ def _apollo_hdmap_projection_status(report: Mapping[str, Any]) -> str:
 def _apollo_hdmap_projection_claim_grade(report: Mapping[str, Any]) -> bool:
     if not isinstance(report, Mapping) or not report:
         return False
-    if _apollo_hdmap_projection_status(report) not in PASS_WARN_STATUSES:
+    if _apollo_hdmap_projection_status(report) != "pass":
         return False
     if report.get("claim_grade") is True:
         return True
@@ -3205,10 +3205,10 @@ def _apollo_control_handoff_evidence_verdict(
             f"apollo_control_handoff_{stage}",
             [f"apollo_control_handoff.failure_stage.{stage}"],
         )
-    if verdict not in {"pass", "warn"}:
+    if verdict != "pass":
         return (
             "insufficient_data",
-            "apollo_control_handoff_missing_status",
+            "apollo_control_handoff_not_pass",
             ["apollo_control_handoff.verdict"],
         )
     stage = str(report.get("failure_stage") or "").strip()

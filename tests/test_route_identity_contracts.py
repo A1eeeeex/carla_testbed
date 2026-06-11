@@ -128,27 +128,69 @@ def test_route_identity_cli_writes_report(tmp_path: Path) -> None:
                 "run_id": "run-1",
                 "scenario_id": "lane_keep_097",
                 "route_id": "town01_rh_spawn097_goal046",
-                "route": {
-                    "route_id": "town01_rh_spawn097_goal046",
-                    "length_m": 120.0,
-                    "start_pose": {"x": 1.0, "y": 2.0},
-                    "goal_pose": {"x": 100.0, "y": 2.0},
-                    "lane_ids": ["lane_a"],
+                "metadata": {
+                    "scenario_metadata": {
+                        "route_id": "town01_rh_spawn097_goal046",
+                        "route_length_m": 120.0,
+                        "spawn": {"x": 1.0, "y": 2.0},
+                        "goal": {"x": 121.0, "y": 2.0},
+                        "spawn_lane": {"road_id": 15, "section_id": 0, "lane_id": 1},
+                        "goal_lane": {"road_id": 15, "section_id": 0, "lane_id": 1},
+                        "route_trace": [
+                            {"x": 1.0, "y": 2.0, "s": 0.0, "lane_id": "15:0:1"},
+                            {"x": 121.0, "y": 2.0, "s": 120.0, "lane_id": "15:0:1"},
+                        ],
+                    }
                 },
             }
         ),
         encoding="utf-8",
     )
     (run_dir / "summary.json").write_text(json.dumps({"run_id": "run-1"}), encoding="utf-8")
-    (artifacts / "planning_topic_debug_summary.json").write_text(
+    (artifacts / "routing_response_decoded.json").write_text(
         json.dumps(
             {
-                "routing_response": {
-                    "total_length_m": 120.0,
-                    "lane_ids": ["lane_a"],
-                    "start_xy": {"x": 1.0, "y": 2.0},
-                    "goal_xy": {"x": 100.0, "y": 2.0},
-                }
+                "source": "/apollo/routing_response",
+                "lane_segments": [{"lane_id": "15_1_1", "start_s": 0.0, "end_s": 120.0}],
+                "total_length_m": 120.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "routing_event_debug.jsonl").write_text(
+        json.dumps({"start_raw_x": 1.0, "start_raw_y": -2.0, "goal_raw_x": 121.0, "goal_raw_y": -2.0}) + "\n",
+        encoding="utf-8",
+    )
+    (artifacts / "planning_route_segment_debug.jsonl").write_text(
+        json.dumps(
+            {
+                "route_segment_total_length": 120.0,
+                "routing_lane_window_count": 1,
+                "routing_lane_window_signature": "15_1_1@0->120",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifacts / "apollo_hdmap_projection.jsonl").write_text(
+        json.dumps({"source": "apollo_hdmap_api", "nearest_lane_id": "15_1_1"}) + "\n",
+        encoding="utf-8",
+    )
+    transform_path = tmp_path / "frame_transform.yaml"
+    transform_path.write_text(
+        json.dumps(
+            {
+                "map_name": "Town01",
+                "source_frame": "carla_world",
+                "target_frame": "apollo_map",
+                "transform": {
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "tz": 0.0,
+                    "yaw_rad": 0.0,
+                    "scale": 1.0,
+                    "y_flip": True,
+                },
             }
         ),
         encoding="utf-8",
@@ -161,6 +203,8 @@ def test_route_identity_cli_writes_report(tmp_path: Path) -> None:
             "tools/analyze_route_identity.py",
             "--run-dir",
             str(run_dir),
+            "--frame-transform",
+            str(transform_path),
             "--out",
             str(out),
         ],
@@ -171,4 +215,7 @@ def test_route_identity_cli_writes_report(tmp_path: Path) -> None:
     )
 
     assert (out / "route_identity_report.json").exists()
-    assert result.returncode in {0, 1}
+    report = json.loads((out / "route_identity_report.json").read_text(encoding="utf-8"))
+    assert result.returncode == 0
+    assert report["status"] == "pass"
+    assert report["route_identity_status"] == "consistent"

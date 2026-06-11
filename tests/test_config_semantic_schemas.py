@@ -81,6 +81,27 @@ def test_claim_gate_is_strict_about_warn_and_insufficient_data() -> None:
     assert {"fail", "warn", "insufficient_data"}.issubset(fail_on_status)
 
 
+def test_claim_gate_requires_runtime_boundary_and_pass_only_core_reports() -> None:
+    gate = _load_yaml(CLAIM_GATE_PATH)
+    claim_requires = set(gate.get("gate", {}).get("claim_requires") or [])
+    rules = {rule["id"]: rule for rule in gate.get("gate", {}).get("rules") or []}
+
+    assert "runtime_claim_boundary_pass" in claim_requires
+    for rule_id in [
+        "runtime_claim_boundary_pass",
+        "apollo_module_consumption_pass",
+        "apollo_route_contract_pass",
+        "localization_contract_pass",
+        "chassis_gt_contract_pass",
+        "hdmap_projection_pass",
+        "reference_line_contract_pass",
+        "control_handoff_pass",
+    ]:
+        rule = rules[rule_id]
+        assert rule["op"] == "=="
+        assert rule["value"] == "pass"
+
+
 def test_claim_gate_expected_artifacts_are_parseable_strings() -> None:
     gate = _load_yaml(CLAIM_GATE_PATH)
     artifacts = gate.get("evidence", {}).get("expected_artifacts")

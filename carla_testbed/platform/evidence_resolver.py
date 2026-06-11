@@ -146,12 +146,17 @@ def _rules_for_plan(plan: RunPlan) -> list[dict[str, Any]]:
             "==",
             True,
         ),
-        _rule("apollo_module_consumption_pass", "apollo_module_consumption", "status", "in", ["pass", "warn"]),
+        _rule("runtime_claim_boundary_pass", "runtime_claim_boundary", "status", "==", "pass"),
+        _rule("apollo_module_consumption_pass", "apollo_module_consumption", "status", "==", "pass"),
+        _rule("apollo_route_contract_pass", "apollo_route_contract", "status", "==", "pass"),
         _rule("hdmap_projection_claim_grade", "apollo_hdmap_projection", "claim_grade", "==", True),
+        _rule("hdmap_projection_pass", "apollo_hdmap_projection", "status", "==", "pass"),
         _rule("localization_contract_claim_grade", "localization_contract", "claim_grade", "==", True),
+        _rule("localization_contract_pass", "localization_contract", "status", "==", "pass"),
         _rule("chassis_gt_contract_claim_grade", "chassis_gt_contract", "claim_grade", "==", True),
-        _rule("reference_line_contract_pass", "apollo_reference_line_contract", "status", "in", ["pass"]),
-        _rule("control_handoff_pass", "apollo_control_handoff", "status", "in", ["pass", "warn"]),
+        _rule("chassis_gt_contract_pass", "chassis_gt_contract", "status", "==", "pass"),
+        _rule("reference_line_contract_pass", "apollo_reference_line_contract", "status", "==", "pass"),
+        _rule("control_handoff_pass", "apollo_control_handoff", "status", "==", "pass"),
         _rule(
             "applied_control_source_apollo",
             "control_attribution",
@@ -160,20 +165,11 @@ def _rules_for_plan(plan: RunPlan) -> list[dict[str, Any]]:
             "apollo_control",
         ),
         _rule("no_blocking_assists", "assist_ledger", "blocking_assists", "==", []),
+        _rule("prediction_evidence_explicit", "prediction_evidence", "prediction_mode", "==", "native_observed"),
     ]
     requirements = plan.scenario.requirements or {}
     rules.extend(traffic_rules)
     rules.extend(fixed_scene_rules)
-    if _prediction_required_for_plan(plan):
-        rules.append(
-            _rule(
-                "prediction_evidence_explicit",
-                "prediction_evidence",
-                "prediction_mode",
-                "==",
-                "native_observed",
-            )
-        )
     if _dynamic_actor_evidence_required_for_plan(plan):
         rules.append(_rule("obstacle_gt_contract_pass", "obstacle_gt_contract", "status", "in", ["pass"]))
         if _vehicles_enabled(plan) or _walkers_enabled(plan):

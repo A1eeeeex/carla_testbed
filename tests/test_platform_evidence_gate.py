@@ -63,6 +63,46 @@ def test_evidence_bundle_indexes_missing_required_reports(tmp_path: Path) -> Non
     assert gate["can_claim_unassisted_natural_driving"] is False
 
 
+def test_runtime_claim_boundary_requires_typed_config_and_no_legacy_fallback(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_fake_run(run_dir)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["typed_config_loaded"] = True
+    manifest["legacy_fallback_used"] = False
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    bundle = build_evidence_bundle(run_dir)
+
+    assert bundle["artifacts"]["runtime_claim_boundary"]["status"] == "pass"
+
+
+def test_runtime_claim_boundary_blocks_legacy_fallback(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_fake_run(run_dir)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["typed_config_loaded"] = False
+    manifest["legacy_fallback_used"] = True
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    bundle = build_evidence_bundle(run_dir)
+    boundary = bundle["artifacts"]["runtime_claim_boundary"]
+
+    assert boundary["status"] == "fail"
+    assert "typed_config_not_loaded" in boundary["summary"]["blocking_reasons"]
+    assert "legacy_fallback_used" in boundary["summary"]["blocking_reasons"]
+
+
+def test_runtime_claim_boundary_missing_fields_is_insufficient_data(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_fake_run(run_dir)
+
+    bundle = build_evidence_bundle(run_dir)
+    boundary = bundle["artifacts"]["runtime_claim_boundary"]
+
+    assert boundary["status"] == "insufficient_data"
+    assert set(boundary["summary"]["missing_fields"]) == {"typed_config_loaded", "legacy_fallback_used"}
+
+
 def test_gate_rule_fails_even_when_report_status_is_pass(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_fake_run(run_dir)

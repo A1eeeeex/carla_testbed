@@ -12,6 +12,7 @@ from carla_testbed.adapters.apollo.frame_transform import (
     carla_point_to_apollo,
     load_frame_transform,
 )
+from carla_testbed.analysis.routing_response_decoded import read_routing_response_decoded
 
 APOLLO_ROUTE_CONTRACT_SCHEMA_VERSION = "apollo_route_contract.v1"
 
@@ -31,6 +32,15 @@ def analyze_apollo_route_contract_run_dir(
 ) -> dict[str, Any]:
     root = Path(run_dir).expanduser()
     frame_transform_obj, frame_transform_source = _resolve_frame_transform(frame_transform)
+    routing_response_decoded_path = _find_first(
+        root,
+        (
+            "artifacts/routing_response_decoded.json",
+            "artifacts/routing_response_decoded.jsonl",
+            "routing_response_decoded.json",
+            "routing_response_decoded.jsonl",
+        ),
+    )
     return analyze_apollo_route_contract(
         manifest=_read_json(_find_first(root, ("manifest.json",))),
         summary=_read_json(_find_first(root, ("summary.json",))),
@@ -63,6 +73,7 @@ def analyze_apollo_route_contract_run_dir(
         hdmap_projection=_read_jsonl(
             _find_first(root, ("artifacts/apollo_hdmap_projection.jsonl", "apollo_hdmap_projection.jsonl"))
         ),
+        routing_response_decoded=read_routing_response_decoded(routing_response_decoded_path),
         frame_transform=frame_transform_obj,
         frame_transform_source=frame_transform_source,
         source={
@@ -86,6 +97,7 @@ def analyze_apollo_route_contract_run_dir(
             "routing_event_debug": _path_str(
                 _find_first(root, ("artifacts/routing_event_debug.jsonl", "routing_event_debug.jsonl"))
             ),
+            "routing_response_decoded": _path_str(routing_response_decoded_path),
             "planning_route_segment_debug": _path_str(
                 _find_first(
                     root,
@@ -112,6 +124,7 @@ def analyze_apollo_route_contract(
     routing_event_debug: Sequence[Mapping[str, Any]] | None = None,
     planning_route_segment_debug: Sequence[Mapping[str, Any]] | None = None,
     hdmap_projection: Sequence[Mapping[str, Any]] | None = None,
+    routing_response_decoded: Mapping[str, Any] | None = None,
     frame_transform: ApolloFrameTransform | None = None,
     frame_transform_source: str | None = None,
     source: Mapping[str, Any] | None = None,
@@ -123,13 +136,20 @@ def analyze_apollo_route_contract(
     routing_rows = list(routing_event_debug or [])
     route_rows = list(planning_route_segment_debug or [])
     hdmap_rows = list(hdmap_projection or [])
+    routing_response_decoded = routing_response_decoded or {}
 
     scenario = _scenario_route(manifest, summary)
-    apollo = _apollo_route(planning_topic_debug_summary, routing_rows, route_rows)
+    apollo = _apollo_route(planning_topic_debug_summary, routing_rows, route_rows, routing_response_decoded)
     projection = _projection_route(hdmap_rows)
     raw_route_phase = _route_phase(apollo, cyber_bridge_stats, scenario.get("route_length_m"))
     last_routing_request = _routing_request_summary(routing_rows, scenario)
-    last_routing_response = _routing_response_summary(planning_topic_debug_summary, routing_rows, route_rows, apollo)
+    last_routing_response = _routing_response_summary(
+        planning_topic_debug_summary,
+        routing_rows,
+        route_rows,
+        apollo,
+        routing_response_decoded,
+    )
     latest_planning_active_route_segment = _planning_active_route_segment(route_rows)
     scenario_start_xy_carla = scenario.get("start_xy")
     scenario_goal_xy_carla = scenario.get("goal_xy")
@@ -240,6 +260,8 @@ def analyze_apollo_route_contract(
 
     if not routing_rows:
         warnings.append("routing_event_debug_missing")
+    if routing_response_decoded.get("status") != "pass":
+        warnings.append("routing_response_decoded_missing")
     if not route_rows:
         warnings.append("planning_route_segment_debug_missing")
     if projection.get("available") is False:
@@ -318,6 +340,7 @@ def analyze_apollo_route_contract(
         "routing_phase_reason": route_phase["routing_phase_reason"],
         "last_routing_request": last_routing_request,
         "last_routing_response": last_routing_response,
+        "routing_response_decoded": _routing_response_decoded_summary(routing_response_decoded),
         "latest_planning_active_route_segment": latest_planning_active_route_segment,
         "route_identity_status": route_identity["status"],
         "route_identity_issues": route_identity["issues"],
@@ -516,7 +539,7 @@ def _claim_route_contract(
         }
     return {
         "status": status,
-        "materialized": status in {"pass", "warn"},
+        "materialized": status == "pass",
         "blocking_reasons": sorted(set(blocking_reasons)),
         "scenario_route_length_m": scenario_length,
         "apollo_routing_total_length_m": apollo_length,
@@ -583,12 +606,16 @@ def _routing_response_summary(
     routing_rows: Sequence[Mapping[str, Any]],
     route_rows: Sequence[Mapping[str, Any]],
     apollo: Mapping[str, Any],
+    routing_response_decoded: Mapping[str, Any],
 ) -> dict[str, Any]:
     last_request = _last_mapping(routing_rows)
     last_route = _last_route_row_with_signature(route_rows)
+    decoded = _routing_response_decoded_summary(routing_response_decoded)
+    decoded_available = decoded.get("available") is True
     return {
         "available": apollo.get("routing_total_length_m") is not None,
         "response_sequence": _first_int(
+            routing_response_decoded.get("response_sequence"),
             planning_summary.get("last_planning_header_sequence_num"),
             last_route.get("planning_header_sequence_num") if last_route else None,
         ),
@@ -597,7 +624,12 @@ def _routing_response_summary(
         "lane_window_count": apollo.get("routing_lane_window_count"),
         "lane_window_signature": apollo.get("routing_lane_signature"),
         "unique_lane_signature": apollo.get("routing_unique_lane_signature"),
-        "source": "planning_topic_debug_summary_or_route_segment_debug",
+        "decoded": decoded,
+        "source": (
+            "routing_response_decoded"
+            if decoded_available
+            else "planning_topic_debug_summary_or_route_segment_debug"
+        ),
     }
 
 
@@ -745,10 +777,30 @@ def _apollo_route(
     planning_summary: Mapping[str, Any],
     routing_rows: Sequence[Mapping[str, Any]],
     route_rows: Sequence[Mapping[str, Any]],
+    routing_response_decoded: Mapping[str, Any],
 ) -> dict[str, Any]:
     last_routing_row = _last_mapping(routing_rows)
     last_route_row = _last_route_row_with_signature(route_rows)
+    decoded_status = str(routing_response_decoded.get("status") or "")
+    decoded_lane_ids = [
+        str(item).strip()
+        for item in (routing_response_decoded.get("lane_sequence_signature") or [])
+        if str(item).strip()
+    ]
+    decoded_lane_segments = (
+        routing_response_decoded.get("lane_segments")
+        if isinstance(routing_response_decoded.get("lane_segments"), list)
+        else []
+    )
+    if not decoded_lane_ids:
+        decoded_lane_ids = [
+            str(row.get("lane_id") or "").strip()
+            for row in decoded_lane_segments
+            if isinstance(row, Mapping) and str(row.get("lane_id") or "").strip()
+        ]
     lane_signature = _first_text(
+        {"decoded": " | ".join(decoded_lane_ids) if decoded_status == "pass" and decoded_lane_ids else None},
+        "decoded",
         planning_summary,
         "last_routing_lane_window_signature",
         last_routing_row,
@@ -757,6 +809,8 @@ def _apollo_route(
         "routing_lane_window_signature",
     )
     unique_signature = _first_text(
+        {"decoded": " | ".join(_unique_keep_order(decoded_lane_ids)) if decoded_status == "pass" and decoded_lane_ids else None},
+        "decoded",
         planning_summary,
         "last_routing_unique_lane_signature",
         last_routing_row,
@@ -765,17 +819,21 @@ def _apollo_route(
         "routing_unique_lane_signature",
     )
     total_length = _first_num(
+        routing_response_decoded.get("total_length_m") if decoded_status == "pass" else None,
         planning_summary.get("last_routing_total_length"),
         last_routing_row.get("routing_total_length") if last_routing_row else None,
         last_routing_row.get("route_total_length_m") if last_routing_row else None,
         last_routing_row.get("goal_distance_m") if last_routing_row else None,
     )
     window_count = _first_int(
+        routing_response_decoded.get("lane_segment_count") if decoded_status == "pass" else None,
         planning_summary.get("last_routing_lane_window_count"),
         last_routing_row.get("routing_lane_window_count") if last_routing_row else None,
         last_route_row.get("routing_lane_window_count") if last_route_row else None,
     )
     lane_ids = _lane_ids_from_signature(lane_signature) or _lane_ids_from_signature(unique_signature)
+    if decoded_status == "pass" and decoded_lane_ids:
+        lane_ids = decoded_lane_ids
     start_xy = _xy_from_keys(last_routing_row, ("start_raw_x", "start_raw_y")) or _xy_from_keys(
         last_routing_row,
         ("start_x", "start_y"),
@@ -795,6 +853,25 @@ def _apollo_route(
         "routing_event_phase": _text_or_none(last_routing_row.get("routing_phase") if last_routing_row else None),
         "routing_request_kind": _text_or_none(last_routing_row.get("routing_request_kind") if last_routing_row else None),
         "routing_goal_mode": _text_or_none(last_routing_row.get("goal_mode") if last_routing_row else None),
+        "routing_source": "routing_response_decoded" if decoded_status == "pass" else "planning_topic_debug_summary_or_route_segment_debug",
+    }
+
+
+def _routing_response_decoded_summary(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or value.get("status") != "pass":
+        return {
+            "available": False,
+            "status": value.get("status") if isinstance(value, Mapping) else "missing",
+            "missing_fields": list(value.get("missing_fields") or []) if isinstance(value, Mapping) else [],
+        }
+    return {
+        "available": True,
+        "status": value.get("status"),
+        "source": value.get("source"),
+        "response_sequence": _first_int(value.get("response_sequence")),
+        "total_length_m": _num(value.get("total_length_m")),
+        "lane_segment_count": _first_int(value.get("lane_segment_count")),
+        "lane_sequence_signature": list(value.get("lane_sequence_signature") or []),
     }
 
 
@@ -835,6 +912,18 @@ def _lane_ids_from_signature(signature: str | None) -> list[str]:
         if re.match(r"^-?\d+_-?\d+_-?\d+$", clean):
             lane_ids.append(clean)
     return lane_ids
+
+
+def _unique_keep_order(items: Sequence[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
 
 
 def _lane_key(lane_id: str | None) -> str | None:

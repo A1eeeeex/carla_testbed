@@ -635,6 +635,10 @@ Required run artifacts:
 
 - `manifest.json`, `config.resolved.yaml`, `summary.json`, `timeseries.csv` or
   `timeseries.jsonl`, and `events.jsonl`.
+- `manifest.json` must show `typed_config_loaded=true` and
+  `legacy_fallback_used=false` for claim-grade runs. If a claim profile falls
+  back to the legacy runner, the run is diagnostic-only even if Apollo channels
+  and CARLA actuation are active.
 - `artifacts/cyber_bridge_stats.json`,
   `artifacts/bridge_health_summary.json`,
   `artifacts/bridge_transport_summary.json`, and
@@ -664,6 +668,12 @@ Required run artifacts:
   scenario route length/start/goal/lane identity must be compatible with Apollo
   Routing output. A long warmup/debug route or mismatched Apollo route response
   blocks route establishment and cannot be hidden by later control activity.
+  The preferred route response input is
+  `artifacts/routing_response_decoded.json` or
+  `artifacts/routing_response_decoded.jsonl`, decoded directly from
+  `/apollo/routing_response`. If this artifact is missing, older
+  Planning-derived route summaries are diagnostic fallback only and cannot
+  create claim-grade route identity pass by themselves.
   The report also records `configured_scenario_route`, `last_routing_request`,
   `last_routing_response`, and `latest_planning_active_route_segment`; all four
   must identify the same claim route before lane-keep, curve, junction, or
@@ -716,6 +726,9 @@ python tools/analyze_apollo_hdmap_projection.py \
   --out "$RUN/analysis/apollo_hdmap_projection"
 python tools/analyze_apollo_localization_contract.py --run-dir "$RUN"
 python tools/analyze_apollo_route_contract.py --run-dir "$RUN" --out "$RUN/analysis/apollo_route_contract"
+python tools/analyze_routing_response_decoded.py \
+  --input "$RUN/artifacts/routing_response_decoded.json" \
+  --out "$RUN/analysis/routing_response_decoded"
 python tools/analyze_apollo_reference_line_contract.py --run-dir "$RUN"
 python tools/analyze_apollo_planning_materialization.py --run-dir "$RUN"
 python tools/analyze_apollo_module_consumption.py --run-dir "$RUN" --out "$RUN/analysis/apollo_module_consumption"
@@ -753,17 +766,22 @@ Minimum pass thresholds for a claim-grade packet:
   `algorithm_variant_manifest_path`. Missing, unresolved, mismatched, or
   non-`truth_input_closed_loop` variant metadata appears in
   `why_not_claimable` and blocks a capability claim.
-- `localization_contract_report.json` is `pass` or non-blocking `warn`,
-  claim-grade, uses sim-time, writes `header.frame_id=map`, uses verified VRP /
+- runtime claim boundary is `pass`: typed config loaded, no legacy fallback,
+  and any config compatibility aliases are explicitly recorded.
+- `localization_contract_report.json` is `pass`, claim-grade, uses sim-time,
+  writes `header.frame_id=map`, uses verified VRP /
   rear-axle evidence, skips stale GT sample republish for claim-grade runs, and
   has no blocking reasons.
+- `chassis_gt_contract_report.json` and
+  `apollo_hdmap_projection_report.json` are both `pass` and claim-grade.
 - `apollo_reference_line_contract_report.json`,
   `apollo_route_contract_report.json`,
   `planning_materialization_report.json`,
   `apollo_module_consumption_report.json`,
   `prediction_evidence_report.json`,
   `apollo_control_handoff_report.json`, `apollo_channel_health_report.json`,
-  and `control_health_report.json` are `pass` or non-blocking `warn`.
+  and `control_health_report.json` are `pass`. `warn` remains useful
+  diagnostic evidence but does not satisfy the no-interference claim gate.
 - `planning_materialization_report.json` reports valid same-domain timing:
   routing/planning latency cannot mix sim-time with wall-time, and input
   freshness cannot be claimed when topic as-of join coverage is zero.
@@ -799,6 +817,8 @@ Known non-claim-grade modes:
 - diagnostic nearest-lane projection only;
 - stale localization republish used as fresh-sample evidence;
 - missing HDMap / Apollo reference-line evidence;
+- missing decoded `/apollo/routing_response` evidence;
+- claim profile typed-config load failure or legacy fallback;
 - missing, unresolved, or mismatched algorithm variant manifest;
 - all-null `control_apply_trace.jsonl` rows used as control evidence;
 - missing or unknown prediction evidence when the scenario requires prediction;

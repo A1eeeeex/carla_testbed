@@ -4,14 +4,18 @@ gate:
   can_claim_natural_driving: true
   claim_requires:
     - no_assist
+    - runtime_claim_boundary_pass
     - route_established
     - apollo_module_consumption_pass
     - planning_nonempty_ratio>=0.8
     - channel_health_pass
     - localization_contract_claim_grade
+    - localization_contract_pass
     - chassis_gt_contract_claim_grade
+    - chassis_gt_contract_pass
     - apollo_route_contract_pass
     - hdmap_projection_claim_grade
+    - hdmap_projection_pass
     - reference_line_contract_pass
     - control_handoff_pass
     - control_attribution_pass
@@ -30,17 +34,23 @@ gate:
       op: "=="
       value: true
       required_for: claim
+    - id: runtime_claim_boundary_pass
+      report: runtime_claim_boundary
+      path: status
+      op: "=="
+      value: pass
+      required_for: claim
     - id: apollo_module_consumption_pass
       report: apollo_module_consumption
       path: status
-      op: in
-      value: [pass, warn]
+      op: "=="
+      value: pass
       required_for: claim
     - id: apollo_route_contract_pass
       report: apollo_route_contract
       path: status
-      op: in
-      value: [pass, warn]
+      op: "=="
+      value: pass
       required_for: claim
     - id: hdmap_projection_claim_grade
       report: apollo_hdmap_projection
@@ -48,11 +58,23 @@ gate:
       op: "=="
       value: true
       required_for: claim
+    - id: hdmap_projection_pass
+      report: apollo_hdmap_projection
+      path: status
+      op: "=="
+      value: pass
+      required_for: claim
     - id: localization_contract_claim_grade
       report: localization_contract
       path: claim_grade
       op: "=="
       value: true
+      required_for: claim
+    - id: localization_contract_pass
+      report: localization_contract
+      path: status
+      op: "=="
+      value: pass
       required_for: claim
     - id: chassis_gt_contract_claim_grade
       report: chassis_gt_contract
@@ -60,17 +82,23 @@ gate:
       op: "=="
       value: true
       required_for: claim
+    - id: chassis_gt_contract_pass
+      report: chassis_gt_contract
+      path: status
+      op: "=="
+      value: pass
+      required_for: claim
     - id: reference_line_contract_pass
       report: apollo_reference_line_contract
       path: status
-      op: in
-      value: [pass]
+      op: "=="
+      value: pass
       required_for: claim
     - id: control_handoff_pass
       report: apollo_control_handoff
       path: status
-      op: in
-      value: [pass, warn]
+      op: "=="
+      value: pass
       required_for: claim
     - id: applied_control_source_apollo
       report: control_attribution
@@ -97,6 +125,7 @@ gate:
 evidence:
   required_analyzers:
     - artifact_completeness
+    - runtime_claim_boundary
     - route_health
     - channel_health
     - localization_contract

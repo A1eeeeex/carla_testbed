@@ -189,3 +189,31 @@ def test_run_dry_run_dispatches_legacy_followstop_config(tmp_path: Path) -> None
     assert "falling back to legacy runner" in result.stderr
     assert "[dry-run] artifacts at" in result.stdout
     assert (run_dir / "effective.yaml").exists()
+
+
+def test_claim_profile_forbids_legacy_fallback_when_typed_load_fails(tmp_path: Path) -> None:
+    config_path = tmp_path / "town01_claim_probe.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "run:",
+                "  id: claim-probe",
+                "  claim_profile: true",
+                "  profile_name: town01_claim_probe",
+                "scenario:",
+                "  name: lane_keep_097",
+                "backend:",
+                "  name: apollo_cyberrt",
+                "unknown_legacy_root:",
+                "  enabled: true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli("run", "--config", str(config_path), "--dry-run")
+
+    assert result.returncode == 2
+    assert "claim profile typed config load failed" in result.stderr
+    assert "falling back to legacy runner" not in result.stderr

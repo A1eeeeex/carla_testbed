@@ -40,3 +40,30 @@ def test_traffic_light_requirements_add_contract_and_behavior() -> None:
     assert "traffic_light_force_green_blocked" in rule_ids
     assert "traffic_light_policy_actual" in rule_ids
     assert "chassis_gt_contract_claim_grade" in rule_ids
+
+
+def test_apollo_claim_resolution_uses_pass_only_core_rules() -> None:
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="town01/lane_keep_097",
+        recording="claim",
+        gate="claim_natural_driving",
+        registry=PlatformRegistry(repo_root="."),
+    )
+    rules = {rule["id"]: rule for rule in plan.gate.rules}
+
+    for rule_id in [
+        "runtime_claim_boundary_pass",
+        "apollo_route_contract_pass",
+        "apollo_module_consumption_pass",
+        "localization_contract_pass",
+        "chassis_gt_contract_pass",
+        "hdmap_projection_pass",
+        "reference_line_contract_pass",
+        "control_handoff_pass",
+        "prediction_evidence_explicit",
+    ]:
+        rule = rules[rule_id]
+        assert rule["op"] == "=="
+    assert rules["prediction_evidence_explicit"]["value"] == "native_observed"

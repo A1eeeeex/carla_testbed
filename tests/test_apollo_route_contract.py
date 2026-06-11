@@ -120,6 +120,62 @@ def test_route_contract_passes_matching_lane_keep_route(tmp_path: Path) -> None:
     assert report["scenario_start_xy_apollo"] == {"x": 2.0, "y": -249.0}
 
 
+def test_route_contract_uses_decoded_routing_response_as_route_identity_source(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "source": "/apollo/routing_response",
+            "lane_segments": [{"lane_id": "15_1_1", "start_s": 66.9, "end_s": 296.9}],
+            "total_length_m": 230.0,
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "last_routing_total_length": 648.0,
+            "last_routing_lane_window_count": 17,
+            "last_routing_lane_window_signature": "99_1_1@0->648",
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "long",
+                "routing_request_kind": "long_phase_route",
+                "start_raw_x": 2.0,
+                "start_raw_y": -249.0,
+                "goal_raw_x": 2.0,
+                "goal_raw_y": -19.0,
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "route_segment_total_length": 230.0,
+                "routing_lane_window_count": 1,
+                "routing_lane_window_signature": "15_1_1@66.9->296.9",
+                "routing_unique_lane_signature": "15_1_1",
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/apollo_hdmap_projection.jsonl",
+        [{"source": "apollo_hdmap_api", "nearest_lane_id": "15_1_1"}],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "pass"
+    assert report["apollo_routing_total_length_m"] == 230.0
+    assert report["last_routing_response"]["source"] == "routing_response_decoded"
+    assert report["routing_response_decoded"]["available"] is True
+    assert report["route_identity_status"] == "consistent"
+
+
 def test_route_contract_missing_apollo_route_is_insufficient(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
 
@@ -368,14 +424,34 @@ def test_goal_near_threshold_warns_even_below_legacy_xy_threshold(tmp_path: Path
 def test_route_contract_cli_writes_report(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     _write_json(
-        run_dir / "artifacts/planning_topic_debug_summary.json",
+        run_dir / "artifacts/routing_response_decoded.json",
         {
-            "last_routing_total_length": 232.0,
-            "last_routing_lane_window_count": 1,
-            "last_routing_lane_window_signature": "15_1_1@66.9->298.9",
+            "source": "/apollo/routing_response",
+            "lane_segments": [{"lane_id": "15_1_1", "start_s": 66.9, "end_s": 298.9}],
+            "total_length_m": 232.0,
         },
     )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [{"start_raw_x": 2.0, "start_raw_y": -249.0, "goal_raw_x": 2.0, "goal_raw_y": -19.0}],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "route_segment_total_length": 232.0,
+                "routing_lane_window_count": 1,
+                "routing_lane_window_signature": "15_1_1@66.9->298.9",
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/apollo_hdmap_projection.jsonl",
+        [{"source": "apollo_hdmap_api", "nearest_lane_id": "15_1_1"}],
+    )
     out_dir = tmp_path / "out"
+    transform_path = tmp_path / "frame_transform.yaml"
+    transform_path.write_text(json.dumps(FRAME_TRANSFORM), encoding="utf-8")
 
     result = subprocess.run(
         [
@@ -383,6 +459,8 @@ def test_route_contract_cli_writes_report(tmp_path: Path) -> None:
             "tools/analyze_apollo_route_contract.py",
             "--run-dir",
             str(run_dir),
+            "--frame-transform",
+            str(transform_path),
             "--out",
             str(out_dir),
         ],
@@ -392,5 +470,7 @@ def test_route_contract_cli_writes_report(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0
-    assert (out_dir / "apollo_route_contract_report.json").is_file()
+    report = json.loads((out_dir / "apollo_route_contract_report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "pass"
+    assert report["last_routing_response"]["source"] == "routing_response_decoded"
     assert (out_dir / "apollo_route_contract_summary.md").is_file()

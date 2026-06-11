@@ -352,6 +352,24 @@ def _read_json_optional(path: Path) -> Mapping[str, Any] | None:
     return data
 
 
+def _config_declares_claim_profile(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        import yaml
+
+        payload = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    except Exception:
+        return False
+    if not isinstance(payload, Mapping):
+        return False
+    run = payload.get("run") if isinstance(payload.get("run"), Mapping) else {}
+    profile_name = str(run.get("profile_name") or payload.get("profile_name") or "").lower()
+    if bool(run.get("claim_profile") or payload.get("claim_profile")):
+        return True
+    return "claim" in profile_name or "claim" in str(path).lower()
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     if args.plan:
         try:
@@ -404,6 +422,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
     try:
         cfg = load_config(args.config, overrides=_parse_override_pairs(args.override))
     except ConfigError as exc:
+        if _config_declares_claim_profile(args.config):
+            print(
+                f"[run] claim profile typed config load failed; legacy fallback is forbidden: {exc}",
+                file=sys.stderr,
+            )
+            return 2
         if not (args.legacy_dispatch or args.dry_run):
             print(
                 f"[run] typed config load failed and --legacy-dispatch was not set: {exc}",

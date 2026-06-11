@@ -63,10 +63,14 @@ traffic-light claims require Apollo HDMap/reference-line/signal evidence.
 not native Apollo routing evidence.
 Claim-grade routing also requires `apollo_route_contract_report.json`: the
 scenario route length/start/goal/lane identity must be compatible with the
-Apollo routing response and route segment evidence. A routing response that is
-much longer than the scenario route, or that uses an incompatible lane/window
-sequence, blocks route establishment before planning/control behavior is
-interpreted.
+Apollo routing response and route segment evidence. The preferred evidence is
+`artifacts/routing_response_decoded.json` or
+`artifacts/routing_response_decoded.jsonl`, written from the actual
+`/apollo/routing_response`. Planning-derived route summaries are useful
+diagnostic fallback but cannot alone support a claim-grade route pass. A
+routing response that is much longer than the scenario route, or that uses an
+incompatible lane/window sequence, blocks route establishment before
+planning/control behavior is interpreted.
 
 `localization` may be replaced by CARLA GT only with
 `localization_contract_report.json`. The report must cover sim time, frame
@@ -242,6 +246,10 @@ raw scenario CARLA XY as `scenario_*_xy_carla`, transformed scenario XY as
 `comparison_frame` plus `transform_source`. If the transform is missing, XY
 agreement is `insufficient_data`/warning evidence, not a hard mismatch.
 Length and lane-sequence mismatches remain hard route-contract failures.
+When present, `routing_response_decoded` is consumed before Planning-derived
+route summaries so the route identity contract is anchored in Apollo's Routing
+response rather than inferred from downstream Planning debug. Missing decoded
+RoutingResponse evidence keeps the route layer diagnostic-only/warn-level.
 
 `apollo_route_contract_report.json` also separates `startup_route_contract`
 from `claim_route_contract`. An ego-seed startup route can be useful diagnostic

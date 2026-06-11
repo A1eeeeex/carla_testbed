@@ -89,6 +89,57 @@ backend:
     assert cfg.backend.params == {"control_topic": "/tb/ego/control_cmd"}
 
 
+def test_legacy_record_io_algo_aliases_are_preserved_for_typed_claim_configs(tmp_path: Path) -> None:
+    config_path = tmp_path / "legacy_aliases.yaml"
+    config_path.write_text(
+        """
+run:
+  id: claim-probe
+  claim_profile: true
+  ticks: 12
+  fixed_delta_seconds: 0.1
+  fail_strategy: log_and_continue
+scenario:
+  driver: carla_town01_route_health
+backend:
+  name: apollo_cyberrt
+record:
+  sensors:
+    enable: false
+io:
+  mode: ros2_native
+algo:
+  stack: apollo
+paths:
+  apollo_root: /opt/apollo/neo
+carla:
+  host: 127.0.0.1
+runtime:
+  mode: online
+logging:
+  level: info
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg.run.claim_profile is True
+    assert cfg.run.max_ticks == 12
+    assert cfg.run.fixed_dt_s == 0.1
+    assert cfg.scenario.name == "carla_town01_route_health"
+    assert cfg.backend.name == "apollo_cyberrt"
+    assert cfg.recording.artifacts["legacy_record"]["sensors"]["enable"] is False
+    assert cfg.backend.params["legacy_io"]["mode"] == "ros2_native"
+    assert cfg.backend.params["legacy_algo"]["stack"] == "apollo"
+    assert cfg.backend.params["legacy_paths"]["apollo_root"] == "/opt/apollo/neo"
+    assert cfg.backend.params["legacy_carla"]["host"] == "127.0.0.1"
+    assert cfg.backend.params["legacy_runtime"]["mode"] == "online"
+    assert cfg.backend.params["legacy_logging"]["level"] == "info"
+    assert cfg.backend.params["legacy_run"]["fail_strategy"] == "log_and_continue"
+    assert any(item["from"] == "record" for item in cfg.config_aliases_used)
+
+
 def test_top_level_assist_ledger_is_a_known_contract_section(tmp_path: Path) -> None:
     config_path = tmp_path / "assist_ledger.yaml"
     config_path.write_text(

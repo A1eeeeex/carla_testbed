@@ -140,6 +140,11 @@ run-local diagnostics include:
   `artifacts/apollo_hdmap_projection.jsonl` is exported from Apollo HDMap API
 - `analysis/apollo_hdmap_projection/apollo_hdmap_projection_summary.md` when
   the projection report is generated
+- `artifacts/routing_response_decoded.json` and
+  `artifacts/routing_response_decoded.jsonl` when `/apollo/routing_response`
+  is observed
+- `analysis/routing_response_decoded/routing_response_decoded_report.json` when
+  the decoded routing response is normalized during postprocess
 - `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`
 - `analysis/apollo_module_consumption/apollo_module_consumption_report.json`
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`
@@ -291,6 +296,11 @@ Apollo Routing materialized the intended scenario route, in Apollo map frame.
 It records raw CARLA scenario coordinates separately from transformed Apollo-map
 coordinates, splits startup routing from claim-route materialization, and
 blocks hard claims when only an ego-seed startup route exists.
+The preferred route-response source is `artifacts/routing_response_decoded.json`
+or `artifacts/routing_response_decoded.jsonl`, decoded directly from
+`/apollo/routing_response`. If that artifact is missing, older
+Planning-derived route summaries remain diagnostic fallback evidence, but they
+must not produce claim-grade `pass` by themselves.
 It also records the route identity chain:
 `configured_scenario_route`, `last_routing_request`, `last_routing_response`,
 and `latest_planning_active_route_segment`. If the scenario route, bridge

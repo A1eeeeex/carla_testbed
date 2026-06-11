@@ -30,6 +30,7 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
         "fixed_dt_s": 0.05,
         "seed": 1,
         "output_root": "runs",
+        "claim_profile": False,
     },
     "sim": {
         "host": "localhost",
@@ -65,7 +66,7 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
 
 TOP_LEVEL_KEYS = set(BUILTIN_DEFAULTS) | {"output"}
 STRICT_SECTION_KEYS = {
-    "run": {"id", "max_ticks", "fixed_dt_s", "seed", "output_root"},
+    "run": {"id", "max_ticks", "fixed_dt_s", "seed", "output_root", "claim_profile"},
     "sim": {"host", "port", "town", "synchronous", "timeout_s"},
 }
 PARAM_SECTION_KEYS = {
@@ -75,6 +76,7 @@ PARAM_SECTION_KEYS = {
     "sensors": ("specs", {"name", "enabled", "specs"}),
     "recording": ("artifacts", {"enabled", "artifacts"}),
 }
+LEGACY_ROOT_KEYS = ("io", "algo", "paths", "carla", "runtime", "logging", "reports", "checks", "profiles")
 
 
 def load_config(
@@ -160,19 +162,92 @@ def _load_yaml_file(path: Path) -> dict[str, Any]:
 
 
 def _normalize_compat_fields(data: dict[str, Any]) -> dict[str, Any]:
+    aliases_used = list(data.get("__config_aliases_used__", []))
     output = data.pop("output", None)
     if isinstance(output, Mapping) and "root" in output:
         data.setdefault("run", {})["output_root"] = output["root"]
+        aliases_used.append({"from": "output.root", "to": "run.output_root"})
+    record = data.pop("record", None)
+    if isinstance(record, Mapping):
+        recording = data.setdefault("recording", {})
+        if isinstance(recording, dict):
+            artifacts = recording.setdefault("artifacts", {})
+            if isinstance(artifacts, dict):
+                artifacts.setdefault("legacy_record", deepcopy(dict(record)))
+                artifacts.setdefault("config_aliases_used", []).append(
+                    {"from": "record", "to": "recording.artifacts.legacy_record"}
+                )
+        aliases_used.append({"from": "record", "to": "recording.artifacts.legacy_record"})
+    for legacy_key in LEGACY_ROOT_KEYS:
+        legacy_section = data.pop(legacy_key, None)
+        if isinstance(legacy_section, Mapping):
+            backend = data.setdefault("backend", {})
+            if isinstance(backend, dict):
+                if (
+                    legacy_key == "algo"
+                    and backend.get("name") == BUILTIN_DEFAULTS["backend"]["name"]
+                ):
+                    stack = str(legacy_section.get("stack") or "").strip()
+                    if stack == "apollo":
+                        backend["name"] = "apollo_cyberrt"
+                        aliases_used.append({"from": "algo.stack", "to": "backend.name"})
+                    elif stack == "autoware":
+                        backend["name"] = "autoware_ros2"
+                        aliases_used.append({"from": "algo.stack", "to": "backend.name"})
+                params = backend.setdefault("params", {})
+                if isinstance(params, dict):
+                    params.setdefault(f"legacy_{legacy_key}", deepcopy(dict(legacy_section)))
+                    aliases_used.append(
+                        {"from": legacy_key, "to": f"backend.params.legacy_{legacy_key}"}
+                    )
+    scenario = data.get("scenario")
+    if isinstance(scenario, dict) and not scenario.get("name"):
+        for legacy_name_key in ("name", "driver", "scenario_id", "id"):
+            value = scenario.get(legacy_name_key)
+            if value not in {None, ""}:
+                scenario["name"] = str(value)
+                if legacy_name_key != "name":
+                    aliases_used.append({"from": f"scenario.{legacy_name_key}", "to": "scenario.name"})
+                break
+    run = data.get("run")
+    if isinstance(run, dict):
+        legacy_ticks = run.pop("ticks", None)
+        if legacy_ticks is not None and run.get("max_ticks") == BUILTIN_DEFAULTS["run"]["max_ticks"]:
+            run["max_ticks"] = legacy_ticks
+            aliases_used.append({"from": "run.ticks", "to": "run.max_ticks"})
+        legacy_fixed_delta = run.pop("fixed_delta_seconds", None)
+        if legacy_fixed_delta is not None and run.get("fixed_dt_s") == BUILTIN_DEFAULTS["run"]["fixed_dt_s"]:
+            run["fixed_dt_s"] = legacy_fixed_delta
+            aliases_used.append({"from": "run.fixed_delta_seconds", "to": "run.fixed_dt_s"})
+        allowed_run = STRICT_SECTION_KEYS["run"]
+        legacy_run_params = {
+            key: deepcopy(value)
+            for key, value in list(run.items())
+            if key not in allowed_run
+        }
+        if legacy_run_params:
+            for key in legacy_run_params:
+                run.pop(key, None)
+            backend = data.setdefault("backend", {})
+            if isinstance(backend, dict):
+                params = backend.setdefault("params", {})
+                if isinstance(params, dict):
+                    params.setdefault("legacy_run", {}).update(legacy_run_params)
+                    aliases_used.append({"from": "run.<legacy_fields>", "to": "backend.params.legacy_run"})
     sim = data.get("sim")
     if isinstance(sim, Mapping) and "fixed_dt_s" in sim:
         data.setdefault("run", {})["fixed_dt_s"] = sim["fixed_dt_s"]
         if isinstance(sim, dict):
             sim.pop("fixed_dt_s", None)
+        aliases_used.append({"from": "sim.fixed_dt_s", "to": "run.fixed_dt_s"})
+    data["__config_aliases_used__"] = aliases_used
     return data
 
 
 def _validate_known_shape(data: Mapping[str, Any], source_path: Path) -> None:
     for key in data:
+        if key == "__config_aliases_used__":
+            continue
         if key not in TOP_LEVEL_KEYS:
             raise ConfigError(f"{source_path}: unknown top-level key '{key}'")
 
@@ -216,5 +291,6 @@ def _to_dataclass(data: Mapping[str, Any], source_path: Path) -> TestbedConfig:
         backend=BackendConfig(**backend),
         recording=RecordingConfig(**recording),
         assist_ledger=dict(data.get("assist_ledger") or {}),
+        config_aliases_used=[dict(item) for item in data.get("__config_aliases_used__") or []],
         source_path=source_path,
     )
