@@ -464,6 +464,22 @@ localization fields or bridge localization stats are present. Plain ego P0
 timeseries can support route-health diagnostics, but it must not overwrite an
 existing localization contract with weaker reconstructed evidence.
 
+`artifacts/routing_event_debug.jsonl` is the row-level source for Apollo route
+goal projection policy. Claim-grade route goals require
+`goal_projection.accepted=true`, trusted lane-centerline source, snap distance
+under `3m`, and lateral error under `1m`. An unaccepted or untrusted projection
+that was applied is a route-contract failure, not a warning.
+
+`analysis/natural_driving/natural_driving_report.json` now exposes
+`planning_nonempty_ratio_for_claim` separately from filtered diagnostic ratios
+such as `planning_nonempty_ratio_filtered_after_routing_segment_available`.
+Only the claim-facing ratio can support a natural-driving pass.
+
+`channel_stats.json.source.publish_gap_trace_summary` summarizes publish-gap
+row evidence including writer/stats/publish-loop p95, async queue depth, and
+artifact writer queue lag. Artifact backpressure keeps a run diagnostic until
+fresh localization/chassis cadence recovers.
+
 ## Current Implementation
 
 `carla_testbed.record.artifact_store.RunArtifactStore` owns the standard file

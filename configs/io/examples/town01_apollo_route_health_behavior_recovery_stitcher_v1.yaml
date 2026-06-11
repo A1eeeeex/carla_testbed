@@ -133,10 +133,11 @@ algo:
     bridge:
       publish_rate_hz: 20.0
       artifact_async_write_enabled: true
-      artifact_async_queue_max_rows: 0
-      artifact_flush_interval_s: 0.0
-      artifact_flush_max_pending_rows: 0
-      artifact_stats_flush_interval_s: 0.0
+      artifact_async_queue_max_rows: 8192
+      artifact_async_queue_soft_limit_rows: 4096
+      artifact_flush_interval_s: 0.5
+      artifact_flush_max_pending_rows: 200
+      artifact_stats_flush_interval_s: 1.0
       claim_grade:
         enabled: true
         stale_world_frame_policy: skip

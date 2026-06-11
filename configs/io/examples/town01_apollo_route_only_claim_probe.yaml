@@ -1,0 +1,36 @@
+# Apollo Town01 route-only claim probe.
+#
+# Purpose:
+# - Verify that Apollo Routing materializes the configured scenario route before
+#   any natural-driving claim is attempted.
+# - Do not use this profile as a natural-driving pass run. It intentionally
+#   disables lane-follow fallback and startup short-route materialization so
+#   route contract failure is visible instead of hidden by a helper command.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml
+
+run:
+  profile_name: town01_apollo_route_only_claim_probe
+
+algo:
+  apollo:
+    bridge:
+      artifact_async_write_enabled: true
+      artifact_async_queue_max_rows: 8192
+      artifact_async_queue_soft_limit_rows: 4096
+      artifact_flush_interval_s: 0.5
+      artifact_flush_max_pending_rows: 200
+      artifact_stats_flush_interval_s: 1.0
+    routing:
+      startup_route_enabled: false
+      send_action: false
+      send_lane_follow: false
+      auto_enable_lane_follow_fallback: false
+      send_routing_request: true
+      goal_mode: scenario_xy
+      snap_goal_to_lane: true
+      snap_allow_untrusted_source: false
+      use_long_goal_after_move: false
+      defer_long_goal_until_planning_ready: false
+      defer_long_goal_until_route_debug_ready: false
+      freeze_after_success: true
+      freeze_after_long_route_success_only: false

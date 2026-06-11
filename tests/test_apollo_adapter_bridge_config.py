@@ -18,6 +18,12 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
                 "docker": {"enabled": False},
                 "bridge": {
                     "map_file": "configs/io/maps/Town01/base_map.txt",
+                    "artifact_async_write_enabled": True,
+                    "artifact_async_queue_max_rows": 8192,
+                    "artifact_async_queue_soft_limit_rows": 4096,
+                    "artifact_flush_interval_s": 0.5,
+                    "artifact_flush_max_pending_rows": 200,
+                    "artifact_stats_flush_interval_s": 1.0,
                     "claim_grade": {
                         "enabled": True,
                         "stale_world_frame_policy": "skip",
@@ -42,8 +48,15 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
 
     bridge_cfg_path = tmp_path / "artifacts" / "apollo_bridge_effective.yaml"
     bridge_cfg = yaml.safe_load(bridge_cfg_path.read_text(encoding="utf-8"))
+    bridge = bridge_cfg["bridge"]
     control_mapping = bridge_cfg["bridge"]["control_mapping"]
     claim_grade = bridge_cfg["bridge"]["claim_grade"]
+    assert bridge["artifact_async_write_enabled"] is True
+    assert bridge["artifact_async_queue_max_rows"] == 8192
+    assert bridge["artifact_async_queue_soft_limit_rows"] == 4096
+    assert bridge["artifact_flush_interval_s"] == 0.5
+    assert bridge["artifact_flush_max_pending_rows"] == 200
+    assert bridge["artifact_stats_flush_interval_s"] == 1.0
     assert control_mapping["steer_scale"] == 0.25
     assert control_mapping["steering_percent_normalization"] == "legacy_double_percent"
     assert claim_grade["enabled"] is True

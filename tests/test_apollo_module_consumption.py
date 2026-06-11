@@ -70,6 +70,18 @@ def _base_run(tmp_path: Path) -> Path:
             {"topic": "/apollo/control"},
         ],
     )
+    _write_jsonl(
+        run_dir / "artifacts/control_decode_debug.jsonl",
+        [
+            {
+                "parsed_control": {
+                    "control_timestamp": 1.0,
+                    "control_header_sequence_num": 1,
+                    "input_trajectory_header_sequence_num": 7,
+                }
+            }
+        ],
+    )
     _write_json(
         run_dir / "analysis/prediction_evidence/prediction_evidence_report.json",
         {
@@ -104,7 +116,9 @@ def test_module_consumption_passes_when_routing_and_inputs_are_consumed(tmp_path
     assert report["status"] == "pass"
     assert report["routing_response_consumed_by_planning"] is True
     assert report["planning_input_age"]["localization_age_ms_p95"] == 10.0
-    assert report["topic_publish_coverage"]["has_localization"] is True
+    assert report["input_topic_publish_coverage"]["has_localization"] is True
+    assert report["output_topic_observation_coverage"]["has_control"] is True
+    assert report["control_consumption_evidence"]["control_decode_debug_available"] is True
 
 
 def test_module_consumption_fails_on_input_timeout_logs(tmp_path: Path) -> None:

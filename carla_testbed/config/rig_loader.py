@@ -14,8 +14,22 @@ if TYPE_CHECKING:
 def _load_yaml_or_json(path: Path) -> Dict:
     text = path.read_text()
     if path.suffix.lower() in [".yaml", ".yml"]:
-        return yaml.safe_load(text)
-    return json.loads(text)
+        data = yaml.safe_load(text)
+    else:
+        data = json.loads(text)
+    return data if isinstance(data, dict) else {}
+
+
+def _deep_merge(base: Dict, override: Dict) -> Dict:
+    out = deepcopy(base)
+    for key, value in override.items():
+        if key == "extends":
+            continue
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = deepcopy(value)
+    return out
 
 
 def load_rig_preset(name: str, preset_dir: Path) -> Dict:
@@ -29,7 +43,16 @@ def load_rig_file(path: str) -> Dict:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"rig file not found: {path}")
-    return _load_yaml_or_json(p)
+    data = _load_yaml_or_json(p)
+    parent = data.get("extends")
+    if not parent:
+        return data
+    parent_path = Path(str(parent)).expanduser()
+    if not parent_path.is_absolute():
+        parent_path = p.parent / parent_path
+    if not parent_path.exists():
+        raise FileNotFoundError(f"extended rig file not found: {parent_path}")
+    return _deep_merge(load_rig_file(str(parent_path)), data)
 
 
 def _parse_scalar(val: str):

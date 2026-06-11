@@ -123,8 +123,7 @@ def _apply_host_path_defaults(cfg: Dict[str, Any], repo_root: Path) -> Dict[str,
 
 def load_config(cfg_path: Path, overrides: Dict[str, Any]) -> Dict[str, Any]:
     repo_root = resolve_repo_root()
-    with open(cfg_path, "r") as f:
-        cfg = yaml.safe_load(f) or {}
+    cfg = _load_config_with_extends(cfg_path)
     project_cfg = load_project_config(repo_root)
     local_cfg = load_local_config(repo_root)
     merged = deep_update(DEFAULTS.copy(), project_cfg)
@@ -134,6 +133,22 @@ def load_config(cfg_path: Path, overrides: Dict[str, Any]) -> Dict[str, Any]:
     merged = deep_update(merged, overrides)
     merged = _apply_host_path_defaults(merged, repo_root)
     return merged
+
+
+def _load_config_with_extends(cfg_path: Path) -> Dict[str, Any]:
+    with open(cfg_path, "r") as f:
+        cfg = yaml.safe_load(f) or {}
+    if not isinstance(cfg, dict):
+        return {}
+    parent = cfg.get("extends")
+    if not parent:
+        return cfg
+    parent_path = Path(str(parent)).expanduser()
+    if not parent_path.is_absolute():
+        parent_path = cfg_path.parent / parent_path
+    base = _load_config_with_extends(parent_path)
+    child = {key: value for key, value in cfg.items() if key != "extends"}
+    return deep_update(base, child)
 
 
 def ensure_run_dir(run_dir: Path) -> Path:

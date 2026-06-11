@@ -164,6 +164,7 @@ def analyze_apollo_link_health(
             control_handoff=payloads.get("apollo_control_handoff", {}),
             control_health=payloads.get("control_health", {}),
             apollo_reference_line_contract=payloads.get("apollo_reference_line_contract", {}),
+            planning_materialization=payloads.get("planning_materialization", {}),
             planning_topic_debug_summary=payloads.get("planning_topic_debug_summary", {}),
             inputs=inputs,
         ),
@@ -1228,6 +1229,7 @@ def _no_assist_layer(
     control_handoff: Mapping[str, Any],
     control_health: Mapping[str, Any],
     apollo_reference_line_contract: Mapping[str, Any],
+    planning_materialization: Mapping[str, Any],
     planning_topic_debug_summary: Mapping[str, Any],
     inputs: Mapping[str, Path | None],
 ) -> dict[str, Any]:
@@ -1251,6 +1253,7 @@ def _no_assist_layer(
         summary=summary,
         control_handoff=control_handoff,
         apollo_reference_line_contract=apollo_reference_line_contract,
+        planning_materialization=planning_materialization,
         planning_topic_debug_summary=planning_topic_debug_summary,
     )
     planning_nonempty_ratio = planning_nonempty["ratio"]
@@ -1337,8 +1340,12 @@ def _no_assist_layer(
             "apollo_control_topic_observed": apollo_control_topic_observed,
             "routing_success_count": routing_success_count,
             "planning_nonempty_ratio": planning_nonempty_ratio,
+            "planning_nonempty_ratio_for_claim": planning_nonempty_ratio,
             "planning_nonempty_ratio_source": planning_nonempty["source"],
             "planning_nonempty_ratio_overall": planning_nonempty["overall_ratio"],
+            "planning_nonempty_ratio_filtered_after_routing_segment_available": planning_nonempty[
+                "after_routing_segment_available"
+            ],
             "planning_nonempty_ratio_after_routing_segment_available": planning_nonempty[
                 "after_routing_segment_available"
             ],
@@ -2317,6 +2324,7 @@ def _planning_nonempty_claim_metric(
     summary: Mapping[str, Any],
     control_handoff: Mapping[str, Any],
     apollo_reference_line_contract: Mapping[str, Any],
+    planning_materialization: Mapping[str, Any],
     planning_topic_debug_summary: Mapping[str, Any],
 ) -> dict[str, Any]:
     evidence = (
@@ -2329,31 +2337,42 @@ def _planning_nonempty_claim_metric(
     after_routing = _num(evidence.get("nonempty_trajectory_ratio_after_routing_segment_available"))
     after_first_nonempty = _num(evidence.get("nonempty_trajectory_ratio_after_first_nonempty"))
     reference_overall = _num(evidence.get("nonempty_trajectory_ratio"))
+    planning_metrics = (
+        planning_materialization.get("metrics")
+        if isinstance(planning_materialization.get("metrics"), Mapping)
+        else {}
+    )
+    planning_materialization_ratio = _first_num(
+        planning_materialization.get("nonempty_trajectory_ratio"),
+        planning_metrics.get("nonempty_trajectory_ratio"),
+    )
     topic_overall = _planning_nonempty_ratio(planning_topic_debug_summary)
     summary_ratio = _first_num(
         _nested(summary, "metrics.planning_nonempty_ratio"),
         summary.get("planning_nonempty_ratio"),
         _nested(control_handoff, "input_readiness.planning_nonempty_ratio"),
     )
-    fallback = _first_num(summary_ratio, topic_overall, reference_overall)
-    ratio = _first_num(claim_ratio, fallback)
-    source = (
-        f"apollo_reference_line_contract.{claim_source}"
-        if claim_ratio is not None and claim_source
-        else (
-            "summary_or_control_handoff"
-            if summary_ratio is not None
-            else (
-                "planning_topic_debug_summary.overall"
-                if topic_overall is not None
-                else ("apollo_reference_line_contract.overall" if reference_overall is not None else None)
-            )
-        )
-    )
+    ratio = _first_num(planning_materialization_ratio, summary_ratio, topic_overall, reference_overall)
+    if planning_materialization_ratio is not None:
+        source = "planning_materialization.overall"
+    elif summary_ratio is not None:
+        source = "summary_or_control_handoff"
+    elif topic_overall is not None:
+        source = "planning_topic_debug_summary.overall"
+    elif reference_overall is not None:
+        source = "apollo_reference_line_contract.overall"
+    else:
+        source = None
     return {
         "ratio": ratio,
         "source": source,
-        "overall_ratio": _first_num(summary_ratio, topic_overall, reference_overall),
+        "overall_ratio": ratio,
+        "filtered_ratio": claim_ratio,
+        "filtered_ratio_source": (
+            f"apollo_reference_line_contract.{claim_source}"
+            if claim_ratio is not None and claim_source
+            else None
+        ),
         "after_routing_segment_available": after_routing,
         "after_first_nonempty": after_first_nonempty,
     }

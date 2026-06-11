@@ -278,7 +278,7 @@ def test_missing_chassis_gt_contract_blocks_unassisted_claim(tmp_path: Path) -> 
     assert "chassis_gt_contract_not_claim_grade" in lane_run["why_not_claimable"]
 
 
-def test_planning_claim_window_ratio_prevents_startup_empty_messages_from_blocking_claim(
+def test_planning_claim_window_ratio_is_diagnostic_not_claim_grade(
     tmp_path: Path,
 ) -> None:
     suite_root = copy_fixture(tmp_path)
@@ -317,18 +317,19 @@ def test_planning_claim_window_ratio_prevents_startup_empty_messages_from_blocki
     report = analyze_natural_driving_suite(suite_root)
     lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
 
-    assert lane_run["planning_nonempty_ratio"] == 0.95
+    assert lane_run["planning_nonempty_ratio"] == 0.41
+    assert lane_run["planning_nonempty_ratio_for_claim"] == 0.41
     assert lane_run["planning_nonempty_ratio_filtered"] == 0.95
+    assert lane_run["planning_nonempty_ratio_filtered_after_routing_segment_available"] == 0.95
     assert lane_run["planning_nonempty_ratio_overall"] == 0.41
     assert lane_run["planning_materialization_nonempty_ratio"] == 0.41
-    assert lane_run["planning_nonempty_ratio_source"] == (
-        "apollo_reference_line_contract.after_routing_segment_available"
-    )
+    assert lane_run["planning_nonempty_ratio_source"] == "planning_materialization.overall"
     assert lane_run["route_established"] is True
     assert lane_run["route_establishment_source"] == "planning_materialization"
-    assert "planning_nonempty_ratio_low" not in lane_run["why_not_claimable"]
-    assert lane_run["verdict"] == "pass"
-    assert lane_run["can_claim_unassisted_natural_driving"] is True
+    assert "planning_nonempty_ratio_low" in lane_run["why_not_claimable"]
+    assert lane_run["verdict"] == "insufficient_data"
+    assert lane_run["failure_reason"] == "unassisted_claim_not_supported"
+    assert lane_run["can_claim_unassisted_natural_driving"] is False
 
 
 def test_apollo_control_source_prefers_handoff_artifact_over_summary_label(tmp_path: Path) -> None:

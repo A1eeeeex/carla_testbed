@@ -106,7 +106,13 @@ def analyze_apollo_module_consumption(
         routing_rows=routing_rows,
     )
     consumed_route_identity = _consumed_route_identity(route_contract)
-    publish_coverage = _topic_publish_coverage(topic_rows)
+    publish_coverage = _input_topic_publish_coverage(topic_rows)
+    output_coverage = _output_topic_observation_coverage(
+        planning_rows=planning_rows,
+        planning_summary=planning_summary,
+        control_rows=control_rows,
+    )
+    control_evidence = _control_consumption_evidence(control_rows)
     prediction_mode = prediction_evidence.get("prediction_mode")
 
     missing = [
@@ -150,8 +156,8 @@ def analyze_apollo_module_consumption(
         blocking.append("apollo_route_contract_missing")
     if not topic_rows:
         warnings.append("topic_publish_stats_missing")
-    elif not publish_coverage.get("has_control"):
-        warnings.append("control_topic_not_observed_for_consumption")
+    if not output_coverage.get("has_control"):
+        warnings.append("control_output_not_observed_for_consumption")
 
     if blocking:
         status = "insufficient_data" if any(item.endswith("_missing") for item in blocking) else "fail"
@@ -184,6 +190,9 @@ def analyze_apollo_module_consumption(
         "planning_input_age": age_metrics,
         "input_freshness_attribution": freshness if isinstance(freshness, Mapping) else {},
         "topic_publish_coverage": publish_coverage,
+        "input_topic_publish_coverage": publish_coverage,
+        "output_topic_observation_coverage": output_coverage,
+        "control_consumption_evidence": control_evidence,
         "blocking_reasons": sorted(set(blocking)),
         "warnings": sorted(set(warnings)),
         "missing_inputs": sorted(set(missing)),
@@ -366,14 +375,63 @@ def _planning_age_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _topic_publish_coverage(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _input_topic_publish_coverage(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     topics = {str(row.get("topic") or row.get("channel") or "") for row in rows}
     return {
         "row_count": len(rows),
         "has_localization": "/apollo/localization/pose" in topics,
         "has_chassis": "/apollo/canbus/chassis" in topics,
-        "has_planning": "/apollo/planning" in topics,
-        "has_control": "/apollo/control" in topics,
+        "has_obstacles": "/apollo/perception/obstacles" in topics,
+        "has_traffic_light": "/apollo/perception/traffic_light" in topics,
+        "coverage_boundary": "Bridge-published Apollo input topics only. Apollo outputs are reported under output_topic_observation_coverage.",
+    }
+
+
+def _output_topic_observation_coverage(
+    *,
+    planning_rows: Sequence[Mapping[str, Any]],
+    planning_summary: Mapping[str, Any],
+    control_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    planning_count = _num(planning_summary.get("total_messages_received"))
+    if planning_count is None:
+        planning_count = float(len(planning_rows)) if planning_rows else None
+    return {
+        "has_planning": bool((planning_count or 0) > 0),
+        "has_control": bool(control_rows),
+        "planning_observed_message_count": planning_count,
+        "control_observed_row_count": len(control_rows),
+        "coverage_boundary": "/apollo/planning and /apollo/control are Apollo outputs observed from debug artifacts, not bridge-published GT inputs.",
+    }
+
+
+def _control_consumption_evidence(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    sequences: list[int] = []
+    for row in rows:
+        candidates = [
+            row.get("control_debug_input_trajectory_header_sequence_num"),
+            row.get("input_trajectory_header_sequence_num"),
+            row.get("planning_header_sequence_num"),
+        ]
+        parsed = row.get("parsed_control")
+        if isinstance(parsed, Mapping):
+            candidates.extend(
+                [
+                    parsed.get("control_debug_input_trajectory_header_sequence_num"),
+                    parsed.get("input_trajectory_header_sequence_num"),
+                    parsed.get("planning_header_sequence_num"),
+                ]
+            )
+        for value in candidates:
+            number = _num(value)
+            if number is not None:
+                sequences.append(int(number))
+                break
+    return {
+        "control_decode_debug_available": bool(rows),
+        "control_debug_input_trajectory_header_sequence_num_available": bool(sequences),
+        "control_consumed_planning_sequence": sequences[-1] if sequences else None,
+        "observed_sequence_count": len(sequences),
     }
 
 

@@ -130,9 +130,11 @@ CSV_FIELDS = [
     "control_source",
     "routing_success_count",
     "planning_nonempty_ratio",
+    "planning_nonempty_ratio_for_claim",
     "planning_nonempty_ratio_source",
     "planning_nonempty_ratio_overall",
     "planning_nonempty_ratio_filtered",
+    "planning_nonempty_ratio_filtered_after_routing_segment_available",
     "planning_nonempty_ratio_after_routing_segment_available",
     "planning_materialization_nonempty_ratio",
     "route_established",
@@ -758,9 +760,13 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "control_source": control_source,
         "routing_success_count": routing_success_count,
         "planning_nonempty_ratio": planning_nonempty_ratio,
+        "planning_nonempty_ratio_for_claim": planning_nonempty_ratio,
         "planning_nonempty_ratio_source": planning_nonempty["source"],
         "planning_nonempty_ratio_overall": planning_nonempty["overall_ratio"],
         "planning_nonempty_ratio_filtered": planning_nonempty["filtered_ratio"],
+        "planning_nonempty_ratio_filtered_after_routing_segment_available": planning_nonempty[
+            "after_routing_segment_available"
+        ],
         "planning_nonempty_ratio_after_routing_segment_available": planning_nonempty[
             "after_routing_segment_available"
         ],
@@ -1404,10 +1410,8 @@ def _planning_nonempty_metric(
     if isinstance(evidence, Mapping):
         reference_overall = _num(evidence.get("nonempty_trajectory_ratio"))
     overall_ratio = _first_num(planning_materialization_ratio, summary_ratio, reference_overall)
-    ratio = _first_num(filtered_ratio, overall_ratio)
-    if filtered_ratio is not None and claim_source:
-        source = f"apollo_reference_line_contract.{claim_source}"
-    elif planning_materialization_ratio is not None:
+    ratio = overall_ratio
+    if planning_materialization_ratio is not None:
         source = "planning_materialization.overall"
     elif summary_ratio is not None:
         source = "summary_or_control_handoff"
@@ -1659,6 +1663,18 @@ def _run_verdict(
         return "fail", "planning_missing", missing_fields
     if run.get("control_handoff_status") != "control_consuming_with_nonzero_planning":
         return "fail", "control_handoff_not_consuming", missing_fields
+
+    route_contract_status = str(run.get("apollo_route_contract_status") or "").strip()
+    route_contract_blockers = {str(item) for item in (run.get("apollo_route_contract_blocking_reasons") or [])}
+    if route_contract_status == "fail":
+        return "fail", "apollo_route_contract_failed", missing_fields
+    if "claim_route_not_materialized" in route_contract_blockers:
+        return "fail", "claim_route_not_materialized", missing_fields
+    planning_materialization_status = str(run.get("planning_materialization_status") or "").strip()
+    if planning_materialization_status == "fail":
+        return "fail", "planning_materialization_failed", missing_fields
+    if run.get("route_established") is False:
+        return "fail", "route_establishment_not_confirmed", missing_fields
 
     channel_status = channel_health.get("status")
     if channel_status == "fail":

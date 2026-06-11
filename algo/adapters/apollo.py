@@ -805,6 +805,23 @@ PY
             bridge["debug_pose_print"] = bool(apollo_bridge_cfg["debug_pose_print"])
         if "debug_dump_control_raw" in apollo_bridge_cfg:
             bridge["debug_dump_control_raw"] = bool(apollo_bridge_cfg["debug_dump_control_raw"])
+        if "artifact_async_write_enabled" in apollo_bridge_cfg:
+            bridge["artifact_async_write_enabled"] = bool(
+                apollo_bridge_cfg["artifact_async_write_enabled"]
+            )
+        for key in (
+            "artifact_async_queue_max_rows",
+            "artifact_async_queue_soft_limit_rows",
+            "artifact_flush_max_pending_rows",
+        ):
+            if key in apollo_bridge_cfg:
+                bridge[key] = int(apollo_bridge_cfg[key])
+        for key in (
+            "artifact_flush_interval_s",
+            "artifact_stats_flush_interval_s",
+        ):
+            if key in apollo_bridge_cfg:
+                bridge[key] = float(apollo_bridge_cfg[key])
         if isinstance(apollo_bridge_cfg.get("claim_grade"), dict):
             bridge["claim_grade"] = dict(apollo_bridge_cfg["claim_grade"])
         if "map_file" in apollo_bridge_cfg:

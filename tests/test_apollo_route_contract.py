@@ -245,6 +245,89 @@ def test_long_goal_route_mismatch_is_not_clean_claim_route(tmp_path: Path) -> No
     assert report["claim_route_contract"]["materialized"] is False
 
 
+def test_unaccepted_untrusted_goal_projection_applied_blocks_claim_route(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "last_routing_total_length": 232.0,
+            "last_routing_lane_window_count": 1,
+            "last_routing_lane_window_signature": "15_1_1@66.9->298.9",
+            "last_routing_unique_lane_signature": "15_1_1",
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "long",
+                "routing_request_kind": "long_phase_route",
+                "goal_mode": "scenario_xy",
+                "start_raw_x": 2.0,
+                "start_raw_y": -249.0,
+                "goal_raw_x": 2.0,
+                "goal_raw_y": -19.0,
+                "goal_projection": {
+                    "available": True,
+                    "accepted": False,
+                    "applied": True,
+                    "source_trusted_lane_centerline": False,
+                    "distance_m": 2.0,
+                    "signed_e_y_m": 0.2,
+                },
+            }
+        ],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "fail"
+    assert "unaccepted_goal_projection_applied" in report["blocking_reasons"]
+    assert "untrusted_goal_projection_applied" in report["blocking_reasons"]
+    assert "apollo_routing_goal_projection_not_accepted" in report["blocking_reasons"]
+    assert "apollo_routing_goal_projection_untrusted" in report["blocking_reasons"]
+
+
+def test_goal_projection_lateral_error_blocks_claim_route(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "last_routing_total_length": 232.0,
+            "last_routing_lane_window_count": 1,
+            "last_routing_lane_window_signature": "15_1_1@66.9->298.9",
+            "last_routing_unique_lane_signature": "15_1_1",
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "long",
+                "routing_request_kind": "long_phase_route",
+                "goal_mode": "scenario_xy",
+                "start_raw_x": 2.0,
+                "start_raw_y": -249.0,
+                "goal_raw_x": 2.0,
+                "goal_raw_y": -19.0,
+                "goal_projection": {
+                    "available": True,
+                    "accepted": True,
+                    "applied": True,
+                    "source_trusted_lane_centerline": True,
+                    "distance_m": 1.0,
+                    "signed_e_y_m": 1.25,
+                },
+            }
+        ],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "fail"
+    assert "apollo_routing_goal_lateral_error_high" in report["blocking_reasons"]
+
+
 def test_goal_near_threshold_warns_even_below_legacy_xy_threshold(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     _write_json(
@@ -276,7 +359,8 @@ def test_goal_near_threshold_warns_even_below_legacy_xy_threshold(tmp_path: Path
 
     report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
 
-    assert report["status"] == "warn"
+    assert report["status"] == "fail"
+    assert "apollo_routing_goal_projection_untrusted" in report["blocking_reasons"]
     assert "apollo_routing_goal_near_threshold" in report["warnings"]
     assert "apollo_routing_goal_lane_compatibility_unverified" in report["warnings"]
 

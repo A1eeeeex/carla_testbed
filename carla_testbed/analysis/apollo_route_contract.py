@@ -195,12 +195,34 @@ def analyze_apollo_route_contract(
         warnings.append("apollo_routing_goal_near_threshold")
     goal_projection = last_routing_request.get("goal_projection")
     if isinstance(goal_projection, Mapping):
+        goal_projection_applied = _parse_bool(goal_projection.get("applied"))
+        goal_projection_accepted = _parse_bool(goal_projection.get("accepted"))
+        goal_projection_trusted = _parse_bool(
+            goal_projection.get("trusted_lane_centerline")
+            if "trusted_lane_centerline" in goal_projection
+            else goal_projection.get("source_trusted_lane_centerline")
+        )
         snap_distance = _num(goal_projection.get("distance_m"))
         lateral_error = _num(goal_projection.get("signed_lateral_error_m"))
+        s_error = _num(
+            goal_projection.get("s_error_m")
+            or goal_projection.get("goal_s_error_m")
+            or goal_projection.get("projection_s_error_m")
+        )
+        if goal_projection_applied is True and goal_projection_accepted is not True:
+            blocking.append("unaccepted_goal_projection_applied")
+        if goal_projection_applied is True and goal_projection_trusted is not True:
+            blocking.append("untrusted_goal_projection_applied")
+        if goal_projection_accepted is False:
+            blocking.append("apollo_routing_goal_projection_not_accepted")
+        if goal_projection_trusted is False:
+            blocking.append("apollo_routing_goal_projection_untrusted")
         if snap_distance is not None and snap_distance > MAX_GOAL_SNAP_DISTANCE_M:
             blocking.append("apollo_routing_goal_snap_distance_high")
         if lateral_error is not None and abs(lateral_error) > MAX_GOAL_LATERAL_ERROR_M:
-            warnings.append("apollo_routing_goal_lateral_error_high")
+            blocking.append("apollo_routing_goal_lateral_error_high")
+        if s_error is not None and abs(s_error) > 5.0:
+            blocking.append("apollo_routing_goal_s_error_high")
         if goal_error is not None and goal_error > MAX_GOAL_ERROR_M * GOAL_NEAR_THRESHOLD_RATIO:
             if last_routing_request.get("goal_projection_trusted_lane_centerline") is not True:
                 warnings.append("apollo_routing_goal_lane_compatibility_unverified")
@@ -666,6 +688,7 @@ def _projection_summary(value: Any) -> dict[str, Any]:
         "available": bool(value.get("available", True)),
         "accepted": value.get("accepted"),
         "rejected": value.get("rejected"),
+        "applied": value.get("applied"),
         "source_type": _text_or_none(value.get("source_type")),
         "trusted_lane_centerline": _parse_bool(
             value.get("trusted_lane_centerline")
@@ -674,6 +697,11 @@ def _projection_summary(value: Any) -> dict[str, Any]:
         ),
         "distance_m": _num(value.get("distance_m")),
         "signed_lateral_error_m": _num(value.get("signed_e_y_m") or value.get("lateral_error_m")),
+        "s_error_m": _num(
+            value.get("s_error_m")
+            or value.get("goal_s_error_m")
+            or value.get("projection_s_error_m")
+        ),
         "lane_yaw_deg": _num(value.get("lane_yaw_deg")),
         "map_file": _text_or_none(value.get("map_file")),
         "reason": _text_or_none(value.get("reason")),

@@ -402,6 +402,28 @@ def test_bridge_publish_gap_trace_records_skip_reason_and_queue_depth(tmp_path: 
     assert row["artifact_backpressure"] is True
 
 
+def test_bridge_goal_snap_rejects_untrusted_projection(tmp_path: Path) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.auto_routing_snap_allow_untrusted_source = False
+    adapter._lane_projection_probe = lambda x, y: {
+        "available": True,
+        "proj_x": x + 1.0,
+        "proj_y": y + 1.0,
+        "distance_m": 1.4,
+        "trusted_lane_centerline": False,
+    }
+
+    x, y, probe = adapter._snap_xy_to_lane(10.0, 20.0)
+
+    assert (x, y) == (10.0, 20.0)
+    assert probe["accepted"] is False
+    assert probe["applied"] is False
+    assert probe["reject_reason"] == "untrusted_snap_source"
+
+
 def test_bridge_debug_timeseries_uses_buffered_csv_writer(tmp_path: Path) -> None:
     _install_fake_protobuf()
     _install_fake_carla()

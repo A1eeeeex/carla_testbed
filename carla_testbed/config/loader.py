@@ -149,6 +149,13 @@ def _load_yaml_file(path: Path) -> dict[str, Any]:
         raise ConfigError(f"failed to parse YAML in {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ConfigError(f"{path}: root must be a mapping")
+    parent = data.get("extends")
+    if parent:
+        parent_path = Path(str(parent)).expanduser()
+        if not parent_path.is_absolute():
+            parent_path = path.parent / parent_path
+        base = _load_yaml_file(parent_path)
+        data = deep_merge(base, {key: value for key, value in data.items() if key != "extends"})
     return data
 
 

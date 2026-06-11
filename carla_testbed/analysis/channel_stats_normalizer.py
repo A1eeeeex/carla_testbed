@@ -507,6 +507,10 @@ def _publish_gap_trace_summary(path: Path) -> dict[str, Any]:
     max_queue_depth: int | None = None
     max_writer_write_duration_ms: float | None = None
     max_publish_loop_duration_ms: float | None = None
+    writer_write_duration_ms_values: list[float] = []
+    publish_loop_duration_ms_values: list[float] = []
+    stats_write_ms_values: list[float] = []
+    artifact_queue_lag_ms_values: list[float] = []
     row_count = 0
     try:
         with path.open(encoding="utf-8", errors="replace") as handle:
@@ -541,6 +545,7 @@ def _publish_gap_trace_summary(path: Path) -> dict[str, Any]:
                     or payload.get("writer_write_duration_ms")
                 )
                 if writer_ms is not None:
+                    writer_write_duration_ms_values.append(writer_ms)
                     max_writer_write_duration_ms = (
                         writer_ms
                         if max_writer_write_duration_ms is None
@@ -548,11 +553,21 @@ def _publish_gap_trace_summary(path: Path) -> dict[str, Any]:
                     )
                 loop_ms = _float_or_none(payload.get("publish_loop_duration_ms"))
                 if loop_ms is not None:
+                    publish_loop_duration_ms_values.append(loop_ms)
                     max_publish_loop_duration_ms = (
                         loop_ms
                         if max_publish_loop_duration_ms is None
                         else max(max_publish_loop_duration_ms, loop_ms)
                     )
+                stats_write_ms = _float_or_none(payload.get("stats_write_ms"))
+                if stats_write_ms is not None:
+                    stats_write_ms_values.append(stats_write_ms)
+                queue_lag_ms = _float_or_none(
+                    payload.get("artifact_writer_queue_lag_ms")
+                    or payload.get("artifact_writer_oldest_item_age_ms")
+                )
+                if queue_lag_ms is not None:
+                    artifact_queue_lag_ms_values.append(queue_lag_ms)
     except OSError:
         return {}
     if row_count <= 0:
@@ -570,7 +585,21 @@ def _publish_gap_trace_summary(path: Path) -> dict[str, Any]:
         "async_dropped_count_total": async_dropped_count,
         "max_async_queue_depth": max_queue_depth,
         "max_writer_write_duration_ms": max_writer_write_duration_ms,
+        "writer_write_duration_ms_p95": _percentile(writer_write_duration_ms_values, 0.95),
         "max_publish_loop_duration_ms": max_publish_loop_duration_ms,
+        "publish_loop_duration_ms_p95": _percentile(publish_loop_duration_ms_values, 0.95),
+        "stats_write_ms_p95": _percentile(stats_write_ms_values, 0.95),
+        "artifact_writer_queue_lag_ms_p95": _percentile(artifact_queue_lag_ms_values, 0.95),
+        "artifact_writer_queue_lag_ms_max": max(artifact_queue_lag_ms_values) if artifact_queue_lag_ms_values else None,
+        "hot_path_risk": bool(
+            artifact_backpressure_count
+            or async_queue_full_count
+            or async_dropped_count
+            or (max_queue_depth is not None and max_queue_depth >= 1000)
+            or (_percentile(stats_write_ms_values, 0.95) or 0.0) > 10.0
+            or (_percentile(writer_write_duration_ms_values, 0.95) or 0.0) > 10.0
+            or (_percentile(publish_loop_duration_ms_values, 0.95) or 0.0) > 50.0
+        ),
         "interpretation": (
             "This summarizes why expected GT localization/chassis publishes were skipped or delayed. "
             "It distinguishes stale-sample skip, publish-loop overrun, artifact backpressure, writer duration, "

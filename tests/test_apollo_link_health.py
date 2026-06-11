@@ -1088,7 +1088,7 @@ def test_planning_nonempty_claim_boundary_next_action_points_to_planning_not_ass
     assert report["can_claim_unassisted_natural_driving"] is False
 
 
-def test_planning_nonempty_claim_window_overrides_startup_diluted_overall_ratio(
+def test_planning_nonempty_filtered_window_is_diagnostic_only(
     tmp_path: Path,
 ) -> None:
     run_dir = _base_run(tmp_path)
@@ -1109,15 +1109,15 @@ def test_planning_nonempty_claim_window_overrides_startup_diluted_overall_ratio(
     report = analyze_apollo_link_health_run_dir(run_dir)
     no_assist = report["layers"]["no_assist_claim_boundary"]
 
-    assert no_assist["status"] == "pass"
-    assert "planning_nonempty_ratio_not_claim_grade" not in no_assist["blocking_reasons"]
-    assert no_assist["key_metrics"]["planning_nonempty_ratio"] == 0.95
+    assert no_assist["status"] == "fail"
+    assert "planning_nonempty_ratio_not_claim_grade" in no_assist["blocking_reasons"]
+    assert no_assist["key_metrics"]["planning_nonempty_ratio"] == 0.41
+    assert no_assist["key_metrics"]["planning_nonempty_ratio_for_claim"] == 0.41
     assert no_assist["key_metrics"]["planning_nonempty_ratio_overall"] == 0.41
-    assert no_assist["key_metrics"]["planning_nonempty_ratio_source"] == (
-        "apollo_reference_line_contract.after_routing_segment_available"
-    )
-    assert report["primary_blocker"] is None
-    assert report["can_claim_unassisted_natural_driving"] is True
+    assert no_assist["key_metrics"]["planning_nonempty_ratio_filtered_after_routing_segment_available"] == 0.95
+    assert no_assist["key_metrics"]["planning_nonempty_ratio_source"] == "summary_or_control_handoff"
+    assert report["primary_blocker"] == "no_assist_claim_boundary:planning_nonempty_ratio_not_claim_grade"
+    assert report["can_claim_unassisted_natural_driving"] is False
 
 
 def test_summary_dummy_lateral_blocks_no_assist_claim(tmp_path: Path) -> None:

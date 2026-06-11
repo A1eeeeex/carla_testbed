@@ -1115,3 +1115,35 @@ paths:
 
 This keeps the suite matrix reproducible while still respecting the current
 online chain’s nested output layout.
+
+## Route-Only Claim Probe And Planning Ratio Boundary
+
+Use `configs/io/examples/town01_apollo_route_only_claim_probe.yaml` before a
+lane-keep claim-candidate run when the route contract is the suspected primary
+blocker. The profile inherits the current Town01 Apollo online profile, disables
+startup short-route materialization and lane-follow fallback, and sends only the
+scenario XY routing goal. It is a routing-contract probe, not a natural-driving
+pass profile. A failed route-only probe means Apollo did not materialize the
+configured scenario route, so downstream Planning/Control output remains
+diagnostic.
+
+For claim-grade route goals, the routing event must show that the goal
+projection is `accepted=true`, `applied=true`, and sourced from a trusted lane
+centerline. `accepted=false`, `source_trusted_lane_centerline=false`, goal snap
+distance above `3m`, lateral error above `1m`, or available s-error above `5m`
+blocks `apollo_route_contract_report.json` from passing. The legacy broad XY
+threshold is retained only as a diagnostic fallback and cannot support a hard
+gate.
+
+`planning_nonempty_ratio_for_claim` is the claim-facing ratio. Filtered fields
+such as `planning_nonempty_ratio_filtered_after_routing_segment_available` are
+diagnostic context only; they may explain startup dilution, but they cannot
+override a failing `planning_materialization_report.json` or a low overall /
+claim-route Planning materialization ratio.
+
+Claim-grade online profiles should keep artifact writing off the GT
+localization/chassis hot path. The bridge now treats excessive artifact writer
+queue depth as explicit backpressure evidence instead of letting diagnostic
+JSONL writes silently slow `/apollo/localization/pose` or
+`/apollo/canbus/chassis`. A run with artifact backpressure or large publish-gap
+p95 values is diagnostic until channel health recovers.

@@ -195,6 +195,8 @@ def test_normalize_channel_stats_prefers_row_level_artifacts_when_available(tmp_
                         "async_dropped_count": 1,
                         "async_queue_depth_max": 9,
                         "writer_write_duration_ms_max": 5.0,
+                        "stats_write_ms": 237.0,
+                        "artifact_writer_queue_lag_ms": 25.0,
                         "publish_loop_duration_ms": 51.0,
                     }
                 ),
@@ -232,6 +234,11 @@ def test_normalize_channel_stats_prefers_row_level_artifacts_when_available(tmp_
     assert gap_summary["async_queue_full_count_total"] == 2
     assert gap_summary["async_dropped_count_total"] == 1
     assert gap_summary["max_async_queue_depth"] == 9
+    assert gap_summary["writer_write_duration_ms_p95"] == pytest.approx(5.0)
+    assert gap_summary["stats_write_ms_p95"] == pytest.approx(237.0)
+    assert gap_summary["publish_loop_duration_ms_p95"] == pytest.approx(51.0)
+    assert gap_summary["artifact_writer_queue_lag_ms_p95"] == pytest.approx(25.0)
+    assert gap_summary["hot_path_risk"] is True
     assert str(artifacts / "publish_gap_trace.jsonl") in stats["source"]["row_level_artifacts"]
 
 

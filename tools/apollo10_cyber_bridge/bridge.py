@@ -1526,6 +1526,16 @@ class ApolloGtBridge:
             0,
             int(bridge_cfg.get("artifact_async_queue_max_rows", 0) or 0),
         )
+        self.artifact_async_queue_soft_limit_rows = max(
+            0,
+            int(
+                bridge_cfg.get(
+                    "artifact_async_queue_soft_limit_rows",
+                    artifact_async_queue_max if artifact_async_queue_max > 0 else 5000,
+                )
+                or 0
+            ),
+        )
         self._artifact_write_queue: Optional[queue.Queue[Any]] = (
             queue.Queue(maxsize=artifact_async_queue_max)
             if self.artifact_async_write_enabled
@@ -1552,9 +1562,11 @@ class ApolloGtBridge:
             "enabled": True,
             "async_write_enabled": self.artifact_async_write_enabled,
             "async_queue_max_rows": artifact_async_queue_max,
+            "async_queue_soft_limit_rows": self.artifact_async_queue_soft_limit_rows,
             "async_queue_size": 0,
             "async_queue_size_max": 0,
             "async_queue_full_count": 0,
+            "async_queue_soft_drop_count": 0,
             "async_queue_blocked_duration_s": 0.0,
             "async_enqueued_count": 0,
             "async_written_count": 0,
@@ -2041,6 +2053,9 @@ class ApolloGtBridge:
             auto_routing_cfg.get("startup_speed_threshold_mps", 0.5)
         )
         self.auto_routing_startup_hold_sec = float(auto_routing_cfg.get("startup_hold_sec", 3.0))
+        self.auto_routing_startup_route_enabled = bool(
+            auto_routing_cfg.get("startup_route_enabled", True)
+        )
         # Nudge routing start waypoint along lane heading so Apollo routing does
         # not occasionally classify the start as a tiny negative-s point.
         self.auto_routing_start_nudge_m = float(auto_routing_cfg.get("start_nudge_m", 0.0))
@@ -2589,8 +2604,20 @@ class ApolloGtBridge:
             try:
                 if item is None:
                     return
-                kind, path, payload = item
+                if len(item) == 4:
+                    kind, path, payload, enqueued_wall_s = item
+                else:
+                    kind, path, payload = item
+                    enqueued_wall_s = None
                 write_start_s = time.time()
+                if enqueued_wall_s is not None:
+                    lag_s = max(0.0, write_start_s - float(enqueued_wall_s))
+                    buffering = self.stats.setdefault("artifact_buffering", {})
+                    buffering["artifact_writer_queue_lag_s"] = lag_s
+                    buffering["artifact_writer_queue_lag_s_max"] = max(
+                        float(buffering.get("artifact_writer_queue_lag_s_max", 0.0) or 0.0),
+                        lag_s,
+                    )
                 if kind == "jsonl":
                     self._append_jsonl_direct(Path(path), payload)
                 elif kind == "csv":
@@ -2622,12 +2649,31 @@ class ApolloGtBridge:
             return False
         self._start_artifact_writer()
         blocked_duration_s = 0.0
+        buffering = self.stats.setdefault("artifact_buffering", {})
         try:
-            write_queue.put_nowait((kind, str(path), dict(payload)))
+            queue_size = int(write_queue.qsize())
+        except Exception:
+            queue_size = 0
+        soft_limit = int(getattr(self, "artifact_async_queue_soft_limit_rows", 0) or 0)
+        if soft_limit > 0 and queue_size >= soft_limit:
+            buffering["async_queue_soft_drop_count"] = int(
+                buffering.get("async_queue_soft_drop_count", 0) or 0
+            ) + 1
+            buffering["async_dropped_count"] = int(buffering.get("async_dropped_count", 0) or 0) + 1
+            buffering["last_async_drop_kind"] = str(kind)
+            buffering["last_async_drop_path"] = str(path)
+            buffering["artifact_backpressure_claim_blocking"] = True
+            buffering["async_queue_size"] = queue_size
+            buffering["async_queue_size_max"] = max(
+                int(buffering.get("async_queue_size_max", 0) or 0),
+                queue_size,
+            )
+            return True
+        try:
+            write_queue.put_nowait((kind, str(path), dict(payload), time.time()))
         except queue.Full:
             # Never let diagnostic artifact IO block the publish loop. Queue
             # saturation is explicit evidence that the run is not claim-grade.
-            buffering = self.stats.setdefault("artifact_buffering", {})
             buffering["async_queue_full_count"] = int(
                 buffering.get("async_queue_full_count", 0) or 0
             ) + 1
@@ -2636,7 +2682,6 @@ class ApolloGtBridge:
             buffering["last_async_drop_path"] = str(path)
             buffering["artifact_backpressure_claim_blocking"] = True
             return True
-        buffering = self.stats.setdefault("artifact_buffering", {})
         buffering["async_enqueued_count"] = int(buffering.get("async_enqueued_count", 0) or 0) + 1
         if blocked_duration_s > 0.0:
             buffering["async_queue_full_count"] = int(
@@ -2853,6 +2898,9 @@ class ApolloGtBridge:
             return
         header = getattr(msg, "header", None)
         frame_id = getattr(header, "frame_id", None) if header is not None else None
+        world_frame = self._latest_world_frame
+        if world_frame is None and extra:
+            world_frame = extra.get("world_frame") or extra.get("carla_world_frame")
         row: Dict[str, Any] = {
             "channel": str(channel),
             "wall_time_sec": time.time(),
@@ -2860,7 +2908,9 @@ class ApolloGtBridge:
             "header_timestamp_sec": _finite_or_none(self._header_timestamp_sec(msg)),
             "sequence_num": self._header_sequence_num(msg),
             "frame_id": None if frame_id is None else str(frame_id),
-            "carla_world_frame": self._latest_world_frame,
+            "carla_world_frame": world_frame,
+            "world_frame": world_frame,
+            "source_clock": "sim_time" if sim_time_sec is not None else "wall_time",
             "payload_count": payload_count,
             "source": source,
             "message_count_increment": 1,
@@ -3195,7 +3245,10 @@ class ApolloGtBridge:
                 "schema_version": "publish_gap_trace.v1",
                 "wall_time_sec": now_wall_s,
                 "world_frame": world_frame,
+                "carla_world_frame": world_frame,
                 "sim_time": odom_stamp if odom_stamp is not None else getattr(self, "_latest_sim_time_sec", None),
+                "sim_time_sec": odom_stamp if odom_stamp is not None else getattr(self, "_latest_sim_time_sec", None),
+                "source_clock": "sim_time" if odom_stamp is not None else "wall_time",
                 "expected_publish": bool(expected_publish),
                 "published_localization": bool(published_localization),
                 "published_chassis": bool(published_chassis),
@@ -3219,6 +3272,16 @@ class ApolloGtBridge:
                     if buffering
                     else None
                 ),
+                "artifact_writer_queue_lag_ms": (
+                    float(buffering.get("artifact_writer_queue_lag_s", 0.0) or 0.0) * 1000.0
+                    if buffering
+                    else None
+                ),
+                "artifact_writer_oldest_item_age_ms": (
+                    float(buffering.get("artifact_writer_queue_lag_s_max", 0.0) or 0.0) * 1000.0
+                    if buffering
+                    else None
+                ),
                 "stats_write_ms": (
                     float(buffering.get("stats_write_duration_s", 0.0) or 0.0) * 1000.0
                     if buffering
@@ -3227,6 +3290,7 @@ class ApolloGtBridge:
                 "async_queue_depth": buffering.get("async_queue_size"),
                 "async_queue_depth_max": buffering.get("async_queue_size_max"),
                 "async_queue_full_count": buffering.get("async_queue_full_count"),
+                "async_queue_soft_drop_count": buffering.get("async_queue_soft_drop_count"),
                 "async_dropped_count": buffering.get("async_dropped_count"),
                 "artifact_backpressure_s": buffering.get("async_queue_blocked_duration_s"),
                 "artifact_backpressure": bool(
@@ -6343,6 +6407,18 @@ class ApolloGtBridge:
     def _snap_xy_to_lane(self, x: float, y: float) -> Tuple[float, float, Dict[str, Any]]:
         probe = self._lane_projection_probe(x, y)
         if not bool(probe.get("available", False)):
+            probe["accepted"] = False
+            probe["rejected"] = False
+            probe["applied"] = False
+            return x, y, probe
+        trusted_source = bool(probe.get("trusted_lane_centerline", False))
+        accepted = bool(trusted_source or self.auto_routing_snap_allow_untrusted_source)
+        probe["accepted"] = accepted
+        probe["rejected"] = not accepted
+        probe["source_trusted_lane_centerline"] = trusted_source
+        if not accepted:
+            probe["reject_reason"] = "untrusted_snap_source"
+            probe["applied"] = False
             return x, y, probe
         snapped_x = float(probe["proj_x"])
         snapped_y = float(probe["proj_y"])
@@ -8571,6 +8647,8 @@ class ApolloGtBridge:
         }
 
     def _current_routing_phase(self, ts_sec: float, speed_mps: float) -> str:
+        if not self.auto_routing_startup_route_enabled:
+            return "long"
         if not self.auto_routing_startup_routing_sent:
             return "startup"
         if self._first_odom_ts is None:
@@ -9378,6 +9456,8 @@ class ApolloGtBridge:
                 "wall_time_sec": timing.get("wall_time_sec"),
                 "sim_time_sec": timing.get("sim_time_sec"),
                 "world_frame": timing.get("world_frame"),
+                "carla_world_frame": timing.get("world_frame"),
+                "source_clock": "sim_time" if timing.get("sim_time_sec") is not None else "wall_time",
                 "routing_phase": phase,
                 "routing_request_index": routing_request_index,
                 "reroute_reason": reroute_reason,
@@ -9561,6 +9641,8 @@ class ApolloGtBridge:
                     "wall_time_sec": timing.get("wall_time_sec"),
                     "sim_time_sec": timing.get("sim_time_sec"),
                     "world_frame": timing.get("world_frame"),
+                    "carla_world_frame": timing.get("world_frame"),
+                    "source_clock": "sim_time" if timing.get("sim_time_sec") is not None else "wall_time",
                     "routing_phase": phase,
                     "routing_request_index": routing_request_index,
                     "routing_request_kind": request_kind,
