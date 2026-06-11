@@ -1,0 +1,45 @@
+{
+  "backend": "apollo_cyberrt",
+  "blocking_reasons": [],
+  "channel": {
+    "hz": 20.0,
+    "max_gap_ms": 80.0,
+    "message_count": 100,
+    "message_type": "Chassis",
+    "name": "/apollo/canbus/chassis",
+    "sequence_monotonic": true,
+    "stale_count": 0,
+    "status": "pass",
+    "timestamp_monotonic": true
+  },
+  "claim_grade": true,
+  "control_feedback": {
+    "brake_feedback_available": true,
+    "steer_feedback_available": true,
+    "throttle_feedback_available": true
+  },
+  "interpretation_boundary": "Fixture proves chassis GT replacement contract only; it does not prove behavior correctness by itself.",
+  "missing_fields": [],
+  "route_id": "traffic_light_red_stop",
+  "run_id": "traffic_light_red_stop",
+  "schema_version": "chassis_gt_contract.v1",
+  "source": {
+    "fixture": true
+  },
+  "speed_consistency": {
+    "speed_delta_p95_mps": 0.0,
+    "status": "pass"
+  },
+  "state": {
+    "driving_mode": "COMPLETE_AUTO_DRIVE",
+    "error_code": "NO_ERROR",
+    "gear_location": "GEAR_DRIVE",
+    "status": "pass"
+  },
+  "status": "pass",
+  "verdict": {
+    "blocking_reasons": [],
+    "status": "pass"
+  },
+  "warnings": []
+}

@@ -270,6 +270,11 @@ duration, snapshot age, CARLA tick gap, payload-build duration, stats-write
 duration, writer write duration, and async artifact queue depth. It is
 diagnostic evidence only: a gap with a clear reason is still a channel-health
 finding until the run satisfies the configured max-gap threshold.
+`channel_stats.json.source.publish_gap_trace_summary` summarizes this file for
+offline review by separating stale-sample skip, publish-loop overrun, artifact
+backpressure, writer duration, and async queue pressure. The summary explains
+why a gap happened; it does not turn skipped samples into fresh claim-grade
+localization or chassis evidence.
 
 For Apollo planning, `channel_stats.json` may record both the primary Apollo
 header/wall-time axis and a secondary `sim_time_*` axis when
@@ -277,12 +282,23 @@ header/wall-time axis and a secondary `sim_time_*` axis when
 not erase a large Apollo header/wall-time gap: if Control consumes expired
 trajectories or Planning pauses in wall time, channel health must remain a
 blocking failure and should report the time-axis diagnosis explicitly.
+Planning gaps over roughly 500 ms should remain visible as warnings even when a
+scenario-specific hard fail threshold is higher, because they can explain
+stuttered control consumption or stale planning materialization.
 
 `analysis/apollo_route_contract/apollo_route_contract_report.json` checks that
 Apollo Routing materialized the intended scenario route, in Apollo map frame.
 It records raw CARLA scenario coordinates separately from transformed Apollo-map
 coordinates, splits startup routing from claim-route materialization, and
 blocks hard claims when only an ego-seed startup route exists.
+It also records the route identity chain:
+`configured_scenario_route`, `last_routing_request`, `last_routing_response`,
+and `latest_planning_active_route_segment`. If the scenario route, bridge
+request, Apollo routing response, or Planning active segment disagree in route
+length, lane signature, phase, or goal snap compatibility, the report must
+surface `route_identity_inconsistent` rather than allowing later control
+activity to imply the intended route was consumed. A near-threshold goal XY
+match is only a warning unless lane/Frenet snap evidence is compatible.
 
 `analysis/planning_materialization/planning_materialization_report.json`
 explains whether Apollo Planning actually materialized non-empty
@@ -295,6 +311,12 @@ projection evidence within the configured tolerance; missing row-level joins
 keep the interpretation diagnostic. Control rx/tx evidence must not override a
 `planning_trajectory_materialization_low` or `route_establishment_latency`
 blocker.
+Natural-driving reports expose both overall Planning non-empty ratio and the
+claim-window ratio, including `planning_nonempty_ratio_source`,
+`planning_nonempty_ratio_overall`, `planning_nonempty_ratio_filtered`, and
+`route_establishment_source`. A filtered claim-window ratio can prevent startup
+empty messages from diluting the metric, but it does not override a failed
+`planning_materialization_report.json` or `route_established=false`.
 
 `analysis/apollo_module_consumption/apollo_module_consumption_report.json`
 checks whether Apollo modules appear to consume the GT inputs that the bridge
@@ -304,6 +326,10 @@ and Apollo logs for input timeouts, reference-line provider failures,
 prediction-not-ready messages, and empty-reason attribution. This is stricter
 than bridge-side publish evidence: a channel can be published while Planning
 still does not consume it.
+The report also echoes consumed route identity fields from route-contract
+evidence. `routing_response_consumed_by_planning=true` only proves Planning
+consumed a routing response; it does not prove that the consumed response is the
+configured claim route.
 
 `analysis/chassis_gt_contract/chassis_gt_contract_report.json` checks the GT
 replacement contract for `/apollo/canbus/chassis`: channel count/rate/gaps,

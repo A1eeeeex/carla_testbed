@@ -18,6 +18,9 @@ APOLLO_ROUTE_CONTRACT_SCHEMA_VERSION = "apollo_route_contract.v1"
 MAX_ABS_ROUTE_LENGTH_DIFF_M = 20.0
 MAX_REL_ROUTE_LENGTH_DIFF = 0.15
 MAX_GOAL_ERROR_M = 20.0
+GOAL_NEAR_THRESHOLD_RATIO = 0.8
+MAX_GOAL_SNAP_DISTANCE_M = 3.0
+MAX_GOAL_LATERAL_ERROR_M = 1.0
 MAX_EXTRA_LANE_WINDOWS_FOR_CLAIM = 2
 
 
@@ -124,7 +127,10 @@ def analyze_apollo_route_contract(
     scenario = _scenario_route(manifest, summary)
     apollo = _apollo_route(planning_topic_debug_summary, routing_rows, route_rows)
     projection = _projection_route(hdmap_rows)
-    route_phase = _route_phase(apollo, cyber_bridge_stats, scenario.get("route_length_m"))
+    raw_route_phase = _route_phase(apollo, cyber_bridge_stats, scenario.get("route_length_m"))
+    last_routing_request = _routing_request_summary(routing_rows, scenario)
+    last_routing_response = _routing_response_summary(planning_topic_debug_summary, routing_rows, route_rows, apollo)
+    latest_planning_active_route_segment = _planning_active_route_segment(route_rows)
     scenario_start_xy_carla = scenario.get("start_xy")
     scenario_goal_xy_carla = scenario.get("goal_xy")
     scenario_start_xy_apollo = _transform_xy(scenario_start_xy_carla, frame_transform)
@@ -185,6 +191,30 @@ def analyze_apollo_route_contract(
         blocking.append("apollo_routing_goal_mismatch")
     elif apollo_goal is None:
         warnings.append("apollo_routing_goal_xy_missing")
+    if goal_error is not None and goal_error > MAX_GOAL_ERROR_M * GOAL_NEAR_THRESHOLD_RATIO:
+        warnings.append("apollo_routing_goal_near_threshold")
+    goal_projection = last_routing_request.get("goal_projection")
+    if isinstance(goal_projection, Mapping):
+        snap_distance = _num(goal_projection.get("distance_m"))
+        lateral_error = _num(goal_projection.get("signed_lateral_error_m"))
+        if snap_distance is not None and snap_distance > MAX_GOAL_SNAP_DISTANCE_M:
+            blocking.append("apollo_routing_goal_snap_distance_high")
+        if lateral_error is not None and abs(lateral_error) > MAX_GOAL_LATERAL_ERROR_M:
+            warnings.append("apollo_routing_goal_lateral_error_high")
+        if goal_error is not None and goal_error > MAX_GOAL_ERROR_M * GOAL_NEAR_THRESHOLD_RATIO:
+            if last_routing_request.get("goal_projection_trusted_lane_centerline") is not True:
+                warnings.append("apollo_routing_goal_lane_compatibility_unverified")
+
+    route_identity = _route_identity(
+        scenario=scenario,
+        apollo=apollo,
+        raw_route_phase=raw_route_phase,
+        last_routing_request=last_routing_request,
+        latest_planning_active_route_segment=latest_planning_active_route_segment,
+        length_tolerance=length_tolerance,
+    )
+    if route_identity["status"] == "inconsistent":
+        blocking.append("route_identity_inconsistent")
 
     if not routing_rows:
         warnings.append("routing_event_debug_missing")
@@ -192,8 +222,10 @@ def analyze_apollo_route_contract(
         warnings.append("planning_route_segment_debug_missing")
     if projection.get("available") is False:
         warnings.append("apollo_hdmap_projection_missing")
-    if route_phase["routing_phase"] == "startup":
+    if raw_route_phase["routing_phase"] == "startup":
         blocking.append("claim_route_not_materialized")
+    if raw_route_phase["routing_phase"] == "long_goal" and blocking:
+        blocking.append("long_goal_not_compatible_with_scenario_route")
 
     if blocking:
         status = "fail"
@@ -203,6 +235,7 @@ def analyze_apollo_route_contract(
         status = "warn"
     else:
         status = "pass"
+    route_phase = _resolved_route_phase(raw_route_phase, status=status)
 
     startup_route_contract = _startup_route_contract(
         route_phase,
@@ -227,6 +260,11 @@ def analyze_apollo_route_contract(
         "scenario_start_lane": scenario.get("start_lane"),
         "scenario_goal_lane": scenario.get("goal_lane"),
         "scenario_route_lane_keys": sorted(scenario_lane_keys),
+        "configured_scenario_route": _configured_scenario_route_report(
+            scenario,
+            start_xy_apollo=scenario_start_xy_apollo,
+            goal_xy_apollo=scenario_goal_xy_apollo,
+        ),
         "comparison_frame": comparison_frame,
         "transform_source": frame_transform_source,
         "scenario_start_xy": scenario_start_xy_apollo,
@@ -249,8 +287,19 @@ def analyze_apollo_route_contract(
         "routing_length_delta_m": length_delta,
         "routing_length_ratio": length_ratio,
         "routing_length_tolerance_m": length_tolerance,
+        "goal_xy_error_threshold_m": MAX_GOAL_ERROR_M,
+        "goal_xy_near_threshold_ratio": GOAL_NEAR_THRESHOLD_RATIO,
+        "goal_snap_distance_threshold_m": MAX_GOAL_SNAP_DISTANCE_M,
+        "goal_lateral_error_threshold_m": MAX_GOAL_LATERAL_ERROR_M,
         "routing_phase": route_phase["routing_phase"],
+        "raw_routing_phase": raw_route_phase["routing_phase"],
         "routing_phase_reason": route_phase["routing_phase_reason"],
+        "last_routing_request": last_routing_request,
+        "last_routing_response": last_routing_response,
+        "latest_planning_active_route_segment": latest_planning_active_route_segment,
+        "route_identity_status": route_identity["status"],
+        "route_identity_issues": route_identity["issues"],
+        "route_identity": route_identity,
         "startup_route_contract": startup_route_contract,
         "claim_route_contract": claim_route_contract,
         "hdmap_projection_available": projection.get("available"),
@@ -288,6 +337,7 @@ def apollo_route_contract_summary_md(report: Mapping[str, Any]) -> str:
             "",
             f"- Status: `{report.get('status')}`",
             f"- Routing phase: `{report.get('routing_phase')}`",
+            f"- Raw routing phase: `{report.get('raw_routing_phase')}`",
             f"- Comparison frame: `{report.get('comparison_frame')}`",
             f"- Transform source: `{report.get('transform_source')}`",
             f"- Route ID: `{report.get('route_id')}`",
@@ -298,6 +348,9 @@ def apollo_route_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Apollo lane windows: `{report.get('apollo_routing_lane_window_count')}`",
             f"- Apollo lane signature: `{report.get('apollo_routing_lane_signature')}`",
             f"- Extra Apollo lane keys: `{', '.join(report.get('apollo_routing_extra_lane_keys') or []) or 'none'}`",
+            f"- Route identity: `{_json_compact(report.get('route_identity'))}`",
+            f"- Last routing request: `{_json_compact(report.get('last_routing_request'))}`",
+            f"- Latest Planning active route segment: `{_json_compact(report.get('latest_planning_active_route_segment'))}`",
             f"- Startup route contract: `{_json_compact(report.get('startup_route_contract'))}`",
             f"- Claim route contract: `{_json_compact(report.get('claim_route_contract'))}`",
             f"- Blocking reasons: `{', '.join(report.get('blocking_reasons') or []) or 'none'}`",
@@ -353,7 +406,14 @@ def _route_phase(
     goal_mode = _first_nonempty_text(
         cyber_bridge_stats.get("routing_goal_mode"),
         health.get("routing_goal_mode"),
+        apollo.get("routing_goal_mode"),
     )
+    event_phase = str(apollo.get("routing_event_phase") or "").strip()
+    request_kind = str(apollo.get("routing_request_kind") or "").strip()
+    if event_phase == "startup" or request_kind == "startup_route":
+        return {"routing_phase": "startup", "routing_phase_reason": reason or "startup_route_detected"}
+    if event_phase in {"long", "long_goal"} or request_kind == "long_phase_route":
+        return {"routing_phase": "long_goal", "routing_phase_reason": reason or "long_goal_route_detected"}
     goal_dist = _first_num(
         cyber_bridge_stats.get("routing_goal_dist_m"),
         health.get("routing_goal_dist_m"),
@@ -372,6 +432,18 @@ def _route_phase(
     if apollo.get("routing_total_length_m") is not None:
         return {"routing_phase": "claim", "routing_phase_reason": reason or "routing_response_present"}
     return {"routing_phase": "unknown", "routing_phase_reason": reason or "routing_phase_unverified"}
+
+
+def _resolved_route_phase(route_phase: Mapping[str, Any], *, status: str) -> dict[str, Any]:
+    raw = str(route_phase.get("routing_phase") or "unknown")
+    reason = str(route_phase.get("routing_phase_reason") or "")
+    if raw in {"startup", "unknown"}:
+        return {"routing_phase": raw, "routing_phase_reason": reason}
+    if status in {"pass", "warn"}:
+        return {"routing_phase": "claim", "routing_phase_reason": reason or "scenario_route_compatible"}
+    if raw == "long_goal":
+        return {"routing_phase": "long_goal", "routing_phase_reason": reason or "long_goal_not_claim_compatible"}
+    return {"routing_phase": raw, "routing_phase_reason": reason}
 
 
 def _startup_route_contract(
@@ -426,6 +498,186 @@ def _claim_route_contract(
         "blocking_reasons": sorted(set(blocking_reasons)),
         "scenario_route_length_m": scenario_length,
         "apollo_routing_total_length_m": apollo_length,
+    }
+
+
+def _configured_scenario_route_report(
+    scenario: Mapping[str, Any],
+    *,
+    start_xy_apollo: Mapping[str, Any] | None,
+    goal_xy_apollo: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "route_id": scenario.get("route_id"),
+        "route_length_m": scenario.get("route_length_m"),
+        "start_lane": scenario.get("start_lane"),
+        "goal_lane": scenario.get("goal_lane"),
+        "route_lane_keys": list(scenario.get("route_lane_keys") or []),
+        "start_xy_carla": scenario.get("start_xy"),
+        "goal_xy_carla": scenario.get("goal_xy"),
+        "start_xy_apollo": dict(start_xy_apollo) if isinstance(start_xy_apollo, Mapping) else None,
+        "goal_xy_apollo": dict(goal_xy_apollo) if isinstance(goal_xy_apollo, Mapping) else None,
+    }
+
+
+def _routing_request_summary(
+    routing_rows: Sequence[Mapping[str, Any]],
+    scenario: Mapping[str, Any],
+) -> dict[str, Any]:
+    row = _last_mapping(routing_rows)
+    if not row:
+        return {
+            "available": False,
+            "expected_route_id": scenario.get("route_id"),
+            "expected_route_length_m": scenario.get("route_length_m"),
+        }
+    goal_projection = _projection_summary(row.get("goal_projection"))
+    start_projection = _projection_summary(row.get("start_projection"))
+    return {
+        "available": True,
+        "request_sequence": _first_int(row.get("routing_request_index")),
+        "routing_phase": _text_or_none(row.get("routing_phase")),
+        "routing_request_kind": _text_or_none(row.get("routing_request_kind")),
+        "reroute_reason": _text_or_none(row.get("reroute_reason")),
+        "trigger_source": _text_or_none(row.get("trigger_source")),
+        "goal_mode": _text_or_none(row.get("goal_mode")),
+        "requested_goal_mode": _text_or_none(row.get("requested_goal_mode")),
+        "goal_source": _text_or_none(row.get("goal_source")),
+        "anchor_mode": _text_or_none(row.get("anchor_mode")),
+        "goal_distance_m": _num(row.get("goal_distance_m")),
+        "start_xy": _xy_from_keys(row, ("start_raw_x", "start_raw_y")) or _xy_from_keys(row, ("start_x", "start_y")),
+        "goal_xy": _xy_from_keys(row, ("goal_raw_x", "goal_raw_y")) or _xy_from_keys(row, ("goal_x", "goal_y")),
+        "start_projection": start_projection,
+        "goal_projection": goal_projection,
+        "goal_projection_distance_m": _num(goal_projection.get("distance_m")),
+        "goal_projection_trusted_lane_centerline": goal_projection.get("trusted_lane_centerline"),
+        "expected_route_id": scenario.get("route_id"),
+        "expected_route_length_m": scenario.get("route_length_m"),
+    }
+
+
+def _routing_response_summary(
+    planning_summary: Mapping[str, Any],
+    routing_rows: Sequence[Mapping[str, Any]],
+    route_rows: Sequence[Mapping[str, Any]],
+    apollo: Mapping[str, Any],
+) -> dict[str, Any]:
+    last_request = _last_mapping(routing_rows)
+    last_route = _last_route_row_with_signature(route_rows)
+    return {
+        "available": apollo.get("routing_total_length_m") is not None,
+        "response_sequence": _first_int(
+            planning_summary.get("last_planning_header_sequence_num"),
+            last_route.get("planning_header_sequence_num") if last_route else None,
+        ),
+        "matched_request_sequence": _first_int(last_request.get("routing_request_index") if last_request else None),
+        "response_total_length_m": apollo.get("routing_total_length_m"),
+        "lane_window_count": apollo.get("routing_lane_window_count"),
+        "lane_window_signature": apollo.get("routing_lane_signature"),
+        "unique_lane_signature": apollo.get("routing_unique_lane_signature"),
+        "source": "planning_topic_debug_summary_or_route_segment_debug",
+    }
+
+
+def _planning_active_route_segment(route_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    row = _last_route_row_with_signature(route_rows)
+    if not row:
+        return {"available": False}
+    return {
+        "available": True,
+        "planning_header_sequence_num": _first_int(row.get("planning_header_sequence_num")),
+        "planning_header_timestamp_sec": _num(row.get("planning_header_timestamp_sec")),
+        "sim_time_sec": _num(row.get("sim_time_sec")),
+        "route_segment_total_length_m": _num(row.get("route_segment_total_length")),
+        "route_segment_count": _first_int(row.get("route_segment_count")),
+        "routing_lane_window_count": _first_int(row.get("routing_lane_window_count")),
+        "routing_lane_window_signature": _text_or_none(row.get("routing_lane_window_signature")),
+        "routing_unique_lane_signature": _text_or_none(row.get("routing_unique_lane_signature")),
+        "current_lane_id": _text_or_none(row.get("current_lane_id")),
+        "lane_id_first": _text_or_none(row.get("lane_id_first")),
+        "target_lane_id_first": _text_or_none(row.get("target_lane_id_first")),
+        "reference_line_provider_status": _text_or_none(row.get("reference_line_provider_status")),
+        "create_route_segments_status": _text_or_none(row.get("create_route_segments_status")),
+        "lane_follow_map_status": _text_or_none(row.get("lane_follow_map_status")),
+    }
+
+
+def _route_identity(
+    *,
+    scenario: Mapping[str, Any],
+    apollo: Mapping[str, Any],
+    raw_route_phase: Mapping[str, Any],
+    last_routing_request: Mapping[str, Any],
+    latest_planning_active_route_segment: Mapping[str, Any],
+    length_tolerance: float | None,
+) -> dict[str, Any]:
+    issues: list[str] = []
+    scenario_length = _num(scenario.get("route_length_m"))
+    apollo_length = _num(apollo.get("routing_total_length_m"))
+    active_length = _num(latest_planning_active_route_segment.get("route_segment_total_length_m"))
+    raw_phase = str(raw_route_phase.get("routing_phase") or "unknown")
+    if scenario_length is None:
+        issues.append("scenario_route_length_missing")
+    if apollo_length is None:
+        issues.append("apollo_routing_response_missing")
+    if (
+        scenario_length is not None
+        and apollo_length is not None
+        and length_tolerance is not None
+        and abs(apollo_length - scenario_length) > length_tolerance
+    ):
+        issues.append("routing_response_length_not_scenario_route")
+    if (
+        scenario_length is not None
+        and active_length is not None
+        and length_tolerance is not None
+        and abs(active_length - scenario_length) > length_tolerance
+    ):
+        issues.append("planning_active_route_segment_length_not_scenario_route")
+    if raw_phase == "long_goal" and issues:
+        issues.append("long_goal_not_proven_as_claim_route")
+    request_phase = str(last_routing_request.get("routing_phase") or "")
+    if request_phase == "startup" and active_length is not None:
+        issues.append("planning_active_route_after_startup_request_only")
+    status = "insufficient_data" if any(item.endswith("_missing") for item in issues) else (
+        "inconsistent" if issues else "consistent"
+    )
+    return {
+        "status": status,
+        "issues": sorted(set(issues)),
+        "scenario_route_length_m": scenario_length,
+        "apollo_routing_total_length_m": apollo_length,
+        "latest_planning_active_route_length_m": active_length,
+        "raw_routing_phase": raw_phase,
+        "last_routing_request_phase": last_routing_request.get("routing_phase"),
+        "last_routing_request_kind": last_routing_request.get("routing_request_kind"),
+        "claim_boundary": (
+            "A Planning response can consume a routing response without consuming the configured "
+            "scenario route. Natural-driving claims require the active route identity to be compatible "
+            "with the configured scenario route."
+        ),
+    }
+
+
+def _projection_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {"available": False}
+    return {
+        "available": bool(value.get("available", True)),
+        "accepted": value.get("accepted"),
+        "rejected": value.get("rejected"),
+        "source_type": _text_or_none(value.get("source_type")),
+        "trusted_lane_centerline": _parse_bool(
+            value.get("trusted_lane_centerline")
+            if "trusted_lane_centerline" in value
+            else value.get("source_trusted_lane_centerline")
+        ),
+        "distance_m": _num(value.get("distance_m")),
+        "signed_lateral_error_m": _num(value.get("signed_e_y_m") or value.get("lateral_error_m")),
+        "lane_yaw_deg": _num(value.get("lane_yaw_deg")),
+        "map_file": _text_or_none(value.get("map_file")),
+        "reason": _text_or_none(value.get("reason")),
+        "reject_reason": _text_or_none(value.get("reject_reason")),
     }
 
 
@@ -512,6 +764,9 @@ def _apollo_route(
         "routing_lane_keys": sorted({_lane_key(lane) for lane in lane_ids if _lane_key(lane)}),
         "start_xy": start_xy,
         "goal_xy": goal_xy,
+        "routing_event_phase": _text_or_none(last_routing_row.get("routing_phase") if last_routing_row else None),
+        "routing_request_kind": _text_or_none(last_routing_row.get("routing_request_kind") if last_routing_row else None),
+        "routing_goal_mode": _text_or_none(last_routing_row.get("goal_mode") if last_routing_row else None),
     }
 
 
@@ -705,6 +960,27 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return False
+
+
+def _parse_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+    return None
+
+
+def _text_or_none(value: Any) -> str | None:
+    if value in {None, ""}:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _json_compact(value: Any) -> str:

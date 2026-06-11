@@ -130,6 +130,13 @@ CSV_FIELDS = [
     "control_source",
     "routing_success_count",
     "planning_nonempty_ratio",
+    "planning_nonempty_ratio_source",
+    "planning_nonempty_ratio_overall",
+    "planning_nonempty_ratio_filtered",
+    "planning_nonempty_ratio_after_routing_segment_available",
+    "planning_materialization_nonempty_ratio",
+    "route_established",
+    "route_establishment_source",
     "control_rx_count",
     "control_tx_count",
     "control_apply_count",
@@ -161,6 +168,10 @@ CSV_FIELDS = [
     "localization_contract_status",
     "localization_blocking_reasons",
     "localization_report_path",
+    "chassis_gt_contract_status",
+    "chassis_gt_contract_claim_grade",
+    "chassis_gt_contract_blocking_reasons",
+    "chassis_gt_contract_report_path",
     "apollo_reference_line_contract_status",
     "apollo_reference_line_blocking_reasons",
     "apollo_reference_line_report_path",
@@ -495,6 +506,13 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
             "localization_contract_report.json",
         ],
     )
+    chassis_gt_contract_path = _find_first(
+        run_dir,
+        [
+            "analysis/chassis_gt_contract/chassis_gt_contract_report.json",
+            "chassis_gt_contract_report.json",
+        ],
+    )
     apollo_reference_line_contract_path = _find_first(
         run_dir,
         [
@@ -624,6 +642,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
     route_health = _read_json(route_health_path)
     channel_health = _read_json(channel_health_path)
     localization_contract = _read_json(localization_contract_path)
+    chassis_gt_contract = _read_json(chassis_gt_contract_path)
     apollo_reference_line_contract = _read_json(apollo_reference_line_contract_path)
     apollo_hdmap_projection = _read_json(apollo_hdmap_projection_path)
     control_health = _read_json(control_health_path)
@@ -676,12 +695,14 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         control_bridge_log_metrics = {}
     control_source = _control_source(summary, manifest, apollo_control_handoff, control_health)
     routing_success_count = _routing_success_count(summary, manifest, apollo_control_handoff)
-    planning_nonempty_ratio = _planning_nonempty_ratio(
+    planning_nonempty = _planning_nonempty_metric(
         summary,
         manifest,
         apollo_reference_line_contract,
         apollo_control_handoff,
+        planning_materialization,
     )
+    planning_nonempty_ratio = planning_nonempty["ratio"]
     control_rx_count = _control_rx_count(summary, manifest, apollo_control_handoff, control_health)
     control_tx_count = _control_tx_count(summary, manifest, apollo_control_handoff, control_health)
     control_apply_count = _control_apply_count(
@@ -737,6 +758,17 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "control_source": control_source,
         "routing_success_count": routing_success_count,
         "planning_nonempty_ratio": planning_nonempty_ratio,
+        "planning_nonempty_ratio_source": planning_nonempty["source"],
+        "planning_nonempty_ratio_overall": planning_nonempty["overall_ratio"],
+        "planning_nonempty_ratio_filtered": planning_nonempty["filtered_ratio"],
+        "planning_nonempty_ratio_after_routing_segment_available": planning_nonempty[
+            "after_routing_segment_available"
+        ],
+        "planning_materialization_nonempty_ratio": planning_nonempty[
+            "planning_materialization_nonempty_ratio"
+        ],
+        "route_established": planning_nonempty["route_established"],
+        "route_establishment_source": planning_nonempty["route_establishment_source"],
         "control_rx_count": control_rx_count,
         "control_tx_count": control_tx_count,
         "control_apply_count": control_apply_count,
@@ -826,6 +858,14 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         "localization_contract_status": _localization_contract_status(localization_contract),
         "localization_blocking_reasons": _localization_blocking_reasons(localization_contract),
         "localization_report_path": str(localization_contract_path) if localization_contract_path else None,
+        "chassis_gt_contract_status": _chassis_gt_contract_status(chassis_gt_contract),
+        "chassis_gt_contract_claim_grade": _chassis_gt_contract_claim_grade(chassis_gt_contract),
+        "chassis_gt_contract_blocking_reasons": _chassis_gt_contract_blocking_reasons(
+            chassis_gt_contract
+        ),
+        "chassis_gt_contract_report_path": (
+            str(chassis_gt_contract_path) if chassis_gt_contract_path else None
+        ),
         "apollo_reference_line_contract_status": _apollo_reference_line_contract_status(
             apollo_reference_line_contract
         ),
@@ -871,6 +911,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
             "route_health_summary": str(route_health_summary_path) if route_health_summary_path else None,
             "apollo_channel_health": str(channel_health_path) if channel_health_path else None,
             "localization_contract": str(localization_contract_path) if localization_contract_path else None,
+            "chassis_gt_contract": str(chassis_gt_contract_path) if chassis_gt_contract_path else None,
             "apollo_reference_line_contract": (
                 str(apollo_reference_line_contract_path) if apollo_reference_line_contract_path else None
             ),
@@ -986,6 +1027,7 @@ def _analyze_run_dir(run_dir: Path, *, root: Path, thresholds: Mapping[str, floa
         summary=summary,
         manifest=manifest,
         localization_contract=localization_contract,
+        chassis_gt_contract=chassis_gt_contract,
         apollo_reference_line_contract=apollo_reference_line_contract,
         apollo_hdmap_projection=apollo_hdmap_projection,
         apollo_route_contract=apollo_route_contract,
@@ -1055,6 +1097,7 @@ def _unassisted_claimability(
     summary: Mapping[str, Any],
     manifest: Mapping[str, Any],
     localization_contract: Mapping[str, Any],
+    chassis_gt_contract: Mapping[str, Any],
     apollo_reference_line_contract: Mapping[str, Any],
     apollo_hdmap_projection: Mapping[str, Any],
     apollo_route_contract: Mapping[str, Any],
@@ -1161,6 +1204,9 @@ def _unassisted_claimability(
         reasons.append("stale_gt_republish_claim_blocked")
     if not _localization_claim_grade(localization_contract):
         reasons.append("localization_contract_not_claim_grade")
+
+    if not _chassis_gt_contract_claim_grade(chassis_gt_contract):
+        reasons.append("chassis_gt_contract_not_claim_grade")
 
     reference_status = _apollo_reference_line_contract_status(apollo_reference_line_contract)
     if reference_status not in PASS_WARN_STATUSES or _apollo_reference_line_blocking_reasons(
@@ -1321,29 +1367,85 @@ def _routing_success_count(
     return None
 
 
+def _planning_nonempty_metric(
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    apollo_reference_line_contract: Mapping[str, Any],
+    apollo_control_handoff: Mapping[str, Any],
+    planning_materialization: Mapping[str, Any],
+) -> dict[str, Any]:
+    evidence = apollo_reference_line_contract.get("evidence")
+    claim_source = None
+    filtered_ratio = None
+    after_routing = None
+    after_first_nonempty = None
+    if isinstance(evidence, Mapping):
+        filtered_ratio = _num(evidence.get("planning_claim_window_nonempty_trajectory_ratio"))
+        claim_source = str(evidence.get("planning_claim_window_source") or "").strip() or None
+        after_routing = _num(evidence.get("nonempty_trajectory_ratio_after_routing_segment_available"))
+        after_first_nonempty = _num(evidence.get("nonempty_trajectory_ratio_after_first_nonempty"))
+    summary_ratio = _first_recursive_number(
+        summary,
+        manifest,
+        apollo_control_handoff,
+        keys={"planning_nonempty_ratio", "planning_non_empty_ratio", "nonempty_trajectory_ratio"},
+    )
+    planning_metrics = (
+        planning_materialization.get("metrics")
+        if isinstance(planning_materialization.get("metrics"), Mapping)
+        else {}
+    )
+    planning_materialization_ratio = _first_num(
+        planning_materialization.get("nonempty_trajectory_ratio"),
+        planning_metrics.get("nonempty_trajectory_ratio"),
+    )
+    reference_overall = None
+    evidence = apollo_reference_line_contract.get("evidence")
+    if isinstance(evidence, Mapping):
+        reference_overall = _num(evidence.get("nonempty_trajectory_ratio"))
+    overall_ratio = _first_num(planning_materialization_ratio, summary_ratio, reference_overall)
+    ratio = _first_num(filtered_ratio, overall_ratio)
+    if filtered_ratio is not None and claim_source:
+        source = f"apollo_reference_line_contract.{claim_source}"
+    elif planning_materialization_ratio is not None:
+        source = "planning_materialization.overall"
+    elif summary_ratio is not None:
+        source = "summary_or_control_handoff"
+    elif reference_overall is not None:
+        source = "apollo_reference_line_contract.overall"
+    else:
+        source = None
+    route_establishment = (
+        planning_materialization.get("route_establishment")
+        if isinstance(planning_materialization.get("route_establishment"), Mapping)
+        else {}
+    )
+    return {
+        "ratio": ratio,
+        "source": source,
+        "overall_ratio": overall_ratio,
+        "filtered_ratio": filtered_ratio,
+        "after_routing_segment_available": after_routing,
+        "after_first_nonempty": after_first_nonempty,
+        "planning_materialization_nonempty_ratio": planning_materialization_ratio,
+        "route_established": route_establishment.get("route_established"),
+        "route_establishment_source": "planning_materialization" if planning_materialization else None,
+    }
+
+
 def _planning_nonempty_ratio(
     summary: Mapping[str, Any],
     manifest: Mapping[str, Any],
     apollo_reference_line_contract: Mapping[str, Any],
     apollo_control_handoff: Mapping[str, Any],
 ) -> float | None:
-    evidence = apollo_reference_line_contract.get("evidence")
-    if isinstance(evidence, Mapping):
-        value = _num(evidence.get("planning_claim_window_nonempty_trajectory_ratio"))
-        if value is not None:
-            return value
-    value = _first_recursive_number(
+    return _planning_nonempty_metric(
         summary,
         manifest,
+        apollo_reference_line_contract,
         apollo_control_handoff,
-        keys={"planning_nonempty_ratio", "planning_non_empty_ratio", "nonempty_trajectory_ratio"},
-    )
-    if value is not None:
-        return value
-    evidence = apollo_reference_line_contract.get("evidence")
-    if isinstance(evidence, Mapping):
-        return _num(evidence.get("nonempty_trajectory_ratio"))
-    return None
+        {},
+    )["ratio"]
 
 
 def _control_rx_count(
@@ -2367,6 +2469,27 @@ def _control_attribution_dominant_breakpoint(control_attribution: Mapping[str, A
 def _localization_contract_status(localization_contract: Mapping[str, Any]) -> str:
     status = _report_status(localization_contract)
     return status if status is not None else "insufficient_data"
+
+
+def _chassis_gt_contract_status(report: Mapping[str, Any]) -> str:
+    status = _report_status(report)
+    return status if status is not None else "insufficient_data"
+
+
+def _chassis_gt_contract_claim_grade(report: Mapping[str, Any]) -> bool:
+    if not isinstance(report, Mapping) or not report:
+        return False
+    if _chassis_gt_contract_status(report) not in PASS_WARN_STATUSES:
+        return False
+    if _chassis_gt_contract_blocking_reasons(report):
+        return False
+    return report.get("claim_grade") is True
+
+
+def _chassis_gt_contract_blocking_reasons(report: Mapping[str, Any]) -> list[str]:
+    if not isinstance(report, Mapping) or not report:
+        return ["chassis_gt_contract_missing"]
+    return [str(item) for item in (report.get("blocking_reasons") or []) if item]
 
 
 def _apollo_reference_line_contract_status(report: Mapping[str, Any]) -> str:
@@ -3573,6 +3696,14 @@ def _num(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _first_num(*values: Any) -> float | None:
+    for value in values:
+        parsed = _num(value)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _string_list(value: Any) -> list[str]:

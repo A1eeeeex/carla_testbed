@@ -247,11 +247,35 @@ def test_apollo_control_apply_without_assists_can_claim_unassisted(tmp_path: Pat
     assert lane_run["control_rx_count"] > 0
     assert lane_run["control_tx_count"] > 0
     assert lane_run["control_apply_count"] > 0
+    assert lane_run["chassis_gt_contract_status"] == "pass"
+    assert lane_run["chassis_gt_contract_claim_grade"] is True
     assert lane_run["lateral_guard_apply_count"] == 0
     assert lane_run["trajectory_contract_guard_apply_count"] == 0
     assert lane_run["active_assists"] == []
     assert lane_run["can_claim_unassisted_natural_driving"] is True
     assert lane_run["why_not_claimable"] == []
+
+
+def test_missing_chassis_gt_contract_blocks_unassisted_claim(tmp_path: Path) -> None:
+    suite_root = copy_fixture(tmp_path)
+    chassis_path = (
+        suite_root
+        / "lane_keep_097"
+        / "analysis"
+        / "chassis_gt_contract"
+        / "chassis_gt_contract_report.json"
+    )
+    chassis_path.unlink()
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
+
+    assert lane_run["verdict"] == "insufficient_data"
+    assert lane_run["can_claim_unassisted_natural_driving"] is False
+    assert lane_run["chassis_gt_contract_status"] == "insufficient_data"
+    assert lane_run["chassis_gt_contract_claim_grade"] is False
+    assert lane_run["chassis_gt_contract_blocking_reasons"] == ["chassis_gt_contract_missing"]
+    assert "chassis_gt_contract_not_claim_grade" in lane_run["why_not_claimable"]
 
 
 def test_planning_claim_window_ratio_prevents_startup_empty_messages_from_blocking_claim(
@@ -273,10 +297,35 @@ def test_planning_claim_window_ratio_prevents_startup_empty_messages_from_blocki
     ref["evidence"]["planning_claim_window_source"] = "after_routing_segment_available"
     ref_path.write_text(json.dumps(ref, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
+    planning_path = (
+        lane_dir
+        / "analysis"
+        / "planning_materialization"
+        / "planning_materialization_report.json"
+    )
+    planning = json.loads(planning_path.read_text(encoding="utf-8"))
+    planning["nonempty_trajectory_ratio"] = 0.41
+    planning.setdefault("metrics", {})["nonempty_trajectory_ratio"] = 0.41
+    planning["route_establishment"] = {
+        "route_established": True,
+        "routing_success_count": 1,
+        "planning_nonempty_after_routing_success_ratio": 0.95,
+        "blocking_reasons": [],
+    }
+    planning_path.write_text(json.dumps(planning, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
     report = analyze_natural_driving_suite(suite_root)
     lane_run = next(run for run in report["run_results"] if run["scenario_id"] == "lane_keep_097")
 
     assert lane_run["planning_nonempty_ratio"] == 0.95
+    assert lane_run["planning_nonempty_ratio_filtered"] == 0.95
+    assert lane_run["planning_nonempty_ratio_overall"] == 0.41
+    assert lane_run["planning_materialization_nonempty_ratio"] == 0.41
+    assert lane_run["planning_nonempty_ratio_source"] == (
+        "apollo_reference_line_contract.after_routing_segment_available"
+    )
+    assert lane_run["route_established"] is True
+    assert lane_run["route_establishment_source"] == "planning_materialization"
     assert "planning_nonempty_ratio_low" not in lane_run["why_not_claimable"]
     assert lane_run["verdict"] == "pass"
     assert lane_run["can_claim_unassisted_natural_driving"] is True

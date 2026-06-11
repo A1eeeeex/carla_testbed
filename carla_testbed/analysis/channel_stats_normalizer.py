@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -230,6 +231,17 @@ def _merge_row_level_artifact_stats(run_dir: Path, stats: dict[str, Any]) -> Non
             channels[channel] = entry
         if entries:
             _append_row_level_artifact(source, topic_publish_stats)
+
+    publish_gap_trace = _find_first(
+        run_dir,
+        ("artifacts/publish_gap_trace.jsonl", "publish_gap_trace.jsonl"),
+    )
+    if publish_gap_trace is not None:
+        summary = _publish_gap_trace_summary(publish_gap_trace)
+        if summary:
+            if isinstance(source, dict):
+                source["publish_gap_trace_summary"] = summary
+                _append_row_level_artifact(source, publish_gap_trace)
 
     if isinstance(source, dict) and source.get("row_level_artifacts"):
         source["type"] = "mixed_bridge_and_row_level_artifacts"
@@ -482,6 +494,89 @@ def _rate_from_span(count: int, timestamps: list[float]) -> float | None:
     if last <= first:
         return None
     return float(count - 1) / (last - first)
+
+
+def _publish_gap_trace_summary(path: Path) -> dict[str, Any]:
+    skip_reasons: Counter[str] = Counter()
+    expected_count = 0
+    published_localization_count = 0
+    published_chassis_count = 0
+    artifact_backpressure_count = 0
+    async_queue_full_count = 0
+    async_dropped_count = 0
+    max_queue_depth: int | None = None
+    max_writer_write_duration_ms: float | None = None
+    max_publish_loop_duration_ms: float | None = None
+    row_count = 0
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, Mapping):
+                    continue
+                row_count += 1
+                if payload.get("expected_publish") is True:
+                    expected_count += 1
+                if payload.get("published_localization") is True:
+                    published_localization_count += 1
+                if payload.get("published_chassis") is True:
+                    published_chassis_count += 1
+                reason = str(payload.get("skip_reason") or "none")
+                if reason and reason != "none":
+                    skip_reasons[reason] += 1
+                if payload.get("artifact_backpressure") is True:
+                    artifact_backpressure_count += 1
+                async_queue_full_count += _int_or_zero(payload.get("async_queue_full_count"))
+                async_dropped_count += _int_or_zero(payload.get("async_dropped_count"))
+                queue_depth = _int_or_none(payload.get("async_queue_depth_max") or payload.get("async_queue_depth"))
+                if queue_depth is not None:
+                    max_queue_depth = queue_depth if max_queue_depth is None else max(max_queue_depth, queue_depth)
+                writer_ms = _float_or_none(
+                    payload.get("writer_write_duration_ms_max")
+                    or payload.get("writer_write_duration_ms")
+                )
+                if writer_ms is not None:
+                    max_writer_write_duration_ms = (
+                        writer_ms
+                        if max_writer_write_duration_ms is None
+                        else max(max_writer_write_duration_ms, writer_ms)
+                    )
+                loop_ms = _float_or_none(payload.get("publish_loop_duration_ms"))
+                if loop_ms is not None:
+                    max_publish_loop_duration_ms = (
+                        loop_ms
+                        if max_publish_loop_duration_ms is None
+                        else max(max_publish_loop_duration_ms, loop_ms)
+                    )
+    except OSError:
+        return {}
+    if row_count <= 0:
+        return {}
+    return {
+        "schema_version": "publish_gap_trace_summary.v1",
+        "path": str(path),
+        "row_count": row_count,
+        "expected_publish_count": expected_count,
+        "published_localization_count": published_localization_count,
+        "published_chassis_count": published_chassis_count,
+        "skip_reason_counts": dict(sorted(skip_reasons.items())),
+        "artifact_backpressure_count": artifact_backpressure_count,
+        "async_queue_full_count_total": async_queue_full_count,
+        "async_dropped_count_total": async_dropped_count,
+        "max_async_queue_depth": max_queue_depth,
+        "max_writer_write_duration_ms": max_writer_write_duration_ms,
+        "max_publish_loop_duration_ms": max_publish_loop_duration_ms,
+        "interpretation": (
+            "This summarizes why expected GT localization/chassis publishes were skipped or delayed. "
+            "It distinguishes stale-sample skip, publish-loop overrun, artifact backpressure, writer duration, "
+            "and async queue pressure; it does not make skipped samples claim-grade."
+        ),
+    }
 
 
 def _monotonic(values: list[float]) -> bool:

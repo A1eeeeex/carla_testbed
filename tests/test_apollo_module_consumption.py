@@ -200,6 +200,47 @@ def test_module_consumption_blocks_failed_route_contract(tmp_path: Path) -> None
     assert "claim_route_consumption_unverified" in report["blocking_reasons"]
 
 
+def test_module_consumption_reports_consumed_route_identity_from_route_contract(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json",
+        {
+            "schema_version": "apollo_route_contract.v1",
+            "status": "fail",
+            "routing_phase": "long_goal",
+            "apollo_routing_total_length_m": 648.136,
+            "apollo_routing_lane_signature": "15_1_1@66.8->307.6 | 13_1_-1@0.0->14.0",
+            "last_routing_response": {
+                "response_total_length_m": 648.136,
+                "lane_window_signature": "15_1_1@66.8->307.6 | 13_1_-1@0.0->14.0",
+            },
+            "latest_planning_active_route_segment": {
+                "route_segment_total_length_m": 648.136,
+                "routing_lane_window_signature": "15_1_1@66.8->307.6 | 13_1_-1@0.0->14.0",
+            },
+            "claim_route_contract": {
+                "status": "fail",
+                "materialized": False,
+                "blocking_reasons": ["route_identity_inconsistent"],
+            },
+            "route_identity_status": "inconsistent",
+            "route_identity_issues": ["planning_active_route_segment_length_not_scenario_route"],
+            "blocking_reasons": ["route_identity_inconsistent"],
+        },
+    )
+
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+
+    assert report["status"] == "fail"
+    assert report["routing_response_consumed_by_planning"] is True
+    assert report["consumed_route_phase"] == "long_goal"
+    assert report["consumed_route_contract_status"] == "fail"
+    assert report["consumed_route_total_length_m"] == 648.136
+    assert report["planning_routing_header_matches_response_id"] is True
+    assert report["consumed_route_identity"]["route_identity_status"] == "inconsistent"
+    assert "claim_route_consumption_unverified" in report["blocking_reasons"]
+
+
 def test_module_consumption_fails_when_route_not_established_and_reference_line_missing(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     _write_json(

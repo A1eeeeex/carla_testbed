@@ -105,6 +105,7 @@ def analyze_apollo_module_consumption(
         planning_rows=planning_rows,
         routing_rows=routing_rows,
     )
+    consumed_route_identity = _consumed_route_identity(route_contract)
     publish_coverage = _topic_publish_coverage(topic_rows)
     prediction_mode = prediction_evidence.get("prediction_mode")
 
@@ -166,6 +167,14 @@ def analyze_apollo_module_consumption(
         "scenario_id": summary.get("scenario_id"),
         "status": status,
         "routing_response_consumed_by_planning": routing_consumed,
+        "consumed_route_phase": consumed_route_identity["consumed_route_phase"],
+        "consumed_route_contract_status": consumed_route_identity["consumed_route_contract_status"],
+        "consumed_route_total_length_m": consumed_route_identity["consumed_route_total_length_m"],
+        "consumed_route_lane_signature": consumed_route_identity["consumed_route_lane_signature"],
+        "planning_routing_header_matches_response_id": consumed_route_identity[
+            "planning_routing_header_matches_response_id"
+        ],
+        "consumed_route_identity": consumed_route_identity,
         "planning_requires_prediction": prediction_evidence.get("planning_requires_prediction"),
         "prediction_mode": prediction_mode,
         "apollo_route_contract_status": route_contract.get("status"),
@@ -184,7 +193,8 @@ def analyze_apollo_module_consumption(
         },
         "interpretation_boundary": (
             "This report checks Apollo module-consumption evidence from logs/debug artifacts. "
-            "Bridge-side publish stats alone are not proof that Planning or Control consumed inputs."
+            "Bridge-side publish stats alone are not proof that Planning or Control consumed inputs. "
+            "Planning may consume a routing response while claim-route consumption remains unverified or failed."
         ),
     }
 
@@ -209,6 +219,10 @@ def apollo_module_consumption_summary_md(report: Mapping[str, Any]) -> str:
             "",
             f"- Status: `{report.get('status')}`",
             f"- Routing response consumed by planning: `{report.get('routing_response_consumed_by_planning')}`",
+            f"- Consumed route phase: `{report.get('consumed_route_phase')}`",
+            f"- Consumed route contract status: `{report.get('consumed_route_contract_status')}`",
+            f"- Consumed route length m: `{report.get('consumed_route_total_length_m')}`",
+            f"- Consumed route lane signature: `{report.get('consumed_route_lane_signature')}`",
             f"- Prediction mode: `{report.get('prediction_mode')}`",
             f"- Pattern counts: `{json.dumps(report.get('pattern_counts') or {}, sort_keys=True)}`",
             f"- Empty reason histogram: `{json.dumps(report.get('empty_reason_histogram') or {}, sort_keys=True)}`",
@@ -250,6 +264,66 @@ def _routing_consumed(
     if routing_rows and planning_rows:
         return False
     return None
+
+
+def _consumed_route_identity(route_contract: Mapping[str, Any]) -> dict[str, Any]:
+    latest_segment = (
+        route_contract.get("latest_planning_active_route_segment")
+        if isinstance(route_contract.get("latest_planning_active_route_segment"), Mapping)
+        else {}
+    )
+    response = (
+        route_contract.get("last_routing_response")
+        if isinstance(route_contract.get("last_routing_response"), Mapping)
+        else {}
+    )
+    route_length = _num(
+        latest_segment.get("route_segment_total_length_m")
+        or latest_segment.get("route_segment_total_length")
+        or response.get("response_total_length_m")
+        or route_contract.get("apollo_routing_total_length_m")
+    )
+    lane_signature = (
+        latest_segment.get("routing_lane_window_signature")
+        or response.get("lane_window_signature")
+        or route_contract.get("apollo_routing_lane_signature")
+    )
+    response_length = _num(response.get("response_total_length_m"))
+    length_matches = (
+        None
+        if route_length is None or response_length is None
+        else abs(route_length - response_length) < 1e-3
+    )
+    response_signature = response.get("lane_window_signature")
+    signature_matches = (
+        None
+        if not lane_signature or not response_signature
+        else str(lane_signature) == str(response_signature)
+    )
+    if length_matches is False or signature_matches is False:
+        matches_response = False
+    elif length_matches is True or signature_matches is True:
+        matches_response = True
+    else:
+        matches_response = None
+    return {
+        "consumed_route_phase": route_contract.get("routing_phase"),
+        "consumed_route_contract_status": (
+            route_contract.get("claim_route_contract", {}).get("status")
+            if isinstance(route_contract.get("claim_route_contract"), Mapping)
+            else route_contract.get("status")
+        ),
+        "consumed_route_total_length_m": route_length,
+        "consumed_route_lane_signature": lane_signature,
+        "planning_routing_header_matches_response_id": matches_response,
+        "route_identity_status": route_contract.get("route_identity_status"),
+        "route_identity_issues": list(route_contract.get("route_identity_issues") or []),
+        "claim_boundary": (
+            "routing_response_consumed_by_planning=true only means Planning consumed some "
+            "routing response. Claim-grade consumption also requires the consumed route "
+            "contract to be compatible with the configured scenario route."
+        ),
+    }
 
 
 def _route_establishment_false(planning_materialization: Mapping[str, Any]) -> bool:

@@ -75,7 +75,10 @@ ROW_LEVEL_EVIDENCE_PATTERNS = (
 CLAIM_REQUIRED_ROW_LEVEL = (
     "artifacts/topic_publish_stats.jsonl",
     "artifacts/publish_gap_trace.jsonl",
+    "artifacts/routing_event_debug.jsonl",
+    "artifacts/planning_route_segment_debug.jsonl",
     "artifacts/control_apply_trace.jsonl",
+    "artifacts/control_decode_debug.jsonl",
     "artifacts/planning_topic_debug.jsonl",
 )
 

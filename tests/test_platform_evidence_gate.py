@@ -172,6 +172,7 @@ def test_claim_pack_includes_row_level_evidence_when_present(tmp_path: Path) -> 
         "artifacts/topic_publish_stats.jsonl",
         "artifacts/publish_gap_trace.jsonl",
         "artifacts/control_apply_trace.jsonl",
+        "artifacts/control_decode_debug.jsonl",
         "artifacts/planning_topic_debug.jsonl",
         "artifacts/routing_event_debug.jsonl",
         "artifacts/planning_route_segment_debug.jsonl",
@@ -230,9 +231,15 @@ def test_claim_pack_includes_row_level_evidence_when_present(tmp_path: Path) -> 
             for item in index["files"]
             if item["path"] == "artifacts/planning_route_segment_debug.jsonl"
         )
+        decode_entry = next(
+            item
+            for item in index["files"]
+            if item["path"] == "artifacts/control_decode_debug.jsonl"
+        )
         assert topic_entry["row_count"] == 1
         assert routing_entry["row_count"] == 1
         assert segment_entry["row_count"] == 1
+        assert decode_entry["row_count"] == 1
         assert topic_entry["sha256"]
         assert topic_entry["head_sample"] == (
             "row_level_samples/artifacts/topic_publish_stats.jsonl.head.jsonl"

@@ -170,6 +170,39 @@ def test_normalize_channel_stats_prefers_row_level_artifacts_when_available(tmp_
         + "\n",
         encoding="utf-8",
     )
+    (artifacts / "publish_gap_trace.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "expected_publish": True,
+                        "published_localization": False,
+                        "published_chassis": False,
+                        "skip_reason": "publish_loop_overrun",
+                        "async_queue_depth": 7,
+                        "writer_write_duration_ms": 3.5,
+                        "publish_loop_duration_ms": 44.0,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "expected_publish": True,
+                        "published_localization": False,
+                        "published_chassis": False,
+                        "skip_reason": "stale_sample_skipped",
+                        "artifact_backpressure": True,
+                        "async_queue_full_count": 2,
+                        "async_dropped_count": 1,
+                        "async_queue_depth_max": 9,
+                        "writer_write_duration_ms_max": 5.0,
+                        "publish_loop_duration_ms": 51.0,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     stats = normalize_channel_stats_for_run(run_dir)
 
@@ -190,6 +223,16 @@ def test_normalize_channel_stats_prefers_row_level_artifacts_when_available(tmp_
     assert channels["/apollo/control"]["source"] == "control_decode_debug.jsonl"
     assert channels["/apollo/control"]["sequence_monotonic"] is True
     assert str(artifacts / "planning_topic_debug.jsonl") in stats["source"]["row_level_artifacts"]
+    gap_summary = stats["source"]["publish_gap_trace_summary"]
+    assert gap_summary["skip_reason_counts"] == {
+        "publish_loop_overrun": 1,
+        "stale_sample_skipped": 1,
+    }
+    assert gap_summary["artifact_backpressure_count"] == 1
+    assert gap_summary["async_queue_full_count_total"] == 2
+    assert gap_summary["async_dropped_count_total"] == 1
+    assert gap_summary["max_async_queue_depth"] == 9
+    assert str(artifacts / "publish_gap_trace.jsonl") in stats["source"]["row_level_artifacts"]
 
 
 def test_normalize_channel_stats_prefers_topic_publish_stats_for_claim_grade_rows(tmp_path: Path) -> None:

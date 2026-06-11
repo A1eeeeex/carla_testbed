@@ -250,12 +250,25 @@ claim route. If only the startup route is observed, downstream gates must
 surface `claim_route_not_materialized` before interpreting Planning, Control,
 or actuation metrics as natural driving.
 
+The report uses an explicit route phase taxonomy: `startup`, `long_goal`,
+`claim`, and `unknown`. It records `raw_routing_phase` before compatibility
+resolution plus the configured scenario route, last routing request, last
+routing response, and latest Planning active route segment. A long goal or
+multi-road Apollo response can be promoted to `claim` only when its length,
+lane signature, start/goal, and snap/Frenet compatibility match the configured
+scenario route. Otherwise the route layer must remain failed with
+`route_identity_inconsistent`, `long_goal_not_compatible_with_scenario_route`,
+or `claim_route_not_materialized`.
+
 `apollo_link_health`, `apollo_chain_completion`, `apollo_module_consumption`,
 and `natural_driving_report.json` consume this report before route
 establishment. If the scenario route is about 230 m but Apollo reports a short
 startup route or a multi-road 648 m routing response, the route layer must fail
 with `claim_route_not_materialized` or `apollo_routing_length_mismatch` rather
 than allowing later control metrics to be interpreted as natural driving.
+`apollo_module_consumption_report.json` may still report that Planning consumed
+some routing response; that is module-consumption evidence, not proof that the
+configured scenario route was consumed.
 
 Planning materialization reports keep time domains explicit. Latency or
 freshness metrics are valid only when both sides use the same domain
@@ -263,6 +276,12 @@ freshness metrics are valid only when both sides use the same domain
 zero as-of join coverage, or missing topic rows produces `insufficient_data`
 freshness attribution; analyzers must not report localization/chassis stale
 counts as zero when freshness evidence is unavailable.
+Natural-driving summaries therefore record both overall Planning materialization
+and the filtered claim window. `planning_nonempty_ratio_filtered` can explain
+startup dilution, while `planning_nonempty_ratio_overall` and
+`route_establishment_source=planning_materialization` preserve the route
+establishment evidence. If planning materialization fails, the claim fails even
+when a filtered reference-line window looks healthy.
 
 ## Chain Completion
 

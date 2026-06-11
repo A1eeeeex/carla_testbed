@@ -653,6 +653,10 @@ Required run artifacts:
 - `analysis/route_health/route_health.json`.
 - `analysis/apollo_channel_health/apollo_channel_health_report.json`.
 - `analysis/localization_contract/localization_contract_report.json`.
+- `analysis/chassis_gt_contract/chassis_gt_contract_report.json`. The report
+  must be claim-grade for no-interference Apollo claims; a healthy chassis
+  channel alone is not enough because chassis speed, mode, gear, error code,
+  feedback, and timestamp alignment are Apollo input semantics.
 - `analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json` when
   `artifacts/apollo_hdmap_projection.jsonl` is available; otherwise
   reference-line hard gates remain `insufficient_data`.
@@ -660,13 +664,21 @@ Required run artifacts:
   scenario route length/start/goal/lane identity must be compatible with Apollo
   Routing output. A long warmup/debug route or mismatched Apollo route response
   blocks route establishment and cannot be hidden by later control activity.
+  The report also records `configured_scenario_route`, `last_routing_request`,
+  `last_routing_response`, and `latest_planning_active_route_segment`; all four
+  must identify the same claim route before lane-keep, curve, junction, or
+  traffic-light behavior is interpreted as Apollo natural driving.
 - `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`.
   Fallback merges from planning/control/timeseries artifacts must be
   timestamp/as-of joins within the configured tolerance, not index joins.
 - `analysis/planning_materialization/planning_materialization_report.json` for
   non-empty `ADCTrajectory` ratio, empty-reason histogram, and
   `route_establishment` status. Control rx/tx evidence does not replace this
-  report.
+  report. `natural_driving_report.json` should expose
+  `planning_nonempty_ratio_source`, `planning_nonempty_ratio_overall`, and
+  `planning_nonempty_ratio_filtered` so startup/warmup dilution is visible
+  without hiding a failed planning-materialization or route-establishment
+  contract.
 - `analysis/apollo_module_consumption/apollo_module_consumption_report.json`
   for Planning/Control consumption evidence, input timeout patterns,
   reference-line provider failures, prediction-not-ready logs, and empty

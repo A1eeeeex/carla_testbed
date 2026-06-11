@@ -155,6 +155,28 @@ def test_planning_large_header_gap_with_small_sim_gap_is_diagnosed_but_still_fai
     assert planning["sim_time_max_gap_ms"] == 50.0
 
 
+def test_planning_half_second_gap_warns_even_below_fail_threshold() -> None:
+    config, stats = load_fixture()
+    stats = deepcopy(stats)
+    stats["channels"]["/apollo/planning"].update(
+        {
+            "max_gap_ms": 530.0,
+            "sim_time_max_gap_ms": 850.0,
+            "gap_count_over_250ms": 110,
+            "sim_time_gap_count_over_250ms": 90,
+        }
+    )
+
+    report = analyze_apollo_channel_health(config, stats, scenario_class="lane_keep")
+
+    planning = report["channel_results"]["planning"]
+    assert report["status"] == "warn"
+    assert "planning" in report["planning_gap_warning_channels"]
+    assert "planning_gap_warn" in planning["issues"]
+    assert "planning_header_or_wall_gap_over_500ms" in planning["warnings"]
+    assert "planning_sim_time_gap_over_500ms" in planning["warnings"]
+
+
 def test_timestamp_and_sequence_non_monotonic_fail() -> None:
     config, stats = load_fixture()
     stats = deepcopy(stats)

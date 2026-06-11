@@ -92,6 +92,7 @@ def test_route_contract_detects_apollo_routing_length_mismatch(tmp_path: Path) -
     assert report["routing_length_ratio"] > 2.0
     assert "apollo_routing_length_mismatch" in report["blocking_reasons"]
     assert "apollo_routing_lane_sequence_mismatch" in report["blocking_reasons"]
+    assert "route_identity_inconsistent" in report["blocking_reasons"]
 
 
 def test_route_contract_passes_matching_lane_keep_route(tmp_path: Path) -> None:
@@ -182,6 +183,102 @@ def test_startup_route_cannot_materialize_claim_route(tmp_path: Path) -> None:
     assert report["startup_route_contract"]["status"] == "diagnostic_only"
     assert report["claim_route_contract"]["materialized"] is False
     assert "claim_route_not_materialized" in report["blocking_reasons"]
+
+
+def test_long_goal_route_mismatch_is_not_clean_claim_route(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "last_routing_total_length": 648.0,
+            "last_routing_lane_window_count": 17,
+            "last_routing_lane_window_signature": "15_1_1@66.9->307.6 | 13_1_-1@0->14.0 | 3_1_1@0->68.3",
+            "last_routing_unique_lane_signature": "15_1_1 | 13_1_-1 | 3_1_1",
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "long",
+                "routing_request_index": 2,
+                "routing_request_kind": "long_phase_route",
+                "reroute_reason": "long_phase_transition",
+                "goal_mode": "scenario_xy",
+                "goal_distance_m": 251.0,
+                "start_raw_x": 1.5,
+                "start_raw_y": -249.0,
+                "goal_raw_x": 3.3,
+                "goal_raw_y": 0.5,
+                "goal_projection": {
+                    "available": True,
+                    "distance_m": 2.9,
+                    "source_trusted_lane_centerline": False,
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "planning_header_sequence_num": 854,
+                "route_segment_total_length": 648.0,
+                "routing_lane_window_count": 17,
+                "routing_lane_window_signature": "15_1_1@66.9->307.6 | 13_1_-1@0->14.0 | 3_1_1@0->68.3",
+                "routing_unique_lane_signature": "15_1_1 | 13_1_-1 | 3_1_1",
+                "create_route_segments_status": "ready",
+            }
+        ],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "fail"
+    assert report["routing_phase"] == "long_goal"
+    assert report["raw_routing_phase"] == "long_goal"
+    assert "long_goal_not_compatible_with_scenario_route" in report["blocking_reasons"]
+    assert report["route_identity_status"] == "inconsistent"
+    assert "planning_active_route_segment_length_not_scenario_route" in report["route_identity_issues"]
+    assert report["last_routing_request"]["request_sequence"] == 2
+    assert report["latest_planning_active_route_segment"]["route_segment_total_length_m"] == 648.0
+    assert report["claim_route_contract"]["materialized"] is False
+
+
+def test_goal_near_threshold_warns_even_below_legacy_xy_threshold(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "last_routing_total_length": 232.0,
+            "last_routing_lane_window_count": 1,
+            "last_routing_lane_window_signature": "15_1_1@66.9->298.9",
+            "last_routing_unique_lane_signature": "15_1_1",
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "long",
+                "routing_request_index": 2,
+                "routing_request_kind": "long_phase_route",
+                "goal_raw_x": 2.0,
+                "goal_raw_y": -0.5,
+                "goal_projection": {
+                    "available": True,
+                    "distance_m": 2.9,
+                    "source_trusted_lane_centerline": False,
+                },
+            }
+        ],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "warn"
+    assert "apollo_routing_goal_near_threshold" in report["warnings"]
+    assert "apollo_routing_goal_lane_compatibility_unverified" in report["warnings"]
 
 
 def test_route_contract_cli_writes_report(tmp_path: Path) -> None:

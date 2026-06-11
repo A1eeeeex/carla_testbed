@@ -8,6 +8,9 @@ import yaml
 
 CHANNEL_HEALTH_CONFIG_SCHEMA_VERSION = "apollo_natural_driving_channels.v1"
 CHANNEL_HEALTH_REPORT_SCHEMA_VERSION = "apollo_channel_health_report.v1"
+PLANNING_WARN_MAX_GAP_MS = 500.0
+PLANNING_WARN_SIM_TIME_MAX_GAP_MS = 500.0
+PLANNING_WARN_GAP_COUNT_OVER_250MS = 0
 DEFAULT_TRAFFIC_LIGHT_SCENARIOS = {
     "traffic_light_red_stop",
     "traffic_light_green_go",
@@ -101,6 +104,7 @@ def analyze_apollo_channel_health(
     missing_optional_channels: list[str] = []
     low_rate_channels: list[str] = []
     gap_failures: list[str] = []
+    planning_gap_warning_channels: list[str] = []
     timestamp_failures: list[str] = []
     sequence_failures: list[str] = []
     stale_channels: list[str] = []
@@ -121,6 +125,8 @@ def analyze_apollo_channel_health(
             low_rate_channels.append(name)
         if "message_gap_too_large" in issues:
             gap_failures.append(name)
+        if "planning_gap_warn" in issues:
+            planning_gap_warning_channels.append(name)
         if "timestamp_non_monotonic" in issues and result.get("status") == "fail":
             timestamp_failures.append(name)
         if "sequence_non_monotonic" in issues and result.get("status") == "fail":
@@ -141,6 +147,7 @@ def analyze_apollo_channel_health(
         "missing_optional_channels": missing_optional_channels,
         "low_rate_channels": low_rate_channels,
         "gap_failures": gap_failures,
+        "planning_gap_warning_channels": planning_gap_warning_channels,
         "timestamp_failures": timestamp_failures,
         "sequence_failures": sequence_failures,
         "stale_channels": stale_channels,
@@ -151,6 +158,7 @@ def analyze_apollo_channel_health(
             "stats_schema_version": stats.get("schema_version"),
             "stats_created_at": stats.get("created_at"),
             "stats_path": stats.get("_source_path"),
+            "stats_source": stats.get("source"),
         },
         "interpretation_boundary": (
             "Channel health checks transport/rate/timestamp/gap evidence only; "
@@ -290,6 +298,24 @@ def _check_channel(
             if isinstance(sim_gap_ms, (int, float)) and sim_gap_ms <= max_allowed_gap:
                 result["warnings"].append(f"{name}_header_or_wall_gap_large_but_sim_time_gap_within_limit")
                 result["time_axis_diagnosis"] = "header_or_wall_time_gap_large_sim_time_gap_ok"
+
+    if name == "planning":
+        planning_warn_reasons: list[str] = []
+        if isinstance(max_gap_ms, (int, float)) and max_gap_ms > PLANNING_WARN_MAX_GAP_MS:
+            planning_warn_reasons.append("planning_header_or_wall_gap_over_500ms")
+        sim_gap_ms = entry.get("sim_time_max_gap_ms")
+        if isinstance(sim_gap_ms, (int, float)) and sim_gap_ms > PLANNING_WARN_SIM_TIME_MAX_GAP_MS:
+            planning_warn_reasons.append("planning_sim_time_gap_over_500ms")
+        gap_count_250 = entry.get("gap_count_over_250ms")
+        sim_gap_count_250 = entry.get("sim_time_gap_count_over_250ms")
+        if isinstance(gap_count_250, (int, float)) and gap_count_250 > PLANNING_WARN_GAP_COUNT_OVER_250MS:
+            planning_warn_reasons.append("planning_gap_count_over_250ms_nonzero")
+        if isinstance(sim_gap_count_250, (int, float)) and sim_gap_count_250 > PLANNING_WARN_GAP_COUNT_OVER_250MS:
+            planning_warn_reasons.append("planning_sim_time_gap_count_over_250ms_nonzero")
+        if planning_warn_reasons:
+            result["issues"].append("planning_gap_warn")
+            result["warnings"].extend(planning_warn_reasons)
+            result["status"] = _combine_status(result["status"], "warn")
 
     max_stale_count = config.get("max_stale_count")
     if isinstance(max_stale_count, (int, float)):
