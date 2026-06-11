@@ -767,7 +767,11 @@ Minimum pass thresholds for a claim-grade packet:
   non-`truth_input_closed_loop` variant metadata appears in
   `why_not_claimable` and blocks a capability claim.
 - runtime claim boundary is `pass`: typed config loaded, no legacy fallback,
-  and any config compatibility aliases are explicitly recorded.
+  and any config compatibility aliases are explicitly recorded. Claim review
+  packets should include the materialized
+  `analysis/runtime_claim_boundary/runtime_claim_boundary_report.json`; the
+  evidence-bundle virtual summary is an index/fallback, not a substitute for a
+  persisted claim-boundary artifact.
 - `localization_contract_report.json` is `pass`, claim-grade, uses sim-time,
   writes `header.frame_id=map`, uses verified VRP /
   rear-axle evidence, skips stale GT sample republish for claim-grade runs, and

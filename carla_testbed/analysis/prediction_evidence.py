@@ -251,6 +251,7 @@ def analyze_prediction_evidence(
         "blocking_capabilities": sorted(set(blocking_capabilities)),
         "missing_fields": sorted(set(missing_fields)),
         "warnings": sorted(set(warnings)),
+        "status": verdict,
         "verdict": verdict,
         "interpretation_boundary": (
             "/apollo/perception/obstacles is not /apollo/prediction. Perception obstacle "

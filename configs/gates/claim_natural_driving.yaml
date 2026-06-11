@@ -72,7 +72,7 @@ gate:
       required_for: claim
     - id: localization_contract_pass
       report: localization_contract
-      path: status
+      path: verdict.status
       op: "=="
       value: pass
       required_for: claim

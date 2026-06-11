@@ -152,7 +152,7 @@ def _rules_for_plan(plan: RunPlan) -> list[dict[str, Any]]:
         _rule("hdmap_projection_claim_grade", "apollo_hdmap_projection", "claim_grade", "==", True),
         _rule("hdmap_projection_pass", "apollo_hdmap_projection", "status", "==", "pass"),
         _rule("localization_contract_claim_grade", "localization_contract", "claim_grade", "==", True),
-        _rule("localization_contract_pass", "localization_contract", "status", "==", "pass"),
+        _rule("localization_contract_pass", "localization_contract", "verdict.status", "==", "pass"),
         _rule("chassis_gt_contract_claim_grade", "chassis_gt_contract", "claim_grade", "==", True),
         _rule("chassis_gt_contract_pass", "chassis_gt_contract", "status", "==", "pass"),
         _rule("reference_line_contract_pass", "apollo_reference_line_contract", "status", "==", "pass"),

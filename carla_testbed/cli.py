@@ -355,19 +355,22 @@ def _read_json_optional(path: Path) -> Mapping[str, Any] | None:
 def _config_declares_claim_profile(path: Path | None) -> bool:
     if path is None:
         return False
+    path_declares_claim = "claim" in str(path).lower()
     try:
         import yaml
 
         payload = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     except Exception:
-        return False
+        # A malformed claim-profile config must not escape into legacy fallback
+        # merely because the lightweight detector could not parse it.
+        return path_declares_claim
     if not isinstance(payload, Mapping):
-        return False
+        return path_declares_claim
     run = payload.get("run") if isinstance(payload.get("run"), Mapping) else {}
     profile_name = str(run.get("profile_name") or payload.get("profile_name") or "").lower()
     if bool(run.get("claim_profile") or payload.get("claim_profile")):
         return True
-    return "claim" in profile_name or "claim" in str(path).lower()
+    return path_declares_claim or "claim" in profile_name
 
 
 def _cmd_run(args: argparse.Namespace) -> int:

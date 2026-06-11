@@ -158,6 +158,8 @@ REPORT_CANDIDATES = {
     ),
 }
 
+RUNTIME_CLAIM_BOUNDARY_SCHEMA_VERSION = "runtime_claim_boundary.v1"
+
 
 def build_evidence_bundle(
     run_dir: str | Path,
@@ -243,9 +245,11 @@ def build_evidence_bundle(
 def write_evidence_bundle(bundle: Mapping[str, Any], out_dir: str | Path) -> dict[str, str]:
     output = Path(out_dir).expanduser()
     output.mkdir(parents=True, exist_ok=True)
+    payload = _bundle_with_materialized_runtime_boundary_path(bundle, output)
+    runtime_paths = _write_runtime_claim_boundary_report(payload, output)
     path = output / "evidence_bundle.json"
-    path.write_text(json.dumps(dict(bundle), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return {"evidence_bundle": str(path)}
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {"evidence_bundle": str(path), **runtime_paths}
 
 
 def build_and_write_evidence_bundle(
@@ -258,6 +262,89 @@ def build_and_write_evidence_bundle(
     bundle = build_evidence_bundle(root, plan=plan)
     output = Path(out_dir).expanduser() if out_dir is not None else root / "analysis" / "evidence_bundle"
     return write_evidence_bundle(bundle, output)
+
+
+def _bundle_with_materialized_runtime_boundary_path(
+    bundle: Mapping[str, Any],
+    output: Path,
+) -> dict[str, Any]:
+    payload = dict(bundle)
+    artifacts = {
+        str(name): dict(artifact) if isinstance(artifact, Mapping) else artifact
+        for name, artifact in (payload.get("artifacts") or {}).items()
+    }
+    boundary = artifacts.get("runtime_claim_boundary")
+    if isinstance(boundary, dict):
+        boundary["path"] = str(_runtime_claim_boundary_output_dir(output) / "runtime_claim_boundary_report.json")
+        artifacts["runtime_claim_boundary"] = boundary
+    payload["artifacts"] = artifacts
+    return payload
+
+
+def _write_runtime_claim_boundary_report(
+    bundle: Mapping[str, Any],
+    output: Path,
+) -> dict[str, str]:
+    artifacts = bundle.get("artifacts") if isinstance(bundle.get("artifacts"), Mapping) else {}
+    boundary = artifacts.get("runtime_claim_boundary") if isinstance(artifacts, Mapping) else None
+    if not isinstance(boundary, Mapping):
+        return {}
+    summary = boundary.get("summary") if isinstance(boundary.get("summary"), Mapping) else {}
+    report = {
+        "schema_version": RUNTIME_CLAIM_BOUNDARY_SCHEMA_VERSION,
+        "status": boundary.get("status") or summary.get("status") or "insufficient_data",
+        "claim_grade": (boundary.get("status") or summary.get("status")) == "pass",
+        "run_id": bundle.get("run_id"),
+        "scenario_id": bundle.get("scenario_id"),
+        "scenario_class": bundle.get("scenario_class"),
+        "route_id": bundle.get("route_id"),
+        "backend": bundle.get("backend"),
+        "typed_config_loaded": summary.get("typed_config_loaded"),
+        "legacy_fallback_used": summary.get("legacy_fallback_used"),
+        "runtime_dispatch_kind": summary.get("runtime_dispatch_kind"),
+        "config_aliases_used": list(summary.get("config_aliases_used") or []),
+        "blocking_reasons": list(summary.get("blocking_reasons") or []),
+        "warnings": list(summary.get("warnings") or []),
+        "missing_fields": list(summary.get("missing_fields") or []),
+        "source": dict(summary.get("source") or {}),
+        "claim_boundary": summary.get("claim_boundary"),
+    }
+    report_dir = _runtime_claim_boundary_output_dir(output)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    json_path = report_dir / "runtime_claim_boundary_report.json"
+    md_path = report_dir / "runtime_claim_boundary_summary.md"
+    json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    md_path.write_text(_runtime_claim_boundary_markdown(report), encoding="utf-8")
+    return {
+        "runtime_claim_boundary_report": str(json_path),
+        "runtime_claim_boundary_summary": str(md_path),
+    }
+
+
+def _runtime_claim_boundary_output_dir(output: Path) -> Path:
+    if output.name == "evidence_bundle":
+        return output.parent / "runtime_claim_boundary"
+    return output / "runtime_claim_boundary"
+
+
+def _runtime_claim_boundary_markdown(report: Mapping[str, Any]) -> str:
+    lines = [
+        "# Runtime Claim Boundary",
+        "",
+        f"- Status: `{report.get('status')}`",
+        f"- Claim grade: `{report.get('claim_grade')}`",
+        f"- Typed config loaded: `{report.get('typed_config_loaded')}`",
+        f"- Legacy fallback used: `{report.get('legacy_fallback_used')}`",
+        f"- Runtime dispatch kind: `{report.get('runtime_dispatch_kind')}`",
+        f"- Config aliases used: `{', '.join(report.get('config_aliases_used') or []) or 'none'}`",
+        f"- Blocking reasons: `{', '.join(report.get('blocking_reasons') or []) or 'none'}`",
+        f"- Missing fields: `{', '.join(report.get('missing_fields') or []) or 'none'}`",
+        f"- Warnings: `{', '.join(report.get('warnings') or []) or 'none'}`",
+        "",
+        str(report.get("claim_boundary") or ""),
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def _artifact_summary(root: Path, name: str, candidates: tuple[str, ...]) -> EvidenceArtifact:
@@ -292,6 +379,7 @@ def _runtime_claim_boundary_artifact(
         keys=("legacy_fallback_used", "legacy_runner_fallback_used", "legacy_dispatch_used"),
     )
     aliases = _first_recursive_value(manifest, summary, keys=("config_aliases_used", "config_compatibility_aliases_used"))
+    runtime_dispatch_kind = _first_recursive_value(manifest, summary, keys=("runtime_dispatch_kind",))
     warnings: list[str] = []
     blocking: list[str] = []
     missing: list[str] = []
@@ -319,10 +407,15 @@ def _runtime_claim_boundary_artifact(
             "status": status,
             "typed_config_loaded": typed_loaded,
             "legacy_fallback_used": legacy_fallback,
+            "runtime_dispatch_kind": runtime_dispatch_kind,
             "config_aliases_used": aliases or [],
             "blocking_reasons": blocking,
             "warnings": warnings,
             "missing_fields": missing,
+            "source": {
+                "manifest_path": str(root / "manifest.json") if (root / "manifest.json").exists() else None,
+                "summary_path": str(root / "summary.json") if (root / "summary.json").exists() else None,
+            },
             "claim_boundary": (
                 "Claim-grade runs must prove typed config loaded successfully and "
                 "legacy fallback was not used. Diagnostic legacy fallback remains allowed "

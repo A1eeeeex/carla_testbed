@@ -181,6 +181,7 @@ def analyze_apollo_control_handoff(
         "warnings": sorted(set(warnings)),
         "missing_inputs": missing_inputs,
         "missing_fields": missing_fields,
+        "status": verdict,
         "verdict": verdict,
         "source": source,
         "interpretation_boundary": (

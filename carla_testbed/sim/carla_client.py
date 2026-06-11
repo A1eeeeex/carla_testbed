@@ -3,9 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import time
 from pathlib import Path
-from typing import Optional
-
-import carla
+from typing import Any, Optional
 
 
 @dataclass
@@ -15,7 +13,12 @@ class CarlaClientManager:
     timeout: float = 30.0
     root: Optional[Path] = None
 
-    def create_client(self) -> carla.Client:
+    def create_client(self) -> Any:
+        try:
+            import carla  # type: ignore
+        except Exception as exc:
+            raise RuntimeError("CARLA Python package is required to create a CARLA client") from exc
+
         last_err: Optional[Exception] = None
         for attempt in range(1, 4):
             try:

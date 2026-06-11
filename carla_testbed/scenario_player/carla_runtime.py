@@ -520,7 +520,7 @@ def _fallback_transform_ahead(base_transform: Any, spawn_cfg: Mapping[str, Any])
     y = float(getattr(location, "y", 0.0) or 0.0) + dy
     z = float(getattr(location, "z", 0.0) or 0.0) + z_offset
     carla_mod = _try_import_carla()
-    if carla_mod is not None:
+    if _has_carla_transform_types(carla_mod):
         return carla_mod.Transform(
             carla_mod.Location(x=x, y=y, z=z),
             carla_mod.Rotation(
@@ -715,7 +715,7 @@ def _lane_change_yaw_hint_deg(action: Mapping[str, Any], raw_progress: float) ->
 
 def _make_transform(*, x: float, y: float, z: float, pitch: float, yaw: float, roll: float) -> Any:
     carla_mod = _try_import_carla()
-    if carla_mod is not None:
+    if _has_carla_transform_types(carla_mod):
         return carla_mod.Transform(
             carla_mod.Location(x=x, y=y, z=z),
             carla_mod.Rotation(pitch=pitch, yaw=yaw, roll=roll),
@@ -804,6 +804,10 @@ def _try_import_carla() -> Any | None:
         return carla
     except Exception:
         return None
+
+
+def _has_carla_transform_types(carla_mod: Any | None) -> bool:
+    return all(hasattr(carla_mod, name) for name in ("Transform", "Location", "Rotation"))
 
 
 def _tick_world_if_available(world: Any) -> None:

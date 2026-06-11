@@ -1,4 +1,5 @@
 __all__ = [
+    "carla_client",
     "CarlaClientManager",
     "CarlaWorldBringupResult",
     "connect_world_with_retry",
@@ -27,13 +28,22 @@ _LAZY_EXPORTS = {
     "spawn_with_retry": (".actors", "spawn_with_retry"),
 }
 
+_LAZY_MODULES = {
+    "carla_client": ".carla_client",
+}
+
 
 def __getattr__(name: str):
+    import importlib
+
+    if name in _LAZY_MODULES:
+        module = importlib.import_module(_LAZY_MODULES[name], __name__)
+        globals()[name] = module
+        return module
     try:
         module_name, attr_name = _LAZY_EXPORTS[name]
     except KeyError as exc:
         raise AttributeError(name) from exc
-    import importlib
 
     module = importlib.import_module(module_name, __name__)
     value = getattr(module, attr_name)

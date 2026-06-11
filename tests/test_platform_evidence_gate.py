@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from carla_testbed.evidence.bundle import build_evidence_bundle
+from carla_testbed.evidence.bundle import build_and_write_evidence_bundle, build_evidence_bundle
 from carla_testbed.evidence.gate_runner import run_gate
 from carla_testbed.platform.compiler import compile_run_plan, write_run_plan
 from carla_testbed.platform.registry import PlatformRegistry
@@ -102,6 +102,286 @@ def test_runtime_claim_boundary_missing_fields_is_insufficient_data(tmp_path: Pa
     assert boundary["status"] == "insufficient_data"
     assert set(boundary["summary"]["missing_fields"]) == {"typed_config_loaded", "legacy_fallback_used"}
 
+
+
+def _write_claim_grade_synthetic_run(run_dir: Path) -> None:
+    run_dir.mkdir(parents=True)
+    scenario_class = "lane_keep"
+    route_id = "lane097"
+    run_id = "synthetic_claim_pass"
+    manifest = {
+        "run_id": run_id,
+        "scenario_id": "lane_keep_097",
+        "scenario_class": scenario_class,
+        "route_id": route_id,
+        "backend": "apollo_cyberrt",
+        "typed_config_loaded": True,
+        "legacy_fallback_used": False,
+        "algorithm_variant_id": "apollo_10_0_carla_gt_town01_reference",
+        "algorithm_variant_manifest_path": "configs/algorithms/apollo_variant.carla_gt.example.yaml",
+        "online_config_path": "configs/examples/smoke.yaml",
+        "online_config_profile_name": "synthetic_claim",
+        "map": "Town01",
+        "transport_mode": "apollo_cyberrt_gt",
+        "transport_mode_source": "synthetic_test",
+        "truth_input": True,
+        "duration_s": 70.0,
+        "fixed_delta_seconds": 0.05,
+        "ticks": 1400,
+        "carla_world": {"loaded_map_name": "Town01", "matches_configured_town": True},
+    }
+    summary = {
+        "run_id": run_id,
+        "scenario_id": "lane_keep_097",
+        "scenario_class": scenario_class,
+        "route_id": route_id,
+        "backend": "apollo_cyberrt",
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (run_dir / "config.resolved.yaml").write_text("run_id: synthetic_claim_pass\n", encoding="utf-8")
+    (run_dir / "events.jsonl").write_text('{"event_type":"start"}\n', encoding="utf-8")
+    (run_dir / "route.json").write_text(json.dumps({"route_id": route_id}), encoding="utf-8")
+    fields = [
+        "sim_time",
+        "route_s",
+        "apollo_steer_raw",
+        "bridge_steer_mapped",
+        "carla_steer_applied",
+        "throttle_raw",
+        "throttle_mapped",
+        "throttle_applied",
+        "brake_raw",
+        "brake_mapped",
+        "brake_applied",
+        "lateral_guard_applied",
+        "trajectory_contract_guard_applied",
+    ]
+    (run_dir / "timeseries.csv").write_text(
+        ",".join(fields) + "\n" + ",".join("0" for _ in fields) + "\n",
+        encoding="utf-8",
+    )
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "topic_publish_stats.jsonl").write_text('{"ok":true}\n', encoding="utf-8")
+    (artifacts / "control_apply_trace.jsonl").write_text('{"ok":true}\n', encoding="utf-8")
+
+    def write_report(rel: str, payload: dict) -> None:
+        path = run_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    common_context = {"scenario_class": scenario_class, "route_id": route_id}
+    write_report(
+        "analysis/route_health/route_health.json",
+        {
+            "schema_version": "route_health.v1",
+            "status": "pass",
+            "route_id": route_id,
+            "route_source": "configured_route_file",
+            "evidence_level": "claim_grade_manifest_route",
+            "hard_gate_eligible": True,
+            "source": {
+                "manifest_path": "manifest.json",
+                "summary_path": "summary.json",
+                "timeseries_path": "timeseries.csv",
+                "route_path": "route.json",
+            },
+        },
+    )
+    (run_dir / "analysis/route_health/route_health.csv").write_text(
+        f"route_id,status\n{route_id},pass\n",
+        encoding="utf-8",
+    )
+    (run_dir / "analysis/route_health/curve_segments.csv").write_text("segment_id\n", encoding="utf-8")
+    (run_dir / "analysis/route_health/route_health_summary.md").write_text("ok\n", encoding="utf-8")
+    write_report(
+        "analysis/apollo_channel_health/apollo_channel_health_report.json",
+        {
+            "schema_version": "channel.v1",
+            "status": "pass",
+            **common_context,
+            "source": {
+                "config_path": "config.resolved.yaml",
+                "stats_path": "artifacts/topic_publish_stats.jsonl",
+            },
+        },
+    )
+    write_report(
+        "analysis/localization_contract/localization_contract_report.json",
+        {
+            "schema_version": "loc.v1",
+            "status": {"measurement_time_available": True},
+            "claim_grade": True,
+            "verdict": {"status": "pass"},
+            "source": {
+                "timeseries_path": "timeseries.csv",
+                "channel_stats_path": "artifacts/topic_publish_stats.jsonl",
+                "route_health_path": "analysis/route_health/route_health.json",
+            },
+        },
+    )
+    write_report(
+        "analysis/chassis_gt_contract/chassis_gt_contract_report.json",
+        {"schema_version": "chassis.v1", "status": "pass", "claim_grade": True},
+    )
+    write_report(
+        "analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json",
+        {"schema_version": "hd.v1", "status": "pass", "claim_grade": True},
+    )
+    write_report(
+        "analysis/apollo_route_contract/apollo_route_contract_report.json",
+        {"schema_version": "route_contract.v1", "status": "pass"},
+    )
+    write_report(
+        "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
+        {"schema_version": "refline.v1", "status": "pass", **common_context, "source": {"run_dir": "."}},
+    )
+    write_report(
+        "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "pm.v1",
+            "status": "pass",
+            "metrics": {"nonempty_trajectory_ratio": 0.95},
+            "route_establishment": {"route_established": True},
+        },
+    )
+    write_report(
+        "analysis/apollo_module_consumption/apollo_module_consumption_report.json",
+        {"schema_version": "amc.v1", "status": "pass"},
+    )
+    write_report(
+        "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
+        {"schema_version": "handoff.v1", "status": "pass", "verdict": "pass"},
+    )
+    write_report(
+        "analysis/control_health/control_health_report.json",
+        {
+            "schema_version": "ctrl.v1",
+            "status": "pass",
+            **common_context,
+            "source": {
+                "summary_path": "summary.json",
+                "manifest_path": "manifest.json",
+                "timeseries_path": "timeseries.csv",
+            },
+        },
+    )
+    write_report(
+        "analysis/control_attribution/control_attribution_report.json",
+        {"schema_version": "attr.v1", "status": "pass", "applied_control_source": "apollo_control"},
+    )
+    write_report(
+        "analysis/prediction_evidence/prediction_evidence_report.json",
+        {
+            "schema_version": "pred.v1",
+            "status": "pass",
+            "verdict": "pass",
+            "prediction_mode": "native_observed",
+        },
+    )
+    write_report(
+        "analysis/assist_ledger/assist_ledger.json",
+        {"schema_version": "assist.v1", "status": "pass", "blocking_assists": []},
+    )
+    write_report(
+        "analysis/apollo_link_health/apollo_link_health_report.json",
+        {"schema_version": "link.v1", "status": "pass"},
+    )
+    write_report(
+        "analysis/natural_driving/natural_driving_report.json",
+        {"schema_version": "natural.v1", "status": "pass"},
+    )
+    write_report(
+        "analysis/failure_timeline/failure_timeline_report.json",
+        {
+            "schema_version": "failure.v1",
+            "status": "pass",
+            **common_context,
+            "source": {
+                "manifest_path": "manifest.json",
+                "summary_path": "summary.json",
+                "events_path": "events.jsonl",
+                "timeseries_path": "timeseries.csv",
+                "route_health_path": "analysis/route_health/route_health.json",
+                "control_health_path": "analysis/control_health/control_health_report.json",
+            },
+        },
+    )
+    write_report(
+        "analysis/route_start_alignment/route_start_alignment_report.json",
+        {
+            "schema_version": "start.v1",
+            "status": "pass",
+            **common_context,
+            "source": {
+                "manifest_path": "manifest.json",
+                "summary_path": "summary.json",
+                "timeseries_path": "timeseries.csv",
+                "failure_timeline_path": "analysis/failure_timeline/failure_timeline_report.json",
+            },
+        },
+    )
+
+
+def test_claim_gate_can_pass_synthetic_claim_grade_reports(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_claim_grade_synthetic_run(run_dir)
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="town01/lane_keep_097",
+        recording="claim",
+        gate="claim_natural_driving",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    gate = run_gate(run_dir, plan=plan)
+
+    assert gate["status"] == "pass"
+    assert gate["can_claim_unassisted_natural_driving"] is True
+    assert all(rule["status"] == "pass" for rule in gate["rules"])
+
+
+def test_runtime_claim_boundary_rule_uses_synthesized_summary(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_claim_grade_synthetic_run(run_dir)
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="town01/lane_keep_097",
+        recording="claim",
+        gate="claim_natural_driving",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    gate = run_gate(run_dir, plan=plan)
+    runtime_rule = next(rule for rule in gate["rules"] if rule["id"] == "runtime_claim_boundary_pass")
+
+    assert runtime_rule["status"] == "pass"
+    assert runtime_rule["actual"] == "pass"
+
+
+def test_runtime_claim_boundary_report_is_materialized_with_evidence_bundle(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_claim_grade_synthetic_run(run_dir)
+    out_dir = tmp_path / "analysis" / "evidence_bundle"
+
+    outputs = build_and_write_evidence_bundle(run_dir, out_dir=out_dir)
+
+    report_path = Path(outputs["runtime_claim_boundary_report"])
+    bundle_path = Path(outputs["evidence_bundle"])
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    boundary = bundle["artifacts"]["runtime_claim_boundary"]
+
+    assert report_path.is_file()
+    assert report["schema_version"] == "runtime_claim_boundary.v1"
+    assert report["status"] == "pass"
+    assert report["claim_grade"] is True
+    assert report["typed_config_loaded"] is True
+    assert report["legacy_fallback_used"] is False
+    assert boundary["path"] == str(report_path)
 
 def test_gate_rule_fails_even_when_report_status_is_pass(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"

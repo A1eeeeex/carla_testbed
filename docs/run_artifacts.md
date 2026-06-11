@@ -145,6 +145,10 @@ run-local diagnostics include:
   is observed
 - `analysis/routing_response_decoded/routing_response_decoded_report.json` when
   the decoded routing response is normalized during postprocess
+- `analysis/runtime_claim_boundary/runtime_claim_boundary_report.json` when
+  platform evidence/gate analysis is run. This materializes the typed-config
+  and no-legacy-fallback boundary instead of relying only on the virtual
+  evidence-bundle summary.
 - `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`
 - `analysis/apollo_module_consumption/apollo_module_consumption_report.json`
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`

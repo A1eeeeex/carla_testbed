@@ -42,12 +42,22 @@ def _evaluate_rule(
     if not isinstance(artifact, Mapping):
         return _rule_result(rule_id, report_name, path, op, expected, None, "insufficient_data", "report artifact missing")
     report_path = artifact.get("path")
-    if not report_path:
-        return _rule_result(rule_id, report_name, path, op, expected, None, "insufficient_data", "report path missing")
-    report = _read_json(Path(str(report_path)))
+    artifact_summary = artifact.get("summary") if isinstance(artifact.get("summary"), Mapping) else {}
+    report: dict[str, Any] = {}
+    if report_path:
+        report = _read_json(Path(str(report_path)))
+    if not report and artifact_summary:
+        report = dict(artifact_summary)
     if not report:
-        return _rule_result(rule_id, report_name, path, op, expected, None, "insufficient_data", "report unreadable")
+        reason = "report unreadable" if report_path else "report path missing"
+        return _rule_result(rule_id, report_name, path, op, expected, None, "insufficient_data", reason)
     actual = _get_path(report, path)
+    if actual is None and artifact_summary:
+        # Virtual artifacts such as runtime_claim_boundary are synthesized by the
+        # bundle and may point at manifest.json for provenance.  Gate rules should
+        # still evaluate the synthesized summary, otherwise a claim-grade boundary
+        # can be indexed as pass but fail the rule as metric-missing.
+        actual = _get_path(artifact_summary, path)
     if op == "exists":
         passed = actual is not None
     elif actual is None:

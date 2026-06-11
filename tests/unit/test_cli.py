@@ -191,6 +191,17 @@ def test_run_dry_run_dispatches_legacy_followstop_config(tmp_path: Path) -> None
     assert (run_dir / "effective.yaml").exists()
 
 
+
+def test_malformed_claim_named_config_forbids_legacy_fallback(tmp_path: Path) -> None:
+    config_path = tmp_path / "town01_claim_probe.yaml"
+    config_path.write_text("run: [not valid", encoding="utf-8")
+
+    result = _run_cli("run", "--config", str(config_path), "--dry-run")
+
+    assert result.returncode == 2
+    assert "claim profile typed config load failed" in result.stderr
+    assert "falling back to legacy runner" not in result.stderr
+
 def test_claim_profile_forbids_legacy_fallback_when_typed_load_fails(tmp_path: Path) -> None:
     config_path = tmp_path / "town01_claim_probe.yaml"
     config_path.write_text(

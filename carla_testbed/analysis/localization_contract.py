@@ -253,6 +253,8 @@ def analyze_localization_contract(
         "lane_projection": lane_projection,
         "kinematics": kinematics,
         "status": status,
+        "status_verdict": verdict_status,
+        "claim_grade": verdict_status == "pass",
         "acceptance_checklist": _build_acceptance_checklist(
             channel=channel,
             time=time,
