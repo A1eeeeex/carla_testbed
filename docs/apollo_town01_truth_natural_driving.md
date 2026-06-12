@@ -772,6 +772,14 @@ Minimum pass thresholds for a claim-grade packet:
   `analysis/runtime_claim_boundary/runtime_claim_boundary_report.json`; the
   evidence-bundle virtual summary is an index/fallback, not a substitute for a
   persisted claim-boundary artifact.
+- A claim-profile typed run must dispatch through an explicit runtime boundary,
+  not legacy fallback. Town01 online claim probes use
+  `typed_apollo_claim_runtime`, which consumes the typed-resolved config and
+  invokes the existing transition backend. CI/minimal configs without a
+  runnable driver may use artifact-only `compat_apollo_cyber_gt_runtime`. In
+  both cases, missing `/apollo/routing_response`, Apollo HDMap projection,
+  localization, planning, or control evidence remains `insufficient_data`.
+  Runtime dispatch is necessary evidence, but not a natural-driving pass.
 - `localization_contract_report.json` is `pass`, claim-grade, uses sim-time,
   writes `header.frame_id=map`, uses verified VRP /
   rear-axle evidence, skips stale GT sample republish for claim-grade runs, and

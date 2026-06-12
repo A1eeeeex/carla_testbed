@@ -35,6 +35,7 @@ from carla_testbed.platform.plan import RunPlan
 from carla_testbed.platform.registry import PlatformRegistry, PlatformRegistryError
 from carla_testbed.record import RunArtifactStore, build_manifest, build_summary
 from carla_testbed.record.registry import default_recorder_registry
+from carla_testbed.runtime.apollo_compat import run_compat_apollo_cyber_gt_runtime
 from carla_testbed.utils.env import resolve_repo_root
 
 try:
@@ -451,6 +452,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.dry_run:
         print("[run] dry-run ok; typed runner not executed")
         return 0
+
+    if cfg.backend.name == "apollo_cyberrt" and (cfg.run.claim_profile or _config_declares_claim_profile(args.config)):
+        run_dir = _run_dir_for_config(cfg, args.run_dir)
+        result = run_compat_apollo_cyber_gt_runtime(
+            cfg,
+            config_path=args.config,
+            run_dir=run_dir,
+            resolved_config=_config_to_dict(cfg),
+            legacy_dispatch_requested=bool(args.legacy_dispatch),
+        )
+        print(f"[run] {result.message}", file=sys.stderr)
+        print(json.dumps({"run_dir": str(result.run_dir), "outputs": result.outputs}, indent=2, sort_keys=True))
+        return result.exit_code
 
     print(
         "[run] typed v0 runner is not wired to CARLA yet. "

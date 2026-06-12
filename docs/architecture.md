@@ -133,8 +133,14 @@ See `docs/backends.md` and `docs/apollo_mvp_bridge.md`.
 
 ## What Is Still Experimental
 
-- The typed v0 config path exists, but the full CARLA runner is not yet wired to
-  every typed config scenario.
+- The typed v0 config path exists. Claim-profile Apollo Town01 configs now
+  dispatch through `typed_apollo_claim_runtime` instead of silently falling into
+  legacy fallback or stopping at "runner not wired." This transition runtime
+  still reuses the existing `tbio` / `tools/apollo10_cyber_bridge` execution
+  component, but the input is a typed-resolved effective config and the manifest
+  records `legacy_fallback_used=false`. Missing online Apollo/CARLA evidence
+  remains `insufficient_data`; this is runtime wiring, not a behavior-success
+  claim.
 - `python -m carla_testbed smoke` is CI-friendly and does not start CARLA or
   Apollo.
 - `python -m carla_testbed run --config configs/examples/smoke.yaml --dry-run`

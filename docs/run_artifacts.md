@@ -149,6 +149,20 @@ run-local diagnostics include:
   platform evidence/gate analysis is run. This materializes the typed-config
   and no-legacy-fallback boundary instead of relying only on the virtual
   evidence-bundle summary.
+- Claim-profile typed configs enter an explicit Apollo claim-runtime dispatch
+  instead of a legacy fallback. Town01 online drivers use
+  `typed_apollo_claim_runtime`, which writes a typed-resolved legacy effective
+  config for the transition backend and then invokes the existing CARLA /
+  Apollo bridge runtime. Minimal CI configs without a runnable driver use the
+  artifact-only `compat_apollo_cyber_gt_runtime`. Either path must keep missing
+  routing, HDMap projection, localization, planning, or control evidence as
+  `insufficient_data`; dispatch alone cannot support a natural-driving claim.
+- The transition runtime must use a CARLA-compatible Python interpreter for the
+  online child process. It records the selected interpreter in
+  `artifacts/typed_transition_runtime.json`. If the requested run directory is
+  already non-empty before launch, the runtime fails preflight instead of
+  allowing the legacy runner to redirect evidence into a sibling `__NN`
+  directory.
 - `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`
 - `analysis/apollo_module_consumption/apollo_module_consumption_report.json`
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`

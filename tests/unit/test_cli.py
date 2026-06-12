@@ -228,3 +228,102 @@ def test_claim_profile_forbids_legacy_fallback_when_typed_load_fails(tmp_path: P
     assert result.returncode == 2
     assert "claim profile typed config load failed" in result.stderr
     assert "falling back to legacy runner" not in result.stderr
+
+
+def _write_apollo_claim_config(tmp_path: Path) -> Path:
+    config_path = tmp_path / "town01_apollo_route_only_claim_probe.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "run:",
+                "  id: claim_runtime",
+                "  max_ticks: 4",
+                "  fixed_dt_s: 0.05",
+                f"  output_root: {tmp_path.as_posix()}",
+                "  claim_profile: true",
+                "  profile_name: unit_claim_probe",
+                "sim:",
+                "  town: Town01",
+                "scenario:",
+                "  name: lane_keep_097",
+                "backend:",
+                "  name: apollo_cyberrt",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def test_claim_profile_dispatches_compat_apollo_runtime(tmp_path: Path) -> None:
+    config_path = _write_apollo_claim_config(tmp_path)
+    run_dir = tmp_path / "claim_run"
+
+    result = _run_cli(
+        "run",
+        "--config",
+        str(config_path),
+        "--run-dir",
+        str(run_dir),
+        "--legacy-dispatch",
+    )
+
+    assert result.returncode == 2
+    assert "compat_apollo_cyber_gt_runtime" in result.stderr
+    assert "typed v0 runner is not wired" not in result.stderr
+    assert "falling back to legacy runner" not in result.stderr
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    boundary = json.loads(
+        (run_dir / "analysis" / "runtime_claim_boundary" / "runtime_claim_boundary_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["typed_config_loaded"] is True
+    assert manifest["legacy_fallback_used"] is False
+    assert manifest["runtime_dispatch_kind"] == "compat_apollo_cyber_gt_runtime"
+    assert manifest["transport_mode"] == "apollo_cyberrt_gt"
+    assert manifest["compat_layers"] == ["legacy_route_health_transition"]
+    assert summary["success"] is False
+    assert summary["can_claim_unassisted_natural_driving"] is False
+    assert boundary["status"] == "pass"
+    assert (run_dir / "config.resolved.yaml").is_file()
+    assert (run_dir / "events.jsonl").is_file()
+    assert (run_dir / "timeseries.csv").is_file()
+    assert (run_dir / "analysis" / "artifact_completeness" / "artifact_completeness_report.json").is_file()
+
+
+def test_claim_profile_compat_runtime_keeps_runtime_evidence_insufficient(tmp_path: Path) -> None:
+    config_path = _write_apollo_claim_config(tmp_path)
+    run_dir = tmp_path / "claim_run"
+
+    result = _run_cli("run", "--config", str(config_path), "--run-dir", str(run_dir))
+
+    assert result.returncode == 2
+    routing = json.loads(
+        (run_dir / "analysis" / "routing_response_decoded" / "routing_response_decoded_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    hdmap = json.loads(
+        (run_dir / "analysis" / "apollo_hdmap_projection" / "apollo_hdmap_projection_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    localization = json.loads(
+        (run_dir / "analysis" / "localization_contract" / "localization_contract_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    handoff = json.loads(
+        (run_dir / "analysis" / "apollo_control_handoff" / "apollo_control_handoff_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert routing["status"] == "insufficient_data"
+    assert routing["lane_segment_count"] == 0
+    assert hdmap["status"] == "insufficient_data"
+    assert localization["verdict"]["status"] == "insufficient_data"
+    assert handoff["status"] == "insufficient_data"
+    assert "localization_runtime_samples_missing" in localization["verdict"]["blocking_reasons"]
