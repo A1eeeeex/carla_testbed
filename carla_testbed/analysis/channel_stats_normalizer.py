@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, Mapping
 
 CHANNEL_STATS_SCHEMA_VERSION = "channel_stats.v1"
+NORMALIZED_CHANNEL_STATS_RELATIVE_PATH = Path(
+    "analysis/channel_stats_normalized/channel_stats_normalized.json"
+)
 
 CHANNEL_MAP = {
     "localization": ("/apollo/localization/pose", "loc_count"),
@@ -91,6 +94,21 @@ def bridge_stats_to_channel_stats(
     }
 
 
+def normalized_channel_stats_path(run_dir: str | Path) -> Path:
+    return Path(run_dir).expanduser() / NORMALIZED_CHANNEL_STATS_RELATIVE_PATH
+
+
+def channel_stats_candidate_paths(run_dir: str | Path) -> tuple[Path, ...]:
+    root = Path(run_dir).expanduser()
+    return (
+        normalized_channel_stats_path(root),
+        root / "channel_stats.json",
+        root / "artifacts" / "channel_stats.json",
+        root / "artifacts" / "cyber_channel_stats.json",
+        root / "analysis" / "channel_stats.json",
+    )
+
+
 def normalize_channel_stats_for_run(run_dir: str | Path, *, output_path: str | Path | None = None) -> dict[str, Any] | None:
     root = Path(run_dir).expanduser()
     bridge_stats_path = discover_bridge_stats_path(root)
@@ -111,6 +129,24 @@ def normalize_channel_stats_for_run(run_dir: str | Path, *, output_path: str | P
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(stats, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     stats["_output_path"] = str(target)
+    if output_path is None:
+        normalized_target = normalized_channel_stats_path(root)
+        normalized_target.parent.mkdir(parents=True, exist_ok=True)
+        normalized_payload = dict(stats)
+        normalized_payload["_normalized_output_path"] = str(normalized_target)
+        normalized_payload.setdefault("source", {}).setdefault(
+            "normalization_boundary",
+            (
+                "Normalized channel stats combine bridge counters and row-level artifacts. "
+                "Counter-derived channels prove runtime observation, not promotion-grade "
+                "message health unless row-level samples are present."
+            ),
+        )
+        normalized_target.write_text(
+            json.dumps(normalized_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        stats["_normalized_output_path"] = str(normalized_target)
     return stats
 
 

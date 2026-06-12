@@ -569,6 +569,47 @@ def test_claim_pack_includes_row_level_evidence_when_present(tmp_path: Path) -> 
         assert json.loads(sample.read().decode("utf-8")) == {"ok": True}
 
 
+def test_transition_claim_pack_declares_source_context_requirements(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_fake_run(run_dir)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest.update(
+        {
+            "runtime_dispatch_kind": "typed_apollo_claim_runtime",
+            "transport_mode": "apollo_cyberrt_gt_over_ros2_transition",
+            "compat_layers": ["ros2_gt_transition", "legacy_route_health_transition"],
+        }
+    )
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    out = tmp_path / "claim.tar.gz"
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "carla_testbed",
+            "pack",
+            "--run-dir",
+            str(run_dir),
+            "--out",
+            str(out),
+            "--profile",
+            "claim",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with tarfile.open(out, "r:gz") as archive:
+        manifest_payload = json.loads(
+            archive.extractfile("run/package_manifest.json").read().decode("utf-8")
+        )
+
+    assert "examples/" in manifest_payload["source_context_requirements"]
+    assert "configs/io/" in manifest_payload["source_context_requirements"]
+
+
 def test_claim_pack_marks_fixed_scene_summary_only_when_row_level_missing(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_fake_run(run_dir)

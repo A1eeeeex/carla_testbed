@@ -75,7 +75,16 @@ def test_normalize_channel_stats_for_run_writes_file(tmp_path: Path) -> None:
 
     assert stats is not None
     assert (run_dir / "channel_stats.json").is_file()
+    assert (
+        run_dir
+        / "analysis"
+        / "channel_stats_normalized"
+        / "channel_stats_normalized.json"
+    ).is_file()
     assert stats["_output_path"] == str(run_dir / "channel_stats.json")
+    assert stats["_normalized_output_path"] == str(
+        run_dir / "analysis" / "channel_stats_normalized" / "channel_stats_normalized.json"
+    )
 
 
 def test_normalize_channel_stats_prefers_timeseries_span_over_absolute_sim_stamp(tmp_path: Path) -> None:

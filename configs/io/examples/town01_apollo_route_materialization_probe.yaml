@@ -1,0 +1,40 @@
+# Apollo Town01 route materialization probe.
+#
+# Purpose:
+# - Run long enough for startup delay, routing request, routing response, and
+#   Planning materialization evidence to appear.
+# - Keep lane-follow fallback disabled so missing route/reference-line evidence
+#   remains visible instead of being hidden by helper behavior.
+# - This is still a diagnostic probe, not a natural-driving pass profile.
+extends: town01_apollo_route_only_claim_probe.yaml
+
+run:
+  claim_profile: true
+  profile_name: town01_apollo_route_materialization_probe
+  max_ticks: 600
+  fixed_dt_s: 0.05
+  materialization_probe: true
+  target_runtime_s: 30.0
+
+reports:
+  require_route_materialization: true
+  write_channel_stats_normalized: true
+  write_planning_materialization: true
+  claim_boundary: diagnostic_route_materialization_only
+
+algo:
+  apollo:
+    routing:
+      startup_route_enabled: false
+      send_action: false
+      send_lane_follow: false
+      auto_enable_lane_follow_fallback: false
+      send_routing_request: true
+      goal_mode: scenario_xy
+      snap_goal_to_lane: true
+      snap_allow_untrusted_source: false
+      use_long_goal_after_move: false
+      defer_long_goal_until_planning_ready: false
+      defer_long_goal_until_route_debug_ready: false
+      freeze_after_success: true
+      freeze_after_long_route_success_only: false

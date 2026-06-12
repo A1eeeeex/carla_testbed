@@ -877,19 +877,36 @@ def _ensure_channel_health(
         and _channel_health_report_reusable(existing, run_dir=run_dir, scenario_class=scenario_class)
     ):
         return {"status": "existing", "path": str(existing)}
-    stats_path = _find_first(run_dir, ["channel_stats.json", "artifacts/channel_stats.json"])
+    stats_path = _find_first(
+        run_dir,
+        [
+            "analysis/channel_stats_normalized/channel_stats_normalized.json",
+            "channel_stats.json",
+            "artifacts/channel_stats.json",
+        ],
+    )
     generated_channel_stats = None
     if refresh and _channel_stats_refreshable(stats_path):
         regenerated = normalize_channel_stats_for_run(run_dir)
         if regenerated is not None:
             generated_channel_stats = regenerated
             output_path = regenerated.get("_output_path")
-            stats_path = Path(str(output_path)) if output_path else run_dir / "channel_stats.json"
+            normalized_output = regenerated.get("_normalized_output_path")
+            stats_path = (
+                Path(str(normalized_output))
+                if normalized_output
+                else (Path(str(output_path)) if output_path else run_dir / "channel_stats.json")
+            )
     if stats_path is None:
         generated_channel_stats = normalize_channel_stats_for_run(run_dir)
         if generated_channel_stats is not None:
             output_path = generated_channel_stats.get("_output_path")
-            stats_path = Path(str(output_path)) if output_path else run_dir / "channel_stats.json"
+            normalized_output = generated_channel_stats.get("_normalized_output_path")
+            stats_path = (
+                Path(str(normalized_output))
+                if normalized_output
+                else (Path(str(output_path)) if output_path else run_dir / "channel_stats.json")
+            )
     if stats_path is None:
         reusable_report = _existing_channel_health_report(run_dir)
         if reusable_report is not None and _channel_health_report_reusable(

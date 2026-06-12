@@ -580,7 +580,12 @@ def test_generated_localization_contract_uses_postprocess_channel_stats_source(
     )
 
     assert (lane / "channel_stats.json").is_file()
-    assert localization["source"]["channel_stats_path"].endswith("lane_keep_097/channel_stats.json")
+    assert (
+        lane / "analysis" / "channel_stats_normalized" / "channel_stats_normalized.json"
+    ).is_file()
+    assert localization["source"]["channel_stats_path"].endswith(
+        "lane_keep_097/analysis/channel_stats_normalized/channel_stats_normalized.json"
+    )
     assert "localization_contract.source.channel_stats_path" not in lane_result["artifact_completeness"][
         "invalid_report_source_fields"
     ]

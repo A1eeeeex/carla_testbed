@@ -156,6 +156,13 @@ pass. Modules with `current_evidence_status=insufficient_data` or
 `hard_gate_eligible=false` block their listed capabilities until the required
 artifacts exist.
 
+`configs/reference/apollo_link_evidence_index.yaml` is the companion runtime
+evidence checklist. The replacement matrix answers "what is native, GT-replaced,
+or bypassed by design"; the evidence index answers "which artifacts must exist
+for a reviewer to inspect this run." Neither file can turn a run into a
+natural-driving pass without `natural_driving_report.json` and the per-link
+contract reports.
+
 ## Machine Checks
 
 Load and validate the reference chain:

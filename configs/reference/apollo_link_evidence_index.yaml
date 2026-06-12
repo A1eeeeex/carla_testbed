@@ -1,0 +1,64 @@
+schema_version: apollo_link_evidence_index.v1
+variant: apollo_10_0_carla_gt_town01_reference
+description: >
+  Minimum artifact index for Apollo Town01 truth-input review. This file is an
+  evidence checklist only; it does not mark any run as pass.
+
+runtime_modes:
+  typed_transition:
+    transport_mode: apollo_cyberrt_gt_over_ros2_transition
+    compat_layers:
+      - ros2_gt_transition
+      - legacy_route_health_transition
+    required_source_paths_for_review:
+      - examples/
+      - configs/io/
+      - carla_testbed/runtime/
+      - tbio/
+      - tools/apollo10_cyber_bridge/
+
+links:
+  typed_dispatch:
+    required_artifacts:
+      - analysis/runtime_claim_boundary/runtime_claim_boundary_report.json
+      - manifest.json
+      - summary.json
+    claim_boundary: wiring_only
+  channel_health:
+    required_artifacts:
+      - analysis/channel_stats_normalized/channel_stats_normalized.json
+      - channel_stats.json
+      - analysis/apollo_channel_health/apollo_channel_health_report.json
+    claim_boundary: row_level_required_for_promotion_grade
+  routing_response:
+    required_artifacts:
+      - artifacts/routing_response_decoded.jsonl
+      - analysis/routing_response_decoded/routing_response_decoded_report.json
+    claim_boundary: missing_or_undecoded_is_insufficient_data
+  hdmap_projection:
+    required_artifacts:
+      - artifacts/apollo_hdmap_projection.jsonl
+      - analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json
+    claim_boundary: only_source_apollo_hdmap_api_rows_are_claim_grade
+  planning_materialization:
+    required_artifacts:
+      - artifacts/planning_topic_debug.jsonl
+      - analysis/planning_materialization/planning_materialization_report.json
+    status_values:
+      - missing
+      - observed_empty
+      - observed_reference_line_missing
+      - observed_nonempty
+    claim_boundary: observed_nonempty_is_necessary_not_sufficient
+  control_attribution:
+    required_artifacts:
+      - artifacts/control_decode_debug.jsonl
+      - artifacts/control_apply_trace.jsonl
+      - analysis/control_attribution/control_attribution_report.json
+    claim_boundary: raw_mapped_applied_required_before_control_root_cause
+  natural_driving:
+    required_artifacts:
+      - natural_driving_report.json
+      - analysis/apollo_link_health/apollo_link_health_report.json
+      - analysis/assist_ledger/assist_ledger.json
+    claim_boundary: report_required_and_assist_clean

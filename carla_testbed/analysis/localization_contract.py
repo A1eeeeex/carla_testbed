@@ -15,6 +15,10 @@ from carla_testbed.analysis.apollo_hdmap_projection import (
     summarize_apollo_hdmap_projection,
 )
 from carla_testbed.analysis.localization_channel_stats import build_localization_channel_stats
+from carla_testbed.analysis.channel_stats_normalizer import (
+    channel_stats_candidate_paths,
+    normalize_channel_stats_for_run,
+)
 
 REPORT_SCHEMA_VERSION = "apollo_localization_contract.v1"
 LOCALIZATION_CHANNEL = "/apollo/localization/pose"
@@ -301,6 +305,13 @@ def analyze_localization_contract_files(
     )
     timeseries = _read_timeseries(source.get("timeseries_path"))
     run_dir_path = source.get("run_dir")
+    if run_dir_path is not None and source.get("channel_stats_path") is None:
+        generated_stats = normalize_channel_stats_for_run(run_dir_path)
+        if generated_stats is not None:
+            normalized_output = generated_stats.get("_normalized_output_path")
+            output_path = generated_stats.get("_output_path")
+            source["channel_stats_path"] = Path(str(normalized_output or output_path))
+            source["channel_stats_selection_reason"] = "generated_normalized_channel_stats_from_run_artifacts"
     if run_dir_path is not None and not explicit_timeseries_path:
         debug_timeseries_path = _find_first(
             run_dir_path,
@@ -1351,7 +1362,7 @@ def _resolve_inputs(
         )
         source["channel_stats_path"] = channel_stats_path or _find_first(
             run_dir,
-            ["channel_stats.json", "artifacts/channel_stats.json", "analysis/channel_stats.json"],
+            [str(path.relative_to(run_dir)) for path in channel_stats_candidate_paths(run_dir)],
         )
         source["route_health_path"] = route_health_path or _find_first(
             run_dir,

@@ -110,7 +110,8 @@ def test_typed_transition_backend_uses_resolved_config_and_preserves_reports(
     )
     assert manifest["runtime_dispatch_kind"] == "typed_apollo_claim_runtime"
     assert manifest["legacy_fallback_used"] is False
-    assert manifest["compat_layers"] == ["legacy_route_health_transition"]
+    assert manifest["compat_layers"] == ["ros2_gt_transition", "legacy_route_health_transition"]
+    assert manifest["transport_mode"] == "apollo_cyberrt_gt_over_ros2_transition"
     assert manifest["typed_runtime_effective_config_path"] == "typed_runtime.effective_legacy.yaml"
     assert summary["runtime_dispatch_kind"] == "typed_apollo_claim_runtime"
     assert summary["can_claim_unassisted_natural_driving"] is False

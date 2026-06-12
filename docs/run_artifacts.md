@@ -445,9 +445,25 @@ available:
 - `artifacts/traffic_flow_events.jsonl`
 - `artifacts/walker_spawn_candidates.jsonl`
 
+Channel health analyzers should prefer
+`analysis/channel_stats_normalized/channel_stats_normalized.json` when present.
+The root-level `channel_stats.json` remains a compatibility copy. Counter-only
+channels from `cyber_bridge_stats.json` prove runtime observation but are not
+promotion-grade channel evidence unless row-level timestamped samples are also
+present.
+
+`artifacts/apollo_hdmap_projection.jsonl` has three different evidence states:
+missing file is `artifact_missing`, existing zero-row file is `artifact_empty`,
+and non-empty rows are `projection_rows_present`. Only rows with
+`source=apollo_hdmap_api` can support claim-grade HDMap/reference-line evidence.
+
 The archive contains `package_manifest.json`, which records included files,
 omitted large artifacts, missing required row-level evidence, and
-`claim_reproducibility_level`. When row-level JSONL evidence is present, the
+`claim_reproducibility_level`. For typed transition runs it also records
+`source_context_requirements` such as `examples/`, `configs/io/`,
+`carla_testbed/runtime/`, `tbio/`, and `tools/apollo10_cyber_bridge/` so an
+external review pack can include the source paths that produced the artifacts.
+When row-level JSONL evidence is present, the
 archive also contains `row_level_evidence_index.json` plus
 `row_level_samples/**/*.head.jsonl` and `row_level_samples/**/*.tail.jsonl`.
 The index records each sampled JSONL file's row count, size, sha256, time range,

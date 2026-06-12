@@ -148,6 +148,7 @@ def package_run_evidence(
             "claim_reproducibility_level": reproducibility,
             "status": status,
             "row_level_evidence_index": "row_level_evidence_index.json" if row_level_index else None,
+            "source_context_requirements": _source_context_requirements(root),
             "claim_boundary": (
                 "Package completeness is review evidence only. It cannot turn a run into "
                 "natural-driving pass without gate_report.json and natural_driving_report.json."
@@ -164,6 +165,43 @@ def package_run_evidence(
         claim_reproducibility_level=reproducibility,
         status=status,
     )
+
+
+def _source_context_requirements(root: Path) -> list[str]:
+    manifest = _read_json(root / "manifest.json")
+    summary = _read_json(root / "summary.json")
+    runtime_dispatch = str(
+        manifest.get("runtime_dispatch_kind")
+        or summary.get("runtime_dispatch_kind")
+        or ""
+    )
+    transport = str(manifest.get("transport_mode") or summary.get("transport_mode") or "")
+    compat_layers = [str(item) for item in (manifest.get("compat_layers") or [])]
+    transition = (
+        runtime_dispatch == "typed_apollo_claim_runtime"
+        or "ros2_gt_transition" in compat_layers
+        or "legacy_route_health_transition" in compat_layers
+        or transport == "apollo_cyberrt_gt_over_ros2_transition"
+    )
+    if not transition:
+        return []
+    return [
+        "examples/",
+        "configs/io/",
+        "carla_testbed/runtime/",
+        "tbio/",
+        "tools/apollo10_cyber_bridge/",
+    ]
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _candidate_files(root: Path, *, profile: str) -> list[Path]:

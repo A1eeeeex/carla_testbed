@@ -203,6 +203,12 @@ def analyze_planning_materialization_files(
         else None
     )
     longest_empty_streak = _longest_empty_streak(planning_rows)
+    materialization_status = _materialization_status(
+        planning_message_count=planning_message_count,
+        nonempty_count=nonempty_count,
+        missing_fields=missing_fields,
+        empty_reason_histogram=empty_reason_histogram,
+    )
     verdict = _verdict(nonempty_ratio, missing_fields)
     blocking_reasons: list[str] = []
     if verdict == "fail":
@@ -248,6 +254,8 @@ def analyze_planning_materialization_files(
             summary_payload.get("scenario_class") or bridge_payload.get("scenario_class")
         ),
         "planning_message_count": planning_message_count,
+        "materialization_status": materialization_status,
+        "materialization_observation_status": materialization_status,
         "nonempty_trajectory_count": nonempty_count,
         "empty_trajectory_count": empty_count,
         "nonempty_trajectory_ratio": nonempty_ratio,
@@ -255,6 +263,7 @@ def analyze_planning_materialization_files(
         "after_localization_chassis_ready_nonempty_ratio": after_loc_chassis_ready_ratio,
         "metrics": {
             "planning_message_count": planning_message_count,
+            "materialization_status": materialization_status,
             "nonempty_trajectory_count": nonempty_count,
             "empty_trajectory_count": empty_count,
             "nonempty_trajectory_ratio": nonempty_ratio,
@@ -320,6 +329,7 @@ def planning_materialization_summary_md(report: Mapping[str, Any]) -> str:
         "# Apollo Planning Materialization",
         "",
         f"- Verdict: {report.get('verdict')}",
+        f"- Materialization status: {report.get('materialization_status')}",
         f"- Planning messages: {report.get('planning_message_count')}",
         f"- Non-empty trajectories: {report.get('nonempty_trajectory_count')}",
         f"- Non-empty ratio: {_fmt_ratio(report.get('nonempty_trajectory_ratio'))}",
@@ -339,6 +349,27 @@ def planning_materialization_summary_md(report: Mapping[str, Any]) -> str:
         for key, value in histogram.items():
             lines.append(f"- {key}: {value}")
     return "\n".join(lines) + "\n"
+
+
+def _materialization_status(
+    *,
+    planning_message_count: int,
+    nonempty_count: int,
+    missing_fields: Sequence[str],
+    empty_reason_histogram: Mapping[str, Any],
+) -> str:
+    if planning_message_count <= 0 and "planning_topic_debug_or_summary" in set(missing_fields):
+        return "missing"
+    if planning_message_count <= 0:
+        return "missing"
+    if nonempty_count > 0:
+        return "observed_nonempty"
+    reference_missing = _int_or_none(
+        empty_reason_histogram.get("reference_line_provider_not_ready")
+    )
+    if reference_missing is not None and reference_missing > 0:
+        return "observed_reference_line_missing"
+    return "observed_empty"
 
 
 def _input_freshness_attribution(

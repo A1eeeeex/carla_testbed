@@ -29,9 +29,25 @@ def test_missing_projection_is_insufficient_data(tmp_path: Path) -> None:
     assert report["schema_version"] == HDMAP_PROJECTION_REPORT_SCHEMA_VERSION
     assert report["status"] == "insufficient_data"
     assert report["claim_grade"] is False
+    assert report["artifact_status"] == "artifact_missing"
     assert report["artifact_file_exists"] is False
     assert "apollo_hdmap_projection_missing" in report["warnings"]
     assert "apollo_hdmap_projection" in report["missing_fields"]
+
+
+def test_empty_projection_artifact_is_distinct_from_missing(tmp_path: Path) -> None:
+    path = tmp_path / "apollo_hdmap_projection.jsonl"
+    path.write_text("", encoding="utf-8")
+
+    report = analyze_apollo_hdmap_projection_file(path)
+
+    assert report["status"] == "insufficient_data"
+    assert report["claim_grade"] is False
+    assert report["artifact_status"] == "artifact_empty"
+    assert report["artifact_file_exists"] is True
+    assert report["projection"]["file_present"] is True
+    assert "apollo_hdmap_projection_empty" in report["warnings"]
+    assert "apollo_hdmap_projection_rows" in report["missing_fields"]
 
 
 def test_unofficial_projection_rows_are_not_claim_grade(tmp_path: Path) -> None:

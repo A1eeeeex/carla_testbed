@@ -5,6 +5,11 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from carla_testbed.analysis.channel_stats_normalizer import (
+    channel_stats_candidate_paths,
+    normalize_channel_stats_for_run,
+)
+
 REPORT_SCHEMA_VERSION = "chassis_gt_contract.v1"
 CHASSIS_CHANNEL = "/apollo/canbus/chassis"
 DEFAULT_MESSAGE_TYPE = "Chassis"
@@ -44,13 +49,16 @@ def analyze_chassis_gt_contract_files(
         )
         channel_stats_path = channel_stats_path or _find_first(
             root,
-            (
-                "channel_stats.json",
-                "artifacts/channel_stats.json",
-                "artifacts/cyber_channel_stats.json",
-                "artifacts/cyber_bridge_stats.json",
-            ),
+            tuple(str(path.relative_to(root)) for path in channel_stats_candidate_paths(root))
+            + ("artifacts/cyber_bridge_stats.json",),
         )
+        if channel_stats_path is None:
+            generated_stats = normalize_channel_stats_for_run(root)
+            if generated_stats is not None:
+                channel_stats_path = (
+                    generated_stats.get("_normalized_output_path")
+                    or generated_stats.get("_output_path")
+                )
         summary_path = summary_path or _find_first(root, ("summary.json",))
         manifest_path = manifest_path or _find_first(root, ("manifest.json",))
     return analyze_chassis_gt_contract(

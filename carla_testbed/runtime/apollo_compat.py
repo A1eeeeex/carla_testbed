@@ -21,6 +21,7 @@ from carla_testbed.analysis.artifact_completeness import (
     check_run_artifact_completeness,
     write_run_artifact_completeness_report,
 )
+from carla_testbed.analysis.channel_stats_normalizer import normalize_channel_stats_for_run
 from carla_testbed.analysis.routing_response_decoded import (
     read_routing_response_decoded,
     write_routing_response_decoded_report,
@@ -32,7 +33,7 @@ from carla_testbed.record.artifact_store import build_carla_world_identity
 
 COMPAT_APOLLO_CYBER_GT_RUNTIME = "compat_apollo_cyber_gt_runtime"
 TYPED_APOLLO_CLAIM_RUNTIME = "typed_apollo_claim_runtime"
-APOLLO_CYBERRT_GT_TRANSPORT = "apollo_cyberrt_gt"
+APOLLO_CYBERRT_GT_TRANSPORT = "apollo_cyberrt_gt_over_ros2_transition"
 APOLLO_VARIANT_ID = "apollo_10_0_carla_gt_town01_reference"
 APOLLO_VARIANT_MANIFEST = "configs/algorithms/apollo_variant.carla_gt.example.yaml"
 
@@ -676,7 +677,7 @@ def _merge_manifest_after_transition(
             "legacy_fallback_used": False,
             "runtime_dispatch_kind": TYPED_APOLLO_CLAIM_RUNTIME,
             "runtime_execution_mode": "transition_backend",
-            "compat_layers": ["legacy_route_health_transition"],
+            "compat_layers": ["ros2_gt_transition", "legacy_route_health_transition"],
             "typed_runtime_effective_config_path": str(legacy_effective_path.relative_to(root)),
             "algorithm_variant_id": existing.get("algorithm_variant_id") or APOLLO_VARIANT_ID,
             "algorithm_variant_manifest_path": existing.get("algorithm_variant_manifest_path")
@@ -1125,6 +1126,15 @@ def _write_secondary_reports(
     hdmap_report.update(common)
     if overwrite or not (root / "analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json").exists():
         outputs.update(write_apollo_hdmap_projection_report(hdmap_report, root / "analysis/apollo_hdmap_projection"))
+
+    normalized_stats = normalize_channel_stats_for_run(root)
+    if normalized_stats is not None:
+        output_path = normalized_stats.get("_output_path")
+        normalized_output_path = normalized_stats.get("_normalized_output_path")
+        if output_path:
+            outputs["channel_stats"] = str(output_path)
+        if normalized_output_path:
+            outputs["channel_stats_normalized"] = str(normalized_output_path)
 
     report_specs = {
         "analysis/planning_materialization/planning_materialization_report.json": {

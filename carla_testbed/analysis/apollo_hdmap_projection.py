@@ -35,14 +35,16 @@ def read_apollo_hdmap_projection(path: str | Path | None) -> list[dict[str, Any]
 
 def analyze_apollo_hdmap_projection_file(path: str | Path | None) -> dict[str, Any]:
     artifact_path = Path(path).expanduser() if path else None
+    artifact_file_exists = bool(artifact_path and artifact_path.exists())
     rows = read_apollo_hdmap_projection(artifact_path)
-    summary = summarize_apollo_hdmap_projection(rows)
+    summary = summarize_apollo_hdmap_projection(rows, artifact_file_exists=artifact_file_exists)
     return {
         "schema_version": HDMAP_PROJECTION_REPORT_SCHEMA_VERSION,
         "status": summary["status"],
         "claim_grade": summary["claim_grade"],
+        "artifact_status": summary["artifact_status"],
         "artifact_path": str(artifact_path) if artifact_path else None,
-        "artifact_file_exists": bool(artifact_path and artifact_path.exists()),
+        "artifact_file_exists": artifact_file_exists,
         "projection": summary,
         "blocking_reasons": list(summary.get("blocking_reasons") or []),
         "warnings": list(summary.get("warnings") or []),
@@ -76,6 +78,7 @@ def apollo_hdmap_projection_summary_md(report: Mapping[str, Any]) -> str:
             "",
             f"- Status: `{report.get('status')}`",
             f"- Claim-grade: `{report.get('claim_grade')}`",
+            f"- Artifact status: `{report.get('artifact_status')}`",
             f"- Artifact: `{report.get('artifact_path')}`",
             f"- Artifact exists: `{report.get('artifact_file_exists')}`",
             f"- Official source available: `{projection.get('official_source_available')}`",
@@ -98,7 +101,11 @@ def apollo_hdmap_projection_summary_md(report: Mapping[str, Any]) -> str:
     )
 
 
-def summarize_apollo_hdmap_projection(rows: Sequence[Mapping[str, Any]] | None) -> dict[str, Any]:
+def summarize_apollo_hdmap_projection(
+    rows: Sequence[Mapping[str, Any]] | None,
+    *,
+    artifact_file_exists: bool | None = None,
+) -> dict[str, Any]:
     all_rows = [dict(row) for row in (rows or [])]
     official_rows = [row for row in all_rows if str(row.get("source") or "") == OFFICIAL_SOURCE]
     ok_rows = [row for row in official_rows if str(row.get("status") or "").lower() == "ok"]
@@ -135,8 +142,13 @@ def summarize_apollo_hdmap_projection(rows: Sequence[Mapping[str, Any]] | None) 
     missing_fields: list[str] = []
 
     if not all_rows:
+        artifact_present = bool(artifact_file_exists)
+        artifact_status = "artifact_empty" if artifact_present else "artifact_missing"
+        warning = "apollo_hdmap_projection_empty" if artifact_present else "apollo_hdmap_projection_missing"
+        missing = "apollo_hdmap_projection_rows" if artifact_present else "apollo_hdmap_projection"
         return {
-            "file_present": False,
+            "file_present": artifact_present,
+            "artifact_status": artifact_status,
             "available": False,
             "official_source_available": False,
             "status": "insufficient_data",
@@ -152,14 +164,19 @@ def summarize_apollo_hdmap_projection(rows: Sequence[Mapping[str, Any]] | None) 
             "nearest_lane_id_topk": [],
             "map_name_topk": [],
             "map_dir_topk": [],
-            "warnings": ["apollo_hdmap_projection_missing"],
+            "warnings": [warning],
             "blocking_reasons": [],
-            "missing_fields": ["apollo_hdmap_projection"],
+            "missing_fields": [missing],
             "suspected_failure_layers": [],
             "interpretation": (
-                "No Apollo HDMap API projection artifact was found; reference-line "
-                "verification remains insufficient unless another explicit verified "
-                "artifact is present."
+                (
+                    "Apollo HDMap API projection artifact exists but contains no rows; reference-line "
+                    "verification remains insufficient until the exporter records projection samples."
+                    if artifact_present
+                    else "No Apollo HDMap API projection artifact was found; reference-line "
+                    "verification remains insufficient unless another explicit verified "
+                    "artifact is present."
+                )
             ),
         }
 
@@ -227,6 +244,7 @@ def summarize_apollo_hdmap_projection(rows: Sequence[Mapping[str, Any]] | None) 
 
     return {
         "file_present": True,
+        "artifact_status": "projection_rows_present",
         "available": bool(official_rows),
         "official_source_available": bool(official_rows),
         "status": status,

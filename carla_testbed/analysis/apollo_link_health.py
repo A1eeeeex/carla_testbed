@@ -810,6 +810,8 @@ def _route_establishment_layer(
             warnings=list(report.get("warnings") or []) + route_contract_warnings,
             key_metrics={
                 "planning_message_count": report.get("planning_message_count"),
+                "materialization_status": report.get("materialization_status")
+                or report.get("materialization_observation_status"),
                 "nonempty_trajectory_count": report.get("nonempty_trajectory_count"),
                 "nonempty_trajectory_ratio": report.get("nonempty_trajectory_ratio"),
                 "after_routing_success_nonempty_ratio": report.get(
@@ -881,6 +883,11 @@ def _route_establishment_layer(
         warnings=warnings,
         key_metrics={
             "planning_message_count": planning_total,
+            "materialization_status": (
+                "missing"
+                if planning_total is None
+                else ("observed_nonempty" if (planning_nonempty or 0) > 0 else "observed_empty")
+            ),
             "nonempty_trajectory_count": planning_nonempty,
             "nonempty_trajectory_ratio": ratio,
             "after_routing_success_nonempty_ratio": None,

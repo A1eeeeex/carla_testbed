@@ -71,6 +71,7 @@ def test_low_nonempty_ratio_hard_fails_with_route_establishment_blocker(tmp_path
     report = analyze_planning_materialization_run_dir(run_dir)
 
     assert report["verdict"] == "fail"
+    assert report["materialization_status"] == "observed_nonempty"
     assert report["nonempty_trajectory_ratio"] == 0.1
     assert "planning_trajectory_materialization_low" in report["blocking_reasons"]
     assert "route_establishment_not_confirmed" in report["blocking_reasons"]
@@ -98,6 +99,7 @@ def test_high_nonempty_ratio_passes_materialization(tmp_path: Path) -> None:
     report = analyze_planning_materialization_run_dir(run_dir)
 
     assert report["verdict"] == "pass"
+    assert report["materialization_status"] == "observed_nonempty"
     assert report["nonempty_trajectory_ratio"] == 0.9
     assert report["metrics"]["nonempty_trajectory_ratio"] == 0.9
 
@@ -246,6 +248,7 @@ def test_zero_freshness_join_coverage_is_unverified_not_zero_stale(tmp_path: Pat
     report = analyze_planning_materialization_run_dir(run_dir)
     freshness = report["input_freshness_attribution"]
 
+    assert report["materialization_status"] == "observed_empty"
     assert report["empty_asof_join"]["localization_join_coverage_ratio"] == 0.0
     assert freshness["status"] == "insufficient_data"
     assert freshness["localization_stale_or_gap_empty_count"] is None
@@ -260,8 +263,45 @@ def test_missing_planning_artifacts_is_insufficient_data(tmp_path: Path) -> None
     report = analyze_planning_materialization_run_dir(run_dir)
 
     assert report["verdict"] == "insufficient_data"
+    assert report["materialization_status"] == "missing"
     assert "planning_topic_debug_or_summary" in report["missing_fields"]
     assert "planning_materialization_insufficient_data" in report["blocking_reasons"]
+
+
+def test_empty_planning_with_reference_line_missing_gets_distinct_status(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path)
+    _write_jsonl(
+        run_dir / "artifacts/planning_topic_debug.jsonl",
+        [
+            {"timestamp": 13.0, "planning_header_sequence_num": 1, "trajectory_point_count": 0},
+            {"timestamp": 14.0, "planning_header_sequence_num": 2, "trajectory_point_count": 0},
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "timestamp": 13.0,
+                "planning_header_sequence_num": 1,
+                "reference_line_provider_status": "failed",
+                "reference_line_count": 0,
+                "route_segment_count": 0,
+            },
+            {
+                "timestamp": 14.0,
+                "planning_header_sequence_num": 2,
+                "lane_follow_map_status": "reference_line_missing",
+                "reference_line_count": 0,
+                "route_segment_count": 0,
+            },
+        ],
+    )
+
+    report = analyze_planning_materialization_run_dir(run_dir)
+
+    assert report["verdict"] == "fail"
+    assert report["materialization_status"] == "observed_reference_line_missing"
+    assert report["empty_reason_histogram"]["reference_line_provider_not_ready"] == 2
 
 
 def test_write_planning_materialization_report(tmp_path: Path) -> None:

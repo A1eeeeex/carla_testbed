@@ -283,7 +283,7 @@ def test_claim_profile_dispatches_compat_apollo_runtime(tmp_path: Path) -> None:
     assert manifest["typed_config_loaded"] is True
     assert manifest["legacy_fallback_used"] is False
     assert manifest["runtime_dispatch_kind"] == "compat_apollo_cyber_gt_runtime"
-    assert manifest["transport_mode"] == "apollo_cyberrt_gt"
+    assert manifest["transport_mode"] == "apollo_cyberrt_gt_over_ros2_transition"
     assert manifest["compat_layers"] == ["legacy_route_health_transition"]
     assert summary["success"] is False
     assert summary["can_claim_unassisted_natural_driving"] is False

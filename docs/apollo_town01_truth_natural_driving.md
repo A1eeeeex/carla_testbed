@@ -1159,6 +1159,26 @@ pass profile. A failed route-only probe means Apollo did not materialize the
 configured scenario route, so downstream Planning/Control output remains
 diagnostic.
 
+Use `configs/io/examples/town01_apollo_route_materialization_probe.yaml` after a
+route-only smoke succeeds or when a one-tick typed-runtime sample only proves
+wiring. This profile keeps the same fallback-disabled route contract but runs
+`max_ticks=600` at `fixed_dt_s=0.05`, so startup delay, routing response,
+Planning materialization, HDMap projection, and Control handoff have a 30 second
+window to produce evidence. It is still diagnostic only; any natural-driving
+pass statement must cite `natural_driving_report.json` plus localization,
+HDMap/reference-line, channel, control, perception, and assist-ledger artifacts.
+
+The materialization report must distinguish:
+
+- `missing`: no Planning debug or summary evidence;
+- `observed_empty`: Planning messages exist but trajectories remain empty;
+- `observed_reference_line_missing`: empty Planning rows align with missing
+  route segments or reference-line provider failure;
+- `observed_nonempty`: at least one non-empty Apollo trajectory was observed.
+
+Only `observed_nonempty` can move diagnosis toward Control. It is necessary but
+not sufficient for a behavior claim.
+
 For claim-grade route goals, the routing event must show that the goal
 projection is `accepted=true`, `applied=true`, and sourced from a trusted lane
 centerline. `accepted=false`, `source_trusted_lane_centerline=false`, goal snap
