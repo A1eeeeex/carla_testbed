@@ -9,7 +9,12 @@ from algo.adapters.apollo import ApolloAdapter
 
 def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_config(tmp_path: Path) -> None:
     profile = {
-        "run": {"ego_id": "hero"},
+        "run": {
+            "ego_id": "hero",
+            "profile_name": "claim_probe",
+            "claim_profile": True,
+            "materialization_probe": True,
+        },
         "runtime": {"carla": {"host": "127.0.0.1", "port": 2000}},
         "sim": {"map": "Town01"},
         "algo": {
@@ -49,8 +54,14 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
     bridge_cfg_path = tmp_path / "artifacts" / "apollo_bridge_effective.yaml"
     bridge_cfg = yaml.safe_load(bridge_cfg_path.read_text(encoding="utf-8"))
     bridge = bridge_cfg["bridge"]
+    run_cfg = bridge_cfg["run"]
     control_mapping = bridge_cfg["bridge"]["control_mapping"]
     claim_grade = bridge_cfg["bridge"]["claim_grade"]
+    assert run_cfg["profile_name"] == "claim_probe"
+    assert run_cfg["claim_profile"] is True
+    assert run_cfg["materialization_probe"] is True
+    assert bridge["claim_profile"] is True
+    assert bridge["materialization_probe"] is True
     assert bridge["artifact_async_write_enabled"] is True
     assert bridge["artifact_async_queue_max_rows"] == 8192
     assert bridge["artifact_async_queue_soft_limit_rows"] == 4096

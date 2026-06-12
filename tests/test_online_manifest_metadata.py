@@ -15,6 +15,8 @@ def test_legacy_online_config_exports_claim_manifest_fields() -> None:
     cfg["run"]["ticks"] = 420
     cfg["run"]["profile_name"] = "town01_apollo_probe"
     cfg["run"]["capability_profile"] = "lane_keep"
+    cfg["run"]["claim_profile"] = True
+    cfg["run"]["materialization_probe"] = True
 
     updates = online_claim_manifest_updates(
         effective_config=cfg,
@@ -41,6 +43,8 @@ def test_legacy_online_config_exports_claim_manifest_fields() -> None:
     assert updates["transport_mode_source"] == "online_config.scenario.publish_ros2_gt"
     assert updates["backend"] == "apollo_cyberrt"
     assert updates["truth_input"] is True
+    assert updates["claim_profile"] is True
+    assert updates["materialization_probe"] is True
     assert updates["fixed_delta_seconds"] == 0.05
     assert updates["ticks"] == 420
     assert updates["duration_s"] == 21.0

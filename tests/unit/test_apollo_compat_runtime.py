@@ -61,6 +61,8 @@ def test_typed_transition_backend_uses_resolved_config_and_preserves_reports(
         assert payload["typed_runtime"]["legacy_fallback_used"] is False
         assert payload["scenario"]["driver"] == "carla_town01_route_health"
         assert payload["run"]["ticks"] == 3
+        assert payload["run"]["claim_profile"] is True
+        assert payload["run"]["materialization_probe"] is False
         report_path = root / "analysis" / "routing_response_decoded" / "routing_response_decoded_report.json"
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(

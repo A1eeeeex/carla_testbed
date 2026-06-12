@@ -1380,8 +1380,25 @@ class ApolloGtBridge:
             yaw_deg=float(tf_cfg.get("yaw_deg", 0.0)),
         )
         self.publish_rate_hz = float(bridge_cfg.get("publish_rate_hz", 20.0))
+        run_cfg = (cfg.get("run", {}) or {})
+        typed_runtime_cfg = (cfg.get("typed_runtime", {}) or {})
+        reports_cfg = (cfg.get("reports", {}) or {})
+        self.materialization_probe_enabled = bool(
+            run_cfg.get("materialization_probe")
+            or bridge_cfg.get("materialization_probe")
+            or reports_cfg.get("require_route_materialization")
+        )
+        self.claim_profile_enabled = bool(
+            run_cfg.get("claim_profile")
+            or bridge_cfg.get("claim_profile")
+            or self.materialization_probe_enabled
+            or str(typed_runtime_cfg.get("runtime_dispatch_kind") or "")
+            == "typed_apollo_claim_runtime"
+        )
         claim_grade_cfg = bridge_cfg.get("claim_grade", {}) or {}
-        self.claim_grade_enabled = bool(claim_grade_cfg.get("enabled", False))
+        self.claim_grade_enabled = bool(
+            claim_grade_cfg.get("enabled", False) or self.claim_profile_enabled
+        )
         self.gt_stale_sample_policy = str(
             claim_grade_cfg.get(
                 "stale_world_frame_policy",
@@ -1412,6 +1429,8 @@ class ApolloGtBridge:
         self.stats["gt_stale_sample_policy"] = self.gt_stale_sample_policy
         self.stats["claim_grade_publish_policy"] = {
             "enabled": self.claim_grade_enabled,
+            "claim_profile_enabled": self.claim_profile_enabled,
+            "materialization_probe_enabled": self.materialization_probe_enabled,
             "localization_publish_policy": self.localization_publish_policy,
             "chassis_publish_policy": self.chassis_publish_policy,
         }
@@ -1506,6 +1525,7 @@ class ApolloGtBridge:
             self.artifacts_dir / "stage5_reroute_decision_debug.jsonl"
         )
         self.goal_validity_debug_path = self.artifacts_dir / "goal_validity_debug.jsonl"
+        self.goal_validity_report_path = self.artifacts_dir / "goal_validity_report.json"
         self.topic_publish_stats_path = self.artifacts_dir / "topic_publish_stats.jsonl"
         self.publish_gap_trace_path = self.artifacts_dir / "publish_gap_trace.jsonl"
         self.control_apply_trace_path = self.artifacts_dir / "control_apply_trace.jsonl"
@@ -2088,6 +2108,9 @@ class ApolloGtBridge:
         self.auto_routing_auto_enable_lane_follow_fallback = bool(
             auto_routing_cfg.get("auto_enable_lane_follow_fallback", True)
         )
+        if self.claim_profile_enabled:
+            self.auto_routing_auto_enable_lane_follow_fallback = False
+            self.auto_routing_startup_route_enabled = False
         self.auto_routing_disable_lane_follow_on_no_response = bool(
             auto_routing_cfg.get("disable_lane_follow_on_no_response", True)
         )
@@ -2156,6 +2179,8 @@ class ApolloGtBridge:
         self.auto_routing_goal_validity_fallback_enabled = bool(
             auto_routing_cfg.get("goal_validity_fallback_enabled", True)
         )
+        if self.claim_profile_enabled:
+            self.auto_routing_goal_validity_fallback_enabled = False
         self.auto_routing_skip_invalid_long_route = bool(
             auto_routing_cfg.get("skip_invalid_long_route", True)
         )
@@ -2183,6 +2208,18 @@ class ApolloGtBridge:
         self.auto_routing_startup_lane_follow_sent = False
         self.auto_routing_long_lane_follow_sent = False
         self.auto_routing_current_phase = "startup"
+        self.stats["claim_profile_route_policy"] = {
+            "claim_profile_enabled": bool(self.claim_profile_enabled),
+            "materialization_probe_enabled": bool(self.materialization_probe_enabled),
+            "startup_route_enabled": bool(self.auto_routing_startup_route_enabled),
+            "auto_enable_lane_follow_fallback": bool(
+                self.auto_routing_auto_enable_lane_follow_fallback
+            ),
+            "goal_validity_fallback_enabled": bool(
+                self.auto_routing_goal_validity_fallback_enabled
+            ),
+            "fallback_blocked_by_claim_profile_count": 0,
+        }
         self._routing_freeze_active = False
         self._routing_last_request_phase = "startup"
         self._lane_follow_disabled_runtime = False
@@ -3167,6 +3204,32 @@ class ApolloGtBridge:
 
     def _record_goal_validity_event(self, payload: Dict[str, Any]) -> None:
         self._append_jsonl(self.goal_validity_debug_path, payload)
+        report = {
+            "schema_version": "goal_validity_report.v1",
+            "status": "blocked"
+            if bool(payload.get("fallback_blocked_by_claim_profile"))
+            else ("fail" if bool(payload.get("invalid_goal")) else "pass"),
+            "claim_profile_enabled": bool(getattr(self, "claim_profile_enabled", False)),
+            "materialization_probe_enabled": bool(
+                getattr(self, "materialization_probe_enabled", False)
+            ),
+            "fallback_blocked_by_claim_profile": bool(
+                payload.get("fallback_blocked_by_claim_profile", False)
+            ),
+            "invalid_goal": bool(payload.get("invalid_goal", False)),
+            "invalid_goal_reason": str(payload.get("invalid_goal_reason", "") or ""),
+            "goal_source": str(payload.get("goal_source", "") or ""),
+            "goal_mode": str(payload.get("goal_mode", "") or ""),
+            "requested_goal_mode": str(payload.get("requested_goal_mode", "") or ""),
+            "routing_phase": str(payload.get("routing_phase", "") or ""),
+            "fallback_applied": bool(payload.get("fallback_applied", False)),
+            "claim_boundary": (
+                "Claim/materialization profiles must use an explicit scenario/fixed route goal. "
+                "ego_seed_ahead/startup_short_ahead/invalid-goal fallback routes are diagnostic "
+                "only and cannot support Apollo natural-driving claims."
+            ),
+        }
+        self._write_json_file(self.goal_validity_report_path, report)
 
     def _record_publish_gap_trace(
         self,
@@ -3790,6 +3853,9 @@ class ApolloGtBridge:
             "invalid_goal": bool(validity.get("invalid_goal", False)),
             "invalid_goal_reason": str(validity.get("invalid_goal_reason", "") or ""),
             "fallback_applied": bool(validity.get("fallback_applied", False)),
+            "fallback_blocked_by_claim_profile": bool(
+                validity.get("fallback_blocked_by_claim_profile", False)
+            ),
             "fallback_from_invalid_reason": str(
                 validity.get("fallback_from_invalid_reason", "") or ""
             ),
@@ -3838,6 +3904,24 @@ class ApolloGtBridge:
             "end_ahead_m_effective": effective_dist,
             "anchor_mode": anchor_mode,
         }
+
+    def _claim_profile_blocks_route_goal(self, goal_meta: Dict[str, Any]) -> bool:
+        if not bool(getattr(self, "claim_profile_enabled", False)):
+            return False
+        goal_source = str(goal_meta.get("goal_source", "") or "").strip()
+        goal_mode = str(goal_meta.get("goal_mode", "") or "").strip()
+        forbidden_sources = {
+            "startup_short_ahead",
+            "invalid_goal_fallback_ahead",
+            "scenario_goal_missing_fallback",
+            "fixed_goal_missing_fallback",
+            "long_ahead_fallback",
+        }
+        if goal_source in forbidden_sources:
+            return True
+        if goal_mode == "ego_seed_ahead":
+            return True
+        return False
 
     def _evaluate_goal_validity(
         self,
@@ -4205,6 +4289,11 @@ class ApolloGtBridge:
                         length = self._resolve_nested_float(segment, (("length",),))
                         if length is None and start_s is not None and end_s is not None:
                             length = max(0.0, float(end_s) - float(start_s))
+                        window_signature = self._routing_lane_window_signature(
+                            lane_id,
+                            start_s,
+                            end_s,
+                        )
                         rows.append(
                             {
                                 "road_index": int(road_index),
@@ -4215,11 +4304,33 @@ class ApolloGtBridge:
                                 "start_s": start_s,
                                 "end_s": end_s,
                                 "length_m": length,
+                                "lane_window_signature": window_signature,
                             }
                         )
         except Exception:
             return rows
         return rows
+
+    def _routing_lane_window_signature(
+        self,
+        lane_id: Any,
+        start_s: Optional[float],
+        end_s: Optional[float],
+    ) -> str:
+        lane = str(lane_id or "").strip()
+
+        def _fmt(value: Optional[float]) -> str:
+            if value is None:
+                return ""
+            try:
+                out = float(value)
+            except Exception:
+                return ""
+            if not math.isfinite(out):
+                return ""
+            return f"{out:.4f}"
+
+        return f"{lane}@{_fmt(start_s)}->{_fmt(end_s)}" if lane else f"@{_fmt(start_s)}->{_fmt(end_s)}"
 
     def _routing_response_decoded_payload(self, msg: Any, *, now_sec: float) -> Dict[str, Any]:
         lane_segments = self._routing_response_lane_windows(msg)
@@ -4259,6 +4370,7 @@ class ApolloGtBridge:
         total_length = 0.0
         has_length = False
         lane_sequence: List[str] = []
+        lane_window_sequence: List[str] = []
         seen_lanes = set()
         for row in lane_segments:
             length = row.get("length_m")
@@ -4270,9 +4382,14 @@ class ApolloGtBridge:
                 except Exception:
                     pass
             lane_id = str(row.get("lane_id") or "").strip()
+            window_signature = str(row.get("lane_window_signature") or "").strip()
+            if window_signature:
+                lane_window_sequence.append(window_signature)
             if lane_id and lane_id not in seen_lanes:
                 seen_lanes.add(lane_id)
                 lane_sequence.append(lane_id)
+        lane_window_signature = " | ".join(lane_window_sequence)
+        unique_lane_signature = " | ".join(lane_sequence)
         return {
             "schema_version": "routing_response_decoded.v1",
             "source": "/apollo/routing_response",
@@ -4286,6 +4403,8 @@ class ApolloGtBridge:
             "lane_segments": lane_segments,
             "total_length_m": total_length if has_length else None,
             "lane_sequence_signature": lane_sequence,
+            "lane_window_signature": lane_window_signature,
+            "unique_lane_signature": unique_lane_signature,
             "claim_boundary": (
                 "This artifact decodes the RoutingResponse on /apollo/routing_response. "
                 "It does not by itself prove route identity, HDMap projection, Planning "
@@ -9147,6 +9266,7 @@ class ApolloGtBridge:
         routing_skipped_due_to_freeze = False
         routing_skipped_due_to_invalid_goal = False
         routing_skipped_due_to_unstable_reference_line = False
+        routing_blocked_due_to_claim_profile_fallback = False
         if send_routing_now and self._routing_freeze_active:
             routing_skipped_due_to_freeze = True
             send_routing_now = False
@@ -9277,6 +9397,23 @@ class ApolloGtBridge:
         pre_fallback_goal_proj = dict(goal_proj)
         pre_fallback_goal_validity = dict(goal_validity)
         goal_fallback_applied = False
+        if self._claim_profile_blocks_route_goal(goal_meta):
+            routing_blocked_due_to_claim_profile_fallback = True
+            routing_skipped_due_to_invalid_goal = True
+            send_routing_now = False
+            goal_validity["invalid_goal"] = True
+            goal_validity["invalid_goal_reason"] = "fallback_route_blocked_by_claim_profile"
+            goal_validity["fallback_blocked_by_claim_profile"] = True
+            goal_validity["claim_profile_enabled"] = bool(self.claim_profile_enabled)
+            goal_validity["materialization_probe_enabled"] = bool(self.materialization_probe_enabled)
+            self.stats["fallback_blocked_by_claim_profile_count"] = int(
+                self.stats.get("fallback_blocked_by_claim_profile_count", 0) or 0
+            ) + 1
+            claim_route_policy = dict(self.stats.get("claim_profile_route_policy", {}) or {})
+            claim_route_policy["fallback_blocked_by_claim_profile_count"] = int(
+                self.stats.get("fallback_blocked_by_claim_profile_count", 0) or 0
+            )
+            self.stats["claim_profile_route_policy"] = claim_route_policy
         original_invalid_goal_reason = str(goal_validity.get("invalid_goal_reason", "") or "")
         if (
             bool(goal_validity.get("invalid_goal"))
@@ -9456,6 +9593,10 @@ class ApolloGtBridge:
             routing_skipped_due_to_unstable_reference_line=routing_skipped_due_to_unstable_reference_line,
             routing_waiting_for_route_debug_ready=routing_waiting_for_route_debug_ready,
         )
+        if routing_blocked_due_to_claim_profile_fallback:
+            request_kind = "blocked"
+            reroute_reason = "fallback_route_blocked_by_claim_profile"
+            reroute_trigger_source = "claim_profile_route_policy"
         self.stats["last_routing_reason"] = reroute_reason
         reason_counts = dict(self.stats.get("reroute_reason_counts", {}) or {})
         reason_counts[reroute_reason] = int(reason_counts.get(reroute_reason, 0) or 0) + 1
@@ -9468,8 +9609,15 @@ class ApolloGtBridge:
                 gate_blocking_reason = "routing_freeze"
                 gate_blocking_detail = "routing send suppressed because freeze-after-success is active"
             elif routing_skipped_due_to_invalid_goal:
-                gate_blocking_reason = "invalid_long_goal_skipped"
-                gate_blocking_detail = "long-phase invalid goal was skipped by guard"
+                if routing_blocked_due_to_claim_profile_fallback:
+                    gate_blocking_reason = "fallback_route_blocked_by_claim_profile"
+                    gate_blocking_detail = (
+                        "claim/materialization profile forbids ego-seed/startup/fallback "
+                        "routing goals"
+                    )
+                else:
+                    gate_blocking_reason = "invalid_long_goal_skipped"
+                    gate_blocking_detail = "long-phase invalid goal was skipped by guard"
             elif routing_waiting_for_route_debug_ready:
                 gate_blocking_reason = "route_debug_not_ready_for_long_phase"
                 gate_blocking_detail = (
@@ -9598,6 +9746,9 @@ class ApolloGtBridge:
                     "routing_freeze_active": self._routing_freeze_active,
                     "invalid_goal": bool(goal_validity.get("invalid_goal")),
                     "invalid_goal_reason": goal_validity.get("invalid_goal_reason"),
+                    "fallback_blocked_by_claim_profile": bool(
+                        goal_validity.get("fallback_blocked_by_claim_profile", False)
+                    ),
                     "skip_invalid_long_route": self.auto_routing_skip_invalid_long_route,
                     "suppress_long_phase_reroute_on_unstable_reference_line": self.auto_routing_suppress_long_phase_reroute_on_unstable_reference_line,
                     "defer_long_goal_until_route_debug_ready": self.auto_routing_defer_long_goal_until_route_debug_ready,
@@ -9738,6 +9889,7 @@ class ApolloGtBridge:
             "freeze_after_success_effective": bool(self._routing_freeze_active),
             "routing_skipped_due_to_freeze": routing_skipped_due_to_freeze,
             "routing_skipped_due_to_invalid_goal": routing_skipped_due_to_invalid_goal,
+            "routing_blocked_due_to_claim_profile_fallback": routing_blocked_due_to_claim_profile_fallback,
             "snap_rejected": bool(snap_rejected),
             "snap_reject_reason": snap_reject_reason,
             "suspicious_snap_rejected": bool(suspicious_snap_rejected),
@@ -9759,7 +9911,12 @@ class ApolloGtBridge:
             "heading_diff_vehicle_vs_snap_lane_deg": heading_diff_to_vehicle_deg,
             "suspicious_snap": suspicious_snap,
         }
-        if send_routing_now or routing_skipped_due_to_freeze or routing_skipped_due_to_invalid_goal:
+        if (
+            send_routing_now
+            or routing_skipped_due_to_freeze
+            or routing_skipped_due_to_invalid_goal
+            or routing_blocked_due_to_claim_profile_fallback
+        ):
             self._record_startup_geometry_event(startup_event)
             self._record_routing_event(
                 {
@@ -9797,6 +9954,12 @@ class ApolloGtBridge:
                     "routing_request_sent": bool(send_routing_now),
                     "routing_skipped_due_to_freeze": bool(routing_skipped_due_to_freeze),
                     "routing_skipped_due_to_invalid_goal": bool(routing_skipped_due_to_invalid_goal),
+                    "routing_blocked_due_to_claim_profile_fallback": bool(
+                        routing_blocked_due_to_claim_profile_fallback
+                    ),
+                    "fallback_blocked_by_claim_profile": bool(
+                        goal_validity.get("fallback_blocked_by_claim_profile", False)
+                    ),
                     "invalid_goal_reason": original_invalid_goal_reason,
                     "goal_fallback_applied": bool(goal_fallback_applied),
                 }

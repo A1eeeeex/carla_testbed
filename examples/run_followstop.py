@@ -3866,6 +3866,10 @@ def main():
         summary_data["profile_name"] = profile_name
         summary_data["profile_config_path"] = profile_config_path
         summary_data["profile"] = profile_info
+        summary_data["claim_profile"] = bool((effective_cfg.get("run", {}) or {}).get("claim_profile", False))
+        summary_data["materialization_probe"] = bool(
+            (effective_cfg.get("run", {}) or {}).get("materialization_probe", False)
+        )
         summary_data["comparison_label"] = str((run_mode_cfg.get("comparison_label") or "")).strip()
         summary_data["adapter_started"] = adapter_started
         if adapter_fail_reason:

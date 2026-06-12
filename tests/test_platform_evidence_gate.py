@@ -28,6 +28,24 @@ def _write_fake_run(run_dir: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _write_claim_required_summary_files(run_dir: Path) -> None:
+    (run_dir / "timeseries.csv").write_text("sim_time,route_s\n0.0,0.0\n", encoding="utf-8")
+    for rel, payload in {
+        "analysis/natural_driving/natural_driving_report.json": {"verdict": {"status": "fail"}},
+        "analysis/assist_ledger/assist_ledger.json": {
+            "schema_version": "assist_ledger.v1",
+            "active_assists": [],
+        },
+        "analysis/artifact_completeness/artifact_completeness_report.json": {
+            "schema_version": "run_artifact_completeness.v1",
+            "status": "insufficient_data",
+        },
+    }.items():
+        path = run_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
     (run_dir / "summary.json").write_text(
         json.dumps(
             {
@@ -163,8 +181,21 @@ def _write_claim_grade_synthetic_run(run_dir: Path) -> None:
     )
     artifacts = run_dir / "artifacts"
     artifacts.mkdir(exist_ok=True)
-    (artifacts / "topic_publish_stats.jsonl").write_text('{"ok":true}\n', encoding="utf-8")
-    (artifacts / "control_apply_trace.jsonl").write_text('{"ok":true}\n', encoding="utf-8")
+    for name in [
+        "topic_publish_stats.jsonl",
+        "publish_gap_trace.jsonl",
+        "routing_event_debug.jsonl",
+        "planning_topic_debug.jsonl",
+        "planning_route_segment_debug.jsonl",
+        "control_apply_trace.jsonl",
+        "control_decode_debug.jsonl",
+        "apollo_hdmap_projection.jsonl",
+    ]:
+        (artifacts / name).write_text('{"ok":true}\n', encoding="utf-8")
+    (artifacts / "routing_response_decoded.json").write_text(
+        json.dumps({"lane_segments": [{"lane_id": "lane_1", "start_s": 0.0, "end_s": 1.0}]}),
+        encoding="utf-8",
+    )
 
     def write_report(rel: str, payload: dict) -> None:
         path = run_dir / rel
@@ -488,6 +519,7 @@ def test_cli_pack_includes_analysis_but_skips_large_artifacts(tmp_path: Path) ->
 def test_claim_pack_includes_row_level_evidence_when_present(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_fake_run(run_dir)
+    _write_claim_required_summary_files(run_dir)
     for rel in [
         "artifacts/topic_publish_stats.jsonl",
         "artifacts/publish_gap_trace.jsonl",

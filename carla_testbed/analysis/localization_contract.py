@@ -117,7 +117,10 @@ ALIASES = {
     "localization_time_base": ["localization_time_base"],
     "heading_source": ["heading_source"],
     "vehicle_reference_confidence": ["vehicle_reference_confidence"],
-    "vehicle_reference_hard_gate_eligible": ["vehicle_reference_hard_gate_eligible"],
+    "vehicle_reference_hard_gate_eligible": [
+        "vehicle_reference_hard_gate_eligible",
+        "runtime_vehicle_reference_hard_gate_eligible",
+    ],
     "orientation_convention": ["orientation_convention"],
     "angular_velocity_unit": ["angular_velocity_unit", "localization_angular_velocity_unit"],
     "acceleration": ["linear_acceleration", "linear_acceleration_x", "accel_mean_mps2", "ego_acceleration"],

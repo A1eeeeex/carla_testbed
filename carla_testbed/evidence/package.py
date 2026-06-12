@@ -35,6 +35,9 @@ DEFAULT_INCLUDE_PATTERNS = (
     "manifest.json",
     "summary.json",
     "config.resolved.yaml",
+    "timeseries.csv",
+    "timeseries.jsonl",
+    "events.jsonl",
     "*.plan.resolved.yaml",
     "analysis/**/*.json",
     "analysis/**/*.md",
@@ -43,6 +46,8 @@ DEFAULT_INCLUDE_PATTERNS = (
     "artifacts/*contract*.json",
     "artifacts/*inspection*.json",
     "artifacts/traffic_flow_manifest.json",
+    "artifacts/routing_response_decoded.json",
+    "artifacts/goal_validity_report.json",
 )
 
 ROW_LEVEL_EVIDENCE_PATTERNS = (
@@ -80,6 +85,13 @@ CLAIM_REQUIRED_ROW_LEVEL = (
     "artifacts/control_apply_trace.jsonl",
     "artifacts/control_decode_debug.jsonl",
     "artifacts/planning_topic_debug.jsonl",
+)
+
+CLAIM_REQUIRED_FILES = (
+    "timeseries.csv",
+    "analysis/natural_driving/natural_driving_report.json",
+    "analysis/assist_ledger/assist_ledger.json",
+    "analysis/artifact_completeness/artifact_completeness_report.json",
 )
 
 FIXED_SCENE_CLAIM_REQUIRED_ROW_LEVEL = (
@@ -222,7 +234,7 @@ def _candidate_files(root: Path, *, profile: str) -> list[Path]:
 def _missing_required(root: Path, *, profile: str) -> list[str]:
     if profile != "claim":
         return []
-    required = list(CLAIM_REQUIRED_ROW_LEVEL)
+    required = list(CLAIM_REQUIRED_ROW_LEVEL) + list(CLAIM_REQUIRED_FILES)
     if _fixed_scene_enabled(root):
         required.extend(FIXED_SCENE_CLAIM_REQUIRED_ROW_LEVEL)
     return [pattern for pattern in required if not (root / pattern).exists()]

@@ -24,6 +24,8 @@ def decode_routing_response_payload(payload: Mapping[str, Any]) -> dict[str, Any
         sum(float(row["length_m"]) for row in rows if row.get("length_m") is not None) if rows else None,
     )
     lane_sequence = _lane_sequence(rows)
+    lane_window_signature = _lane_window_signature(rows)
+    unique_lane_signature = " | ".join(lane_sequence)
     road_segments = payload.get("road_segments") if isinstance(payload.get("road_segments"), list) else []
     status = "pass" if rows and total_length is not None else "insufficient_data"
     missing: list[str] = []
@@ -48,6 +50,8 @@ def decode_routing_response_payload(payload: Mapping[str, Any]) -> dict[str, Any
         "lane_segments": rows,
         "total_length_m": total_length,
         "lane_sequence_signature": lane_sequence,
+        "lane_window_signature": lane_window_signature,
+        "unique_lane_signature": unique_lane_signature,
         "blocking_reasons": [],
         "warnings": [],
         "missing_fields": missing,
@@ -97,6 +101,7 @@ def routing_response_decoded_summary_md(report: Mapping[str, Any]) -> str:
             f"- Passage count: `{report.get('passage_count')}`",
             f"- Lane segment count: `{report.get('lane_segment_count')}`",
             f"- Lane sequence: `{', '.join(report.get('lane_sequence_signature') or []) or 'none'}`",
+            f"- Lane window signature: `{report.get('lane_window_signature') or 'none'}`",
             f"- Missing fields: `{', '.join(report.get('missing_fields') or []) or 'none'}`",
             "",
             str(report.get("claim_boundary") or ""),
@@ -145,16 +150,21 @@ def _normalize_lane_segment(row: Mapping[str, Any]) -> dict[str, Any]:
     length = _first_num(row.get("length_m"), row.get("length"))
     if length is None and start_s is not None and end_s is not None:
         length = max(0.0, float(end_s) - float(start_s))
-    return {
+    lane_id = str(row.get("lane_id") or row.get("id") or "").strip()
+    normalized = {
         "road_index": _first_int(row.get("road_index")),
         "road_id": row.get("road_id"),
         "passage_index": _first_int(row.get("passage_index")),
         "segment_index": _first_int(row.get("segment_index")),
-        "lane_id": str(row.get("lane_id") or row.get("id") or "").strip(),
+        "lane_id": lane_id,
         "start_s": start_s,
         "end_s": end_s,
         "length_m": length,
     }
+    normalized["lane_window_signature"] = str(
+        row.get("lane_window_signature") or _format_lane_window(lane_id, start_s, end_s)
+    )
+    return normalized
 
 
 def _lane_sequence(rows: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -167,6 +177,31 @@ def _lane_sequence(rows: Sequence[Mapping[str, Any]]) -> list[str]:
         seen.add(lane_id)
         out.append(lane_id)
     return out
+
+
+def _lane_window_signature(rows: Sequence[Mapping[str, Any]]) -> str:
+    windows: list[str] = []
+    for row in rows:
+        sig = str(row.get("lane_window_signature") or "").strip()
+        if not sig:
+            sig = _format_lane_window(row.get("lane_id"), row.get("start_s"), row.get("end_s"))
+        if sig:
+            windows.append(sig)
+    return " | ".join(windows)
+
+
+def _format_lane_window(lane_id: Any, start_s: Any, end_s: Any) -> str:
+    lane = str(lane_id or "").strip()
+
+    def _fmt(value: Any) -> str:
+        try:
+            if value is None:
+                return ""
+            return f"{float(value):.4f}"
+        except (TypeError, ValueError):
+            return ""
+
+    return f"{lane}@{_fmt(start_s)}->{_fmt(end_s)}" if lane else f"@{_fmt(start_s)}->{_fmt(end_s)}"
 
 
 def _count_passages(roads: Any) -> int | None:

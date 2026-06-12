@@ -32,6 +32,9 @@ def test_decodes_nested_routing_response_payload() -> None:
     assert report["total_length_m"] == 40.0
     assert report["lane_segment_count"] == 2
     assert report["lane_sequence_signature"] == ["15_1_1"]
+    assert report["lane_segments"][0]["lane_window_signature"] == "15_1_1@10.0000->30.0000"
+    assert report["lane_window_signature"] == "15_1_1@10.0000->30.0000 | 15_1_1@30.0000->50.0000"
+    assert report["unique_lane_signature"] == "15_1_1"
 
 
 def test_missing_lane_segments_is_insufficient_data() -> None:

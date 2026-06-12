@@ -1168,6 +1168,14 @@ window to produce evidence. It is still diagnostic only; any natural-driving
 pass statement must cite `natural_driving_report.json` plus localization,
 HDMap/reference-line, channel, control, perception, and assist-ledger artifacts.
 
+In claim or materialization profiles, fallback route generation is not allowed.
+`ego_seed_ahead`, `startup_short_ahead`,
+`invalid_goal_fallback_ahead`, `scenario_goal_missing_fallback`,
+`fixed_goal_missing_fallback`, and `long_ahead_fallback` must be recorded as
+`fallback_blocked_by_claim_profile` in `goal_validity_report.json` /
+`routing_event_debug.jsonl` instead of being sent as substitute routes. Those
+fallbacks remain useful for smoke/debug runs only.
+
 The materialization report must distinguish:
 
 - `missing`: no Planning debug or summary evidence;

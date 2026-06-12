@@ -723,6 +723,18 @@ PY
 
         cfg = yaml.safe_load(template_file.read_text()) or {}
         run_cfg = profile.get("run", {}) or {}
+        bridge_run_cfg = cfg.setdefault("run", {})
+        for key in ("profile_name", "claim_profile", "materialization_probe"):
+            if key in run_cfg:
+                bridge_run_cfg[key] = run_cfg[key]
+        if "claim_profile" not in bridge_run_cfg:
+            bridge_run_cfg["claim_profile"] = False
+        if "materialization_probe" not in bridge_run_cfg:
+            bridge_run_cfg["materialization_probe"] = False
+        if isinstance(profile.get("typed_runtime"), dict):
+            cfg["typed_runtime"] = dict(profile["typed_runtime"])
+        if isinstance(profile.get("reports"), dict):
+            cfg["reports"] = dict(profile["reports"])
         artifacts = run_dir / "artifacts"
         io_ros = ((profile.get("io", {}) or {}).get("ros", {}) or {})
         bridge = (cfg.get("bridge", {}) or {})
@@ -824,6 +836,10 @@ PY
                 bridge[key] = float(apollo_bridge_cfg[key])
         if isinstance(apollo_bridge_cfg.get("claim_grade"), dict):
             bridge["claim_grade"] = dict(apollo_bridge_cfg["claim_grade"])
+        bridge["claim_profile"] = bool(bridge_run_cfg.get("claim_profile", False))
+        bridge["materialization_probe"] = bool(
+            bridge_run_cfg.get("materialization_probe", False)
+        )
         if "map_file" in apollo_bridge_cfg:
             bridge["map_file"] = str(apollo_bridge_cfg["map_file"])
         if "map_bounds_file" in apollo_bridge_cfg:

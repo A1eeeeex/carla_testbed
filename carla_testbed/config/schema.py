@@ -13,6 +13,7 @@ class RunConfig:
     seed: int = 1
     output_root: str = "runs"
     claim_profile: bool = False
+    materialization_probe: bool = False
 
 
 @dataclass(frozen=True)

@@ -125,6 +125,23 @@ def analyze_planning_materialization_files(
         if planning_message_count > 0
         else None
     )
+    trajectory_point_count_max = _max_int(
+        [_trajectory_point_count(row) for row in planning_rows],
+        planning_summary.get("trajectory_point_count_max"),
+        planning_summary.get("max_trajectory_point_count"),
+    )
+    reference_line_count_max = _max_int(
+        [row.get("reference_line_count") for row in route_rows],
+        [row.get("reference_line_count") for row in planning_rows],
+        planning_summary.get("reference_line_count_max"),
+        planning_summary.get("max_reference_line_count"),
+    )
+    route_segment_count_max = _max_int(
+        [row.get("route_segment_count") for row in route_rows],
+        [row.get("route_segment_count") for row in planning_rows],
+        planning_summary.get("route_segment_count_max"),
+        planning_summary.get("max_route_segment_count"),
+    )
 
     routing_success_ts = _first_number(
         planning_summary,
@@ -245,6 +262,14 @@ def analyze_planning_materialization_files(
             )
     if route_establishment["route_established"] is False:
         blocking_reasons.append("route_establishment_not_confirmed")
+    suspected_layers = _suspected_layers(
+        missing_fields=missing_fields,
+        warnings=warnings,
+        empty_reason_histogram=empty_reason_histogram,
+        projection_status_counts=projection_status_counts,
+        route_establishment=route_establishment,
+        materialization_status=materialization_status,
+    )
 
     return {
         "schema_version": PLANNING_MATERIALIZATION_SCHEMA_VERSION,
@@ -259,6 +284,9 @@ def analyze_planning_materialization_files(
         "nonempty_trajectory_count": nonempty_count,
         "empty_trajectory_count": empty_count,
         "nonempty_trajectory_ratio": nonempty_ratio,
+        "trajectory_point_count_max": trajectory_point_count_max,
+        "reference_line_count_max": reference_line_count_max,
+        "route_segment_count_max": route_segment_count_max,
         "after_routing_success_nonempty_ratio": after_routing_ratio,
         "after_localization_chassis_ready_nonempty_ratio": after_loc_chassis_ready_ratio,
         "metrics": {
@@ -267,6 +295,9 @@ def analyze_planning_materialization_files(
             "nonempty_trajectory_count": nonempty_count,
             "empty_trajectory_count": empty_count,
             "nonempty_trajectory_ratio": nonempty_ratio,
+            "trajectory_point_count_max": trajectory_point_count_max,
+            "reference_line_count_max": reference_line_count_max,
+            "route_segment_count_max": route_segment_count_max,
             "after_routing_success_nonempty_ratio": after_routing_ratio,
             "after_localization_chassis_ready_nonempty_ratio": after_loc_chassis_ready_ratio,
             "longest_empty_streak": longest_empty_streak,
@@ -288,6 +319,7 @@ def analyze_planning_materialization_files(
         "apollo_log_error_topk": log_errors,
         "hdmap_projection_status_counts": dict(sorted(projection_status_counts.items())),
         "route_establishment": route_establishment,
+        "suspected_layers": suspected_layers,
         "thresholds": {
             "claim_candidate_nonempty_ratio_min": 0.80,
             "warn_nonempty_ratio_min": 0.50,
@@ -370,6 +402,46 @@ def _materialization_status(
     if reference_missing is not None and reference_missing > 0:
         return "observed_reference_line_missing"
     return "observed_empty"
+
+
+def _suspected_layers(
+    *,
+    missing_fields: Sequence[str],
+    warnings: Sequence[str],
+    empty_reason_histogram: Mapping[str, Any],
+    projection_status_counts: Mapping[str, Any],
+    route_establishment: Mapping[str, Any],
+    materialization_status: str,
+) -> list[str]:
+    layers: list[str] = []
+    if missing_fields:
+        layers.append("planning_observability")
+    if route_establishment.get("route_established") is False or _int_or_none(
+        empty_reason_histogram.get("routing_not_ready")
+    ):
+        layers.append("routing_materialization")
+    non_ok_projection = any(
+        str(status) not in {"ok", "pass"} and (_int_or_none(count) or 0) > 0
+        for status, count in projection_status_counts.items()
+    )
+    if non_ok_projection or "apollo_hdmap_projection_missing" in set(warnings):
+        layers.append("hdmap_projection")
+    if (
+        materialization_status == "observed_reference_line_missing"
+        or (_int_or_none(empty_reason_histogram.get("reference_line_provider_not_ready")) or 0) > 0
+        or "apollo_reference_line_contract_missing" in set(warnings)
+    ):
+        layers.append("planning_reference_line")
+    if (
+        (_int_or_none(empty_reason_histogram.get("localization_stale_or_gap")) or 0) > 0
+        or (_int_or_none(empty_reason_histogram.get("chassis_stale_or_gap")) or 0) > 0
+    ):
+        layers.append("localization_chassis_freshness")
+    if materialization_status in {"missing", "observed_empty"}:
+        layers.append("planning_trajectory_materialization")
+    if not layers:
+        layers.append("planning_materialization")
+    return sorted(set(layers))
 
 
 def _input_freshness_attribution(
@@ -885,6 +957,23 @@ def _number(value: Any) -> float | None:
 def _int_or_none(value: Any) -> int | None:
     number = _number(value)
     return int(number) if number is not None else None
+
+
+def _max_int(*sources: Any) -> int:
+    values: list[int] = []
+
+    def _collect(value: Any) -> None:
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                _collect(item)
+            return
+        out = _int_or_none(value)
+        if out is not None:
+            values.append(out)
+
+    for source in sources:
+        _collect(source)
+    return max(values) if values else 0
 
 
 def _first_number(*items: Any) -> float | None:

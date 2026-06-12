@@ -73,6 +73,11 @@ def test_low_nonempty_ratio_hard_fails_with_route_establishment_blocker(tmp_path
     assert report["verdict"] == "fail"
     assert report["materialization_status"] == "observed_nonempty"
     assert report["nonempty_trajectory_ratio"] == 0.1
+    assert report["trajectory_point_count_max"] == 12
+    assert report["reference_line_count_max"] == 1
+    assert report["route_segment_count_max"] == 1
+    assert "planning_reference_line" in report["suspected_layers"]
+    assert "routing_materialization" in report["suspected_layers"]
     assert "planning_trajectory_materialization_low" in report["blocking_reasons"]
     assert "route_establishment_not_confirmed" in report["blocking_reasons"]
     assert report["empty_reason_histogram"]["reference_line_provider_not_ready"] == 7

@@ -495,6 +495,8 @@ def _legacy_effective_config_from_typed(
         "ticks": cfg.run.max_ticks,
         "fixed_delta_seconds": cfg.run.fixed_dt_s,
         "profile_name": metadata["profile_name"],
+        "claim_profile": bool(cfg.run.claim_profile),
+        "materialization_probe": bool(getattr(cfg.run, "materialization_probe", False)),
     }
     legacy_run = params.get("legacy_run")
     if isinstance(legacy_run, Mapping):

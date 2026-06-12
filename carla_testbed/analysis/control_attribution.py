@@ -119,6 +119,12 @@ def analyze_control_attribution(
         manifest,
     )
     applied_control_source = _normalize_applied_control_source(control_source)
+    control_chain_status = _control_chain_status(
+        raw_available=raw_available,
+        mapped_available=mapped_available,
+        applied_available=applied_available,
+        applied_control_source=applied_control_source,
+    )
 
     dominant = _dominant_breakpoint(
         raw_available=raw_available,
@@ -139,6 +145,7 @@ def analyze_control_attribution(
         "control_latency_p95_ms": latency_p95,
         "source_control_semantics": source_semantics,
         "dominant_breakpoint": dominant,
+        "control_chain_status": control_chain_status,
     }
     verdict_status = "pass"
     failure_reason = None
@@ -148,6 +155,9 @@ def analyze_control_attribution(
     elif dominant in {"source_control_semantics", "bridge_mapping", "carla_apply", "vehicle_response"}:
         verdict_status = "fail"
         failure_reason = dominant
+    elif control_chain_status == "applied_not_apollo":
+        verdict_status = "fail"
+        failure_reason = control_chain_status
     elif warnings:
         verdict_status = "warn"
         failure_reason = "control_attribution_warn"
@@ -164,6 +174,7 @@ def analyze_control_attribution(
         "calibration_profile_id": _first_text_from_sources("calibration_profile_id", rows, summary, manifest),
         "control_source": control_source,
         "applied_control_source": applied_control_source,
+        "control_chain_status": control_chain_status,
         "raw_control_available": raw_available,
         "mapped_control_available": mapped_available,
         "applied_control_available": applied_available,
@@ -196,6 +207,24 @@ def write_control_attribution_report(report: Mapping[str, Any], out_dir: str | P
         "control_attribution_report": str(json_path),
         "control_attribution_summary": str(md_path),
     }
+
+
+def _control_chain_status(
+    *,
+    raw_available: bool,
+    mapped_available: bool,
+    applied_available: bool,
+    applied_control_source: str | None,
+) -> str:
+    if not raw_available:
+        return "control_missing"
+    if not mapped_available:
+        return "raw_present_not_mapped"
+    if not applied_available:
+        return "mapped_not_applied"
+    if applied_control_source and applied_control_source != "apollo_control":
+        return "applied_not_apollo"
+    return "apollo_control_attributed"
 
 
 def _dominant_breakpoint(

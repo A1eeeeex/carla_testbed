@@ -84,6 +84,8 @@ def test_fixture_generates_report_and_summary(tmp_path: Path) -> None:
     assert report["schema_version"] == "control_attribution.v1"
     assert report["verdict"]["status"] == "pass"
     assert report["attribution"]["dominant_breakpoint"] == "none"
+    assert report["control_chain_status"] == "apollo_control_attributed"
+    assert report["attribution"]["control_chain_status"] == "apollo_control_attributed"
     assert report["raw_control_available"] is True
     assert report["mapped_control_available"] is True
     assert report["applied_control_available"] is True
@@ -145,6 +147,7 @@ def test_missing_raw_is_insufficient_data(tmp_path: Path) -> None:
         row["apollo_steer_raw"] = ""
     report = _analyze(tmp_path, rows)
     assert report["attribution"]["dominant_breakpoint"] == "insufficient_data"
+    assert report["control_chain_status"] == "control_missing"
     assert report["verdict"]["status"] == "insufficient_data"
     assert "apollo_steer_raw" in report["missing_fields"]
 
@@ -170,6 +173,20 @@ def test_apollo_control_source_is_normalized_for_claim_gate(tmp_path: Path) -> N
 
     assert report["control_source"] == "/apollo/control"
     assert report["applied_control_source"] == "apollo_control"
+    assert report["control_chain_status"] == "apollo_control_attributed"
+
+
+def test_non_apollo_applied_control_source_is_not_apollo_attributed(tmp_path: Path) -> None:
+    rows = _base_rows()
+    trace = _write_rows(tmp_path / "timeseries.csv", rows)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"control_source": "carla_route_follower"}), encoding="utf-8")
+
+    report = analyze_control_attribution(trace, manifest_json=manifest)
+
+    assert report["applied_control_source"] == "carla_route_follower"
+    assert report["control_chain_status"] == "applied_not_apollo"
+    assert report["verdict"]["status"] == "fail"
 
 
 def test_cli_writes_report(tmp_path: Path) -> None:

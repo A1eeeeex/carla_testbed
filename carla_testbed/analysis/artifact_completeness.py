@@ -25,6 +25,18 @@ TRAFFIC_LIGHT_EXPECTED_BEHAVIOR_BY_CLASS = {
     "traffic_light_red_to_green_release": "red_to_green_release",
 }
 
+CLAIM_PROFILE_RAW_ARTIFACTS = [
+    ("topic_publish_stats", "artifacts/topic_publish_stats.jsonl"),
+    ("publish_gap_trace", "artifacts/publish_gap_trace.jsonl"),
+    ("routing_event_debug", "artifacts/routing_event_debug.jsonl"),
+    ("routing_response_decoded", "artifacts/routing_response_decoded.json"),
+    ("planning_topic_debug", "artifacts/planning_topic_debug.jsonl"),
+    ("planning_route_segment_debug", "artifacts/planning_route_segment_debug.jsonl"),
+    ("control_apply_trace", "artifacts/control_apply_trace.jsonl"),
+    ("control_decode_debug", "artifacts/control_decode_debug.jsonl"),
+    ("apollo_hdmap_projection", "artifacts/apollo_hdmap_projection.jsonl"),
+]
+
 CONTROL_TRACE_REQUIRED_FIELDS = [
     "apollo_steer_raw",
     "bridge_steer_mapped",
@@ -169,6 +181,24 @@ def check_run_artifact_completeness(
             "traffic_light_behavior_report.json",
         ],
     )
+    topic_publish_stats_path = _find_first(root, ["artifacts/topic_publish_stats.jsonl"])
+    publish_gap_trace_path = _find_first(root, ["artifacts/publish_gap_trace.jsonl"])
+    routing_event_debug_path = _find_first(root, ["artifacts/routing_event_debug.jsonl"])
+    routing_response_decoded_path = _find_first(
+        root,
+        [
+            "artifacts/routing_response_decoded.json",
+            "analysis/routing_response_decoded/routing_response_decoded_report.json",
+        ],
+    )
+    planning_topic_debug_path = _find_first(root, ["artifacts/planning_topic_debug.jsonl"])
+    planning_route_segment_debug_path = _find_first(
+        root,
+        ["artifacts/planning_route_segment_debug.jsonl"],
+    )
+    control_apply_trace_path = _find_first(root, ["artifacts/control_apply_trace.jsonl"])
+    control_decode_debug_path = _find_first(root, ["artifacts/control_decode_debug.jsonl"])
+    apollo_hdmap_projection_path = _find_first(root, ["artifacts/apollo_hdmap_projection.jsonl"])
 
     artifacts = {
         "manifest": str(root / "manifest.json") if (root / "manifest.json").exists() else None,
@@ -193,10 +223,30 @@ def check_run_artifact_completeness(
         else None,
         "traffic_light_contract": str(traffic_light_contract_path) if traffic_light_contract_path else None,
         "traffic_light_behavior": str(traffic_light_behavior_path) if traffic_light_behavior_path else None,
+        "topic_publish_stats": str(topic_publish_stats_path) if topic_publish_stats_path else None,
+        "publish_gap_trace": str(publish_gap_trace_path) if publish_gap_trace_path else None,
+        "routing_event_debug": str(routing_event_debug_path) if routing_event_debug_path else None,
+        "routing_response_decoded": (
+            str(routing_response_decoded_path) if routing_response_decoded_path else None
+        ),
+        "planning_topic_debug": str(planning_topic_debug_path) if planning_topic_debug_path else None,
+        "planning_route_segment_debug": (
+            str(planning_route_segment_debug_path) if planning_route_segment_debug_path else None
+        ),
+        "control_apply_trace": str(control_apply_trace_path) if control_apply_trace_path else None,
+        "control_decode_debug": str(control_decode_debug_path) if control_decode_debug_path else None,
+        "apollo_hdmap_projection": (
+            str(apollo_hdmap_projection_path) if apollo_hdmap_projection_path else None
+        ),
     }
     missing_artifacts = _missing_artifacts(
         artifacts,
         scenario_class=inferred_scenario_class,
+    )
+    claim_or_materialization_profile = _is_claim_or_materialization_profile(summary, manifest)
+    missing_raw_artifacts = _missing_raw_evidence_artifacts(
+        artifacts,
+        claim_or_materialization_profile=claim_or_materialization_profile,
     )
     timeseries_rows = _read_timeseries_rows(timeseries_path)
     missing_control_trace = _missing_control_trace_fields(timeseries_rows)
@@ -220,9 +270,12 @@ def check_run_artifact_completeness(
         traffic_light_behavior_path=traffic_light_behavior_path,
         route_curve_artifact_gap_path=route_curve_artifact_gap_path,
     )
+    summary_complete = not missing_artifacts
+    raw_evidence_complete = not missing_raw_artifacts
     status = "pass"
     if (
         missing_artifacts
+        or missing_raw_artifacts
         or missing_control_trace
         or missing_manifest_fields
         or invalid_manifest_source_fields
@@ -237,13 +290,18 @@ def check_run_artifact_completeness(
         "route_id": route_id,
         "scenario_class": inferred_scenario_class,
         "status": status,
+        "claim_or_materialization_profile": claim_or_materialization_profile,
+        "summary_complete": summary_complete,
+        "raw_evidence_complete": raw_evidence_complete,
         "artifact_complete": not missing_artifacts
+        and not missing_raw_artifacts
         and not missing_control_trace
         and not missing_manifest_fields
         and not invalid_manifest_source_fields
         and not invalid_report_source_fields,
         "artifacts": artifacts,
         "missing_artifacts": missing_artifacts,
+        "missing_raw_evidence_artifacts": missing_raw_artifacts,
         "missing_manifest_fields": missing_manifest_fields,
         "invalid_manifest_source_fields": invalid_manifest_source_fields,
         "invalid_report_source_fields": invalid_report_source_fields,
@@ -279,6 +337,9 @@ def _artifact_completeness_markdown(report: Mapping[str, Any]) -> str:
         f"- status: `{report.get('status')}`",
         f"- scenario_class: `{report.get('scenario_class')}`",
         f"- artifact_complete: `{report.get('artifact_complete')}`",
+        f"- summary_complete: `{report.get('summary_complete')}`",
+        f"- raw_evidence_complete: `{report.get('raw_evidence_complete')}`",
+        f"- claim_or_materialization_profile: `{report.get('claim_or_materialization_profile')}`",
         f"- control_trace_available: `{report.get('control_trace_available')}`",
         "",
         "## Missing Artifacts",
@@ -287,6 +348,12 @@ def _artifact_completeness_markdown(report: Mapping[str, Any]) -> str:
     missing_artifacts = [str(item) for item in report.get("missing_artifacts") or []]
     if missing_artifacts:
         lines.extend(f"- `{item}`" for item in missing_artifacts)
+    else:
+        lines.append("- none")
+    lines.extend(["", "## Missing Raw Evidence Artifacts", ""])
+    missing_raw = [str(item) for item in report.get("missing_raw_evidence_artifacts") or []]
+    if missing_raw:
+        lines.extend(f"- `{item}`" for item in missing_raw)
     else:
         lines.append("- none")
     lines.extend(["", "## Missing Manifest Fields", ""])
@@ -353,6 +420,49 @@ def _missing_artifacts(artifacts: Mapping[str, Any], *, scenario_class: str | No
     if scenario_class in CURVE_DIAGNOSTIC_SCENARIO_CLASSES and not artifacts.get("route_curve_artifact_gap"):
         missing.append("route_curve_artifact_gap_report.json")
     return missing
+
+
+def _missing_raw_evidence_artifacts(
+    artifacts: Mapping[str, Any],
+    *,
+    claim_or_materialization_profile: bool,
+) -> list[str]:
+    if not claim_or_materialization_profile:
+        return []
+    missing: list[str] = []
+    for key, label in CLAIM_PROFILE_RAW_ARTIFACTS:
+        if not artifacts.get(key):
+            missing.append(label)
+    return missing
+
+
+def _is_claim_or_materialization_profile(
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> bool:
+    if bool(summary.get("claim_profile") or manifest.get("claim_profile")):
+        return True
+    if bool(summary.get("materialization_probe") or manifest.get("materialization_probe")):
+        return True
+    runtime_dispatch = str(
+        manifest.get("runtime_dispatch_kind")
+        or summary.get("runtime_dispatch_kind")
+        or ""
+    ).strip()
+    if runtime_dispatch == "typed_apollo_claim_runtime":
+        return True
+    for value in (
+        manifest.get("online_config_profile_name"),
+        summary.get("online_config_profile_name"),
+        manifest.get("profile_name"),
+        summary.get("profile_name"),
+        manifest.get("run_id"),
+        summary.get("run_id"),
+    ):
+        text = str(value or "").lower()
+        if "claim" in text or "materialization" in text:
+            return True
+    return False
 
 
 def _invalid_report_source_fields(

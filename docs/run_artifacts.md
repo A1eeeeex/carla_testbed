@@ -192,6 +192,23 @@ run-local diagnostics include:
 evidence chain persisted in the run directory instead of relying on an in-memory
 check or visual observation.
 
+`artifact_completeness_report.json` separates summary/report completeness from
+raw evidence completeness. Claim or materialization profiles require
+timestamped row-level artifacts such as `topic_publish_stats.jsonl`,
+`routing_event_debug.jsonl`, `routing_response_decoded.json`,
+`planning_topic_debug.jsonl`, `planning_route_segment_debug.jsonl`,
+`control_apply_trace.jsonl`, `control_decode_debug.jsonl`, and
+`apollo_hdmap_projection.jsonl`. If those raw artifacts are missing, the report
+must set `raw_evidence_complete=false` and `status=insufficient_data` even when
+high-level summaries are present.
+
+For transition runs, `bridge_transport_summary.json` may retain
+`transport_mode=ros2_gt` as the legacy compatibility layer while also reporting
+`canonical_transport_mode=apollo_cyberrt_gt_over_ros2_transition`,
+`legacy_transport_name=ros2_gt`, and `compat_layers`. Reviewers should use the
+canonical field for claim-boundary interpretation and the legacy field only for
+debugging the compatibility path.
+
 Fixed-scene artifacts describe scripted non-ego actor setup and behavior.
 They are useful for follow-stop, cut-in, cut-out, and lead-vehicle diagnostic
 cases, but they do not prove ego natural-driving success. Ego capability claims

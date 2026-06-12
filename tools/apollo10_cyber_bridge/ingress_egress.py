@@ -73,9 +73,18 @@ def build_bridge_transport_summary(
     control_out_type: str,
     direct_bridge: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    legacy_transport = str(transport_mode or "ros2_gt")
+    canonical_transport = legacy_transport
+    compat_layers: list[str] = []
+    if legacy_transport == "ros2_gt" and bool(uses_ros2_gt):
+        canonical_transport = "apollo_cyberrt_gt_over_ros2_transition"
+        compat_layers = ["ros2_gt_transition", "legacy_route_health_transition"]
     return {
         "source": "bridge_transport",
-        "transport_mode": str(transport_mode or "ros2_gt"),
+        "transport_mode": legacy_transport,
+        "canonical_transport_mode": canonical_transport,
+        "legacy_transport_name": legacy_transport if canonical_transport != legacy_transport else "",
+        "compat_layers": compat_layers,
         "gt_source": str(gt_source or ""),
         "control_apply_path": str(control_apply_path or ""),
         "tick_owner": str(tick_owner or ""),

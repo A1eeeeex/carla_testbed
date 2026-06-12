@@ -105,6 +105,16 @@ def online_claim_manifest_updates(
     _set_if_present(updates, "backend", backend)
     if truth_input is not None:
         updates["truth_input"] = bool(truth_input)
+    claim_profile = _first_bool(run_cfg.get("claim_profile"), cfg.get("claim_profile"))
+    if claim_profile is not None:
+        updates["claim_profile"] = bool(claim_profile)
+    materialization_probe = _first_bool(
+        run_cfg.get("materialization_probe"),
+        cfg.get("materialization_probe"),
+        _mapping(cfg.get("reports")).get("require_route_materialization"),
+    )
+    if materialization_probe is not None:
+        updates["materialization_probe"] = bool(materialization_probe)
     if duration_s is not None:
         updates["duration_s"] = float(duration_s)
     if fixed_delta_seconds is not None:

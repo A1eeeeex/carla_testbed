@@ -31,6 +31,7 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
         "seed": 1,
         "output_root": "runs",
         "claim_profile": False,
+        "materialization_probe": False,
     },
     "sim": {
         "host": "localhost",
@@ -66,7 +67,15 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
 
 TOP_LEVEL_KEYS = set(BUILTIN_DEFAULTS) | {"output"}
 STRICT_SECTION_KEYS = {
-    "run": {"id", "max_ticks", "fixed_dt_s", "seed", "output_root", "claim_profile"},
+    "run": {
+        "id",
+        "max_ticks",
+        "fixed_dt_s",
+        "seed",
+        "output_root",
+        "claim_profile",
+        "materialization_probe",
+    },
     "sim": {"host", "port", "town", "synchronous", "timeout_s"},
 }
 PARAM_SECTION_KEYS = {
