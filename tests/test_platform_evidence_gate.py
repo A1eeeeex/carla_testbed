@@ -159,7 +159,24 @@ def _write_claim_grade_synthetic_run(run_dir: Path) -> None:
     (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
     (run_dir / "config.resolved.yaml").write_text("run_id: synthetic_claim_pass\n", encoding="utf-8")
     (run_dir / "events.jsonl").write_text('{"event_type":"start"}\n', encoding="utf-8")
-    (run_dir / "route.json").write_text(json.dumps({"route_id": route_id}), encoding="utf-8")
+    route_points = [
+        {"index": 0, "x": 0.0, "y": 0.0, "z": 0.0, "s": 0.0, "heading": 0.0, "lane_id": "15:0:1"},
+        {"index": 1, "x": 5.0, "y": 0.0, "z": 0.0, "s": 5.0, "heading": 0.0, "lane_id": "15:0:1"},
+    ]
+    (run_dir / "route.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "runtime_route_trace.v1",
+                "route_id": route_id,
+                "map": "Town01",
+                "map_name": "Town01",
+                "source": "synthetic_claim_fixture",
+                "status": "pass",
+                "points": route_points,
+            }
+        ),
+        encoding="utf-8",
+    )
     fields = [
         "sim_time",
         "route_s",
@@ -198,6 +215,26 @@ def _write_claim_grade_synthetic_run(run_dir: Path) -> None:
     )
     (artifacts / "routing_response_decoded.jsonl").write_text(
         json.dumps({"lane_segments": [{"lane_id": "lane_1", "start_s": 0.0, "end_s": 1.0}]}) + "\n",
+        encoding="utf-8",
+    )
+    (artifacts / "route_definition_claim.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "route_definition_claim.v1",
+                "run_id": run_id,
+                "scenario_id": "lane_keep_097",
+                "scenario_class": scenario_class,
+                "route_id": route_id,
+                "scenario_route_samples": route_points,
+                "scenario_lane_sequence": ["15:0:1"],
+                "scenario_lane_window_signature": "15:1",
+                "apollo_routing_lane_sequence": ["15:0:1"],
+                "apollo_routing_lane_window_signature": "15:1",
+                "lane_equivalence": {"status": "direct_match", "mismatch_index": None},
+                "status": "pass",
+                "blocking_reasons": [],
+            }
+        ),
         encoding="utf-8",
     )
 

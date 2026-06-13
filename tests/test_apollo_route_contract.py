@@ -7,7 +7,10 @@ from pathlib import Path
 
 from carla_testbed.analysis.apollo_route_contract import (
     APOLLO_ROUTE_CONTRACT_SCHEMA_VERSION,
+    ROUTE_DEFINITION_CLAIM_SCHEMA_VERSION,
     analyze_apollo_route_contract_run_dir,
+    build_route_definition_claim,
+    write_apollo_route_contract_report,
 )
 
 FRAME_TRANSFORM = {
@@ -530,6 +533,52 @@ def test_route_contract_uses_decoded_routing_response_as_route_identity_source(t
     assert report["last_routing_response"]["source"] == "routing_response_decoded"
     assert report["routing_response_decoded"]["available"] is True
     assert report["route_identity_status"] == "consistent"
+
+
+def test_route_contract_writes_route_definition_claim_artifact(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "source": "/apollo/routing_response",
+            "lane_segments": [{"lane_id": "15_1_1", "start_s": 66.9, "end_s": 296.9}],
+            "total_length_m": 230.0,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [{"start_raw_x": 2.0, "start_raw_y": -249.0, "goal_raw_x": 2.0, "goal_raw_y": -19.0}],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "route_segment_total_length": 230.0,
+                "routing_lane_window_count": 1,
+                "routing_lane_window_signature": "15_1_1@66.9->296.9",
+                "routing_unique_lane_signature": "15_1_1",
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/apollo_hdmap_projection.jsonl",
+        [{"source": "apollo_hdmap_api", "nearest_lane_id": "15_1_1"}],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+    outputs = write_apollo_route_contract_report(report, run_dir / "analysis/apollo_route_contract")
+    claim = build_route_definition_claim(report)
+
+    artifact_path = run_dir / "artifacts/route_definition_claim.json"
+    written = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert Path(outputs["route_definition_claim"]).is_file()
+    assert outputs["route_definition_claim_artifact"] == str(artifact_path)
+    assert written["schema_version"] == ROUTE_DEFINITION_CLAIM_SCHEMA_VERSION
+    assert written["scenario_lane_sequence"] == ["15:1"]
+    assert written["apollo_lane_sequence"] == ["15:1"]
+    assert written["scenario_route_samples"]
+    assert written["lane_equivalence"]["status"] == "direct_match"
+    assert claim["scenario_lane_window_signature"] == "15:1"
 
 
 def test_route_contract_missing_apollo_route_is_insufficient(tmp_path: Path) -> None:

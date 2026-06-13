@@ -30,6 +30,7 @@ CLAIM_PROFILE_RAW_ARTIFACTS = [
     ("events", "events.jsonl"),
     ("timeseries", "timeseries.csv"),
     ("route_json", "route.json"),
+    ("route_definition_claim", "artifacts/route_definition_claim.json"),
     ("topic_publish_stats", "artifacts/topic_publish_stats.jsonl"),
     ("publish_gap_trace", "artifacts/publish_gap_trace.jsonl"),
     ("routing_event_debug", "artifacts/routing_event_debug.jsonl"),
@@ -203,6 +204,7 @@ def check_run_artifact_completeness(
             "artifacts/routing_response_decoded.jsonl",
         ],
     )
+    route_definition_claim_path = _find_first(root, ["artifacts/route_definition_claim.json"])
     planning_topic_debug_path = _find_first(root, ["artifacts/planning_topic_debug.jsonl"])
     planning_route_segment_debug_path = _find_first(
         root,
@@ -247,6 +249,7 @@ def check_run_artifact_completeness(
             if routing_response_decoded_jsonl_path
             else None
         ),
+        "route_definition_claim": str(route_definition_claim_path) if route_definition_claim_path else None,
         "planning_topic_debug": str(planning_topic_debug_path) if planning_topic_debug_path else None,
         "planning_route_segment_debug": (
             str(planning_route_segment_debug_path) if planning_route_segment_debug_path else None
@@ -257,6 +260,7 @@ def check_run_artifact_completeness(
             str(apollo_hdmap_projection_path) if apollo_hdmap_projection_path else None
         ),
     }
+    physical_artifacts = _physical_artifact_statuses(artifacts)
     missing_artifacts = _missing_artifacts(
         artifacts,
         scenario_class=inferred_scenario_class,
@@ -290,10 +294,13 @@ def check_run_artifact_completeness(
     )
     summary_complete = not missing_artifacts
     raw_evidence_complete = not missing_raw_artifacts
+    empty_artifacts = _empty_present_artifacts(physical_artifacts)
+    physical_complete = not missing_artifacts and not empty_artifacts and not missing_raw_artifacts
     status = "pass"
     if (
         missing_artifacts
         or missing_raw_artifacts
+        or empty_artifacts
         or missing_control_trace
         or missing_manifest_fields
         or invalid_manifest_source_fields
@@ -309,17 +316,22 @@ def check_run_artifact_completeness(
         "scenario_class": inferred_scenario_class,
         "status": status,
         "claim_or_materialization_profile": claim_or_materialization_profile,
+        "declared_complete": not missing_artifacts,
+        "physical_complete": physical_complete,
         "summary_complete": summary_complete,
         "raw_evidence_complete": raw_evidence_complete,
         "artifact_complete": not missing_artifacts
         and not missing_raw_artifacts
+        and not empty_artifacts
         and not missing_control_trace
         and not missing_manifest_fields
         and not invalid_manifest_source_fields
         and not invalid_report_source_fields,
         "artifacts": artifacts,
+        "physical_artifacts": physical_artifacts,
         "missing_artifacts": missing_artifacts,
         "missing_raw_evidence_artifacts": missing_raw_artifacts,
+        "empty_artifacts": empty_artifacts,
         "missing_manifest_fields": missing_manifest_fields,
         "invalid_manifest_source_fields": invalid_manifest_source_fields,
         "invalid_report_source_fields": invalid_report_source_fields,
@@ -355,6 +367,8 @@ def _artifact_completeness_markdown(report: Mapping[str, Any]) -> str:
         f"- status: `{report.get('status')}`",
         f"- scenario_class: `{report.get('scenario_class')}`",
         f"- artifact_complete: `{report.get('artifact_complete')}`",
+        f"- declared_complete: `{report.get('declared_complete')}`",
+        f"- physical_complete: `{report.get('physical_complete')}`",
         f"- summary_complete: `{report.get('summary_complete')}`",
         f"- raw_evidence_complete: `{report.get('raw_evidence_complete')}`",
         f"- claim_or_materialization_profile: `{report.get('claim_or_materialization_profile')}`",
@@ -366,6 +380,12 @@ def _artifact_completeness_markdown(report: Mapping[str, Any]) -> str:
     missing_artifacts = [str(item) for item in report.get("missing_artifacts") or []]
     if missing_artifacts:
         lines.extend(f"- `{item}`" for item in missing_artifacts)
+    else:
+        lines.append("- none")
+    lines.extend(["", "## Empty Present Artifacts", ""])
+    empty_artifacts = [str(item) for item in report.get("empty_artifacts") or []]
+    if empty_artifacts:
+        lines.extend(f"- `{item}`" for item in empty_artifacts)
     else:
         lines.append("- none")
     lines.extend(["", "## Missing Raw Evidence Artifacts", ""])
@@ -449,14 +469,23 @@ def _missing_raw_evidence_artifacts(
         return []
     missing: list[str] = []
     for key, label in CLAIM_PROFILE_RAW_ARTIFACTS:
-        if not artifacts.get(key):
+        raw_path = artifacts.get(key)
+        if not raw_path:
             missing.append(label)
+        elif not _artifact_file_non_empty(Path(str(raw_path))):
+            missing.append(f"{label}:empty")
     missing.extend(_invalid_raw_evidence_artifacts(artifacts))
     return missing
 
 
 def _invalid_raw_evidence_artifacts(artifacts: Mapping[str, Any]) -> list[str]:
     invalid: list[str] = []
+    route_json = artifacts.get("route_json")
+    if route_json and not _route_json_has_points(Path(str(route_json))):
+        invalid.append("route.json:points_missing")
+    route_claim = artifacts.get("route_definition_claim")
+    if route_claim and not _route_definition_claim_has_samples(Path(str(route_claim))):
+        invalid.append("artifacts/route_definition_claim.json:scenario_route_samples_missing")
     routing_json = artifacts.get("routing_response_decoded")
     if routing_json and not _routing_response_decoded_file_has_lane_segments(Path(str(routing_json))):
         invalid.append("artifacts/routing_response_decoded.json:lane_segments_missing")
@@ -464,6 +493,62 @@ def _invalid_raw_evidence_artifacts(artifacts: Mapping[str, Any]) -> list[str]:
     if routing_jsonl and not _routing_response_decoded_file_has_lane_segments(Path(str(routing_jsonl))):
         invalid.append("artifacts/routing_response_decoded.jsonl:lane_segments_missing")
     return invalid
+
+
+def _physical_artifact_statuses(artifacts: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    statuses: dict[str, dict[str, Any]] = {}
+    for key, raw_path in artifacts.items():
+        if raw_path in {None, ""}:
+            statuses[key] = {
+                "path": None,
+                "exists": False,
+                "size_bytes": None,
+                "non_empty": False,
+            }
+            continue
+        path = Path(str(raw_path))
+        exists = path.is_file()
+        size = path.stat().st_size if exists else None
+        statuses[key] = {
+            "path": str(path),
+            "exists": exists,
+            "size_bytes": size,
+            "non_empty": bool(size and size > 0),
+        }
+    return statuses
+
+
+def _empty_present_artifacts(physical_artifacts: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    empty: list[str] = []
+    for key, status in physical_artifacts.items():
+        if status.get("exists") is True and not status.get("non_empty"):
+            empty.append(str(status.get("path") or key))
+    return sorted(empty)
+
+
+def _artifact_file_non_empty(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _route_json_has_points(path: Path) -> bool:
+    payload = _read_json(path)
+    points = payload.get("points")
+    return isinstance(points, list) and any(isinstance(row, Mapping) for row in points)
+
+
+def _route_definition_claim_has_samples(path: Path) -> bool:
+    payload = _read_json(path)
+    samples = payload.get("scenario_route_samples")
+    lane_sequence = payload.get("scenario_lane_sequence")
+    return (
+        isinstance(samples, list)
+        and any(isinstance(row, Mapping) for row in samples)
+        and isinstance(lane_sequence, list)
+        and bool(lane_sequence)
+    )
 
 
 def _routing_response_decoded_file_has_lane_segments(path: Path) -> bool:

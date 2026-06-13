@@ -114,7 +114,7 @@ def _run_artifact_only_compat_runtime(
     store = RunArtifactStore(root).ensure()
     start_wall = time.time()
     store.write_resolved_config(dict(resolved_config))
-    route_path = _write_route_stub(root, route_id=metadata["route_id"])
+    route_path = _write_route_artifact(root, route_id=metadata["route_id"], metadata=metadata)
     stats_path = _write_cyber_bridge_stats(root, cfg, metadata=metadata)
     _write_topic_publish_stats(root)
     _write_control_apply_trace(root)
@@ -280,9 +280,7 @@ def _run_typed_transition_backend(
         error_text=error_text,
     )
 
-    route_path = root / "route.json"
-    if not route_path.exists():
-        route_path = _write_route_stub(root, route_id=str(runtime_metadata["route_id"]))
+    route_path = _write_route_artifact(root, route_id=str(runtime_metadata["route_id"]), metadata=runtime_metadata)
     stats_path = root / "artifacts" / "cyber_bridge_stats.json"
     if not stats_path.exists():
         stats_path = _write_cyber_bridge_stats(root, cfg, metadata=runtime_metadata)
@@ -361,7 +359,7 @@ def _write_transition_preflight_failure(
 ) -> ApolloCompatRuntimeResult:
     store = RunArtifactStore(root).ensure()
     store.write_resolved_config(dict(resolved_config))
-    route_path = _write_route_stub(root, route_id=str(metadata["route_id"]))
+    route_path = _write_route_artifact(root, route_id=str(metadata["route_id"]), metadata=metadata)
     stats_path = _write_cyber_bridge_stats(root, cfg, metadata=metadata)
     manifest = _build_manifest_payload(
         cfg,
@@ -672,9 +670,7 @@ def _merge_manifest_after_transition(
     manifest_path = root / "manifest.json"
     existing = _read_json(manifest_path)
     if not existing:
-        route_path = root / "route.json"
-        if not route_path.exists():
-            route_path = _write_route_stub(root, route_id=str(metadata["route_id"]))
+        route_path = _write_route_artifact(root, route_id=str(metadata["route_id"]), metadata=metadata)
         existing = _build_manifest_payload(
             cfg,
             config_path=config_path,
@@ -1320,6 +1316,29 @@ def _write_control_apply_trace(root: Path) -> None:
     )
 
 
+def _write_route_artifact(
+    root: Path,
+    *,
+    route_id: str,
+    metadata: Mapping[str, Any] | None = None,
+) -> Path:
+    path = root / "route.json"
+    existing = _read_json(path)
+    if existing and not _route_json_is_stub(existing):
+        return path
+    scenario_metadata = _scenario_metadata_for_route(root, metadata=metadata)
+    route_trace = scenario_metadata.get("route_trace")
+    if isinstance(route_trace, list) and route_trace:
+        points = _route_points_from_trace(route_trace)
+        if points:
+            _write_json(
+                path,
+                _route_trace_payload(route_id=route_id, scenario_metadata=scenario_metadata, points=points),
+            )
+            return path
+    return _write_route_stub(root, route_id=route_id)
+
+
 def _write_route_stub(root: Path, *, route_id: str) -> Path:
     path = root / "route.json"
     _write_json(
@@ -1333,6 +1352,105 @@ def _write_route_stub(root: Path, *, route_id: str) -> Path:
         },
     )
     return path
+
+
+def _route_trace_payload(
+    *,
+    route_id: str,
+    scenario_metadata: Mapping[str, Any],
+    points: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    map_name = _first_text(scenario_metadata.get("map"), scenario_metadata.get("map_name"), "Town01")
+    return {
+        "schema_version": "runtime_route_trace.v1",
+        "route_id": _first_text(scenario_metadata.get("route_id"), route_id),
+        "map": map_name,
+        "map_name": map_name,
+        "source": "artifacts/scenario_metadata.json:route_trace",
+        "status": "pass",
+        "points": [dict(point) for point in points],
+        "spawn_pose": scenario_metadata.get("spawn"),
+        "goal_pose": scenario_metadata.get("goal"),
+        "metadata": {
+            "route_trace_source": scenario_metadata.get("route_trace_source"),
+            "route_trace_point_count": len(points),
+            "route_trace_length_m": scenario_metadata.get("route_trace_length_m"),
+            "route_trace_length_source": scenario_metadata.get("route_trace_length_source"),
+            "claim_route_length_m": scenario_metadata.get("claim_route_length_m"),
+            "claim_route_length_source": scenario_metadata.get("claim_route_length_source"),
+            "declared_route_length_m": scenario_metadata.get("route_length_m"),
+            "route_length_m_role": scenario_metadata.get("route_length_m_role"),
+            "route_length_m_claim_grade": scenario_metadata.get("route_length_m_claim_grade"),
+            "route_selected_from_corpus": scenario_metadata.get("route_selected_from_corpus"),
+            "route_corpus_path": scenario_metadata.get("route_corpus_path"),
+        },
+        "claim_boundary": (
+            "This route geometry is the configured scenario route trace. "
+            "Apollo natural-driving claims still require apollo_route_contract, "
+            "HDMap projection, reference-line, localization, control, perception, "
+            "and assist evidence."
+        ),
+    }
+
+
+def _scenario_metadata_for_route(
+    root: Path,
+    *,
+    metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    candidates: list[Any] = []
+    artifact_metadata = _read_json(root / "artifacts" / "scenario_metadata.json")
+    if artifact_metadata:
+        candidates.append(artifact_metadata)
+    manifest = _read_json(root / "manifest.json")
+    manifest_metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), Mapping) else {}
+    if isinstance(manifest_metadata, Mapping):
+        candidates.append(manifest_metadata.get("scenario_metadata"))
+    if isinstance(metadata, Mapping):
+        candidates.append(metadata.get("scenario_metadata"))
+        candidates.append(metadata)
+    for candidate in candidates:
+        if isinstance(candidate, Mapping):
+            route_trace = candidate.get("route_trace")
+            if isinstance(route_trace, list) and route_trace:
+                return dict(candidate)
+    return {}
+
+
+def _route_points_from_trace(route_trace: Sequence[Any]) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for index, item in enumerate(route_trace):
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("x") is None or item.get("y") is None:
+            continue
+        point: dict[str, Any] = {
+            "index": _int_or_default(item.get("index"), index),
+            "x": item.get("x"),
+            "y": item.get("y"),
+            "z": item.get("z", 0.0),
+            "s": item.get("s"),
+            "heading": item.get("heading"),
+            "curvature": item.get("curvature"),
+            "lane_id": item.get("lane_id"),
+            "tags": item.get("tags") or [],
+        }
+        points.append({key: value for key, value in point.items() if value is not None})
+    return points
+
+
+def _route_json_is_stub(payload: Mapping[str, Any]) -> bool:
+    points = payload.get("points")
+    schema_version = str(payload.get("schema_version") or "")
+    status = str(payload.get("status") or "")
+    return schema_version == "route_stub.v1" or status == "insufficient_data" or not points
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _write_timeseries_csv(root: Path, *, route_id: str) -> None:

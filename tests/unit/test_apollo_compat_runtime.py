@@ -214,6 +214,83 @@ def test_transition_backend_syncs_valid_routing_response_into_report_and_jsonl(
     assert route_health["route_id"] == "town01_rh_spawn068_goal079"
 
 
+def test_transition_backend_materializes_route_json_from_scenario_route_trace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_transition_config(tmp_path)
+    cfg = load_config(config_path)
+    run_dir = tmp_path / "claim_transition"
+
+    def fake_invoke(_effective_path: Path, root: Path) -> int:
+        artifacts = root / "artifacts"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        (artifacts / "scenario_metadata.json").write_text(
+            json.dumps(
+                {
+                    "route_id": "town01_rh_spawn097_goal046",
+                    "map": "Town01",
+                    "route_trace_source": "town01_forward_waypoint_trace",
+                    "route_trace_length_m": 10.0,
+                    "route_trace_length_source": "route_trace_s_span",
+                    "claim_route_length_m": 10.0,
+                    "claim_route_length_source": "route_trace_s_span",
+                    "spawn": {"x": 0.0, "y": 0.0, "z": 0.0, "yaw_deg": 0.0},
+                    "goal": {"x": 10.0, "y": 0.0, "z": 0.0, "yaw_deg": 0.0},
+                    "route_trace": [
+                        {"index": 0, "x": 0.0, "y": 0.0, "z": 0.0, "s": 0.0, "heading": 0.0, "lane_id": "15:0:1"},
+                        {"index": 1, "x": 5.0, "y": 0.0, "z": 0.0, "s": 5.0, "heading": 0.0, "lane_id": "15:0:1"},
+                        {"index": 2, "x": 10.0, "y": 0.0, "z": 0.0, "s": 10.0, "heading": 0.0, "lane_id": "15:0:1"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (root / "route.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "route_stub.v1",
+                    "route_id": "town01_rh_spawn097_goal046",
+                    "status": "insufficient_data",
+                    "points": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (root / "summary.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "exit_reason": "fake_transition_ok",
+                    "frames": 1,
+                    "route_id": "town01_rh_spawn097_goal046",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(apollo_compat, "_invoke_tbio_transition_backend", fake_invoke)
+
+    result = apollo_compat.run_compat_apollo_cyber_gt_runtime(
+        cfg,
+        config_path=config_path,
+        run_dir=run_dir,
+        resolved_config=dataclasses.asdict(cfg),
+    )
+
+    assert result.exit_code == 0
+    route = json.loads((run_dir / "route.json").read_text(encoding="utf-8"))
+    assert route["schema_version"] == "runtime_route_trace.v1"
+    assert route["route_id"] == "town01_rh_spawn097_goal046"
+    assert route["map"] == "Town01"
+    assert route["source"] == "artifacts/scenario_metadata.json:route_trace"
+    assert len(route["points"]) == 3
+    assert route["points"][0]["lane_id"] == "15:0:1"
+    assert route["metadata"]["claim_route_length_m"] == 10.0
+    assert "Apollo natural-driving claims still require" in route["claim_boundary"]
+
+
 def test_transition_python_resolver_does_not_use_unexpanded_placeholder(
     tmp_path: Path,
     monkeypatch,

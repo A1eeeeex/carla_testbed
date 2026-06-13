@@ -15,6 +15,7 @@ from carla_testbed.adapters.apollo.frame_transform import (
 from carla_testbed.analysis.routing_response_decoded import read_routing_response_decoded
 
 APOLLO_ROUTE_CONTRACT_SCHEMA_VERSION = "apollo_route_contract.v1"
+ROUTE_DEFINITION_CLAIM_SCHEMA_VERSION = "route_definition_claim.v1"
 
 MAX_ABS_ROUTE_LENGTH_DIFF_M = 20.0
 MAX_REL_ROUTE_LENGTH_DIFF = 0.15
@@ -187,6 +188,8 @@ def analyze_apollo_route_contract(
 
     scenario_lane_keys = set(scenario.get("route_lane_keys") or [])
     apollo_lane_keys = set(apollo.get("routing_lane_keys") or [])
+    scenario_lane_sequence = list(scenario.get("route_lane_sequence") or [])
+    apollo_lane_sequence = list(apollo.get("routing_lane_sequence_keys") or [])
     apollo_extra_lane_keys = sorted(apollo_lane_keys - scenario_lane_keys)
     missing_scenario_lane_keys = sorted(scenario_lane_keys - apollo_lane_keys)
     scenario_lane_namespace = _scenario_lane_namespace(scenario)
@@ -281,6 +284,20 @@ def analyze_apollo_route_contract(
                 blocking.append("apollo_routing_missing_scenario_lane")
             if lane_window_sequence_mismatch:
                 blocking.append("apollo_routing_lane_sequence_mismatch")
+    lane_equivalence = _lane_equivalence_report(
+        status=lane_equivalence_status,
+        scenario_namespace=scenario_lane_namespace,
+        apollo_namespace=apollo_lane_namespace,
+        scenario_sequence=scenario_lane_sequence,
+        apollo_sequence=apollo_lane_sequence,
+        scenario_keys=scenario_lane_keys,
+        apollo_keys=apollo_lane_keys,
+        missing_scenario_lane_keys=missing_scenario_lane_keys,
+        apollo_extra_lane_keys=apollo_extra_lane_keys,
+        apollo_lane_window_count=apollo_lane_window_count,
+        expected_lane_window_count=expected_lane_window_count,
+        directly_comparable=lane_namespaces_directly_comparable,
+    )
 
     route_identity = _route_identity(
         scenario=scenario,
@@ -352,10 +369,12 @@ def analyze_apollo_route_contract(
         "scenario_start_lane": scenario.get("start_lane"),
         "scenario_goal_lane": scenario.get("goal_lane"),
         "scenario_route_lane_keys": sorted(scenario_lane_keys),
+        "scenario_route_lane_sequence": scenario_lane_sequence,
         "scenario_lane_namespace": scenario_lane_namespace,
         "apollo_lane_namespace": apollo_lane_namespace,
         "lane_namespaces_directly_comparable": lane_namespaces_directly_comparable,
         "lane_equivalence_status": lane_equivalence_status,
+        "lane_equivalence": lane_equivalence,
         "configured_scenario_route": _configured_scenario_route_report(
             scenario,
             start_xy_apollo=scenario_start_xy_apollo,
@@ -374,6 +393,7 @@ def analyze_apollo_route_contract(
         "apollo_routing_lane_signature": apollo.get("routing_lane_signature"),
         "apollo_routing_unique_lane_signature": apollo.get("routing_unique_lane_signature"),
         "apollo_routing_lane_keys": sorted(apollo_lane_keys),
+        "apollo_routing_lane_sequence": apollo_lane_sequence,
         "apollo_routing_extra_lane_keys": apollo_extra_lane_keys,
         "apollo_routing_missing_scenario_lane_keys": missing_scenario_lane_keys,
         "apollo_start_xy": apollo.get("start_xy"),
@@ -419,11 +439,114 @@ def write_apollo_route_contract_report(report: Mapping[str, Any], out_dir: str |
     output.mkdir(parents=True, exist_ok=True)
     report_path = output / "apollo_route_contract_report.json"
     summary_path = output / "apollo_route_contract_summary.md"
+    route_claim_path = output / "route_definition_claim.json"
     report_path.write_text(json.dumps(dict(report), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     summary_path.write_text(apollo_route_contract_summary_md(report), encoding="utf-8")
-    return {
+    route_claim = build_route_definition_claim(report)
+    route_claim_path.write_text(json.dumps(route_claim, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    outputs = {
         "apollo_route_contract_report": str(report_path),
         "apollo_route_contract_summary": str(summary_path),
+        "route_definition_claim": str(route_claim_path),
+    }
+    artifact_path = _route_definition_claim_artifact_path(report, output)
+    if artifact_path is not None:
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(json.dumps(route_claim, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        outputs["route_definition_claim_artifact"] = str(artifact_path)
+    return outputs
+
+
+def build_route_definition_claim(report: Mapping[str, Any]) -> dict[str, Any]:
+    configured = report.get("configured_scenario_route")
+    if not isinstance(configured, Mapping):
+        configured = {}
+    last_request = report.get("last_routing_request")
+    if not isinstance(last_request, Mapping):
+        last_request = {}
+    last_response = report.get("last_routing_response")
+    if not isinstance(last_response, Mapping):
+        last_response = {}
+    planning_segment = report.get("latest_planning_active_route_segment")
+    if not isinstance(planning_segment, Mapping):
+        planning_segment = {}
+    lane_equivalence = report.get("lane_equivalence")
+    if not isinstance(lane_equivalence, Mapping):
+        lane_equivalence = {}
+    route_identity = report.get("route_identity")
+    if not isinstance(route_identity, Mapping):
+        route_identity = {}
+    return {
+        "schema_version": ROUTE_DEFINITION_CLAIM_SCHEMA_VERSION,
+        "run_id": report.get("run_id"),
+        "scenario_id": report.get("scenario_id"),
+        "scenario_class": report.get("scenario_class"),
+        "route_id": report.get("route_id"),
+        "map": configured.get("map") or configured.get("map_name"),
+        "comparison_frame": report.get("comparison_frame"),
+        "route_length_m": report.get("scenario_route_length_m"),
+        "route_length_source": report.get("scenario_route_length_source"),
+        "route_length_consistency_status": report.get("scenario_route_length_consistency_status"),
+        "route_length_consistency_reason": report.get("scenario_route_length_consistency_reason"),
+        "scenario_route_samples": list(configured.get("route_trace_samples") or []),
+        "scenario_route_sample_count": configured.get("route_trace_point_count"),
+        "scenario_lane_namespace": report.get("scenario_lane_namespace"),
+        "scenario_lane_window_signature": _sequence_signature(
+            report.get("scenario_route_lane_sequence") or report.get("scenario_route_lane_keys") or []
+        ),
+        "scenario_lane_sequence": list(report.get("scenario_route_lane_sequence") or []),
+        "apollo_lane_namespace": report.get("apollo_lane_namespace"),
+        "apollo_lane_window_signature": report.get("apollo_routing_lane_signature"),
+        "apollo_lane_sequence": list(report.get("apollo_routing_lane_sequence") or []),
+        "apollo_unique_lane_signature": report.get("apollo_routing_unique_lane_signature"),
+        "apollo_lane_window_count": report.get("apollo_routing_lane_window_count"),
+        "planning_lane_window_signature": planning_segment.get("routing_lane_window_signature"),
+        "planning_lane_window_count": planning_segment.get("routing_lane_window_count"),
+        "start": {
+            "scenario_lane_id": report.get("scenario_start_lane"),
+            "scenario_xy_carla": report.get("scenario_start_xy_carla"),
+            "scenario_xy_apollo": report.get("scenario_start_xy_apollo"),
+            "apollo_xy": report.get("apollo_start_xy"),
+            "routing_request_projection": last_request.get("start_projection"),
+            "xy_error_m": report.get("start_xy_error_m"),
+        },
+        "goal": {
+            "scenario_lane_id": report.get("scenario_goal_lane"),
+            "scenario_xy_carla": report.get("scenario_goal_xy_carla"),
+            "scenario_xy_apollo": report.get("scenario_goal_xy_apollo"),
+            "apollo_xy": report.get("apollo_goal_xy"),
+            "routing_request_projection": last_request.get("goal_projection"),
+            "xy_error_m": report.get("goal_xy_error_m"),
+        },
+        "lane_equivalence": dict(lane_equivalence),
+        "route_identity": dict(route_identity),
+        "claim_route_contract": report.get("claim_route_contract"),
+        "startup_route_contract": report.get("startup_route_contract"),
+        "status": report.get("status"),
+        "blocking_reasons": list(report.get("blocking_reasons") or []),
+        "warnings": list(report.get("warnings") or []),
+        "missing_fields": list(report.get("missing_fields") or []),
+        "source": {
+            "apollo_route_contract_report": report.get("source", {}).get("apollo_route_contract_report")
+            if isinstance(report.get("source"), Mapping)
+            else None,
+            "run_dir": report.get("source", {}).get("run_dir") if isinstance(report.get("source"), Mapping) else None,
+            "routing_response_decoded": report.get("source", {}).get("routing_response_decoded")
+            if isinstance(report.get("source"), Mapping)
+            else None,
+            "planning_route_segment_debug": report.get("source", {}).get("planning_route_segment_debug")
+            if isinstance(report.get("source"), Mapping)
+            else None,
+            "apollo_hdmap_projection": report.get("source", {}).get("apollo_hdmap_projection")
+            if isinstance(report.get("source"), Mapping)
+            else None,
+        },
+        "interpretation_boundary": (
+            "This artifact is a claim-route identity ledger. It does not prove ego behavior "
+            "or Planning/Control correctness; it only records whether the configured route, "
+            "Apollo RoutingResponse, and Planning route segment are compatible enough to "
+            "support later capability evidence."
+        ),
     }
 
 
@@ -467,6 +590,28 @@ def apollo_route_contract_summary_md(report: Mapping[str, Any]) -> str:
             "",
         ]
     )
+
+
+def _route_definition_claim_artifact_path(report: Mapping[str, Any], output: Path) -> Path | None:
+    source = report.get("source")
+    if not isinstance(source, Mapping):
+        return None
+    raw_run_dir = source.get("run_dir")
+    if raw_run_dir in {None, ""}:
+        return None
+    run_dir = Path(str(raw_run_dir)).expanduser()
+    try:
+        run_dir_resolved = run_dir.resolve()
+        output_resolved = output.resolve()
+    except OSError:
+        return None
+    try:
+        is_under_run = output_resolved.is_relative_to(run_dir_resolved)
+    except AttributeError:
+        is_under_run = str(output_resolved).startswith(str(run_dir_resolved))
+    if not is_under_run:
+        return None
+    return run_dir / "artifacts" / "route_definition_claim.json"
 
 
 def _resolve_frame_transform(
@@ -626,11 +771,13 @@ def _configured_scenario_route_report(
         "route_trace_length_m": scenario.get("route_trace_length_m"),
         "route_trace_length_source": scenario.get("route_trace_length_source"),
         "route_trace_point_count": scenario.get("route_trace_point_count"),
+        "route_trace_samples": list(scenario.get("route_trace_samples") or []),
         "route_length_consistency_status": scenario.get("route_length_consistency_status"),
         "route_length_consistency_reason": scenario.get("route_length_consistency_reason"),
         "start_lane": scenario.get("start_lane"),
         "goal_lane": scenario.get("goal_lane"),
         "route_lane_keys": list(scenario.get("route_lane_keys") or []),
+        "route_lane_sequence": list(scenario.get("route_lane_sequence") or []),
         "start_xy_carla": scenario.get("start_xy"),
         "goal_xy_carla": scenario.get("goal_xy"),
         "start_xy_apollo": dict(start_xy_apollo) if isinstance(start_xy_apollo, Mapping) else None,
@@ -861,7 +1008,10 @@ def _scenario_route(manifest: Mapping[str, Any], summary: Mapping[str, Any]) -> 
             trace_length_source if trace_length is not None else "missing"
         )
         consistency = _route_length_consistency(legacy_declared_length, trace_length)
-    lane_keys = {_lane_key(lane) for lane in [*route_lanes, start_lane, goal_lane] if lane}
+    lane_sequence = _unique_keep_order(
+        [key for key in (_lane_key(lane) for lane in [start_lane, *route_lanes, goal_lane] if lane) if key]
+    )
+    lane_keys = set(lane_sequence)
     return {
         "route_id": scenario.get("route_id") or summary.get("route_id") or manifest.get("route_id"),
         "route_length_m": route_length,
@@ -875,10 +1025,12 @@ def _scenario_route(manifest: Mapping[str, Any], summary: Mapping[str, Any]) -> 
         "route_trace_length_source": trace_length_source,
         "route_trace_point_count": len(route_trace),
         "route_trace_source": _text_or_none(scenario.get("route_trace_source")),
+        "route_trace_samples": _route_trace_samples(route_trace),
         **consistency,
         "start_lane": start_lane,
         "goal_lane": goal_lane,
         "route_lane_keys": sorted(key for key in lane_keys if key),
+        "route_lane_sequence": lane_sequence,
         "start_xy": start_xy,
         "goal_xy": goal_xy,
     }
@@ -1038,6 +1190,7 @@ def _apollo_route(
     lane_ids = _lane_ids_from_signature(lane_signature) or _lane_ids_from_signature(unique_signature)
     if decoded_status == "pass" and decoded_lane_ids:
         lane_ids = decoded_lane_ids
+    lane_sequence_keys = _unique_keep_order([key for key in (_lane_key(lane) for lane in lane_ids) if key])
     start_xy = _xy_from_keys(last_routing_row, ("start_raw_x", "start_raw_y")) or _xy_from_keys(
         last_routing_row,
         ("start_x", "start_y"),
@@ -1052,6 +1205,8 @@ def _apollo_route(
         "routing_lane_signature": lane_signature,
         "routing_unique_lane_signature": unique_signature,
         "routing_lane_keys": sorted({_lane_key(lane) for lane in lane_ids if _lane_key(lane)}),
+        "routing_lane_sequence": lane_ids,
+        "routing_lane_sequence_keys": lane_sequence_keys,
         "start_xy": start_xy,
         "goal_xy": goal_xy,
         "routing_event_phase": _text_or_none(last_routing_row.get("routing_phase") if last_routing_row else None),
@@ -1084,6 +1239,103 @@ def _projection_route(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     lanes = sorted({_lane_key(str(row.get("nearest_lane_id") or "")) for row in official if row.get("nearest_lane_id")})
     lanes = [lane for lane in lanes if lane]
     return {"available": bool(official), "lane_keys": lanes}
+
+
+def _lane_equivalence_report(
+    *,
+    status: str,
+    scenario_namespace: str,
+    apollo_namespace: str,
+    scenario_sequence: Sequence[Any],
+    apollo_sequence: Sequence[Any],
+    scenario_keys: set[str],
+    apollo_keys: set[str],
+    missing_scenario_lane_keys: Sequence[str],
+    apollo_extra_lane_keys: Sequence[str],
+    apollo_lane_window_count: int | None,
+    expected_lane_window_count: int,
+    directly_comparable: bool,
+) -> dict[str, Any]:
+    scenario_sequence_text = [str(item) for item in scenario_sequence if str(item or "").strip()]
+    apollo_sequence_text = [str(item) for item in apollo_sequence if str(item or "").strip()]
+    first_mismatch_index = _first_sequence_mismatch_index(scenario_sequence_text, apollo_sequence_text)
+    reason = status
+    if missing_scenario_lane_keys:
+        reason = "apollo_route_missing_configured_scenario_lanes"
+    elif apollo_extra_lane_keys:
+        reason = "apollo_route_contains_extra_lanes"
+    elif first_mismatch_index is not None:
+        reason = "ordered_lane_sequence_mismatch"
+    elif status == "cross_namespace_unverified":
+        reason = "lane_namespaces_require_explicit_equivalence_artifact"
+    return {
+        "status": status,
+        "reason": reason,
+        "directly_comparable": directly_comparable,
+        "scenario_namespace": scenario_namespace,
+        "apollo_namespace": apollo_namespace,
+        "scenario_lane_sequence": scenario_sequence_text,
+        "apollo_lane_sequence": apollo_sequence_text,
+        "scenario_lane_signature": _sequence_signature(scenario_sequence_text),
+        "apollo_lane_signature": _sequence_signature(apollo_sequence_text),
+        "missing_scenario_lane_keys": list(missing_scenario_lane_keys),
+        "apollo_extra_lane_keys": list(apollo_extra_lane_keys),
+        "shared_lane_keys": sorted(scenario_keys & apollo_keys),
+        "first_mismatch_index": first_mismatch_index,
+        "first_mismatch": (
+            {
+                "scenario": scenario_sequence_text[first_mismatch_index]
+                if first_mismatch_index is not None and first_mismatch_index < len(scenario_sequence_text)
+                else None,
+                "apollo": apollo_sequence_text[first_mismatch_index]
+                if first_mismatch_index is not None and first_mismatch_index < len(apollo_sequence_text)
+                else None,
+            }
+            if first_mismatch_index is not None
+            else None
+        ),
+        "apollo_lane_window_count": apollo_lane_window_count,
+        "expected_lane_window_count_max_for_claim": expected_lane_window_count,
+        "claim_boundary": (
+            "Lane ids from CARLA waypoints and Apollo HDMap are not interchangeable. "
+            "A cross-namespace match requires explicit Apollo HDMap projection or a "
+            "lane-equivalence artifact; set overlap alone is not claim-grade."
+        ),
+    }
+
+
+def _first_sequence_mismatch_index(left: Sequence[str], right: Sequence[str]) -> int | None:
+    max_len = max(len(left), len(right))
+    for index in range(max_len):
+        left_value = left[index] if index < len(left) else None
+        right_value = right[index] if index < len(right) else None
+        if left_value != right_value:
+            return index
+    return None
+
+
+def _sequence_signature(values: Sequence[Any]) -> str:
+    return " | ".join(str(item) for item in values if str(item or "").strip())
+
+
+def _route_trace_samples(route_trace: Sequence[Any]) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    for index, row in enumerate(route_trace):
+        if not isinstance(row, Mapping):
+            continue
+        xy = _xy(row)
+        lane_id = _lane_id_from_trace(row)
+        samples.append(
+            {
+                "index": index,
+                "x": xy.get("x") if xy else None,
+                "y": xy.get("y") if xy else None,
+                "s": _num(row.get("s")),
+                "lane_id": lane_id,
+                "lane_key": _lane_key(lane_id),
+            }
+        )
+    return samples
 
 
 def _lane_id_from_mapping(value: Any) -> str | None:

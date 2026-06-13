@@ -661,7 +661,11 @@ Required run artifacts:
   identity for a hard gate. A `route_stub.v1` file with an empty `points` list
   is source-trace metadata only; route-health may fall back to manifest
   `route_trace` or timeseries diagnostics, but the stub itself is not
-  claim-grade route geometry.
+  claim-grade route geometry. Typed Apollo transition runs should materialize
+  this file from `artifacts/scenario_metadata.json:route_trace` when that
+  scenario trace exists, while still requiring Apollo route contract, HDMap
+  projection, reference-line, localization, control, perception, and assist
+  evidence before any natural-driving claim.
 - `manifest.json` must show `typed_config_loaded=true` and
   `legacy_fallback_used=false` for claim-grade runs. If a claim profile falls
   back to the legacy runner, the run is diagnostic-only even if Apollo channels
@@ -715,6 +719,13 @@ Required run artifacts:
   `last_routing_response`, and `latest_planning_active_route_segment`; all four
   must identify the same claim route before lane-keep, curve, junction, or
   traffic-light behavior is interpreted as Apollo natural driving.
+  Postprocess also writes `artifacts/route_definition_claim.json` when the
+  route-contract analyzer runs inside a run directory. That artifact is the
+  compact claim-route ledger for review: scenario route samples, ordered Apollo
+  lane-window signature, start/goal lane/projection fields, route length source,
+  and `lane_equivalence_status`. If it is missing, stale, empty, or only
+  reconstructed from an incompatible route stub, the route contract remains
+  non-claim-grade.
   `configured_scenario_route` includes the route length source and internal
   consistency status. Town01 route-health runs may preserve a legacy
   `route_length_m` for corpus selection, but claim-grade route identity must
