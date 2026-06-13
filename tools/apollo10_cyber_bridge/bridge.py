@@ -7171,6 +7171,39 @@ class ApolloGtBridge:
             _safe_set(ch, "driving_mode", getattr(ch.__class__, "COMPLETE_AUTO_DRIVE"))
         if hasattr(ch.__class__, "GEAR_DRIVE") and hasattr(ch, "gear_location"):
             _safe_set(ch, "gear_location", getattr(ch.__class__, "GEAR_DRIVE"))
+        if hasattr(ch.__class__, "NO_ERROR") and hasattr(ch, "error_code"):
+            _safe_set(ch, "error_code", getattr(ch.__class__, "NO_ERROR"))
+        chassis_state = {
+            "speed_mps": speed,
+            "driving_mode": self._enum_name_from_msg(
+                ch, "driving_mode", getattr(ch, "driving_mode", None)
+            ),
+            "driving_mode_value": getattr(ch, "driving_mode", None)
+            if hasattr(ch, "driving_mode")
+            else None,
+            "gear_location": self._enum_name_from_msg(
+                ch, "gear_location", getattr(ch, "gear_location", None)
+            ),
+            "gear_location_value": getattr(ch, "gear_location", None)
+            if hasattr(ch, "gear_location")
+            else None,
+            "error_code": self._enum_name_from_msg(
+                ch, "error_code", getattr(ch, "error_code", None)
+            ),
+            "error_code_value": getattr(ch, "error_code", None)
+            if hasattr(ch, "error_code")
+            else None,
+            "throttle_percentage": throttle_pct,
+            "brake_percentage": brake_pct,
+            "steering_percentage": steer_pct,
+            "throttle_percentage_cmd": throttle_cmd_pct,
+            "brake_percentage_cmd": brake_cmd_pct,
+            "steering_percentage_cmd": steer_cmd_pct,
+            "feedback_source": measured.get("source", "unavailable"),
+            "feedback_available": bool(measured.get("available", False)),
+        }
+        self.stats["chassis"] = chassis_state
+        self.stats["last_control_feedback"]["chassis"] = dict(chassis_state)
         return ch
 
     def _class_to_apollo_type(self, class_name: str) -> int:
@@ -10692,6 +10725,10 @@ class ApolloGtBridge:
                     if matched_point_distance is None:
                         matched_point_distance = desired_point_distance("debug_simple_mpc_matched_point")
                     target_point_distance = desired_point_distance("debug_simple_lat_target_point")
+                    chassis_feedback = (
+                        (self.stats.get("last_control_feedback", {}) or {}).get("chassis", {})
+                        or {}
+                    )
                     row = {
                         "ts_sec": ts_sec,
                         "map_x": self._coerce_float(pose_debug.get("map_x"), float("nan"), "pose_debug.map_x", "publish_row"),
@@ -11145,6 +11182,50 @@ class ApolloGtBridge:
                         "apollo_mode": desired_in.get("mode", ""),
                         "apollo_gear": desired_in.get("gear", ""),
                         "apollo_estop": desired_in.get("estop", False),
+                        "driving_mode": chassis_feedback.get("driving_mode"),
+                        "driving_mode_value": chassis_feedback.get("driving_mode_value"),
+                        "gear_location": chassis_feedback.get("gear_location"),
+                        "gear_location_value": chassis_feedback.get("gear_location_value"),
+                        "chassis_error_code": chassis_feedback.get("error_code"),
+                        "chassis_error_code_value": chassis_feedback.get("error_code_value"),
+                        "chassis_feedback_source": chassis_feedback.get("feedback_source"),
+                        "chassis_control_feedback_available": chassis_feedback.get("feedback_available"),
+                        "throttle_applied": self._coerce_float(
+                            desired_out.get("throttle"), float("nan"), "desired_out.throttle", "publish_row"
+                        ),
+                        "brake_applied": self._coerce_float(
+                            desired_out.get("brake"), float("nan"), "desired_out.brake", "publish_row"
+                        ),
+                        "carla_steer_applied": self._coerce_float(
+                            desired_out.get("steer"), float("nan"), "desired_out.steer", "publish_row"
+                        ),
+                        "throttle_feedback": self._coerce_float(
+                            measured.get("throttle"), float("nan"), "measured.throttle", "publish_row"
+                        ),
+                        "brake_feedback": self._coerce_float(
+                            measured.get("brake"), float("nan"), "measured.brake", "publish_row"
+                        ),
+                        "steer_feedback": self._coerce_float(
+                            measured.get("steer"), float("nan"), "measured.steer", "publish_row"
+                        ),
+                        "chassis_throttle_percentage": self._coerce_float(
+                            chassis_feedback.get("throttle_percentage"),
+                            float("nan"),
+                            "chassis_feedback.throttle_percentage",
+                            "publish_row",
+                        ),
+                        "chassis_brake_percentage": self._coerce_float(
+                            chassis_feedback.get("brake_percentage"),
+                            float("nan"),
+                            "chassis_feedback.brake_percentage",
+                            "publish_row",
+                        ),
+                        "chassis_steering_percentage": self._coerce_float(
+                            chassis_feedback.get("steering_percentage"),
+                            float("nan"),
+                            "chassis_feedback.steering_percentage",
+                            "publish_row",
+                        ),
                         "localization_timestamp": ts_sec,
                         "chassis_timestamp": ts_sec,
                         "planning_timestamp": self._coerce_float(

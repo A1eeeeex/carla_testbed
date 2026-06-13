@@ -121,6 +121,41 @@ def test_chassis_gt_contract_run_dir_prefers_debug_timeseries_with_chassis_field
     assert "driving_mode" in report["missing_fields"]
 
 
+def test_chassis_gt_contract_accepts_bridge_debug_feedback_aliases(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(run_dir / "summary.json", {"run_id": "run", "route_id": "097", "backend": "apollo_cyberrt"})
+    _write_channel_stats(run_dir / "channel_stats.json")
+    _write_timeseries(
+        run_dir / "artifacts/debug_timeseries.csv",
+        [
+            {
+                "sim_time": index * 0.05,
+                "chassis_speed_mps": 7.0,
+                "localization_speed_mps": 7.0,
+                "driving_mode": "COMPLETE_AUTO_DRIVE",
+                "gear_location_value": 1,
+                "chassis_error_code_value": 0,
+                "commanded_throttle": 0.20,
+                "measured_throttle": 0.20,
+                "commanded_brake": 0.0,
+                "measured_brake": 0.0,
+                "carla_steer_applied": -0.12,
+                "measured_steer_pct": -12.0,
+            }
+            for index in range(5)
+        ],
+    )
+
+    report = analyze_chassis_gt_contract_files(run_dir=run_dir)
+
+    assert report["status"] == "pass"
+    assert report["claim_grade"] is True
+    assert report["control_feedback"]["throttle_feedback_available"] is True
+    assert report["control_feedback"]["steer_applied_feedback_delta_p95"] == 0.0
+    assert report["state"]["gear_locations"] == ["1"]
+    assert report["state"]["error_codes"] == ["0"]
+
+
 def test_chassis_gt_contract_non_monotonic_channel_fails(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_complete_run(run_dir)

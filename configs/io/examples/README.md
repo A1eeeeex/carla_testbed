@@ -90,6 +90,17 @@ Town01 随机起点自由巡航健康场景现在以单一主线运转：
   - strongest 基线的本地 CARLA demo 录制派生
   - 只补 `record.visual`，默认输出 `dual_cam` 第三人称视频
   - 用于展示，不替代 capability promotion 主线
+- `town01_apollo_route_materialization_probe_reference_line_pullback_v1.yaml`
+  - 基于 materialization probe 的 reference-line / trajectory stitcher A/B
+    诊断候选
+  - 用于验证 Apollo trajectory 是否继续贴 ego 漂移，而不是 claim
+    natural-driving pass
+  - `2026-06-13` 在线样本
+    `runs/apollo_reference_line_pullback_online_20260613_151737` 为负结果：
+    Chassis GT contract 已 `pass/claim_grade=true`，但 run
+    `fail_reason=EGO_NOT_MOVING`，link-health primary blocker 为
+    `route_establishment:apollo_routing_lane_sequence_mismatch`；因此该配置
+    继续只能作为 diagnostic A/B，不能设为默认或 promotion candidate
 
 如果希望一条命令录完当前 Town01 最适合展示的几个关键场景，可以直接用：
 

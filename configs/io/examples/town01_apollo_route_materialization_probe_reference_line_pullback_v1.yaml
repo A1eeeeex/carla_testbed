@@ -1,0 +1,28 @@
+# Apollo Town01 route materialization probe: reference-line pullback candidate.
+#
+# Purpose:
+# - Keep the proven routing -> planning -> control materialization profile.
+# - Disable Planning-side stitcher knobs that may cause the first trajectory to
+#   keep following the already-drifted ego pose instead of the claim route
+#   centerline.
+# - This is a capability-repair A/B probe. It is not a natural-driving pass
+#   profile and must be interpreted through localization, HDMap projection,
+#   reference-line, control-handoff, chassis-GT, and link-health artifacts.
+extends: town01_apollo_route_materialization_probe.yaml
+
+run:
+  claim_profile: true
+  profile_name: town01_apollo_route_materialization_probe_reference_line_pullback_v1
+  max_ticks: 700
+  target_runtime_s: 35.0
+
+reports:
+  claim_boundary: diagnostic_reference_line_pullback_only
+
+algo:
+  apollo:
+    planning:
+      enable_reference_line_stitching: false
+      enable_trajectory_stitcher: false
+    routing:
+      freeze_after_success: true

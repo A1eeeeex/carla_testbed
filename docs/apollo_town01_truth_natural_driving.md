@@ -688,10 +688,12 @@ Required run artifacts:
   must be claim-grade for no-interference Apollo claims; a healthy chassis
   channel alone is not enough because chassis speed, mode, gear, error code,
   feedback, and timestamp alignment are Apollo input semantics. If
-  `artifacts/debug_timeseries.csv` provides chassis/localization speed and
-  timestamp rows, postprocess may use it to avoid a stale
-  `chassis_runtime_samples_missing` diagnosis, but missing state fields still
-  keep the run non-claim-grade.
+  `artifacts/debug_timeseries.csv` provides chassis/localization speed,
+  timestamp rows, published Chassis state enums, and CARLA measured
+  throttle/brake/steer feedback, postprocess may use it to avoid stale
+  `chassis_runtime_samples_missing` or feedback-missing diagnoses. Older runs
+  without those state fields remain non-claim-grade instead of being
+  retroactively upgraded.
 - `analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json` when
   `artifacts/apollo_hdmap_projection.jsonl` is available; otherwise
   reference-line hard gates remain `insufficient_data`.

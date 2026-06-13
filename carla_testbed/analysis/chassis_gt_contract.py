@@ -21,15 +21,34 @@ DEFAULT_GAP_FAIL_MS = 1000.0
 ALIASES = {
     "chassis_speed_mps": ["chassis_speed_mps", "chassis_speed", "vehicle_speed_mps"],
     "ego_speed_mps": ["ego_speed", "ego_speed_mps", "speed_mps", "localization_speed_mps"],
-    "driving_mode": ["driving_mode", "chassis_driving_mode"],
-    "gear_location": ["gear_location", "chassis_gear_location"],
-    "error_code": ["chassis_error_code", "chassis_error", "error_code"],
-    "throttle_applied": ["throttle_applied", "carla_throttle_applied"],
-    "throttle_feedback": ["throttle_feedback", "chassis_throttle_percentage"],
-    "brake_applied": ["brake_applied", "carla_brake_applied"],
-    "brake_feedback": ["brake_feedback", "chassis_brake_percentage"],
+    "driving_mode": ["driving_mode", "driving_mode_value", "chassis_driving_mode"],
+    "gear_location": ["gear_location", "gear_location_value", "chassis_gear_location"],
+    "error_code": [
+        "chassis_error_code",
+        "chassis_error_code_value",
+        "chassis_error",
+        "error_code",
+    ],
+    "throttle_applied": ["throttle_applied", "carla_throttle_applied", "commanded_throttle"],
+    "throttle_feedback": [
+        "throttle_feedback",
+        "measured_throttle",
+        "chassis_throttle_percentage",
+    ],
+    "brake_applied": ["brake_applied", "carla_brake_applied", "commanded_brake"],
+    "brake_feedback": [
+        "brake_feedback",
+        "measured_brake",
+        "chassis_brake_percentage",
+    ],
     "steer_applied": ["carla_steer_applied", "steer_applied", "applied_steer"],
-    "steer_feedback": ["chassis_steering_percentage", "steering_percentage"],
+    "steer_feedback": [
+        "steer_feedback",
+        "measured_steer",
+        "measured_steer_pct",
+        "chassis_steering_percentage",
+        "steering_percentage",
+    ],
 }
 
 
@@ -272,7 +291,7 @@ def _control_feedback(rows: Sequence[Mapping[str, Any]], warnings: list[str]) ->
             feedback = _alias_number(row, feedback_key)
             if applied is None or feedback is None:
                 continue
-            deltas.append(abs(applied - feedback))
+            deltas.append(abs(_normalize_control_value(applied) - _normalize_control_value(feedback)))
         result[f"{axis}_feedback_available"] = bool(deltas)
         result[f"{axis}_applied_feedback_delta_p95"] = _percentile(deltas, 95.0)
         if not deltas:
@@ -354,7 +373,7 @@ def _is_auto_drive(value: str) -> bool:
 
 def _is_drive_gear(value: str) -> bool:
     upper = value.upper()
-    return upper in {"3", "D", "DRIVE", "GEAR_DRIVE"}
+    return upper in {"1", "3", "D", "DRIVE", "GEAR_DRIVE"}
 
 
 def _is_no_error(value: str) -> bool:
@@ -429,3 +448,11 @@ def _text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalize_control_value(value: float) -> float:
+    # Bridge rows may contain normalized CARLA controls (0..1) or Apollo
+    # chassis feedback percentages (0..100). Keep signed steering semantics.
+    if abs(value) > 1.5:
+        return value / 100.0
+    return value
