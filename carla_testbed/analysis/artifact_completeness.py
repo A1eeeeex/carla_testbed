@@ -26,10 +26,15 @@ TRAFFIC_LIGHT_EXPECTED_BEHAVIOR_BY_CLASS = {
 }
 
 CLAIM_PROFILE_RAW_ARTIFACTS = [
+    ("config_resolved", "config.resolved.yaml"),
+    ("events", "events.jsonl"),
+    ("timeseries", "timeseries.csv"),
+    ("route_json", "route.json"),
     ("topic_publish_stats", "artifacts/topic_publish_stats.jsonl"),
     ("publish_gap_trace", "artifacts/publish_gap_trace.jsonl"),
     ("routing_event_debug", "artifacts/routing_event_debug.jsonl"),
     ("routing_response_decoded", "artifacts/routing_response_decoded.json"),
+    ("routing_response_decoded_jsonl", "artifacts/routing_response_decoded.jsonl"),
     ("planning_topic_debug", "artifacts/planning_topic_debug.jsonl"),
     ("planning_route_segment_debug", "artifacts/planning_route_segment_debug.jsonl"),
     ("control_apply_trace", "artifacts/control_apply_trace.jsonl"),
@@ -87,6 +92,7 @@ def check_run_artifact_completeness(
     route_id = _route_id(summary, manifest)
 
     config_path = _find_first(root, ["config.resolved.yaml", "effective_config.yaml"])
+    route_json_path = _find_first(root, ["route.json"])
     timeseries_path = _find_first(root, ["timeseries.csv", "timeseries.jsonl"])
     route_health_path = _find_first(
         root,
@@ -191,6 +197,12 @@ def check_run_artifact_completeness(
             "analysis/routing_response_decoded/routing_response_decoded_report.json",
         ],
     )
+    routing_response_decoded_jsonl_path = _find_first(
+        root,
+        [
+            "artifacts/routing_response_decoded.jsonl",
+        ],
+    )
     planning_topic_debug_path = _find_first(root, ["artifacts/planning_topic_debug.jsonl"])
     planning_route_segment_debug_path = _find_first(
         root,
@@ -205,6 +217,7 @@ def check_run_artifact_completeness(
         "summary": str(root / "summary.json") if (root / "summary.json").exists() else None,
         "config_resolved": str(config_path) if config_path else None,
         "events": str(root / "events.jsonl") if (root / "events.jsonl").exists() else None,
+        "route_json": str(route_json_path) if route_json_path else None,
         "timeseries": str(timeseries_path) if timeseries_path else None,
         "route_health": str(route_health_path) if route_health_path else None,
         "route_health_csv": str(route_health_csv_path) if route_health_csv_path else None,
@@ -228,6 +241,11 @@ def check_run_artifact_completeness(
         "routing_event_debug": str(routing_event_debug_path) if routing_event_debug_path else None,
         "routing_response_decoded": (
             str(routing_response_decoded_path) if routing_response_decoded_path else None
+        ),
+        "routing_response_decoded_jsonl": (
+            str(routing_response_decoded_jsonl_path)
+            if routing_response_decoded_jsonl_path
+            else None
         ),
         "planning_topic_debug": str(planning_topic_debug_path) if planning_topic_debug_path else None,
         "planning_route_segment_debug": (
@@ -433,7 +451,65 @@ def _missing_raw_evidence_artifacts(
     for key, label in CLAIM_PROFILE_RAW_ARTIFACTS:
         if not artifacts.get(key):
             missing.append(label)
+    missing.extend(_invalid_raw_evidence_artifacts(artifacts))
     return missing
+
+
+def _invalid_raw_evidence_artifacts(artifacts: Mapping[str, Any]) -> list[str]:
+    invalid: list[str] = []
+    routing_json = artifacts.get("routing_response_decoded")
+    if routing_json and not _routing_response_decoded_file_has_lane_segments(Path(str(routing_json))):
+        invalid.append("artifacts/routing_response_decoded.json:lane_segments_missing")
+    routing_jsonl = artifacts.get("routing_response_decoded_jsonl")
+    if routing_jsonl and not _routing_response_decoded_file_has_lane_segments(Path(str(routing_jsonl))):
+        invalid.append("artifacts/routing_response_decoded.jsonl:lane_segments_missing")
+    return invalid
+
+
+def _routing_response_decoded_file_has_lane_segments(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if path.suffix.lower() == ".jsonl":
+        try:
+            rows = [
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except (OSError, json.JSONDecodeError):
+            return False
+        return any(_routing_response_payload_has_lane_segments(row) for row in rows if isinstance(row, Mapping))
+    return _routing_response_payload_has_lane_segments(_read_json(path))
+
+
+def _routing_response_payload_has_lane_segments(payload: Mapping[str, Any]) -> bool:
+    if not payload:
+        return False
+    count = payload.get("lane_segment_count")
+    try:
+        if count is not None and int(count) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    lane_segments = payload.get("lane_segments")
+    if isinstance(lane_segments, list) and any(isinstance(row, Mapping) for row in lane_segments):
+        return True
+    road_segments = payload.get("road_segments") or payload.get("road")
+    if not isinstance(road_segments, list):
+        return False
+    for road in road_segments:
+        if not isinstance(road, Mapping):
+            continue
+        passages = road.get("passages") or road.get("passage") or []
+        if not isinstance(passages, list):
+            continue
+        for passage in passages:
+            if not isinstance(passage, Mapping):
+                continue
+            segments = passage.get("segments") or passage.get("segment") or []
+            if isinstance(segments, list) and segments:
+                return True
+    return False
 
 
 def _is_claim_or_materialization_profile(

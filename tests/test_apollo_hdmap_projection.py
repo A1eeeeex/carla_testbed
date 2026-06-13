@@ -123,9 +123,10 @@ def test_claim_grade_projection_requires_minimum_sample_count(tmp_path: Path) ->
 
     report = analyze_apollo_hdmap_projection_file(path)
 
-    assert report["status"] == "fail"
+    assert report["status"] == "insufficient_data"
     assert report["claim_grade"] is False
-    assert "apollo_hdmap_projection_sample_count_low" in report["blocking_reasons"]
+    assert "apollo_hdmap_projection_sample_count_low" in report["insufficient_reasons"]
+    assert "apollo_hdmap_projection_sample_count_low" not in report["blocking_reasons"]
 
 
 def test_claim_grade_projection_requires_route_s_coverage(tmp_path: Path) -> None:
@@ -137,9 +138,10 @@ def test_claim_grade_projection_requires_route_s_coverage(tmp_path: Path) -> Non
     _write_jsonl(path, rows)
     report = analyze_apollo_hdmap_projection_file(path)
 
-    assert report["status"] == "fail"
+    assert report["status"] == "insufficient_data"
     assert report["claim_grade"] is False
-    assert "apollo_hdmap_projection_route_s_coverage_low" in report["blocking_reasons"]
+    assert "apollo_hdmap_projection_route_s_coverage_low" in report["insufficient_reasons"]
+    assert "apollo_hdmap_projection_route_s_coverage_low" not in report["blocking_reasons"]
 
 
 def test_claim_grade_projection_fails_inconsistent_map_identity(tmp_path: Path) -> None:
@@ -241,6 +243,49 @@ def test_load_projection_samples_from_reference_line_contract(tmp_path: Path) ->
     assert samples[0].x == 1.5
     assert samples[0].y == -250.8
     assert samples[0].heading == 1.57
+
+
+def test_projection_samples_prefer_sim_time_over_wall_timestamp(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_jsonl(
+        run_dir / "artifacts" / "apollo_reference_line_contract.jsonl",
+        [
+            {
+                "timestamp": 1_781_250_000.0,
+                "sim_time_sec": 12.5,
+                "localization": {
+                    "x": 1.5,
+                    "y": -250.8,
+                    "heading": 1.57,
+                },
+            }
+        ],
+    )
+
+    samples = load_localization_projection_samples(run_dir=run_dir)
+
+    assert len(samples) == 1
+    assert samples[0].timestamp == 12.5
+
+
+def test_projection_sample_limit_evenly_covers_source_window(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    rows = [
+        {
+            "timestamp": float(index),
+            "localization": {
+                "x": float(index),
+                "y": -250.0 + float(index),
+                "heading": 1.57,
+            },
+        }
+        for index in range(101)
+    ]
+    _write_jsonl(run_dir / "artifacts" / "apollo_reference_line_contract.jsonl", rows)
+
+    samples = load_localization_projection_samples(run_dir=run_dir, max_samples=5)
+
+    assert [sample.source_index for sample in samples] == [0, 25, 50, 75, 100]
 
 
 def test_export_projection_jsonl_with_mocked_apollo_map_xysl(tmp_path: Path) -> None:

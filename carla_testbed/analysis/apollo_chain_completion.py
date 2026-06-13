@@ -175,7 +175,10 @@ def analyze_apollo_chain_completion_run_dir(
         for module in required_modules_for_capability(reference_chain, target_capability)
         if module.get("name")
     }
-    missing_required_evidence = _missing_required_evidence(module_statuses)
+    missing_required_evidence = _missing_required_evidence(
+        module_statuses,
+        target_required_modules=target_required_modules,
+    )
     blocking_modules = _blocking_modules(module_statuses)
     blocking_layers = _blocking_layers(link_layers)
     failure_stage = _failure_stage(
@@ -217,7 +220,16 @@ def analyze_apollo_chain_completion_run_dir(
         "can_claim_truth_input_closed_loop": can_claim_closed_loop,
         "can_claim_unassisted_natural_driving": can_claim_unassisted,
         "can_claim_algorithm_limitation": can_claim_algorithm_limitation,
-        "warnings": sorted(set(warnings + _completion_warnings(module_statuses))),
+        "warnings": sorted(
+            set(
+                warnings
+                + _completion_warnings(
+                    module_statuses,
+                    target_required_modules=target_required_modules,
+                    missing_required_evidence=missing_required_evidence,
+                )
+            )
+        ),
         "verdict": verdict,
         "source_link_health": {
             "schema_version": link_health.get("schema_version"),
@@ -743,14 +755,31 @@ def _only_reference_line_or_projection_missing(blocking_modules: Sequence[Mappin
     return bool(names) and names.issubset({"hdmap", "planning"})
 
 
-def _missing_required_evidence(module_statuses: Mapping[str, Mapping[str, Any]]) -> list[str]:
+def _missing_required_evidence(
+    module_statuses: Mapping[str, Mapping[str, Any]],
+    *,
+    target_required_modules: set[str],
+) -> list[str]:
     missing: list[str] = []
     for name, module in module_statuses.items():
+        if not _module_required_for_target(name, module, target_required_modules):
+            continue
         observed = module.get("observed_evidence") if isinstance(module.get("observed_evidence"), Mapping) else {}
         for evidence, path in observed.items():
             if not path:
                 missing.append(f"{name}:{evidence}")
     return sorted(set(missing))
+
+
+def _module_required_for_target(
+    name: str,
+    module: Mapping[str, Any],
+    target_required_modules: set[str],
+) -> bool:
+    if not target_required_modules:
+        return True
+    reference_module = str(module.get("reference_module") or name)
+    return name in target_required_modules or reference_module in target_required_modules
 
 
 def _blocking_modules(module_statuses: Mapping[str, Mapping[str, Any]]) -> list[str]:
@@ -895,12 +924,21 @@ def _overall_verdict(
     return "pass"
 
 
-def _completion_warnings(module_statuses: Mapping[str, Mapping[str, Any]]) -> list[str]:
+def _completion_warnings(
+    module_statuses: Mapping[str, Mapping[str, Any]],
+    *,
+    target_required_modules: set[str],
+    missing_required_evidence: Sequence[str],
+) -> list[str]:
     warnings: list[str] = []
     prediction = module_statuses.get("prediction", {})
     if prediction.get("replacement_status") == "bypassed":
         warnings.append("prediction_bypassed_requires_explicit_scope_boundary")
-    if any(module.get("effective_status", module.get("evidence_status")) == "missing" for module in module_statuses.values()):
+    if missing_required_evidence or any(
+        module.get("effective_status", module.get("evidence_status")) == "missing"
+        for name, module in module_statuses.items()
+        if _module_required_for_target(name, module, target_required_modules)
+    ):
         warnings.append("missing_required_evidence_blocks_claim")
     return warnings
 

@@ -297,7 +297,10 @@ def _sample_from_mapping(
     x = _first_number(loc, ["x", "localization_x", "map_x"])
     y = _first_number(loc, ["y", "localization_y", "map_y"])
     heading = _first_number(loc, ["heading", "localization_heading", "map_heading"])
-    timestamp = _first_number(payload, ["timestamp", "sim_time_sec", "measurement_time", "ts_sec"])
+    # Prefer simulation time when both wall-time `timestamp` and `sim_time_sec`
+    # are present in bridge debug rows. Claim-grade projection evidence should
+    # stay on the same time base as localization/chassis/planning contracts.
+    timestamp = _first_number(payload, ["sim_time_sec", "measurement_time", "ts_sec", "timestamp"])
     if x is None or y is None:
         return None
     return LocalizationProjectionSample(

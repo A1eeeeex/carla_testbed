@@ -7,7 +7,7 @@ from pathlib import Path
 import random
 import time
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 try:
     import carla
@@ -21,6 +21,15 @@ from .base import ActorRefs, Scenario
 
 def _wrap_deg(delta_deg: float) -> float:
     return (delta_deg + 180.0) % 360.0 - 180.0
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass
@@ -391,6 +400,37 @@ class Town01RouteHealthScenario(Scenario):
             )
             previous_loc = loc
         return points
+
+    @staticmethod
+    def _route_trace_length_from_points(points: Sequence[Mapping[str, Any]]) -> tuple[Optional[float], str]:
+        rows = [row for row in points if isinstance(row, Mapping)]
+        if len(rows) < 2:
+            return None, "route_trace_missing_or_too_short"
+        first_s = _safe_float(rows[0].get("s"))
+        last_s = _safe_float(rows[-1].get("s"))
+        if first_s is not None and last_s is not None:
+            return abs(float(last_s) - float(first_s)), "route_trace_s_span"
+        total = 0.0
+        used_segments = 0
+        prev_x = _safe_float(rows[0].get("x"))
+        prev_y = _safe_float(rows[0].get("y"))
+        prev_z = _safe_float(rows[0].get("z")) or 0.0
+        for row in rows[1:]:
+            x = _safe_float(row.get("x"))
+            y = _safe_float(row.get("y"))
+            z = _safe_float(row.get("z")) or 0.0
+            if prev_x is not None and prev_y is not None and x is not None and y is not None:
+                dx = float(x) - float(prev_x)
+                dy = float(y) - float(prev_y)
+                dz = float(z) - float(prev_z)
+                total += math.sqrt((dx * dx) + (dy * dy) + (dz * dz))
+                used_segments += 1
+            prev_x = x
+            prev_y = y
+            prev_z = z
+        if used_segments:
+            return float(total), "route_trace_xyz_polyline"
+        return None, "route_trace_length_unavailable"
 
     @staticmethod
     def route_id_for(spawn_idx: int, goal_trace_index: int) -> str:
@@ -901,6 +941,13 @@ class Town01RouteHealthScenario(Scenario):
             str((selected_route_record or {}).get("route_id") or "")
             or self.route_id_for(int(selected_spawn["spawn_idx"]), int(selected_goal["goal_trace_index"]))
         )
+        route_trace = self._route_trace_points(
+            list(selected_spawn.get("forward_trace") or []),
+            end_index=int(selected_goal["goal_trace_index"]),
+        )
+        route_trace_length_m, route_trace_length_source = self._route_trace_length_from_points(route_trace)
+        legacy_route_length_m = float(selected_goal["route_length_m"])
+        claim_route_length_m = float(route_trace_length_m) if route_trace_length_m is not None else legacy_route_length_m
         self._selected_meta = {
             "scene_type": "town01_route_health_random_spawn_cruise",
             "route_id": route_id,
@@ -940,12 +987,20 @@ class Town01RouteHealthScenario(Scenario):
                 "section_id": int(goal_wp.section_id),
                 "lane_id": int(goal_wp.lane_id),
             },
-            "route_length_m": float(selected_goal["route_length_m"]),
-            "route_trace_source": "town01_forward_waypoint_trace",
-            "route_trace": self._route_trace_points(
-                list(selected_spawn.get("forward_trace") or []),
-                end_index=int(selected_goal["goal_trace_index"]),
+            "route_length_m": legacy_route_length_m,
+            "route_length_m_role": "legacy_selection_straight_line_distance",
+            "route_length_m_claim_grade": False,
+            "claim_route_length_m": claim_route_length_m,
+            "claim_route_length_source": (
+                route_trace_length_source
+                if route_trace_length_m is not None
+                else "legacy_selection_route_length_fallback"
             ),
+            "route_trace_source": "town01_forward_waypoint_trace",
+            "route_trace_length_m": route_trace_length_m,
+            "route_trace_length_source": route_trace_length_source,
+            "route_trace_point_count": int(len(route_trace)),
+            "route_trace": route_trace,
             "forward_available_length_m": float(selected_goal["forward_available_length_m"]),
             "remain_length_after_goal_m": float(selected_goal["remain_end_margin_m"]),
             "goal_trace_index": int(selected_goal["goal_trace_index"]),

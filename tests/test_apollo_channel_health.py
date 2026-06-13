@@ -135,7 +135,7 @@ def test_low_rate_and_large_gap_fail_for_required_planning() -> None:
     assert "message_gap_too_large" in planning["issues"]
 
 
-def test_planning_large_header_gap_with_small_sim_gap_is_diagnosed_but_still_fails() -> None:
+def test_planning_large_header_gap_with_small_sim_gap_is_diagnosed_as_warning() -> None:
     config, stats = load_fixture()
     stats = deepcopy(stats)
     stats["channels"]["/apollo/planning"].update(
@@ -149,7 +149,10 @@ def test_planning_large_header_gap_with_small_sim_gap_is_diagnosed_but_still_fai
     report = analyze_apollo_channel_health(config, stats, scenario_class="lane_keep")
 
     planning = report["channel_results"]["planning"]
-    assert report["status"] == "fail"
+    assert report["status"] == "warn"
+    assert "planning" not in report["gap_failures"]
+    assert "message_gap_too_large" not in planning["issues"]
+    assert "message_gap_time_axis_warn" in planning["issues"]
     assert planning["time_axis_diagnosis"] == "header_or_wall_time_gap_large_sim_time_gap_ok"
     assert "planning_header_or_wall_gap_large_but_sim_time_gap_within_limit" in planning["warnings"]
     assert planning["sim_time_max_gap_ms"] == 50.0

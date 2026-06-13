@@ -95,6 +95,362 @@ def test_route_contract_detects_apollo_routing_length_mismatch(tmp_path: Path) -
     assert "route_identity_inconsistent" in report["blocking_reasons"]
 
 
+def test_cross_namespace_carla_waypoint_lane_mismatch_requires_equivalence_not_fail(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    meta = manifest["metadata"]["scenario_metadata"]
+    meta.update(
+        {
+            "route_length_m": 229.18,
+            "route_length_m_role": "legacy_selection_straight_line_distance",
+            "route_length_m_claim_grade": False,
+            "claim_route_length_m": 388.41,
+            "claim_route_length_source": "route_trace_s_span",
+            "route_trace_source": "town01_forward_waypoint_trace",
+            "spawn": {"x": 2.0, "y": 208.6},
+            "goal": {"x": 154.0, "y": 37.1},
+            "spawn_lane": {"road_id": 15, "section_id": 0, "lane_id": 1},
+            "goal_lane": {"road_id": 25, "section_id": 0, "lane_id": -1},
+            "route_trace": [
+                {"x": 2.0, "y": 208.6, "s": 0.0, "lane_id": "15:0:1"},
+                {"x": 2.0, "y": 8.6, "s": 200.0, "lane_id": "13:0:-1"},
+                {"x": 80.0, "y": 1.9, "s": 280.0, "lane_id": "117:0:1"},
+                {"x": 145.0, "y": 1.9, "s": 346.0, "lane_id": "83:0:1"},
+                {"x": 154.0, "y": 37.1, "s": 388.41, "lane_id": "25:0:-1"},
+            ],
+        }
+    )
+    _write_json(run_dir / "manifest.json", manifest)
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "source": "/apollo/raw_routing_response",
+            "status": "pass",
+            "lane_segments": [
+                {"lane_id": "15_1_1", "start_s": 107.5, "end_s": 307.6},
+                {"lane_id": "13_1_-1", "start_s": 0.0, "end_s": 14.0},
+                {"lane_id": "3_1_1", "start_s": 0.0, "end_s": 68.3},
+                {"lane_id": "82_4_1", "start_s": 0.0, "end_s": 1.3},
+                {"lane_id": "82_3_1", "start_s": 0.0, "end_s": 10.9},
+                {"lane_id": "82_2_1", "start_s": 0.0, "end_s": 9.6},
+                {"lane_id": "82_1_1", "start_s": 0.0, "end_s": 1.3},
+                {"lane_id": "2_1_1", "start_s": 0.0, "end_s": 42.2},
+                {"lane_id": "31_1_-1", "start_s": 0.0, "end_s": 15.6},
+                {"lane_id": "25_1_-1", "start_s": 0.0, "end_s": 26.3},
+            ],
+            "total_length_m": 390.13,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "claim",
+                "routing_request_kind": "claim_route",
+                "goal_mode": "scenario_xy",
+                "goal_source": "scenario_goal_file",
+                "start_raw_x": 2.0,
+                "start_raw_y": -208.6,
+                "goal_raw_x": 154.0,
+                "goal_raw_y": -37.1,
+                "goal_projection": {
+                    "applied": True,
+                    "accepted": True,
+                    "trusted_lane_centerline": True,
+                    "distance_m": 0.01,
+                    "signed_lateral_error_m": 0.01,
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/apollo_hdmap_projection.jsonl",
+        [
+            {
+                "timestamp": float(index),
+                "nearest_lane_id": "15_1_1",
+                "source": "apollo_hdmap_api",
+                "status": "ok",
+            }
+            for index in range(60)
+        ],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "warn"
+    assert report["lane_equivalence_status"] == "cross_namespace_unverified"
+    assert report["scenario_lane_namespace"] == "carla_waypoint"
+    assert "scenario_apollo_lane_namespace_equivalence_unverified" in report["warnings"]
+    assert "apollo_routing_lane_sequence_mismatch" not in report["blocking_reasons"]
+    assert "apollo_routing_missing_scenario_lane" not in report["blocking_reasons"]
+    assert report["claim_route_contract"]["materialized"] is True
+
+
+def test_cross_namespace_lane_mismatch_without_hdmap_projection_is_insufficient_not_fail(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    meta = manifest["metadata"]["scenario_metadata"]
+    meta.update(
+        {
+            "route_length_m": 229.18,
+            "route_length_m_role": "legacy_selection_straight_line_distance",
+            "route_length_m_claim_grade": False,
+            "claim_route_length_m": 388.41,
+            "claim_route_length_source": "route_trace_s_span",
+            "route_trace_source": "town01_forward_waypoint_trace",
+            "spawn": {"x": 2.0, "y": 208.6},
+            "goal": {"x": 154.0, "y": 37.1},
+            "spawn_lane": {"road_id": 15, "section_id": 0, "lane_id": 1},
+            "goal_lane": {"road_id": 25, "section_id": 0, "lane_id": -1},
+            "route_trace": [
+                {"x": 2.0, "y": 208.6, "s": 0.0, "lane_id": "15:0:1"},
+                {"x": 2.0, "y": 8.6, "s": 200.0, "lane_id": "13:0:-1"},
+                {"x": 80.0, "y": 1.9, "s": 280.0, "lane_id": "117:0:1"},
+                {"x": 145.0, "y": 1.9, "s": 346.0, "lane_id": "83:0:1"},
+                {"x": 154.0, "y": 37.1, "s": 388.41, "lane_id": "25:0:-1"},
+            ],
+        }
+    )
+    _write_json(run_dir / "manifest.json", manifest)
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "source": "/apollo/raw_routing_response",
+            "status": "pass",
+            "lane_segments": [
+                {"lane_id": "15_1_1", "start_s": 107.5, "end_s": 307.6},
+                {"lane_id": "13_1_-1", "start_s": 0.0, "end_s": 14.0},
+                {"lane_id": "3_1_1", "start_s": 0.0, "end_s": 68.3},
+                {"lane_id": "82_4_1", "start_s": 0.0, "end_s": 1.3},
+                {"lane_id": "82_3_1", "start_s": 0.0, "end_s": 10.9},
+                {"lane_id": "82_2_1", "start_s": 0.0, "end_s": 9.6},
+                {"lane_id": "82_1_1", "start_s": 0.0, "end_s": 1.3},
+                {"lane_id": "2_1_1", "start_s": 0.0, "end_s": 42.2},
+                {"lane_id": "31_1_-1", "start_s": 0.0, "end_s": 15.6},
+                {"lane_id": "25_1_-1", "start_s": 0.0, "end_s": 26.3},
+            ],
+            "total_length_m": 390.13,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "claim",
+                "routing_request_kind": "claim_route",
+                "goal_mode": "scenario_xy",
+                "goal_source": "scenario_goal_file",
+                "start_raw_x": 2.0,
+                "start_raw_y": -208.6,
+                "goal_raw_x": 154.0,
+                "goal_raw_y": -37.1,
+                "goal_projection": {
+                    "applied": True,
+                    "accepted": True,
+                    "trusted_lane_centerline": True,
+                    "distance_m": 0.01,
+                    "signed_lateral_error_m": 0.01,
+                },
+            }
+        ],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "insufficient_data"
+    assert report["lane_equivalence_status"] == "cross_namespace_unverified"
+    assert report["scenario_lane_namespace"] == "carla_waypoint"
+    assert report["lane_namespaces_directly_comparable"] is False
+    assert "apollo_hdmap_projection_for_lane_equivalence" in report["missing_fields"]
+    assert "scenario_apollo_lane_namespace_equivalence_unverified" in report["warnings"]
+    assert "apollo_hdmap_projection_required_for_cross_namespace_lane_equivalence" in report["warnings"]
+    assert "apollo_routing_lane_sequence_mismatch" not in report["blocking_reasons"]
+    assert "apollo_routing_missing_scenario_lane" not in report["blocking_reasons"]
+
+
+def test_route_contract_blocks_inconsistent_scenario_route_length_sources(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    route_trace = manifest["metadata"]["scenario_metadata"]["route_trace"]
+    route_trace[-1]["s"] = 388.0
+    route_trace[-1]["x"] = 154.0
+    route_trace[-1]["y"] = 37.0
+    _write_json(run_dir / "manifest.json", manifest)
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "source": "/apollo/routing_response",
+            "lane_segments": [{"lane_id": "15_1_1", "start_s": 66.9, "end_s": 296.9}],
+            "total_length_m": 230.0,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "claim",
+                "routing_request_kind": "claim_route",
+                "start_raw_x": 2.0,
+                "start_raw_y": -249.0,
+                "goal_raw_x": 2.0,
+                "goal_raw_y": -19.0,
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "route_segment_total_length": 230.0,
+                "routing_lane_window_count": 1,
+                "routing_lane_window_signature": "15_1_1@66.9->296.9",
+                "routing_unique_lane_signature": "15_1_1",
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/apollo_hdmap_projection.jsonl",
+        [{"source": "apollo_hdmap_api", "nearest_lane_id": "15_1_1"}],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "fail"
+    assert report["scenario_route_length_m"] == 230.0
+    assert report["scenario_route_length_source"] == "declared_metadata"
+    assert report["scenario_route_trace_length_m"] == 388.0
+    assert report["scenario_route_length_consistency_status"] == "inconsistent"
+    assert report["scenario_route_length_consistency_reason"] == (
+        "declared_route_length_disagrees_with_route_trace"
+    )
+    assert "scenario_route_length_inconsistent" in report["blocking_reasons"]
+    assert "scenario_route_length_inconsistent" in report["route_identity_issues"]
+
+
+def test_route_contract_prefers_claim_trace_length_over_legacy_selection_length(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    scenario = manifest["metadata"]["scenario_metadata"]
+    scenario["route_length_m"] = 229.2
+    scenario["route_length_m_role"] = "legacy_selection_straight_line_distance"
+    scenario["route_length_m_claim_grade"] = False
+    scenario["claim_route_length_m"] = 388.0
+    scenario["claim_route_length_source"] = "route_trace_s_span"
+    scenario["route_trace_length_m"] = 388.0
+    scenario["route_trace_length_source"] = "route_trace_s_span"
+    scenario["goal"] = {"x": 154.0, "y": 37.0}
+    route_trace = scenario["route_trace"]
+    route_trace[-1]["s"] = 388.0
+    route_trace[-1]["x"] = 154.0
+    route_trace[-1]["y"] = 37.0
+    _write_json(run_dir / "manifest.json", manifest)
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "source": "/apollo/routing_response",
+            "lane_segments": [{"lane_id": "15_1_1", "start_s": 66.9, "end_s": 454.9}],
+            "total_length_m": 388.0,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "claim",
+                "routing_request_kind": "claim_route",
+                "start_raw_x": 2.0,
+                "start_raw_y": -249.0,
+                "goal_raw_x": 154.0,
+                "goal_raw_y": -37.0,
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "route_segment_total_length": 388.0,
+                "routing_lane_window_count": 1,
+                "routing_lane_window_signature": "15_1_1@66.9->454.9",
+                "routing_unique_lane_signature": "15_1_1",
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/apollo_hdmap_projection.jsonl",
+        [{"source": "apollo_hdmap_api", "nearest_lane_id": "15_1_1"}],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "pass"
+    assert report["scenario_route_length_m"] == 388.0
+    assert report["scenario_route_length_source"] == "route_trace_s_span"
+    assert report["scenario_route_claim_length_m"] == 388.0
+    assert report["scenario_route_legacy_length_m"] == 229.2
+    assert report["scenario_route_legacy_length_role"] == "legacy_selection_straight_line_distance"
+    assert report["scenario_route_length_consistency_status"] == "consistent"
+    assert report["scenario_route_length_consistency_reason"] == "claim_route_length_matches_route_trace"
+    assert "scenario_route_length_inconsistent" not in report["blocking_reasons"]
+
+
+def test_route_contract_uses_route_trace_length_when_declared_length_missing(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["metadata"]["scenario_metadata"].pop("route_length_m")
+    _write_json(run_dir / "manifest.json", manifest)
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "source": "/apollo/routing_response",
+            "lane_segments": [{"lane_id": "15_1_1", "start_s": 66.9, "end_s": 296.9}],
+            "total_length_m": 230.0,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "claim",
+                "routing_request_kind": "claim_route",
+                "start_raw_x": 2.0,
+                "start_raw_y": -249.0,
+                "goal_raw_x": 2.0,
+                "goal_raw_y": -19.0,
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "route_segment_total_length": 230.0,
+                "routing_lane_window_count": 1,
+                "routing_lane_window_signature": "15_1_1@66.9->296.9",
+                "routing_unique_lane_signature": "15_1_1",
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/apollo_hdmap_projection.jsonl",
+        [{"source": "apollo_hdmap_api", "nearest_lane_id": "15_1_1"}],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "pass"
+    assert report["scenario_route_length_m"] == 230.0
+    assert report["scenario_route_length_source"] == "route_trace_s_span"
+    assert report["scenario_route_length_consistency_status"] == "trace_only"
+    assert report["scenario_route_length_consistency_reason"] == "declared_route_length_missing_trace_used"
+    assert "scenario_route_length_m" not in report["missing_fields"]
+
+
 def test_route_contract_passes_matching_lane_keep_route(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     _write_json(

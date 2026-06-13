@@ -337,6 +337,13 @@ The chain completion report answers:
 - whether truth-input closed-loop and unassisted natural-driving claims are
   currently allowed.
 
+The top-level `missing_required_evidence` list is scoped to the run's target
+capability. For example, a `lane_keep` run may still show
+`traffic_light_perception` as a non-claim-grade module in `module_statuses`, but
+traffic-light-only artifacts are not listed as missing lane-keep evidence. Use
+`module_statuses` for the full platform audit and `missing_required_evidence`
+for the current capability blocker list.
+
 Run it on an existing run directory:
 
 ```bash

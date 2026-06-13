@@ -196,6 +196,10 @@ def _write_claim_grade_synthetic_run(run_dir: Path) -> None:
         json.dumps({"lane_segments": [{"lane_id": "lane_1", "start_s": 0.0, "end_s": 1.0}]}),
         encoding="utf-8",
     )
+    (artifacts / "routing_response_decoded.jsonl").write_text(
+        json.dumps({"lane_segments": [{"lane_id": "lane_1", "start_s": 0.0, "end_s": 1.0}]}) + "\n",
+        encoding="utf-8",
+    )
 
     def write_report(rel: str, payload: dict) -> None:
         path = run_dir / rel

@@ -163,6 +163,122 @@ def test_inspect_run_surfaces_invalid_report_source_fields(tmp_path: Path) -> No
     assert "route_health.source.route_path" in result.stdout
 
 
+def test_inspect_run_surfaces_materialization_blocker_stack(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts_dir = run_dir / "artifacts"
+    planning_dir = run_dir / "analysis" / "planning_materialization"
+    artifacts_dir.mkdir(parents=True)
+    planning_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "claim_guard",
+                "scenario_name": "lane_keep_097",
+                "backend_name": "apollo_cyberrt",
+                "claim_profile": True,
+                "materialization_probe": True,
+                "scenario_class": "lane_keep",
+                "route_id": "town01_rh_spawn068_goal079",
+                "algorithm_variant_id": "apollo_10_0_carla_gt_town01_reference",
+                "algorithm_variant_manifest_path": (
+                    "configs/algorithms/apollo_variant.carla_gt.example.yaml"
+                ),
+                "online_config_path": (
+                    "configs/io/examples/"
+                    "town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml"
+                ),
+                "online_config_profile_name": "claim_guard",
+                "map": "Town01",
+                "transport_mode": "apollo_cyberrt_gt_over_ros2_transition",
+                "transport_mode_source": "online_config.scenario.publish_ros2_gt",
+                "backend": "apollo_cyberrt",
+                "truth_input": True,
+                "duration_s": 30.0,
+                "fixed_delta_seconds": 0.05,
+                "ticks": 600,
+                "carla_world": {
+                    "loaded_map_name": "Carla/Maps/Town01",
+                    "matches_configured_town": True,
+                },
+            }
+        )
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "run_id": "claim_guard",
+                "success": False,
+                "fail_reason": "NO_CONTROL_LOG",
+                "scenario_class": "lane_keep",
+                "route_id": "town01_rh_spawn068_goal079",
+                "claim_profile": True,
+                "materialization_probe": True,
+            }
+        )
+    )
+    (artifacts_dir / "goal_validity_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "goal_validity_report.v1",
+                "status": "fail",
+                "invalid_goal": True,
+                "invalid_goal_reason": "goal_projection_unavailable",
+                "fallback_applied": False,
+                "claim_profile_enabled": True,
+            }
+        )
+    )
+    (artifacts_dir / "map_contract_guard.json").write_text(
+        json.dumps(
+            {
+                "map_contract_invalid": True,
+                "high_risk_mismatch": True,
+                "mismatch_reasons": ["effective_bridge_base_map_missing"],
+            }
+        )
+    )
+    (artifacts_dir / "cyber_bridge_stats.json").write_text(
+        json.dumps(
+            {
+                "routing_request_count": 0,
+                "routing_response_count": 0,
+                "routing_success_count": 0,
+                "control_rx_count": 0,
+                "control_tx_count": 0,
+            }
+        )
+    )
+    (artifacts_dir / "planning_topic_debug_summary.json").write_text(
+        json.dumps(
+            {
+                "total_messages_received": 573,
+                "messages_with_nonzero_trajectory_points": 0,
+            }
+        )
+    )
+    (planning_dir / "planning_materialization_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "planning_materialization.v1",
+                "verdict": "fail",
+                "materialization_status": "observed_reference_line_missing",
+                "blocking_reasons": ["planning_trajectory_materialization_low"],
+            }
+        )
+    )
+
+    result = _run_cli("inspect-run", str(run_dir))
+
+    assert result.returncode == 0
+    assert "first_blocker=goal_projection_unavailable/map_contract_invalid" in result.stdout
+    assert "blocker_stack=goal,map,routing,hdmap_projection,planning,control,attribution" in result.stdout
+    assert "blocker_stage name=goal status=fail reason=goal_projection_unavailable" in result.stdout
+    assert "blocker_stage name=map status=fail reason=effective_bridge_base_map_missing" in result.stdout
+    assert "blocker_stage name=routing status=fail reason=routing_request_missing" in result.stdout
+    assert "blocker_stage name=control status=fail reason=control_rx_missing" in result.stdout
+    assert "missing_raw_evidence_artifacts=" in result.stdout
+
+
 def test_run_dry_run_loads_typed_config(tmp_path: Path) -> None:
     config_path = _write_smoke_config(tmp_path)
 

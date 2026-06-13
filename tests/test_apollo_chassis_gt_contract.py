@@ -92,6 +92,35 @@ def test_chassis_gt_contract_missing_channel_stats_is_insufficient(tmp_path: Pat
     assert "channel_stats.chassis" in report["missing_fields"]
 
 
+def test_chassis_gt_contract_run_dir_prefers_debug_timeseries_with_chassis_fields(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(run_dir / "summary.json", {"run_id": "run", "route_id": "097", "backend": "apollo_cyberrt"})
+    _write_channel_stats(run_dir / "channel_stats.json")
+    _write_timeseries(
+        run_dir / "timeseries.csv",
+        [{"sim_time": index * 0.05, "ego_x": float(index)} for index in range(5)],
+    )
+    _write_timeseries(
+        run_dir / "artifacts/debug_timeseries.csv",
+        [
+            {
+                "sim_time": index * 0.05,
+                "chassis_speed_mps": 7.0,
+                "localization_speed_mps": 7.0,
+            }
+            for index in range(5)
+        ],
+    )
+
+    report = analyze_chassis_gt_contract_files(run_dir=run_dir)
+
+    assert report["status"] == "warn"
+    assert report["claim_grade"] is False
+    assert report["speed_consistency"]["sample_count"] == 5
+    assert report["speed_consistency"]["speed_delta_p95_mps"] == 0.0
+    assert "driving_mode" in report["missing_fields"]
+
+
 def test_chassis_gt_contract_non_monotonic_channel_fails(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_complete_run(run_dir)

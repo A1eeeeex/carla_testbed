@@ -138,6 +138,50 @@ def test_run_dir_uses_manifest_route_trace_for_carla_route_geometry(tmp_path: Pa
     assert payload["route_geometry"]["point_count"] == 3
     assert payload["route_geometry"]["length_m"] > 20.0
     assert payload["reference_line_verified"] is False
+
+
+def test_run_dir_falls_back_when_route_json_is_stub(tmp_path: Path) -> None:
+    run_dir = tmp_path / "route_stub_run"
+    run_dir.mkdir()
+    (run_dir / "route.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "route_stub.v1",
+                "route_id": "town01_route_stub",
+                "points": [],
+                "status": "insufficient_data",
+                "claim_boundary": "source traceability only",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "route_id": "town01_route_stub",
+                "map_name": "Town01",
+                "metadata": {
+                    "scenario_metadata": {
+                        "route_trace": [
+                            {"location": {"x": 0.0, "y": 0.0, "z": 0.0}},
+                            {"location": {"x": 10.0, "y": 0.0, "z": 0.0}},
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "summary.json").write_text(json.dumps({"route_id": "town01_route_stub"}), encoding="utf-8")
+
+    analyze_route_health_run_dir(run_dir)
+
+    payload = json.loads((run_dir / "analysis" / "route_health" / "route_health.json").read_text(encoding="utf-8"))
+    assert payload["route_source"] == "manifest_route_trace"
+    assert payload["hard_gate_eligible"] is True
+    assert payload["source"]["route_path"] == str(run_dir / "route.json")
+    assert "route_load_error" in payload["source"]
+    assert any("route_artifact_invalid" in warning for warning in payload["warnings"])
     assert payload["apollo_reference_line_claim_grade"] is False
     assert payload["source"]["route_trace_source_key"] == "manifest.metadata.scenario_metadata.route_trace"
 

@@ -189,6 +189,58 @@ def test_planning_materialization_prefers_sim_time_over_wall_timestamp(tmp_path:
     assert "derived_latency_outside_reasonable_range" not in report["time_domain"]["warnings"]
 
 
+def test_planning_materialization_prefers_routing_boundary_sim_time_over_wall_time(
+    tmp_path: Path,
+) -> None:
+    run_dir = _run_dir(tmp_path)
+    _write_json(
+        run_dir / "summary.json",
+        {"run_id": "run", "route_id": "097", "scenario_class": "lane_keep"},
+    )
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "total_messages_received": 3,
+            "messages_with_nonzero_trajectory_points": 2,
+            "routing_first_success_response_ts_sec": 1_781_257_358.0,
+            "routing_first_success_response_after_last_routing_send_boundary_ts_sec": 60.0,
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/cyber_bridge_stats.json",
+        {
+            "routing_success_count": 1,
+            "routing_first_success_response_ts_sec": 1_781_257_358.0,
+            "routing_first_success_response_after_last_routing_send_boundary_ts_sec": 60.0,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_topic_debug.jsonl",
+        [
+            {"sim_time_sec": 59.9, "planning_header_sequence_num": 1, "trajectory_point_count": 0},
+            {"sim_time_sec": 60.1, "planning_header_sequence_num": 2, "trajectory_point_count": 8},
+            {"sim_time_sec": 60.2, "planning_header_sequence_num": 3, "trajectory_point_count": 8},
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/topic_publish_stats.jsonl",
+        [
+            {"sim_time_sec": 60.0, "channel": "/apollo/localization/pose"},
+            {"sim_time_sec": 60.0, "channel": "/apollo/canbus/chassis"},
+            {"sim_time_sec": 60.1, "channel": "/apollo/localization/pose"},
+            {"sim_time_sec": 60.1, "channel": "/apollo/canbus/chassis"},
+        ],
+    )
+
+    report = analyze_planning_materialization_run_dir(run_dir)
+
+    assert report["after_routing_success_nonempty_ratio"] == 1.0
+    assert report["first_nonempty_after_routing_latency_s"] == pytest.approx(0.1)
+    assert report["time_domain"]["status"] == "pass"
+    assert report["route_establishment"]["route_established"] is True
+    assert "route_establishment_not_confirmed" not in report["blocking_reasons"]
+
+
 def test_planning_materialization_nulls_invalid_mixed_time_latency(tmp_path: Path) -> None:
     run_dir = _run_dir(tmp_path)
     _write_json(

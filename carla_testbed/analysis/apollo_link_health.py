@@ -5,7 +5,12 @@ from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence
 
+from carla_testbed.analysis.apollo_channel_health import analyze_apollo_channel_health_files
+from carla_testbed.analysis.apollo_module_consumption import analyze_apollo_module_consumption_run_dir
+from carla_testbed.analysis.chassis_gt_contract import analyze_chassis_gt_contract_files
 from carla_testbed.analysis.obstacle_gt_contract import analyze_obstacle_gt_contract_file
+from carla_testbed.analysis.planning_materialization import analyze_planning_materialization_run_dir
+from carla_testbed.analysis.prediction_evidence import analyze_prediction_evidence_run_dir
 from carla_testbed.analysis.assist_ledger import build_runtime_assist_ledger
 
 APOLLO_LINK_HEALTH_SCHEMA_VERSION = "apollo_link_health.v1"
@@ -18,6 +23,7 @@ LAYER_ORDER = (
     "chassis_gt_contract",
     "hdmap_projection",
     "planning_reference_line",
+    "apollo_lateral_semantics",
     "route_establishment",
     "apollo_module_consumption",
     "routing_planning_control_handoff",
@@ -36,6 +42,17 @@ TRAFFIC_LIGHT_SCENARIOS = {
     "traffic_light_green_go",
     "traffic_light_red_to_green_release",
 }
+ROUTE_CONTRACT_BLOCKER_PRIORITY = (
+    "scenario_route_length_inconsistent",
+    "apollo_routing_goal_mismatch",
+    "apollo_routing_lane_sequence_mismatch",
+    "apollo_routing_length_mismatch",
+    "apollo_routing_missing_scenario_lane",
+    "route_identity_inconsistent",
+    "claim_route_not_materialized",
+    "long_goal_not_compatible_with_scenario_route",
+    "routing_response_runtime_evidence_missing",
+)
 
 
 def analyze_apollo_link_health_run_dir(run_dir: str | Path) -> dict[str, Any]:
@@ -56,6 +73,23 @@ def analyze_apollo_link_health(
     manifest = payloads.get("manifest", {})
     cyber_bridge_stats = payloads.get("cyber_bridge_stats", {})
     scenario_class = _first_text(summary, "scenario_class", manifest, "scenario_class")
+    source_kinds: dict[str, str] = {}
+    if root is not None:
+        if _should_regenerate_planning_materialization(payloads.get("planning_materialization")):
+            regenerated_planning = analyze_planning_materialization_run_dir(root)
+            if _planning_materialization_has_runtime_evidence(regenerated_planning) or not payloads.get("planning_materialization"):
+                payloads["planning_materialization"] = regenerated_planning
+                source_kinds["planning_materialization"] = "regenerated_from_run_artifacts"
+        if _should_regenerate_apollo_module_consumption(payloads.get("apollo_module_consumption")):
+            regenerated_consumption = analyze_apollo_module_consumption_run_dir(root)
+            if _apollo_module_consumption_has_runtime_evidence(regenerated_consumption) or not payloads.get("apollo_module_consumption"):
+                payloads["apollo_module_consumption"] = regenerated_consumption
+                source_kinds["apollo_module_consumption"] = "regenerated_from_run_artifacts"
+        if _should_regenerate_prediction_evidence(payloads.get("prediction_evidence")):
+            regenerated_prediction = analyze_prediction_evidence_run_dir(root)
+            if _prediction_evidence_has_boundary(regenerated_prediction):
+                payloads["prediction_evidence"] = regenerated_prediction
+                source_kinds["prediction_evidence"] = "regenerated_from_run_artifacts"
 
     layers = {
         "environment_world": _environment_world_layer(
@@ -69,20 +103,17 @@ def analyze_apollo_link_health(
         "channel_health": _channel_health_layer(
             payloads.get("apollo_channel_health"),
             inputs.get("apollo_channel_health"),
+            stats_path=inputs.get("channel_stats"),
+            scenario_class=scenario_class,
         ),
         "localization_gt_contract": _localization_layer(
             payloads.get("localization_contract"),
             inputs.get("localization_contract"),
         ),
-        "chassis_gt_contract": _report_layer(
-            name="chassis_gt_contract",
-            report=payloads.get("chassis_gt_contract"),
-            path=inputs.get("chassis_gt_contract"),
-            status_keys=("status",),
-            blocking_keys=("blocking_reasons",),
-            warning_keys=("warnings",),
-            next_action="Generate chassis_gt_contract_report.json and verify chassis speed, driving mode, gear, and error-code semantics.",
-            key_metric_fields=("channel", "speed_consistency", "state", "claim_grade"),
+        "chassis_gt_contract": _chassis_gt_layer(
+            payloads.get("chassis_gt_contract"),
+            inputs.get("chassis_gt_contract"),
+            run_dir=root,
         ),
         "hdmap_projection": _hdmap_projection_layer(
             payloads.get("apollo_hdmap_projection"),
@@ -100,33 +131,24 @@ def analyze_apollo_link_health(
             next_action="Inspect Apollo reference-line, routing lane ids, and HDMap projection evidence.",
             key_metric_fields=("metrics", "evidence", "apollo_hdmap_projection"),
         ),
+        "apollo_lateral_semantics": _apollo_lateral_semantics_layer(
+            payloads.get("apollo_lateral_semantics"),
+            inputs.get("apollo_lateral_semantics"),
+        ),
         "route_establishment": _route_establishment_layer(
             payloads.get("planning_materialization"),
             inputs.get("planning_materialization"),
+            source_kind=source_kinds.get("planning_materialization", "report"),
             route_contract=payloads.get("apollo_route_contract"),
             route_contract_path=inputs.get("apollo_route_contract"),
             summary=summary,
             bridge_stats=cyber_bridge_stats,
             planning_topic_debug_summary=payloads.get("planning_topic_debug_summary", {}),
         ),
-        "apollo_module_consumption": _report_layer(
-            name="apollo_module_consumption",
-            report=payloads.get("apollo_module_consumption"),
-            path=inputs.get("apollo_module_consumption"),
-            status_keys=("status",),
-            blocking_keys=("blocking_reasons",),
-            warning_keys=("warnings",),
-            next_action=(
-                "Generate apollo_module_consumption_report.json to prove Apollo Planning/Control "
-                "consumed GT inputs; bridge-side publish stats alone are not enough."
-            ),
-            key_metric_fields=(
-                "routing_response_consumed_by_planning",
-                "pattern_counts",
-                "empty_reason_histogram",
-                "planning_input_age",
-                "prediction_mode",
-            ),
+        "apollo_module_consumption": _apollo_module_consumption_layer(
+            payloads.get("apollo_module_consumption"),
+            inputs.get("apollo_module_consumption"),
+            source_kind=source_kinds.get("apollo_module_consumption", "report"),
         ),
         "routing_planning_control_handoff": _control_handoff_layer(
             payloads.get("apollo_control_handoff"),
@@ -151,6 +173,7 @@ def analyze_apollo_link_health(
             payloads.get("prediction_evidence"),
             inputs.get("prediction_evidence"),
             scenario_class=scenario_class,
+            source_kind=source_kinds.get("prediction_evidence", "report"),
         ),
         "traffic_light_gt": _traffic_light_layer(
             payloads.get("traffic_light_contract"),
@@ -321,6 +344,27 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
             "metrics",
             "evidence",
         ),
+        "apollo_lateral_semantics": (
+            "suspected_layer",
+            "confidence",
+            "anomaly_types",
+            "hdmap_route_lateral_consistency_status",
+            "hdmap_route_lateral_interpretation",
+            "first_high_lateral_route_s",
+            "first_high_lateral_sim_time",
+            "max_abs_lateral_route_s",
+            "max_abs_lateral_sim_time",
+            "cross_track_error_abs_p95",
+            "apollo_simple_lat_lateral_error_abs_p95",
+            "route_s_vs_apollo_current_station_abs_delta_p95",
+            "ego_to_apollo_matched_point_xy_distance_p95",
+            "route_to_apollo_matched_point_xy_distance_p95",
+            "reference_debug_status",
+            "reference_line_provider_ready_ratio",
+            "reference_line_count_zero_ratio",
+            "apollo_steer_raw_abs_p95",
+            "carla_steer_applied_abs_p95",
+        ),
         "route_establishment": (
             "planning_message_count",
             "nonempty_trajectory_count",
@@ -329,6 +373,13 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
             "route_established",
             "route_contract_status",
             "scenario_route_length_m",
+            "scenario_route_length_source",
+            "scenario_route_claim_length_m",
+            "scenario_route_claim_length_source",
+            "scenario_route_legacy_length_m",
+            "scenario_route_legacy_length_role",
+            "scenario_route_trace_length_m",
+            "scenario_route_length_consistency_status",
             "apollo_routing_total_length_m",
             "routing_length_ratio",
             "summary_fail_reason",
@@ -471,6 +522,7 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
                 "artifacts/apollo_channel_health_report.json",
             ],
         ),
+        "channel_stats": _find_first(root, ["channel_stats.json", "artifacts/channel_stats.json"]),
         "localization_contract": _find_first(
             root,
             [
@@ -490,6 +542,13 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
             [
                 "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
                 "apollo_reference_line_contract_report.json",
+            ],
+        ),
+        "apollo_lateral_semantics": _find_first(
+            root,
+            [
+                "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
+                "apollo_lateral_semantics_report.json",
             ],
         ),
         "apollo_hdmap_projection": _find_first(
@@ -558,14 +617,7 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
                 "obstacle_gt_contract.json",
             ],
         ),
-        "natural_driving_report": _find_first(
-            root,
-            [
-                "analysis/natural_driving/natural_driving_report.json",
-                "natural_driving_report.json",
-            ],
-        )
-        or _find_natural_driving_report_in_ancestors(root),
+        "natural_driving_report": _find_natural_driving_report(root),
         "followstop_child_stderr": _find_followstop_child_stderr(root),
     }
 
@@ -715,6 +767,14 @@ def _localization_layer(report: Mapping[str, Any] | None, path: Path | None) -> 
     blocking = list(verdict.get("blocking_reasons") or report.get("blocking_reasons") or [])
     warnings = list(report.get("warnings") or [])
     status = _normalize_status(verdict.get("status") or report.get("status"))
+    lateral_consistency = report.get("hdmap_route_lateral_consistency")
+    lateral_consistency = lateral_consistency if isinstance(lateral_consistency, Mapping) else {}
+    next_action = "Fix GT localization contract before blaming reference-line, control, curve, junction, or traffic-light behavior."
+    if lateral_consistency.get("interpretation") == "hdmap_lateral_matches_route_cross_track_actual_lateral_drift":
+        next_action = (
+            "HDMap lateral error matches CARLA route cross-track; inspect Apollo lateral "
+            "target/reference semantics and raw/mapped/applied steering before changing map or transform."
+        )
     return _layer(
         status=status,
         blocking_reasons=blocking,
@@ -726,10 +786,187 @@ def _localization_layer(report: Mapping[str, Any] | None, path: Path | None) -> 
             "position_uses_vrp": _nested(report, "reference_point.position_uses_vrp"),
             "vehicle_reference_hard_gate_eligible": _nested(report, "reference_point.vehicle_reference_hard_gate_eligible"),
             "measurement_header_delta_ms_p95": _nested(report, "time.measurement_header_delta_ms_p95"),
+            "hdmap_route_lateral_consistency_status": lateral_consistency.get("status"),
+            "hdmap_route_lateral_alignment_mode": lateral_consistency.get("alignment_mode"),
+            "hdmap_route_lateral_delta_p95_m": lateral_consistency.get("best_abs_delta_p95_m"),
+            "hdmap_route_lateral_interpretation": lateral_consistency.get("interpretation"),
         },
         artifact_paths={"localization_contract": str(path) if path else None},
-        next_action="Fix GT localization contract before blaming reference-line, control, curve, junction, or traffic-light behavior.",
+        next_action=next_action,
     )
+
+
+def _chassis_gt_layer(
+    report: Mapping[str, Any] | None,
+    path: Path | None,
+    *,
+    run_dir: Path | None,
+) -> dict[str, Any]:
+    source_report: Mapping[str, Any] | None = report
+    source_kind = "report"
+    if _should_regenerate_chassis_gt_contract(report) and run_dir is not None:
+        regenerated = analyze_chassis_gt_contract_files(run_dir=run_dir)
+        if _chassis_gt_contract_has_runtime_evidence(regenerated) or not report:
+            source_report = regenerated
+            source_kind = "regenerated_from_run_artifacts"
+    layer = _report_layer(
+        name="chassis_gt_contract",
+        report=source_report,
+        path=path,
+        status_keys=("status",),
+        blocking_keys=("blocking_reasons",),
+        warning_keys=("warnings",),
+        next_action=(
+            "Generate chassis_gt_contract_report.json and verify chassis speed, "
+            "driving mode, gear, and error-code semantics."
+        ),
+        key_metric_fields=("channel", "speed_consistency", "state", "claim_grade", "missing_fields"),
+    )
+    layer["artifact_paths"]["source_kind"] = source_kind
+    if run_dir is not None:
+        layer["artifact_paths"]["run_dir"] = str(run_dir)
+    return layer
+
+
+def _should_regenerate_chassis_gt_contract(report: Mapping[str, Any] | None) -> bool:
+    if not report:
+        return True
+    status = _normalize_status(report.get("status") or _nested(report, "verdict.status"))
+    if status == "fail":
+        return False
+    blocking = {str(item) for item in report.get("blocking_reasons") or [] if item}
+    if blocking and blocking != {"chassis_runtime_samples_missing"}:
+        return False
+    return (
+        status == "insufficient_data"
+        and (
+            not isinstance(report.get("channel"), Mapping)
+            or "chassis_runtime_samples_missing" in blocking
+            or not isinstance(report.get("speed_consistency"), Mapping)
+        )
+    )
+
+
+def _chassis_gt_contract_has_runtime_evidence(report: Mapping[str, Any]) -> bool:
+    channel = report.get("channel") if isinstance(report.get("channel"), Mapping) else {}
+    speed = report.get("speed_consistency") if isinstance(report.get("speed_consistency"), Mapping) else {}
+    return bool(
+        _first_num(channel.get("message_count")) is not None
+        or _first_num(speed.get("sample_count")) is not None
+    )
+
+
+def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path | None) -> dict[str, Any]:
+    if not report:
+        return _layer(
+            status="not_applicable",
+            blocking_reasons=[],
+            warnings=["apollo_lateral_semantics_report_missing"],
+            key_metrics={},
+            artifact_paths={"apollo_lateral_semantics": str(path) if path else None},
+            next_action=(
+                "Generate apollo_lateral_semantics_report.json when lateral drift, matched/target point, "
+                "or source-steer behavior needs attribution."
+            ),
+        )
+    verdict = report.get("verdict") if isinstance(report.get("verdict"), Mapping) else {}
+    anomaly_types = _lateral_semantics_anomaly_types(report)
+    suspected_layer = str(report.get("suspected_layer") or verdict.get("suspected_layer") or "")
+    confidence = str(report.get("confidence") or verdict.get("confidence") or "")
+    status = _normalize_status(verdict.get("status") or report.get("status"))
+    warnings = list(report.get("warnings") or [])
+    if anomaly_types and "lateral_semantics_anomaly" not in warnings:
+        warnings.append("lateral_semantics_anomaly")
+    next_action = "Use this report as attribution evidence only; do not treat suspected_layer as definitive root cause."
+    if suspected_layer == "target_point_semantics":
+        next_action = (
+            "Inspect Apollo target/matched point semantics, source-steer generation, and the route_s window "
+            "where HDMap projection and CARLA cross-track both show drift."
+        )
+    elif suspected_layer == "reference_line_semantics":
+        next_action = "Inspect reference-line curvature/heading and Apollo routing lane ids before changing control mapping."
+    elif suspected_layer == "control_mapping":
+        next_action = "Inspect raw/mapped/applied steer consistency before changing steer_scale or controller parameters."
+    elif suspected_layer == "vehicle_response":
+        next_action = "Inspect CARLA vehicle response and calibration profile after upstream reference-line evidence is non-blocking."
+    return _layer(
+        status=status,
+        blocking_reasons=[],
+        warnings=warnings,
+        key_metrics={
+            "suspected_layer": suspected_layer or None,
+            "confidence": confidence or None,
+            "failure_reason": verdict.get("failure_reason") or report.get("failure_reason"),
+            "anomaly_types": anomaly_types,
+            "hdmap_route_lateral_consistency_status": _nested(
+                report,
+                "hdmap_route_lateral_consistency.status",
+            ),
+            "hdmap_route_lateral_interpretation": _nested(
+                report,
+                "hdmap_route_lateral_consistency.interpretation",
+            ),
+            "hdmap_route_lateral_delta_p95_m": _nested(
+                report,
+                "hdmap_route_lateral_consistency.best_abs_delta_p95_m",
+            ),
+            "first_high_lateral_route_s": _nested(
+                report,
+                "drift_window_summary.first_high_lateral.route_s",
+            ),
+            "first_high_lateral_sim_time": _nested(
+                report,
+                "drift_window_summary.first_high_lateral.sim_time",
+            ),
+            "max_abs_lateral_route_s": _nested(
+                report,
+                "drift_window_summary.max_abs_lateral.route_s",
+            ),
+            "max_abs_lateral_sim_time": _nested(
+                report,
+                "drift_window_summary.max_abs_lateral.sim_time",
+            ),
+            "cross_track_error_abs_p95": _nested(report, "correlation_summary.cross_track_error_abs.p95"),
+            "apollo_simple_lat_lateral_error_abs_p95": _nested(
+                report,
+                "correlation_summary.apollo_simple_lat_lateral_error_abs.p95",
+            ),
+            "route_s_vs_apollo_current_station_abs_delta_p95": _nested(
+                report,
+                "correlation_summary.route_s_vs_apollo_current_station_abs_delta.p95",
+            ),
+            "ego_to_apollo_matched_point_xy_distance_p95": _nested(
+                report,
+                "correlation_summary.ego_to_apollo_matched_point_xy_distance.p95",
+            ),
+            "route_to_apollo_matched_point_xy_distance_p95": _nested(
+                report,
+                "correlation_summary.route_to_apollo_matched_point_xy_distance.p95",
+            ),
+            "reference_debug_status": _nested(report, "reference_debug_summary.status"),
+            "reference_line_provider_ready_ratio": _nested(
+                report,
+                "reference_debug_summary.reference_line_provider_ready_ratio",
+            ),
+            "reference_line_count_zero_ratio": _nested(
+                report,
+                "reference_debug_summary.reference_line_count_zero_ratio",
+            ),
+            "apollo_steer_raw_abs_p95": _nested(report, "correlation_summary.apollo_steer_raw_abs.p95"),
+            "carla_steer_applied_abs_p95": _nested(report, "correlation_summary.carla_steer_applied_abs.p95"),
+        },
+        artifact_paths={"apollo_lateral_semantics": str(path) if path else None},
+        next_action=next_action,
+    )
+
+
+def _lateral_semantics_anomaly_types(report: Mapping[str, Any]) -> list[str]:
+    anomalies = report.get("anomalies") if isinstance(report.get("anomalies"), list) else []
+    result: list[str] = []
+    for item in anomalies:
+        if isinstance(item, Mapping) and item.get("type") not in {None, ""}:
+            result.append(str(item.get("type")))
+    return result
 
 
 def _hdmap_projection_layer(
@@ -758,14 +995,24 @@ def _hdmap_projection_layer(
             artifact_paths=_paths(inputs, "apollo_hdmap_projection", "localization_contract", "apollo_reference_line_contract"),
             next_action="Generate artifacts/apollo_hdmap_projection.jsonl using Apollo HDMap API projection evidence.",
         )
+    insufficient_reasons = list(projection.get("insufficient_reasons") or [])
+    warnings = list(projection.get("warnings") or [])
+    warnings.extend(str(item) for item in insufficient_reasons if item)
+    next_action = "If projection is high-error, check map alignment, lane direction, lane id, and routing snap."
+    if any("coverage" in str(item) or "sample_count" in str(item) for item in insufficient_reasons):
+        next_action = (
+            "Run a longer claim-window sample or export denser Apollo HDMap projection rows; "
+            "current projection quality may be good but coverage is not claim-grade."
+        )
     return _layer(
         status=_normalize_status(projection.get("status")),
         blocking_reasons=list(projection.get("blocking_reasons") or []),
-        warnings=list(projection.get("warnings") or []),
+        warnings=warnings,
         key_metrics={
             "file_present": projection.get("file_present"),
             "official_source_available": projection.get("official_source_available"),
             "claim_grade": projection.get("claim_grade"),
+            "insufficient_reasons": insufficient_reasons,
             "heading_error_p95_rad": projection.get("heading_error_p95_rad"),
             "lateral_error_p95_m": projection.get("lateral_error_p95_m"),
             "sim_time_coverage_ratio": projection.get("sim_time_coverage_ratio"),
@@ -774,14 +1021,81 @@ def _hdmap_projection_layer(
             "nearest_lane_id_topk": projection.get("nearest_lane_id_topk"),
         },
         artifact_paths=_paths(inputs, "apollo_hdmap_projection", "localization_contract", "apollo_reference_line_contract"),
-        next_action="If projection is high-error, check map alignment, lane direction, lane id, and routing snap.",
+        next_action=next_action,
     )
+
+
+def _should_regenerate_planning_materialization(report: Mapping[str, Any] | None) -> bool:
+    if not report:
+        return False
+    status = _normalize_status(report.get("verdict") or report.get("status"))
+    if status == "fail":
+        return False
+    blocking = {str(item) for item in report.get("blocking_reasons") or [] if item}
+    if blocking and blocking != {"planning_runtime_messages_missing"}:
+        return False
+    return (
+        status == "insufficient_data"
+        and (
+            "planning_runtime_messages_missing" in blocking
+            or _first_num(report.get("planning_message_count")) is None
+        )
+    )
+
+
+def _planning_materialization_has_runtime_evidence(report: Mapping[str, Any]) -> bool:
+    return _first_num(report.get("planning_message_count")) is not None
+
+
+def _should_regenerate_apollo_module_consumption(report: Mapping[str, Any] | None) -> bool:
+    if not report:
+        return False
+    status = _normalize_status(report.get("status"))
+    if status == "fail":
+        return False
+    blocking = {str(item) for item in report.get("blocking_reasons") or [] if item}
+    if blocking and blocking != {"apollo_module_runtime_logs_missing"}:
+        return False
+    return (
+        status == "insufficient_data"
+        and (
+            "apollo_module_runtime_logs_missing" in blocking
+            or not isinstance(report.get("pattern_counts"), Mapping)
+        )
+    )
+
+
+def _apollo_module_consumption_has_runtime_evidence(report: Mapping[str, Any]) -> bool:
+    source = report.get("source") if isinstance(report.get("source"), Mapping) else {}
+    return bool(
+        report.get("routing_response_consumed_by_planning") is not None
+        or isinstance(report.get("pattern_counts"), Mapping)
+        or source.get("planning_topic_debug")
+    )
+
+
+def _should_regenerate_prediction_evidence(report: Mapping[str, Any] | None) -> bool:
+    if not report:
+        return False
+    status = _normalize_status(report.get("verdict") or report.get("status"))
+    if status == "fail":
+        return False
+    mode = str(report.get("prediction_mode") or "").strip()
+    blockers = {str(item) for item in report.get("blocking_capabilities") or [] if item}
+    return status == "insufficient_data" and (
+        mode in {"", "unknown"} or "prediction_status_unknown" in blockers
+    )
+
+
+def _prediction_evidence_has_boundary(report: Mapping[str, Any]) -> bool:
+    return str(report.get("prediction_mode") or "").strip() not in {"", "unknown"}
 
 
 def _route_establishment_layer(
     report: Mapping[str, Any] | None,
     path: Path | None,
     *,
+    source_kind: str,
     route_contract: Mapping[str, Any] | None,
     route_contract_path: Path | None,
     summary: Mapping[str, Any],
@@ -826,6 +1140,19 @@ def _route_establishment_layer(
                 "summary_fail_reason": summary.get("fail_reason"),
                 "route_contract_status": route_contract_status,
                 "scenario_route_length_m": route_contract.get("scenario_route_length_m") if route_contract else None,
+                "scenario_route_length_source": route_contract.get("scenario_route_length_source") if route_contract else None,
+                "scenario_route_declared_length_m": route_contract.get("scenario_route_declared_length_m") if route_contract else None,
+                "scenario_route_claim_length_m": route_contract.get("scenario_route_claim_length_m") if route_contract else None,
+                "scenario_route_claim_length_source": route_contract.get("scenario_route_claim_length_source") if route_contract else None,
+                "scenario_route_legacy_length_m": route_contract.get("scenario_route_legacy_length_m") if route_contract else None,
+                "scenario_route_legacy_length_role": route_contract.get("scenario_route_legacy_length_role") if route_contract else None,
+                "scenario_route_trace_length_m": route_contract.get("scenario_route_trace_length_m") if route_contract else None,
+                "scenario_route_length_consistency_status": (
+                    route_contract.get("scenario_route_length_consistency_status") if route_contract else None
+                ),
+                "scenario_route_length_consistency_reason": (
+                    route_contract.get("scenario_route_length_consistency_reason") if route_contract else None
+                ),
                 "apollo_routing_total_length_m": route_contract.get("apollo_routing_total_length_m") if route_contract else None,
                 "routing_length_ratio": route_contract.get("routing_length_ratio") if route_contract else None,
                 "apollo_routing_lane_window_count": route_contract.get("apollo_routing_lane_window_count") if route_contract else None,
@@ -834,6 +1161,7 @@ def _route_establishment_layer(
             artifact_paths={
                 "planning_materialization": str(path) if path else None,
                 "apollo_route_contract": str(route_contract_path) if route_contract_path else None,
+                "source_kind": source_kind,
             },
             next_action=(
                 "If route establishment fails, inspect Apollo route contract and planning "
@@ -896,12 +1224,26 @@ def _route_establishment_layer(
             "summary_fail_reason": fail_reason,
             "route_contract_status": route_contract_status,
             "scenario_route_length_m": route_contract.get("scenario_route_length_m") if route_contract else None,
+            "scenario_route_length_source": route_contract.get("scenario_route_length_source") if route_contract else None,
+            "scenario_route_declared_length_m": route_contract.get("scenario_route_declared_length_m") if route_contract else None,
+            "scenario_route_claim_length_m": route_contract.get("scenario_route_claim_length_m") if route_contract else None,
+            "scenario_route_claim_length_source": route_contract.get("scenario_route_claim_length_source") if route_contract else None,
+            "scenario_route_legacy_length_m": route_contract.get("scenario_route_legacy_length_m") if route_contract else None,
+            "scenario_route_legacy_length_role": route_contract.get("scenario_route_legacy_length_role") if route_contract else None,
+            "scenario_route_trace_length_m": route_contract.get("scenario_route_trace_length_m") if route_contract else None,
+            "scenario_route_length_consistency_status": (
+                route_contract.get("scenario_route_length_consistency_status") if route_contract else None
+            ),
+            "scenario_route_length_consistency_reason": (
+                route_contract.get("scenario_route_length_consistency_reason") if route_contract else None
+            ),
             "apollo_routing_total_length_m": route_contract.get("apollo_routing_total_length_m") if route_contract else None,
             "routing_length_ratio": route_contract.get("routing_length_ratio") if route_contract else None,
         },
         artifact_paths={
             "planning_materialization": str(path) if path else None,
             "apollo_route_contract": str(route_contract_path) if route_contract_path else None,
+            "source_kind": source_kind,
         },
         next_action=(
             "Generate planning_materialization_report.json and apollo_route_contract_report.json; "
@@ -1043,12 +1385,22 @@ def _control_health_layer(report: Mapping[str, Any] | None, path: Path | None) -
             path=path,
             next_action="Generate control_health_report.json; inspect raw/mapped/applied controls, cadence, and vehicle response.",
         )
+    semantics = _control_semantics_from_control_health(report)
+    semantics_primary = report.get("control_semantics_primary_factor") or semantics.get(
+        "primary_factor"
+    )
+    semantics_suspected = report.get("control_semantics_suspected_factors")
+    if not isinstance(semantics_suspected, list):
+        semantics_suspected = list(semantics.get("suspected_factors") or [])
     return _layer(
         status=_normalize_status(report.get("status")),
         blocking_reasons=[reason for reason in [report.get("failure_reason")] if reason and report.get("status") == "fail"],
         warnings=list(report.get("warnings") or []),
         key_metrics={
             "failure_reason": report.get("failure_reason"),
+            "control_semantics_primary_factor": semantics_primary,
+            "control_semantics_suspected_factors": semantics_suspected,
+            "control_semantics_evidence": dict(semantics),
             "control_handoff_status": report.get("control_handoff_status"),
             "control_process_health": _nested(report, "metrics.control_process_health"),
             "oscillation_decomposition": _nested(report, "metrics.oscillation_decomposition"),
@@ -1079,15 +1431,117 @@ def _control_health_layer(report: Mapping[str, Any] | None, path: Path | None) -
             "route_s_after_first_applied_control_delta_m": _nested(report, "metrics.route_s_after_first_applied_control_delta_m"),
         },
         artifact_paths={"control_health": str(path) if path else None},
-        next_action=(
-            "If localization/reference-line is non-blocking, inspect longitudinal_oscillation_attribution "
-            "plus trajectory_consume_correlation/planning_trajectory_correlation before tuning bridge "
-            "mapping or actuation."
-        ),
+        next_action=_control_health_next_action(semantics_primary),
     )
 
 
-def _channel_health_layer(report: Mapping[str, Any] | None, path: Path | None) -> dict[str, Any]:
+def _control_health_next_action(semantics_primary: Any) -> str:
+    if semantics_primary:
+        return (
+            "If localization/reference-line is non-blocking, inspect Apollo Control simple_lon "
+            f"and consumed trajectory evidence for `{semantics_primary}` before tuning bridge "
+            "mapping or actuation."
+        )
+    return (
+        "If localization/reference-line is non-blocking, inspect longitudinal_oscillation_attribution "
+        "plus trajectory_consume_correlation/planning_trajectory_correlation before tuning bridge "
+        "mapping or actuation."
+    )
+
+
+def _control_semantics_from_control_health(report: Mapping[str, Any]) -> dict[str, Any]:
+    semantics = report.get("control_semantics_evidence")
+    if isinstance(semantics, Mapping) and (
+        semantics.get("primary_factor") or semantics.get("suspected_factors")
+    ):
+        return dict(semantics)
+
+    control_debug = _nested(report, "metrics.control_decode_debug")
+    if not isinstance(control_debug, Mapping):
+        control_debug = {}
+    sources: dict[str, Mapping[str, Any]] = {}
+    for name in (
+        "longitudinal_oscillation_attribution",
+        "trajectory_consume_correlation",
+        "planning_trajectory_correlation",
+    ):
+        value = control_debug.get(name)
+        if isinstance(value, Mapping):
+            sources[name] = value
+    planning_log = _nested(report, "metrics.planning_log_fallback_diagnostics")
+    if isinstance(planning_log, Mapping):
+        sources["planning_log_fallback_diagnostics"] = planning_log
+
+    suspected: list[str] = []
+    dominant_by_source: dict[str, Any] = {}
+    source_availability: dict[str, Any] = {}
+    transition_counts: dict[str, Any] = {}
+    for name, payload in sources.items():
+        source_availability[name] = payload.get("available")
+        if payload.get("transition_count") is not None:
+            transition_counts[name] = payload.get("transition_count")
+        dominant = payload.get("dominant_suspected_factor")
+        if dominant:
+            dominant_by_source[name] = dominant
+            suspected.append(str(dominant))
+        suspected.extend(str(item) for item in payload.get("suspected_factors") or [])
+
+    suspected = _dedupe_preserve_order(suspected)
+    primary_source = None
+    primary_factor = None
+    for name in (
+        "planning_trajectory_correlation",
+        "trajectory_consume_correlation",
+        "longitudinal_oscillation_attribution",
+        "planning_log_fallback_diagnostics",
+    ):
+        factor = dominant_by_source.get(name)
+        if factor:
+            primary_source = name
+            primary_factor = factor
+            break
+    if primary_factor is None and suspected:
+        primary_factor = suspected[0]
+    return {
+        "available": bool(primary_factor or suspected),
+        "primary_source": primary_source,
+        "primary_factor": primary_factor,
+        "suspected_factors": suspected,
+        "dominant_by_source": dominant_by_source,
+        "source_availability": source_availability,
+        "transition_counts": transition_counts,
+    }
+
+
+def _dedupe_preserve_order(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _channel_health_layer(
+    report: Mapping[str, Any] | None,
+    path: Path | None,
+    *,
+    stats_path: Path | None = None,
+    scenario_class: str | None = None,
+) -> dict[str, Any]:
+    source_kind = "report"
+    if _channel_report_needs_stats_fallback(report) and stats_path is not None and stats_path.exists():
+        try:
+            report = analyze_apollo_channel_health_files(
+                "configs/algorithms/apollo_natural_driving_channels.yaml",
+                stats_path,
+                scenario_class=scenario_class,
+            )
+            source_kind = "regenerated_from_channel_stats"
+        except Exception:
+            source_kind = "report_stats_fallback_failed"
     if not report:
         return _missing_report_layer(
             path=path,
@@ -1133,9 +1587,21 @@ def _channel_health_layer(report: Mapping[str, Any] | None, path: Path | None) -
             "planning_sim_time_timestamp_monotonic": planning_result.get("sim_time_timestamp_monotonic"),
             "planning_source": planning_result.get("source"),
         },
-        artifact_paths={"channel_health": str(path) if path else None},
+        artifact_paths={
+            "channel_health": str(path) if path else None,
+            "channel_stats": str(stats_path) if stats_path else None,
+            "source_kind": source_kind,
+        },
         next_action="Generate/inspect apollo_channel_health_report.json; required channel absence is a transport issue, while planning-only gaps must be interpreted with planning/reference-line artifacts.",
     )
+
+
+def _channel_report_needs_stats_fallback(report: Mapping[str, Any] | None) -> bool:
+    if not report:
+        return True
+    if not isinstance(report.get("channel_results"), Mapping) or not report.get("channel_results"):
+        return True
+    return False
 
 
 def _channel_failure_detail(channel_result: Mapping[str, Any]) -> dict[str, Any]:
@@ -1191,6 +1657,7 @@ def _prediction_layer(
     path: Path | None,
     *,
     scenario_class: str | None,
+    source_kind: str,
 ) -> dict[str, Any]:
     if not report:
         return _missing_report_layer(
@@ -1220,7 +1687,10 @@ def _prediction_layer(
             "bypass_reason": report.get("bypass_reason"),
             "blocking_capabilities": report.get("blocking_capabilities") or [],
         },
-        artifact_paths={"prediction_evidence": str(path) if path else None},
+        artifact_paths={
+            "prediction_evidence": str(path) if path else None,
+            "source_kind": source_kind,
+        },
         next_action=(
             "For dynamic, junction, and traffic-light claims, require native prediction "
             "or an explicit GT prediction/bypass boundary in prediction_evidence_report.json."
@@ -1255,6 +1725,7 @@ def _no_assist_layer(
     applied_control_source = _normalize_applied_control_source(control_source)
     explicit_control_source = _explicit_control_source(summary, manifest)
     apollo_control_topic_observed = _apollo_control_topic_observed(control_handoff, bridge_stats)
+    handoff_proves_apollo_control = _handoff_proves_apollo_control(control_handoff)
     routing_success_count = _first_num(summary.get("routing_success_count"), bridge_stats.get("routing_success_count"))
     planning_nonempty = _planning_nonempty_claim_metric(
         summary=summary,
@@ -1289,9 +1760,12 @@ def _no_assist_layer(
         explicit_control_source
         and explicit_control_source != "/apollo/control"
         and apollo_control_topic_observed
+        and not handoff_proves_apollo_control
     ):
         reasons.append("control_source_conflict")
         explicit_blockers.append("control_source_conflict")
+    if handoff_proves_apollo_control and explicit_control_source not in {None, "/apollo/control"}:
+        warnings.append("summary_control_source_overridden_by_apollo_control_handoff")
     if routing_success_count is None or routing_success_count < 1:
         reasons.append("routing_success_missing")
     if planning_nonempty_ratio is None:
@@ -1345,6 +1819,7 @@ def _no_assist_layer(
             "applied_control_source": applied_control_source,
             "explicit_control_source": explicit_control_source,
             "apollo_control_topic_observed": apollo_control_topic_observed,
+            "handoff_proves_apollo_control": handoff_proves_apollo_control,
             "routing_success_count": routing_success_count,
             "planning_nonempty_ratio": planning_nonempty_ratio,
             "planning_nonempty_ratio_for_claim": planning_nonempty_ratio,
@@ -1445,6 +1920,35 @@ def _obstacle_gt_layer(
     return layer
 
 
+def _apollo_module_consumption_layer(
+    report: Mapping[str, Any] | None,
+    path: Path | None,
+    *,
+    source_kind: str,
+) -> dict[str, Any]:
+    layer = _report_layer(
+        name="apollo_module_consumption",
+        report=report,
+        path=path,
+        status_keys=("status",),
+        blocking_keys=("blocking_reasons",),
+        warning_keys=("warnings",),
+        next_action=(
+            "Generate apollo_module_consumption_report.json to prove Apollo Planning/Control "
+            "consumed GT inputs; bridge-side publish stats alone are not enough."
+        ),
+        key_metric_fields=(
+            "routing_response_consumed_by_planning",
+            "pattern_counts",
+            "empty_reason_histogram",
+            "planning_input_age",
+            "prediction_mode",
+        ),
+    )
+    layer["artifact_paths"]["source_kind"] = source_kind
+    return layer
+
+
 def _report_layer(
     *,
     name: str,
@@ -1521,6 +2025,11 @@ def _blocker_summary(layers: Mapping[str, Mapping[str, Any]]) -> tuple[str | Non
     if special:
         secondary = [item for item in blockers if item != special]
         return special, secondary
+
+    actual_lateral_drift = _actual_lateral_drift_primary(layers)
+    if actual_lateral_drift:
+        secondary = [item for item in blockers if item != actual_lateral_drift]
+        return actual_lateral_drift, secondary
 
     planning_primary = _planning_materialization_primary(layers)
     if planning_primary:
@@ -1608,6 +2117,9 @@ def _planning_materialization_primary(layers: Mapping[str, Mapping[str, Any]]) -
     reasons = set(route.get("blocking_reasons") or [])
     if "routing_success_missing" in reasons:
         return None
+    for reason in ROUTE_CONTRACT_BLOCKER_PRIORITY:
+        if reason in reasons:
+            return f"route_establishment:{reason}"
     preferred = (
         "planning_trajectory_materialization_low",
         "route_establishment_latency",
@@ -1683,10 +2195,27 @@ def _reference_line_localization_mismatch(layers: Mapping[str, Mapping[str, Any]
     return None
 
 
+def _actual_lateral_drift_primary(layers: Mapping[str, Mapping[str, Any]]) -> str | None:
+    localization = layers.get("localization_gt_contract", {})
+    loc_reasons = set(localization.get("blocking_reasons") or [])
+    loc_metrics = localization.get("key_metrics") if isinstance(localization.get("key_metrics"), Mapping) else {}
+    if "apollo_hdmap_projection_lateral_error_high" not in loc_reasons:
+        return None
+    if (
+        loc_metrics.get("hdmap_route_lateral_consistency_status") == "pass"
+        and loc_metrics.get("hdmap_route_lateral_interpretation")
+        == "hdmap_lateral_matches_route_cross_track_actual_lateral_drift"
+    ):
+        return "natural_driving_outcome:actual_lateral_drift_matches_hdmap_projection"
+    return None
+
+
 def _layer_blocker_name(name: str, layer: Mapping[str, Any]) -> str:
     reasons = list(layer.get("blocking_reasons") or [])
+    insufficient_reasons = _layer_insufficient_reasons(layer)
     if name == "route_establishment":
         preferred = (
+            *ROUTE_CONTRACT_BLOCKER_PRIORITY,
             "planning_trajectory_materialization_low",
             "route_establishment_latency",
             "planning_nonempty_after_routing_below_threshold",
@@ -1714,7 +2243,20 @@ def _layer_blocker_name(name: str, layer: Mapping[str, Any]) -> str:
         for reason in preferred:
             if reason in reason_set:
                 return f"{name}:{reason}"
-    return f"{name}:{reasons[0]}" if reasons else f"{name}:{layer.get('status')}"
+    if reasons:
+        return f"{name}:{reasons[0]}"
+    if insufficient_reasons:
+        return f"{name}:{insufficient_reasons[0]}"
+    return f"{name}:{layer.get('status')}"
+
+
+def _layer_insufficient_reasons(layer: Mapping[str, Any]) -> list[str]:
+    direct = [str(item) for item in layer.get("insufficient_reasons") or [] if item]
+    metrics = layer.get("key_metrics") if isinstance(layer.get("key_metrics"), Mapping) else {}
+    metric_reasons = [str(item) for item in metrics.get("insufficient_reasons") or [] if item]
+    projection = metrics.get("apollo_hdmap_projection") if isinstance(metrics.get("apollo_hdmap_projection"), Mapping) else {}
+    projection_reasons = [str(item) for item in projection.get("insufficient_reasons") or [] if item]
+    return [*direct, *metric_reasons, *projection_reasons]
 
 
 def _can_claim_unassisted(layers: Mapping[str, Mapping[str, Any]]) -> bool:
@@ -1738,6 +2280,8 @@ def _can_claim_unassisted(layers: Mapping[str, Mapping[str, Any]]) -> bool:
     )
     if any(not _non_blocking(layers.get(name, {})) for name in required):
         return False
+    if _claim_grade_reasons(layers):
+        return False
     no_assist = layers.get("no_assist_claim_boundary", {})
     no_assist_metrics = no_assist.get("key_metrics") if isinstance(no_assist.get("key_metrics"), Mapping) else {}
     natural = layers.get("natural_driving_outcome", {})
@@ -1759,10 +2303,25 @@ def _why_not_claimable(layers: Mapping[str, Mapping[str, Any]]) -> list[str]:
                 reasons.extend(f"{name}:{reason}" for reason in layer_reasons)
             else:
                 reasons.append(f"{name}:{status}")
+    reasons.extend(_claim_grade_reasons(layers))
     no_assist = layers.get("no_assist_claim_boundary", {})
     metrics = no_assist.get("key_metrics") if isinstance(no_assist.get("key_metrics"), Mapping) else {}
     reasons.extend(str(item) for item in metrics.get("why_not_claimable") or [])
     return sorted(set(reason for reason in reasons if reason and reason != "traffic_light_gt:not_applicable"))
+
+
+def _claim_grade_reasons(layers: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    reasons: list[str] = []
+    for name in LAYER_ORDER:
+        layer = layers.get(name, {})
+        metrics = layer.get("key_metrics") if isinstance(layer.get("key_metrics"), Mapping) else {}
+        if metrics.get("claim_grade") is False:
+            reasons.append(f"{name}:claim_grade_false")
+        if metrics.get("hard_gate_eligible") is False:
+            reasons.append(f"{name}:hard_gate_eligible_false")
+        if metrics.get("vehicle_reference_hard_gate_eligible") is False:
+            reasons.append(f"{name}:vehicle_reference_hard_gate_eligible_false")
+    return reasons
 
 
 def _non_blocking(layer: Mapping[str, Any]) -> bool:
@@ -1774,6 +2333,18 @@ def _next_highest_value_validation(primary: str | None, layers: Mapping[str, Map
         return "Run longer route-level validation and natural-driving evaluator with the same artifact set."
     if primary == "reference_line/localization lane-heading mismatch":
         return "Compare localization lane heading, Apollo HDMap projection, and planning/control reference-line heading on the same route_s window."
+    if primary == "natural_driving_outcome:actual_lateral_drift_matches_hdmap_projection":
+        return (
+            "HDMap lateral error matches CARLA route cross-track, so treat it as real closed-loop lateral drift. "
+            "Inspect route_s windows around drift growth, Apollo target/matched point semantics, and raw/mapped/applied steer before changing localization transform."
+        )
+    if primary and "apollo_hdmap_projection_route_s_coverage_low" in primary:
+        return (
+            "Run a longer claim-window route sample and regenerate artifacts/apollo_hdmap_projection.jsonl; "
+            "current official projection quality is usable but projected route-s coverage is not claim-grade."
+        )
+    if primary and "apollo_hdmap_projection_sample_count_low" in primary:
+        return "Regenerate Apollo HDMap projection with at least the configured minimum claim-grade sample count."
     if primary == "channel_health:fail" and _planning_gap_coincides_with_inter_tick_pause(layers):
         return (
             "Inspect harness loop cadence and blocking hooks between world ticks. "
@@ -1813,16 +2384,20 @@ def _find_first(root: Path, relatives: Sequence[str]) -> Path | None:
     return None
 
 
-def _find_natural_driving_report_in_ancestors(root: Path) -> Path | None:
-    for parent in root.parents:
+def _find_natural_driving_report(root: Path) -> Path | None:
+    candidates: list[Path] = []
+    for base in (root, *root.parents):
         for relative in (
             "analysis/natural_driving/natural_driving_report.json",
+            "analysis/natural_driving_postprocess/natural_driving_report.json",
             "natural_driving_report.json",
         ):
-            path = parent / relative
+            path = base / relative
             if path.exists():
-                return path
-    return None
+                candidates.append(path)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime_ns)
 
 
 def _find_followstop_child_stderr(root: Path) -> Path | None:
@@ -2244,6 +2819,8 @@ def _infer_control_source(
     control_handoff: Mapping[str, Any],
     bridge_stats: Mapping[str, Any] | None = None,
 ) -> str | None:
+    if _handoff_proves_apollo_control(control_handoff):
+        return "/apollo/control"
     explicit = _explicit_control_source(summary, manifest)
     if explicit:
         return explicit
@@ -2268,6 +2845,23 @@ def _normalize_applied_control_source(control_source: str | None) -> str | None:
     if normalized in {"route_follower", "legacy_followstop", "manual", "direct_autopilot", "dummy_lateral"}:
         return normalized
     return normalized.replace("/", "_").strip("_") or None
+
+
+def _handoff_proves_apollo_control(control_handoff: Mapping[str, Any]) -> bool:
+    if not isinstance(control_handoff, Mapping):
+        return False
+    if _nested(control_handoff, "control_channel.name") != "/apollo/control":
+        return False
+    count = _first_num(
+        _nested(control_handoff, "control_channel.message_count"),
+        _nested(control_handoff, "bridge_receive.control_rx_count"),
+        _nested(control_handoff, "mapping_and_apply.apply_control_count"),
+    )
+    if count is None or count <= 0:
+        return False
+    status = _normalize_status(control_handoff.get("verdict") or control_handoff.get("status"))
+    failure_stage = str(control_handoff.get("failure_stage") or "").strip().lower()
+    return status in {"pass", "warn"} and failure_stage in {"", "none", "pass"}
 
 
 def _explicit_control_source(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> str | None:

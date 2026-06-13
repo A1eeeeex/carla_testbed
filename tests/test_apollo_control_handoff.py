@@ -147,6 +147,40 @@ def test_process_crash_tcmalloc_is_process_health_failure(tmp_path: Path) -> Non
     assert report["process_health"]["crash_reason"] == "tcmalloc_invalid_free"
 
 
+def test_deferred_survival_artifact_satisfies_process_health(tmp_path: Path) -> None:
+    run_dir = _copy_case(tmp_path)
+    summary = _json(run_dir / "summary.json")
+    summary.pop("control_process_started", None)
+    _write_json(run_dir / "summary.json", summary)
+    (run_dir / "artifacts" / "control.out.log").unlink()
+    (run_dir / "artifacts" / "apollo_control_deferred_survival.json").write_text(
+        json.dumps(
+            {
+                "probe_window_sec": 10.0,
+                "control_started_pid_seen": True,
+                "control_survived_5s": True,
+                "control_survived_10s": True,
+                "control_present_after_first_nonzero_planning": True,
+                "control_present_at_end": True,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_control_handoff(run_dir=run_dir)
+
+    assert report["verdict"] == "pass"
+    assert report["failure_stage"] == "none"
+    assert report["process_health"]["status"] == "pass"
+    assert report["process_health"]["started"] is True
+    assert report["process_health"]["alive_after_5s"] is True
+    assert report["process_health"]["alive_at_end"] is True
+    assert report["process_health"]["survival_probe_available"] is True
+
+
 def test_planning_ready_control_missing_fails_control_channel(tmp_path: Path) -> None:
     run_dir = _copy_case(tmp_path)
     stats = _json(run_dir / "artifacts" / "channel_stats.json")

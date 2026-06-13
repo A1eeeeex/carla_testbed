@@ -99,6 +99,29 @@ def test_lane_keep_stale_republish_blocks_unassisted_claim(tmp_path: Path) -> No
     assert "stale_gt_republish_claim_blocked" in lane["why_not_claimable"]
 
 
+def test_lane_keep_hdmap_lateral_matching_route_drift_gets_specific_failure_reason(tmp_path: Path) -> None:
+    suite_root = _copy_suite(tmp_path)
+    loc_path = _localization_path(suite_root / "lane_keep_097")
+    loc = _read_json(loc_path)
+    loc["verdict"]["status"] = "fail"
+    loc["verdict"]["blocking_reasons"] = ["apollo_hdmap_projection_lateral_error_high"]
+    loc["hdmap_route_lateral_consistency"] = {
+        "status": "pass",
+        "alignment_mode": "negated_projection_l_matches_cross_track",
+        "best_abs_delta_p95_m": 0.015,
+        "interpretation": "hdmap_lateral_matches_route_cross_track_actual_lateral_drift",
+    }
+    _write_json(loc_path, loc)
+
+    report = analyze_natural_driving_suite(suite_root)
+    lane = _run(report, "lane_keep_097")
+
+    assert lane["verdict"] == "insufficient_data"
+    assert lane["failure_reason"] == "actual_lateral_drift_matches_hdmap_projection"
+    assert lane["can_claim_unassisted_natural_driving"] is False
+    assert "apollo_hdmap_projection_lateral_error_high" in lane["localization_blocking_reasons"]
+
+
 def test_curve_with_localization_heading_block_is_diagnostic_not_algorithm_fail(tmp_path: Path) -> None:
     suite_root = tmp_path / "suite"
     _make_curve_run(suite_root)

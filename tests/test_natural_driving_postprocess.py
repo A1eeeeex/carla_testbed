@@ -481,6 +481,127 @@ def test_refresh_preserves_existing_route_and_channel_reports_when_raw_inputs_ar
     assert report["natural_driving"]["status"] == "pass"
 
 
+def test_refresh_regenerates_route_and_planning_reports_when_raw_inputs_exist(
+    tmp_path: Path,
+) -> None:
+    suite_root = _copy_suite(tmp_path)
+    lane = suite_root / "lane_keep_097"
+    route_report_path = lane / "analysis" / "apollo_route_contract" / "apollo_route_contract_report.json"
+    planning_report_path = lane / "analysis" / "planning_materialization" / "planning_materialization_report.json"
+    route_report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_route_contract.v1",
+                "status": "insufficient_data",
+                "blocking_reasons": ["routing_response_runtime_evidence_missing"],
+                "stale_marker": "must_be_regenerated",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    planning_report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "planning_materialization.v1",
+                "verdict": "insufficient_data",
+                "blocking_reasons": ["planning_runtime_messages_missing"],
+                "stale_marker": "must_be_regenerated",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifacts = lane / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "routing_event_debug.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": 1.0,
+                "routing_phase": "claim",
+                "routing_request_kind": "claim_route",
+                "goal_projection": {
+                    "applied": True,
+                    "accepted": True,
+                    "trusted_lane_centerline": True,
+                    "distance_m": 0.1,
+                    "signed_lateral_error_m": 0.0,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifacts / "routing_response_decoded.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "routing_response_decoded.v1",
+                "status": "pass",
+                "source": "/apollo/raw_routing_response",
+                "lane_segment_count": 1,
+                "lane_sequence_signature": ["15_1_1"],
+                "lane_segments": [
+                    {"lane_id": "15_1_1", "start_s": 0.0, "end_s": 100.0, "length_m": 100.0}
+                ],
+                "total_length_m": 100.0,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifacts / "planning_topic_debug_summary.json").write_text(
+        json.dumps(
+            {
+                "total_messages_received": 4,
+                "messages_with_nonzero_trajectory_points": 3,
+                "last_routing_total_length": 100.0,
+                "last_routing_lane_window_count": 1,
+                "last_routing_lane_window_signature": "15_1_1@0.0000->100.0000",
+                "last_routing_unique_lane_signature": "15_1_1",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifacts / "planning_topic_debug.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "timestamp": float(index),
+                    "planning_header_sequence_num": index,
+                    "trajectory_point_count": 10 if index else 0,
+                    "reference_line_count": 1,
+                    "routing_lane_window_signature": "15_1_1@0.0000->100.0000",
+                }
+            )
+            for index in range(4)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = postprocess_natural_driving_runs(suite_root, out_dir=tmp_path / "out", refresh=True)
+    lane_result = next(run for run in report["runs"] if run["run_id"] == "lane_keep_097")
+    regenerated_route = json.loads(Path(lane_result["apollo_route_contract"]["path"]).read_text(encoding="utf-8"))
+    regenerated_planning = json.loads(
+        Path(lane_result["planning_materialization"]["path"]).read_text(encoding="utf-8")
+    )
+
+    assert lane_result["apollo_route_contract"]["status"] == "generated"
+    assert "stale_marker" not in regenerated_route
+    assert regenerated_route["source"]["routing_response_decoded"].endswith(
+        "artifacts/routing_response_decoded.json"
+    )
+    assert lane_result["planning_materialization"]["status"] == "generated"
+    assert "stale_marker" not in regenerated_planning
+    assert regenerated_planning["planning_message_count"] == 4
+    assert regenerated_planning["nonempty_trajectory_ratio"] == 0.75
+
+
 def test_postprocess_writes_insufficient_channel_report_when_stats_missing(tmp_path: Path) -> None:
     suite_root = _copy_suite(tmp_path)
     lane = suite_root / "lane_keep_097"

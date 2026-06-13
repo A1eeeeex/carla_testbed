@@ -824,6 +824,22 @@ def _write_apollo_scenario_goal(
     scenario_driver = str(
         (((effective_cfg.get("scenario", {}) or {}).get("driver")) or scenario_meta.get("scenario_driver") or "")
     ).strip().lower()
+
+    def _route_health_metadata_payload() -> Dict[str, Any]:
+        return {
+            "route_length_m": scenario_meta.get("route_length_m"),
+            "route_length_m_role": scenario_meta.get("route_length_m_role"),
+            "route_length_m_claim_grade": scenario_meta.get("route_length_m_claim_grade"),
+            "claim_route_length_m": scenario_meta.get("claim_route_length_m"),
+            "claim_route_length_source": scenario_meta.get("claim_route_length_source"),
+            "route_trace_length_m": scenario_meta.get("route_trace_length_m"),
+            "route_trace_length_source": scenario_meta.get("route_trace_length_source"),
+            "route_trace_point_count": scenario_meta.get("route_trace_point_count"),
+            "remain_length_after_goal_m": scenario_meta.get("remain_length_after_goal_m"),
+            "spawn_lane": scenario_meta.get("spawn_lane"),
+            "goal_lane": scenario_meta.get("goal_lane"),
+        }
+
     scenario_goal_raw = scenario_meta.get("scenario_goal_raw_carla") if isinstance(scenario_meta, dict) else None
     if isinstance(scenario_goal_raw, dict) and "x" in scenario_goal_raw and "y" in scenario_goal_raw:
         goal_raw_carla = {
@@ -831,38 +847,20 @@ def _write_apollo_scenario_goal(
             "y": float(scenario_goal_raw["y"]),
             "z": float(scenario_goal_raw.get("z", ego_loc.z)),
         }
-        if scenario_driver == "carla_apollo_semantic_suite":
-            gx, gy, gz = _apollo_map_xyz_from_carla_raw(
-                goal_raw_carla["x"], goal_raw_carla["y"], goal_raw_carla["z"]
-            )
-            goal_source = "scenario_metadata_apollo_map_xy"
-            goal_raw = {"x": float(gx), "y": float(gy), "z": float(gz)}
-            payload = {
-                "frame": "apollo_map",
-                "source": goal_source,
-                "goal": goal_raw,
-                "goal_raw_carla": dict(goal_raw_carla),
-                "route_health_metadata": {
-                    "route_length_m": scenario_meta.get("route_length_m"),
-                    "remain_length_after_goal_m": scenario_meta.get("remain_length_after_goal_m"),
-                    "spawn_lane": scenario_meta.get("spawn_lane"),
-                    "goal_lane": scenario_meta.get("goal_lane"),
-                },
-            }
-        else:
-            goal_source = "scenario_metadata_xy"
-            goal_raw = dict(goal_raw_carla)
-            payload = {
-                "frame": "carla_raw",
-                "source": goal_source,
-                "goal": goal_raw,
-                "route_health_metadata": {
-                    "route_length_m": scenario_meta.get("route_length_m"),
-                    "remain_length_after_goal_m": scenario_meta.get("remain_length_after_goal_m"),
-                    "spawn_lane": scenario_meta.get("spawn_lane"),
-                    "goal_lane": scenario_meta.get("goal_lane"),
-                },
-            }
+        gx, gy, gz = _apollo_map_xyz_from_carla_raw(
+            goal_raw_carla["x"], goal_raw_carla["y"], goal_raw_carla["z"]
+        )
+        goal_source = "scenario_metadata_apollo_map_xy"
+        goal_raw = {"x": float(gx), "y": float(gy), "z": float(gz)}
+        payload = {
+            "frame": "apollo_map",
+            "source": goal_source,
+            "source_raw_frame": "carla_raw",
+            "scenario_driver": scenario_driver,
+            "goal": goal_raw,
+            "goal_raw_carla": dict(goal_raw_carla),
+            "route_health_metadata": _route_health_metadata_payload(),
+        }
     elif args.scenario_goal_x is not None and args.scenario_goal_y is not None:
         goal_source = "cli_xy"
         goal_raw = {
@@ -3874,6 +3872,22 @@ def main():
         summary_data["adapter_started"] = adapter_started
         if adapter_fail_reason:
             summary_data["adapter_fail_reason"] = adapter_fail_reason
+        control_rx_count = _safe_int(apollo_cyber_bridge_stats.get("control_rx_count"))
+        control_tx_count = _safe_int(apollo_cyber_bridge_stats.get("control_tx_count"))
+        summary_data["routing_success_count"] = routing_success_count
+        summary_data["routing_materialized"] = bool((routing_success_count or 0) > 0)
+        summary_data["planning_message_count"] = planning_total_messages
+        summary_data["planning_nonempty_count"] = planning_nonempty_count
+        summary_data["planning_nonempty_trajectory_ratio"] = planning_nonzero_ratio
+        summary_data["planning_materialized"] = bool((planning_nonempty_count or 0) > 0)
+        summary_data["control_rx_count"] = control_rx_count
+        summary_data["control_tx_count"] = control_tx_count
+        if (planning_nonempty_count or 0) > 0 and (control_rx_count or 0) > 0:
+            summary_data["control_handoff_status"] = "control_consuming_with_nonzero_planning"
+        elif (planning_nonempty_count or 0) > 0:
+            summary_data["control_handoff_status"] = "control_missing"
+        else:
+            summary_data["control_handoff_status"] = "planning_not_materialized"
         summary_data["acceptance"] = acceptance
         summary_data["success"] = acceptance["success"]
         summary_data["fail_reason"] = acceptance["fail_reason"]
@@ -3884,19 +3898,19 @@ def main():
             summary_data["route_health_label"] = acceptance["checks"].get("route_health", {}).get("label")
             if isinstance(scenario_meta.get("traffic_light_control"), dict):
                 summary_data["traffic_light_control"] = scenario_meta["traffic_light_control"]
+        standard_claim_updates = online_claim_manifest_updates(
+            effective_config=effective_cfg,
+            scenario_metadata=scenario_meta,
+            summary=summary_data,
+            config_path=profile_config_path,
+            profile_name=profile_name,
+        )
+        summary_data.update(standard_claim_updates)
         try:
             manifest_path = out_run_dir / "manifest.json"
             if manifest_path.exists():
                 manifest_data = _load_json_if_exists(manifest_path)
-                manifest_data.update(
-                    online_claim_manifest_updates(
-                        effective_config=effective_cfg,
-                        scenario_metadata=scenario_meta,
-                        summary=summary_data,
-                        config_path=profile_config_path,
-                        profile_name=profile_name,
-                    )
-                )
+                manifest_data.update(standard_claim_updates)
                 manifest_path.write_text(json.dumps(manifest_data, indent=2))
         except Exception as exc:
             print(f"[WARN] failed to update standard run manifest metadata: {exc}")

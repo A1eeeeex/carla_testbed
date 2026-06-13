@@ -249,6 +249,7 @@ class FirstWaveStructureTests(unittest.TestCase):
             planning_channel="/apollo/planning",
             routing_request_channel="/apollo/raw_routing_request",
             routing_response_channel="/apollo/routing_response",
+            raw_routing_response_channel="/apollo/raw_routing_response",
             lane_follow_channel="/apollo/external_command/lane_follow",
             action_channel="/apollo/external_command/action",
             traffic_light_channel="/apollo/perception/traffic_light",

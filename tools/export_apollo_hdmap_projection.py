@@ -42,7 +42,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--map-name", default="Town01", help="Map name recorded in output rows.")
     parser.add_argument("--map-xysl-bin", default="/opt/apollo/neo/bin/map_xysl", help="Apollo map_xysl binary path.")
     parser.add_argument("--timeout-s", type=float, default=15.0, help="Per-sample command timeout.")
-    parser.add_argument("--max-samples", type=int, default=250, help="Maximum samples to project; <=0 means all.")
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=250,
+        help=(
+            "Maximum samples to project, evenly spread across the source window. "
+            "<=0 means all samples and can be slow for online run artifacts."
+        ),
+    )
     parser.add_argument(
         "--no-docker",
         action="store_true",
@@ -94,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
             "status": report["status"],
             "claim_grade": report["claim_grade"],
             "blocking_reasons": report.get("blocking_reasons") or [],
+            "insufficient_reasons": report.get("insufficient_reasons") or [],
             "warnings": report.get("warnings") or [],
             "outputs": outputs,
         }

@@ -21,15 +21,29 @@ def _write_rows(path: Path, rows: list[dict[str, object]]) -> Path:
         "route_id",
         "backend",
         "sim_time",
+        "route_s",
         "route_curvature",
         "reference_lane_curvature",
         "apollo_planning_first_kappa",
         "apollo_target_point_kappa",
         "apollo_steer_raw",
+        "apollo_debug_simple_lon_current_station_m",
+        "apollo_debug_simple_lon_station_reference_m",
+        "apollo_debug_simple_lat_target_point_s",
+        "apollo_debug_simple_lon_matched_point_s",
+        "ego_x",
+        "ego_y",
+        "route_x",
+        "route_y",
+        "apollo_debug_simple_lat_target_point_x",
+        "apollo_debug_simple_lat_target_point_y",
+        "apollo_debug_simple_lon_matched_point_x",
+        "apollo_debug_simple_lon_matched_point_y",
         "bridge_steer_mapped",
         "carla_steer_applied",
         "ego_yaw_rate",
         "cross_track_error",
+        "apollo_debug_simple_lat_lateral_error_m",
         "heading_error",
         "apollo_matched_point_distance",
         "apollo_target_point_distance",
@@ -54,6 +68,7 @@ def _base_rows() -> list[dict[str, object]]:
                 "route_id": "lane_keep_097",
                 "backend": "carla_direct",
                 "sim_time": index * 0.05,
+                "route_s": index * 2.0,
                 "route_curvature": 0.0,
                 "reference_lane_curvature": 0.0,
                 "apollo_planning_first_kappa": 0.0,
@@ -122,6 +137,130 @@ def test_applied_steer_no_yaw_response_suspects_vehicle_response(tmp_path: Path)
     assert "applied_steer_no_yaw_response" in _types(report)
 
 
+def test_high_lateral_drift_with_low_source_steer_suspects_target_point_semantics(tmp_path: Path) -> None:
+    rows = _base_rows()
+    for row in rows:
+        row["apollo_steer_raw"] = 0.0
+        row["bridge_steer_mapped"] = 0.0
+        row["carla_steer_applied"] = 0.0
+        row["cross_track_error"] = 0.85
+        row["heading_error"] = 0.01
+
+    report = _analyze(tmp_path, rows)
+
+    assert report["verdict"]["status"] == "warn"
+    assert report["suspected_layer"] == "target_point_semantics"
+    assert "high_lateral_drift_with_low_source_steer" in _types(report)
+
+
+def test_simple_lat_near_zero_while_route_lateral_high_is_anomaly(tmp_path: Path) -> None:
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["route_s"] = 100.0 + index * 10.0
+        row["ego_x"] = 1.0
+        row["ego_y"] = float(index)
+        row["route_x"] = 1.85
+        row["route_y"] = float(index)
+        row["apollo_debug_simple_lon_matched_point_x"] = 1.01
+        row["apollo_debug_simple_lon_matched_point_y"] = float(index)
+        row["apollo_debug_simple_lat_target_point_x"] = 1.01
+        row["apollo_debug_simple_lat_target_point_y"] = float(index) + 1.4
+        row["cross_track_error"] = 0.85
+        row["apollo_debug_simple_lat_lateral_error_m"] = 0.002
+        row["apollo_debug_simple_lon_current_station_m"] = 0.5 + index * 0.1
+        row["apollo_debug_simple_lat_target_point_s"] = 1.0 + index * 0.1
+        row["apollo_debug_simple_lon_matched_point_s"] = 0.0
+        row["apollo_steer_raw"] = 0.0
+        row["bridge_steer_mapped"] = 0.0
+        row["carla_steer_applied"] = 0.0
+
+    report = _analyze(tmp_path, rows)
+
+    assert report["verdict"]["status"] == "warn"
+    assert report["suspected_layer"] == "target_point_semantics"
+    assert "route_lateral_high_but_simple_lat_and_source_steer_near_zero" in _types(report)
+    assert "simple_lat_station_frame_not_route_s_aligned" in _types(report)
+    assert "matched_point_tracks_ego_not_route_centerline" in _types(report)
+    assert report["correlation_summary"]["apollo_simple_lat_lateral_error_abs"]["p95"] == 0.002
+    assert report["correlation_summary"]["route_s_vs_apollo_current_station_abs_delta"]["p95"] > 90.0
+    assert report["correlation_summary"]["ego_to_apollo_matched_point_xy_distance"]["p95"] < 0.02
+    assert report["correlation_summary"]["route_to_apollo_matched_point_xy_distance"]["p95"] > 0.8
+
+
+def test_reference_debug_missing_with_nonempty_planning_is_context_anomaly(tmp_path: Path) -> None:
+    timeseries = _write_rows(tmp_path / "timeseries.csv", _base_rows())
+    reference_contract = tmp_path / "apollo_reference_line_contract_report.json"
+    reference_contract.write_text(
+        json.dumps(
+            {
+                "status": "warn",
+                "warnings": [
+                    "reference_line_count_zero_debug_counter_with_nonempty_trajectory",
+                    "reference_line_provider_ready_ratio_low",
+                ],
+                "evidence": {
+                    "nonempty_trajectory_ratio": 0.91,
+                    "reference_line_provider_ready_ratio": 0.0,
+                },
+                "metrics": {
+                    "reference_line_count_zero_ratio": 1.0,
+                    "routing_segment_count_zero_ratio": 0.08,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics(
+        timeseries=timeseries,
+        reference_line_contract=reference_contract,
+    )
+
+    assert report["verdict"]["status"] == "warn"
+    assert "planning_nonempty_but_reference_line_debug_missing" in _types(report)
+    assert report["reference_debug_summary"]["nonempty_planning_with_reference_debug_missing"] is True
+    assert report["reference_debug_summary"]["reference_line_provider_ready_ratio"] == 0.0
+    assert report["reference_debug_summary"]["reference_line_count_zero_ratio"] == 1.0
+
+
+def test_lateral_drift_window_records_route_s_and_target_context(tmp_path: Path) -> None:
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["route_s"] = 10.0 + index * 5.0
+        row["cross_track_error"] = [0.05, 0.25, 0.55, 0.85][index]
+        row["apollo_debug_simple_lat_lateral_error_m"] = 0.002
+        row["apollo_debug_simple_lon_current_station_m"] = -1.0 + index * 0.1
+        row["apollo_debug_simple_lat_target_point_s"] = -1.5 + index * 0.1
+        row["apollo_debug_simple_lon_matched_point_s"] = 0.0
+        row["apollo_steer_raw"] = 0.0
+        row["bridge_steer_mapped"] = 0.0
+        row["carla_steer_applied"] = 0.0
+        row["apollo_target_point_distance"] = 1.2 + index * 0.1
+        row["apollo_matched_point_distance"] = 0.1 + index * 0.05
+
+    report = _analyze(tmp_path, rows)
+    drift = report["drift_window_summary"]
+    first_context = drift["first_high_lateral_context"]["stats"]
+
+    assert drift["status"] == "available"
+    assert drift["first_high_lateral"]["route_s"] == 20.0
+    assert drift["first_high_lateral"]["cross_track_error"] == 0.55
+    assert drift["max_abs_lateral"]["route_s"] == 25.0
+    assert drift["phase_samples"]["first_high_lateral"]["route_s"] == 20.0
+    assert drift["phase_samples"]["first_high_lateral"]["apollo_simple_lat_lateral_error"] == 0.002
+    assert drift["phase_samples"]["first_high_lateral"]["apollo_simple_lon_current_station"] == -0.8
+    assert drift["phase_samples"]["first_high_lateral"]["apollo_simple_lat_target_point_s"] == -1.3
+    assert drift["phase_samples"]["first_high_lateral"]["apollo_simple_lon_matched_point_s"] == 0.0
+    assert drift["phase_samples"]["first_high_lateral"]["apollo_steer_raw"] == 0.0
+    assert drift["phase_samples"]["first_high_lateral"]["target_point_distance"] == 1.4
+    assert drift["phase_samples"]["end"]["route_s"] == 25.0
+    assert first_context["apollo_steer_raw"]["p95"] == 0.0
+    assert first_context["carla_steer_applied"]["p95"] == 0.0
+    assert first_context["target_point_distance"]["count"] > 0
+    assert first_context["matched_point_distance"]["count"] > 0
+    assert first_context["apollo_simple_lon_current_station"]["count"] > 0
+
+
 def test_missing_fields_gracefully_degrade(tmp_path: Path) -> None:
     path = _write_rows(tmp_path / "timeseries.csv", [{"run_id": "missing"}])
     report = analyze_apollo_lateral_semantics(timeseries=path)
@@ -178,6 +317,153 @@ def test_alias_fields_are_resolved(tmp_path: Path) -> None:
     assert report["resolved_fields"]["reference_lane_curvature"] == "reference_line_curvature"
     assert "route_straight_but_planning_kappa_high" in _types(report)
     assert "source_steer" in FIELD_ALIASES["apollo_steer_raw"]
+
+
+def test_debug_timeseries_alias_fields_are_resolved(tmp_path: Path) -> None:
+    path = tmp_path / "debug_timeseries.csv"
+    fieldnames = [
+        "run_id",
+        "route_id",
+        "route_curvature",
+        "apollo_debug_simple_lat_curvature",
+        "first_trajectory_point_kappa",
+        "apollo_debug_simple_lat_target_point_kappa",
+        "apollo_desired_steer",
+        "mapped_carla_steer_cmd",
+        "measured_steer",
+        "ego_yaw_rate_rad_s",
+        "apollo_debug_simple_lat_lateral_error_m",
+        "apollo_debug_simple_lat_heading_error_rad",
+        "apollo_matched_point_distance",
+        "apollo_target_point_distance",
+        "steer_scale",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow(
+            {
+                "run_id": "debug_alias",
+                "route_id": "town01_rh_spawn068_goal079",
+                "route_curvature": 0.0,
+                "apollo_debug_simple_lat_curvature": 0.0,
+                "first_trajectory_point_kappa": 0.0,
+                "apollo_debug_simple_lat_target_point_kappa": 0.001,
+                "apollo_desired_steer": 0.2,
+                "mapped_carla_steer_cmd": 0.05,
+                "measured_steer": 0.05,
+                "ego_yaw_rate_rad_s": 0.02,
+                "apollo_debug_simple_lat_lateral_error_m": 0.1,
+                "apollo_debug_simple_lat_heading_error_rad": 0.01,
+                "apollo_matched_point_distance": 0.2,
+                "apollo_target_point_distance": 1.5,
+                "steer_scale": 0.25,
+            }
+        )
+
+    report = analyze_apollo_lateral_semantics(timeseries=path)
+
+    assert report["missing_fields"] == []
+    assert report["verdict"]["status"] == "pass"
+    assert report["suspected_layer"] == "none"
+    assert report["resolved_fields"]["reference_lane_curvature"] == "apollo_debug_simple_lat_curvature"
+    assert report["resolved_fields"]["apollo_target_point_kappa"] == "apollo_debug_simple_lat_target_point_kappa"
+    assert report["resolved_fields"]["bridge_steer_mapped"] == "mapped_carla_steer_cmd"
+    assert report["resolved_fields"]["matched_point_distance"] == "apollo_matched_point_distance"
+
+
+def test_run_dir_uses_debug_timeseries_for_apollo_semantic_fields(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "artifacts").mkdir(parents=True)
+    _write_rows(run_dir / "timeseries.csv", [{"run_id": "plain_timeseries_only"}])
+    debug_path = run_dir / "artifacts" / "debug_timeseries.csv"
+    fieldnames = [
+        "run_id",
+        "route_id",
+        "route_curvature",
+        "apollo_debug_simple_lat_curvature",
+        "first_trajectory_point_kappa",
+        "apollo_debug_simple_lat_target_point_kappa",
+        "apollo_desired_steer",
+        "mapped_carla_steer_cmd",
+        "measured_steer",
+        "ego_yaw_rate_rad_s",
+        "apollo_debug_simple_lat_lateral_error_m",
+        "apollo_debug_simple_lat_heading_error_rad",
+        "apollo_matched_point_distance",
+        "apollo_target_point_distance",
+        "steer_scale",
+    ]
+    with debug_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow(
+            {
+                "run_id": "debug_timeseries",
+                "route_id": "lane_keep_097",
+                "route_curvature": 0.0,
+                "apollo_debug_simple_lat_curvature": 0.0,
+                "first_trajectory_point_kappa": 0.0,
+                "apollo_debug_simple_lat_target_point_kappa": 0.001,
+                "apollo_desired_steer": 0.2,
+                "mapped_carla_steer_cmd": 0.05,
+                "measured_steer": 0.05,
+                "ego_yaw_rate_rad_s": 0.02,
+                "apollo_debug_simple_lat_lateral_error_m": 0.1,
+                "apollo_debug_simple_lat_heading_error_rad": 0.01,
+                "apollo_matched_point_distance": 0.2,
+                "apollo_target_point_distance": 1.5,
+                "steer_scale": 0.25,
+            }
+        )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+
+    assert report["missing_fields"] == []
+    assert report["verdict"]["status"] == "pass"
+    assert report["suspected_layer"] == "none"
+    assert any(str(path).endswith("artifacts/debug_timeseries.csv") for path in report["source"]["timeseries"])
+    assert report["resolved_fields"]["apollo_target_point_kappa"] == "apollo_debug_simple_lat_target_point_kappa"
+
+
+def test_run_dir_consumes_localization_hdmap_lateral_consistency(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "artifacts").mkdir(parents=True)
+    _write_rows(run_dir / "artifacts" / "debug_timeseries.csv", _base_rows())
+    loc_dir = run_dir / "analysis" / "localization_contract"
+    loc_dir.mkdir(parents=True)
+    (loc_dir / "localization_contract_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_localization_contract.v1",
+                "verdict": {
+                    "status": "fail",
+                    "blocking_reasons": ["apollo_hdmap_projection_lateral_error_high"],
+                },
+                "hdmap_route_lateral_consistency": {
+                    "available": True,
+                    "status": "pass",
+                    "alignment_mode": "opposite_sign",
+                    "best_abs_delta_p95_m": 0.015,
+                    "projection_lateral_p95_m": 0.82,
+                    "route_cross_track_p95_m": 0.81,
+                    "sample_count": 60,
+                    "interpretation": "hdmap_lateral_matches_route_cross_track_actual_lateral_drift",
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+
+    assert report["verdict"]["status"] == "warn"
+    assert report["suspected_layer"] == "target_point_semantics"
+    assert "actual_lateral_drift_matches_hdmap_projection" in _types(report)
+    assert report["hdmap_route_lateral_consistency"]["status"] == "pass"
+    assert report["source"]["localization_contract"].endswith("localization_contract_report.json")
 
 
 def test_cli_run_dir_writes_report(tmp_path: Path) -> None:

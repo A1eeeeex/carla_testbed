@@ -68,7 +68,7 @@ ACCEPTANCE_CHECK_IDS = (
 )
 
 ALIASES = {
-    "sim_time": ["sim_time", "sim_time_s", "timestamp", "time"],
+    "sim_time": ["sim_time", "sim_time_s", "ts_sec", "timestamp", "time"],
     "frame_id": ["frame_id", "frame", "carla_frame_id"],
     "localization_timestamp": ["localization_timestamp", "localization_timestamp_sec"],
     "chassis_timestamp": ["chassis_timestamp", "chassis_timestamp_sec", "chassis_header_timestamp_sec"],
@@ -139,6 +139,8 @@ ALIASES = {
     "ego_x": ["ego_x", "x"],
     "ego_y": ["ego_y", "y"],
     "ego_z": ["ego_z", "z"],
+    "route_cross_track_error_m": ["cross_track_error", "cross_track_error_m", "route_cross_track_error_m"],
+    "route_s": ["route_s", "route_station_m"],
     "lane_inside": ["lane_inside"],
     "lane_dist_m": ["lane_dist_m", "lane_projection_distance_m"],
     "lane_lateral_error_m": ["e_y_m", "lane_lateral_error_m"],
@@ -172,6 +174,10 @@ def analyze_localization_contract(
     pose = _analyze_pose_consistency(rows, route_health, missing_fields, warnings)
     lane_projection = _analyze_lane_projection(rows, missing_fields, warnings)
     apollo_hdmap_projection = summarize_apollo_hdmap_projection(hdmap_projection_rows or [])
+    hdmap_route_lateral_consistency = _analyze_hdmap_route_lateral_consistency(
+        rows,
+        hdmap_projection_rows or [],
+    )
     if apollo_hdmap_projection["file_present"]:
         warnings.extend(str(item) for item in apollo_hdmap_projection.get("warnings", []) if item)
         blocking_reasons.extend(str(item) for item in apollo_hdmap_projection.get("blocking_reasons", []) if item)
@@ -280,6 +286,7 @@ def analyze_localization_contract(
         "source": dict(source),
         "verdict": verdict,
         "apollo_hdmap_projection": apollo_hdmap_projection,
+        "hdmap_route_lateral_consistency": hdmap_route_lateral_consistency,
         "interpretation_boundary": (
             "This report checks GT localization contract evidence only. It does not prove Apollo "
             "planning/control capability, and insufficient localization evidence should be resolved "
@@ -307,6 +314,7 @@ def analyze_localization_contract_files(
         hdmap_projection_path=Path(hdmap_projection_path).expanduser() if hdmap_projection_path else None,
     )
     timeseries = _read_timeseries(source.get("timeseries_path"))
+    primary_timeseries = list(timeseries)
     run_dir_path = source.get("run_dir")
     if run_dir_path is not None and source.get("channel_stats_path") is None:
         generated_stats = normalize_channel_stats_for_run(run_dir_path)
@@ -324,6 +332,10 @@ def analyze_localization_contract_files(
         primary_score = _localization_contract_evidence_score(timeseries)
         debug_score = _localization_contract_evidence_score(debug_timeseries)
         if debug_score > primary_score:
+            debug_timeseries = _merge_route_context_by_sim_time(
+                debug_timeseries,
+                primary_timeseries,
+            )
             timeseries = debug_timeseries
             source["timeseries_path"] = debug_timeseries_path
             source["timeseries_selection_reason"] = "debug_timeseries_has_stronger_localization_contract_fields"
@@ -450,6 +462,7 @@ def localization_contract_summary_md(report: Mapping[str, Any]) -> str:
     reference_point = _mapping(report.get("reference_point"))
     pose = _mapping(report.get("pose_consistency"))
     hdmap_projection = _mapping(report.get("apollo_hdmap_projection"))
+    hdmap_route_lateral = _mapping(report.get("hdmap_route_lateral_consistency"))
     time = _mapping(report.get("time"))
     kinematics = _mapping(report.get("kinematics"))
     checklist = _mapping(report.get("acceptance_checklist"))
@@ -481,6 +494,10 @@ def localization_contract_summary_md(report: Mapping[str, Any]) -> str:
         f"- Apollo HDMap projection claim-grade: `{hdmap_projection.get('claim_grade')}`",
         f"- Apollo HDMap projection heading p95 rad: `{hdmap_projection.get('heading_error_p95_rad')}`",
         f"- Apollo HDMap projection lateral p95 m: `{hdmap_projection.get('lateral_error_p95_m')}`",
+        f"- HDMap lateral vs route cross-track consistency: `{hdmap_route_lateral.get('status')}`",
+        f"- HDMap/route lateral alignment mode: `{hdmap_route_lateral.get('alignment_mode')}`",
+        f"- HDMap/route lateral delta p95 m: `{hdmap_route_lateral.get('best_abs_delta_p95_m')}`",
+        f"- HDMap/route lateral interpretation: `{hdmap_route_lateral.get('interpretation')}`",
         f"- Yaw-rate vs heading finite-difference p95 rad/s: `{kinematics.get('yaw_rate_vs_heading_fd_p95_rad_s')}`",
         f"- Acceptance checklist: `{', '.join(checklist_statuses) or 'not evaluated'}`",
         f"- Missing fields: `{', '.join(report.get('missing_fields') or []) or 'none'}`",
@@ -1235,6 +1252,182 @@ def _analyze_lane_projection(
         "reference_line_verified": False,
         "reference_line_note": "diagnostic lane projection is not Apollo reference-line verification",
     }
+
+
+def _analyze_hdmap_route_lateral_consistency(
+    rows: list[dict[str, Any]],
+    hdmap_projection_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    route_samples: list[tuple[float, float, float | None]] = []
+    for row in rows:
+        timestamp = _number_or_none(_value(row, "sim_time"))
+        cross_track = _number_or_none(_value(row, "route_cross_track_error_m"))
+        route_s = _number_or_none(_value(row, "route_s"))
+        if timestamp is None or cross_track is None:
+            continue
+        route_samples.append((timestamp, cross_track, route_s))
+    route_samples.sort(key=lambda item: item[0])
+
+    projection_samples: list[tuple[float, float]] = []
+    for row in hdmap_projection_rows:
+        if str(row.get("source") or "") != "apollo_hdmap_api":
+            continue
+        if str(row.get("status") or "").lower() != "ok":
+            continue
+        timestamp = _number_or_none(row.get("timestamp"))
+        lateral = _number_or_none(row.get("lateral_error_m") if row.get("lateral_error_m") is not None else row.get("projection_l"))
+        if timestamp is None or lateral is None:
+            continue
+        projection_samples.append((timestamp, lateral))
+    projection_samples.sort(key=lambda item: item[0])
+
+    if not route_samples or not projection_samples:
+        return {
+            "available": False,
+            "status": "insufficient_data",
+            "sample_count": 0,
+            "alignment_mode": None,
+            "best_abs_delta_p95_m": None,
+            "best_abs_delta_max_m": None,
+            "projection_lateral_p95_m": None,
+            "route_cross_track_p95_m": None,
+            "projection_lateral_start_m": None,
+            "projection_lateral_end_m": None,
+            "route_cross_track_start_m": None,
+            "route_cross_track_end_m": None,
+            "route_s_start_m": None,
+            "route_s_end_m": None,
+            "interpretation": "route_cross_track_or_projection_samples_missing",
+        }
+
+    pairs: list[tuple[float, float, float, float | None]] = []
+    search_index = 0
+    for timestamp, projection_lateral in projection_samples:
+        while search_index + 1 < len(route_samples) and route_samples[search_index + 1][0] <= timestamp:
+            search_index += 1
+        candidates = [route_samples[search_index]]
+        if search_index + 1 < len(route_samples):
+            candidates.append(route_samples[search_index + 1])
+        nearest = min(candidates, key=lambda item: abs(item[0] - timestamp))
+        if abs(nearest[0] - timestamp) <= 0.10:
+            pairs.append((timestamp, projection_lateral, nearest[1], nearest[2]))
+
+    if not pairs:
+        return {
+            "available": False,
+            "status": "insufficient_data",
+            "sample_count": 0,
+            "alignment_mode": None,
+            "best_abs_delta_p95_m": None,
+            "best_abs_delta_max_m": None,
+            "projection_lateral_p95_m": None,
+            "route_cross_track_p95_m": None,
+            "projection_lateral_start_m": None,
+            "projection_lateral_end_m": None,
+            "route_cross_track_start_m": None,
+            "route_cross_track_end_m": None,
+            "route_s_start_m": None,
+            "route_s_end_m": None,
+            "interpretation": "timestamp_join_failed",
+        }
+
+    projection_values = [item[1] for item in pairs]
+    route_values = [item[2] for item in pairs]
+    same_sign_deltas = [projection - route for _, projection, route, _ in pairs]
+    opposite_sign_deltas = [projection + route for _, projection, route, _ in pairs]
+    same_p95 = _p95_abs_numbers(same_sign_deltas)
+    opposite_p95 = _p95_abs_numbers(opposite_sign_deltas)
+    same_max = max(abs(value) for value in same_sign_deltas)
+    opposite_max = max(abs(value) for value in opposite_sign_deltas)
+
+    if opposite_p95 is not None and (same_p95 is None or opposite_p95 <= same_p95):
+        alignment_mode = "opposite_sign"
+        best_p95 = opposite_p95
+        best_max = opposite_max
+    else:
+        alignment_mode = "same_sign"
+        best_p95 = same_p95
+        best_max = same_max
+
+    projection_p95 = _p95_abs_numbers(projection_values)
+    route_p95 = _p95_abs_numbers(route_values)
+    status = "pass" if best_p95 is not None and best_p95 <= 0.10 else "warn" if best_p95 is not None and best_p95 <= 0.30 else "fail"
+    if status == "pass" and projection_p95 is not None and projection_p95 >= 0.50 and route_p95 is not None and route_p95 >= 0.50:
+        interpretation = "hdmap_lateral_matches_route_cross_track_actual_lateral_drift"
+    elif status == "pass":
+        interpretation = "hdmap_lateral_matches_route_cross_track"
+    else:
+        interpretation = "hdmap_lateral_does_not_match_route_cross_track_check_transform_or_lane_equivalence"
+
+    route_s_values = [item[3] for item in pairs if item[3] is not None]
+    return {
+        "available": True,
+        "status": status,
+        "sample_count": len(pairs),
+        "alignment_mode": alignment_mode,
+        "same_sign_abs_delta_p95_m": same_p95,
+        "opposite_sign_abs_delta_p95_m": opposite_p95,
+        "best_abs_delta_p95_m": best_p95,
+        "best_abs_delta_max_m": best_max,
+        "projection_lateral_p95_m": projection_p95,
+        "route_cross_track_p95_m": route_p95,
+        "projection_lateral_start_m": projection_values[0],
+        "projection_lateral_end_m": projection_values[-1],
+        "route_cross_track_start_m": route_values[0],
+        "route_cross_track_end_m": route_values[-1],
+        "route_s_start_m": route_s_values[0] if route_s_values else None,
+        "route_s_end_m": route_s_values[-1] if route_s_values else None,
+        "interpretation": interpretation,
+    }
+
+
+def _merge_route_context_by_sim_time(
+    preferred_rows: list[dict[str, Any]],
+    route_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not preferred_rows or not route_rows:
+        return preferred_rows
+    if _has_any(preferred_rows, "route_cross_track_error_m") and _has_any(preferred_rows, "route_s"):
+        return preferred_rows
+
+    route_context: list[tuple[float, Mapping[str, Any]]] = []
+    for row in route_rows:
+        timestamp = _number_or_none(_value(row, "sim_time"))
+        if timestamp is not None:
+            route_context.append((timestamp, row))
+    route_context.sort(key=lambda item: item[0])
+    if not route_context:
+        return preferred_rows
+
+    context_fields = (
+        "route_id",
+        "route_s",
+        "cross_track_error",
+        "cross_track_error_m",
+        "route_cross_track_error_m",
+        "route_heading",
+        "heading_error",
+    )
+    merged: list[dict[str, Any]] = []
+    search_index = 0
+    for row in preferred_rows:
+        updated = dict(row)
+        timestamp = _number_or_none(_value(updated, "sim_time"))
+        if timestamp is None:
+            merged.append(updated)
+            continue
+        while search_index + 1 < len(route_context) and route_context[search_index + 1][0] <= timestamp:
+            search_index += 1
+        candidates = [route_context[search_index]]
+        if search_index + 1 < len(route_context):
+            candidates.append(route_context[search_index + 1])
+        nearest_time, nearest_row = min(candidates, key=lambda item: abs(item[0] - timestamp))
+        if abs(nearest_time - timestamp) <= 0.10:
+            for field in context_fields:
+                if updated.get(field) in {None, ""} and nearest_row.get(field) not in {None, ""}:
+                    updated[field] = nearest_row.get(field)
+        merged.append(updated)
+    return merged
 
 
 def _analyze_kinematics(

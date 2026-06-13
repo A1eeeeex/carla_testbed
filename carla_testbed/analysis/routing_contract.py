@@ -58,6 +58,20 @@ def analyze_routing_contract_from_route_contract(route_contract: Mapping[str, An
         "claim_route_contract": dict(claim_route),
         "apollo_routing_total_length_m": route_contract.get("apollo_routing_total_length_m"),
         "scenario_route_length_m": route_contract.get("scenario_route_length_m"),
+        "scenario_route_length_source": route_contract.get("scenario_route_length_source"),
+        "scenario_route_declared_length_m": route_contract.get("scenario_route_declared_length_m"),
+        "scenario_route_claim_length_m": route_contract.get("scenario_route_claim_length_m"),
+        "scenario_route_claim_length_source": route_contract.get("scenario_route_claim_length_source"),
+        "scenario_route_legacy_length_m": route_contract.get("scenario_route_legacy_length_m"),
+        "scenario_route_legacy_length_role": route_contract.get("scenario_route_legacy_length_role"),
+        "scenario_route_trace_length_m": route_contract.get("scenario_route_trace_length_m"),
+        "scenario_route_trace_length_source": route_contract.get("scenario_route_trace_length_source"),
+        "scenario_route_length_consistency_status": route_contract.get(
+            "scenario_route_length_consistency_status"
+        ),
+        "scenario_route_length_consistency_reason": route_contract.get(
+            "scenario_route_length_consistency_reason"
+        ),
         "routing_length_ratio": route_contract.get("routing_length_ratio"),
         "goal_xy_error_m": route_contract.get("goal_xy_error_m"),
         "start_xy_error_m": route_contract.get("start_xy_error_m"),
@@ -111,6 +125,12 @@ def routing_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Raw routing phase: `{report.get('raw_routing_phase')}`",
             f"- Route identity status: `{report.get('route_identity_status')}`",
             f"- Scenario length m: `{report.get('scenario_route_length_m')}`",
+            f"- Scenario length source: `{report.get('scenario_route_length_source')}`",
+            f"- Scenario claim length m: `{report.get('scenario_route_claim_length_m')}`",
+            f"- Scenario legacy length m: `{report.get('scenario_route_legacy_length_m')}`",
+            f"- Scenario legacy length role: `{report.get('scenario_route_legacy_length_role')}`",
+            f"- Scenario trace length m: `{report.get('scenario_route_trace_length_m')}`",
+            f"- Scenario length consistency: `{report.get('scenario_route_length_consistency_status')}`",
             f"- Apollo routing length m: `{report.get('apollo_routing_total_length_m')}`",
             f"- Routing length ratio: `{report.get('routing_length_ratio')}`",
             f"- Goal XY error m: `{report.get('goal_xy_error_m')}`",

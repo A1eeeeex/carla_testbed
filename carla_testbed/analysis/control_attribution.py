@@ -23,12 +23,92 @@ DEFAULT_THRESHOLDS = {
     "brake_throttle_conflict_threshold": 0.05,
 }
 
+CONTROL_FIELD_ALIASES = {
+    "apollo_steer_raw": [
+        "apollo_steer_raw",
+        "apollo_desired_steer",
+        "steering_target",
+        "source_steer",
+        "control_steer_raw",
+        "steering_normalized_for_mapping",
+    ],
+    "bridge_steer_mapped": [
+        "bridge_steer_mapped",
+        "mapped_carla_steer_cmd",
+        "mapped_steer",
+        "control_steer_mapped",
+        "commanded_steer",
+        "cmd_steer",
+        "clamped_steer",
+    ],
+    "carla_steer_applied": [
+        "carla_steer_applied",
+        "measured_steer",
+        "applied_steer",
+        "vehicle_steer_applied",
+    ],
+    "ego_yaw_rate": [
+        "ego_yaw_rate",
+        "ego_yaw_rate_rad_s",
+        "localization_yaw_rate_rad_s",
+        "yaw_rate",
+        "vehicle_yaw_rate",
+    ],
+    "throttle_raw": ["throttle_raw", "apollo_desired_throttle"],
+    "throttle_mapped": ["throttle_mapped", "mapped_throttle_cmd", "commanded_throttle", "cmd_throttle", "clamped_throttle"],
+    "throttle_applied": ["throttle_applied", "measured_throttle", "applied_throttle"],
+    "brake_raw": ["brake_raw", "apollo_desired_brake"],
+    "brake_mapped": ["brake_mapped", "mapped_brake_cmd", "commanded_brake", "cmd_brake", "clamped_brake"],
+    "brake_applied": ["brake_applied", "measured_brake", "applied_brake"],
+    "control_latency_ms": ["control_latency_ms"],
+    "steer_scale": ["steer_scale"],
+    "steering_sign": ["steering_sign", "steer_sign"],
+}
+
+
+def analyze_control_attribution_run_dir(
+    run_dir: str | Path,
+    *,
+    thresholds: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
+    """Analyze a run directory, preferring rich debug control traces when present."""
+    root = Path(run_dir).expanduser()
+    control_input = _find_first(
+        root,
+        [
+            "artifacts/debug_timeseries.csv",
+            "timeseries.csv",
+            "timeseries.jsonl",
+            "artifacts/control_decode_debug.jsonl",
+        ],
+    ) or root / "timeseries.csv"
+    return analyze_control_attribution(
+        control_input,
+        summary_json=_find_first(root, ["summary.json"]),
+        manifest_json=_find_first(root, ["manifest.json"]),
+        config_yaml=_find_first(root, ["config.resolved.yaml", "effective_config.yaml"]),
+        control_handoff_json=_find_first(
+            root,
+            [
+                "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
+                "artifacts/control_handoff_summary.json",
+            ],
+        ),
+        bridge_health_json=_find_first(root, ["artifacts/bridge_health_summary.json"]),
+        cyber_bridge_stats_json=_find_first(root, ["artifacts/cyber_bridge_stats.json"]),
+        thresholds=thresholds,
+    )
+
 
 def analyze_control_attribution(
     control_input: str | Path,
     *,
     summary_json: str | Path | None = None,
     manifest_json: str | Path | None = None,
+    config_yaml: str | Path | None = None,
+    control_handoff_json: str | Path | None = None,
+    bridge_health_json: str | Path | None = None,
+    cyber_bridge_stats_json: str | Path | None = None,
     thresholds: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """Attribute control-chain breakpoints from offline control trace rows."""
@@ -36,6 +116,10 @@ def analyze_control_attribution(
     rows = _read_rows(input_path)
     summary = _read_json(Path(summary_json).expanduser()) if summary_json else {}
     manifest = _read_json(Path(manifest_json).expanduser()) if manifest_json else {}
+    config = _read_yaml(Path(config_yaml).expanduser()) if config_yaml else {}
+    control_handoff = _read_json(Path(control_handoff_json).expanduser()) if control_handoff_json else {}
+    bridge_health = _read_json(Path(bridge_health_json).expanduser()) if bridge_health_json else {}
+    cyber_bridge_stats = _read_json(Path(cyber_bridge_stats_json).expanduser()) if cyber_bridge_stats_json else {}
     active_thresholds = dict(DEFAULT_THRESHOLDS)
     active_thresholds.update(thresholds or {})
 
@@ -57,8 +141,8 @@ def analyze_control_attribution(
     if not yaw_available:
         missing_fields.append("ego_yaw_rate")
 
-    steer_scale = _first_number_from_sources("steer_scale", rows, summary, manifest)
-    steering_sign = _first_number_from_sources("steering_sign", rows, summary, manifest)
+    steer_scale = _first_number_from_sources("steer_scale", rows, summary, manifest, config)
+    steering_sign = _first_number_from_sources("steering_sign", rows, summary, manifest, config)
     if steering_sign is None:
         steering_sign = 1.0
         warnings.append("steering_sign_missing_assumed_positive")
@@ -118,6 +202,13 @@ def analyze_control_attribution(
         summary,
         manifest,
     )
+    control_source_evidence = _derive_apollo_control_source_evidence(
+        control_handoff=control_handoff,
+        bridge_health=bridge_health,
+        cyber_bridge_stats=cyber_bridge_stats,
+    )
+    if _can_promote_generic_external_source(control_source) and control_source_evidence.get("status") == "pass":
+        control_source = str(control_source_evidence["control_source"])
     applied_control_source = _normalize_applied_control_source(control_source)
     control_chain_status = _control_chain_status(
         raw_available=raw_available,
@@ -168,13 +259,15 @@ def analyze_control_attribution(
         "route_id": _first_text_from_sources("route_id", rows, summary, manifest),
         "backend": _first_text_from_sources("backend", rows, summary, manifest)
         or _first_text_from_sources("backend_name", rows, summary, manifest),
-        "actuator_mapping_mode": _first_text_from_sources("actuator_mapping_mode", rows, summary, manifest),
+        "actuator_mapping_mode": _first_text_from_sources("actuator_mapping_mode", rows, summary, manifest, config),
         "steer_scale": steer_scale,
         "steering_sign": steering_sign,
         "calibration_profile_id": _first_text_from_sources("calibration_profile_id", rows, summary, manifest),
         "control_source": control_source,
         "applied_control_source": applied_control_source,
+        "control_source_evidence": control_source_evidence,
         "control_chain_status": control_chain_status,
+        "resolved_fields": _resolved_fields(rows),
         "raw_control_available": raw_available,
         "mapped_control_available": mapped_available,
         "applied_control_available": applied_available,
@@ -192,6 +285,10 @@ def analyze_control_attribution(
             "control_input_path": str(input_path),
             "summary_path": str(summary_json) if summary_json else None,
             "manifest_path": str(manifest_json) if manifest_json else None,
+            "config_path": str(config_yaml) if config_yaml else None,
+            "control_handoff_path": str(control_handoff_json) if control_handoff_json else None,
+            "bridge_health_path": str(bridge_health_json) if bridge_health_json else None,
+            "cyber_bridge_stats_path": str(cyber_bridge_stats_json) if cyber_bridge_stats_json else None,
         },
     }
 
@@ -225,6 +322,70 @@ def _control_chain_status(
     if applied_control_source and applied_control_source != "apollo_control":
         return "applied_not_apollo"
     return "apollo_control_attributed"
+
+
+def _derive_apollo_control_source_evidence(
+    *,
+    control_handoff: Mapping[str, Any],
+    bridge_health: Mapping[str, Any],
+    cyber_bridge_stats: Mapping[str, Any],
+) -> dict[str, Any]:
+    flat_handoff = _flatten_mapping(control_handoff) if control_handoff else {}
+    flat_bridge = _flatten_mapping(bridge_health) if bridge_health else {}
+    flat_stats = _flatten_mapping(cyber_bridge_stats) if cyber_bridge_stats else {}
+    control_channel = (
+        _text_from_flat(flat_handoff, "control_channel.name")
+        or _text_from_flat(flat_bridge, "ingress_egress.cyber.control_channel")
+        or _text_from_flat(flat_bridge, "bridge_transport.cyber.control_channel")
+    )
+    handoff_status = _text_from_flat(flat_handoff, "status") or _text_from_flat(flat_handoff, "verdict")
+    channel_status = _text_from_flat(flat_handoff, "control_channel.status")
+    apply_count = _num(
+        _value_from_flat(flat_handoff, "mapping_and_apply.apply_control_count")
+        or _value_from_flat(flat_bridge, "command_materialization.observed_counters.control_tx_count")
+        or _value_from_flat(flat_stats, "control_tx_count")
+    )
+    rx_count = _num(
+        _value_from_flat(flat_handoff, "bridge_receive.control_rx_count")
+        or _value_from_flat(flat_stats, "control_rx_count")
+    )
+    tx_count = _num(
+        _value_from_flat(flat_stats, "control_tx_count")
+        or _value_from_flat(flat_bridge, "command_materialization.observed_counters.control_tx_count")
+    )
+    control_apply_path = (
+        _text_from_flat(flat_bridge, "control_apply_path")
+        or _text_from_flat(flat_bridge, "bridge_transport.control_apply_path")
+        or _text_from_flat(flat_bridge, "ingress_egress.control_apply_path")
+    )
+    reasons: list[str] = []
+    if control_channel != "/apollo/control":
+        reasons.append("apollo_control_channel_not_verified")
+    if handoff_status not in {"pass", "warn", None}:
+        reasons.append("control_handoff_status_blocking")
+    if channel_status not in {"pass", "warn", None}:
+        reasons.append("control_channel_status_blocking")
+    if (apply_count or 0.0) <= 0.0 and (tx_count or 0.0) <= 0.0:
+        reasons.append("control_apply_or_tx_count_missing")
+    if (rx_count or 0.0) <= 0.0:
+        reasons.append("control_rx_count_missing")
+    status = "insufficient_data" if reasons else "pass"
+    return {
+        "status": status,
+        "control_source": "/apollo/control" if status == "pass" else None,
+        "control_channel": control_channel,
+        "control_handoff_status": handoff_status,
+        "control_channel_status": channel_status,
+        "apply_control_count": apply_count,
+        "control_rx_count": rx_count,
+        "control_tx_count": tx_count,
+        "control_apply_path": control_apply_path,
+        "blocking_reasons": reasons,
+        "interpretation": (
+            "Generic harness metadata such as external_stack is not sufficient. "
+            "Apollo control attribution requires /apollo/control channel evidence plus rx/tx/apply counters."
+        ),
+    }
 
 
 def _dominant_breakpoint(
@@ -270,8 +431,8 @@ def _raw_to_mapped_steer_consistency(
         }
     values: list[float] = []
     for row in rows:
-        raw = _num(row.get("apollo_steer_raw"))
-        mapped = _num(row.get("bridge_steer_mapped"))
+        raw = _value_for_field(row, "apollo_steer_raw")
+        mapped = _value_for_field(row, "bridge_steer_mapped")
         if raw is None or mapped is None:
             continue
         expected = _clamp(raw * steer_scale * steering_sign, -1.0, 1.0)
@@ -295,8 +456,8 @@ def _pair_consistency(
 ) -> dict[str, Any]:
     values: list[float] = []
     for row in rows:
-        left = _num(row.get(left_field))
-        right = _num(row.get(right_field))
+        left = _value_for_field(row, left_field)
+        right = _value_for_field(row, right_field)
         if left is not None and right is not None:
             values.append(abs(left - right))
     error = _percentile(values, 0.95)
@@ -344,8 +505,8 @@ def _applied_steer_to_yaw_response(
     sign_matches = 0
     sign_count = 0
     for row in rows:
-        steer = _num(row.get("carla_steer_applied"))
-        yaw = _num(row.get("ego_yaw_rate"))
+        steer = _value_for_field(row, "carla_steer_applied")
+        yaw = _value_for_field(row, "ego_yaw_rate")
         if steer is None or yaw is None:
             continue
         if abs(steer) <= thresholds["applied_steer_active_threshold"]:
@@ -411,8 +572,8 @@ def _brake_throttle_conflicts(rows: Sequence[Mapping[str, Any]], thresholds: Map
     conflicts = 0
     threshold = thresholds["brake_throttle_conflict_threshold"]
     for row in rows:
-        throttle = _num(row.get("throttle_applied"))
-        brake = _num(row.get("brake_applied"))
+        throttle = _value_for_field(row, "throttle_applied")
+        brake = _value_for_field(row, "brake_applied")
         if throttle is None or brake is None:
             continue
         seen = True
@@ -458,12 +619,24 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _read_yaml(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        import yaml
+
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _has_field(rows: Sequence[Mapping[str, Any]], field: str) -> bool:
-    return any(_num(row.get(field)) is not None for row in rows)
+    return any(_value_for_field(row, field) is not None for row in rows)
 
 
 def _series(rows: Sequence[Mapping[str, Any]], field: str) -> list[float]:
-    return [value for row in rows if (value := _num(row.get(field))) is not None]
+    return [value for row in rows if (value := _value_for_field(row, field)) is not None]
 
 
 def _percentile(values: Sequence[float], q: float) -> float | None:
@@ -505,8 +678,15 @@ def _first_number_from_sources(
             value = _num(metadata.get(field))
             if value is not None:
                 return value
+        flat = _flatten_mapping(source)
+        for alias in CONTROL_FIELD_ALIASES.get(field, [field]):
+            for key, nested_value in flat.items():
+                if key.endswith(alias):
+                    value = _num(nested_value)
+                    if value is not None:
+                        return value
     for row in rows:
-        value = _num(row.get(field))
+        value = _value_for_field(row, field)
         if value is not None:
             return value
     return None
@@ -527,11 +707,73 @@ def _first_text_from_sources(
             value = metadata.get(field)
             if value not in {None, ""}:
                 return str(value)
+        flat = _flatten_mapping(source)
+        for key, nested_value in flat.items():
+            if key.endswith(field) and nested_value not in {None, ""}:
+                return str(nested_value)
     for row in rows:
         value = row.get(field)
         if value not in {None, ""}:
             return str(value)
     return default
+
+
+def _value_for_field(row: Mapping[str, Any], field: str) -> float | None:
+    for alias in CONTROL_FIELD_ALIASES.get(field, [field]):
+        value = _num(row.get(alias))
+        if value is not None:
+            return value
+    return None
+
+
+def _resolved_fields(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    for field, aliases in CONTROL_FIELD_ALIASES.items():
+        for alias in aliases:
+            if any(_num(row.get(alias)) is not None for row in rows):
+                resolved[field] = alias
+                break
+    return resolved
+
+
+def _flatten_mapping(payload: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
+    flat: dict[str, Any] = {}
+    for key, value in payload.items():
+        current = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, Mapping):
+            flat.update(_flatten_mapping(value, current))
+        else:
+            flat[current] = value
+    return flat
+
+
+def _value_from_flat(payload: Mapping[str, Any], suffix: str) -> Any:
+    for key, value in payload.items():
+        if key == suffix or key.endswith(f".{suffix}"):
+            return value
+    return None
+
+
+def _text_from_flat(payload: Mapping[str, Any], suffix: str) -> str | None:
+    value = _value_from_flat(payload, suffix)
+    if value in {None, ""}:
+        return None
+    return str(value)
+
+
+def _find_first(root: Path, relative_paths: Sequence[str]) -> Path | None:
+    for relative in relative_paths:
+        path = root / relative
+        if path.exists():
+            return path
+    return None
+
+
+def _can_promote_generic_external_source(control_source: str | None) -> bool:
+    if control_source in {None, ""}:
+        return True
+    normalized = str(control_source).strip().lower()
+    return normalized in {"external_stack", "external"}
 
 
 def _normalize_applied_control_source(control_source: str | None) -> str | None:
@@ -562,6 +804,9 @@ def _sign(value: float) -> int:
 def _markdown(report: Mapping[str, Any]) -> str:
     attribution = report.get("attribution") if isinstance(report.get("attribution"), Mapping) else {}
     verdict = report.get("verdict") if isinstance(report.get("verdict"), Mapping) else {}
+    source_evidence = (
+        report.get("control_source_evidence") if isinstance(report.get("control_source_evidence"), Mapping) else {}
+    )
     lines = [
         "# Control Attribution Report",
         "",
@@ -576,6 +821,9 @@ def _markdown(report: Mapping[str, Any]) -> str:
         f"- steering_sign: `{report.get('steering_sign')}`",
         f"- verdict: `{verdict.get('status')}`",
         f"- dominant_breakpoint: `{attribution.get('dominant_breakpoint')}`",
+        f"- control_source_evidence_status: `{source_evidence.get('status')}`",
+        f"- control_source_evidence_channel: `{source_evidence.get('control_channel')}`",
+        f"- control_source_evidence_apply_count: `{source_evidence.get('apply_control_count')}`",
         "",
         "## Chain Availability",
         "",

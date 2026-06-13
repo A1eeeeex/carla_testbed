@@ -39,7 +39,10 @@ def test_legacy_online_config_exports_claim_manifest_fields() -> None:
     )
     assert updates["online_config_profile_name"] == "town01_apollo_probe"
     assert updates["map"] == "Town01"
-    assert updates["transport_mode"] == "ros2_gt"
+    assert updates["transport_mode"] == "apollo_cyberrt_gt_over_ros2_transition"
+    assert updates["canonical_transport_mode"] == "apollo_cyberrt_gt_over_ros2_transition"
+    assert updates["legacy_transport_name"] == "ros2_gt"
+    assert updates["compat_layers"] == ["ros2_gt_transition", "legacy_route_health_transition"]
     assert updates["transport_mode_source"] == "online_config.scenario.publish_ros2_gt"
     assert updates["backend"] == "apollo_cyberrt"
     assert updates["truth_input"] is True
@@ -48,6 +51,53 @@ def test_legacy_online_config_exports_claim_manifest_fields() -> None:
     assert updates["fixed_delta_seconds"] == 0.05
     assert updates["ticks"] == 420
     assert updates["duration_s"] == 21.0
+    assert updates["runtime_contract_status"] == "misconfigured"
+    assert "harness_control_disable_unknown" in updates["runtime_contract"]["blockers"]
+
+
+def test_online_claim_manifest_exports_aligned_runtime_contract_when_external_control_is_explicit() -> None:
+    cfg = yaml.safe_load(
+        open(
+            "configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml",
+            encoding="utf-8",
+        )
+    )
+    cfg["run"]["claim_profile"] = True
+    cfg["run"]["materialization_probe"] = True
+
+    updates = online_claim_manifest_updates(
+        effective_config=cfg,
+        scenario_metadata={"route_id": "town01_rh_spawn097_goal046", "map": "Town01"},
+        summary={
+            "profile": {
+                "harness_disable_control_effective": True,
+                "external_stack": True,
+            },
+            "routing_success_count": 1,
+            "routing_materialized": True,
+            "planning_message_count": 120,
+            "planning_nonempty_count": 100,
+            "planning_nonempty_trajectory_ratio": 0.833,
+            "planning_materialized": True,
+            "control_rx_count": 200,
+            "control_tx_count": 199,
+            "control_handoff_status": "control_consuming_with_nonzero_planning",
+        },
+    )
+
+    assert updates["runtime_contract_status"] == "aligned"
+    assert updates["runtime_contract"]["status"] == "aligned"
+    assert updates["runtime_contract"]["blockers"] == []
+    assert updates["runtime_contract"]["transport_mode"] == "apollo_cyberrt_gt_over_ros2_transition"
+    assert updates["routing_success_count"] == 1
+    assert updates["routing_materialized"] is True
+    assert updates["planning_message_count"] == 120
+    assert updates["planning_nonempty_count"] == 100
+    assert updates["planning_nonempty_trajectory_ratio"] == 0.833
+    assert updates["planning_materialized"] is True
+    assert updates["control_rx_count"] == 200
+    assert updates["control_tx_count"] == 199
+    assert updates["control_handoff_status"] == "control_consuming_with_nonzero_planning"
 
 
 def test_manifest_metadata_does_not_invent_algorithm_variant() -> None:

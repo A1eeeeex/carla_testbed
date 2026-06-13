@@ -86,6 +86,7 @@ def analyze_apollo_control_handoff(
     control_health_payload = _read_json(paths["control_health"])
     control_attribution_payload = _read_json(paths["control_attribution"])
     control_handoff_debug = _read_json(paths["control_handoff_summary"])
+    control_survival = _read_json(paths["control_survival"])
     rows = _read_rows(paths["timeseries"])
     decode_rows = _read_jsonl(paths["control_decode_debug"])
     apply_rows = _read_jsonl(paths["direct_control_apply"])
@@ -98,6 +99,7 @@ def analyze_apollo_control_handoff(
     process_health = _process_health(
         summary=summary_payload,
         control_handoff_debug=control_handoff_debug,
+        control_survival=control_survival,
         logs=logs,
         log_paths=paths["control_logs"],
     )
@@ -316,6 +318,8 @@ def _has_control_handoff_regeneration_inputs(root: Path) -> bool:
         "channel_stats.json",
         "artifacts/control_handoff_summary.json",
         "control_handoff_summary.json",
+        "artifacts/apollo_control_deferred_survival.json",
+        "apollo_control_deferred_survival.json",
         "artifacts/planning_topic_debug_summary.json",
         "planning_topic_debug_summary.json",
         "artifacts/control_decode_debug.jsonl",
@@ -370,6 +374,14 @@ def _resolve_inputs(
             None,
             ["artifacts/control_handoff_summary.json", "control_handoff_summary.json"],
         ),
+        "control_survival": _given_or_find(
+            root,
+            None,
+            [
+                "artifacts/apollo_control_deferred_survival.json",
+                "apollo_control_deferred_survival.json",
+            ],
+        ),
         "control_decode_debug": _given_or_find(
             root,
             None,
@@ -393,10 +405,11 @@ def _process_health(
     *,
     summary: Mapping[str, Any],
     control_handoff_debug: Mapping[str, Any],
+    control_survival: Mapping[str, Any],
     logs: Sequence[str],
     log_paths: Sequence[Path],
 ) -> dict[str, Any]:
-    evidence_available = bool(summary or control_handoff_debug or logs or log_paths)
+    evidence_available = bool(summary or control_handoff_debug or control_survival or logs or log_paths)
     log_text = "\n".join(logs)
     crash_reason, crash_signature = _detect_crash(log_text)
     debug_crash = _first_text(control_handoff_debug, "control_crash_reason", summary, "control_crash_reason")
@@ -407,6 +420,8 @@ def _process_health(
         control_handoff_debug.get("control_process_started"),
         control_handoff_debug.get("process_started"),
         control_handoff_debug.get("control_started_pid_seen"),
+        control_survival.get("control_started_pid_seen"),
+        control_survival.get("control_present_after_first_nonzero_planning"),
         summary.get("control_process_started"),
     )
     pid = _first_number(control_handoff_debug.get("pid"), control_handoff_debug.get("control_pid"), summary.get("control_pid"))
@@ -415,11 +430,14 @@ def _process_health(
     alive_after_5s = _first_bool(
         control_handoff_debug.get("alive_after_5s"),
         control_handoff_debug.get("control_survived_5s"),
+        control_survival.get("control_survived_5s"),
+        control_survival.get("control_survived_10s"),
         summary.get("control_alive_after_5s"),
     )
     alive_at_end = _first_bool(
         control_handoff_debug.get("alive_at_end"),
         control_handoff_debug.get("control_final_process_alive"),
+        control_survival.get("control_present_at_end"),
         summary.get("control_alive_at_end"),
     )
     exit_code = _first_number(
@@ -466,6 +484,8 @@ def _process_health(
         "crash_reason": crash_reason,
         "crash_signature": crash_signature,
         "core_dump_detected": core_dump_detected,
+        "survival_probe_available": bool(control_survival),
+        "survival_probe_window_sec": _num(control_survival.get("probe_window_sec")),
         "log_paths": [str(path) for path in log_paths],
         "log_tail": _tail_lines(logs),
         "missing_fields": missing_fields,

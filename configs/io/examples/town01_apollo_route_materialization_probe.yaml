@@ -3,8 +3,9 @@
 # Purpose:
 # - Run long enough for startup delay, routing request, routing response, and
 #   Planning materialization evidence to appear.
-# - Keep lane-follow fallback disabled so missing route/reference-line evidence
-#   remains visible instead of being hidden by helper behavior.
+# - Send the explicit Apollo 10 lane-follow external command required by
+#   Planning, while keeping automatic lane-follow fallback disabled so missing
+#   route/reference-line evidence remains visible.
 # - This is still a diagnostic probe, not a natural-driving pass profile.
 extends: town01_apollo_route_only_claim_probe.yaml
 
@@ -15,6 +16,17 @@ run:
   fixed_dt_s: 0.05
   materialization_probe: true
   target_runtime_s: 30.0
+
+runtime:
+  carla:
+    # This online probe must be self-contained. Without this, the typed
+    # transition backend silently expects an already-running external CARLA and
+    # produces only external_carla_missing evidence.
+    start: true
+    host: localhost
+    port: 2000
+    extra_args: --ros2
+    foreground: false
 
 reports:
   require_route_materialization: true
@@ -27,8 +39,10 @@ algo:
     routing:
       startup_route_enabled: false
       send_action: false
-      send_lane_follow: false
+      send_lane_follow: true
       auto_enable_lane_follow_fallback: false
+      disable_lane_follow_on_no_response: false
+      lane_follow_no_response_grace_sec: 40.0
       send_routing_request: true
       goal_mode: scenario_xy
       snap_goal_to_lane: true

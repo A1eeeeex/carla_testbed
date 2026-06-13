@@ -47,6 +47,7 @@ def analyze_apollo_hdmap_projection_file(path: str | Path | None) -> dict[str, A
         "artifact_file_exists": artifact_file_exists,
         "projection": summary,
         "blocking_reasons": list(summary.get("blocking_reasons") or []),
+        "insufficient_reasons": list(summary.get("insufficient_reasons") or []),
         "warnings": list(summary.get("warnings") or []),
         "missing_fields": list(summary.get("missing_fields") or []),
         "suspected_failure_layers": list(summary.get("suspected_failure_layers") or []),
@@ -93,6 +94,7 @@ def apollo_hdmap_projection_summary_md(report: Mapping[str, Any]) -> str:
             f"- Lateral error p95 m: `{projection.get('lateral_error_p95_m')}`",
             f"- Nearest lane ids: `{', '.join(projection.get('nearest_lane_id_topk') or []) or 'none'}`",
             f"- Warnings: `{', '.join(report.get('warnings') or []) or 'none'}`",
+            f"- Insufficient reasons: `{', '.join(report.get('insufficient_reasons') or []) or 'none'}`",
             f"- Blocking reasons: `{', '.join(report.get('blocking_reasons') or []) or 'none'}`",
             "",
             str(report.get("interpretation_boundary") or ""),
@@ -138,6 +140,7 @@ def summarize_apollo_hdmap_projection(
 
     warnings: list[str] = []
     blocking: list[str] = []
+    insufficient: list[str] = []
     suspected_layers: list[str] = []
     missing_fields: list[str] = []
 
@@ -166,6 +169,7 @@ def summarize_apollo_hdmap_projection(
             "map_dir_topk": [],
             "warnings": [warning],
             "blocking_reasons": [],
+            "insufficient_reasons": [],
             "missing_fields": [missing],
             "suspected_failure_layers": [],
             "interpretation": (
@@ -216,18 +220,18 @@ def summarize_apollo_hdmap_projection(
     if official_rows and non_ok_count:
         warnings.append("apollo_hdmap_projection_non_ok_rows_present")
     if official_rows and len(ok_rows) < HDMAP_MIN_CLAIM_GRADE_ROWS:
-        blocking.append("apollo_hdmap_projection_sample_count_low")
+        insufficient.append("apollo_hdmap_projection_sample_count_low")
     if ok_ratio is not None and ok_ratio < HDMAP_MIN_OK_RATIO:
         blocking.append("apollo_hdmap_projection_ok_ratio_low")
     if official_rows and projection_s_coverage_m is None:
         missing_fields.append("projection_s")
-        blocking.append("apollo_hdmap_projection_route_s_coverage_missing")
+        insufficient.append("apollo_hdmap_projection_route_s_coverage_missing")
     elif projection_s_coverage_m is not None and projection_s_coverage_m < route_s_coverage_threshold_m:
-        blocking.append("apollo_hdmap_projection_route_s_coverage_low")
+        insufficient.append("apollo_hdmap_projection_route_s_coverage_low")
     if sim_time_coverage_ratio is not None and sim_time_coverage_ratio < HDMAP_MIN_SIM_TIME_COVERAGE_RATIO:
-        blocking.append("apollo_hdmap_projection_sim_time_coverage_low")
+        insufficient.append("apollo_hdmap_projection_sim_time_coverage_low")
     if route_s_coverage_ratio is not None and route_s_coverage_ratio < HDMAP_MIN_ROUTE_S_COVERAGE_RATIO:
-        blocking.append("apollo_hdmap_projection_route_s_coverage_ratio_low")
+        insufficient.append("apollo_hdmap_projection_route_s_coverage_ratio_low")
     map_names = {str(row.get("map_name") or "") for row in official_rows if str(row.get("map_name") or "").strip()}
     map_dirs = {str(row.get("map_dir") or "") for row in official_rows if str(row.get("map_dir") or "").strip()}
     if len(map_names) > 1 or len(map_dirs) > 1:
@@ -235,7 +239,7 @@ def summarize_apollo_hdmap_projection(
 
     if blocking:
         status = "fail"
-    elif not official_rows or missing_fields:
+    elif not official_rows or missing_fields or insufficient:
         status = "insufficient_data"
     elif warnings:
         status = "warn"
@@ -275,6 +279,7 @@ def summarize_apollo_hdmap_projection(
         "map_dir_topk": _topk(str(row.get("map_dir") or "") for row in official_rows),
         "warnings": sorted(set(warnings)),
         "blocking_reasons": sorted(set(blocking)),
+        "insufficient_reasons": sorted(set(insufficient)),
         "missing_fields": sorted(set(missing_fields)),
         "suspected_failure_layers": sorted(set(suspected_layers)),
         "interpretation": (

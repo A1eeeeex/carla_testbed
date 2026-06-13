@@ -2848,7 +2848,7 @@ def _localization_contract_verdict(
                 "localization_contract_blocking_curve_diagnostic",
                 missing_fields,
             )
-        return "insufficient_data", "localization_contract_blocking", missing_fields
+        return "insufficient_data", _localization_contract_failure_reason(localization_contract), missing_fields
     if status not in {"pass", "warn"}:
         return (
             "insufficient_data",
@@ -2873,6 +2873,20 @@ def _localization_contract_verdict(
             missing_fields,
         )
     return "pass", None, []
+
+
+def _localization_contract_failure_reason(localization_contract: Mapping[str, Any]) -> str:
+    blocking_reasons = set(_localization_blocking_reasons(localization_contract))
+    lateral_consistency = localization_contract.get("hdmap_route_lateral_consistency")
+    lateral_consistency = lateral_consistency if isinstance(lateral_consistency, Mapping) else {}
+    if (
+        "apollo_hdmap_projection_lateral_error_high" in blocking_reasons
+        and lateral_consistency.get("status") == "pass"
+        and lateral_consistency.get("interpretation")
+        == "hdmap_lateral_matches_route_cross_track_actual_lateral_drift"
+    ):
+        return "actual_lateral_drift_matches_hdmap_projection"
+    return "localization_contract_blocking"
 
 
 def _localization_checklist_hard_gate_missing(

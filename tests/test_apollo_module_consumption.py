@@ -158,6 +158,34 @@ def test_module_consumption_flags_apollo_route_reference_line_error_patterns(tmp
     assert "route_or_reference_line_failure_logs_present" in report["blocking_reasons"]
 
 
+def test_module_consumption_warns_on_transient_route_logs_after_materialization(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "verdict": "pass",
+            "first_nonempty_after_routing_latency_s": 0.15,
+            "route_establishment": {
+                "route_established": True,
+                "routing_success_count": 1,
+                "planning_nonempty_after_routing_success_ratio": 0.99,
+            },
+            "empty_reason_histogram": {},
+            "apollo_log_error_topk": [
+                {"message": "lane_follow_map.cc adc_route_index error, can not get distance to destination"},
+                {"message": "on_lane_planning.cc Planning failed:PLANNING_ERROR planner failed"},
+            ],
+        },
+    )
+
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+
+    assert report["status"] == "warn"
+    assert "route_or_reference_line_failure_logs_present" not in report["blocking_reasons"]
+    assert "route_or_reference_line_failure_logs_transient" in report["warnings"]
+
+
 def test_module_consumption_warns_when_input_freshness_unverified(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     _write_json(
@@ -306,6 +334,36 @@ def test_module_consumption_fails_when_route_not_established_and_reference_line_
     assert report["status"] == "fail"
     assert "routing_response_not_consumed_by_planning" in report["blocking_reasons"]
     assert "reference_line_provider_not_ready_empty_planning" in report["blocking_reasons"]
+
+
+def test_module_consumption_warns_on_transient_reference_line_empty_after_route_established(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "verdict": "pass",
+            "first_nonempty_after_routing_latency_s": 0.15,
+            "route_establishment": {
+                "route_established": True,
+                "routing_success_count": 1,
+                "planning_nonempty_after_routing_success_ratio": 0.99,
+            },
+            "empty_reason_histogram": {
+                "reference_line_provider_not_ready": 3,
+                "routing_not_ready": 94,
+            },
+            "input_freshness_attribution": {"status": "pass"},
+        },
+    )
+
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+
+    assert report["status"] == "warn"
+    assert "reference_line_provider_not_ready_empty_planning" not in report["blocking_reasons"]
+    assert "reference_line_provider_not_ready_empty_planning_transient" in report["warnings"]
 
 
 def test_module_consumption_distinguishes_partial_routing_consumption_from_route_establishment_failure(

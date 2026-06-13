@@ -18,6 +18,8 @@ APOLLO_ROUTE_CONTRACT_SCHEMA_VERSION = "apollo_route_contract.v1"
 
 MAX_ABS_ROUTE_LENGTH_DIFF_M = 20.0
 MAX_REL_ROUTE_LENGTH_DIFF = 0.15
+MAX_SCENARIO_ROUTE_SOURCE_DIFF_M = 5.0
+MAX_SCENARIO_ROUTE_SOURCE_REL_DIFF = 0.05
 MAX_GOAL_ERROR_M = 20.0
 GOAL_NEAR_THRESHOLD_RATIO = 0.8
 MAX_GOAL_SNAP_DISTANCE_M = 3.0
@@ -178,6 +180,8 @@ def analyze_apollo_route_contract(
         missing.append("scenario_route_length_m")
     if apollo_length is None:
         missing.append("apollo_routing_total_length_m")
+    if scenario.get("route_length_consistency_status") == "inconsistent":
+        blocking.append("scenario_route_length_inconsistent")
     if length_delta is not None and length_tolerance is not None and abs(length_delta) > length_tolerance:
         blocking.append("apollo_routing_length_mismatch")
 
@@ -185,21 +189,21 @@ def analyze_apollo_route_contract(
     apollo_lane_keys = set(apollo.get("routing_lane_keys") or [])
     apollo_extra_lane_keys = sorted(apollo_lane_keys - scenario_lane_keys)
     missing_scenario_lane_keys = sorted(scenario_lane_keys - apollo_lane_keys)
+    scenario_lane_namespace = _scenario_lane_namespace(scenario)
+    apollo_lane_namespace = "apollo_hdmap"
+    lane_namespaces_directly_comparable = scenario_lane_namespace == apollo_lane_namespace
     if not scenario_lane_keys:
         missing.append("scenario_route_lane_ids")
     if not apollo_lane_keys:
         missing.append("apollo_routing_lane_ids")
-    if scenario_lane_keys and apollo_lane_keys and missing_scenario_lane_keys:
-        blocking.append("apollo_routing_missing_scenario_lane")
     expected_lane_window_count = max(1, len(scenario_lane_keys) + MAX_EXTRA_LANE_WINDOWS_FOR_CLAIM)
     apollo_lane_window_count = apollo.get("routing_lane_window_count")
-    if (
+    lane_window_sequence_mismatch = bool(
         apollo_lane_window_count is not None
         and scenario_lane_keys
         and apollo_lane_window_count > expected_lane_window_count
         and apollo_extra_lane_keys
-    ):
-        blocking.append("apollo_routing_lane_sequence_mismatch")
+    )
 
     scenario_goal = scenario_goal_xy_apollo
     apollo_goal = apollo.get("goal_xy")
@@ -246,6 +250,37 @@ def analyze_apollo_route_contract(
         if goal_error is not None and goal_error > MAX_GOAL_ERROR_M * GOAL_NEAR_THRESHOLD_RATIO:
             if last_routing_request.get("goal_projection_trusted_lane_centerline") is not True:
                 warnings.append("apollo_routing_goal_lane_compatibility_unverified")
+
+    length_compatible = (
+        length_delta is not None
+        and length_tolerance is not None
+        and abs(length_delta) <= length_tolerance
+    )
+    goal_compatible = goal_error is not None and goal_error <= MAX_GOAL_ERROR_M
+    start_compatible = start_error is None or start_error <= MAX_GOAL_ERROR_M
+    has_claim_projection = bool(projection.get("available"))
+    lane_equivalence_status = "not_evaluated"
+    if scenario_lane_keys and apollo_lane_keys:
+        if not missing_scenario_lane_keys and not lane_window_sequence_mismatch:
+            lane_equivalence_status = "direct_match"
+        elif lane_namespaces_directly_comparable:
+            lane_equivalence_status = "mismatch"
+            if missing_scenario_lane_keys:
+                blocking.append("apollo_routing_missing_scenario_lane")
+            if lane_window_sequence_mismatch:
+                blocking.append("apollo_routing_lane_sequence_mismatch")
+        elif length_compatible and goal_compatible and start_compatible:
+            lane_equivalence_status = "cross_namespace_unverified"
+            warnings.append("scenario_apollo_lane_namespace_equivalence_unverified")
+            if not has_claim_projection:
+                missing.append("apollo_hdmap_projection_for_lane_equivalence")
+                warnings.append("apollo_hdmap_projection_required_for_cross_namespace_lane_equivalence")
+        else:
+            lane_equivalence_status = "mismatch"
+            if missing_scenario_lane_keys:
+                blocking.append("apollo_routing_missing_scenario_lane")
+            if lane_window_sequence_mismatch:
+                blocking.append("apollo_routing_lane_sequence_mismatch")
 
     route_identity = _route_identity(
         scenario=scenario,
@@ -301,9 +336,26 @@ def analyze_apollo_route_contract(
         "scenario_id": _first_text(summary, "scenario_id", manifest, "scenario_id"),
         "scenario_class": _first_text(summary, "scenario_class", manifest, "scenario_class"),
         "scenario_route_length_m": scenario_length,
+        "scenario_route_length_source": scenario.get("route_length_source"),
+        "scenario_route_declared_length_m": scenario.get("route_length_declared_m"),
+        "scenario_route_claim_length_m": scenario.get("route_length_claim_m"),
+        "scenario_route_claim_length_source": scenario.get("route_length_claim_source"),
+        "scenario_route_legacy_length_m": scenario.get("route_length_legacy_m"),
+        "scenario_route_legacy_length_role": scenario.get("route_length_legacy_role"),
+        "scenario_route_trace_length_m": scenario.get("route_trace_length_m"),
+        "scenario_route_trace_length_source": scenario.get("route_trace_length_source"),
+        "scenario_route_trace_point_count": scenario.get("route_trace_point_count"),
+        "scenario_route_length_consistency_status": scenario.get("route_length_consistency_status"),
+        "scenario_route_length_consistency_reason": scenario.get("route_length_consistency_reason"),
+        "scenario_route_length_source_delta_m": scenario.get("route_length_source_delta_m"),
+        "scenario_route_length_source_ratio": scenario.get("route_length_source_ratio"),
         "scenario_start_lane": scenario.get("start_lane"),
         "scenario_goal_lane": scenario.get("goal_lane"),
         "scenario_route_lane_keys": sorted(scenario_lane_keys),
+        "scenario_lane_namespace": scenario_lane_namespace,
+        "apollo_lane_namespace": apollo_lane_namespace,
+        "lane_namespaces_directly_comparable": lane_namespaces_directly_comparable,
+        "lane_equivalence_status": lane_equivalence_status,
         "configured_scenario_route": _configured_scenario_route_report(
             scenario,
             start_xy_apollo=scenario_start_xy_apollo,
@@ -387,9 +439,19 @@ def apollo_route_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Transform source: `{report.get('transform_source')}`",
             f"- Route ID: `{report.get('route_id')}`",
             f"- Scenario route length m: `{report.get('scenario_route_length_m')}`",
+            f"- Scenario route length source: `{report.get('scenario_route_length_source')}`",
+            f"- Scenario route claim length m: `{report.get('scenario_route_claim_length_m')}`",
+            f"- Scenario route legacy length m: `{report.get('scenario_route_legacy_length_m')}`",
+            f"- Scenario route legacy length role: `{report.get('scenario_route_legacy_length_role')}`",
+            f"- Scenario route trace length m: `{report.get('scenario_route_trace_length_m')}`",
+            f"- Scenario route length consistency: `{report.get('scenario_route_length_consistency_status')}`",
+            f"- Scenario route length consistency reason: `{report.get('scenario_route_length_consistency_reason')}`",
             f"- Apollo routing total length m: `{report.get('apollo_routing_total_length_m')}`",
             f"- Routing length ratio: `{report.get('routing_length_ratio')}`",
             f"- Scenario start/goal lane: `{report.get('scenario_start_lane')}` / `{report.get('scenario_goal_lane')}`",
+            f"- Scenario lane namespace: `{report.get('scenario_lane_namespace')}`",
+            f"- Apollo lane namespace: `{report.get('apollo_lane_namespace')}`",
+            f"- Lane equivalence status: `{report.get('lane_equivalence_status')}`",
             f"- Apollo lane windows: `{report.get('apollo_routing_lane_window_count')}`",
             f"- Apollo lane signature: `{report.get('apollo_routing_lane_signature')}`",
             f"- Extra Apollo lane keys: `{', '.join(report.get('apollo_routing_extra_lane_keys') or []) or 'none'}`",
@@ -539,7 +601,7 @@ def _claim_route_contract(
         }
     return {
         "status": status,
-        "materialized": status == "pass",
+        "materialized": status in {"pass", "warn"},
         "blocking_reasons": sorted(set(blocking_reasons)),
         "scenario_route_length_m": scenario_length,
         "apollo_routing_total_length_m": apollo_length,
@@ -555,6 +617,17 @@ def _configured_scenario_route_report(
     return {
         "route_id": scenario.get("route_id"),
         "route_length_m": scenario.get("route_length_m"),
+        "route_length_source": scenario.get("route_length_source"),
+        "route_length_declared_m": scenario.get("route_length_declared_m"),
+        "route_length_claim_m": scenario.get("route_length_claim_m"),
+        "route_length_claim_source": scenario.get("route_length_claim_source"),
+        "route_length_legacy_m": scenario.get("route_length_legacy_m"),
+        "route_length_legacy_role": scenario.get("route_length_legacy_role"),
+        "route_trace_length_m": scenario.get("route_trace_length_m"),
+        "route_trace_length_source": scenario.get("route_trace_length_source"),
+        "route_trace_point_count": scenario.get("route_trace_point_count"),
+        "route_length_consistency_status": scenario.get("route_length_consistency_status"),
+        "route_length_consistency_reason": scenario.get("route_length_consistency_reason"),
         "start_lane": scenario.get("start_lane"),
         "goal_lane": scenario.get("goal_lane"),
         "route_lane_keys": list(scenario.get("route_lane_keys") or []),
@@ -670,6 +743,8 @@ def _route_identity(
     apollo_length = _num(apollo.get("routing_total_length_m"))
     active_length = _num(latest_planning_active_route_segment.get("route_segment_total_length_m"))
     raw_phase = str(raw_route_phase.get("routing_phase") or "unknown")
+    if scenario.get("route_length_consistency_status") == "inconsistent":
+        issues.append("scenario_route_length_inconsistent")
     if scenario_length is None:
         issues.append("scenario_route_length_missing")
     if apollo_length is None:
@@ -700,6 +775,11 @@ def _route_identity(
         "status": status,
         "issues": sorted(set(issues)),
         "scenario_route_length_m": scenario_length,
+        "scenario_route_length_source": scenario.get("route_length_source"),
+        "scenario_route_declared_length_m": scenario.get("route_length_declared_m"),
+        "scenario_route_trace_length_m": scenario.get("route_trace_length_m"),
+        "scenario_route_length_consistency_status": scenario.get("route_length_consistency_status"),
+        "scenario_route_length_consistency_reason": scenario.get("route_length_consistency_reason"),
         "apollo_routing_total_length_m": apollo_length,
         "latest_planning_active_route_length_m": active_length,
         "raw_routing_phase": raw_phase,
@@ -751,25 +831,149 @@ def _scenario_route(manifest: Mapping[str, Any], summary: Mapping[str, Any]) -> 
     goal_lane = _lane_id_from_mapping(scenario.get("goal_lane")) or (route_lanes[-1] if route_lanes else None)
     start_xy = _xy(scenario.get("spawn")) or _xy(route_trace[0]) if route_trace else _xy(scenario.get("spawn"))
     goal_xy = _xy(scenario.get("goal")) or _xy(route_trace[-1]) if route_trace else _xy(scenario.get("goal"))
-    route_length = _num(
-        scenario.get("route_length_m")
-        or summary.get("route_length_m")
-        or summary.get("expected_route_distance_m")
+    legacy_declared_length = _first_num(
+        scenario.get("route_length_m"),
+        summary.get("route_length_m"),
+        summary.get("expected_route_distance_m"),
     )
-    if route_length is None and len(route_trace) >= 2:
-        first_s = _num(route_trace[0].get("s"))
-        last_s = _num(route_trace[-1].get("s"))
-        if first_s is not None and last_s is not None:
-            route_length = abs(last_s - first_s)
+    explicit_claim_length = _first_num(
+        scenario.get("claim_route_length_m"),
+        scenario.get("route_trace_length_m"),
+        scenario.get("route_claim_length_m"),
+    )
+    trace_length, trace_length_source = _route_trace_length(route_trace)
+    if explicit_claim_length is not None:
+        route_length = explicit_claim_length
+        route_length_source = _first_nonempty_text(
+            scenario.get("claim_route_length_source"),
+            "claim_route_length_m"
+            if scenario.get("claim_route_length_m") is not None
+            else scenario.get("route_trace_length_source"),
+            "route_trace_length_m",
+        )
+        consistency = _route_length_consistency(route_length, trace_length)
+        consistency["route_length_consistency_reason"] = _claim_route_length_reason(
+            consistency.get("route_length_consistency_reason")
+        )
+    else:
+        route_length = legacy_declared_length if legacy_declared_length is not None else trace_length
+        route_length_source = "declared_metadata" if legacy_declared_length is not None else (
+            trace_length_source if trace_length is not None else "missing"
+        )
+        consistency = _route_length_consistency(legacy_declared_length, trace_length)
     lane_keys = {_lane_key(lane) for lane in [*route_lanes, start_lane, goal_lane] if lane}
     return {
         "route_id": scenario.get("route_id") or summary.get("route_id") or manifest.get("route_id"),
         "route_length_m": route_length,
+        "route_length_source": route_length_source,
+        "route_length_declared_m": legacy_declared_length,
+        "route_length_claim_m": explicit_claim_length,
+        "route_length_claim_source": _text_or_none(scenario.get("claim_route_length_source")),
+        "route_length_legacy_m": legacy_declared_length,
+        "route_length_legacy_role": _text_or_none(scenario.get("route_length_m_role")),
+        "route_trace_length_m": trace_length,
+        "route_trace_length_source": trace_length_source,
+        "route_trace_point_count": len(route_trace),
+        "route_trace_source": _text_or_none(scenario.get("route_trace_source")),
+        **consistency,
         "start_lane": start_lane,
         "goal_lane": goal_lane,
         "route_lane_keys": sorted(key for key in lane_keys if key),
         "start_xy": start_xy,
         "goal_xy": goal_xy,
+    }
+
+
+def _claim_route_length_reason(reason: Any) -> str | None:
+    text = _text_or_none(reason)
+    if text is None:
+        return None
+    replacements = {
+        "declared_route_length_missing_trace_used": "claim_route_length_missing_trace_used",
+        "route_trace_length_missing_declared_used": "route_trace_length_missing_claim_used",
+        "declared_route_length_disagrees_with_route_trace": "claim_route_length_disagrees_with_route_trace",
+        "declared_route_length_matches_route_trace": "claim_route_length_matches_route_trace",
+    }
+    return replacements.get(text, text)
+
+
+def _scenario_lane_namespace(scenario: Mapping[str, Any]) -> str:
+    source = str(scenario.get("route_trace_source") or "").strip().lower()
+    if "apollo" in source or "hdmap" in source:
+        return "apollo_hdmap"
+    if "carla" in source or "waypoint" in source or source.startswith("town01_"):
+        return "carla_waypoint"
+    # Town01 route-health metadata records lanes as CARLA road/section/lane ids.
+    if scenario.get("route_trace_point_count") or scenario.get("route_trace_length_m"):
+        return "carla_waypoint"
+    return "unknown"
+
+
+def _route_trace_length(route_trace: Sequence[Any]) -> tuple[float | None, str | None]:
+    rows = [row for row in route_trace if isinstance(row, Mapping)]
+    if len(rows) < 2:
+        return None, None
+    first_s = _num(rows[0].get("s"))
+    last_s = _num(rows[-1].get("s"))
+    if first_s is not None and last_s is not None:
+        return abs(last_s - first_s), "route_trace_s_span"
+    total = 0.0
+    used_segments = 0
+    previous = _xy(rows[0])
+    for row in rows[1:]:
+        current = _xy(row)
+        if previous is not None and current is not None:
+            total += math.hypot(current["x"] - previous["x"], current["y"] - previous["y"])
+            used_segments += 1
+        previous = current
+    if used_segments:
+        return total, "route_trace_xy_polyline"
+    return None, None
+
+
+def _route_length_consistency(
+    declared_length: float | None,
+    trace_length: float | None,
+) -> dict[str, Any]:
+    if declared_length is None and trace_length is None:
+        return {
+            "route_length_consistency_status": "missing",
+            "route_length_consistency_reason": "scenario_route_length_missing",
+            "route_length_source_delta_m": None,
+            "route_length_source_ratio": None,
+        }
+    if declared_length is None:
+        return {
+            "route_length_consistency_status": "trace_only",
+            "route_length_consistency_reason": "declared_route_length_missing_trace_used",
+            "route_length_source_delta_m": None,
+            "route_length_source_ratio": None,
+        }
+    if trace_length is None:
+        return {
+            "route_length_consistency_status": "declared_only",
+            "route_length_consistency_reason": "route_trace_length_missing_declared_used",
+            "route_length_source_delta_m": None,
+            "route_length_source_ratio": None,
+        }
+    delta = trace_length - declared_length
+    ratio = trace_length / declared_length if declared_length > 0 else None
+    tolerance = max(
+        MAX_SCENARIO_ROUTE_SOURCE_DIFF_M,
+        MAX_SCENARIO_ROUTE_SOURCE_REL_DIFF * max(abs(declared_length), abs(trace_length)),
+    )
+    if abs(delta) > tolerance:
+        return {
+            "route_length_consistency_status": "inconsistent",
+            "route_length_consistency_reason": "declared_route_length_disagrees_with_route_trace",
+            "route_length_source_delta_m": delta,
+            "route_length_source_ratio": ratio,
+        }
+    return {
+        "route_length_consistency_status": "consistent",
+        "route_length_consistency_reason": "declared_route_length_matches_route_trace",
+        "route_length_source_delta_m": delta,
+        "route_length_source_ratio": ratio,
     }
 
 

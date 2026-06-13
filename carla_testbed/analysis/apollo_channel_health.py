@@ -292,12 +292,15 @@ def _check_channel(
             result["issues"].append("missing_or_invalid_max_gap_ms")
             result["status"] = "fail" if required else _combine_status(result["status"], "warn")
         elif max_gap_ms > max_allowed_gap:
-            result["issues"].append("message_gap_too_large")
-            result["status"] = "fail" if required else _combine_status(result["status"], "warn")
             sim_gap_ms = entry.get("sim_time_max_gap_ms")
             if isinstance(sim_gap_ms, (int, float)) and sim_gap_ms <= max_allowed_gap:
+                result["issues"].append("message_gap_time_axis_warn")
                 result["warnings"].append(f"{name}_header_or_wall_gap_large_but_sim_time_gap_within_limit")
                 result["time_axis_diagnosis"] = "header_or_wall_time_gap_large_sim_time_gap_ok"
+                result["status"] = _combine_status(result["status"], "warn")
+            else:
+                result["issues"].append("message_gap_too_large")
+                result["status"] = "fail" if required else _combine_status(result["status"], "warn")
 
     if name == "planning":
         planning_warn_reasons: list[str] = []

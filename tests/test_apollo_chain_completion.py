@@ -533,6 +533,10 @@ def test_traffic_light_only_schema_blocks_traffic_light_capability(tmp_path: Pat
 
     assert report["module_statuses"]["traffic_light_perception"]["evidence_status"] == "missing"
     assert report["capability_status"]["traffic_light"] == "insufficient_data"
+    assert any(
+        item.startswith("traffic_light_perception:")
+        for item in report["missing_required_evidence"]
+    )
 
 
 def test_prediction_bypass_without_reason_fails_matrix_validation(tmp_path: Path) -> None:
@@ -636,6 +640,11 @@ def test_lane_keep_failure_stage_does_not_prioritize_non_applicable_traffic_ligh
         "traffic_light"
     ]
     assert report["failure_stage"] == "planning_materialization"
+    assert not any(
+        item.startswith("traffic_light_perception:")
+        for item in report["missing_required_evidence"]
+    )
+    assert not any(item.startswith("dreamview:") for item in report["missing_required_evidence"])
 
 
 def test_route_health_without_reference_line_blocks_curve_and_junction(tmp_path: Path) -> None:

@@ -41,6 +41,41 @@ APPLIED_CONTROL_TRACE_FIELDS = [
     "throttle_applied",
     "brake_applied",
 ]
+SIMPLE_LON_POINT_FIELDS = {
+    "debug_simple_lon_current_matched_point_s_m": "debug_simple_lon_current_matched_point_s",
+    "debug_simple_lon_current_matched_point_x": "debug_simple_lon_current_matched_point_x",
+    "debug_simple_lon_current_matched_point_y": "debug_simple_lon_current_matched_point_y",
+    "debug_simple_lon_current_matched_point_theta_rad": "debug_simple_lon_current_matched_point_theta",
+    "debug_simple_lon_current_matched_point_kappa": "debug_simple_lon_current_matched_point_kappa",
+    "debug_simple_lon_current_reference_point_s_m": "debug_simple_lon_current_reference_point_s",
+    "debug_simple_lon_current_reference_point_x": "debug_simple_lon_current_reference_point_x",
+    "debug_simple_lon_current_reference_point_y": "debug_simple_lon_current_reference_point_y",
+    "debug_simple_lon_current_reference_point_theta_rad": "debug_simple_lon_current_reference_point_theta",
+    "debug_simple_lon_current_reference_point_kappa": "debug_simple_lon_current_reference_point_kappa",
+    "debug_simple_lon_preview_reference_point_s_m": "debug_simple_lon_preview_reference_point_s",
+    "debug_simple_lon_preview_reference_point_x": "debug_simple_lon_preview_reference_point_x",
+    "debug_simple_lon_preview_reference_point_y": "debug_simple_lon_preview_reference_point_y",
+    "debug_simple_lon_preview_reference_point_theta_rad": "debug_simple_lon_preview_reference_point_theta",
+    "debug_simple_lon_preview_reference_point_kappa": "debug_simple_lon_preview_reference_point_kappa",
+}
+LONGITUDINAL_CONTEXT_FIELDS = (
+    "debug_simple_lon_current_speed_mps",
+    "debug_simple_lon_speed_reference_mps",
+    "debug_simple_lon_speed_error_mps",
+    "debug_simple_lon_current_acceleration_mps2",
+    "debug_simple_lon_acceleration_reference_mps2",
+    "debug_simple_lon_acceleration_error_mps2",
+    "debug_simple_lon_acceleration_cmd_mps2",
+    "debug_simple_lon_acceleration_cmd_closeloop_mps2",
+    "debug_simple_lon_acceleration_lookup_mps2",
+    "debug_simple_lon_throttle_cmd_pct",
+    "debug_simple_lon_brake_cmd_pct",
+    "debug_simple_lon_path_remain_m",
+    "debug_simple_lon_station_error_m",
+    "debug_simple_lon_preview_station_error_m",
+    "debug_simple_lon_is_full_stop",
+    *tuple(SIMPLE_LON_POINT_FIELDS),
+)
 
 
 def analyze_control_health_run_dir(
@@ -77,7 +112,9 @@ def analyze_control_health_run_dir(
         root,
         [
             "artifacts/control_trajectory_consume_debug.jsonl",
+            "artifacts/control_trajectory_consume_debug_live.jsonl",
             "control_trajectory_consume_debug.jsonl",
+            "control_trajectory_consume_debug_live.jsonl",
         ],
     )
     control_apply_trace_path = _find_first(
@@ -189,13 +226,35 @@ def analyze_control_health_run_dir(
     )
     rows = _read_rows(timeseries_path)
     control_bridge_log = _analyze_control_bridge_log(control_bridge_log_path)
-    control_row_level_trace_path = control_decode_debug_path or control_apply_trace_path
+    control_row_level_trace_path = control_apply_trace_path or control_decode_debug_path
     control_decode_debug = _analyze_control_decode_debug(
         control_row_level_trace_path,
         trajectory_consume_path=control_trajectory_consume_path,
         planning_topic_debug_path=planning_topic_debug_path,
         planning_route_segment_debug_path=planning_route_segment_debug_path,
+        auxiliary_context_path=(
+            control_decode_debug_path
+            if control_row_level_trace_path == control_apply_trace_path
+            else None
+        ),
     )
+    auxiliary_control_decode_debug = {}
+    if (
+        control_apply_trace_path is not None
+        and control_row_level_trace_path == control_apply_trace_path
+        and control_decode_debug_path is not None
+        and control_decode_debug_path != control_apply_trace_path
+    ):
+        auxiliary_control_decode_debug = _analyze_control_decode_debug(
+            control_decode_debug_path,
+            trajectory_consume_path=control_trajectory_consume_path,
+            planning_topic_debug_path=planning_topic_debug_path,
+            planning_route_segment_debug_path=planning_route_segment_debug_path,
+        )
+        control_decode_debug = _merge_auxiliary_control_decode_debug(
+            control_decode_debug,
+            auxiliary_control_decode_debug,
+        )
     direct_control_apply = _analyze_direct_control_apply_log(direct_control_apply_path)
     control_application_timeseries = _control_application_metrics(rows)
     control_apply_delay = _control_apply_delay_metrics(
@@ -308,6 +367,7 @@ def analyze_control_health_run_dir(
         control_bridge_log=control_bridge_log,
         control_decode_debug=control_decode_debug,
     )
+    external_control_source = _external_control_source(control_row_level_trace_path)
     status, failure_reason, verdict_missing, warnings = _verdict(
         summary=summary,
         handoff_status=handoff,
@@ -318,6 +378,7 @@ def analyze_control_health_run_dir(
         thresholds=active_thresholds,
     )
     missing_fields.extend(verdict_missing)
+    control_semantics = _control_semantics_summary(report_metrics)
     return {
         "schema_version": CONTROL_HEALTH_REPORT_SCHEMA_VERSION,
         "run_id": _first_text(summary, "run_id", manifest, "run_id", default=root.name),
@@ -343,8 +404,11 @@ def analyze_control_health_run_dir(
         "raw_mapped_applied_control_source": (
             "timeseries"
             if not missing_fields
-            else ("bridge_decode_plus_timeseries" if external_control_evidence_available else None)
+            else (external_control_source if external_control_evidence_available else None)
         ),
+        "control_semantics_primary_factor": control_semantics.get("primary_factor"),
+        "control_semantics_suspected_factors": control_semantics.get("suspected_factors", []),
+        "control_semantics_evidence": control_semantics,
         "metrics": report_metrics,
         "missing_fields": sorted(set(missing_fields)),
         "missing_inputs": sorted(set(missing_inputs)),
@@ -357,6 +421,11 @@ def analyze_control_health_run_dir(
             "timeseries_path": str(timeseries_path) if timeseries_path else None,
             "control_bridge_log_path": str(control_bridge_log_path) if control_bridge_log_path else None,
             "control_decode_debug_path": str(control_decode_debug_path) if control_decode_debug_path else None,
+            "auxiliary_control_decode_debug_path": (
+                str(control_decode_debug_path)
+                if auxiliary_control_decode_debug.get("available") is True
+                else None
+            ),
             "control_trajectory_consume_path": (
                 str(control_trajectory_consume_path) if control_trajectory_consume_path else None
             ),
@@ -523,15 +592,16 @@ def _oscillation_decomposition(
         rows,
         max_switch_count=thresholds["max_vehicle_response_sign_switch_count"],
     )
+    trace_source_name = _trace_source_name(control_decode_debug)
     raw = _prefer_decode_layer(
         current=raw,
         decoded=control_decode_debug.get("apollo_raw_command_layer"),
-        source_name="control_decode_debug.jsonl",
+        source_name=trace_source_name,
     )
     mapped = _prefer_decode_layer(
         current=mapped,
         decoded=control_decode_debug.get("bridge_mapped_command_layer"),
-        source_name="control_decode_debug.jsonl",
+        source_name=trace_source_name,
     )
     cadence = _bridge_apply_cadence_layer(control_bridge_log, thresholds)
     layers = {
@@ -573,6 +643,159 @@ def _oscillation_decomposition(
     }
 
 
+def _trace_source_name(control_decode_debug: Mapping[str, Any]) -> str:
+    path = control_decode_debug.get("path")
+    if isinstance(path, str) and path:
+        return Path(path).name
+    return "control_decode_debug.jsonl"
+
+
+def _control_semantics_summary(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    """Summarize raw-control semantic evidence without changing control verdicts."""
+    control_debug = metrics.get("control_decode_debug")
+    if not isinstance(control_debug, Mapping):
+        control_debug = {}
+    sources: dict[str, Mapping[str, Any]] = {}
+    for name in (
+        "longitudinal_oscillation_attribution",
+        "trajectory_consume_correlation",
+        "planning_trajectory_correlation",
+    ):
+        value = control_debug.get(name)
+        if isinstance(value, Mapping):
+            sources[name] = value
+    planning_log = metrics.get("planning_log_fallback_diagnostics")
+    if isinstance(planning_log, Mapping):
+        sources["planning_log_fallback_diagnostics"] = planning_log
+
+    suspected: list[str] = []
+    dominant_by_source: dict[str, Any] = {}
+    availability: dict[str, Any] = {}
+    transition_counts: dict[str, Any] = {}
+    for name, payload in sources.items():
+        availability[name] = payload.get("available")
+        if payload.get("transition_count") is not None:
+            transition_counts[name] = payload.get("transition_count")
+        dominant = payload.get("dominant_suspected_factor")
+        if dominant:
+            dominant_by_source[name] = dominant
+            suspected.append(str(dominant))
+        for factor in payload.get("suspected_factors") or []:
+            suspected.append(str(factor))
+
+    deduped_suspected = _dedupe_preserve_order(suspected)
+    primary_source = None
+    primary_factor = None
+    for name in (
+        "planning_trajectory_correlation",
+        "trajectory_consume_correlation",
+        "longitudinal_oscillation_attribution",
+        "planning_log_fallback_diagnostics",
+    ):
+        factor = dominant_by_source.get(name)
+        if factor:
+            primary_source = name
+            primary_factor = factor
+            break
+    if primary_factor is None and deduped_suspected:
+        primary_factor = deduped_suspected[0]
+
+    return {
+        "available": bool(deduped_suspected or dominant_by_source),
+        "primary_source": primary_source,
+        "primary_factor": primary_factor,
+        "suspected_factors": deduped_suspected,
+        "dominant_by_source": dominant_by_source,
+        "source_availability": availability,
+        "transition_counts": transition_counts,
+        "interpretation_caveat": (
+            "This summarizes Apollo raw-control semantic evidence only. It narrows "
+            "the next diagnostic target but does not override localization, HDMap "
+            "projection, reference-line, or natural-driving claim gates."
+        ),
+    }
+
+
+def _dedupe_preserve_order(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _merge_auxiliary_control_decode_debug(
+    primary: Mapping[str, Any],
+    auxiliary: Mapping[str, Any],
+) -> dict[str, Any]:
+    out = dict(primary)
+    if auxiliary.get("available") is not True:
+        return out
+    out["auxiliary_source_path"] = auxiliary.get("path")
+    out["auxiliary_source_used_for"] = []
+
+    primary_longitudinal = primary.get("longitudinal_debug")
+    auxiliary_longitudinal = auxiliary.get("longitudinal_debug")
+    if not _report_available(primary_longitudinal) and _report_available(auxiliary_longitudinal):
+        out["longitudinal_debug"] = auxiliary_longitudinal
+        out["auxiliary_source_used_for"].append("longitudinal_debug")
+
+    primary_attribution = primary.get("longitudinal_oscillation_attribution")
+    auxiliary_attribution = auxiliary.get("longitudinal_oscillation_attribution")
+    if (
+        not _longitudinal_attribution_has_context(primary_attribution)
+        and _longitudinal_attribution_has_context(auxiliary_attribution)
+    ):
+        out["longitudinal_oscillation_attribution"] = auxiliary_attribution
+        out["auxiliary_source_used_for"].append("longitudinal_oscillation_attribution")
+
+    return out
+
+
+def _report_available(value: Any) -> bool:
+    return isinstance(value, Mapping) and value.get("available") is True
+
+
+def _longitudinal_attribution_has_context(value: Any) -> bool:
+    if not isinstance(value, Mapping) or value.get("available") is not True:
+        return False
+    if value.get("suspected_factors"):
+        return True
+    examples = value.get("examples")
+    if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes)):
+        return False
+    context_keys = {
+        "acceleration_cmd_mps2",
+        "brake_cmd_pct",
+        "current_speed_mps",
+        "path_remain_m",
+        "speed_error_mps",
+        "speed_reference_mps",
+        "station_error_m",
+        "throttle_cmd_pct",
+    }
+    for example in examples:
+        if not isinstance(example, Mapping):
+            continue
+        for key in context_keys:
+            values = example.get(key)
+            if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+                if any(item is not None for item in values):
+                    return True
+            elif values is not None:
+                return True
+    return False
+
+
+def _external_control_source(path: Path | None) -> str:
+    if path is not None and path.name == "control_apply_trace.jsonl":
+        return "control_apply_trace_plus_timeseries"
+    return "bridge_decode_plus_timeseries"
+
+
 def _prefer_decode_layer(
     *,
     current: Mapping[str, Any],
@@ -585,13 +808,26 @@ def _prefer_decode_layer(
     decoded_layer = dict(decoded)
     decoded_count = _num(decoded_layer.get("sample_count")) or 0.0
     current_count = _num(current_layer.get("sample_count")) or 0.0
+    decoded_field_count = _resolved_field_count(decoded_layer)
+    current_field_count = _resolved_field_count(current_layer)
     if decoded_count <= 0:
         return current_layer
-    if current_layer.get("status") == "insufficient_data" or decoded_count > current_count:
+    if (
+        current_layer.get("status") == "insufficient_data"
+        or decoded_field_count > current_field_count
+        or decoded_count > current_count
+    ):
         decoded_layer["source"] = source_name
         return decoded_layer
     current_layer.setdefault("alternate_source", source_name)
     return current_layer
+
+
+def _resolved_field_count(layer: Mapping[str, Any]) -> int:
+    fields = layer.get("resolved_fields")
+    if not isinstance(fields, Mapping):
+        return 0
+    return sum(1 for value in fields.values() if value not in {None, ""})
 
 
 def _command_oscillation_layer(
@@ -1104,6 +1340,10 @@ def _external_control_evidence_available(
     decode_rows = _num(control_decode_debug.get("parsed_line_count"))
     if decode_rows is None:
         decode_rows = _num(control_decode_debug.get("line_count"))
+    trace_path = str(control_decode_debug.get("path") or "")
+    if Path(trace_path).name == "control_apply_trace.jsonl":
+        applied_rows = _num(control_decode_debug.get("applied_payload_row_count"))
+        return bool(decode_available and (decode_rows or 0) > 0 and (applied_rows or 0) > 0)
     bridge_available = bool(control_bridge_log.get("available") is True)
     applied_count = _num(control_bridge_log.get("final_applied_count"))
     return bool(decode_available and (decode_rows or 0) > 0 and bridge_available and (applied_count or 0) > 0)
@@ -1770,6 +2010,7 @@ def _analyze_control_decode_debug(
     trajectory_consume_path: Path | None = None,
     planning_topic_debug_path: Path | None = None,
     planning_route_segment_debug_path: Path | None = None,
+    auxiliary_context_path: Path | None = None,
 ) -> dict[str, Any]:
     if path is None or not path.exists():
         return {"available": False}
@@ -1779,6 +2020,7 @@ def _analyze_control_decode_debug(
     planning_message_age_values: list[float] = []
     trace_rows: list[dict[str, Any]] = []
     command_payload_row_count = 0
+    applied_payload_row_count = 0
     no_command_placeholder_count = 0
     line_count = 0
     parsed_count = 0
@@ -1810,6 +2052,8 @@ def _analyze_control_decode_debug(
                     command_payload_row_count += 1
                 else:
                     no_command_placeholder_count += 1
+                if _trace_row_has_applied_payload(trace):
+                    applied_payload_row_count += 1
                 if trace:
                     trace_rows.append(trace)
     except OSError as exc:
@@ -1818,6 +2062,17 @@ def _analyze_control_decode_debug(
             "path": str(path),
             "read_error": str(exc),
         }
+
+    auxiliary_context = _load_auxiliary_longitudinal_context(
+        auxiliary_context_path,
+        primary_path=path,
+    )
+    enriched_rows = 0
+    if auxiliary_context.get("available") is True:
+        enriched_rows = _enrich_trace_rows_from_auxiliary_context(
+            trace_rows,
+            auxiliary_context.get("trace_rows") or [],
+        )
 
     raw_layer = _command_oscillation_layer(
         trace_rows,
@@ -1862,10 +2117,16 @@ def _analyze_control_decode_debug(
         "line_count": line_count,
         "parsed_line_count": parsed_count,
         "malformed_line_count": malformed_count,
+        "auxiliary_context_path": auxiliary_context.get("path"),
+        "auxiliary_context_line_count": auxiliary_context.get("line_count"),
+        "auxiliary_context_malformed_line_count": auxiliary_context.get("malformed_line_count"),
+        "auxiliary_context_enriched_rows": enriched_rows,
         "trace_row_count": len(trace_rows),
         "command_payload_row_count": command_payload_row_count,
+        "applied_payload_row_count": applied_payload_row_count,
         "no_command_placeholder_count": no_command_placeholder_count,
         "command_payload_available": command_payload_row_count > 0,
+        "applied_payload_available": applied_payload_row_count > 0,
         "nonzero_mapped_control_frames": nonzero_mapped if trace_rows else None,
         "first_nonzero_mapped_control_ts_sec": first_nonzero_mapped_ts,
         "apollo_raw_command_layer": raw_layer,
@@ -1878,6 +2139,7 @@ def _analyze_control_decode_debug(
         ),
         "longitudinal_debug": _longitudinal_debug_summary(trace_rows),
         "longitudinal_oscillation_attribution": _longitudinal_oscillation_attribution(trace_rows),
+        "control_sequence_diagnostics": _control_sequence_diagnostics(trace_rows),
         "trajectory_consume_correlation": _trajectory_consume_correlation(
             trace_rows,
             trajectory_consume_path=trajectory_consume_path,
@@ -1987,6 +2249,8 @@ def _control_decode_payload_to_trace_row(payload: Mapping[str, Any]) -> dict[str
     bridge_mapped_map = bridge_mapped if isinstance(bridge_mapped, Mapping) else {}
     carla_applied = payload.get("carla_applied")
     carla_applied_map = carla_applied if isinstance(carla_applied, Mapping) else {}
+    apollo_control = payload.get("apollo_control")
+    apollo_control_map = apollo_control if isinstance(apollo_control, Mapping) else {}
     row = {
         "ts_sec": _first_number(
             payload.get("ts_sec"),
@@ -1997,7 +2261,26 @@ def _control_decode_payload_to_trace_row(payload: Mapping[str, Any]) -> dict[str
         "control_header_sequence_num": _first_number(
             parsed_map.get("control_header_sequence_num"),
             payload.get("control_header_sequence_num"),
+            apollo_control_map.get("header_sequence_num"),
             raw_dump_map.get("control_header_sequence_num"),
+        ),
+        "control_header_timestamp_sec": _first_number(
+            parsed_map.get("control_header_timestamp_sec"),
+            payload.get("control_header_timestamp_sec"),
+            apollo_control_map.get("header_timestamp_sec"),
+            raw_dump_map.get("control_header_timestamp_sec"),
+        ),
+        "control_rx_timestamp": _first_number(
+            parsed_map.get("control_rx_timestamp"),
+            payload.get("control_rx_timestamp"),
+            apollo_control_map.get("rx_timestamp"),
+            output_map.get("control_rx_timestamp"),
+        ),
+        "control_timestamp": _first_number(
+            parsed_map.get("control_timestamp"),
+            payload.get("control_timestamp"),
+            apollo_control_map.get("control_timestamp"),
+            output_map.get("control_timestamp"),
         ),
         "throttle_raw": _first_number(
             payload.get("raw_throttle"),
@@ -2159,7 +2442,85 @@ def _control_decode_payload_to_trace_row(payload: Mapping[str, Any]) -> dict[str
             "debug_simple_lon_is_full_stop",
         ),
     }
+    for target, raw_key in SIMPLE_LON_POINT_FIELDS.items():
+        row[target] = _first_number(
+            parsed_map.get(target),
+            payload.get(target),
+            raw_dump_map.get(raw_key),
+        )
     return {key: value for key, value in row.items() if value not in {None, ""}}
+
+
+def _load_auxiliary_longitudinal_context(
+    path: Path | None,
+    *,
+    primary_path: Path | None,
+) -> dict[str, Any]:
+    if path is None or primary_path is None or path == primary_path or not path.exists():
+        return {"available": False}
+    trace_rows: list[dict[str, Any]] = []
+    line_count = 0
+    malformed_count = 0
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                line_count += 1
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    malformed_count += 1
+                    continue
+                if not isinstance(payload, Mapping):
+                    malformed_count += 1
+                    continue
+                trace = _control_decode_payload_to_trace_row(payload)
+                if _int(trace.get("control_header_sequence_num")) is None:
+                    continue
+                if any(trace.get(field) not in {None, ""} for field in LONGITUDINAL_CONTEXT_FIELDS):
+                    trace_rows.append(trace)
+    except OSError as exc:
+        return {
+            "available": False,
+            "path": str(path),
+            "read_error": str(exc),
+        }
+    return {
+        "available": bool(trace_rows),
+        "path": str(path),
+        "line_count": line_count,
+        "malformed_line_count": malformed_count,
+        "trace_rows": trace_rows,
+    }
+
+
+def _enrich_trace_rows_from_auxiliary_context(
+    rows: list[dict[str, Any]],
+    auxiliary_rows: Sequence[Mapping[str, Any]],
+) -> int:
+    auxiliary_by_sequence: dict[int, Mapping[str, Any]] = {}
+    for auxiliary in auxiliary_rows:
+        sequence = _int(auxiliary.get("control_header_sequence_num"))
+        if sequence is not None:
+            auxiliary_by_sequence[sequence] = auxiliary
+
+    enriched_rows = 0
+    for row in rows:
+        sequence = _int(row.get("control_header_sequence_num"))
+        if sequence is None:
+            continue
+        auxiliary = auxiliary_by_sequence.get(sequence)
+        if auxiliary is None:
+            continue
+        enriched = False
+        for field in LONGITUDINAL_CONTEXT_FIELDS:
+            if row.get(field) in {None, ""} and auxiliary.get(field) not in {None, ""}:
+                row[field] = auxiliary[field]
+                enriched = True
+        if enriched:
+            enriched_rows += 1
+    return enriched_rows
 
 
 def _trace_row_has_command_payload(row: Mapping[str, Any]) -> bool:
@@ -2170,11 +2531,110 @@ def _trace_row_has_command_payload(row: Mapping[str, Any]) -> bool:
         "throttle_mapped",
         "brake_mapped",
         "bridge_steer_mapped",
+    )
+    return any(_num(row.get(field)) is not None for field in command_fields)
+
+
+def _trace_row_has_applied_payload(row: Mapping[str, Any]) -> bool:
+    applied_fields = (
         "throttle_applied",
         "brake_applied",
         "carla_steer_applied",
     )
-    return any(_num(row.get(field)) is not None for field in command_fields)
+    return any(_num(row.get(field)) is not None for field in applied_fields)
+
+
+def _control_sequence_diagnostics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    command_rows = [row for row in rows if _trace_row_has_command_payload(row)]
+    rows_with_sequence: list[Mapping[str, Any]] = []
+    sequence_values: list[int] = []
+    for row in command_rows:
+        sequence = _int(row.get("control_header_sequence_num"))
+        if sequence is None:
+            continue
+        rows_with_sequence.append(row)
+        sequence_values.append(sequence)
+
+    unique_sequences = sorted(set(sequence_values))
+    by_sequence: dict[int, Mapping[str, Any]] = {}
+    for row in rows_with_sequence:
+        sequence = _int(row.get("control_header_sequence_num"))
+        if sequence is not None:
+            by_sequence[sequence] = row
+    unique_rows = [by_sequence[sequence] for sequence in unique_sequences]
+
+    row_count = len(command_rows)
+    with_sequence_count = len(rows_with_sequence)
+    unique_count = len(unique_sequences)
+    duplicate_ratio = None
+    if with_sequence_count:
+        duplicate_ratio = max(0.0, 1.0 - (unique_count / with_sequence_count))
+
+    return {
+        "command_payload_row_count": row_count,
+        "rows_with_sequence_count": with_sequence_count,
+        "rows_missing_sequence_count": row_count - with_sequence_count,
+        "unique_sequence_count": unique_count,
+        "duplicate_sequence_ratio": duplicate_ratio,
+        "raw_throttle_brake_switch_count_rows": _throttle_brake_switch_count(
+            command_rows,
+            throttle_fields=("throttle_raw",),
+            brake_fields=("brake_raw",),
+        ),
+        "raw_throttle_brake_switch_count_unique_sequence": _throttle_brake_switch_count(
+            unique_rows,
+            throttle_fields=("throttle_raw",),
+            brake_fields=("brake_raw",),
+        ),
+        "mapped_throttle_brake_switch_count_rows": _throttle_brake_switch_count(
+            command_rows,
+            throttle_fields=("throttle_mapped",),
+            brake_fields=("brake_mapped",),
+        ),
+        "mapped_throttle_brake_switch_count_unique_sequence": _throttle_brake_switch_count(
+            unique_rows,
+            throttle_fields=("throttle_mapped",),
+            brake_fields=("brake_mapped",),
+        ),
+        "applied_throttle_brake_switch_count_rows": _throttle_brake_switch_count(
+            command_rows,
+            throttle_fields=("throttle_applied",),
+            brake_fields=("brake_applied",),
+        ),
+        "applied_throttle_brake_switch_count_unique_sequence": _throttle_brake_switch_count(
+            unique_rows,
+            throttle_fields=("throttle_applied",),
+            brake_fields=("brake_applied",),
+        ),
+    }
+
+
+def _throttle_brake_switch_count(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    throttle_fields: Sequence[str],
+    brake_fields: Sequence[str],
+) -> int | None:
+    states: list[str] = []
+    for row in rows:
+        throttle = _first_row_number(row, *throttle_fields)
+        brake = _first_row_number(row, *brake_fields)
+        if throttle is None and brake is None:
+            continue
+        throttle_f = float(throttle or 0.0)
+        brake_f = float(brake or 0.0)
+        if throttle_f > 0.05 and brake_f > 0.05:
+            state = "conflict"
+        elif throttle_f > 0.05:
+            state = "throttle"
+        elif brake_f > 0.05:
+            state = "brake"
+        else:
+            state = "neutral"
+        states.append(state)
+    if not states:
+        return None
+    return sum(1 for previous, current in zip(states, states[1:]) if previous != current)
 
 
 def _longitudinal_debug_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -2193,6 +2653,7 @@ def _longitudinal_debug_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, 
         "debug_simple_lon_path_remain_m",
         "debug_simple_lon_station_error_m",
         "debug_simple_lon_preview_station_error_m",
+        *tuple(SIMPLE_LON_POINT_FIELDS),
     )
     sample_count = len(rows)
     available_counts: dict[str, int] = {}
@@ -2258,6 +2719,12 @@ def _longitudinal_oscillation_attribution(rows: Sequence[Mapping[str, Any]]) -> 
         "speed_reference_large_drop": 0,
         "speed_reference_large_jump": 0,
         "current_speed_large_jump": 0,
+        "matched_point_s_large_jump": 0,
+        "matched_point_xy_large_jump": 0,
+        "reference_point_s_large_jump": 0,
+        "reference_point_xy_large_jump": 0,
+        "preview_reference_point_s_large_jump": 0,
+        "preview_reference_point_xy_large_jump": 0,
         "sequence_gap_gt_one": 0,
     }
     examples: list[dict[str, Any]] = []
@@ -2298,6 +2765,60 @@ def _longitudinal_oscillation_attribution(rows: Sequence[Mapping[str, Any]]) -> 
             jump_key="current_speed_large_jump",
             threshold=0.5,
         )
+        _count_large_delta(
+            buckets,
+            prev_row,
+            cur_row,
+            field="debug_simple_lon_current_matched_point_s_m",
+            drop_key="matched_point_s_large_jump",
+            jump_key="matched_point_s_large_jump",
+            threshold=2.0,
+        )
+        _count_xy_large_delta(
+            buckets,
+            prev_row,
+            cur_row,
+            x_field="debug_simple_lon_current_matched_point_x",
+            y_field="debug_simple_lon_current_matched_point_y",
+            key="matched_point_xy_large_jump",
+            threshold=2.0,
+        )
+        _count_large_delta(
+            buckets,
+            prev_row,
+            cur_row,
+            field="debug_simple_lon_current_reference_point_s_m",
+            drop_key="reference_point_s_large_jump",
+            jump_key="reference_point_s_large_jump",
+            threshold=2.0,
+        )
+        _count_xy_large_delta(
+            buckets,
+            prev_row,
+            cur_row,
+            x_field="debug_simple_lon_current_reference_point_x",
+            y_field="debug_simple_lon_current_reference_point_y",
+            key="reference_point_xy_large_jump",
+            threshold=2.0,
+        )
+        _count_large_delta(
+            buckets,
+            prev_row,
+            cur_row,
+            field="debug_simple_lon_preview_reference_point_s_m",
+            drop_key="preview_reference_point_s_large_jump",
+            jump_key="preview_reference_point_s_large_jump",
+            threshold=2.0,
+        )
+        _count_xy_large_delta(
+            buckets,
+            prev_row,
+            cur_row,
+            x_field="debug_simple_lon_preview_reference_point_x",
+            y_field="debug_simple_lon_preview_reference_point_y",
+            key="preview_reference_point_xy_large_jump",
+            threshold=2.0,
+        )
         prev_acc = _num(prev_row.get("debug_simple_lon_acceleration_cmd_mps2"))
         cur_acc = _num(cur_row.get("debug_simple_lon_acceleration_cmd_mps2"))
         if prev_acc is not None and cur_acc is not None and prev_acc * cur_acc < 0:
@@ -2327,6 +2848,16 @@ def _longitudinal_oscillation_attribution(rows: Sequence[Mapping[str, Any]]) -> 
     station_jump_count = buckets["station_error_large_drop"] + buckets["station_error_large_jump"]
     if transition_count and (path_jump_count + station_jump_count) / transition_count >= 0.4:
         suspected_factors.append("trajectory_station_or_path_remain_jump")
+    matched_reference_jump_count = (
+        buckets["matched_point_s_large_jump"]
+        + buckets["matched_point_xy_large_jump"]
+        + buckets["reference_point_s_large_jump"]
+        + buckets["reference_point_xy_large_jump"]
+        + buckets["preview_reference_point_s_large_jump"]
+        + buckets["preview_reference_point_xy_large_jump"]
+    )
+    if transition_count and matched_reference_jump_count / transition_count >= 0.25:
+        suspected_factors.append("matched_or_reference_point_jump")
     speed_reference_jump_count = buckets["speed_reference_large_drop"] + buckets["speed_reference_large_jump"]
     if transition_count and speed_reference_jump_count / transition_count >= 0.25:
         suspected_factors.append("speed_reference_jump")
@@ -2352,6 +2883,8 @@ def _longitudinal_oscillation_attribution(rows: Sequence[Mapping[str, Any]]) -> 
             "station_error_jump_m": 1.0,
             "speed_reference_jump_mps": 0.5,
             "current_speed_jump_mps": 0.5,
+            "matched_reference_point_s_jump_m": 2.0,
+            "matched_reference_point_xy_jump_m": 2.0,
             "acceleration_cmd_sign_flip_ratio_for_factor": 0.8,
         },
         "examples": examples,
@@ -3044,6 +3577,28 @@ def _count_large_delta(
         buckets[jump_key] += 1
 
 
+def _count_xy_large_delta(
+    buckets: dict[str, int],
+    prev_row: Mapping[str, Any],
+    cur_row: Mapping[str, Any],
+    *,
+    x_field: str,
+    y_field: str,
+    key: str,
+    threshold: float,
+) -> None:
+    distance = _xy_distance(
+        prev_row,
+        cur_row,
+        left_x=x_field,
+        left_y=y_field,
+        right_x=x_field,
+        right_y=y_field,
+    )
+    if distance is not None and distance >= threshold:
+        buckets[key] += 1
+
+
 def _longitudinal_transition_example(
     *,
     prev_index: int,
@@ -3093,9 +3648,54 @@ def _longitudinal_transition_example(
             _num(prev_row.get("debug_simple_lon_brake_cmd_pct")),
             _num(cur_row.get("debug_simple_lon_brake_cmd_pct")),
         ],
+        "matched_point": _point_pair(
+            prev_row,
+            cur_row,
+            prefix="debug_simple_lon_current_matched_point",
+        ),
+        "current_reference_point": _point_pair(
+            prev_row,
+            cur_row,
+            prefix="debug_simple_lon_current_reference_point",
+        ),
+        "preview_reference_point": _point_pair(
+            prev_row,
+            cur_row,
+            prefix="debug_simple_lon_preview_reference_point",
+        ),
         "is_full_stop": [
             _parse_bool(prev_row.get("debug_simple_lon_is_full_stop")),
             _parse_bool(cur_row.get("debug_simple_lon_is_full_stop")),
+        ],
+    }
+
+
+def _point_pair(
+    prev_row: Mapping[str, Any],
+    cur_row: Mapping[str, Any],
+    *,
+    prefix: str,
+) -> dict[str, Any]:
+    return {
+        "s_m": [
+            _num(prev_row.get(f"{prefix}_s_m")),
+            _num(cur_row.get(f"{prefix}_s_m")),
+        ],
+        "x": [
+            _num(prev_row.get(f"{prefix}_x")),
+            _num(cur_row.get(f"{prefix}_x")),
+        ],
+        "y": [
+            _num(prev_row.get(f"{prefix}_y")),
+            _num(cur_row.get(f"{prefix}_y")),
+        ],
+        "theta_rad": [
+            _num(prev_row.get(f"{prefix}_theta_rad")),
+            _num(cur_row.get(f"{prefix}_theta_rad")),
+        ],
+        "kappa": [
+            _num(prev_row.get(f"{prefix}_kappa")),
+            _num(cur_row.get(f"{prefix}_kappa")),
         ],
     }
 

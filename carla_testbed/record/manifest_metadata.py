@@ -63,7 +63,10 @@ def online_claim_manifest_updates(
     if duration_s is None and ticks is not None and fixed_delta_seconds is not None:
         duration_s = float(ticks) * float(fixed_delta_seconds)
 
-    transport_mode, transport_mode_source = _transport_mode(scenario_cfg, apollo_cfg)
+    transport_mode, transport_mode_source, legacy_transport_name, compat_layers = _transport_mode(
+        scenario_cfg,
+        apollo_cfg,
+    )
     stack = str(algo_cfg.get("stack") or "").strip().lower()
     backend = _first_text(
         cfg.get("backend"),
@@ -102,6 +105,10 @@ def online_claim_manifest_updates(
     _set_if_present(updates, "map", _first_text(run_cfg.get("map"), scenario_meta.get("map")))
     _set_if_present(updates, "transport_mode", transport_mode)
     _set_if_present(updates, "transport_mode_source", transport_mode_source)
+    _set_if_present(updates, "canonical_transport_mode", transport_mode)
+    _set_if_present(updates, "legacy_transport_name", legacy_transport_name)
+    if compat_layers:
+        updates["compat_layers"] = list(compat_layers)
     _set_if_present(updates, "backend", backend)
     if truth_input is not None:
         updates["truth_input"] = bool(truth_input)
@@ -121,6 +128,30 @@ def online_claim_manifest_updates(
         updates["fixed_delta_seconds"] = float(fixed_delta_seconds)
     if ticks is not None:
         updates["ticks"] = int(ticks)
+    runtime_contract = _runtime_contract(
+        backend=backend,
+        stack=stack,
+        truth_input=truth_input,
+        transport_mode=transport_mode,
+        claim_profile=claim_profile,
+        materialization_probe=materialization_probe,
+        profile=_mapping(summary_map.get("profile")),
+        algo_cfg=algo_cfg,
+    )
+    updates["runtime_contract"] = runtime_contract
+    updates["runtime_contract_status"] = runtime_contract["status"]
+    for key in (
+        "routing_success_count",
+        "routing_materialized",
+        "planning_message_count",
+        "planning_nonempty_count",
+        "planning_nonempty_trajectory_ratio",
+        "planning_materialized",
+        "control_rx_count",
+        "control_tx_count",
+        "control_handoff_status",
+    ):
+        _set_if_present(updates, key, summary_map.get(key))
     return updates
 
 
@@ -177,13 +208,104 @@ def _scenario_id_from_profile(capability_profile: str | None, route_id: str | No
 def _transport_mode(
     scenario_cfg: Mapping[str, Any],
     apollo_cfg: Mapping[str, Any],
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, str | None, list[str]]:
     explicit = _first_text(apollo_cfg.get("transport_mode"))
     if explicit is not None:
-        return explicit, "online_config.algo.apollo.transport_mode"
+        return (
+            _canonical_transport_mode(explicit),
+            "online_config.algo.apollo.transport_mode",
+            _legacy_transport_name(explicit),
+            _compat_layers(explicit),
+        )
     publish_ros2_gt = scenario_cfg.get("publish_ros2_gt")
     if publish_ros2_gt is True:
-        return "ros2_gt", "online_config.scenario.publish_ros2_gt"
+        legacy = "ros2_gt"
+        return _canonical_transport_mode(legacy), "online_config.scenario.publish_ros2_gt", legacy, _compat_layers(legacy)
     if publish_ros2_gt is False:
-        return "non_ros2_gt", "online_config.scenario.publish_ros2_gt"
-    return None, None
+        return "non_ros2_gt", "online_config.scenario.publish_ros2_gt", None, []
+    return None, None, None, []
+
+
+def _canonical_transport_mode(value: str | None) -> str | None:
+    text = str(value or "").strip().lower()
+    if text == "ros2_gt":
+        return "apollo_cyberrt_gt_over_ros2_transition"
+    return text or None
+
+
+def _legacy_transport_name(value: str | None) -> str | None:
+    text = str(value or "").strip().lower()
+    if text == "ros2_gt":
+        return "ros2_gt"
+    return None
+
+
+def _compat_layers(value: str | None) -> list[str]:
+    text = str(value or "").strip().lower()
+    if text == "ros2_gt":
+        return ["ros2_gt_transition", "legacy_route_health_transition"]
+    return []
+
+
+def _runtime_contract(
+    *,
+    backend: str | None,
+    stack: str,
+    truth_input: bool | None,
+    transport_mode: str | None,
+    claim_profile: bool | None,
+    materialization_probe: bool | None,
+    profile: Mapping[str, Any],
+    algo_cfg: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return an explicit runtime contract for online Apollo claim artifacts.
+
+    This is intentionally conservative: it records why the runtime can be used
+    as an Apollo truth-input materialization sample, but it does not assert
+    natural-driving success or behavior quality.
+    """
+
+    blockers: list[str] = []
+    unknowns: list[str] = []
+    canonical_transport = _canonical_transport_mode(transport_mode)
+    expected_transport = "apollo_cyberrt_gt_over_ros2_transition"
+    if (backend or "").strip() != "apollo_cyberrt":
+        blockers.append("backend_not_apollo_cyberrt")
+    if stack and stack != "apollo":
+        blockers.append("stack_not_apollo")
+    elif not stack:
+        unknowns.append("algo.stack")
+    if truth_input is not True:
+        blockers.append("truth_input_not_enabled" if truth_input is False else "truth_input_unknown")
+    if canonical_transport != expected_transport:
+        blockers.append("transport_not_apollo_cyberrt_gt_over_ros2_transition")
+    harness_disabled = _first_bool(
+        profile.get("harness_disable_control_effective"),
+        profile.get("disable_legacy_harness_control_for_external_stack"),
+        algo_cfg.get("disable_legacy_harness_control_for_external_stack"),
+    )
+    if harness_disabled is not True:
+        blockers.append(
+            "harness_control_not_disabled_for_external_stack"
+            if harness_disabled is False
+            else "harness_control_disable_unknown"
+        )
+    if claim_profile is not True and materialization_probe is not True:
+        blockers.append("claim_or_materialization_profile_not_enabled")
+    status = "aligned" if not blockers and not unknowns else ("insufficient_data" if unknowns else "misconfigured")
+    return {
+        "schema_version": "runtime_contract.v1",
+        "status": status,
+        "blockers": blockers + unknowns,
+        "backend": backend,
+        "stack": stack or None,
+        "truth_input": truth_input,
+        "transport_mode": canonical_transport,
+        "harness_control_disabled_for_external_stack": harness_disabled,
+        "claim_profile": bool(claim_profile),
+        "materialization_probe": bool(materialization_probe),
+        "claim_boundary": (
+            "Runtime contract alignment is a prerequisite only; it does not prove "
+            "Apollo natural-driving behavior without downstream evidence reports."
+        ),
+    }

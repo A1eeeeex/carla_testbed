@@ -326,6 +326,9 @@ def _cmd_inspect_run(args: argparse.Namespace) -> int:
     missing_artifacts = artifact_completeness.get("missing_artifacts") or []
     if missing_artifacts:
         print(f"[inspect-run] missing_artifacts={','.join(missing_artifacts)}")
+    missing_raw_artifacts = artifact_completeness.get("missing_raw_evidence_artifacts") or []
+    if missing_raw_artifacts:
+        print(f"[inspect-run] missing_raw_evidence_artifacts={','.join(missing_raw_artifacts)}")
     missing_manifest_fields = artifact_completeness.get("missing_manifest_fields") or []
     if missing_manifest_fields:
         print(f"[inspect-run] missing_manifest_fields={','.join(missing_manifest_fields)}")
@@ -338,7 +341,165 @@ def _cmd_inspect_run(args: argparse.Namespace) -> int:
     missing_control_trace_fields = artifact_completeness.get("missing_control_trace_fields") or []
     if missing_control_trace_fields:
         print(f"[inspect-run] missing_control_trace_fields={','.join(missing_control_trace_fields)}")
+    blocker_stack = _inspect_run_blocker_stack(run_dir)
+    first_blocker = _inspect_first_blocker(blocker_stack)
+    print(f"[inspect-run] blocker_stack={','.join(item['name'] for item in blocker_stack)}")
+    print(f"[inspect-run] first_blocker={first_blocker or 'none'}")
+    for item in blocker_stack:
+        print(
+            "[inspect-run] blocker_stage "
+            f"name={item['name']} status={item['status']} "
+            f"reason={item['reason'] or 'none'}"
+        )
     return 0
+
+
+def _inspect_run_blocker_stack(run_dir: Path) -> list[dict[str, str]]:
+    artifacts = run_dir / "artifacts"
+    analysis = run_dir / "analysis"
+    cyber_stats = _read_json_optional(artifacts / "cyber_bridge_stats.json") or {}
+    planning_debug = _read_json_optional(artifacts / "planning_topic_debug_summary.json") or {}
+    return [
+        _inspect_goal_stage(artifacts / "goal_validity_report.json"),
+        _inspect_map_stage(artifacts),
+        _inspect_routing_stage(artifacts, cyber_stats),
+        _inspect_hdmap_projection_stage(run_dir),
+        _inspect_planning_stage(analysis, planning_debug),
+        _inspect_control_stage(analysis, cyber_stats),
+        _inspect_attribution_stage(analysis, run_dir),
+    ]
+
+
+def _inspect_goal_stage(path: Path) -> dict[str, str]:
+    report = _read_json_optional(path)
+    if report is None:
+        return _inspect_stage("goal", "insufficient_data", "goal_validity_report_missing")
+    invalid = report.get("invalid_goal") is True
+    status = str(report.get("status") or "").strip().lower()
+    fallback_applied = report.get("fallback_applied") is True
+    if status == "fail" or invalid:
+        return _inspect_stage(
+            "goal",
+            "fail",
+            str(report.get("invalid_goal_reason") or "invalid_goal"),
+        )
+    if fallback_applied and bool(report.get("claim_profile_enabled") or report.get("materialization_probe_enabled")):
+        return _inspect_stage("goal", "fail", "fallback_route_applied_in_claim_profile")
+    return _inspect_stage("goal", status or "pass", "")
+
+
+def _inspect_map_stage(artifacts: Path) -> dict[str, str]:
+    report = _read_json_optional(artifacts / "map_contract_guard.json") or _read_json_optional(
+        artifacts / "stage5_map_contract_guard.json"
+    )
+    if report is None:
+        return _inspect_stage("map", "insufficient_data", "map_contract_guard_missing")
+    if report.get("map_contract_invalid") is True or report.get("high_risk_mismatch") is True:
+        reasons = [str(item) for item in (report.get("mismatch_reasons") or []) if item]
+        reason = reasons[0] if reasons else str(report.get("mismatch_classification") or "map_contract_invalid")
+        return _inspect_stage("map", "fail", reason)
+    return _inspect_stage("map", "pass", "")
+
+
+def _inspect_routing_stage(artifacts: Path, cyber_stats: Mapping[str, Any]) -> dict[str, str]:
+    decoded = _read_json_optional(artifacts / "routing_response_decoded.json")
+    lane_segments = decoded.get("lane_segments") if isinstance(decoded, Mapping) else None
+    if isinstance(lane_segments, list) and lane_segments:
+        return _inspect_stage("routing", "pass", "")
+    request_count = _numeric(cyber_stats.get("routing_request_count"))
+    response_count = _numeric(cyber_stats.get("routing_response_count"))
+    success_count = _numeric(cyber_stats.get("routing_success_count"))
+    if request_count is not None and request_count < 1:
+        return _inspect_stage("routing", "fail", "routing_request_missing")
+    if response_count is not None and response_count < 1:
+        return _inspect_stage("routing", "fail", "routing_response_missing")
+    if success_count is not None and success_count < 1:
+        return _inspect_stage("routing", "fail", "routing_success_missing")
+    return _inspect_stage("routing", "insufficient_data", "routing_response_decoded_missing")
+
+
+def _inspect_hdmap_projection_stage(run_dir: Path) -> dict[str, str]:
+    report = _read_json_optional(
+        run_dir / "analysis" / "apollo_hdmap_projection" / "apollo_hdmap_projection_report.json"
+    )
+    raw = run_dir / "artifacts" / "apollo_hdmap_projection.jsonl"
+    if report is None and not raw.exists():
+        return _inspect_stage("hdmap_projection", "insufficient_data", "apollo_hdmap_projection_missing")
+    if report is None:
+        return _inspect_stage("hdmap_projection", "warn", "apollo_hdmap_projection_raw_unanalyzed")
+    status = str(report.get("status") or report.get("verdict") or "insufficient_data").strip().lower()
+    reasons = report.get("blocking_reasons") or report.get("errors") or []
+    reason = str(reasons[0]) if reasons else ""
+    return _inspect_stage("hdmap_projection", status or "insufficient_data", reason)
+
+
+def _inspect_planning_stage(analysis: Path, planning_debug: Mapping[str, Any]) -> dict[str, str]:
+    report = _read_json_optional(analysis / "planning_materialization" / "planning_materialization_report.json")
+    if report is not None:
+        status = str(report.get("verdict") or report.get("status") or "insufficient_data").strip().lower()
+        reasons = [str(item) for item in (report.get("blocking_reasons") or []) if item]
+        reason = reasons[0] if reasons else str(report.get("materialization_status") or "")
+        return _inspect_stage("planning", status or "insufficient_data", reason)
+    total = _numeric(planning_debug.get("total_messages_received"))
+    nonempty = _numeric(planning_debug.get("messages_with_nonzero_trajectory_points"))
+    if total is None:
+        return _inspect_stage("planning", "insufficient_data", "planning_materialization_missing")
+    if total > 0 and (nonempty or 0) < 1:
+        return _inspect_stage("planning", "fail", "planning_trajectory_empty")
+    return _inspect_stage("planning", "pass", "")
+
+
+def _inspect_control_stage(analysis: Path, cyber_stats: Mapping[str, Any]) -> dict[str, str]:
+    report = _read_json_optional(analysis / "apollo_control_handoff" / "apollo_control_handoff_report.json")
+    if report is not None:
+        status = str(report.get("verdict") or report.get("status") or "insufficient_data").strip().lower()
+        reasons = [str(item) for item in (report.get("blocking_reasons") or []) if item]
+        return _inspect_stage("control", status or "insufficient_data", reasons[0] if reasons else "")
+    control_rx = _numeric(cyber_stats.get("control_rx_count"))
+    control_tx = _numeric(cyber_stats.get("control_tx_count"))
+    if control_rx is not None and control_rx < 1:
+        return _inspect_stage("control", "fail", "control_rx_missing")
+    if control_tx is not None and control_tx < 1:
+        return _inspect_stage("control", "fail", "control_tx_missing")
+    return _inspect_stage("control", "insufficient_data", "apollo_control_handoff_report_missing")
+
+
+def _inspect_attribution_stage(analysis: Path, run_dir: Path) -> dict[str, str]:
+    report = _read_json_optional(analysis / "control_attribution" / "control_attribution_report.json")
+    if report is not None:
+        verdict = report.get("verdict")
+        status = verdict.get("status") if isinstance(verdict, Mapping) else verdict
+        status = str(status or report.get("status") or "insufficient_data").strip().lower()
+        reasons = [str(item) for item in (report.get("blocking_reasons") or []) if item]
+        return _inspect_stage("attribution", status or "insufficient_data", reasons[0] if reasons else "")
+    if not (run_dir / "artifacts" / "control_apply_trace.jsonl").exists():
+        return _inspect_stage("attribution", "insufficient_data", "control_apply_trace_missing")
+    return _inspect_stage("attribution", "insufficient_data", "control_attribution_report_missing")
+
+
+def _inspect_stage(name: str, status: str, reason: str) -> dict[str, str]:
+    return {"name": name, "status": status or "insufficient_data", "reason": reason or ""}
+
+
+def _inspect_first_blocker(stack: list[dict[str, str]]) -> str | None:
+    by_name = {item["name"]: item for item in stack}
+    goal = by_name.get("goal", {})
+    map_stage = by_name.get("map", {})
+    if goal.get("reason") == "goal_projection_unavailable" and map_stage.get("status") == "fail":
+        return "goal_projection_unavailable/map_contract_invalid"
+    for item in stack:
+        if item["status"] in {"fail", "insufficient_data"}:
+            return f"{item['name']}:{item['reason'] or item['status']}"
+    return None
+
+
+def _numeric(value: Any) -> float | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _read_json_optional(path: Path) -> Mapping[str, Any] | None:

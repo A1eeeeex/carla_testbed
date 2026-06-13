@@ -571,6 +571,7 @@ def _apollo_hdmap_projection_contract(hdmap_projection: Mapping[str, Any]) -> di
     status = str(hdmap_projection.get("status") or "insufficient_data")
     warnings = list(hdmap_projection.get("warnings") or [])
     blocking = list(hdmap_projection.get("blocking_reasons") or [])
+    insufficient = list(hdmap_projection.get("insufficient_reasons") or [])
     missing = list(hdmap_projection.get("missing_fields") or [])
     available = bool(hdmap_projection.get("official_source_available"))
     return {
@@ -578,6 +579,7 @@ def _apollo_hdmap_projection_contract(hdmap_projection: Mapping[str, Any]) -> di
         "available": available,
         "claim_grade": bool(hdmap_projection.get("claim_grade")),
         "blocking_reasons": sorted(set(blocking)),
+        "insufficient_reasons": sorted(set(insufficient)),
         "warnings": sorted(set(warnings)),
         "missing_fields": sorted(set(missing)),
         "key_metrics": {
@@ -670,6 +672,9 @@ def _contract_messages(contracts: Mapping[str, Any]) -> tuple[list[str], list[st
             continue
         warnings.extend(str(item) for item in contract.get("warnings") or [] if item)
         if contract.get("status") == "insufficient_data":
+            for item in contract.get("insufficient_reasons") or []:
+                if item:
+                    warnings.append(str(item))
             for item in contract.get("missing_fields") or []:
                 if not item:
                     continue

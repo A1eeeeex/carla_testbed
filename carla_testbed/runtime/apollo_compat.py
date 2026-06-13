@@ -258,10 +258,11 @@ def _run_typed_transition_backend(
         (root / "artifacts").mkdir(parents=True, exist_ok=True)
         shutil.copy2(transition_runtime_staged, root / "artifacts" / "typed_transition_runtime.json")
 
+    runtime_metadata = _metadata_with_transition_outputs(root, metadata)
     _merge_manifest_after_transition(
         root,
         cfg=cfg,
-        metadata=metadata,
+        metadata=runtime_metadata,
         config_path=config_path,
         legacy_effective_path=root_legacy_effective_path,
         start_wall=start_wall,
@@ -273,7 +274,7 @@ def _run_typed_transition_backend(
     _merge_summary_after_transition(
         root,
         cfg=cfg,
-        metadata=metadata,
+        metadata=runtime_metadata,
         wall_duration_s=end_wall - start_wall,
         exit_code=exit_code,
         error_text=error_text,
@@ -281,25 +282,25 @@ def _run_typed_transition_backend(
 
     route_path = root / "route.json"
     if not route_path.exists():
-        route_path = _write_route_stub(root, route_id=str(metadata["route_id"]))
+        route_path = _write_route_stub(root, route_id=str(runtime_metadata["route_id"]))
     stats_path = root / "artifacts" / "cyber_bridge_stats.json"
     if not stats_path.exists():
-        stats_path = _write_cyber_bridge_stats(root, cfg, metadata=metadata)
+        stats_path = _write_cyber_bridge_stats(root, cfg, metadata=runtime_metadata)
     if not (root / "timeseries.csv").exists():
-        _write_timeseries_csv(root, route_id=str(metadata["route_id"]))
+        _write_timeseries_csv(root, route_id=str(runtime_metadata["route_id"]))
     if not (root / "artifacts/topic_publish_stats.jsonl").exists():
         _write_topic_publish_stats(root)
     if not (root / "artifacts/control_apply_trace.jsonl").exists():
         _write_control_apply_trace(root)
     _write_core_insufficient_reports(
         root,
-        metadata=metadata,
+        metadata=runtime_metadata,
         route_path=route_path,
         stats_path=stats_path,
         overwrite=False,
     )
-    outputs = _write_secondary_reports(root, metadata=metadata, overwrite=False)
-    outputs.update(_write_boundary_and_completeness(root, metadata=metadata))
+    outputs = _write_secondary_reports(root, metadata=runtime_metadata, overwrite=False)
+    outputs.update(_write_boundary_and_completeness(root, metadata=runtime_metadata))
     outputs["manifest"] = str(root / "manifest.json")
     outputs["summary"] = str(root / "summary.json")
     outputs["config_resolved"] = str(root / "config.resolved.yaml")
@@ -462,6 +463,31 @@ def _metadata_from_config(
         "config_path": str(Path(config_path)),
         "config_aliases_used": list(cfg.config_aliases_used or []),
     }
+
+
+def _metadata_with_transition_outputs(root: Path, metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge runtime-selected route identity back into typed compat metadata.
+
+    Random-route transition runs often cannot know the final route_id until the
+    legacy runner writes summary.json. Keeping the pre-dispatch placeholder in
+    manifest/report metadata makes otherwise useful evidence look stale.
+    """
+
+    summary = _read_json(root / "summary.json")
+    manifest = _read_json(root / "manifest.json")
+    route = _read_json(root / "route.json")
+    route_id = _first_non_placeholder_text(
+        summary.get("route_id"),
+        summary.get("selected_route_id"),
+        manifest.get("route_id"),
+        manifest.get("selected_route_id"),
+        route.get("route_id"),
+        metadata.get("route_id"),
+    )
+    updated = dict(metadata)
+    if route_id:
+        updated["route_id"] = route_id
+    return updated
 
 
 def _transition_driver_name(cfg: TestbedConfig) -> str:
@@ -1099,7 +1125,8 @@ def _write_secondary_reports(
         "route_id": metadata["route_id"],
     }
     routing_raw = root / "artifacts" / "routing_response_decoded.json"
-    if overwrite or not routing_raw.exists():
+    routing_jsonl = root / "artifacts" / "routing_response_decoded.jsonl"
+    if overwrite or (not routing_raw.exists() and not routing_jsonl.exists()):
         _write_json(
             routing_raw,
             {
@@ -1111,14 +1138,38 @@ def _write_secondary_reports(
                 "total_length_m": None,
             },
         )
-    routing_report = read_routing_response_decoded(routing_raw)
+    routing_source = routing_raw if routing_raw.exists() else routing_jsonl
+    routing_report = read_routing_response_decoded(routing_source)
     routing_report.update(common)
-    if overwrite or not (root / "analysis/routing_response_decoded/routing_response_decoded_report.json").exists():
-        outputs.update(write_routing_response_decoded_report(routing_report, root / "analysis/routing_response_decoded"))
-    _write_jsonl(
-        root / "artifacts/routing_response_decoded.jsonl",
-        [{"status": "insufficient_data", "message_count": 0, "source": "/apollo/routing_response"}],
+    routing_report_path = root / "analysis/routing_response_decoded/routing_response_decoded_report.json"
+    existing_routing_report = _read_json(routing_report_path)
+    should_write_routing_report = (
+        overwrite
+        or not routing_report_path.exists()
+        or (
+            routing_report.get("status") == "pass"
+            and (existing_routing_report or {}).get("status") != "pass"
+        )
     )
+    if should_write_routing_report:
+        outputs.update(write_routing_response_decoded_report(routing_report, root / "analysis/routing_response_decoded"))
+    existing_jsonl_report = read_routing_response_decoded(routing_jsonl) if routing_jsonl.exists() else {}
+    should_write_routing_jsonl = (
+        overwrite
+        or not routing_jsonl.exists()
+        or (
+            routing_report.get("status") == "pass"
+            and existing_jsonl_report.get("status") != "pass"
+        )
+    )
+    if should_write_routing_jsonl:
+        if routing_report.get("status") == "pass":
+            _write_jsonl(routing_jsonl, [routing_report])
+        else:
+            _write_jsonl(
+                routing_jsonl,
+                [{"status": "insufficient_data", "message_count": 0, "source": "/apollo/routing_response"}],
+            )
 
     hdmap_jsonl = root / "artifacts" / "apollo_hdmap_projection.jsonl"
     hdmap_jsonl.parent.mkdir(parents=True, exist_ok=True)
@@ -1378,6 +1429,15 @@ def _first_text(*values: Any) -> str:
             continue
         text = str(value).strip()
         if text:
+            return text
+    return ""
+
+
+def _first_non_placeholder_text(*values: Any) -> str:
+    placeholders = {"unknown", "unknown_route", "none", "null"}
+    for value in values:
+        text = _first_text(value)
+        if text and text.lower() not in placeholders:
             return text
     return ""
 

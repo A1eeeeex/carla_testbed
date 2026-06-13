@@ -119,6 +119,31 @@ def test_apollo_hdmap_projection_high_heading_error_blocks_claim() -> None:
     assert "lane_direction" in report["apollo_hdmap_projection"]["suspected_failure_layers"]
 
 
+def test_hdmap_lateral_error_can_be_attributed_to_route_cross_track_drift() -> None:
+    rows = _read_csv(TIMESERIES)
+    for row in rows:
+        row["cross_track_error"] = "-0.80"
+        row["route_s"] = str(float(row["sim_time"]) * 10.0)
+
+    report = analyze_localization_contract(
+        timeseries_rows=rows,
+        channel_stats=_read_json(CHANNEL_STATS),
+        route_health=_read_json(ROUTE_HEALTH),
+        hdmap_projection_rows=_hdmap_projection_rows(heading_error_rad=0.01, lateral_error_m=0.80),
+        frame_transform=load_frame_transform(FRAME_TRANSFORM),
+        vehicle_reference=load_vehicle_reference(VEHICLE_REFERENCE),
+        source=_runtime_reference_source(),
+    )
+
+    consistency = report["hdmap_route_lateral_consistency"]
+    assert report["verdict"]["status"] == "fail"
+    assert "apollo_hdmap_projection_lateral_error_high" in report["verdict"]["blocking_reasons"]
+    assert consistency["status"] == "pass"
+    assert consistency["alignment_mode"] == "opposite_sign"
+    assert consistency["best_abs_delta_p95_m"] == pytest.approx(0.0)
+    assert consistency["interpretation"] == "hdmap_lateral_matches_route_cross_track_actual_lateral_drift"
+
+
 def test_checklist_missing_fields_do_not_fabricate_pass() -> None:
     report = analyze_localization_contract(
         timeseries_rows=[],
@@ -660,6 +685,35 @@ def test_run_dir_auto_discovers_apollo_hdmap_projection(tmp_path: Path) -> None:
     assert report["acceptance_checklist"]["reference_line_projection"]["status"] == "pass"
 
 
+def test_debug_timeseries_merges_primary_route_context_for_hdmap_lateral_attribution(tmp_path: Path) -> None:
+    run_dir = _make_run_dir(tmp_path / "run")
+    route_rows = [
+        {"sim_time": f"{index * 0.05:.2f}", "route_id": "lane097", "route_s": str(index), "cross_track_error": "-0.80"}
+        for index in range(8)
+    ]
+    _write_csv(run_dir / "timeseries.csv", route_rows)
+    _copy(TIMESERIES, run_dir / "artifacts" / "debug_timeseries.csv")
+    projection_path = run_dir / "artifacts" / "apollo_hdmap_projection.jsonl"
+    projection_path.write_text(
+        "\n".join(json.dumps(row, sort_keys=True) for row in _hdmap_projection_rows(heading_error_rad=0.01, lateral_error_m=0.80))
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_localization_contract_files(
+        run_dir=run_dir,
+        frame_transform_path=FRAME_TRANSFORM,
+        vehicle_reference_path=VEHICLE_REFERENCE,
+    )
+
+    consistency = report["hdmap_route_lateral_consistency"]
+    assert report["source"]["timeseries_path"].endswith("artifacts/debug_timeseries.csv")
+    assert report["verdict"]["status"] == "fail"
+    assert consistency["status"] == "pass"
+    assert consistency["alignment_mode"] == "opposite_sign"
+    assert consistency["interpretation"] == "hdmap_lateral_matches_route_cross_track_actual_lateral_drift"
+
+
 def test_run_dir_falls_back_to_debug_timeseries_for_localization_fields(tmp_path: Path) -> None:
     run_dir = _make_run_dir(tmp_path / "run")
     (run_dir / "timeseries.csv").write_text("sim_time,route_id\n1.0,lane097\n", encoding="utf-8")
@@ -826,6 +880,17 @@ def _read_json(path: Path) -> dict:
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return [dict(row) for row in csv.DictReader(handle)]
+
+
+def _write_csv(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _copy(source: Path, dest: Path) -> None:

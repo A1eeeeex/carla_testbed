@@ -59,7 +59,9 @@ def test_claim_profile_missing_raw_evidence_does_not_pass_artifact_check(tmp_pat
     assert report["raw_evidence_complete"] is False
     assert report["artifact_complete"] is False
     assert report["claim_or_materialization_profile"] is True
+    assert "route.json" in report["missing_raw_evidence_artifacts"]
     assert "artifacts/topic_publish_stats.jsonl" in report["missing_raw_evidence_artifacts"]
+    assert "artifacts/routing_response_decoded.jsonl" in report["missing_raw_evidence_artifacts"]
     assert "artifacts/planning_topic_debug.jsonl" in report["missing_raw_evidence_artifacts"]
     assert "artifacts/control_apply_trace.jsonl" in report["missing_raw_evidence_artifacts"]
 
@@ -72,6 +74,60 @@ def test_claim_profile_with_raw_evidence_can_pass_artifact_check(tmp_path: Path)
     _rewrite_json(manifest_path, manifest)
     artifacts_dir = run_dir / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
+    (run_dir / "route.json").write_text(
+        json.dumps({"route_id": "lane097", "points": []}) + "\n",
+        encoding="utf-8",
+    )
+    raw_files = [
+        "topic_publish_stats.jsonl",
+        "publish_gap_trace.jsonl",
+        "routing_event_debug.jsonl",
+        "planning_topic_debug.jsonl",
+        "planning_route_segment_debug.jsonl",
+        "control_apply_trace.jsonl",
+        "control_decode_debug.jsonl",
+        "apollo_hdmap_projection.jsonl",
+    ]
+    for name in raw_files:
+        (artifacts_dir / name).write_text("{}\n", encoding="utf-8")
+    (artifacts_dir / "routing_response_decoded.jsonl").write_text(
+        json.dumps(
+            {
+                "status": "pass",
+                "lane_segment_count": 1,
+                "lane_segments": [{"lane_id": "lane_1", "start_s": 0.0, "end_s": 1.0}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifacts_dir / "routing_response_decoded.json").write_text(
+        json.dumps({"lane_segments": [{"lane_id": "lane_1", "start_s": 0.0, "end_s": 1.0}]}),
+        encoding="utf-8",
+    )
+
+    report = check_run_artifact_completeness(run_dir)
+
+    assert report["status"] == "pass"
+    assert report["artifact_complete"] is True
+    assert report["raw_evidence_complete"] is True
+    assert report["missing_raw_evidence_artifacts"] == []
+
+
+def test_claim_profile_stale_routing_response_jsonl_does_not_pass_artifact_check(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["claim_profile"] = True
+    _rewrite_json(manifest_path, manifest)
+    artifacts_dir = run_dir / "artifacts"
+    artifacts_dir.mkdir(exist_ok=True)
+    (run_dir / "route.json").write_text(
+        json.dumps({"route_id": "lane097", "points": []}) + "\n",
+        encoding="utf-8",
+    )
     raw_files = [
         "topic_publish_stats.jsonl",
         "publish_gap_trace.jsonl",
@@ -85,16 +141,35 @@ def test_claim_profile_with_raw_evidence_can_pass_artifact_check(tmp_path: Path)
     for name in raw_files:
         (artifacts_dir / name).write_text("{}\n", encoding="utf-8")
     (artifacts_dir / "routing_response_decoded.json").write_text(
-        json.dumps({"lane_segments": [{"lane_id": "lane_1", "start_s": 0.0, "end_s": 1.0}]}),
+        json.dumps(
+            {
+                "status": "pass",
+                "lane_segment_count": 1,
+                "lane_segments": [{"lane_id": "lane_1", "start_s": 0.0, "end_s": 1.0}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifacts_dir / "routing_response_decoded.jsonl").write_text(
+        json.dumps(
+            {
+                "message_count": 0,
+                "source": "/apollo/routing_response",
+                "status": "insufficient_data",
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
 
     report = check_run_artifact_completeness(run_dir)
 
-    assert report["status"] == "pass"
-    assert report["artifact_complete"] is True
-    assert report["raw_evidence_complete"] is True
-    assert report["missing_raw_evidence_artifacts"] == []
+    assert report["status"] == "insufficient_data"
+    assert report["raw_evidence_complete"] is False
+    assert "artifacts/routing_response_decoded.jsonl:lane_segments_missing" in report[
+        "missing_raw_evidence_artifacts"
+    ]
 
 
 def test_artifact_completeness_report_writer_creates_json_and_markdown(tmp_path: Path) -> None:

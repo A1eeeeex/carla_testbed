@@ -30,6 +30,7 @@ python tools/export_apollo_hdmap_projection.py \
   --map-dir /apollo/modules/map/data/carla_town01 \
   --base-map-filename base_map.txt \
   --map-name Town01 \
+  --max-samples 250 \
   --analyze
 ```
 
@@ -39,6 +40,9 @@ The wrapper reads the actual Apollo-map localization samples from
 `$RUN/artifacts/apollo_hdmap_projection.jsonl`. `map_xysl` is acceptable for
 `source="apollo_hdmap_api"` because its source calls Apollo HDMap
 `HDMapUtil::BaseMap().GetNearestLane()` and lane heading APIs.
+`--max-samples` is bounded and spread across the source window; avoid
+`--max-samples 0` for normal online validation because it projects every
+localization row and can spend the per-row timeout on off-map samples.
 
 If this command fails, keep projection evidence as `insufficient_data`; do not
 substitute CARLA waypoint projection or bridge-side nearest-lane diagnostics for

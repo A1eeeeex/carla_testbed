@@ -45,7 +45,14 @@ def analyze_chassis_gt_contract_files(
     if root is not None:
         timeseries_path = timeseries_path or _find_first(
             root,
-            ("timeseries.csv", "timeseries.jsonl", "artifacts/timeseries.csv", "artifacts/timeseries.jsonl"),
+            (
+                "artifacts/debug_timeseries.csv",
+                "debug_timeseries.csv",
+                "timeseries.csv",
+                "timeseries.jsonl",
+                "artifacts/timeseries.csv",
+                "artifacts/timeseries.jsonl",
+            ),
         )
         channel_stats_path = channel_stats_path or _find_first(
             root,

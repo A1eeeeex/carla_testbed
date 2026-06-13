@@ -43,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
                 "status": report["status"],
                 "claim_grade": report["claim_grade"],
                 "blocking_reasons": report.get("blocking_reasons") or [],
+                "insufficient_reasons": report.get("insufficient_reasons") or [],
                 "warnings": report.get("warnings") or [],
                 "outputs": outputs,
             },

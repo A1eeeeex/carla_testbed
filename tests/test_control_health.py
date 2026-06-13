@@ -152,7 +152,7 @@ def test_control_apply_trace_without_command_payload_is_not_control_evidence(
                     "timestamp": index * 0.05,
                     "apollo_raw": {"throttle": None, "brake": None, "steer": None},
                     "bridge_mapped": {"throttle": None, "brake": None, "steer": None},
-                    "carla_applied": {"throttle": None, "brake": None, "steer": None},
+                    "carla_applied": {"throttle": 0.1, "brake": 0.0, "steer": 0.0},
                 }
             )
             for index in range(3)
@@ -176,6 +176,7 @@ def test_control_apply_trace_without_command_payload_is_not_control_evidence(
     assert decode["available"] is True
     assert decode["trace_row_count"] == 3
     assert decode["command_payload_row_count"] == 0
+    assert decode["applied_payload_row_count"] == 3
     assert decode["no_command_placeholder_count"] == 3
     assert decode["command_payload_available"] is False
     assert "control_row_level_trace_no_command_payload" in report["warnings"]
@@ -416,6 +417,21 @@ def test_control_health_reads_simple_lon_debug_from_raw_control_dump(tmp_path: P
                         "debug_simple_lon_brake_cmd": 0.0 if index == 0 else 50.0,
                         "debug_simple_lon_path_remain": 30.0 if index == 0 else 0.5,
                         "debug_simple_lon_station_error": 3.0 if index == 0 else 0.1,
+                        "debug_simple_lon_current_matched_point_s": 20.0 if index == 0 else 0.2,
+                        "debug_simple_lon_current_matched_point_x": 10.0 if index == 0 else 0.0,
+                        "debug_simple_lon_current_matched_point_y": 1.0,
+                        "debug_simple_lon_current_matched_point_theta": 0.0,
+                        "debug_simple_lon_current_matched_point_kappa": 0.0,
+                        "debug_simple_lon_current_reference_point_s": 22.0 if index == 0 else 0.1,
+                        "debug_simple_lon_current_reference_point_x": 11.0 if index == 0 else 0.0,
+                        "debug_simple_lon_current_reference_point_y": 1.0,
+                        "debug_simple_lon_current_reference_point_theta": 0.0,
+                        "debug_simple_lon_current_reference_point_kappa": 0.0,
+                        "debug_simple_lon_preview_reference_point_s": 24.0 if index == 0 else 0.3,
+                        "debug_simple_lon_preview_reference_point_x": 12.0 if index == 0 else 0.0,
+                        "debug_simple_lon_preview_reference_point_y": 1.0,
+                        "debug_simple_lon_preview_reference_point_theta": 0.0,
+                        "debug_simple_lon_preview_reference_point_kappa": 0.0,
                         "debug_simple_lon_is_full_stop": False,
                     },
                     "mapped_throttle_cmd": 1.0,
@@ -547,6 +563,17 @@ def test_control_health_reads_simple_lon_debug_from_raw_control_dump(tmp_path: P
     assert attribution["transition_count"] == 1
     assert attribution["transition_buckets"]["acceleration_cmd_sign_flip"] == 1
     assert attribution["transition_buckets"]["path_remain_large_drop"] == 1
+    assert attribution["transition_buckets"]["matched_point_s_large_jump"] == 1
+    assert attribution["transition_buckets"]["matched_point_xy_large_jump"] == 1
+    assert attribution["transition_buckets"]["reference_point_s_large_jump"] == 1
+    assert attribution["transition_buckets"]["reference_point_xy_large_jump"] == 1
+    assert attribution["transition_buckets"]["preview_reference_point_s_large_jump"] == 1
+    assert attribution["transition_buckets"]["preview_reference_point_xy_large_jump"] == 1
+    assert "matched_or_reference_point_jump" in attribution["suspected_factors"]
+    example = attribution["examples"][0]
+    assert example["matched_point"]["s_m"] == [20.0, 0.2]
+    assert example["current_reference_point"]["x"] == [11.0, 0.0]
+    assert example["preview_reference_point"]["x"] == [12.0, 0.0]
     assert attribution["dominant_suspected_factor"] == "apollo_simple_lon_acceleration_cmd_sign_switching"
     correlation = report["metrics"]["control_decode_debug"]["trajectory_consume_correlation"]
     assert correlation["available"] is True
@@ -562,6 +589,20 @@ def test_control_health_reads_simple_lon_debug_from_raw_control_dump(tmp_path: P
     assert planning["transition_buckets"]["trajectory_last_point_jump_gt_5m"] == 1
     assert planning["transition_buckets"]["speed_fallback_involved"] == 1
     assert planning["dominant_suspected_factor"] == "planning_trajectory_length_switching"
+    assert report["control_semantics_primary_factor"] == "planning_trajectory_length_switching"
+    assert "planning_trajectory_length_switching" in report["control_semantics_suspected_factors"]
+    assert (
+        report["control_semantics_evidence"]["dominant_by_source"][
+            "longitudinal_oscillation_attribution"
+        ]
+        == "apollo_simple_lon_acceleration_cmd_sign_switching"
+    )
+    assert (
+        report["control_semantics_evidence"]["dominant_by_source"][
+            "trajectory_consume_correlation"
+        ]
+        == "planning_sequence_update_correlates_with_switches"
+    )
     assert (
         planning["examples"][0]["planning_trajectory"]["trajectory_type"]
         == ["NORMAL", "SPEED_FALLBACK"]
@@ -584,6 +625,67 @@ def test_control_health_reads_simple_lon_debug_from_raw_control_dump(tmp_path: P
     assert "apollo_control_oversamples_gt_state" in report["warnings"]
     assert "gt_state_wall_rate_low_relative_to_control" in report["warnings"]
     assert "apollo_control_current_acceleration_spiky" in report["warnings"]
+
+
+def test_control_health_accepts_live_control_trajectory_consume_debug(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    (artifact_dir / "control_decode_debug.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "raw_control_msg_dump": {
+                        "control_header_sequence_num": index + 10,
+                        "throttle": 100.0 if index == 0 else 0.0,
+                        "brake": 0.0 if index == 0 else 40.0,
+                        "debug_simple_lon_acceleration_cmd": 0.5 if index == 0 else -0.5,
+                        "debug_simple_lon_throttle_cmd": 80.0 if index == 0 else 0.0,
+                        "debug_simple_lon_brake_cmd": 0.0 if index == 0 else 40.0,
+                        "debug_simple_lon_current_speed": 2.0,
+                        "debug_simple_lon_speed_reference": 4.0 if index == 0 else 1.0,
+                        "debug_simple_lon_speed_error": 2.0 if index == 0 else -1.0,
+                    },
+                    "mapped_throttle_cmd": 1.0 if index == 0 else 0.0,
+                    "mapped_brake_cmd": 0.0 if index == 0 else 0.4,
+                    "mapped_carla_steer_cmd": 0.0,
+                }
+            )
+            for index in range(2)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifact_dir / "control_trajectory_consume_debug_live.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "planning_header_sequence_num_used": 100 + index,
+                    "latest_planning_trajectory_point_count": 120 - index,
+                    "effective_planning_source": "matched_seq",
+                    "control_input_candidate_source": "primary",
+                    "latest_planning_msg_age_ms": 30.0 + index,
+                    "trajectory_first_point_relative_time": 0.0,
+                    "trajectory_last_point_relative_time": 7.0 - index,
+                }
+            )
+            for index in range(2)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+    correlation = report["metrics"]["control_decode_debug"]["trajectory_consume_correlation"]
+
+    assert report["source"]["control_trajectory_consume_path"].endswith(
+        "control_trajectory_consume_debug_live.jsonl"
+    )
+    assert correlation["available"] is True
+    assert correlation["path"].endswith("control_trajectory_consume_debug_live.jsonl")
+    assert correlation["transition_buckets"]["planning_sequence_changed"] == 1
 
 
 def test_control_health_brake_throttle_conflict_fails(tmp_path: Path) -> None:
@@ -1299,6 +1401,11 @@ def test_control_health_prefers_control_apply_trace_jsonl_for_row_level_evidence
                     "control_latency_ms": 10.0 * (index + 1),
                     "control_message_age_ms": 5.0,
                     "planning_message_age_ms": 7.0,
+                    "apollo_control": {
+                        "header_sequence_num": index + 1,
+                        "header_timestamp_sec": 9.0 + index,
+                        "rx_timestamp": 9.5 + index,
+                    },
                     "apollo_raw": {"throttle": 0.2, "brake": 0.0, "steer": 0.0},
                     "bridge_mapped": {
                         "throttle": 0.2,
@@ -1315,17 +1422,120 @@ def test_control_health_prefers_control_apply_trace_jsonl_for_row_level_evidence
         + "\n",
         encoding="utf-8",
     )
+    (artifact_dir / "control_decode_debug.jsonl").write_text(
+        json.dumps(
+            {
+                "parsed_control": {
+                    "throttle": 1.0,
+                    "brake": 1.0,
+                    "steer": 1.0,
+                },
+                "raw_control_msg_dump": {
+                    "control_header_sequence_num": 1,
+                    "debug_simple_lon_current_speed": 2.0,
+                    "debug_simple_lon_speed_reference": 5.0,
+                    "debug_simple_lon_speed_error": 3.0,
+                    "debug_simple_lon_acceleration_cmd": 0.7,
+                    "debug_simple_lon_throttle_cmd": 70.0,
+                    "debug_simple_lon_brake_cmd": 0.0,
+                    "debug_simple_lon_path_remain": 12.0,
+                    "debug_simple_lon_station_error": 1.5,
+                },
+                "output_to_carla": {"throttle": 1.0, "brake": 1.0, "steer": 1.0},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     report = analyze_control_health_run_dir(run_dir)
     decode = report["metrics"]["control_decode_debug"]
 
+    assert report["source"]["control_decode_debug_path"].endswith("control_decode_debug.jsonl")
     assert report["source"]["control_apply_trace_path"].endswith("control_apply_trace.jsonl")
     assert report["source"]["control_row_level_trace_path"].endswith("control_apply_trace.jsonl")
+    assert report["raw_mapped_applied_control_source"] == "control_apply_trace_plus_timeseries"
     assert decode["available"] is True
     assert decode["path"].endswith("control_apply_trace.jsonl")
     assert decode["trace_row_count"] == 2
     assert decode["nonzero_mapped_control_frames"] == 2
     assert decode["control_latency_p95_ms"] == 19.5
+    sequence = decode["control_sequence_diagnostics"]
+    assert sequence["rows_with_sequence_count"] == 2
+    assert sequence["unique_sequence_count"] == 2
+    assert sequence["duplicate_sequence_ratio"] == 0.0
+    assert decode["auxiliary_context_path"].endswith("control_decode_debug.jsonl")
+    assert decode["auxiliary_context_enriched_rows"] == 1
+    longitudinal = decode["longitudinal_debug"]
+    assert longitudinal["available"] is True
+    assert longitudinal["available_counts"]["debug_simple_lon_speed_reference_mps"] == 1
+    assert longitudinal["stats"]["debug_simple_lon_throttle_cmd_pct"]["max"] == 70.0
     assert decode["throttle_brake_mutual_exclusion_applied_count"] == 1
     assert decode["apollo_raw_command_layer"]["status"] == "pass"
     assert decode["bridge_mapped_command_layer"]["status"] == "pass"
+    layers = report["metrics"]["oscillation_decomposition"]["layers"]
+    assert layers["apollo_raw_command"]["source"] == "control_apply_trace.jsonl"
+    assert layers["bridge_mapped_command"]["source"] == "control_apply_trace.jsonl"
+
+
+def test_control_health_reports_command_switches_by_unique_control_sequence(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    csv_path = run_dir / "timeseries.csv"
+    rows = _read_csv(csv_path)
+    for row in rows:
+        for field in (
+            "throttle_raw",
+            "brake_raw",
+            "throttle_mapped",
+            "brake_mapped",
+            "bridge_steer_mapped",
+        ):
+            row[field] = ""
+    _write_csv(csv_path, rows)
+
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    payloads = [
+        {
+            "schema_version": "control_apply_trace.v1",
+            "timestamp": 10.0,
+            "apollo_control": {"header_sequence_num": 10},
+            "apollo_raw": {"throttle": 0.5, "brake": 0.0, "steer": 0.0},
+            "bridge_mapped": {"throttle": 0.5, "brake": 0.0, "steer": 0.0},
+            "carla_applied": {"throttle": 0.5, "brake": 0.0, "steer": 0.0},
+        },
+        {
+            "schema_version": "control_apply_trace.v1",
+            "timestamp": 10.05,
+            "apollo_control": {"header_sequence_num": 10},
+            "apollo_raw": {"throttle": 0.5, "brake": 0.0, "steer": 0.0},
+            "bridge_mapped": {"throttle": 0.5, "brake": 0.0, "steer": 0.0},
+            "carla_applied": {"throttle": 0.5, "brake": 0.0, "steer": 0.0},
+        },
+        {
+            "schema_version": "control_apply_trace.v1",
+            "timestamp": 10.10,
+            "apollo_control": {"header_sequence_num": 11},
+            "apollo_raw": {"throttle": 0.0, "brake": 0.4, "steer": 0.0},
+            "bridge_mapped": {"throttle": 0.0, "brake": 0.4, "steer": 0.0},
+            "carla_applied": {"throttle": 0.0, "brake": 0.4, "steer": 0.0},
+        },
+    ]
+    (artifact_dir / "control_apply_trace.jsonl").write_text(
+        "\n".join(json.dumps(payload) for payload in payloads) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+    sequence = report["metrics"]["control_decode_debug"]["control_sequence_diagnostics"]
+
+    assert sequence["command_payload_row_count"] == 3
+    assert sequence["rows_with_sequence_count"] == 3
+    assert sequence["unique_sequence_count"] == 2
+    assert sequence["duplicate_sequence_ratio"] == pytest.approx(1 / 3)
+    assert sequence["raw_throttle_brake_switch_count_rows"] == 1
+    assert sequence["raw_throttle_brake_switch_count_unique_sequence"] == 1
+    assert sequence["mapped_throttle_brake_switch_count_unique_sequence"] == 1
+    assert sequence["applied_throttle_brake_switch_count_unique_sequence"] == 1

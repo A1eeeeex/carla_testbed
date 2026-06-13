@@ -264,8 +264,34 @@ Outputs:
 This report compares route curvature, reference-line curvature, Apollo planning
 first-point kappa, target-point kappa, source steer, matched/target point
 distance, mapped/applied steer, yaw-rate response, cross-track error, and
-heading error. It uses `suspected_layer` plus `confidence`, not a definitive
-root-cause claim.
+heading error. When a localization contract provides
+`hdmap_route_lateral_consistency`, the report also records whether official
+Apollo HDMap `projection_l` matches CARLA route cross-track; a high lateral
+error in that case becomes a warning-level lateral semantics anomaly such as
+`actual_lateral_drift_matches_hdmap_projection`, not a hard pass or an absolute
+root-cause claim. If CARLA route / Apollo HDMap lateral error is high while
+Apollo `simple_lat` lateral error and source steer stay near zero, the report
+emits `route_lateral_high_but_simple_lat_and_source_steer_near_zero`; this
+narrows the next audit toward target/reference/simple-lat semantics, not toward
+blind steer-scale tuning. If Apollo `simple_lon_current_station` is also far
+from `route_s`, it emits `simple_lat_station_frame_not_route_s_aligned`; this
+does not require Apollo station to use global route coordinates, but it prevents
+operators from treating local `simple_lat` near-zero error as proof that
+route-level lateral tracking is healthy. If the Apollo matched point is close
+to ego while the configured route centerline is far from that matched point, it
+emits `matched_point_tracks_ego_not_route_centerline`; this is a coordinate /
+reference evidence pattern that should be audited before changing control
+mapping. When `apollo_reference_line_contract_report.json` reports non-empty
+Planning but zero reference-line debug count or provider-not-ready state, the
+lateral report emits `planning_nonempty_but_reference_line_debug_missing`;
+this keeps the claim boundary clear between trajectory materialization and
+claim-grade reference-line evidence. It also emits `drift_window_summary`,
+including phase
+snapshots for start, first-high-lateral, max-lateral, and end route points,
+plus local context windows with source steer, mapped/applied steer,
+matched/target point distance, Apollo `simple_lat` lateral error, kappa,
+heading, and yaw-rate statistics. It uses `suspected_layer` plus `confidence`,
+not a definitive root-cause claim.
 
 Important caveats:
 

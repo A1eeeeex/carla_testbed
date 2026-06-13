@@ -128,14 +128,27 @@ def analyze_apollo_module_consumption(
         blocking.append("routing_response_not_consumed_by_planning")
     if routing_consumed is None and _route_establishment_false(planning_materialization):
         blocking.append("routing_response_consumption_unconfirmed")
-    if int(empty_reason_histogram.get("reference_line_provider_not_ready", 0) or 0) > 0:
-        blocking.append("reference_line_provider_not_ready_empty_planning")
+    reference_line_not_ready_count = int(
+        empty_reason_histogram.get("reference_line_provider_not_ready", 0) or 0
+    )
+    if reference_line_not_ready_count > 0:
+        if _route_establishment_true(planning_materialization) and planning_materialization.get("verdict") == "pass":
+            warnings.append("reference_line_provider_not_ready_empty_planning_transient")
+        else:
+            blocking.append("reference_line_provider_not_ready_empty_planning")
     if pattern_counts["localization_timeout"] or pattern_counts["chassis_timeout"]:
         blocking.append("planning_input_timeout_logs_present")
+    route_reference_logs_are_transient = _materialized_after_route(planning_materialization)
     if pattern_counts["reference_line_provider_failure"]:
-        blocking.append("reference_line_provider_failure_logs_present")
+        if route_reference_logs_are_transient:
+            warnings.append("reference_line_provider_failure_logs_transient")
+        else:
+            blocking.append("reference_line_provider_failure_logs_present")
     if pattern_counts["route_or_reference_line_failure"]:
-        blocking.append("route_or_reference_line_failure_logs_present")
+        if route_reference_logs_are_transient:
+            warnings.append("route_or_reference_line_failure_logs_transient")
+        else:
+            blocking.append("route_or_reference_line_failure_logs_present")
     freshness = planning_materialization.get("input_freshness_attribution")
     if isinstance(freshness, Mapping) and freshness.get("status") == "insufficient_data":
         warnings.append("planning_input_freshness_unverified")
@@ -219,6 +232,24 @@ def write_apollo_module_consumption_report(report: Mapping[str, Any], out_dir: s
         "apollo_module_consumption_report": str(json_path),
         "apollo_module_consumption_summary": str(summary_path),
     }
+
+
+def _materialized_after_route(planning_materialization: Mapping[str, Any]) -> bool:
+    if planning_materialization.get("verdict") != "pass":
+        return False
+    route_establishment = planning_materialization.get("route_establishment")
+    if not isinstance(route_establishment, Mapping):
+        return False
+    if route_establishment.get("route_established") is not True:
+        return False
+    after_routing_ratio = _num(route_establishment.get("planning_nonempty_after_routing_success_ratio"))
+    if after_routing_ratio is not None and after_routing_ratio < 0.95:
+        return False
+    latency_s = _num(
+        route_establishment.get("first_nonempty_after_routing_latency_s")
+        or planning_materialization.get("first_nonempty_after_routing_latency_s")
+    )
+    return latency_s is None or latency_s <= 1.0
 
 
 def apollo_module_consumption_summary_md(report: Mapping[str, Any]) -> str:
@@ -343,6 +374,13 @@ def _route_establishment_false(planning_materialization: Mapping[str, Any]) -> b
         reasons = planning_materialization.get("blocking_reasons")
         if isinstance(reasons, list):
             return "route_establishment_not_confirmed" in {str(item) for item in reasons}
+    return False
+
+
+def _route_establishment_true(planning_materialization: Mapping[str, Any]) -> bool:
+    route_establishment = planning_materialization.get("route_establishment")
+    if isinstance(route_establishment, Mapping):
+        return route_establishment.get("route_established") is True
     return False
 
 

@@ -222,6 +222,7 @@ python tools/export_apollo_hdmap_projection.py \
   --map-dir /apollo/modules/map/data/carla_town01 \
   --base-map-filename base_map.txt \
   --map-name Town01 \
+  --max-samples 250 \
   --analyze
 
 python tools/analyze_apollo_hdmap_projection.py \
@@ -239,6 +240,22 @@ bridge nearest-lane diagnostics for claim-grade projection evidence.
 Use bounded sampling and a per-sample timeout for online runs. A timed-out
 `map_xysl` call should become a row with `status="error"` /
 `command_timeout=true`, not a skipped row and not a pass.
+
+When `localization_contract_report.json` has both official HDMap projection
+rows and CARLA route `cross_track_error`, it also reports
+`hdmap_route_lateral_consistency`. If Apollo HDMap `projection_l` matches CARLA
+route cross-track after the expected sign convention, the high lateral error is
+more likely actual closed-loop lateral drift / route tracking evidence than a
+static frame-transform or lane-namespace mismatch. This attribution does not
+turn a high-lateral projection into a pass; it only narrows the next debugging
+layer.
+`natural_driving_report.json` should keep the run non-claimable and use
+`failure_reason=actual_lateral_drift_matches_hdmap_projection` for this narrow
+case, while `apollo_link_health_report.json` should surface the same condition
+as `natural_driving_outcome:actual_lateral_drift_matches_hdmap_projection`.
+This is an attribution refinement, not a pass condition: the localization and
+HDMap projection layers remain blocking until lateral error is within gate
+thresholds.
 
 `analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json` is a
 projection evidence report only. A `pass` result can support
@@ -452,7 +469,7 @@ python tools/analyze_route_health.py --run-dir "$RUN"
 python tools/analyze_apollo_localization_contract.py \
   --run-dir "$RUN" \
   --frame-transform configs/town01/apollo_frame_transform.example.yaml \
-  --vehicle-reference configs/vehicles/ego_vehicle_reference.example.yaml \
+  --vehicle-reference configs/vehicles/ego_vehicle_reference.verified.yaml \
   --out "$RUN/analysis/localization_contract"
 cat "$RUN/analysis/localization_contract/localization_contract_summary.md"
 cat "$RUN/analysis/route_health/route_health_summary.md"
@@ -516,7 +533,8 @@ Claim-grade localization requires:
   `apollo_lateral_semantics_report.json` for curve conclusions.
 
 Non-claim-grade localization modes include `confidence: assumed` vehicle
-reference, stale timestamp republish counted as fresh samples, diagnostic
+reference, using `configs/vehicles/ego_vehicle_reference.example.yaml` for a
+hard-gate claim, stale timestamp republish counted as fresh samples, diagnostic
 nearest-lane projection only, missing `apollo_hdmap_projection.jsonl`, and
 missing `apollo_reference_line_contract_report.json`. These modes may still be
 useful diagnostics, but they must keep the natural-driving verdict at

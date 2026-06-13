@@ -510,23 +510,23 @@ def discover_route_health_run_inputs(run_dir: str | Path) -> dict[str, Any]:
                     break
             if route_path is not None:
                 break
-    if route_path is None:
-        for payload in (manifest, config, summary):
-            for key, value in _inline_route_candidates(payload):
-                inline_route_payload = value
-                inline_route_source_key = key
+    for payload in (manifest, config, summary):
+        for key, value in _inline_route_candidates(payload):
+            inline_route_payload = value
+            inline_route_source_key = key
+            if route_path is None:
                 route_source = ROUTE_SOURCE_INLINE_ROUTE
-                break
-            if inline_route_payload is not None:
-                break
-    if route_path is None and inline_route_payload is None:
-        for key, trace, source_payload in _route_trace_candidates(manifest, summary):
-            if isinstance(trace, list) and len(trace) >= 2:
-                route_trace_payload = trace
-                route_trace_source_key = key
-                route_trace_source_payload = source_payload
+            break
+        if inline_route_payload is not None:
+            break
+    for key, trace, source_payload in _route_trace_candidates(manifest, summary):
+        if isinstance(trace, list) and len(trace) >= 2:
+            route_trace_payload = trace
+            route_trace_source_key = key
+            route_trace_source_payload = source_payload
+            if route_path is None and inline_route_payload is None:
                 route_source = ROUTE_SOURCE_MANIFEST_ROUTE_TRACE
-                break
+            break
     return {
         "run_dir": root,
         "manifest_path": manifest_path,
@@ -922,8 +922,14 @@ def analyze_route_health_run_dir(
     if bridge_control_decode_path is not None:
         bridge_rows = load_bridge_control_decode_rows(bridge_control_decode_path)
     analysis_rows = None if rows is None and not bridge_rows else [*(rows or []), *bridge_rows]
+    route_load_error: str | None = None
     if route_path is not None:
-        route = load_route_json(route_path)
+        try:
+            route = load_route_json(route_path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            route_load_error = f"{type(exc).__name__}: {exc}"
+            route = None
+    if route is not None:
         report = analyze_route_health(
             route,
             analysis_rows,
@@ -979,6 +985,9 @@ def analyze_route_health_run_dir(
             report = build_insufficient_route_health_report(inputs)
     else:
         report = build_insufficient_route_health_report(inputs)
+    if route_load_error:
+        report.setdefault("warnings", []).append(f"route_artifact_invalid: {route_load_error}")
+        report.setdefault("source", _source_payload(inputs))["route_load_error"] = route_load_error
     if bridge_rows and report.get("verdict", {}).get("status") != "insufficient_data":
         report.setdefault("warnings", []).append("control semantics enriched from bridge_control_decode.jsonl")
     _enrich_apollo_semantics_from_summary(report, summary)

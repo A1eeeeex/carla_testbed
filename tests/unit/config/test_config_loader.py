@@ -184,3 +184,18 @@ backend:
     cfg = load_config(config_path)
 
     assert cfg.run.output_root == "runs/from-env/${CARLA_TESTBED_UNSET_OUTPUT}"
+
+
+def test_town01_materialization_probe_starts_carla_for_online_reproducibility() -> None:
+    cfg = load_config(
+        REPO_ROOT
+        / "configs"
+        / "io"
+        / "examples"
+        / "town01_apollo_route_materialization_probe.yaml"
+    )
+
+    runtime_carla = ((cfg.backend.params.get("legacy_runtime") or {}).get("carla") or {})
+
+    assert runtime_carla.get("start") is True
+    assert runtime_carla.get("extra_args") == "--ros2"

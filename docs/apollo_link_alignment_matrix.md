@@ -35,10 +35,20 @@ you need a short routing-contract probe. It is not long enough to evaluate
 route materialization if startup delay dominates.
 
 Use `configs/io/examples/town01_apollo_route_materialization_probe.yaml` for
-the first online materialization sample. It keeps fallback disabled and runs
-`max_ticks=600` at `fixed_dt_s=0.05`, giving a 30 second diagnostic window for
-routing response, HDMap projection, Planning materialization, and Control
-handoff evidence.
+the first online materialization sample. It keeps automatic fallback disabled
+but explicitly sends Apollo 10's lane-follow external command, because Planning
+uses `/apollo/external_command/lane_follow` plus `/apollo/routing_response` to
+construct a planning command. The probe runs `max_ticks=600` at
+`fixed_dt_s=0.05`, giving a 30 second diagnostic window for routing response,
+HDMap projection, Planning materialization, and Control handoff evidence.
+It is self-contained for online reproduction and sets `runtime.carla.start=true`;
+set `--override runtime.carla.start=false` only when intentionally reusing an
+already-running CARLA server and record that choice in the run notes.
+In this profile, disabling startup routing and long-goal rerouting means the
+bridge should record `routing_phase=claim` and
+`routing_request_kind=claim_route` in `artifacts/routing_event_debug.jsonl`.
+If the event is recorded as `long_phase_route`, the run is diagnostic only
+because it no longer proves the scenario route was the Apollo route under test.
 
 If the materialization probe still produces only empty Planning trajectories,
 diagnose in this order: routing response decoded evidence, Apollo HDMap

@@ -70,6 +70,28 @@ latency, actuator mapping mode, calibration profile, steering sign/scale, and
 apply-cadence diagnostics in the same row. This lets the handoff and
 control-health analyzers attribute breakpoints without smoothing away the raw
 source command.
+When available, each row also records Apollo control header sequence and
+timestamp metadata under `apollo_control`. `control_health_report.json` reports
+both row-level throttle/brake switch counts and switch counts compressed by
+unique `header_sequence_num`; this is how operators tell repeated application
+of one command apart from genuinely oscillating Apollo `/control` output.
+If `control_apply_trace.jsonl` is the primary raw/mapped/applied trace but does
+not yet contain Apollo `simple_lon` debug context, `control_health_report.json`
+may read `control_decode_debug.jsonl` as an auxiliary source for longitudinal
+source-control semantics only. That auxiliary source must not replace the
+primary raw -> mapped -> applied evidence chain.
+`control_trajectory_consume_debug.jsonl` and the live variant
+`control_trajectory_consume_debug_live.jsonl` are both accepted as planning
+handoff correlation evidence. They let the report distinguish command switching
+caused by planning sequence/trajectory updates from switching that happens
+inside the same consumed trajectory.
+`control_health_report.json` also exposes the same evidence through
+`control_semantics_primary_factor`, `control_semantics_suspected_factors`, and
+`control_semantics_evidence` so `apollo_link_health_report.json` can surface
+the highest-value control diagnostic target without reimplementing the nested
+debug parsing. These fields are diagnostic summaries only; they do not override
+localization, HDMap projection, reference-line, control-handoff, or
+natural-driving gates.
 Trace-file presence alone is not control evidence. Rows whose raw, mapped, and
 applied command fields are all null are treated as no-command placeholders; they
 can document that the bridge loop ran, but they cannot clear raw/mapped/applied

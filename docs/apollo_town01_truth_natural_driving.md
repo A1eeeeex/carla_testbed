@@ -540,6 +540,14 @@ any tuning claim:
 - vehicle response oscillation;
 - bridge apply cadence / same-frame drop / sync-tick issues.
 
+If Apollo simple_lon or planning-consume debug evidence is available, the report
+also exposes `control_semantics_primary_factor`,
+`control_semantics_suspected_factors`, and `control_semantics_evidence`. These
+fields help identify whether the next check should focus on same-trajectory
+longitudinal switching, matched/reference-point jumps, speed-reference jumps,
+or planning trajectory changes. They do not convert a run into a natural-driving
+pass and they do not override localization/reference-line/HDMap blockers.
+
 Low bridge apply cadence or high same-frame drop should be treated as an apply
 scheduling problem first. Do not smooth, clamp, or tune controls to hide a
 localization or reference-line contract failure. Legacy mapping remains
@@ -569,6 +577,19 @@ steer, and yaw-rate response. It is the preferred artifact when a run shows
 first-high-steer, matched-point-too-large, target-point jumps, or high kappa on
 a straight reference. Its output is a suspected layer with confidence; it is
 not a license to change `steer_scale` or declare Apollo algorithm limitation.
+For the current Town01 lane-keep diagnosis, also compare external
+`cross_track_error` / official HDMap `projection_l` with Apollo
+`simple_lat` lateral error. If the external lateral drift is high but
+`apollo_simple_lat_lateral_error_abs_p95` and source steer stay near zero, the
+claim remains blocked and the next audit should focus on reference/target/simple
+lat semantics rather than masking the symptom in the bridge. If
+`route_s_vs_apollo_current_station_abs_delta_p95` is large, document that Apollo
+control debug station is a local planning/control coordinate and must not be
+used as a substitute for route-level or HDMap projection lateral evidence.
+Likewise, when `ego_to_apollo_matched_point_xy_distance_p95` is low but
+`route_to_apollo_matched_point_xy_distance_p95` is high, treat the run as a
+reference/target semantics audit case; do not claim route-level lane keeping
+from the local matched-point error alone.
 
 Calibration belongs here. It explains control-actuation behavior; it does not
 replace route-health or shadow-mode evidence.
@@ -635,6 +656,12 @@ Required run artifacts:
 
 - `manifest.json`, `config.resolved.yaml`, `summary.json`, `timeseries.csv` or
   `timeseries.jsonl`, and `events.jsonl`.
+- `route.json` for claim/materialization profiles. If a route is reconstructed
+  only from timeseries fields, it remains diagnostic and cannot establish route
+  identity for a hard gate. A `route_stub.v1` file with an empty `points` list
+  is source-trace metadata only; route-health may fall back to manifest
+  `route_trace` or timeseries diagnostics, but the stub itself is not
+  claim-grade route geometry.
 - `manifest.json` must show `typed_config_loaded=true` and
   `legacy_fallback_used=false` for claim-grade runs. If a claim profile falls
   back to the legacy runner, the run is diagnostic-only even if Apollo channels
@@ -660,7 +687,11 @@ Required run artifacts:
 - `analysis/chassis_gt_contract/chassis_gt_contract_report.json`. The report
   must be claim-grade for no-interference Apollo claims; a healthy chassis
   channel alone is not enough because chassis speed, mode, gear, error code,
-  feedback, and timestamp alignment are Apollo input semantics.
+  feedback, and timestamp alignment are Apollo input semantics. If
+  `artifacts/debug_timeseries.csv` provides chassis/localization speed and
+  timestamp rows, postprocess may use it to avoid a stale
+  `chassis_runtime_samples_missing` diagnosis, but missing state fields still
+  keep the run non-claim-grade.
 - `analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json` when
   `artifacts/apollo_hdmap_projection.jsonl` is available; otherwise
   reference-line hard gates remain `insufficient_data`.
@@ -669,15 +700,39 @@ Required run artifacts:
   Routing output. A long warmup/debug route or mismatched Apollo route response
   blocks route establishment and cannot be hidden by later control activity.
   The preferred route response input is
-  `artifacts/routing_response_decoded.json` or
-  `artifacts/routing_response_decoded.jsonl`, decoded directly from
-  `/apollo/routing_response`. If this artifact is missing, older
+  `artifacts/routing_response_decoded.json` and
+  `artifacts/routing_response_decoded.jsonl`, decoded from an observed Apollo
+  `RoutingResponse`. In Apollo 10 raw-routing mode, the native routing module
+  emits `/apollo/raw_routing_response`; a bridge relay may forward that same
+  protobuf to the planning-facing `/apollo/routing_response` channel. This
+  relay is compatibility evidence only and must never be replaced by scenario
+  route synthesis. If the decoded artifact is missing, older
   Planning-derived route summaries are diagnostic fallback only and cannot
   create claim-grade route identity pass by themselves.
   The report also records `configured_scenario_route`, `last_routing_request`,
   `last_routing_response`, and `latest_planning_active_route_segment`; all four
   must identify the same claim route before lane-keep, curve, junction, or
   traffic-light behavior is interpreted as Apollo natural driving.
+  `configured_scenario_route` includes the route length source and internal
+  consistency status. Town01 route-health runs may preserve a legacy
+  `route_length_m` for corpus selection, but claim-grade route identity must
+  use `claim_route_length_m` / `route_trace_length_m`. If an older artifact has
+  only declared metadata length and it conflicts with the route trace s-span or
+  polyline length, `scenario_route_length_inconsistent` blocks the claim before
+  Apollo behavior is interpreted. In that case the next fix is route corpus /
+  scenario metadata alignment, not control tuning.
+  CARLA waypoint lane ids and Apollo HDMap lane ids are different namespaces.
+  If route length and start/goal are compatible but lane keys do not directly
+  match, missing official Apollo HDMap projection or explicit lane-equivalence
+  evidence should leave the route contract at `insufficient_data` with
+  `lane_equivalence_status=cross_namespace_unverified`. That is neither a
+  claim-grade behavior result nor a confirmed Apollo routing failure.
+  Claim-route `artifacts/scenario_goal.json` must also keep frame semantics
+  explicit: the top-level `goal` consumed by the bridge is Apollo map frame
+  (`frame="apollo_map"`), while `goal_raw_carla` is an audit copy of the CARLA
+  raw coordinate. A CARLA raw goal must not be handed to Apollo routing as the
+  claim goal; otherwise the bridge can clamp or snap a frame-mismatched target
+  and produce a route that is not the intended scenario route.
 - `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`.
   Fallback merges from planning/control/timeseries artifacts must be
   timestamp/as-of joins within the configured tolerance, not index joins.
@@ -693,12 +748,19 @@ Required run artifacts:
   for Planning/Control consumption evidence, input timeout patterns,
   reference-line provider failures, prediction-not-ready logs, and empty
   Planning attribution. Bridge-side publish evidence alone is insufficient.
+  Startup-only route/reference-line log patterns may be downgraded to warnings
+  only when `planning_materialization_report.json` shows route establishment
+  and stable after-routing non-empty Planning output; otherwise those log
+  patterns remain blocking.
 - `analysis/prediction_evidence/prediction_evidence_report.json`. Prediction
   may be `native_observed`, explicitly bypassed for a permitted static
   diagnostic case, or `not_required_for_case`; missing or unknown prediction
   state cannot silently pass the chain. Static lane-keep bypass with GT
   obstacles is diagnostic-only for natural-driving claim boundaries unless a
-  scenario-specific override explicitly downgrades the claim.
+  scenario-specific override explicitly downgrades the claim. Link-health may
+  refresh a stale `prediction_mode=unknown` placeholder from channel stats and
+  the replacement matrix, but the refreshed bypass remains non-claim-grade for
+  closed-loop natural driving.
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`.
 - `analysis/control_health/control_health_report.json`.
 - `analysis/apollo_link_health/apollo_link_health_report.json`.
@@ -720,6 +782,7 @@ python tools/export_apollo_hdmap_projection.py \
   --map-dir /apollo/modules/map/data/carla_town01 \
   --base-map-filename base_map.txt \
   --map-name Town01 \
+  --max-samples 250 \
   --analyze
 python tools/analyze_apollo_hdmap_projection.py \
   --projection "$RUN/artifacts/apollo_hdmap_projection.jsonl" \
@@ -801,9 +864,19 @@ Minimum pass thresholds for a claim-grade packet:
   `source=apollo_hdmap_api`, `ok_ratio >= 0.95`, heading `p95 < 0.05 rad`,
   lateral error `p95 < 0.50 m`, and lane-id compatibility with Planning
   `lane_id` or `target_lane_id` evidence.
+  Too few projection rows or too little projected route-s coverage is
+  `insufficient_data`, not a projection-quality failure; it still blocks
+  `can_claim_unassisted_natural_driving=true` until a longer or denser
+  claim-window artifact is generated.
 - `apollo_link_health_report.json` reports
   `can_claim_unassisted_natural_driving=true`, no primary blocker, and no
   missing hard-gate artifacts.
+- `apollo_link_health_report.json` may include an
+  `apollo_lateral_semantics` attribution layer when
+  `apollo_lateral_semantics_report.json` exists. A `warn` in that layer can
+  point the next debugging step toward target-point, reference-line,
+  control-mapping, or vehicle-response semantics, but it is not by itself a
+  no-interference pass or fail gate.
 - `assist_ledger.active_assists=[]`,
   `lateral_guard_apply_count=0`, and
   `trajectory_contract_guard_apply_count=0` or explicitly diagnostic
@@ -955,6 +1028,10 @@ ROS2, or CyberRT. It attempts to:
 When both legacy root-level reports and regenerated `analysis/...` reports
 exist, the evaluator prefers the standard `analysis/...` artifact. This avoids
 using stale root reports after a refreshed postprocess pass.
+`apollo_link_health` also accepts postprocess-local
+`analysis/natural_driving_postprocess/natural_driving_report.json` and selects
+the newest natural-driving report among known locations, so a refreshed
+postprocess pass is not masked by an older direct analyzer output.
 Route-contract postprocess must compare scenario and Apollo Routing XY in the
 Apollo map frame, not by directly comparing raw CARLA world coordinates. The
 report preserves `scenario_*_xy_carla` and writes transformed
@@ -1161,12 +1238,15 @@ diagnostic.
 
 Use `configs/io/examples/town01_apollo_route_materialization_probe.yaml` after a
 route-only smoke succeeds or when a one-tick typed-runtime sample only proves
-wiring. This profile keeps the same fallback-disabled route contract but runs
-`max_ticks=600` at `fixed_dt_s=0.05`, so startup delay, routing response,
-Planning materialization, HDMap projection, and Control handoff have a 30 second
-window to produce evidence. It is still diagnostic only; any natural-driving
-pass statement must cite `natural_driving_report.json` plus localization,
-HDMap/reference-line, channel, control, perception, and assist-ledger artifacts.
+wiring. This profile keeps automatic route fallback disabled, but it explicitly
+sends Apollo 10's lane-follow external command because Planning reports
+`planning_command not ready` when only a raw routing request/response is
+present. It runs `max_ticks=600` at `fixed_dt_s=0.05`, so startup delay, routing
+response, Planning materialization, HDMap projection, and Control handoff have a
+30 second window to produce evidence. It is still diagnostic only; any
+natural-driving pass statement must cite `natural_driving_report.json` plus
+localization, HDMap/reference-line, channel, control, perception, and
+assist-ledger artifacts.
 
 In claim or materialization profiles, fallback route generation is not allowed.
 `ego_seed_ahead`, `startup_short_ahead`,

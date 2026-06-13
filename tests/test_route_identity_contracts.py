@@ -72,6 +72,38 @@ def test_route_identity_inconsistent_blocks_claim() -> None:
     assert report["route_identity_issues"] == ["lane_sequence_mismatch"]
 
 
+def test_route_identity_preserves_scenario_route_length_source_and_consistency() -> None:
+    report = analyze_route_identity_from_route_contract(
+        _route_contract(
+            status="fail",
+            scenario_route_length_m=229.2,
+            scenario_route_length_source="declared_metadata",
+            scenario_route_declared_length_m=229.2,
+            scenario_route_claim_length_m=None,
+            scenario_route_legacy_length_m=229.2,
+            scenario_route_legacy_length_role="legacy_selection_straight_line_distance",
+            scenario_route_trace_length_m=388.4,
+            scenario_route_trace_length_source="route_trace_s_span",
+            scenario_route_length_consistency_status="inconsistent",
+            scenario_route_length_consistency_reason="declared_route_length_disagrees_with_route_trace",
+            route_identity_status="inconsistent",
+            route_identity={"status": "inconsistent", "issues": ["scenario_route_length_inconsistent"]},
+            blocking_reasons=["scenario_route_length_inconsistent", "route_identity_inconsistent"],
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["length_expected_m"] == 229.2
+    assert report["length_expected_source"] == "declared_metadata"
+    assert report["length_expected_declared_m"] == 229.2
+    assert report["length_expected_claim_m"] is None
+    assert report["length_expected_legacy_m"] == 229.2
+    assert report["length_expected_legacy_role"] == "legacy_selection_straight_line_distance"
+    assert report["length_expected_trace_m"] == 388.4
+    assert report["length_expected_consistency_status"] == "inconsistent"
+    assert "scenario_route_length_inconsistent" in report["blocking_reasons"]
+
+
 def test_routing_contract_requires_claim_route_materialized() -> None:
     report = analyze_routing_contract_from_route_contract(
         _route_contract(
@@ -87,6 +119,40 @@ def test_routing_contract_requires_claim_route_materialized() -> None:
 
     assert report["status"] == "fail"
     assert "claim_route_not_materialized" in report["blocking_reasons"]
+
+
+def test_routing_contract_preserves_scenario_route_length_source_and_consistency() -> None:
+    report = analyze_routing_contract_from_route_contract(
+        _route_contract(
+            status="fail",
+            scenario_route_length_m=229.2,
+            scenario_route_length_source="declared_metadata",
+            scenario_route_declared_length_m=229.2,
+            scenario_route_claim_length_m=None,
+            scenario_route_legacy_length_m=229.2,
+            scenario_route_legacy_length_role="legacy_selection_straight_line_distance",
+            scenario_route_trace_length_m=388.4,
+            scenario_route_trace_length_source="route_trace_s_span",
+            scenario_route_length_consistency_status="inconsistent",
+            scenario_route_length_consistency_reason="declared_route_length_disagrees_with_route_trace",
+            claim_route_contract={
+                "status": "fail",
+                "materialized": False,
+                "blocking_reasons": ["scenario_route_length_inconsistent"],
+            },
+            blocking_reasons=["scenario_route_length_inconsistent"],
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["scenario_route_length_m"] == 229.2
+    assert report["scenario_route_length_source"] == "declared_metadata"
+    assert report["scenario_route_claim_length_m"] is None
+    assert report["scenario_route_legacy_length_m"] == 229.2
+    assert report["scenario_route_legacy_length_role"] == "legacy_selection_straight_line_distance"
+    assert report["scenario_route_trace_length_m"] == 388.4
+    assert report["scenario_route_length_consistency_status"] == "inconsistent"
+    assert "scenario_route_length_inconsistent" in report["blocking_reasons"]
 
 
 def test_hdmap_projection_missing_is_insufficient_data() -> None:

@@ -122,6 +122,98 @@ def test_typed_transition_backend_uses_resolved_config_and_preserves_reports(
     assert routing["lane_segment_count"] == 1
 
 
+def test_transition_backend_syncs_valid_routing_response_into_report_and_jsonl(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_transition_config(tmp_path)
+    cfg = load_config(config_path)
+    run_dir = tmp_path / "claim_transition"
+
+    def fake_invoke(_effective_path: Path, root: Path) -> int:
+        artifacts = root / "artifacts"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        (artifacts / "routing_response_decoded.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "routing_response_decoded.v1",
+                    "status": "pass",
+                    "source": "/apollo/raw_routing_response",
+                    "lane_segment_count": 1,
+                    "lane_segments": [{"lane_id": "lane_1", "length_m": 42.0}],
+                    "total_length_m": 42.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (artifacts / "routing_response_decoded.jsonl").write_text(
+            json.dumps(
+                {
+                    "status": "insufficient_data",
+                    "message_count": 0,
+                    "source": "/apollo/routing_response",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        report_path = root / "analysis" / "routing_response_decoded" / "routing_response_decoded_report.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            json.dumps({"schema_version": "routing_response_decoded.v1", "status": "insufficient_data"}),
+            encoding="utf-8",
+        )
+        (root / "summary.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "exit_reason": "fake_transition_ok",
+                    "frames": 1,
+                    "route_id": "town01_rh_spawn068_goal079",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(apollo_compat, "_invoke_tbio_transition_backend", fake_invoke)
+
+    result = apollo_compat.run_compat_apollo_cyber_gt_runtime(
+        cfg,
+        config_path=config_path,
+        run_dir=run_dir,
+        resolved_config=dataclasses.asdict(cfg),
+    )
+
+    assert result.exit_code == 0
+    routing_report = json.loads(
+        (
+            run_dir
+            / "analysis"
+            / "routing_response_decoded"
+            / "routing_response_decoded_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    routing_jsonl_rows = [
+        json.loads(line)
+        for line in (run_dir / "artifacts" / "routing_response_decoded.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if line.strip()
+    ]
+    assert routing_report["status"] == "pass"
+    assert routing_report["lane_segment_count"] == 1
+    assert routing_jsonl_rows[-1]["status"] == "pass"
+    assert routing_jsonl_rows[-1]["lane_segment_count"] == 1
+    assert routing_jsonl_rows[-1]["lane_segments"][0]["lane_id"] == "lane_1"
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    route_health = json.loads((run_dir / "analysis" / "route_health" / "route_health.json").read_text(encoding="utf-8"))
+    assert manifest["route_id"] == "town01_rh_spawn068_goal079"
+    assert summary["route_id"] == "town01_rh_spawn068_goal079"
+    assert route_health["route_id"] == "town01_rh_spawn068_goal079"
+
+
 def test_transition_python_resolver_does_not_use_unexpanded_placeholder(
     tmp_path: Path,
     monkeypatch,

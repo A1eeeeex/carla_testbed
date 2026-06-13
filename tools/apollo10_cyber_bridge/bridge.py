@@ -30,6 +30,7 @@ from carla_testbed.adapters.apollo.messages import (
 )
 from carla_testbed.adapters.apollo.vehicle_reference import load_vehicle_reference
 from carla_testbed.analysis.apollo_reference_line_contract import build_reference_line_contract_event
+from tools.apollo10_cyber_bridge.control_apply_trace import build_control_apply_trace_payload
 
 # Apollo 10.0 shipped pb2 files are not compatible with protobuf>=4 C++ descriptors.
 # Force the pure-Python runtime inside the bridge process so planning/traffic-light
@@ -217,6 +218,12 @@ except Exception:
 REAR_AXLE_LOCALIZATION_BACK_OFFSET_M = 1.4235
 REAR_AXLE_LOCALIZATION_BACK_OFFSET_TOLERANCE_M = 0.05
 APOLLO_CONTROL_STATE_REFERENCE = "rear_axle_input_com_internal"
+DEFAULT_APOLLO_MAP_ROOT_CANDIDATES = (
+    "/apollo/modules/map/data",
+    "/home/ubuntu/Apollo10.0/application-core/data/map_data",
+    "/home/ubuntu/application-core/data/map_data",
+    "/home/ubuntu/apollo/modules/map/data",
+)
 
 
 def _clamp(val: float, lo: float, hi: float) -> float:
@@ -338,6 +345,48 @@ def _localization_reference_mode(back_offset_m: float) -> str:
     if abs(float(back_offset_m)) <= REAR_AXLE_LOCALIZATION_BACK_OFFSET_TOLERANCE_M:
         return "vehicle_origin"
     return "custom_offset"
+
+
+def _bridge_path_text(
+    raw: Any,
+    *,
+    apollo_map_root_candidates: Sequence[str | Path] = DEFAULT_APOLLO_MAP_ROOT_CANDIDATES,
+) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    text = _replace_apollo_map_root_placeholder(text, apollo_map_root_candidates)
+    return os.path.expanduser(os.path.expandvars(text))
+
+
+def _bridge_path(
+    raw: Any,
+    *,
+    apollo_map_root_candidates: Sequence[str | Path] = DEFAULT_APOLLO_MAP_ROOT_CANDIDATES,
+) -> Path:
+    return Path(_bridge_path_text(raw, apollo_map_root_candidates=apollo_map_root_candidates))
+
+
+def _replace_apollo_map_root_placeholder(
+    text: str,
+    candidates: Sequence[str | Path],
+) -> str:
+    if "${APOLLO_MAP_ROOT}" not in text and "$APOLLO_MAP_ROOT" not in text:
+        return text
+    env_root = os.environ.get("APOLLO_MAP_ROOT")
+    ordered: list[str | Path] = []
+    if env_root:
+        ordered.append(env_root)
+    ordered.extend(candidates)
+    for candidate in ordered:
+        root = Path(candidate).expanduser()
+        if root.exists():
+            replacement = str(root)
+            return text.replace("${APOLLO_MAP_ROOT}", replacement).replace(
+                "$APOLLO_MAP_ROOT",
+                replacement,
+            )
+    return text
 
 
 def _finite_or_none(value: Any) -> Optional[float]:
@@ -1298,6 +1347,10 @@ class ApolloGtBridge:
             "last_control_publish_error": "",
             "routing_request_count": 0,
             "routing_response_count": 0,
+            "raw_routing_response_count": 0,
+            "planning_routing_response_count": 0,
+            "routing_response_relay_count": 0,
+            "routing_response_relay_error_count": 0,
             "routing_success_count": 0,
             "routing_empty_count": 0,
             "routing_last_road_count": 0,
@@ -1335,7 +1388,7 @@ class ApolloGtBridge:
             "last_routing_anchor": {},
             "last_routing_goal": {},
             "last_routing_projection": {},
-            "routing_phase_counts": {"startup": 0, "long": 0},
+            "routing_phase_counts": {"startup": 0, "long": 0, "claim": 0},
             "reroute_reason_counts": {},
             "last_routing_reason": "",
             "goal_validity_last": {},
@@ -1462,8 +1515,10 @@ class ApolloGtBridge:
         except Exception as exc:
             self.vehicle_reference_load_error = str(exc)
         self.apollo_control_state_reference = APOLLO_CONTROL_STATE_REFERENCE
-        self.map_file_path = str(bridge_cfg.get("map_file", "")).strip()
-        self.map_bounds_file = str(bridge_cfg.get("map_bounds_file", "")).strip()
+        self.map_file_path_raw = str(bridge_cfg.get("map_file", "")).strip()
+        self.map_file_path = _bridge_path_text(self.map_file_path_raw)
+        self.map_bounds_file_raw = str(bridge_cfg.get("map_bounds_file", "")).strip()
+        self.map_bounds_file = _bridge_path_text(self.map_bounds_file_raw)
         self.map_segments: List[Tuple[float, float, float, float]] = []
         self.map_geometry_source_file = ""
         self.map_geometry_source_type = "missing"
@@ -2062,6 +2117,10 @@ class ApolloGtBridge:
         self.action_channel = str(cyber_cfg.get("action_channel", "/apollo/external_command/action"))
         self.lane_follow_channel = str(cyber_cfg.get("lane_follow_channel", "/apollo/external_command/lane_follow"))
         self.routing_response_channel = str(cyber_cfg.get("routing_response_channel", "/apollo/routing_response"))
+        self.raw_routing_response_channel = str(
+            cyber_cfg.get("raw_routing_response_channel", "/apollo/raw_routing_response")
+            or "/apollo/raw_routing_response"
+        )
         self.traffic_light_channel = str(cyber_cfg.get("traffic_light_channel", "/apollo/perception/traffic_light"))
         self.planning_channel = str(cyber_cfg.get("planning_channel", "/apollo/planning"))
 
@@ -2128,6 +2187,23 @@ class ApolloGtBridge:
                 "auto-enable lane_follow to provide planning_command"
             )
         self.auto_routing_send_routing = bool(auto_routing_cfg.get("send_routing_request", True))
+        self.auto_routing_relay_raw_routing_response_to_planning = bool(
+            auto_routing_cfg.get("relay_raw_routing_response_to_planning", True)
+        )
+        self.stats["routing_channels"] = {
+            "routing_request_channel": self.routing_request_channel,
+            "raw_routing_response_channel": self.raw_routing_response_channel,
+            "planning_routing_response_channel": self.routing_response_channel,
+            "relay_raw_routing_response_to_planning": bool(
+                self.auto_routing_relay_raw_routing_response_to_planning
+                and self.raw_routing_response_channel != self.routing_response_channel
+            ),
+            "claim_boundary": (
+                "Apollo 10 routing emits raw RoutingResponse on /apollo/raw_routing_response; "
+                "planning consumes /apollo/routing_response. The relay, when enabled, forwards "
+                "only observed Apollo raw responses and must not synthesize scenario routes."
+            ),
+        }
         self.auto_routing_freeze_after_success = bool(auto_routing_cfg.get("freeze_after_success", True))
         self.auto_routing_freeze_after_long_route_success_only = bool(
             auto_routing_cfg.get("freeze_after_long_route_success_only", False)
@@ -2230,7 +2306,8 @@ class ApolloGtBridge:
             self.auto_routing_scenario_goal_path = (self.artifacts_dir / self.auto_routing_scenario_goal_path).resolve()
         self._first_odom_ts: Optional[float] = None
         self.map_bounds_xy: Optional[Tuple[float, float, float, float]] = None
-        self.apollo_runtime_map_dir = str(bridge_cfg.get("apollo_runtime_map_dir", "") or "").strip()
+        self.apollo_runtime_map_dir_raw = str(bridge_cfg.get("apollo_runtime_map_dir", "") or "").strip()
+        self.apollo_runtime_map_dir = _bridge_path_text(self.apollo_runtime_map_dir_raw)
         self.dreamview_selected_map = str(bridge_cfg.get("dreamview_selected_map", "") or "").strip()
         self.map_contract_invalid = bool(bridge_cfg.get("map_contract_invalid", False))
         self.map_contract_mismatch_reason = str(
@@ -2250,6 +2327,15 @@ class ApolloGtBridge:
         self._scenario_goal_cache: Optional[Dict[str, Any]] = None
         self._scenario_goal_mtime_ns: Optional[int] = None
         self._bridge_start_wall_sec = time.time()
+        self.stats["map_path_resolution"] = {
+            "map_file_raw": self.map_file_path_raw,
+            "map_file_resolved": self.map_file_path,
+            "map_bounds_file_raw": self.map_bounds_file_raw,
+            "map_bounds_file_resolved": self.map_bounds_file,
+            "apollo_runtime_map_dir_raw": self.apollo_runtime_map_dir_raw,
+            "apollo_runtime_map_dir_resolved": self.apollo_runtime_map_dir,
+            "apollo_map_root_env": os.environ.get("APOLLO_MAP_ROOT", ""),
+        }
         self._load_map_geometry()
         self._load_map_lane_metadata()
         self._load_map_bounds(auto_routing_cfg)
@@ -2478,12 +2564,23 @@ class ApolloGtBridge:
             self.obstacles_channel, self.perception_pb2.PerceptionObstacles
         )
         self.routing_writer = None
+        self.routing_response_writer = None
         self.action_client = None
         self.lane_follow_client = None
         if self.auto_routing_enabled:
             if self.auto_routing_send_routing:
                 self.routing_writer = self._cyber_create_writer(
                     self.routing_request_channel, self.routing_pb2.RoutingRequest
+                )
+            relay_raw_response = bool(
+                self.auto_routing_relay_raw_routing_response_to_planning
+                and self.raw_routing_response_channel
+                and self.routing_response_channel
+                and self.raw_routing_response_channel != self.routing_response_channel
+            )
+            if relay_raw_response:
+                self.routing_response_writer = self._cyber_create_writer(
+                    self.routing_response_channel, self.routing_pb2.RoutingResponse
                 )
             status_resp_type = (
                 self.command_status_pb2.CommandStatus
@@ -2502,9 +2599,18 @@ class ApolloGtBridge:
                     self.lane_follow_pb2.LaneFollowCommand,
                     status_resp_type,
                 )
-            self._cyber_create_reader(
-                self.routing_response_channel, self.routing_pb2.RoutingResponse, self._on_routing_response
-            )
+            if relay_raw_response:
+                self._cyber_create_reader(
+                    self.raw_routing_response_channel,
+                    self.routing_pb2.RoutingResponse,
+                    self._on_raw_routing_response,
+                )
+            else:
+                self._cyber_create_reader(
+                    self.routing_response_channel,
+                    self.routing_pb2.RoutingResponse,
+                    self._on_routing_response,
+                )
         if self.traffic_light_policy in {"force_green", "carla_actual"}:
             if self.traffic_light_pb2 is not None and hasattr(self.traffic_light_pb2, "TrafficLightDetection"):
                 self.traffic_light_writer = self._cyber_create_writer(
@@ -2962,62 +3068,7 @@ class ApolloGtBridge:
         path = getattr(self, "control_apply_trace_path", None)
         if path is None:
             return
-        payload = {
-            "schema_version": "control_apply_trace.v1",
-            "event_type": "control_apply",
-            "timestamp": _finite_or_none(row.get("ts_sec")),
-            "sim_time": _finite_or_none(row.get("sim_time")),
-            "world_frame": _finite_or_none(row.get("frame_id")),
-            "route_id": row.get("route_id"),
-            "route_s": _finite_or_none(row.get("route_s")),
-            "actuator_mapping_mode": row.get("actuator_mapping_mode"),
-            "calibration_profile_id": row.get("calibration_profile_id"),
-            "steer_scale": _finite_or_none(row.get("steer_scale")),
-            "steering_sign": _finite_or_none(row.get("steering_sign")),
-            "control_latency_ms": _finite_or_none(row.get("control_latency_ms")),
-            "control_message_age_ms": _finite_or_none(row.get("control_message_age_ms")),
-            "planning_message_age_ms": _finite_or_none(row.get("planning_message_age_ms")),
-            "apollo_raw": {
-                "throttle": _finite_or_none(row.get("throttle_raw")),
-                "brake": _finite_or_none(row.get("brake_raw")),
-                "steer": _finite_or_none(row.get("apollo_steer_raw")),
-                "gear": row.get("apollo_gear"),
-                "estop": row.get("apollo_estop"),
-            },
-            "bridge_mapped": {
-                "throttle": _finite_or_none(row.get("throttle_mapped")),
-                "brake": _finite_or_none(row.get("brake_mapped")),
-                "steer": _finite_or_none(row.get("bridge_steer_mapped")),
-                "mapped_throttle_cmd": _finite_or_none(row.get("mapped_throttle_cmd")),
-                "mapped_brake_cmd": _finite_or_none(row.get("mapped_brake_cmd")),
-                "mapped_carla_steer_cmd": _finite_or_none(row.get("mapped_carla_steer_cmd")),
-                "throttle_brake_mutual_exclusion_applied": bool(
-                    row.get("throttle_brake_mutual_exclusion_applied")
-                ),
-                "throttle_brake_hysteresis_held": bool(row.get("throttle_brake_hysteresis_held")),
-            },
-            "carla_applied": {
-                "throttle": _finite_or_none(row.get("throttle_applied")),
-                "brake": _finite_or_none(row.get("brake_applied")),
-                "steer": _finite_or_none(row.get("carla_steer_applied")),
-                "reverse": measured.get("reverse", False),
-                "hand_brake": measured.get("hand_brake", False),
-            },
-            "vehicle_response": {
-                "speed_mps": _finite_or_none(row.get("speed_mps")),
-                "yaw_rate_rad_s": _finite_or_none(measured.get("yaw_rate_rps")),
-                "forward_accel_mps2": _finite_or_none(row.get("measured_forward_accel_mps2")),
-                "pose_x": _finite_or_none(measured.get("pose_x")),
-                "pose_y": _finite_or_none(measured.get("pose_y")),
-                "pose_yaw_deg": _finite_or_none(measured.get("pose_yaw_deg")),
-            },
-            "diagnostics": {
-                "planning_lateral_contract_valid": row.get("planning_lateral_contract_valid"),
-                "planning_lateral_contract_reason": row.get("planning_lateral_contract_reason"),
-                "lateral_guard_applied": row.get("lateral_guard_applied"),
-                "trajectory_contract_guard_applied": row.get("trajectory_contract_guard_applied"),
-            },
-        }
+        payload = build_control_apply_trace_payload(row, measured, self.stats)
         self._append_jsonl(Path(path), payload)
 
     def _gt_sample_key_from_odom(
@@ -3555,6 +3606,8 @@ class ApolloGtBridge:
         direct_control_apply_frame_span = _finite_or_none(direct_stats.get("control_apply_frame_span"))
         speed_mps = _finite_or_none(self._latest_speed_mps)
         max_speed_mps = _finite_or_none(direct_stats.get("control_apply_max_speed_mps"))
+        if max_speed_mps is None:
+            max_speed_mps = _finite_or_none(getattr(self, "_max_speed_mps", None))
         gate_reason = str(gate.get("last_blocking_reason") or "").strip()
         direct_last_error = str(direct_stats.get("last_error", "") or "").strip()
         stage = "unknown"
@@ -3589,15 +3642,15 @@ class ApolloGtBridge:
         elif planning_msg_count <= 0:
             stage = "routing_established_waiting_for_planning"
             layer = "planning_materialization"
-            reason = reason or "planning_message_pending"
+            reason = "planning_message_pending"
         elif planning_nonempty_count <= 0:
             stage = "planning_empty_only"
             layer = "planning_materialization"
-            reason = reason or "planning_empty_only"
+            reason = "planning_trajectory_empty"
         elif control_rx_count <= 0:
             stage = "planning_ready_no_control_rx"
             layer = "control_materialization"
-            reason = reason or "control_message_pending"
+            reason = "control_message_pending"
         elif control_tx_count <= 0:
             stage = "control_rx_no_bridge_tx"
             layer = "control_materialization"
@@ -3622,7 +3675,7 @@ class ApolloGtBridge:
         ):
             stage = "control_applied_no_motion"
             layer = "actuation"
-            reason = reason or "vehicle_speed_not_rising"
+            reason = "vehicle_speed_not_rising"
         else:
             stage = "materialized"
             layer = "materialized"
@@ -3641,9 +3694,16 @@ class ApolloGtBridge:
             "require_no_ros2_runtime": bool(self.require_no_ros2_runtime),
             "command_interfaces": {
                 "routing_writer_ready": bool(self.routing_writer is not None),
+                "routing_response_relay_writer_ready": bool(self.routing_response_writer is not None),
                 "lane_follow_client_ready": bool(self.lane_follow_client is not None),
                 "action_client_ready": bool(self.action_client is not None),
                 "routing_request_path_enabled": bool(self.auto_routing_send_routing),
+                "raw_routing_response_channel": self.raw_routing_response_channel,
+                "planning_routing_response_channel": self.routing_response_channel,
+                "raw_routing_response_relay_enabled": bool(
+                    self.auto_routing_relay_raw_routing_response_to_planning
+                    and self.raw_routing_response_channel != self.routing_response_channel
+                ),
                 "lane_follow_path_enabled": bool(self.auto_routing_send_lane_follow),
                 "action_path_enabled": bool(self.auto_routing_send_action),
                 "lane_follow_disabled_runtime": bool(self._lane_follow_disabled_runtime),
@@ -3652,6 +3712,16 @@ class ApolloGtBridge:
             "observed_counters": {
                 "routing_request_count": routing_request_count,
                 "routing_response_count": routing_response_count,
+                "raw_routing_response_count": int(self.stats.get("raw_routing_response_count", 0) or 0),
+                "planning_routing_response_count": int(
+                    self.stats.get("planning_routing_response_count", 0) or 0
+                ),
+                "routing_response_relay_count": int(
+                    self.stats.get("routing_response_relay_count", 0) or 0
+                ),
+                "routing_response_relay_error_count": int(
+                    self.stats.get("routing_response_relay_error_count", 0) or 0
+                ),
                 "routing_success_count": routing_success_count,
                 "planning_message_count": planning_msg_count,
                 "planning_nonempty_trajectory_count": planning_nonempty_count,
@@ -3969,6 +4039,12 @@ class ApolloGtBridge:
         goal_projection_available = bool(goal_proj.get("available", False))
         goal_projection_distance_m = _safe_float(goal_proj.get("distance_m"))
         requested_mode = str(goal_meta.get("requested_goal_mode", self.auto_routing_goal_mode) or "")
+        post_routing_reference_evidence_available = bool(
+            self.auto_routing_established
+            or reference_line_count > 0
+            or route_segment_count > 0
+            or routing_lane_window_count > 0
+        )
         invalid_goal_reason = ""
         if self.auto_routing_goal_validity_check_enabled:
             if requested_mode in {"scenario_xy", "fixed_xy"} and self.auto_routing_snap_goal_to_lane and (not goal_projection_available):
@@ -3978,11 +4054,17 @@ class ApolloGtBridge:
             elif (
                 recent_fresh
                 and reference_line_count <= 0
+                and post_routing_reference_evidence_available
                 and phase == "long"
                 and not reference_line_debug_missing_but_trajectory_nonzero
             ):
                 invalid_goal_reason = "reference_line_unavailable"
-            elif recent_fresh and route_segment_count <= 0 and phase == "long":
+            elif (
+                recent_fresh
+                and route_segment_count <= 0
+                and post_routing_reference_evidence_available
+                and phase == "long"
+            ):
                 invalid_goal_reason = "route_segment_unavailable"
         validity = {
             "timestamp": command_ts,
@@ -4013,6 +4095,7 @@ class ApolloGtBridge:
             "reference_line_provider_status": reference_line_provider_status,
             "create_route_segments_status": create_route_segments_status,
             "lane_follow_map_status": lane_follow_map_status,
+            "post_routing_reference_evidence_available": post_routing_reference_evidence_available,
             "recent_route_debug_present": bool(recent),
             "recent_route_debug_fresh": recent_fresh,
             "recent_route_debug_timestamp": recent_ts,
@@ -4036,15 +4119,18 @@ class ApolloGtBridge:
         routing_skipped_due_to_unstable_reference_line: bool,
         routing_waiting_for_route_debug_ready: bool,
     ) -> Tuple[str, str, str]:
+        phase_route_kind = "claim_route" if phase == "claim" else "long_phase_route"
+        phase_trigger = "claim_route_policy" if phase == "claim" else "auto_routing_long_phase"
         if routing_skipped_due_to_freeze:
-            return "long_phase_route", "freeze_after_success_skip", "freeze_after_success_guard"
+            return phase_route_kind, "freeze_after_success_skip", "freeze_after_success_guard"
         if routing_skipped_due_to_invalid_goal:
-            return "long_phase_route", "long_phase_invalid_goal_skip", "goal_validity_guard"
+            reason = "claim_route_invalid_goal_skip" if phase == "claim" else "long_phase_invalid_goal_skip"
+            return phase_route_kind, reason, "goal_validity_guard"
         if routing_waiting_for_route_debug_ready:
-            return "long_phase_route", "long_phase_wait_route_debug_ready", "route_debug_readiness_guard"
+            return phase_route_kind, "long_phase_wait_route_debug_ready", "route_debug_readiness_guard"
         if routing_skipped_due_to_unstable_reference_line:
             return (
-                "long_phase_route",
+                phase_route_kind,
                 "long_phase_unstable_reference_line_skip",
                 "reference_line_guard",
             )
@@ -4054,9 +4140,13 @@ class ApolloGtBridge:
             if int(self.auto_routing_routing_sent) == 0:
                 return "startup_route", "startup_initial_route", "auto_routing_startup"
             return "startup_route", "startup_route_refresh", "auto_routing_startup"
+        if phase == "claim":
+            if not self.auto_routing_long_routing_sent:
+                return "claim_route", "claim_initial_route", "claim_route_policy"
+            return "claim_route", "claim_route_refresh", "claim_route_policy"
         if not self.auto_routing_long_routing_sent:
-            return "long_phase_route", "long_phase_transition", "auto_routing_long_phase"
-        return "explicit_reroute", "long_phase_refresh", "auto_routing_long_phase"
+            return "long_phase_route", "long_phase_transition", phase_trigger
+        return "explicit_reroute", "long_phase_refresh", phase_trigger
 
     def _resolve_nested_value(
         self, obj: Any, paths: Sequence[Sequence[str]], default: Any = None
@@ -4332,7 +4422,13 @@ class ApolloGtBridge:
 
         return f"{lane}@{_fmt(start_s)}->{_fmt(end_s)}" if lane else f"@{_fmt(start_s)}->{_fmt(end_s)}"
 
-    def _routing_response_decoded_payload(self, msg: Any, *, now_sec: float) -> Dict[str, Any]:
+    def _routing_response_decoded_payload(
+        self,
+        msg: Any,
+        *,
+        now_sec: float,
+        source_channel: str = "/apollo/routing_response",
+    ) -> Dict[str, Any]:
         lane_segments = self._routing_response_lane_windows(msg)
         road_segments: List[Dict[str, Any]] = []
         roads = getattr(msg, "road", None)
@@ -4392,7 +4488,9 @@ class ApolloGtBridge:
         unique_lane_signature = " | ".join(lane_sequence)
         return {
             "schema_version": "routing_response_decoded.v1",
-            "source": "/apollo/routing_response",
+            "source": source_channel,
+            "planning_facing_channel": self.routing_response_channel,
+            "raw_routing_response_channel": self.raw_routing_response_channel,
             "timestamp_sec": _finite_or_none(now_sec),
             "header_timestamp_sec": _finite_or_none(self._header_timestamp_sec(msg)),
             "response_sequence": self._header_sequence_num(msg),
@@ -4406,7 +4504,8 @@ class ApolloGtBridge:
             "lane_window_signature": lane_window_signature,
             "unique_lane_signature": unique_lane_signature,
             "claim_boundary": (
-                "This artifact decodes the RoutingResponse on /apollo/routing_response. "
+                "This artifact decodes a real Apollo RoutingResponse observed on the "
+                "reported source channel. "
                 "It does not by itself prove route identity, HDMap projection, Planning "
                 "materialization, or Control handoff."
             ),
@@ -5078,6 +5177,7 @@ class ApolloGtBridge:
             planning_channel=self.planning_channel,
             routing_request_channel=self.routing_request_channel,
             routing_response_channel=self.routing_response_channel,
+            raw_routing_response_channel=self.raw_routing_response_channel,
             lane_follow_channel=self.lane_follow_channel,
             action_channel=self.action_channel,
             traffic_light_channel=self.traffic_light_channel,
@@ -5122,6 +5222,17 @@ class ApolloGtBridge:
             "routing_startup_phase_used": last_goal.get("startup_phase_used"),
             "routing_phase": self.auto_routing_current_phase,
             "routing_request_count": self.stats.get("routing_request_count", 0),
+            "routing_response_count": self.stats.get("routing_response_count", 0),
+            "raw_routing_response_count": self.stats.get("raw_routing_response_count", 0),
+            "planning_routing_response_count": self.stats.get("planning_routing_response_count", 0),
+            "routing_response_relay_count": self.stats.get("routing_response_relay_count", 0),
+            "routing_response_relay_error_count": self.stats.get("routing_response_relay_error_count", 0),
+            "raw_routing_response_channel": self.raw_routing_response_channel,
+            "planning_routing_response_channel": self.routing_response_channel,
+            "raw_routing_response_relay_enabled": bool(
+                self.auto_routing_relay_raw_routing_response_to_planning
+                and self.raw_routing_response_channel != self.routing_response_channel
+            ),
             "routing_phase_counts": dict(self.stats.get("routing_phase_counts", {})),
             "reroute_reason_counts": dict(self.stats.get("reroute_reason_counts", {}) or {}),
             "last_routing_reason": self.stats.get("last_routing_reason", ""),
@@ -8448,8 +8559,26 @@ class ApolloGtBridge:
         self.stats["last_control_publish_error"] = ""
         self.stats["control_tx_count"] += 1
 
-    def _on_routing_response(self, msg: Any) -> None:
+    def _on_raw_routing_response(self, msg: Any) -> None:
+        self._on_routing_response(
+            msg,
+            source_channel=self.raw_routing_response_channel,
+            relay_to_planning=True,
+        )
+
+    def _on_routing_response(
+        self,
+        msg: Any,
+        *,
+        source_channel: Optional[str] = None,
+        relay_to_planning: bool = False,
+    ) -> None:
         now_sec = self._command_now_sec()
+        source_channel = str(source_channel or self.routing_response_channel or "")
+        if source_channel == self.raw_routing_response_channel:
+            self.stats["raw_routing_response_count"] += 1
+        if source_channel == self.routing_response_channel:
+            self.stats["planning_routing_response_count"] += 1
         self.stats["routing_response_count"] += 1
         self._routing_last_response_ts_sec = now_sec
         if self._routing_first_response_ts_sec is None:
@@ -8465,7 +8594,11 @@ class ApolloGtBridge:
         road_count = len(roads) if roads is not None else 0
         self.stats["routing_last_road_count"] = int(road_count)
         try:
-            decoded_payload = self._routing_response_decoded_payload(msg, now_sec=now_sec)
+            decoded_payload = self._routing_response_decoded_payload(
+                msg,
+                now_sec=now_sec,
+                source_channel=source_channel,
+            )
             self._append_jsonl(self.routing_response_decoded_jsonl_path, decoded_payload)
             self._write_json_file(self.routing_response_decoded_path, decoded_payload)
             self.stats["routing_response_decoded_path"] = str(self.routing_response_decoded_path)
@@ -8480,6 +8613,28 @@ class ApolloGtBridge:
             )
         except Exception as exc:
             self.stats["routing_response_decode_error"] = f"{type(exc).__name__}: {exc}"
+        if (
+            relay_to_planning
+            and self.routing_response_writer is not None
+            and source_channel != self.routing_response_channel
+        ):
+            try:
+                self.routing_response_writer.write(msg)
+                self.stats["routing_response_relay_count"] += 1
+                self.stats["last_routing_response_relay"] = {
+                    "source_channel": source_channel,
+                    "target_channel": self.routing_response_channel,
+                    "timestamp_sec": _finite_or_none(now_sec),
+                    "road_count": int(road_count),
+                    "claim_boundary": (
+                        "Relay forwards the Apollo routing module's raw RoutingResponse to "
+                        "the planning-facing /apollo/routing_response channel. It must not "
+                        "be replaced by scenario-route synthesis."
+                    ),
+                }
+            except Exception as exc:
+                self.stats["routing_response_relay_error_count"] += 1
+                self.stats["last_routing_response_relay_error"] = f"{type(exc).__name__}: {exc}"
         if road_count > 0:
             self.stats["routing_success_count"] += 1
             self._routing_last_success_response_ts_sec = now_sec
@@ -8509,7 +8664,7 @@ class ApolloGtBridge:
 
     def _resolve_map_file(self) -> Optional[Path]:
         if self.apollo_runtime_map_dir:
-            runtime_root = Path(self.apollo_runtime_map_dir).expanduser()
+            runtime_root = _bridge_path(self.apollo_runtime_map_dir)
             if not runtime_root.is_absolute():
                 runtime_root = (self.apollo_root / runtime_root).resolve()
             for candidate in ("base_map.txt", "base_map.xml", "sim_map.txt", "sim_map.xml"):
@@ -8517,7 +8672,7 @@ class ApolloGtBridge:
                 if path.exists():
                     return path.resolve()
         if self.map_file_path:
-            map_file = Path(self.map_file_path)
+            map_file = _bridge_path(self.map_file_path)
             if not map_file.is_absolute():
                 map_file = (self.apollo_root / map_file).resolve()
             return map_file
@@ -8546,7 +8701,7 @@ class ApolloGtBridge:
 
     def _resolve_map_dir(self) -> Optional[Path]:
         if self.apollo_runtime_map_dir:
-            runtime_root = Path(self.apollo_runtime_map_dir).expanduser()
+            runtime_root = _bridge_path(self.apollo_runtime_map_dir)
             if not runtime_root.is_absolute():
                 runtime_root = (self.apollo_root / runtime_root).resolve()
             if runtime_root.exists():
@@ -8732,7 +8887,7 @@ class ApolloGtBridge:
             self.stats["map_bounds"] = {"enabled": False, "reason": "disabled"}
             return
         if self.map_bounds_file:
-            bounds_file = Path(self.map_bounds_file)
+            bounds_file = _bridge_path(self.map_bounds_file)
             if not bounds_file.is_absolute():
                 bounds_file = (Path.cwd() / bounds_file).resolve()
             if bounds_file.exists():
@@ -8893,7 +9048,7 @@ class ApolloGtBridge:
 
     def _current_routing_phase(self, ts_sec: float, speed_mps: float) -> str:
         if not self.auto_routing_startup_route_enabled:
-            return "long"
+            return "long" if self.auto_routing_use_long_goal_after_move else "claim"
         if not self.auto_routing_startup_routing_sent:
             return "startup"
         if self._first_odom_ts is None:
@@ -9483,6 +9638,12 @@ class ApolloGtBridge:
             recent_route_debug.get("lane_follow_map_status", "") or ""
         ).strip()
         lane_follow_map_inconsistent_active = self._lane_follow_map_inconsistent_active(recent_route_debug)
+        post_routing_reference_guard_applicable = bool(
+            self.auto_routing_established
+            or recent_reference_line_count > 0
+            or recent_route_segment_count > 0
+            or int(recent_route_debug.get("routing_lane_window_count", 0) or 0) > 0
+        )
         startup_elapsed_sec = (
             max(0.0, command_ts - float(self._first_odom_ts))
             if self._first_odom_ts is not None
@@ -9533,6 +9694,7 @@ class ApolloGtBridge:
             and not routing_waiting_for_route_debug_ready
             and not ignore_roll_active
             and self.auto_routing_suppress_long_phase_reroute_on_unstable_reference_line
+            and post_routing_reference_guard_applicable
             and (
                 bool(goal_validity.get("invalid_goal"))
                 or (
@@ -11493,6 +11655,7 @@ def _default_config() -> Dict[str, Any]:
             "action_channel": "/apollo/external_command/action",
             "lane_follow_channel": "/apollo/external_command/lane_follow",
             "routing_response_channel": "/apollo/routing_response",
+            "raw_routing_response_channel": "/apollo/raw_routing_response",
             "traffic_light_channel": "/apollo/perception/traffic_light",
             "planning_channel": "/apollo/planning",
         },
@@ -11544,6 +11707,7 @@ def _default_config() -> Dict[str, Any]:
                 "auto_enable_lane_follow_fallback": True,
                 "disable_lane_follow_on_no_response": True,
                 "send_routing_request": True,
+                "relay_raw_routing_response_to_planning": True,
                 "freeze_after_success": True,
             },
             "traffic_light": {

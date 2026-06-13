@@ -133,6 +133,26 @@ def test_apollo_hdmap_projection_high_heading_error_fails(tmp_path: Path) -> Non
     assert "map_alignment" in report["apollo_hdmap_projection"]["suspected_failure_layers"]
 
 
+def test_apollo_hdmap_projection_low_coverage_is_insufficient_not_fail(tmp_path: Path) -> None:
+    run_dir = _copy_case(tmp_path, "pass")
+    projection_path = run_dir / "artifacts" / "apollo_hdmap_projection.jsonl"
+    _write_hdmap_projection(projection_path, heading_error_rad=0.01, lateral_error_m=0.05)
+    rows = [json.loads(line) for line in projection_path.read_text(encoding="utf-8").splitlines()]
+    for index, row in enumerate(rows):
+        row["projection_s"] = 10.0 + index * 0.1
+    _write_jsonl(projection_path, rows)
+
+    report = analyze_apollo_reference_line_contract_run_dir(run_dir)
+
+    assert report["status"] == "insufficient_data"
+    assert "apollo_hdmap_projection_route_s_coverage_low" in report["warnings"]
+    assert "apollo_hdmap_projection_route_s_coverage_low" not in report["blocking_reasons"]
+    assert report["contracts"]["apollo_hdmap_projection"]["status"] == "insufficient_data"
+    assert "apollo_hdmap_projection_route_s_coverage_low" in (
+        report["contracts"]["apollo_hdmap_projection"]["insufficient_reasons"]
+    )
+
+
 def test_nonempty_trajectory_with_zero_reference_line_count_is_not_old_empty_blocker() -> None:
     rows = [
         {

@@ -145,6 +145,14 @@ def analyze_planning_materialization_files(
 
     routing_success_ts = _first_number(
         planning_summary,
+        "routing_first_success_response_after_last_routing_send_boundary_ts_sec",
+        bridge_payload,
+        "routing_first_success_response_after_last_routing_send_boundary_ts_sec",
+        planning_summary,
+        "routing_first_response_after_last_routing_send_boundary_ts_sec",
+        bridge_payload,
+        "routing_first_response_after_last_routing_send_boundary_ts_sec",
+        planning_summary,
         "routing_first_success_response_ts_sec",
         bridge_payload,
         "routing_first_success_response_ts_sec",
@@ -522,7 +530,12 @@ def _time_domain_diagnostics(
         warnings.append("planning_topic_time_domain_mismatch")
     if routing_success_ts is not None and planning_domain.get("domain") == "unknown":
         warnings.append("routing_success_time_domain_unverified")
-    status = "insufficient_data" if warnings else "pass"
+    status_blocking = bool(
+        mixed
+        or "derived_latency_outside_reasonable_range" in warnings
+        or "routing_success_time_domain_unverified" in warnings
+    )
+    status = "insufficient_data" if status_blocking else "pass"
     reported_first_nonempty_latency = (
         None
         if "first_nonempty_after_routing_latency_s" in invalid_latency_fields
