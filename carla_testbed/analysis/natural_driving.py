@@ -1280,7 +1280,9 @@ def _unassisted_claimability(
 
 
 def _localization_claim_grade(report: Mapping[str, Any]) -> bool:
-    if _localization_contract_status(report) != "pass":
+    if _localization_contract_status(report) not in {"pass", "warn"}:
+        return False
+    if report.get("claim_grade") is False:
         return False
     if _localization_blocking_reasons(report):
         return False

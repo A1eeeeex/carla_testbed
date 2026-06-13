@@ -41,6 +41,23 @@ def test_postprocess_keeps_complete_fixture_pass(tmp_path: Path) -> None:
     assert all(run["artifacts"]["artifact_completeness"] for run in natural_report["run_results"])
 
 
+def test_postprocess_generates_control_attribution_from_run_artifacts(tmp_path: Path) -> None:
+    suite_root = _copy_suite(tmp_path)
+    lane = suite_root / "lane_keep_097"
+    shutil.rmtree(lane / "analysis" / "control_attribution", ignore_errors=True)
+
+    report = postprocess_natural_driving_runs(suite_root, out_dir=tmp_path / "out")
+    lane_result = next(run for run in report["runs"] if run["run_id"] == "lane_keep_097")
+    attribution = lane_result["control_attribution"]
+    payload = json.loads(Path(attribution["path"]).read_text(encoding="utf-8"))
+
+    assert attribution["status"] == "generated"
+    assert attribution["report_status"] in {"pass", "warn", "insufficient_data", "fail"}
+    assert Path(attribution["summary_path"]).is_file()
+    assert payload["schema_version"] == "control_attribution.v1"
+    assert payload["source"]["control_input_path"]
+
+
 def test_postprocess_writes_route_start_probe_plan_for_route_start_lane_invasion(tmp_path: Path) -> None:
     suite_root = _copy_suite(tmp_path)
     lane_dir = suite_root / "lane_keep_097"

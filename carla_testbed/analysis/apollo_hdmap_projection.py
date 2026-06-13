@@ -82,6 +82,8 @@ def apollo_hdmap_projection_summary_md(report: Mapping[str, Any]) -> str:
             f"- Artifact status: `{report.get('artifact_status')}`",
             f"- Artifact: `{report.get('artifact_path')}`",
             f"- Artifact exists: `{report.get('artifact_file_exists')}`",
+            f"- Empty reason: `{projection.get('empty_reason') or report.get('empty_reason') or 'none'}`",
+            f"- Next action: `{projection.get('next_action') or report.get('next_action') or 'none'}`",
             f"- Official source available: `{projection.get('official_source_available')}`",
             f"- Row count: `{projection.get('row_count')}`",
             f"- Official row count: `{projection.get('official_row_count')}`",
@@ -149,9 +151,22 @@ def summarize_apollo_hdmap_projection(
         artifact_status = "artifact_empty" if artifact_present else "artifact_missing"
         warning = "apollo_hdmap_projection_empty" if artifact_present else "apollo_hdmap_projection_missing"
         missing = "apollo_hdmap_projection_rows" if artifact_present else "apollo_hdmap_projection"
+        empty_reason = (
+            "apollo_hdmap_projection_artifact_empty_no_exported_rows"
+            if artifact_present
+            else "apollo_hdmap_projection_artifact_missing"
+        )
+        next_action = (
+            "Run tools/export_apollo_hdmap_projection.py against Apollo map_xysl "
+            "using localization samples from artifacts/apollo_reference_line_contract.jsonl."
+            if artifact_present
+            else "Generate artifacts/apollo_hdmap_projection.jsonl with rows from Apollo HDMap API map_xysl."
+        )
         return {
             "file_present": artifact_present,
             "artifact_status": artifact_status,
+            "empty_reason": empty_reason,
+            "next_action": next_action,
             "available": False,
             "official_source_available": False,
             "status": "insufficient_data",
@@ -249,6 +264,8 @@ def summarize_apollo_hdmap_projection(
     return {
         "file_present": True,
         "artifact_status": "projection_rows_present",
+        "empty_reason": None,
+        "next_action": None,
         "available": bool(official_rows),
         "official_source_available": bool(official_rows),
         "status": status,

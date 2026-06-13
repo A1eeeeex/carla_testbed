@@ -1300,3 +1300,32 @@ queue depth as explicit backpressure evidence instead of letting diagnostic
 JSONL writes silently slow `/apollo/localization/pose` or
 `/apollo/canbus/chassis`. A run with artifact backpressure or large publish-gap
 p95 values is diagnostic until channel health recovers.
+
+## P0/P1 Online Triage Boundary
+
+For current Town01 claim/materialization probes, the first decision point is
+route / HDMap / reference-line closure. A run may show routing success,
+non-empty Planning trajectories, and `/apollo/control` rx/tx/apply counters,
+while still being non-claim-grade because
+`apollo_hdmap_projection.jsonl` has no `source="apollo_hdmap_api"` rows or
+`apollo_reference_line_contract_report.json` is `insufficient_data`.
+
+The expected postprocess sequence for a single run is:
+
+```bash
+RUN=runs/<run_id>
+python tools/analyze_apollo_localization_contract.py --run-dir "$RUN"
+python tools/analyze_apollo_chassis_gt_contract.py --run-dir "$RUN"
+python tools/analyze_control_attribution.py --run-dir "$RUN" --out "$RUN/analysis/control_attribution"
+python tools/postprocess_town01_natural_driving.py --suite-root "$RUN" --out "$RUN/analysis/natural_driving" --refresh
+python tools/analyze_apollo_link_health.py --run-dir "$RUN" --out "$RUN/analysis/apollo_link_health"
+```
+
+If the link-health primary blocker is
+`route_establishment:apollo_hdmap_projection_for_lane_equivalence`, the next
+highest-value action is to export Apollo HDMap projection rows with
+`tools/export_apollo_hdmap_projection.py`, not to tune steering, throttle,
+brake, or `steer_scale`. Control oscillation and raw/mapped/applied mismatch
+remain important secondary evidence, but they should not be used to claim an
+Apollo algorithm limitation until localization and Apollo reference-line
+contracts are non-blocking.

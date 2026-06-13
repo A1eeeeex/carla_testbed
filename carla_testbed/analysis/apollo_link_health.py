@@ -1004,6 +1004,8 @@ def _hdmap_projection_layer(
             "Run a longer claim-window sample or export denser Apollo HDMap projection rows; "
             "current projection quality may be good but coverage is not claim-grade."
         )
+    if projection.get("empty_reason"):
+        next_action = str(projection.get("next_action") or next_action)
     return _layer(
         status=_normalize_status(projection.get("status")),
         blocking_reasons=list(projection.get("blocking_reasons") or []),
@@ -1012,6 +1014,7 @@ def _hdmap_projection_layer(
             "file_present": projection.get("file_present"),
             "official_source_available": projection.get("official_source_available"),
             "claim_grade": projection.get("claim_grade"),
+            "empty_reason": projection.get("empty_reason"),
             "insufficient_reasons": insufficient_reasons,
             "heading_error_p95_rad": projection.get("heading_error_p95_rad"),
             "lateral_error_p95_m": projection.get("lateral_error_p95_m"),
@@ -1139,6 +1142,14 @@ def _route_establishment_layer(
                 "route_completion_ratio": route_establishment.get("route_completion_ratio"),
                 "summary_fail_reason": summary.get("fail_reason"),
                 "route_contract_status": route_contract_status,
+                "route_contract_missing_fields": (
+                    list(route_contract.get("missing_fields") or []) if route_contract else []
+                ),
+                "insufficient_reasons": (
+                    list(route_contract.get("missing_fields") or [])
+                    if route_contract_status == "insufficient_data" and route_contract
+                    else []
+                ),
                 "scenario_route_length_m": route_contract.get("scenario_route_length_m") if route_contract else None,
                 "scenario_route_length_source": route_contract.get("scenario_route_length_source") if route_contract else None,
                 "scenario_route_declared_length_m": route_contract.get("scenario_route_declared_length_m") if route_contract else None,
@@ -1223,6 +1234,14 @@ def _route_establishment_layer(
             "routing_success_count": routing_success_count,
             "summary_fail_reason": fail_reason,
             "route_contract_status": route_contract_status,
+            "route_contract_missing_fields": (
+                list(route_contract.get("missing_fields") or []) if route_contract else []
+            ),
+            "insufficient_reasons": (
+                list(route_contract.get("missing_fields") or [])
+                if route_contract_status == "insufficient_data" and route_contract
+                else []
+            ),
             "scenario_route_length_m": route_contract.get("scenario_route_length_m") if route_contract else None,
             "scenario_route_length_source": route_contract.get("scenario_route_length_source") if route_contract else None,
             "scenario_route_declared_length_m": route_contract.get("scenario_route_declared_length_m") if route_contract else None,
@@ -2021,6 +2040,11 @@ def _blocker_summary(layers: Mapping[str, Mapping[str, Any]]) -> tuple[str | Non
         secondary = [item for item in blockers if item != routing_primary]
         return routing_primary, secondary
 
+    route_contract_primary = _route_contract_unverified_primary(layers)
+    if route_contract_primary:
+        secondary = [item for item in blockers if item != route_contract_primary]
+        return route_contract_primary, secondary
+
     special = _reference_line_localization_mismatch(layers)
     if special:
         secondary = [item for item in blockers if item != special]
@@ -2132,6 +2156,23 @@ def _planning_materialization_primary(layers: Mapping[str, Mapping[str, Any]]) -
     return None
 
 
+def _route_contract_unverified_primary(layers: Mapping[str, Mapping[str, Any]]) -> str | None:
+    if not _non_blocking(layers.get("environment_world", {})):
+        return None
+    if not _non_blocking(layers.get("bridge_runtime", {})):
+        return None
+    route = layers.get("route_establishment", {})
+    if route.get("status") != "insufficient_data":
+        return None
+    metrics = route.get("key_metrics") if isinstance(route.get("key_metrics"), Mapping) else {}
+    if metrics.get("route_contract_status") != "insufficient_data":
+        return None
+    for reason in _layer_insufficient_reasons(route):
+        if reason:
+            return f"route_establishment:{reason}"
+    return "route_establishment:apollo_route_contract_insufficient"
+
+
 def _is_planning_gap_only_channel_failure(channel_layer: Mapping[str, Any]) -> bool:
     if channel_layer.get("status") != "fail":
         return False
@@ -2216,6 +2257,8 @@ def _layer_blocker_name(name: str, layer: Mapping[str, Any]) -> str:
     if name == "route_establishment":
         preferred = (
             *ROUTE_CONTRACT_BLOCKER_PRIORITY,
+            "apollo_hdmap_projection_for_lane_equivalence",
+            "apollo_route_contract_insufficient",
             "planning_trajectory_materialization_low",
             "route_establishment_latency",
             "planning_nonempty_after_routing_below_threshold",

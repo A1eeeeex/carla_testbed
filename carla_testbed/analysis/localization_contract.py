@@ -249,6 +249,14 @@ def analyze_localization_contract(
         "blocking_reasons": sorted(set(blocking_reasons)),
     }
 
+    claim_grade = (
+        verdict_status in {"pass", "warn"}
+        and not blocking_reasons
+        and not missing_fields
+        and reference_point.get("position_uses_vrp") is True
+        and reference_point.get("vehicle_reference_hard_gate_eligible") is True
+    )
+
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "run_id": _first_text(source, "run_id"),
@@ -267,7 +275,7 @@ def analyze_localization_contract(
         "kinematics": kinematics,
         "status": status,
         "status_verdict": verdict_status,
-        "claim_grade": verdict_status == "pass",
+        "claim_grade": claim_grade,
         "acceptance_checklist": _build_acceptance_checklist(
             channel=channel,
             time=time,
@@ -342,8 +350,6 @@ def analyze_localization_contract_files(
     channel_stats = _read_json_optional(source.get("channel_stats_path"))
     route_health = _read_json_optional(source.get("route_health_path"))
     hdmap_projection_rows = read_apollo_hdmap_projection(source.get("hdmap_projection_path"))
-    frame_transform = _load_frame_transform_optional(frame_transform_path)
-    vehicle_reference = load_vehicle_reference(vehicle_reference_path) if vehicle_reference_path else None
     metadata = _read_run_metadata(source.get("run_dir"), route_health)
     metadata.update({key: str(value) for key, value in source.items() if value is not None})
     for artifact_key in ("cyber_bridge_stats_path", "ros2_gt_live_stats_path"):
@@ -355,6 +361,21 @@ def analyze_localization_contract_files(
         metadata["cyber_bridge_stats"] = cyber_bridge_stats
     if ros2_gt_live_stats is not None:
         metadata["ros2_gt_live_stats"] = ros2_gt_live_stats
+    resolved_frame_transform_path = _resolve_frame_transform_path(frame_transform_path)
+    resolved_vehicle_reference_path = _resolve_vehicle_reference_path(
+        vehicle_reference_path,
+        cyber_bridge_stats=cyber_bridge_stats,
+    )
+    if resolved_frame_transform_path is not None:
+        metadata["frame_transform_config_path"] = str(resolved_frame_transform_path)
+    if resolved_vehicle_reference_path is not None:
+        metadata["vehicle_reference_config_path"] = str(resolved_vehicle_reference_path)
+    frame_transform = _load_frame_transform_optional(resolved_frame_transform_path)
+    vehicle_reference = (
+        load_vehicle_reference(resolved_vehicle_reference_path)
+        if resolved_vehicle_reference_path is not None
+        else None
+    )
     return analyze_localization_contract(
         timeseries_rows=timeseries,
         channel_stats=channel_stats,
@@ -1703,6 +1724,42 @@ def _report_status(report: Mapping[str, Any]) -> str | None:
 
 def _path_exists(path: str | Path | None) -> bool:
     return path is not None and Path(path).expanduser().exists()
+
+
+def _resolve_frame_transform_path(path: str | Path | None) -> Path | None:
+    if path is not None:
+        candidate = Path(path).expanduser()
+        return candidate if candidate.exists() else None
+    return DEFAULT_FRAME_TRANSFORM_PATH if DEFAULT_FRAME_TRANSFORM_PATH.exists() else None
+
+
+def _resolve_vehicle_reference_path(
+    path: str | Path | None,
+    *,
+    cyber_bridge_stats: Mapping[str, Any] | None,
+) -> Path | None:
+    if path is not None:
+        candidate = Path(path).expanduser()
+        return candidate if candidate.exists() else None
+    runtime_path = _runtime_vehicle_reference_path(cyber_bridge_stats)
+    if runtime_path is not None:
+        return runtime_path
+    return _default_vehicle_reference_path()
+
+
+def _runtime_vehicle_reference_path(cyber_bridge_stats: Mapping[str, Any] | None) -> Path | None:
+    stats = _mapping(cyber_bridge_stats)
+    for source in (
+        _mapping(stats.get("localization")),
+        _mapping(stats.get("last_pose_debug")),
+    ):
+        value = source.get("vehicle_reference_path")
+        if value in {None, ""}:
+            continue
+        candidate = Path(str(value)).expanduser()
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _default_vehicle_reference_path() -> Path | None:

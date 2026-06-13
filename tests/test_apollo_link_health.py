@@ -568,6 +568,76 @@ def test_scenario_route_length_inconsistency_outranks_apollo_goal_mismatch(tmp_p
     assert report["primary_blocker"] == "route_establishment:scenario_route_length_inconsistent"
 
 
+def test_route_contract_insufficient_outranks_downstream_module_consumption_fail(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    route_contract_path = run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json"
+    route_contract = json.loads(route_contract_path.read_text(encoding="utf-8"))
+    route_contract.update(
+        {
+            "status": "insufficient_data",
+            "missing_fields": ["apollo_hdmap_projection_for_lane_equivalence"],
+            "blocking_reasons": [],
+            "warnings": ["apollo_hdmap_projection_required_for_cross_namespace_lane_equivalence"],
+        }
+    )
+    _write_json(route_contract_path, route_contract)
+    _write_json(
+        run_dir / "analysis/apollo_module_consumption/apollo_module_consumption_report.json",
+        {
+            "schema_version": "apollo_module_consumption.v1",
+            "status": "fail",
+            "blocking_reasons": [
+                "claim_route_consumption_unverified",
+                "route_contract_unverified_before_module_consumption_claim",
+            ],
+            "warnings": [],
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    route_layer = report["layers"]["route_establishment"]
+    assert route_layer["status"] == "insufficient_data"
+    assert route_layer["key_metrics"]["route_contract_missing_fields"] == [
+        "apollo_hdmap_projection_for_lane_equivalence"
+    ]
+    assert report["primary_blocker"] == "route_establishment:apollo_hdmap_projection_for_lane_equivalence"
+    assert "apollo_module_consumption:claim_route_consumption_unverified" in report["secondary_blockers"]
+
+
+def test_hdmap_projection_empty_reason_reaches_link_health(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json",
+        {
+            "schema_version": "apollo_hdmap_projection_report.v1",
+            "status": "insufficient_data",
+            "claim_grade": False,
+            "projection": {
+                "file_present": True,
+                "artifact_status": "artifact_empty",
+                "empty_reason": "apollo_hdmap_projection_artifact_empty_no_exported_rows",
+                "next_action": "Run tools/export_apollo_hdmap_projection.py.",
+                "official_source_available": False,
+                "claim_grade": False,
+                "warnings": ["apollo_hdmap_projection_empty"],
+                "insufficient_reasons": [],
+                "missing_fields": ["apollo_hdmap_projection_rows"],
+            },
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    layer = report["layers"]["hdmap_projection"]
+    assert layer["status"] == "insufficient_data"
+    assert (
+        layer["key_metrics"]["empty_reason"]
+        == "apollo_hdmap_projection_artifact_empty_no_exported_rows"
+    )
+    assert layer["next_action"] == "Run tools/export_apollo_hdmap_projection.py."
+
+
 def test_independent_hdmap_projection_report_is_consumed(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     loc_path = run_dir / "analysis/localization_contract/localization_contract_report.json"

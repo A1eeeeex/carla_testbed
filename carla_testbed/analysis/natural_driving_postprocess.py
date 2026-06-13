@@ -39,6 +39,10 @@ from carla_testbed.analysis.control_health import (
     analyze_control_health_run_dir,
     write_control_health_report,
 )
+from carla_testbed.analysis.control_attribution import (
+    analyze_control_attribution_run_dir,
+    write_control_attribution_report,
+)
 from carla_testbed.analysis.failure_timeline import (
     analyze_failure_timeline_run_dir,
     write_failure_timeline_report,
@@ -187,6 +191,7 @@ def _postprocess_run_dir(
     route_health_result = _ensure_route_health(run_dir, refresh=refresh)
     route_curve_artifact_gap_result = _ensure_route_curve_artifact_gap(run_dir, refresh=refresh)
     apollo_control_handoff_result = _ensure_apollo_control_handoff(run_dir, refresh=refresh)
+    control_attribution_result = _ensure_control_attribution(run_dir, refresh=refresh)
     apollo_route_contract_result = _ensure_apollo_route_contract(run_dir, refresh=refresh)
     planning_materialization_result = _ensure_planning_materialization(run_dir, refresh=refresh)
     apollo_module_consumption_result = _ensure_apollo_module_consumption(run_dir, refresh=refresh)
@@ -250,6 +255,7 @@ def _postprocess_run_dir(
         "route_curve_artifact_gap": route_curve_artifact_gap_result,
         "standardization": standardization,
         "apollo_control_handoff": apollo_control_handoff_result,
+        "control_attribution": control_attribution_result,
         "apollo_route_contract": apollo_route_contract_result,
         "planning_materialization": planning_materialization_result,
         "apollo_module_consumption": apollo_module_consumption_result,
@@ -282,6 +288,37 @@ def _postprocess_run_dir(
 
 def _ensure_apollo_control_handoff(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
     return ensure_apollo_control_handoff_report(run_dir, refresh=refresh)
+
+
+def _ensure_control_attribution(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    existing = _find_first(
+        run_dir,
+        [
+            "analysis/control_attribution/control_attribution_report.json",
+            "control_attribution_report.json",
+        ],
+    )
+    if existing is not None and not refresh:
+        report = _read_json(existing)
+        verdict = report.get("verdict") if isinstance(report.get("verdict"), Mapping) else {}
+        return {
+            "status": "existing",
+            "path": str(existing),
+            "report_status": verdict.get("status") or report.get("status"),
+        }
+    report = analyze_control_attribution_run_dir(run_dir)
+    outputs = write_control_attribution_report(report, run_dir / "analysis" / "control_attribution")
+    verdict = report.get("verdict") if isinstance(report.get("verdict"), Mapping) else {}
+    attribution = report.get("attribution") if isinstance(report.get("attribution"), Mapping) else {}
+    return {
+        "status": "generated",
+        "path": outputs["control_attribution_report"],
+        "summary_path": outputs["control_attribution_summary"],
+        "report_status": verdict.get("status") or report.get("status"),
+        "dominant_breakpoint": attribution.get("dominant_breakpoint"),
+        "missing_fields": report.get("missing_fields") or [],
+        "warnings": report.get("warnings") or [],
+    }
 
 
 def _ensure_apollo_route_contract(run_dir: Path, *, refresh: bool) -> dict[str, Any]:

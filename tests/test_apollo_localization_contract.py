@@ -665,6 +665,19 @@ def test_run_dir_auto_discovers_inputs(tmp_path: Path) -> None:
     assert report["verdict"]["status"] == "pass"
 
 
+def test_run_dir_uses_default_frame_and_vehicle_reference_when_not_explicit(tmp_path: Path) -> None:
+    run_dir = _make_run_dir(tmp_path / "run")
+
+    report = analyze_localization_contract_files(run_dir=run_dir)
+
+    assert report["source"]["frame_transform_config_path"].endswith("configs/town01/apollo_frame_transform.example.yaml")
+    assert report["source"]["vehicle_reference_config_path"].endswith(
+        "configs/vehicles/ego_vehicle_reference.verified.yaml"
+    )
+    assert report["reference_point"]["vehicle_reference_hard_gate_eligible"] is True
+    assert report["verdict"]["status"] == "pass"
+
+
 def test_run_dir_auto_discovers_apollo_hdmap_projection(tmp_path: Path) -> None:
     run_dir = _make_run_dir(tmp_path / "run")
     projection_path = run_dir / "artifacts" / "apollo_hdmap_projection.jsonl"

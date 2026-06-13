@@ -539,3 +539,19 @@ nearest-lane projection only, missing `apollo_hdmap_projection.jsonl`, and
 missing `apollo_reference_line_contract_report.json`. These modes may still be
 useful diagnostics, but they must keep the natural-driving verdict at
 `insufficient_data`, `diagnostic_only`, or non-claim `warn`.
+
+## Runtime Stats Refresh Boundary
+
+When an online run contains `artifacts/cyber_bridge_stats.json` with canonical
+localization metadata, `tools/analyze_apollo_localization_contract.py --run-dir`
+may regenerate a claim-grade localization report even if an older placeholder
+report under `analysis/localization_contract/` was stale. The analyzer should
+prefer runtime fields such as `header.frame_id`, `measurement_time`,
+`heading_source`, `orientation_convention`, verified vehicle reference, and
+speed/yaw-rate consistency over legacy report placeholders.
+
+This refresh only proves the GT localization contract layer. It does not prove
+Apollo HDMap lane equivalence or Planning reference-line closure. If
+`apollo_hdmap_projection.jsonl` is empty or missing, the run remains blocked at
+the HDMap/reference-line layer, even when localization itself is `warn` or
+`pass` with `claim_grade=true`.

@@ -754,3 +754,29 @@ and an invalid Apollo map contract should show
 `first_blocker=goal_projection_unavailable/map_contract_invalid` before any
 Planning or control symptom. This command does not replace detailed artifact
 review for Apollo/Town01 capability promotion.
+
+## P0/P1 Claim Evidence Refresh Rules
+
+Postprocess may regenerate `localization_contract_report.json` and
+`chassis_gt_contract_report.json` from `artifacts/cyber_bridge_stats.json` when
+the bridge recorded canonical GT localization/chassis metadata. This fallback is
+intended to prevent stale placeholder reports from hiding real runtime evidence.
+It does not relax the claim gate: localization and chassis still need
+`claim_grade=true`, no blocking reasons, and explicit frame / VRP / time-source
+metadata before `natural_driving_report.json` can record a natural-driving pass.
+
+`artifacts/apollo_hdmap_projection.jsonl` is different. An empty file is
+reported as `empty_reason=apollo_hdmap_projection_artifact_empty_no_exported_rows`
+with a next action to run `tools/export_apollo_hdmap_projection.py` against
+Apollo's HDMap API. Empty or missing projection evidence keeps
+`apollo_route_contract_report.json`, `apollo_reference_line_contract_report.json`,
+and `natural_driving_report.json` non-claim-grade. CARLA waypoint projection,
+nearest-lane debug rows, and Planning trajectory rows cannot substitute for
+`source="apollo_hdmap_api"` projection samples.
+
+Single-run postprocess should still materialize
+`analysis/natural_driving/natural_driving_report.json` and
+`analysis/control_attribution/control_attribution_report.json` even when the run
+fails. These reports are failure evidence, not a pass. A failing control
+attribution report should be treated as secondary if route / HDMap /
+reference-line contracts are still insufficient.

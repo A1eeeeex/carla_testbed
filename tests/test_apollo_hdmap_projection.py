@@ -46,6 +46,8 @@ def test_empty_projection_artifact_is_distinct_from_missing(tmp_path: Path) -> N
     assert report["artifact_status"] == "artifact_empty"
     assert report["artifact_file_exists"] is True
     assert report["projection"]["file_present"] is True
+    assert report["projection"]["empty_reason"] == "apollo_hdmap_projection_artifact_empty_no_exported_rows"
+    assert "export_apollo_hdmap_projection.py" in report["projection"]["next_action"]
     assert "apollo_hdmap_projection_empty" in report["warnings"]
     assert "apollo_hdmap_projection_rows" in report["missing_fields"]
 

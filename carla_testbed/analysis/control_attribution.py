@@ -26,15 +26,23 @@ DEFAULT_THRESHOLDS = {
 CONTROL_FIELD_ALIASES = {
     "apollo_steer_raw": [
         "apollo_steer_raw",
+        "apollo_raw.steer",
+        "parsed_control.steer",
         "apollo_desired_steer",
         "steering_target",
+        "raw_control_msg_dump.steering_target",
         "source_steer",
         "control_steer_raw",
         "steering_normalized_for_mapping",
+        "parsed_control.steering_normalized_for_mapping",
+        "output_to_carla.steering_normalized_for_mapping",
     ],
     "bridge_steer_mapped": [
         "bridge_steer_mapped",
+        "bridge_mapped.steer",
+        "bridge_mapped.mapped_carla_steer_cmd",
         "mapped_carla_steer_cmd",
+        "output_to_carla.mapped_carla_steer_cmd",
         "mapped_steer",
         "control_steer_mapped",
         "commanded_steer",
@@ -43,6 +51,7 @@ CONTROL_FIELD_ALIASES = {
     ],
     "carla_steer_applied": [
         "carla_steer_applied",
+        "carla_applied.steer",
         "measured_steer",
         "applied_steer",
         "vehicle_steer_applied",
@@ -54,12 +63,30 @@ CONTROL_FIELD_ALIASES = {
         "yaw_rate",
         "vehicle_yaw_rate",
     ],
-    "throttle_raw": ["throttle_raw", "apollo_desired_throttle"],
-    "throttle_mapped": ["throttle_mapped", "mapped_throttle_cmd", "commanded_throttle", "cmd_throttle", "clamped_throttle"],
-    "throttle_applied": ["throttle_applied", "measured_throttle", "applied_throttle"],
-    "brake_raw": ["brake_raw", "apollo_desired_brake"],
-    "brake_mapped": ["brake_mapped", "mapped_brake_cmd", "commanded_brake", "cmd_brake", "clamped_brake"],
-    "brake_applied": ["brake_applied", "measured_brake", "applied_brake"],
+    "throttle_raw": ["throttle_raw", "apollo_raw.throttle", "parsed_control.throttle", "apollo_desired_throttle"],
+    "throttle_mapped": [
+        "throttle_mapped",
+        "bridge_mapped.throttle",
+        "bridge_mapped.mapped_throttle_cmd",
+        "mapped_throttle_cmd",
+        "output_to_carla.mapped_throttle_cmd",
+        "commanded_throttle",
+        "cmd_throttle",
+        "clamped_throttle",
+    ],
+    "throttle_applied": ["throttle_applied", "carla_applied.throttle", "measured_throttle", "applied_throttle"],
+    "brake_raw": ["brake_raw", "apollo_raw.brake", "parsed_control.brake", "apollo_desired_brake"],
+    "brake_mapped": [
+        "brake_mapped",
+        "bridge_mapped.brake",
+        "bridge_mapped.mapped_brake_cmd",
+        "mapped_brake_cmd",
+        "output_to_carla.mapped_brake_cmd",
+        "commanded_brake",
+        "cmd_brake",
+        "clamped_brake",
+    ],
+    "brake_applied": ["brake_applied", "carla_applied.brake", "measured_brake", "applied_brake"],
     "control_latency_ms": ["control_latency_ms"],
     "steer_scale": ["steer_scale"],
     "steering_sign": ["steering_sign", "steer_sign"],
@@ -223,6 +250,9 @@ def analyze_control_attribution(
         applied_available=applied_available,
         raw_to_mapped=raw_to_mapped,
         mapped_to_applied=mapped_to_applied,
+        throttle_consistency=throttle_consistency,
+        brake_consistency=brake_consistency,
+        thresholds=active_thresholds,
         vehicle_response=vehicle_response,
         source_semantics=source_semantics,
     )
@@ -395,6 +425,9 @@ def _dominant_breakpoint(
     applied_available: bool,
     raw_to_mapped: Mapping[str, Any],
     mapped_to_applied: Mapping[str, Any],
+    throttle_consistency: Mapping[str, Any],
+    brake_consistency: Mapping[str, Any],
+    thresholds: Mapping[str, float],
     vehicle_response: Mapping[str, Any],
     source_semantics: Mapping[str, Any],
 ) -> str:
@@ -408,11 +441,37 @@ def _dominant_breakpoint(
         return "insufficient_data"
     if mapped_to_applied.get("status") == "fail":
         return "carla_apply"
+    longitudinal_breakpoint = _longitudinal_dominant_breakpoint(
+        throttle_consistency,
+        brake_consistency,
+        thresholds=thresholds,
+    )
+    if longitudinal_breakpoint is not None:
+        return longitudinal_breakpoint
     if vehicle_response.get("status") == "fail":
         return "vehicle_response"
     if source_semantics.get("status") == "fail":
         return "source_control_semantics"
     return "none"
+
+
+def _longitudinal_dominant_breakpoint(
+    throttle_consistency: Mapping[str, Any],
+    brake_consistency: Mapping[str, Any],
+    *,
+    thresholds: Mapping[str, float],
+) -> str | None:
+    threshold = float(thresholds["max_longitudinal_error_p95"])
+    for consistency in (throttle_consistency, brake_consistency):
+        if consistency.get("status") != "fail":
+            continue
+        raw_to_mapped = _num(consistency.get("raw_to_mapped_error_p95"))
+        mapped_to_applied = _num(consistency.get("mapped_to_applied_error_p95"))
+        if raw_to_mapped is not None and raw_to_mapped > threshold:
+            return "bridge_mapping"
+        if mapped_to_applied is not None and mapped_to_applied > threshold:
+            return "carla_apply"
+    return None
 
 
 def _raw_to_mapped_steer_consistency(
@@ -603,7 +662,7 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
             if isinstance(payload, dict):
-                rows.append(payload)
+                rows.append(_flatten_row(payload))
         return rows
     with path.open(encoding="utf-8", newline="") as handle:
         return [dict(row) for row in csv.DictReader(handle)]
@@ -617,6 +676,12 @@ def _read_json(path: Path) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _flatten_row(payload: Mapping[str, Any]) -> dict[str, Any]:
+    flattened = dict(payload)
+    flattened.update(_flatten_mapping(payload))
+    return flattened
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:

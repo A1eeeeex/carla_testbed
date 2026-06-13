@@ -133,6 +133,19 @@ def test_mapped_ok_applied_wrong_is_carla_apply(tmp_path: Path) -> None:
     assert report["attribution"]["mapped_to_applied_steer_consistency"]["status"] == "fail"
 
 
+def test_longitudinal_raw_mapped_mismatch_is_bridge_mapping(tmp_path: Path) -> None:
+    rows = _base_rows()
+    for row in rows:
+        row["throttle_raw"] = 0.2
+        row["throttle_mapped"] = 0.6
+        row["throttle_applied"] = 0.6
+        row["ego_yaw_rate"] = 0.04
+    report = _analyze(tmp_path, rows)
+    assert report["attribution"]["dominant_breakpoint"] == "bridge_mapping"
+    assert report["attribution"]["throttle_raw_mapped_applied_consistency"]["status"] == "fail"
+    assert report["verdict"]["status"] == "fail"
+
+
 def test_applied_ok_yaw_rate_no_response_is_vehicle_response(tmp_path: Path) -> None:
     rows = _base_rows()
     for row in rows:
