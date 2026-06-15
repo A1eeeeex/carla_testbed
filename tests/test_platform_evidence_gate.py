@@ -554,7 +554,9 @@ def test_cli_pack_includes_analysis_but_skips_large_artifacts(tmp_path: Path) ->
     assert "analysis/gate/gate_report.json" in payload["included_files"]
     assert all("video/" not in item for item in payload["included_files"])
     assert payload["status"] == "insufficient_data"
+    assert payload["package_raw_evidence_complete"] is False
     assert "artifacts/topic_publish_stats.jsonl" in payload["missing_required_files"]
+    assert "artifacts/topic_publish_stats.jsonl" in payload["missing_full_artifacts"]
 
 
 def test_claim_pack_includes_row_level_evidence_when_present(tmp_path: Path) -> None:
@@ -596,6 +598,8 @@ def test_claim_pack_includes_row_level_evidence_when_present(tmp_path: Path) -> 
 
     assert payload["status"] == "pass"
     assert payload["claim_reproducibility_level"] == "row_level_evidence_present"
+    assert payload["package_raw_evidence_complete"] is True
+    assert payload["missing_full_artifacts"] == []
     assert "artifacts/topic_publish_stats.jsonl" in payload["included_files"]
     assert "artifacts/routing_event_debug.jsonl" in payload["included_files"]
     assert "artifacts/planning_route_segment_debug.jsonl" in payload["included_files"]
@@ -605,7 +609,17 @@ def test_claim_pack_includes_row_level_evidence_when_present(tmp_path: Path) -> 
         "row_level_samples/artifacts/topic_publish_stats.jsonl.head.jsonl"
         in payload["included_files"]
     )
+    assert (
+        "row_level_samples/artifacts/topic_publish_stats.jsonl.head.jsonl"
+        in payload["sampled_artifacts"]
+    )
     with tarfile.open(out, "r:gz") as archive:
+        manifest_payload = json.loads(
+            archive.extractfile("run/package_manifest.json").read().decode("utf-8")
+        )
+        assert manifest_payload["package_raw_evidence_complete"] is True
+        assert manifest_payload["missing_full_artifacts"] == []
+        assert manifest_payload["sampled_artifacts"]
         index_member = archive.extractfile("run/row_level_evidence_index.json")
         assert index_member is not None
         index = json.loads(index_member.read().decode("utf-8"))
@@ -720,6 +734,7 @@ def test_claim_pack_marks_fixed_scene_summary_only_when_row_level_missing(tmp_pa
     payload = json.loads(result.stdout)
 
     assert payload["status"] == "insufficient_data"
+    assert payload["package_raw_evidence_complete"] is False
     assert payload["claim_reproducibility_level"] == "summary_only_missing_fixed_scene_row_level"
     assert "artifacts/fixed_scene_runtime_state.json" in payload["missing_required_files"]
     assert "artifacts/scenario_actor_trace.jsonl" in payload["missing_required_files"]

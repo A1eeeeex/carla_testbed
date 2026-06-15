@@ -192,6 +192,8 @@ run-local diagnostics include:
 - `analysis/control_health/control_health_report.json`
 - `analysis/apollo_link_health/apollo_link_health_report.json`
 - `analysis/apollo_link_health/apollo_link_health_summary.md`
+- `analysis/gt_replacement_evidence/gt_replacement_evidence_report.json`
+- `analysis/gt_replacement_evidence/gt_replacement_evidence_summary.md`
 - `analysis/failure_timeline/failure_timeline_report.json`
 - `analysis/route_start_alignment/route_start_alignment_report.json`
 - `analysis/artifact_completeness/artifact_completeness_report.json`
@@ -223,6 +225,10 @@ exist, it also reports top gap windows with skip-reason and CARLA tick-stage
 correlation. It must not turn a channel-health failure into a pass; instead it
 should explain whether the next fix belongs in GT publisher cadence, Apollo
 output cadence, artifact delivery/time-axis interpretation, or missing evidence.
+The top-level `primary_gap_source`, `top_gap_window`, `carla_tick_stage`,
+`publish_skip_reason`, and `artifact_writer_lag_ms` fields are the operator
+attribution surface. If the publish gap trace is absent, the report must say
+`missing_publish_gap_trace` instead of guessing a source.
 
 `artifact_completeness_report.json` separates declared summary/report
 completeness from physical raw evidence completeness. Claim or materialization
@@ -606,6 +612,11 @@ and top-level fields so an external reviewer can sanity-check raw evidence
 without unpacking large media or reading every row. Missing row-level evidence
 keeps a claim package at summary-only review level; it must not be described as
 claim-grade natural driving evidence.
+The package manifest also separates `package_raw_evidence_complete` from package
+file completeness. `sampled_artifacts` are audit samples only, and
+`missing_full_artifacts` lists raw evidence required by the source run but not
+present in the package/source directory. A package that contains only head/tail
+samples is not full online evidence.
 
 The row-level index is review scaffolding, not a pass condition by itself.
 Analyzer reports still decide whether channel health, route contract, HDMap
@@ -793,6 +804,21 @@ Apollo's HDMap API. Empty or missing projection evidence keeps
 and `natural_driving_report.json` non-claim-grade. CARLA waypoint projection,
 nearest-lane debug rows, and Planning trajectory rows cannot substitute for
 `source="apollo_hdmap_api"` projection samples.
+When route/lane-equivalence coverage is being validated, export start/goal and
+route samples explicitly:
+
+```bash
+python tools/export_apollo_hdmap_projection.py \
+  --run-dir <run_dir> \
+  --include-start-goal \
+  --include-route-samples \
+  --max-samples 500 \
+  --min-route-s-coverage 50 \
+  --out <run_dir>/artifacts/apollo_hdmap_projection.jsonl
+```
+
+The exporter status records `failure_reason`, requested route-s coverage,
+observed `projection_s_coverage_m`, and non-ok projection status counts.
 
 Single-run postprocess should still materialize
 `analysis/natural_driving/natural_driving_report.json` and
@@ -800,3 +826,9 @@ Single-run postprocess should still materialize
 fails. These reports are failure evidence, not a pass. A failing control
 attribution report should be treated as secondary if route / HDMap /
 reference-line contracts are still insufficient.
+
+`analysis/gt_replacement_evidence/gt_replacement_evidence_report.json`
+materializes the runtime view of `apollo_gt_replacement_matrix.yaml`. It lists
+native, GT-replaced, CARLA-replaced, and bypassed modules; observed and missing
+required evidence; per-module claim-grade status; and replacement blockers. It
+is an audit surface, not a new pass condition.

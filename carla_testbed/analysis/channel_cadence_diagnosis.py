@@ -166,7 +166,11 @@ def analyze_channel_cadence_diagnosis(
     if not carla_tick_health_summary:
         warnings.append("carla_tick_health_summary_missing")
     if not publish_gap_summary:
-        warnings.append("publish_gap_trace_missing")
+        warnings.append("missing_publish_gap_trace")
+        missing_artifacts.append("publish_gap_trace")
+    top_gap_windows = _top_gap_windows(channel_reports)
+    top_gap_window = top_gap_windows[0] if top_gap_windows else None
+    gap_attribution = _gap_attribution(top_gap_window)
 
     return {
         "schema_version": CHANNEL_CADENCE_DIAGNOSIS_SCHEMA_VERSION,
@@ -178,8 +182,13 @@ def analyze_channel_cadence_diagnosis(
         "status": status,
         "channel_health_status": channel_health.get("status"),
         "channels": channel_reports,
-        "top_gap_windows": _top_gap_windows(channel_reports),
+        "top_gap_windows": top_gap_windows,
+        "top_gap_window": top_gap_window,
         "primary_cadence_issue": primary,
+        "primary_gap_source": gap_attribution["primary_gap_source"],
+        "carla_tick_stage": gap_attribution["carla_tick_stage"],
+        "publish_skip_reason": gap_attribution["publish_skip_reason"],
+        "artifact_writer_lag_ms": gap_attribution["artifact_writer_lag_ms"],
         "blocking_reasons": sorted(set(blocking_reasons)),
         "warnings": sorted(set(warnings)),
         "missing_artifacts": sorted(set(missing_artifacts)),
@@ -219,6 +228,10 @@ def channel_cadence_diagnosis_summary_md(report: Mapping[str, Any]) -> str:
         f"- Status: `{report.get('status')}`",
         f"- Channel-health status: `{report.get('channel_health_status')}`",
         f"- Primary cadence issue: `{report.get('primary_cadence_issue')}`",
+        f"- Primary gap source: `{report.get('primary_gap_source')}`",
+        f"- CARLA tick stage: `{report.get('carla_tick_stage')}`",
+        f"- Publish skip reason: `{report.get('publish_skip_reason')}`",
+        f"- Artifact writer lag ms: `{report.get('artifact_writer_lag_ms')}`",
         f"- Blocking reasons: `{', '.join(report.get('blocking_reasons') or []) or 'none'}`",
         f"- Warnings: `{', '.join(report.get('warnings') or []) or 'none'}`",
         f"- Next action: `{report.get('next_action')}`",
@@ -482,6 +495,71 @@ def _top_gap_windows(channel_reports: Mapping[str, Mapping[str, Any]]) -> list[d
     return windows[:8]
 
 
+def _gap_attribution(window: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(window, Mapping):
+        return {
+            "primary_gap_source": "missing_gap_window",
+            "carla_tick_stage": None,
+            "publish_skip_reason": None,
+            "artifact_writer_lag_ms": None,
+        }
+    publish = (
+        window.get("publish_gap_correlation")
+        if isinstance(window.get("publish_gap_correlation"), Mapping)
+        else {}
+    )
+    tick = (
+        window.get("carla_tick_correlation")
+        if isinstance(window.get("carla_tick_correlation"), Mapping)
+        else {}
+    )
+    skip_counts = publish.get("skip_reason_counts") if isinstance(publish.get("skip_reason_counts"), Mapping) else {}
+    dominant_skip = _dominant_skip_reason(skip_counts)
+    carla_tick_stage = tick.get("max_stage_name")
+    artifact_writer_lag_ms = _first_num(
+        publish,
+        "max_artifact_writer_queue_lag_ms",
+        "artifact_writer_queue_lag_ms",
+        "max_writer_write_duration_ms",
+    )
+    max_queue_depth = _int(publish.get("max_async_queue_depth"))
+    artifact_backpressure_count = _int(publish.get("artifact_backpressure_count")) or 0
+    if artifact_backpressure_count > 0 or (max_queue_depth is not None and max_queue_depth >= 4096):
+        primary = "artifact_writer_backpressure"
+    elif dominant_skip == "publish_loop_overrun":
+        primary = "gt_publish_loop_overrun"
+    elif dominant_skip == "stale_sample_skipped":
+        primary = "stale_sample_skip"
+    elif carla_tick_stage:
+        primary = f"carla_tick_stage:{carla_tick_stage}"
+    elif dominant_skip:
+        primary = f"publish_skip:{dominant_skip}"
+    else:
+        primary = "undetermined_gap_source"
+    return {
+        "primary_gap_source": primary,
+        "carla_tick_stage": carla_tick_stage,
+        "publish_skip_reason": dominant_skip,
+        "artifact_writer_lag_ms": artifact_writer_lag_ms,
+    }
+
+
+def _dominant_skip_reason(skip_counts: Mapping[str, Any]) -> str | None:
+    best_reason: str | None = None
+    best_count = -1
+    for reason, value in skip_counts.items():
+        count = _int(value)
+        if count is None or count <= 0:
+            continue
+        text = str(reason)
+        if text == "none":
+            continue
+        if count > best_count:
+            best_reason = text
+            best_count = count
+    return best_reason
+
+
 def _summarize_window_publish_gap(
     *,
     rows: Sequence[Mapping[str, Any]],
@@ -504,6 +582,7 @@ def _summarize_window_publish_gap(
     skipped = 0
     max_loop_ms: float | None = None
     max_writer_ms: float | None = None
+    max_writer_lag_ms: float | None = None
     max_queue_depth: int | None = None
     backpressure_count = 0
     for row in selected:
@@ -516,6 +595,11 @@ def _summarize_window_publish_gap(
                 skipped += 1
         max_loop_ms = _max_num(max_loop_ms, row.get("publish_loop_duration_ms"))
         max_writer_ms = _max_num(max_writer_ms, row.get("writer_write_duration_ms_max"), row.get("writer_write_duration_ms"))
+        max_writer_lag_ms = _max_num(
+            max_writer_lag_ms,
+            row.get("artifact_writer_queue_lag_ms_max"),
+            row.get("artifact_writer_queue_lag_ms"),
+        )
         queue_depth = _int(row.get("async_queue_depth_max")) or _int(row.get("async_queue_depth"))
         if queue_depth is not None:
             max_queue_depth = queue_depth if max_queue_depth is None else max(max_queue_depth, queue_depth)
@@ -528,6 +612,7 @@ def _summarize_window_publish_gap(
         "skipped_count": skipped,
         "max_publish_loop_duration_ms": max_loop_ms,
         "max_writer_write_duration_ms": max_writer_ms,
+        "max_artifact_writer_queue_lag_ms": max_writer_lag_ms,
         "max_async_queue_depth": max_queue_depth,
         "artifact_backpressure_count": backpressure_count,
     }
@@ -711,6 +796,7 @@ def _summarize_publish_gap_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, 
     }
     max_loop_ms: float | None = None
     max_writer_ms: float | None = None
+    max_writer_lag_ms: float | None = None
     max_queue_depth: int | None = None
     backpressure_count = 0
     for row in rows:
@@ -723,6 +809,11 @@ def _summarize_publish_gap_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, 
                 by_channel[name]["skipped"] += 1
         max_loop_ms = _max_num(max_loop_ms, row.get("publish_loop_duration_ms"))
         max_writer_ms = _max_num(max_writer_ms, row.get("writer_write_duration_ms_max"), row.get("writer_write_duration_ms"))
+        max_writer_lag_ms = _max_num(
+            max_writer_lag_ms,
+            row.get("artifact_writer_queue_lag_ms_max"),
+            row.get("artifact_writer_queue_lag_ms"),
+        )
         queue_depth = _int(row.get("async_queue_depth_max")) or _int(row.get("async_queue_depth"))
         if queue_depth is not None:
             max_queue_depth = queue_depth if max_queue_depth is None else max(max_queue_depth, queue_depth)
@@ -734,6 +825,7 @@ def _summarize_publish_gap_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, 
         "by_channel": by_channel,
         "max_publish_loop_duration_ms": max_loop_ms,
         "max_writer_write_duration_ms": max_writer_ms,
+        "max_artifact_writer_queue_lag_ms": max_writer_lag_ms,
         "max_async_queue_depth": max_queue_depth,
         "artifact_backpressure_count": backpressure_count,
     }

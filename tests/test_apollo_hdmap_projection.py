@@ -290,6 +290,33 @@ def test_projection_sample_limit_evenly_covers_source_window(tmp_path: Path) -> 
     assert [sample.source_index for sample in samples] == [0, 25, 50, 75, 100]
 
 
+def test_projection_samples_can_include_route_json_start_goal(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    route = {
+        "points": [
+            {"x": 1.0, "y": 2.0, "heading": 0.1},
+            {"x": 2.0, "y": 2.5, "heading": 0.2},
+            {"x": 3.0, "y": 3.0, "heading": 0.3},
+        ]
+    }
+    (run_dir / "route.json").parent.mkdir(parents=True, exist_ok=True)
+    (run_dir / "route.json").write_text(json.dumps(route), encoding="utf-8")
+
+    samples = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_start_goal=True,
+        include_route_samples=True,
+        max_samples=0,
+    )
+
+    assert [(sample.x, sample.y, sample.heading) for sample in samples] == [
+        (1.0, 2.0, 0.1),
+        (3.0, 3.0, 0.3),
+        (2.0, 2.5, 0.2),
+    ]
+    assert all(sample.source_artifact.endswith("route.json") for sample in samples)
+
+
 def test_export_projection_jsonl_with_mocked_apollo_map_xysl(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_jsonl(
@@ -330,6 +357,37 @@ def test_export_projection_jsonl_with_mocked_apollo_map_xysl(tmp_path: Path) -> 
     assert rows[0]["projection_s"] == 66.746709
     assert rows[0]["lateral_error_m"] == 0.508728
     assert abs(rows[0]["heading_error_rad"] - (1.570800987 - 1.570666)) < 1e-9
+
+
+def test_export_projection_records_requested_route_s_coverage_gap(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "route.json").parent.mkdir(parents=True, exist_ok=True)
+    (run_dir / "route.json").write_text(
+        json.dumps({"points": [{"x": 1.0, "y": 2.0, "heading": 0.0}, {"x": 2.0, "y": 2.0, "heading": 0.0}]}),
+        encoding="utf-8",
+    )
+
+    def fake_runner(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="lane_id[15_1_1], s[10.0], l[0.1], heading[0.0]\n",
+            stderr="",
+        )
+
+    out_path = run_dir / "artifacts" / "apollo_hdmap_projection.jsonl"
+    status = export_apollo_hdmap_projection_jsonl(
+        run_dir=run_dir,
+        out_path=out_path,
+        include_route_samples=True,
+        min_route_s_coverage=20.0,
+        command_runner=fake_runner,
+    )
+
+    assert status["status"] == "warn"
+    assert status["failure_reason"] == "route_s_coverage_below_requested_min"
+    assert status["projection_s_coverage_m"] == 0.0
+    assert "apollo_hdmap_projection_route_s_coverage_below_requested_min" in status["warnings"]
 
 
 def test_export_projection_jsonl_records_map_xysl_timeout(tmp_path: Path) -> None:

@@ -52,6 +52,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--include-route-samples",
+        action="store_true",
+        help="Also project route.json points so route-s coverage can become claim-grade.",
+    )
+    parser.add_argument(
+        "--include-start-goal",
+        action="store_true",
+        help="Also project route start and goal points when route.json is available.",
+    )
+    parser.add_argument(
+        "--min-route-s-coverage",
+        type=float,
+        default=None,
+        help="Warn when exported projection_s coverage is below this many meters.",
+    )
+    parser.add_argument(
         "--no-docker",
         action="store_true",
         help="Run map_xysl directly on the host instead of docker exec.",
@@ -90,6 +106,9 @@ def main(argv: list[str] | None = None) -> int:
         out_path=out_path,
         config=cfg,
         max_samples=args.max_samples,
+        include_route_samples=args.include_route_samples,
+        include_start_goal=args.include_start_goal,
+        min_route_s_coverage=args.min_route_s_coverage,
     )
     payload: dict[str, object] = {"export": export_status}
     exit_ok = export_status["status"] in {"pass", "warn"}

@@ -297,6 +297,7 @@ def analyze_apollo_route_contract(
         apollo_lane_window_count=apollo_lane_window_count,
         expected_lane_window_count=expected_lane_window_count,
         directly_comparable=lane_namespaces_directly_comparable,
+        projection_source=projection.get("source"),
     )
 
     route_identity = _route_identity(
@@ -491,6 +492,10 @@ def build_route_definition_claim(report: Mapping[str, Any]) -> dict[str, Any]:
         "scenario_route_samples": list(configured.get("route_trace_samples") or []),
         "scenario_route_sample_count": configured.get("route_trace_point_count"),
         "scenario_lane_namespace": report.get("scenario_lane_namespace"),
+        "namespace": {
+            "scenario": report.get("scenario_lane_namespace"),
+            "apollo": report.get("apollo_lane_namespace"),
+        },
         "scenario_lane_window_signature": _sequence_signature(
             report.get("scenario_route_lane_sequence") or report.get("scenario_route_lane_keys") or []
         ),
@@ -502,6 +507,15 @@ def build_route_definition_claim(report: Mapping[str, Any]) -> dict[str, Any]:
         "apollo_lane_window_count": report.get("apollo_routing_lane_window_count"),
         "planning_lane_window_signature": planning_segment.get("routing_lane_window_signature"),
         "planning_lane_window_count": planning_segment.get("routing_lane_window_count"),
+        "lane_window_signature": {
+            "scenario": _sequence_signature(
+                report.get("scenario_route_lane_sequence") or report.get("scenario_route_lane_keys") or []
+            ),
+            "apollo": report.get("apollo_routing_lane_signature"),
+            "planning": planning_segment.get("routing_lane_window_signature"),
+        },
+        "projection_source": lane_equivalence.get("projection_source"),
+        "equivalence_table": list(lane_equivalence.get("equivalence_table") or []),
         "start": {
             "scenario_lane_id": report.get("scenario_start_lane"),
             "scenario_xy_carla": report.get("scenario_start_xy_carla"),
@@ -1238,7 +1252,7 @@ def _projection_route(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     official = [row for row in rows if str(row.get("source") or "") == "apollo_hdmap_api"]
     lanes = sorted({_lane_key(str(row.get("nearest_lane_id") or "")) for row in official if row.get("nearest_lane_id")})
     lanes = [lane for lane in lanes if lane]
-    return {"available": bool(official), "lane_keys": lanes}
+    return {"available": bool(official), "lane_keys": lanes, "source": "apollo_hdmap_api" if official else None}
 
 
 def _lane_equivalence_report(
@@ -1255,6 +1269,7 @@ def _lane_equivalence_report(
     apollo_lane_window_count: int | None,
     expected_lane_window_count: int,
     directly_comparable: bool,
+    projection_source: str | None,
 ) -> dict[str, Any]:
     scenario_sequence_text = [str(item) for item in scenario_sequence if str(item or "").strip()]
     apollo_sequence_text = [str(item) for item in apollo_sequence if str(item or "").strip()]
@@ -1278,6 +1293,8 @@ def _lane_equivalence_report(
         "apollo_lane_sequence": apollo_sequence_text,
         "scenario_lane_signature": _sequence_signature(scenario_sequence_text),
         "apollo_lane_signature": _sequence_signature(apollo_sequence_text),
+        "projection_source": projection_source,
+        "equivalence_table": _lane_equivalence_table(scenario_sequence_text, apollo_sequence_text),
         "missing_scenario_lane_keys": list(missing_scenario_lane_keys),
         "apollo_extra_lane_keys": list(apollo_extra_lane_keys),
         "shared_lane_keys": sorted(scenario_keys & apollo_keys),
@@ -1302,6 +1319,26 @@ def _lane_equivalence_report(
             "lane-equivalence artifact; set overlap alone is not claim-grade."
         ),
     }
+
+
+def _lane_equivalence_table(
+    scenario_sequence: Sequence[str],
+    apollo_sequence: Sequence[str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    max_len = max(len(scenario_sequence), len(apollo_sequence))
+    for index in range(max_len):
+        scenario_lane = scenario_sequence[index] if index < len(scenario_sequence) else None
+        apollo_lane = apollo_sequence[index] if index < len(apollo_sequence) else None
+        rows.append(
+            {
+                "index": index,
+                "scenario_lane_key": scenario_lane,
+                "apollo_lane_key": apollo_lane,
+                "exact_match": bool(scenario_lane is not None and scenario_lane == apollo_lane),
+            }
+        )
+    return rows
 
 
 def _first_sequence_mismatch_index(left: Sequence[str], right: Sequence[str]) -> int | None:

@@ -47,6 +47,10 @@ from carla_testbed.analysis.failure_timeline import (
     analyze_failure_timeline_run_dir,
     write_failure_timeline_report,
 )
+from carla_testbed.analysis.gt_replacement_evidence import (
+    analyze_gt_replacement_evidence_run_dir,
+    write_gt_replacement_evidence_report,
+)
 from carla_testbed.analysis.localization_contract import ensure_localization_contract_report
 from carla_testbed.analysis.natural_driving import (
     TRAFFIC_LIGHT_SCENARIO_CLASSES,
@@ -242,6 +246,7 @@ def _postprocess_run_dir(
     )
     apollo_link_health_result = _ensure_apollo_link_health(run_dir, refresh=refresh)
     apollo_chain_completion_result = _ensure_apollo_chain_completion(run_dir, refresh=refresh)
+    gt_replacement_evidence_result = _ensure_gt_replacement_evidence(run_dir, refresh=refresh)
     completeness = check_run_artifact_completeness(run_dir, scenario_class=scenario_class)
     completeness_outputs = write_run_artifact_completeness_report(
         completeness,
@@ -272,6 +277,7 @@ def _postprocess_run_dir(
         "obstacle_gt_contract": obstacle_gt_contract_result,
         "apollo_link_health": apollo_link_health_result,
         "apollo_chain_completion": apollo_chain_completion_result,
+        "gt_replacement_evidence": gt_replacement_evidence_result,
         "artifact_completeness": {
             "status": completeness["status"],
             "artifact_complete": completeness["artifact_complete"],
@@ -1200,6 +1206,55 @@ def _apollo_chain_completion_raw_inputs_available(run_dir: Path) -> bool:
     ) is not None
 
 
+def _ensure_gt_replacement_evidence(run_dir: Path, *, refresh: bool) -> dict[str, Any]:
+    report_path = run_dir / "analysis" / "gt_replacement_evidence" / "gt_replacement_evidence_report.json"
+    existing = _find_first(
+        run_dir,
+        [
+            "analysis/gt_replacement_evidence/gt_replacement_evidence_report.json",
+            "gt_replacement_evidence_report.json",
+        ],
+    )
+    if existing is not None and not refresh:
+        report = _read_json(existing)
+        return {
+            "status": "existing",
+            "path": str(existing),
+            "report_status": report.get("verdict"),
+            "claim_grade": bool(report.get("gt_replacements_claim_grade")),
+        }
+    if existing is not None and not _apollo_chain_completion_raw_inputs_available(run_dir):
+        report = _copy_existing_report(
+            existing,
+            report_path,
+            summary_name="gt_replacement_evidence_summary.md",
+        )
+        return {
+            "status": "existing_report_copied",
+            "path": str(report_path),
+            "summary_path": str(report_path.with_name("gt_replacement_evidence_summary.md")),
+            "report_status": report.get("verdict"),
+            "claim_grade": bool(report.get("gt_replacements_claim_grade")),
+            "source_report": str(existing),
+        }
+    report = analyze_gt_replacement_evidence_run_dir(
+        run_dir,
+        reference_path=DEFAULT_APOLLO_REFERENCE_CHAIN,
+        replacement_path=DEFAULT_APOLLO_GT_REPLACEMENT_MATRIX,
+    )
+    outputs = write_gt_replacement_evidence_report(
+        report,
+        run_dir / "analysis" / "gt_replacement_evidence",
+    )
+    return {
+        "status": "generated",
+        "path": outputs["gt_replacement_evidence_report"],
+        "summary_path": outputs["gt_replacement_evidence_summary"],
+        "report_status": report.get("verdict"),
+        "claim_grade": bool(report.get("gt_replacements_claim_grade")),
+    }
+
+
 def _ensure_traffic_light_contract_report(
     run_dir: Path,
     *,
@@ -1522,8 +1577,8 @@ def _write_markdown(path: Path, report: Mapping[str, Any]) -> None:
         f"- route_start_probe_plan_status: `{probe_plan.get('status')}`",
         f"- route_start_probe_count: `{probe_plan.get('probe_count')}`",
         "",
-        "| run_id | scenario_class | artifact_status | route_health | route_curve_gap | apollo_route_contract | planning_materialization | module_consumption | prediction | apollo_hdmap_projection | apollo_reference_line | link_health | chain_completion | failure_timeline | route_start_alignment | channel_health | traffic_light_contract | traffic_light_behavior |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| run_id | scenario_class | artifact_status | route_health | route_curve_gap | apollo_route_contract | planning_materialization | module_consumption | prediction | gt_replacement | apollo_hdmap_projection | apollo_reference_line | link_health | chain_completion | failure_timeline | route_start_alignment | channel_health | traffic_light_contract | traffic_light_behavior |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for run in report.get("runs") or []:
         completeness = run.get("artifact_completeness") or {}
@@ -1533,6 +1588,7 @@ def _write_markdown(path: Path, report: Mapping[str, Any]) -> None:
         planning_materialization = run.get("planning_materialization") or {}
         module_consumption = run.get("apollo_module_consumption") or {}
         prediction = run.get("prediction_evidence") or {}
+        gt_replacement = run.get("gt_replacement_evidence") or {}
         hdmap_projection = run.get("apollo_hdmap_projection") or {}
         reference_line = run.get("apollo_reference_line_contract") or {}
         link_health = run.get("apollo_link_health") or {}
@@ -1550,6 +1606,7 @@ def _write_markdown(path: Path, report: Mapping[str, Any]) -> None:
             f"{planning_materialization.get('report_status') or planning_materialization.get('status')} | "
             f"{module_consumption.get('report_status') or module_consumption.get('status')} | "
             f"{prediction.get('report_status') or prediction.get('status')} | "
+            f"{gt_replacement.get('report_status') or gt_replacement.get('status')} | "
             f"{hdmap_projection.get('report_status') or hdmap_projection.get('status')} | "
             f"{reference_line.get('status')} | "
             f"{link_health.get('primary_blocker') or link_health.get('report_status') or link_health.get('status')} | "

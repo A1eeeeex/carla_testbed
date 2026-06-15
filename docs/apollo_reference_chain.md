@@ -361,6 +361,21 @@ Outputs:
 - compatible `apollo_link_health_report.json` and summary when requested by the
   wrapper
 
+For external review, also materialize the GT replacement audit view:
+
+```bash
+python tools/analyze_gt_replacement_evidence.py \
+  --run-dir <run_dir> \
+  --reference-chain configs/reference/apollo_reference_chain.yaml \
+  --replacement-matrix configs/reference/apollo_gt_replacement_matrix.yaml \
+  --out <run_dir>/analysis/gt_replacement_evidence
+```
+
+This report reuses the same chain-completion module statuses and exposes the
+replacement-specific questions: which GT/bypassed modules have observed
+evidence, which are claim-grade, and which replacement contracts still block
+truth-input closed-loop or no-interference natural-driving claims.
+
 Important boundaries:
 
 - `route_health.json` can prove CARLA route geometry, but it cannot by itself

@@ -578,6 +578,12 @@ def test_route_contract_writes_route_definition_claim_artifact(tmp_path: Path) -
     assert written["apollo_lane_sequence"] == ["15:1"]
     assert written["scenario_route_samples"]
     assert written["lane_equivalence"]["status"] == "direct_match"
+    assert written["namespace"] == {"scenario": "carla_waypoint", "apollo": "apollo_hdmap"}
+    assert written["lane_window_signature"]["scenario"] == "15:1"
+    assert written["lane_window_signature"]["apollo"] == "15_1_1"
+    assert written["projection_source"] == "apollo_hdmap_api"
+    assert written["equivalence_table"][0]["scenario_lane_key"] == "15:1"
+    assert written["equivalence_table"][0]["apollo_lane_key"] == "15:1"
     assert claim["scenario_lane_window_signature"] == "15:1"
 
 

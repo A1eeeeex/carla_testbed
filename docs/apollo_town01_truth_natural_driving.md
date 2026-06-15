@@ -786,6 +786,7 @@ Required run artifacts:
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`.
 - `analysis/control_health/control_health_report.json`.
 - `analysis/apollo_link_health/apollo_link_health_report.json`.
+- `analysis/gt_replacement_evidence/gt_replacement_evidence_report.json`.
 - `analysis/traffic_light_contract/traffic_light_contract_report.json` and
   `analysis/traffic_light/traffic_light_behavior_report.json` for
   traffic-light scenarios.
@@ -805,6 +806,9 @@ python tools/export_apollo_hdmap_projection.py \
   --base-map-filename base_map.txt \
   --map-name Town01 \
   --max-samples 250 \
+  --include-start-goal \
+  --include-route-samples \
+  --min-route-s-coverage 50 \
   --analyze
 python tools/analyze_apollo_hdmap_projection.py \
   --projection "$RUN/artifacts/apollo_hdmap_projection.jsonl" \
@@ -820,6 +824,8 @@ python tools/analyze_apollo_module_consumption.py --run-dir "$RUN" --out "$RUN/a
 python tools/analyze_apollo_prediction_evidence.py --run-dir "$RUN" --out "$RUN/analysis/prediction_evidence"
 python tools/analyze_apollo_control_handoff.py --run-dir "$RUN"
 python tools/analyze_apollo_link_health.py --run-dir "$RUN"
+python tools/analyze_apollo_chain_completion.py --run-dir "$RUN"
+python tools/analyze_gt_replacement_evidence.py --run-dir "$RUN"
 ```
 
 Required analyzer for the suite aggregate:
@@ -935,7 +941,8 @@ Recommended validation sequence:
 
 1. Offline: `python -m pytest -q`.
 2. Single-run postprocess: run the localization, reference-line,
-   control-handoff, and link-health analyzers listed above, then run
+   control-handoff, link-health, chain-completion, and GT replacement evidence
+   analyzers listed above, then run
    `python tools/analyze_town01_natural_driving.py --suite-root <suite> --out <suite>/analysis`.
 3. Strict postprocess: run
    `tools/postprocess_town01_natural_driving.py` with

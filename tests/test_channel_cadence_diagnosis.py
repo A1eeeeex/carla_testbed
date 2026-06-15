@@ -31,6 +31,10 @@ def test_isolated_header_sim_gap_is_blocking_but_diagnosed() -> None:
     assert report["schema_version"] == CHANNEL_CADENCE_DIAGNOSIS_SCHEMA_VERSION
     assert report["status"] == "fail"
     assert report["primary_cadence_issue"] == "localization:isolated_header_sim_gap_over_contract"
+    assert report["primary_gap_source"] == "stale_sample_skip"
+    assert report["publish_skip_reason"] == "stale_sample_skipped"
+    assert report["carla_tick_stage"] == "sensor_capture"
+    assert report["top_gap_window"]["channel_name"] == "localization"
     loc = report["channels"]["localization"]
     assert loc["cadence_class"] == "isolated_header_sim_gap"
     assert loc["suspected_layer"] == "gt_publish_cadence"
@@ -56,6 +60,8 @@ def test_slow_wall_delivery_does_not_mask_healthy_header_sim_cadence() -> None:
     assert loc["status"] == "warn"
     assert loc["cadence_class"] == "healthy_header_sim_cadence"
     assert "delivery_wall_hz_below_contract_but_header_sim_hz_ok" in loc["warnings"]
+    assert "missing_publish_gap_trace" in report["warnings"]
+    assert "publish_gap_trace" in report["missing_artifacts"]
     assert report["blocking_reasons"] == []
 
 

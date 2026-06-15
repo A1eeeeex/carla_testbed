@@ -251,6 +251,56 @@ def test_run_dir_obstacle_contract_generates_report_from_artifact(tmp_path: Path
     assert Path(outputs["obstacle_gt_contract_report"]).exists()
 
 
+def test_obstacle_gt_contract_skips_invalid_jsonl_tail_without_crashing(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifact = run_dir / "artifacts" / "obstacle_gt_contract.jsonl"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(json.dumps(_obstacle()) + "\n" + "\x00" * 32 + "\n", encoding="utf-8")
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="follow_stop")
+
+    assert report["status"] == "warn"
+    assert report["message_count"] == 1
+    assert report["source_row_count"] == 2
+    assert report["invalid_jsonl_row_count"] == 1
+    assert report["object_count"] == 1
+    assert "obstacle_gt_contract_invalid_jsonl_rows" in report["warnings"]
+    assert report["parse_errors"][0]["line_number"] == 2
+
+
+def test_obstacle_gt_contract_invalid_jsonl_only_is_insufficient_data(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifact = run_dir / "artifacts" / "obstacle_gt_contract.jsonl"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("\x00" * 32 + "\n", encoding="utf-8")
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="lane_keep")
+
+    assert report["status"] == "insufficient_data"
+    assert report["message_count"] == 0
+    assert report["source_row_count"] == 1
+    assert report["invalid_jsonl_row_count"] == 1
+    assert "obstacle_gt_contract_invalid_jsonl_rows" in report["warnings"]
+    assert "obstacle_gt_contract.valid_jsonl_rows" in report["missing_fields"]
+
+
+def test_empty_obstacle_messages_with_invalid_jsonl_tail_warn(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifact = run_dir / "artifacts" / "obstacle_gt_contract.jsonl"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(
+        json.dumps({"timestamp": 1.0, "published_obstacle_count": 0}) + "\n" + "\x00" * 32 + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="lane_keep")
+
+    assert report["status"] == "warn"
+    assert report["empty_obstacle_messages_healthy"] is True
+    assert report["invalid_jsonl_row_count"] == 1
+    assert "obstacle_gt_contract_invalid_jsonl_rows" in report["warnings"]
+
+
 def test_fixed_scene_actor_must_appear_in_obstacle_gt(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     artifacts = run_dir / "artifacts"

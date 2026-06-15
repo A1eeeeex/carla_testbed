@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 OBSTACLE_GT_CONTRACT_SCHEMA_VERSION = "obstacle_gt_contract.v1"
+_PARSE_ERROR_KEY = "_obstacle_gt_contract_parse_error"
 
 DYNAMIC_SCENARIO_CLASSES = {
     "cut_in",
@@ -98,6 +99,8 @@ def analyze_obstacle_gt_contract_records(
     fixed_scene_context: Mapping[str, Any] | None = None,
     traffic_flow_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    parse_error_records = [dict(record) for record in records if record.get(_PARSE_ERROR_KEY)]
+    valid_records = [record for record in records if not record.get(_PARSE_ERROR_KEY)]
     dynamic_required = (
         _scenario_requires_dynamic_obstacle(scenario_class)
         if dynamic_obstacle_required is None
@@ -114,7 +117,8 @@ def analyze_obstacle_gt_contract_records(
     object_results: list[dict[str, Any]] = []
     id_map: dict[str, str] = {}
     tracking_by_apollo_id: dict[str, float] = {}
-    message_count = len(records)
+    message_count = len(valid_records)
+    source_row_count = message_count + len(parse_error_records)
     empty_message_count = 0
     pedestrian_results: list[dict[str, Any]] = []
     fixed_scene = dict(fixed_scene_context or _fixed_scene_context_from_roles(fixed_scene_actor_roles))
@@ -146,6 +150,11 @@ def analyze_obstacle_gt_contract_records(
     if background_walker_actor_ids:
         pedestrian_required = True
 
+    if parse_error_records:
+        warnings.append("obstacle_gt_contract_invalid_jsonl_rows")
+        if not valid_records:
+            missing_fields.append("obstacle_gt_contract.valid_jsonl_rows")
+
     if fixed_scene_enabled and fixed_scene.get("runtime_state_missing"):
         missing_fields.append("fixed_scene_runtime_state_missing_for_obstacle_linkage")
     if fixed_scene_enabled and fixed_scene_expected_roles and not fixed_scene_actor_roles:
@@ -159,12 +168,12 @@ def analyze_obstacle_gt_contract_records(
         if missing_id_roles:
             missing_fields.append("fixed_scene_actor_id_missing")
 
-    if not records:
+    if not valid_records:
         missing_fields.append("obstacle_gt_contract.records")
         if pedestrian_required:
             missing_fields.append("pedestrian_obstacle_records")
 
-    for index, record in enumerate(records):
+    for index, record in enumerate(valid_records):
         objects = _record_objects(record)
         if not objects and _looks_like_object(record):
             objects = [record]
@@ -195,7 +204,7 @@ def analyze_obstacle_gt_contract_records(
             warnings.extend(result["warnings"])
             missing_fields.extend(result["missing_fields"])
 
-    if pedestrian_required and records and not pedestrian_results:
+    if pedestrian_required and valid_records and not pedestrian_results:
         errors.append("pedestrian_obstacle_section_missing")
     observed_carla_actor_ids = {
         str(result.get("carla_actor_id"))
@@ -210,7 +219,7 @@ def analyze_obstacle_gt_contract_records(
     background_walker_obstacle_count = len(background_walker_actor_ids & observed_carla_actor_ids)
     if (
         expected_fixed_scene_actor_ids
-        and records
+        and valid_records
         and scenario_actor_obstacle_count != len(expected_fixed_scene_actor_ids)
     ):
         errors.append("fixed_scene_actor_obstacle_count_mismatch")
@@ -230,7 +239,7 @@ def analyze_obstacle_gt_contract_records(
             status = "warn"
         else:
             status = "pass"
-    elif records and empty_message_count == message_count:
+    elif valid_records and empty_message_count == message_count:
         if dynamic_required:
             status = "fail"
             errors.append("required_dynamic_obstacle_missing")
@@ -245,6 +254,8 @@ def analyze_obstacle_gt_contract_records(
         status = "insufficient_data"
     if errors:
         status = "fail"
+    elif parse_error_records and status in {"pass", "pass_empty"}:
+        status = "warn"
     return {
         "schema_version": OBSTACLE_GT_CONTRACT_SCHEMA_VERSION,
         "status": status,
@@ -254,7 +265,7 @@ def analyze_obstacle_gt_contract_records(
         "message_count": message_count,
         "empty_message_count": empty_message_count,
         "empty_obstacle_messages_healthy": bool(
-            records and empty_message_count == message_count and not dynamic_required
+            valid_records and empty_message_count == message_count and not dynamic_required
         ),
         "object_count": len(object_results),
         "object_results": object_results,
@@ -331,6 +342,16 @@ def analyze_obstacle_gt_contract_records(
                 else ("pass" if background_vehicle_actor_ids or background_walker_actor_ids else "not_applicable")
             ),
         },
+        "source_row_count": source_row_count,
+        "invalid_jsonl_row_count": len(parse_error_records),
+        "parse_errors": [
+            {
+                "line_number": item.get("line_number"),
+                "error": item.get("error"),
+                "line_preview": item.get("line_preview"),
+            }
+            for item in parse_error_records[:10]
+        ],
         "errors": sorted(set(errors)),
         "warnings": sorted(set(warnings)),
         "missing_fields": sorted(set(missing_fields)),
@@ -470,7 +491,10 @@ def _read_records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     if path.suffix == ".json":
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            return [_parse_error_record(line_number=None, error=str(exc), line_preview="")]
         if isinstance(payload, list):
             return [item for item in payload if isinstance(item, dict)]
         if isinstance(payload, dict):
@@ -480,13 +504,38 @@ def _read_records(path: Path) -> list[dict[str, Any]]:
             return [payload]
         return []
     records: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
-        payload = json.loads(line)
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            records.append(
+                _parse_error_record(
+                    line_number=line_number,
+                    error=str(exc),
+                    line_preview=line,
+                )
+            )
+            continue
         if isinstance(payload, dict):
             records.append(payload)
     return records
+
+
+def _parse_error_record(
+    *,
+    line_number: int | None,
+    error: str,
+    line_preview: str,
+) -> dict[str, Any]:
+    preview = line_preview[:160].replace("\x00", "\\0")
+    return {
+        _PARSE_ERROR_KEY: True,
+        "line_number": line_number,
+        "error": error,
+        "line_preview": preview,
+    }
 
 
 def _find_first(root: Path, relatives: Sequence[str]) -> Path | None:

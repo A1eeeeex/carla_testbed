@@ -17,6 +17,9 @@ class PackageResult:
     missing_required_files: list[str]
     omitted_large_artifacts: list[str]
     claim_reproducibility_level: str
+    package_raw_evidence_complete: bool
+    sampled_artifacts: list[str]
+    missing_full_artifacts: list[str]
     status: str
 
     def to_dict(self) -> dict:
@@ -27,6 +30,9 @@ class PackageResult:
             "missing_required_files": list(self.missing_required_files),
             "omitted_large_artifacts": list(self.omitted_large_artifacts),
             "claim_reproducibility_level": self.claim_reproducibility_level,
+            "package_raw_evidence_complete": self.package_raw_evidence_complete,
+            "sampled_artifacts": list(self.sampled_artifacts),
+            "missing_full_artifacts": list(self.missing_full_artifacts),
             "status": self.status,
         }
 
@@ -127,7 +133,10 @@ def package_run_evidence(
     candidates = _candidate_files(root, profile=profile)
     missing_required = _missing_required(root, profile=profile)
     reproducibility = _claim_reproducibility_level(profile, missing_required)
+    missing_full_artifacts = list(missing_required)
+    package_raw_evidence_complete = bool(profile != "claim" or not missing_full_artifacts)
     status = "pass" if not missing_required else "insufficient_data"
+    sampled_artifacts: list[str] = []
     with tarfile.open(output, "w:gz") as archive:
         for path in candidates:
             rel = path.relative_to(root)
@@ -149,6 +158,11 @@ def package_run_evidence(
             for sample_rel, sample_text in sorted(row_level_samples.items()):
                 _add_bytes(archive, Path(root.name) / sample_rel, sample_text)
                 included.append(sample_rel)
+                sampled_artifacts.append(sample_rel)
+        if profile == "claim" and not row_level_index:
+            package_raw_evidence_complete = False
+            if "row_level_evidence_index.json" not in missing_full_artifacts:
+                missing_full_artifacts.append("row_level_evidence_index.json")
         manifest = {
             "schema_version": "evidence_package_manifest.v1",
             "profile": profile,
@@ -158,6 +172,9 @@ def package_run_evidence(
             "missing_required_files": sorted(missing_required),
             "omitted_large_artifacts": sorted(omitted_large),
             "claim_reproducibility_level": reproducibility,
+            "package_raw_evidence_complete": package_raw_evidence_complete,
+            "sampled_artifacts": sorted(sampled_artifacts),
+            "missing_full_artifacts": sorted(missing_full_artifacts),
             "status": status,
             "row_level_evidence_index": "row_level_evidence_index.json" if row_level_index else None,
             "source_context_requirements": _source_context_requirements(root),
@@ -175,6 +192,9 @@ def package_run_evidence(
         missing_required_files=sorted(missing_required),
         omitted_large_artifacts=sorted(omitted_large),
         claim_reproducibility_level=reproducibility,
+        package_raw_evidence_complete=package_raw_evidence_complete,
+        sampled_artifacts=sorted(sampled_artifacts),
+        missing_full_artifacts=sorted(missing_full_artifacts),
         status=status,
     )
 

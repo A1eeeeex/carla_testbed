@@ -5,6 +5,7 @@ import math
 import re
 import shlex
 import subprocess
+from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -47,6 +48,8 @@ def load_localization_projection_samples(
     run_dir: str | Path | None = None,
     input_path: str | Path | None = None,
     max_samples: int | None = 250,
+    include_route_samples: bool = False,
+    include_start_goal: bool = False,
 ) -> list[LocalizationProjectionSample]:
     """Load Apollo-map localization samples without depending on Apollo runtime.
 
@@ -68,6 +71,7 @@ def load_localization_projection_samples(
             ]
         )
 
+    selected_samples: list[LocalizationProjectionSample] = []
     seen: set[Path] = set()
     for path in candidates:
         if path in seen:
@@ -80,8 +84,15 @@ def load_localization_projection_samples(
         else:
             samples = _samples_from_json(path)
         if samples:
-            return _limit_samples(samples, max_samples=max_samples)
-    return []
+            selected_samples.extend(samples)
+            break
+    if run_dir and (include_route_samples or include_start_goal):
+        route_samples = _samples_from_route_json(Path(run_dir).expanduser() / "route.json")
+        if include_start_goal and route_samples:
+            selected_samples.extend([route_samples[0], route_samples[-1]])
+        if include_route_samples:
+            selected_samples.extend(route_samples)
+    return _limit_samples(_dedupe_samples(selected_samples), max_samples=max_samples)
 
 
 def export_apollo_hdmap_projection_jsonl(
@@ -91,6 +102,9 @@ def export_apollo_hdmap_projection_jsonl(
     out_path: str | Path,
     config: MapXyslConfig | None = None,
     max_samples: int | None = 250,
+    include_route_samples: bool = False,
+    include_start_goal: bool = False,
+    min_route_s_coverage: float | None = None,
     command_runner: CommandRunner = subprocess.run,
 ) -> dict[str, Any]:
     cfg = config or MapXyslConfig()
@@ -98,6 +112,8 @@ def export_apollo_hdmap_projection_jsonl(
         run_dir=run_dir,
         input_path=input_path,
         max_samples=max_samples,
+        include_route_samples=include_route_samples,
+        include_start_goal=include_start_goal,
     )
     output_path = Path(out_path).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,10 +135,34 @@ def export_apollo_hdmap_projection_jsonl(
 
     ok_rows = [row for row in rows if row.get("status") == "ok"]
     non_ok_rows = [row for row in rows if row.get("status") != "ok"]
-    status = "pass" if rows and not non_ok_rows else "warn" if rows else "insufficient_data"
+    projection_s_values = [_float(row.get("projection_s")) for row in ok_rows]
+    projection_s_values = [value for value in projection_s_values if value is not None]
+    projection_s_coverage_m = (
+        max(projection_s_values) - min(projection_s_values)
+        if len(projection_s_values) >= 2
+        else None
+    )
+    warnings: list[str] = []
+    if not rows:
+        warnings.append("localization_samples_missing")
+    if non_ok_rows:
+        warnings.append("apollo_hdmap_projection_non_ok_rows")
+    if (
+        min_route_s_coverage is not None
+        and projection_s_coverage_m is not None
+        and projection_s_coverage_m < min_route_s_coverage
+    ):
+        warnings.append("apollo_hdmap_projection_route_s_coverage_below_requested_min")
+    status = "pass" if rows and not warnings else "warn" if rows else "insufficient_data"
     return {
         "schema_version": "apollo_hdmap_projection_export.v1",
         "status": status,
+        "failure_reason": _export_failure_reason(
+            rows=rows,
+            non_ok_rows=non_ok_rows,
+            projection_s_coverage_m=projection_s_coverage_m,
+            min_route_s_coverage=min_route_s_coverage,
+        ),
         "run_dir": str(Path(run_dir).expanduser()) if run_dir else None,
         "input_path": str(Path(input_path).expanduser()) if input_path else None,
         "out_path": str(output_path),
@@ -130,6 +170,11 @@ def export_apollo_hdmap_projection_jsonl(
         "row_count": len(rows),
         "ok_row_count": len(ok_rows),
         "non_ok_row_count": len(non_ok_rows),
+        "non_ok_status_counts": _status_counts(non_ok_rows),
+        "include_route_samples": include_route_samples,
+        "include_start_goal": include_start_goal,
+        "min_route_s_coverage_m": min_route_s_coverage,
+        "projection_s_coverage_m": projection_s_coverage_m,
         "map_name": cfg.map_name,
         "map_dir": cfg.map_dir,
         "base_map_filename": cfg.base_map_filename,
@@ -137,7 +182,7 @@ def export_apollo_hdmap_projection_jsonl(
         "map_xysl_bin": cfg.map_xysl_bin,
         "backend": "apollo_map_xysl",
         "source": OFFICIAL_SOURCE,
-        "warnings": [] if rows else ["localization_samples_missing"],
+        "warnings": warnings,
         "blocking_reasons": [],
     }
 
@@ -287,6 +332,43 @@ def _samples_from_json(path: Path) -> list[LocalizationProjectionSample]:
     return [sample] if sample is not None else []
 
 
+def _samples_from_route_json(path: Path) -> list[LocalizationProjectionSample]:
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, Mapping):
+        return []
+    points = payload.get("points")
+    if not isinstance(points, SequenceABC) or isinstance(points, (str, bytes)):
+        points = payload.get("route_trace")
+    if not isinstance(points, SequenceABC) or isinstance(points, (str, bytes)):
+        return []
+    samples: list[LocalizationProjectionSample] = []
+    for index, item in enumerate(points):
+        if not isinstance(item, Mapping):
+            continue
+        x = _first_number(item, ["x", "localization_x", "map_x"])
+        y = _first_number(item, ["y", "localization_y", "map_y"])
+        heading = _first_number(item, ["heading", "yaw_rad", "yaw", "localization_heading"])
+        timestamp = _first_number(item, ["sim_time_sec", "timestamp", "time_sec"])
+        if x is None or y is None:
+            continue
+        samples.append(
+            LocalizationProjectionSample(
+                timestamp=timestamp,
+                x=x,
+                y=y,
+                heading=heading,
+                source_artifact=str(path),
+                source_index=index,
+            )
+        )
+    return samples
+
+
 def _sample_from_mapping(
     payload: Mapping[str, Any],
     *,
@@ -313,6 +395,22 @@ def _sample_from_mapping(
     )
 
 
+def _dedupe_samples(samples: Sequence[LocalizationProjectionSample]) -> list[LocalizationProjectionSample]:
+    deduped: list[LocalizationProjectionSample] = []
+    seen: set[tuple[float, float, float | None]] = set()
+    for sample in samples:
+        key = (
+            round(float(sample.x), 6),
+            round(float(sample.y), 6),
+            round(float(sample.heading), 6) if sample.heading is not None else None,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(sample)
+    return deduped
+
+
 def _limit_samples(
     samples: Sequence[LocalizationProjectionSample],
     *,
@@ -326,6 +424,35 @@ def _limit_samples(
     step = (len(selected) - 1) / float(max_samples - 1)
     indexes = sorted({round(i * step) for i in range(max_samples)})
     return [selected[index] for index in indexes]
+
+
+def _status_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        status = str(row.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _export_failure_reason(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    non_ok_rows: Sequence[Mapping[str, Any]],
+    projection_s_coverage_m: float | None,
+    min_route_s_coverage: float | None,
+) -> str | None:
+    if not rows:
+        return "localization_samples_missing"
+    if non_ok_rows:
+        counts = _status_counts(non_ok_rows)
+        return "non_ok_projection_rows:" + ",".join(f"{key}={value}" for key, value in sorted(counts.items()))
+    if (
+        min_route_s_coverage is not None
+        and projection_s_coverage_m is not None
+        and projection_s_coverage_m < min_route_s_coverage
+    ):
+        return "route_s_coverage_below_requested_min"
+    return None
 
 
 def _status_from_map_xysl_output(output: str) -> str:
