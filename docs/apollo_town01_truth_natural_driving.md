@@ -64,6 +64,39 @@ Apollo HDMap projection evidence:
   projection rows with bounded heading and lateral error. Missing projection
   remains `insufficient_data`, not an Apollo behavior failure.
 
+Apollo route-establishment command timing:
+
+- bridge config: `algo.apollo.routing.startup_apollo_warmup_sec`
+- readiness bypass config:
+  `startup_apollo_warmup_bypass_when_ready`,
+  `startup_apollo_warmup_bypass_min_elapsed_sec`,
+  `startup_apollo_warmup_ready_min_planning_messages`, and
+  `startup_apollo_warmup_ready_accept_preplanning_gt_only`, and
+  `startup_apollo_warmup_ready_min_gt_fresh_samples`
+- evidence: `artifacts/command_materialization_summary.json` under
+  `gate_state.apollo_warmup_bypassed_by_readiness` and
+  `gate_state.apollo_warmup_readiness`
+
+The readiness bypass is a route-establishment timing mechanism, not a
+capability result. In strict mode it may send the scenario route before the
+fixed Apollo warmup window ends only after Apollo Planning has been observed on
+`/apollo/planning`, GT localization/chassis have fresh publishes, and routing
+or lane-follow command interfaces are ready. Some Apollo 10 runs do not emit
+planning messages before the first routing request; the diagnostic
+`startup_apollo_warmup_ready_accept_preplanning_gt_only` mode allows an earlier
+route send once GT localization/chassis and command interfaces are ready, but
+the artifact must record `readiness_source=preplanning_gt_inputs_and_command_interface`.
+That mode proves only that the route was not delayed by a fixed warmup gate. It
+does not prove planning or reference-line health.
+
+This avoids the opposite failure modes seen in earlier probes: blindly
+disabling warmup can send the route too early, while a fixed 30s warmup can
+delay scenario routing until the evaluation window is nearly over. A run still
+needs
+`planning_materialization_report.json`, `apollo_reference_line_contract_report.json`,
+and `apollo_link_health_report.json` to show route establishment and
+reference-line evidence before any natural-driving claim.
+
 ## Scope
 
 Truth-input mode means CARLA provides ground-truth inputs such as ego

@@ -569,6 +569,31 @@ def test_refresh_regenerates_when_raw_reference_line_inputs_exist(tmp_path: Path
     assert "reference_line_heading_error_high" in report["blocking_reasons"]
 
 
+def test_non_refresh_regenerates_stale_reference_line_report_when_raw_inputs_exist(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_case(tmp_path, "lane_heading_mismatch")
+    existing = run_dir / "analysis" / "apollo_reference_line_contract" / "apollo_reference_line_contract_report.json"
+    existing.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        existing,
+        {
+            "schema_version": REPORT_SCHEMA_VERSION,
+            "status": "insufficient_data",
+            "blocking_reasons": ["apollo_reference_line_runtime_evidence_missing"],
+            "stale_marker": "must_be_regenerated",
+        },
+    )
+
+    result = ensure_apollo_reference_line_contract_report(run_dir, refresh=False)
+    report = _read_json(Path(result["path"]))
+
+    assert result["status"] == "generated"
+    assert report["status"] == "fail"
+    assert "stale_marker" not in report
+    assert "reference_line_heading_error_high" in report["blocking_reasons"]
+
+
 def _copy_case(tmp_path: Path, name: str) -> Path:
     target = tmp_path / name
     shutil.copytree(FIXTURE_ROOT / name, target)

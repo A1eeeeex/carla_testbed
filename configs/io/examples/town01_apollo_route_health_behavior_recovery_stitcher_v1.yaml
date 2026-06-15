@@ -178,6 +178,11 @@ algo:
       target_speed_mps: 8.0
       startup_delay_sec: 3.0
       startup_apollo_warmup_sec: 30.0
+      startup_apollo_warmup_bypass_when_ready: true
+      startup_apollo_warmup_bypass_min_elapsed_sec: 8.0
+      startup_apollo_warmup_ready_min_planning_messages: 3
+      startup_apollo_warmup_ready_accept_preplanning_gt_only: true
+      startup_apollo_warmup_ready_min_gt_fresh_samples: 3
       startup_end_ahead_m: 30.0
       startup_speed_threshold_mps: 0.5
       startup_hold_sec: 3.0

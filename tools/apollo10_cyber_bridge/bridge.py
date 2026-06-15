@@ -1710,6 +1710,8 @@ class ApolloGtBridge:
             "send_lane_follow_now": False,
             "startup_delay_remaining_sec": None,
             "apollo_warmup_remaining_sec": None,
+            "apollo_warmup_bypassed_by_readiness": False,
+            "apollo_warmup_readiness": {},
             "last_error_snapshot": "",
         }
         self.auto_calib_enabled = bool(tf_cfg.get("auto_calib", False))
@@ -2165,6 +2167,35 @@ class ApolloGtBridge:
         self.auto_routing_startup_apollo_warmup_sec = max(
             0.0, float(auto_routing_cfg.get("startup_apollo_warmup_sec", 0.0))
         )
+        self.auto_routing_startup_apollo_warmup_bypass_when_ready = bool(
+            auto_routing_cfg.get(
+                "startup_apollo_warmup_bypass_when_ready",
+                bool(self.claim_profile_enabled or self.materialization_probe_enabled),
+            )
+        )
+        self.auto_routing_startup_apollo_warmup_bypass_min_elapsed_sec = max(
+            0.0,
+            float(
+                auto_routing_cfg.get(
+                    "startup_apollo_warmup_bypass_min_elapsed_sec",
+                    max(self.auto_routing_startup_delay_sec, 8.0),
+                )
+            ),
+        )
+        self.auto_routing_startup_apollo_warmup_ready_min_planning_messages = max(
+            0,
+            int(auto_routing_cfg.get("startup_apollo_warmup_ready_min_planning_messages", 3) or 0),
+        )
+        self.auto_routing_startup_apollo_warmup_ready_accept_preplanning_gt_only = bool(
+            auto_routing_cfg.get(
+                "startup_apollo_warmup_ready_accept_preplanning_gt_only",
+                False,
+            )
+        )
+        self.auto_routing_startup_apollo_warmup_ready_min_gt_fresh_samples = max(
+            0,
+            int(auto_routing_cfg.get("startup_apollo_warmup_ready_min_gt_fresh_samples", 3) or 0),
+        )
         self.auto_routing_lane_follow_refresh_sec = float(
             auto_routing_cfg.get("lane_follow_refresh_sec", auto_routing_cfg.get("command_refresh_sec", 1.0))
         )
@@ -2299,6 +2330,21 @@ class ApolloGtBridge:
             "startup_route_enabled": bool(self.auto_routing_startup_route_enabled),
             "auto_enable_lane_follow_fallback": bool(
                 self.auto_routing_auto_enable_lane_follow_fallback
+            ),
+            "startup_apollo_warmup_bypass_when_ready": bool(
+                self.auto_routing_startup_apollo_warmup_bypass_when_ready
+            ),
+            "startup_apollo_warmup_bypass_min_elapsed_sec": float(
+                self.auto_routing_startup_apollo_warmup_bypass_min_elapsed_sec
+            ),
+            "startup_apollo_warmup_ready_min_planning_messages": int(
+                self.auto_routing_startup_apollo_warmup_ready_min_planning_messages
+            ),
+            "startup_apollo_warmup_ready_accept_preplanning_gt_only": bool(
+                self.auto_routing_startup_apollo_warmup_ready_accept_preplanning_gt_only
+            ),
+            "startup_apollo_warmup_ready_min_gt_fresh_samples": int(
+                self.auto_routing_startup_apollo_warmup_ready_min_gt_fresh_samples
             ),
             "goal_validity_fallback_enabled": bool(
                 self.auto_routing_goal_validity_fallback_enabled
@@ -3592,6 +3638,8 @@ class ApolloGtBridge:
         send_lane_follow_now: bool = False,
         startup_delay_remaining_sec: Optional[float] = None,
         apollo_warmup_remaining_sec: Optional[float] = None,
+        apollo_warmup_bypassed_by_readiness: Optional[bool] = None,
+        apollo_warmup_readiness: Optional[Dict[str, Any]] = None,
     ) -> None:
         state = self._command_gate_state
         state["evaluation_count"] = int(state.get("evaluation_count", 0) or 0) + 1
@@ -3623,6 +3671,10 @@ class ApolloGtBridge:
         state["send_lane_follow_now"] = bool(send_lane_follow_now)
         state["startup_delay_remaining_sec"] = _finite_or_none(startup_delay_remaining_sec)
         state["apollo_warmup_remaining_sec"] = _finite_or_none(apollo_warmup_remaining_sec)
+        if apollo_warmup_bypassed_by_readiness is not None:
+            state["apollo_warmup_bypassed_by_readiness"] = bool(apollo_warmup_bypassed_by_readiness)
+        if apollo_warmup_readiness is not None:
+            state["apollo_warmup_readiness"] = dict(apollo_warmup_readiness)
         state["routing_request_count_at_last_eval"] = int(self.stats.get("routing_request_count", 0) or 0)
         state["planning_nonempty_count_at_last_eval"] = int(self._planning_nonempty_count)
         state["control_tx_count_at_last_eval"] = int(self.stats.get("control_tx_count", 0) or 0)
@@ -9229,6 +9281,106 @@ class ApolloGtBridge:
             in_startup = not planning_ready_escape
         return "startup" if in_startup else "long"
 
+    def _apollo_startup_warmup_readiness(
+        self,
+        *,
+        startup_delay_elapsed_sec: float,
+        startup_apollo_warmup_elapsed_sec: float,
+    ) -> Dict[str, Any]:
+        min_elapsed_sec = max(
+            float(getattr(self, "auto_routing_startup_delay_sec", 0.0) or 0.0),
+            float(
+                getattr(
+                    self,
+                    "auto_routing_startup_apollo_warmup_bypass_min_elapsed_sec",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+        planning_message_count = int(getattr(self, "_planning_msg_count", 0) or 0)
+        min_planning_messages = int(
+            getattr(
+                self,
+                "auto_routing_startup_apollo_warmup_ready_min_planning_messages",
+                0,
+            )
+            or 0
+        )
+        accept_preplanning_gt_only = bool(
+            getattr(
+                self,
+                "auto_routing_startup_apollo_warmup_ready_accept_preplanning_gt_only",
+                False,
+            )
+        )
+        localization_fresh = int(self.stats.get("localization_fresh_publish_count", 0) or 0)
+        chassis_fresh = int(self.stats.get("chassis_fresh_publish_count", 0) or 0)
+        min_gt_fresh = int(
+            getattr(
+                self,
+                "auto_routing_startup_apollo_warmup_ready_min_gt_fresh_samples",
+                0,
+            )
+            or 0
+        )
+        routing_interface_ready = bool(
+            (self.routing_writer is not None and self.auto_routing_send_routing)
+            or (
+                self.lane_follow_client is not None
+                and self.auto_routing_send_lane_follow
+                and (not self._lane_follow_disabled_runtime)
+            )
+            or (self.action_client is not None and self.auto_routing_send_action)
+        )
+        checks = {
+            "policy_enabled": bool(
+                getattr(self, "auto_routing_startup_apollo_warmup_bypass_when_ready", False)
+            ),
+            "startup_delay_elapsed_sec": _finite_or_none(startup_delay_elapsed_sec),
+            "startup_apollo_warmup_elapsed_sec": _finite_or_none(startup_apollo_warmup_elapsed_sec),
+            "min_elapsed_sec": _finite_or_none(min_elapsed_sec),
+            "planning_message_count": planning_message_count,
+            "min_planning_messages": min_planning_messages,
+            "planning_reader_observed": planning_message_count >= min_planning_messages,
+            "accept_preplanning_gt_only": accept_preplanning_gt_only,
+            "localization_fresh_publish_count": localization_fresh,
+            "chassis_fresh_publish_count": chassis_fresh,
+            "min_gt_fresh_samples": min_gt_fresh,
+            "routing_interface_ready": routing_interface_ready,
+        }
+        missing: List[str] = []
+        if not checks["policy_enabled"]:
+            missing.append("policy_disabled")
+        if startup_delay_elapsed_sec < min_elapsed_sec:
+            missing.append("startup_elapsed_below_ready_min")
+        if (
+            planning_message_count < min_planning_messages
+            and not accept_preplanning_gt_only
+        ):
+            missing.append("planning_reader_not_observed")
+        if localization_fresh < min_gt_fresh:
+            missing.append("localization_fresh_samples_insufficient")
+        if chassis_fresh < min_gt_fresh:
+            missing.append("chassis_fresh_samples_insufficient")
+        if not routing_interface_ready:
+            missing.append("routing_or_command_interface_unavailable")
+        checks["ready"] = not missing
+        checks["missing_ready_conditions"] = missing
+        if planning_message_count >= min_planning_messages:
+            readiness_source = "planning_reader_and_gt_inputs"
+        elif accept_preplanning_gt_only:
+            readiness_source = "preplanning_gt_inputs_and_command_interface"
+        else:
+            readiness_source = "not_ready"
+        checks["readiness_source"] = readiness_source
+        checks["readiness_policy"] = (
+            "claim_route_send_may_bypass_fixed_apollo_warmup_after_planning_and_gt_inputs; "
+            "if explicitly configured, preplanning_gt_only can send once GT inputs and command "
+            "interfaces are ready but must be reported as route-establishment timing evidence only"
+        )
+        return checks
+
     def _routing_end_point(
         self,
         x0: float,
@@ -9415,19 +9567,51 @@ class ApolloGtBridge:
             and self.auto_routing_startup_apollo_warmup_sec > 0.0
             and startup_apollo_warmup_elapsed_sec < self.auto_routing_startup_apollo_warmup_sec
         ):
-            self.stats["last_error"] = "waiting_for_apollo_startup_warmup"
-            self._update_command_gate_state(
-                ts_sec=ts_sec,
-                phase="startup",
-                status="blocked",
-                blocking_reason="apollo_startup_warmup",
-                blocking_detail="waiting for configured Apollo startup warmup window",
-                eligible=True,
-                apollo_warmup_remaining_sec=max(
-                    0.0, self.auto_routing_startup_apollo_warmup_sec - startup_apollo_warmup_elapsed_sec
-                ),
+            warmup_readiness = self._apollo_startup_warmup_readiness(
+                startup_delay_elapsed_sec=startup_delay_elapsed_sec,
+                startup_apollo_warmup_elapsed_sec=startup_apollo_warmup_elapsed_sec,
             )
-            return
+            self.stats["apollo_startup_warmup_readiness"] = dict(warmup_readiness)
+            if bool(warmup_readiness.get("ready")):
+                self.stats["apollo_startup_warmup_bypass_count"] = int(
+                    self.stats.get("apollo_startup_warmup_bypass_count", 0) or 0
+                ) + 1
+                self.stats["last_error"] = ""
+                self._update_command_gate_state(
+                    ts_sec=ts_sec,
+                    phase="startup",
+                    status="warmup_bypassed_by_readiness",
+                    blocking_reason="",
+                    blocking_detail=(
+                        "configured Apollo startup warmup bypassed after readiness policy "
+                        f"{warmup_readiness.get('readiness_source', 'unknown')} passed"
+                    ),
+                    eligible=True,
+                    apollo_warmup_remaining_sec=max(
+                        0.0,
+                        self.auto_routing_startup_apollo_warmup_sec
+                        - startup_apollo_warmup_elapsed_sec,
+                    ),
+                    apollo_warmup_bypassed_by_readiness=True,
+                    apollo_warmup_readiness=warmup_readiness,
+                )
+            else:
+                self.stats["last_error"] = "waiting_for_apollo_startup_warmup"
+                self._update_command_gate_state(
+                    ts_sec=ts_sec,
+                    phase="startup",
+                    status="blocked",
+                    blocking_reason="apollo_startup_warmup",
+                    blocking_detail="waiting for configured Apollo startup warmup window or readiness-based bypass",
+                    eligible=True,
+                    apollo_warmup_remaining_sec=max(
+                        0.0,
+                        self.auto_routing_startup_apollo_warmup_sec
+                        - startup_apollo_warmup_elapsed_sec,
+                    ),
+                    apollo_warmup_readiness=warmup_readiness,
+                )
+                return
         if speed_mps is None:
             speed_mps = self._latest_speed_mps
         phase = self._current_routing_phase(ts_sec, float(speed_mps))

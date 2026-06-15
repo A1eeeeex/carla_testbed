@@ -251,12 +251,16 @@ def ensure_apollo_control_handoff_report(
     )
     if existing is not None and not refresh:
         report = _read_json(existing)
-        return {
-            "status": "existing",
-            "path": str(existing),
-            "report_status": report.get("verdict"),
-            "failure_stage": report.get("failure_stage"),
-        }
+        if not (
+            _has_control_handoff_regeneration_inputs(root)
+            and _control_handoff_report_needs_regeneration(report)
+        ):
+            return {
+                "status": "existing",
+                "path": str(existing),
+                "report_status": report.get("verdict"),
+                "failure_stage": report.get("failure_stage"),
+            }
     if existing is not None and refresh and not _has_control_handoff_regeneration_inputs(root):
         report_path.parent.mkdir(parents=True, exist_ok=True)
         if existing != report_path:
@@ -329,6 +333,28 @@ def _has_control_handoff_regeneration_inputs(root: Path) -> bool:
     if any((root / pattern).exists() for pattern in raw_evidence_patterns):
         return True
     return any(_control_log_paths(root))
+
+
+def _control_handoff_report_needs_regeneration(report: Mapping[str, Any]) -> bool:
+    if report.get("schema_version") != APOLLO_CONTROL_HANDOFF_SCHEMA_VERSION:
+        return True
+    status = str(report.get("verdict") or report.get("status") or "").strip().lower()
+    if status == "fail":
+        return False
+    blockers = {str(item) for item in report.get("blocking_reasons") or [] if item}
+    runtime_missing = "control_runtime_messages_missing" in blockers
+    no_control_channel = not isinstance(report.get("control_channel"), Mapping) or _nested_number(
+        report, "control_channel", "message_count"
+    ) is None
+    no_bridge_receive = not isinstance(report.get("bridge_receive"), Mapping) or _nested_number(
+        report, "bridge_receive", "control_rx_count"
+    ) is None
+    no_apply = not isinstance(report.get("mapping_and_apply"), Mapping) or _nested_number(
+        report, "mapping_and_apply", "apply_control_count"
+    ) is None
+    return status == "insufficient_data" and (
+        runtime_missing or no_control_channel or no_bridge_receive or no_apply
+    )
 
 
 def _resolve_inputs(

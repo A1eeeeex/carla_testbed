@@ -338,11 +338,15 @@ def _ensure_apollo_route_contract(run_dir: Path, *, refresh: bool) -> dict[str, 
     )
     if existing is not None and not refresh:
         report = _read_json(existing)
-        return {
-            "status": "existing",
-            "path": str(existing),
-            "report_status": report.get("status"),
-        }
+        if not (
+            _apollo_route_contract_raw_inputs_available(run_dir)
+            and _apollo_route_contract_report_needs_regeneration(report)
+        ):
+            return {
+                "status": "existing",
+                "path": str(existing),
+                "report_status": report.get("status"),
+            }
     if existing is not None and not _apollo_route_contract_raw_inputs_available(run_dir):
         report = _copy_existing_report(
             existing,
@@ -384,7 +388,11 @@ def _ensure_planning_materialization(run_dir: Path, *, refresh: bool) -> dict[st
     )
     if existing is not None and not refresh:
         report = _read_json(existing)
-        return {"status": "existing", "path": str(existing), "report_status": report.get("verdict")}
+        if not (
+            _planning_materialization_raw_inputs_available(run_dir)
+            and _planning_materialization_report_needs_regeneration(report)
+        ):
+            return {"status": "existing", "path": str(existing), "report_status": report.get("verdict")}
     if existing is not None and not _planning_materialization_raw_inputs_available(run_dir):
         report = _copy_existing_report(
             existing,
@@ -427,6 +435,21 @@ def _apollo_route_contract_raw_inputs_available(run_dir: Path) -> bool:
     ) is not None
 
 
+def _apollo_route_contract_report_needs_regeneration(report: Mapping[str, Any]) -> bool:
+    status = str(report.get("status") or "").strip().lower()
+    if status == "fail":
+        return False
+    blocking = {str(item) for item in report.get("blocking_reasons") or [] if item}
+    missing_runtime = {
+        "routing_response_runtime_evidence_missing",
+        "routing_runtime_evidence_missing",
+    }
+    return status == "insufficient_data" and (
+        not report.get("routing_response_decoded")
+        or bool(blocking & missing_runtime)
+    )
+
+
 def _planning_materialization_raw_inputs_available(run_dir: Path) -> bool:
     return _find_first(
         run_dir,
@@ -441,6 +464,18 @@ def _planning_materialization_raw_inputs_available(run_dir: Path) -> bool:
             "planning_route_segment_debug.jsonl",
         ],
     ) is not None
+
+
+def _planning_materialization_report_needs_regeneration(report: Mapping[str, Any]) -> bool:
+    status = str(report.get("verdict") or report.get("status") or "").strip().lower()
+    if status == "fail":
+        return False
+    blocking = {str(item) for item in report.get("blocking_reasons") or [] if item}
+    planning_count = report.get("planning_message_count")
+    return status == "insufficient_data" and (
+        "planning_runtime_messages_missing" in blocking
+        or planning_count is None
+    )
 
 
 def _copy_existing_report(existing: Path, target: Path, *, summary_name: str) -> dict[str, Any]:

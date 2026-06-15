@@ -201,11 +201,15 @@ def ensure_apollo_reference_line_contract_report(run_dir: str | Path, *, refresh
     )
     if existing is not None and not refresh:
         report = _read_json(existing)
-        return {
-            "status": "existing",
-            "path": str(existing),
-            "report_status": report.get("status"),
-        }
+        if not (
+            _has_reference_line_regeneration_inputs(root)
+            and _reference_line_report_needs_regeneration(report)
+        ):
+            return {
+                "status": "existing",
+                "path": str(existing),
+                "report_status": report.get("status"),
+            }
     if existing is not None and not _has_reference_line_regeneration_inputs(root):
         report_path.parent.mkdir(parents=True, exist_ok=True)
         if existing.resolve() != report_path.resolve():
@@ -255,6 +259,35 @@ def _has_reference_line_regeneration_inputs(root: Path) -> bool:
             return True
     timeseries = _find_first(root, ["artifacts/debug_timeseries.csv", "debug_timeseries.csv", "timeseries.csv"])
     return _timeseries_has_reference_line_fields(timeseries)
+
+
+def _reference_line_report_needs_regeneration(report: Mapping[str, Any]) -> bool:
+    status = str(report.get("status") or "").strip().lower()
+    if status == "fail":
+        return False
+    blockers = {str(item) for item in report.get("blocking_reasons") or [] if item}
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), Mapping) else {}
+    metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+    missing_runtime = "apollo_reference_line_runtime_evidence_missing" in blockers
+    missing_evidence = not any(
+        evidence.get(key) is not None
+        for key in (
+            "planning_reference_available",
+            "control_reference_available",
+            "nonempty_trajectory_ratio",
+        )
+    )
+    missing_metrics = not any(
+        metrics.get(key) is not None
+        for key in (
+            "planning_ref_heading_error_p95_rad",
+            "control_ref_heading_error_p95_rad",
+            "control_lateral_error_p95_m",
+        )
+    )
+    return status == "insufficient_data" and (
+        missing_runtime or missing_evidence or missing_metrics
+    )
 
 
 def _timeseries_has_reference_line_fields(path: Path | None) -> bool:

@@ -112,6 +112,142 @@ def test_claim_profile_blocks_fallback_route_goal_sources(tmp_path: Path) -> Non
     )
 
 
+def test_apollo_warmup_readiness_bypass_requires_planning_and_gt_inputs(tmp_path: Path) -> None:
+    adapter = _adapter(tmp_path)
+    adapter.stats = {
+        "localization_fresh_publish_count": 5,
+        "chassis_fresh_publish_count": 5,
+    }
+    adapter._planning_msg_count = 4
+    adapter.auto_routing_startup_delay_sec = 3.0
+    adapter.auto_routing_startup_apollo_warmup_bypass_when_ready = True
+    adapter.auto_routing_startup_apollo_warmup_bypass_min_elapsed_sec = 8.0
+    adapter.auto_routing_startup_apollo_warmup_ready_min_planning_messages = 3
+    adapter.auto_routing_startup_apollo_warmup_ready_accept_preplanning_gt_only = False
+    adapter.auto_routing_startup_apollo_warmup_ready_min_gt_fresh_samples = 3
+    adapter.routing_writer = object()
+    adapter.auto_routing_send_routing = True
+    adapter.lane_follow_client = None
+    adapter.auto_routing_send_lane_follow = False
+    adapter.action_client = None
+    adapter.auto_routing_send_action = False
+    adapter._lane_follow_disabled_runtime = False
+
+    readiness = adapter._apollo_startup_warmup_readiness(
+        startup_delay_elapsed_sec=8.2,
+        startup_apollo_warmup_elapsed_sec=11.0,
+    )
+
+    assert readiness["ready"] is True
+    assert readiness["missing_ready_conditions"] == []
+    assert readiness["planning_message_count"] == 4
+    assert readiness["readiness_source"] == "planning_reader_and_gt_inputs"
+    assert readiness["localization_fresh_publish_count"] == 5
+    assert readiness["chassis_fresh_publish_count"] == 5
+
+
+def test_apollo_warmup_readiness_blocks_when_planning_or_gt_missing(tmp_path: Path) -> None:
+    adapter = _adapter(tmp_path)
+    adapter.stats = {
+        "localization_fresh_publish_count": 5,
+        "chassis_fresh_publish_count": 0,
+    }
+    adapter._planning_msg_count = 0
+    adapter.auto_routing_startup_delay_sec = 3.0
+    adapter.auto_routing_startup_apollo_warmup_bypass_when_ready = True
+    adapter.auto_routing_startup_apollo_warmup_bypass_min_elapsed_sec = 8.0
+    adapter.auto_routing_startup_apollo_warmup_ready_min_planning_messages = 3
+    adapter.auto_routing_startup_apollo_warmup_ready_accept_preplanning_gt_only = False
+    adapter.auto_routing_startup_apollo_warmup_ready_min_gt_fresh_samples = 3
+    adapter.routing_writer = object()
+    adapter.auto_routing_send_routing = True
+    adapter.lane_follow_client = None
+    adapter.auto_routing_send_lane_follow = False
+    adapter.action_client = None
+    adapter.auto_routing_send_action = False
+    adapter._lane_follow_disabled_runtime = False
+
+    readiness = adapter._apollo_startup_warmup_readiness(
+        startup_delay_elapsed_sec=8.2,
+        startup_apollo_warmup_elapsed_sec=11.0,
+    )
+
+    assert readiness["ready"] is False
+    assert "planning_reader_not_observed" in readiness["missing_ready_conditions"]
+    assert "chassis_fresh_samples_insufficient" in readiness["missing_ready_conditions"]
+    assert "localization_fresh_samples_insufficient" not in readiness["missing_ready_conditions"]
+
+
+def test_apollo_warmup_readiness_can_use_preplanning_gt_ready_policy(tmp_path: Path) -> None:
+    adapter = _adapter(tmp_path)
+    adapter.stats = {
+        "localization_fresh_publish_count": 5,
+        "chassis_fresh_publish_count": 5,
+    }
+    adapter._planning_msg_count = 0
+    adapter.auto_routing_startup_delay_sec = 3.0
+    adapter.auto_routing_startup_apollo_warmup_bypass_when_ready = True
+    adapter.auto_routing_startup_apollo_warmup_bypass_min_elapsed_sec = 8.0
+    adapter.auto_routing_startup_apollo_warmup_ready_min_planning_messages = 3
+    adapter.auto_routing_startup_apollo_warmup_ready_accept_preplanning_gt_only = True
+    adapter.auto_routing_startup_apollo_warmup_ready_min_gt_fresh_samples = 3
+    adapter.routing_writer = object()
+    adapter.auto_routing_send_routing = True
+    adapter.lane_follow_client = None
+    adapter.auto_routing_send_lane_follow = False
+    adapter.action_client = None
+    adapter.auto_routing_send_action = False
+    adapter._lane_follow_disabled_runtime = False
+
+    readiness = adapter._apollo_startup_warmup_readiness(
+        startup_delay_elapsed_sec=8.2,
+        startup_apollo_warmup_elapsed_sec=11.0,
+    )
+
+    assert readiness["ready"] is True
+    assert readiness["missing_ready_conditions"] == []
+    assert readiness["planning_reader_observed"] is False
+    assert readiness["accept_preplanning_gt_only"] is True
+    assert readiness["readiness_source"] == "preplanning_gt_inputs_and_command_interface"
+
+
+def test_command_gate_preserves_apollo_warmup_bypass_evidence(tmp_path: Path) -> None:
+    adapter = _adapter(tmp_path)
+    adapter.stats = {"routing_request_count": 0, "control_tx_count": 0}
+    adapter._planning_nonempty_count = 0
+    adapter._command_gate_state = {
+        "evaluation_count": 0,
+        "first_eval_ts_sec": None,
+        "last_eval_ts_sec": None,
+        "first_eligible_ts_sec": None,
+        "last_eligible_ts_sec": None,
+        "first_ready_to_send_ts_sec": None,
+        "last_ready_to_send_ts_sec": None,
+        "apollo_warmup_bypassed_by_readiness": False,
+        "apollo_warmup_readiness": {},
+    }
+
+    adapter._update_command_gate_state(
+        ts_sec=10.0,
+        phase="startup",
+        status="warmup_bypassed_by_readiness",
+        eligible=True,
+        apollo_warmup_bypassed_by_readiness=True,
+        apollo_warmup_readiness={"ready": True},
+    )
+    adapter._update_command_gate_state(
+        ts_sec=10.1,
+        phase="long",
+        status="ready_to_send",
+        eligible=True,
+        ready_to_send=True,
+        send_routing_now=True,
+    )
+
+    assert adapter._command_gate_state["apollo_warmup_bypassed_by_readiness"] is True
+    assert adapter._command_gate_state["apollo_warmup_readiness"] == {"ready": True}
+
+
 def test_scenario_goal_apollo_map_frame_is_not_retransformed(tmp_path: Path) -> None:
     adapter = _adapter(tmp_path)
     bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")

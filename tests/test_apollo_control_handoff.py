@@ -133,6 +133,36 @@ def test_refresh_regenerates_handoff_when_raw_inputs_exist(tmp_path: Path) -> No
     assert regenerated["failure_stage"] == "control_channel"
 
 
+def test_non_refresh_regenerates_stale_handoff_when_raw_inputs_exist(tmp_path: Path) -> None:
+    run_dir = _copy_case(tmp_path)
+    existing_path = run_dir / "analysis" / "apollo_control_handoff" / "apollo_control_handoff_report.json"
+    existing_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_path.write_text(
+        json.dumps(
+            {
+                "schema_version": APOLLO_CONTROL_HANDOFF_SCHEMA_VERSION,
+                "verdict": "insufficient_data",
+                "failure_stage": "insufficient_data",
+                "blocking_reasons": ["control_runtime_messages_missing"],
+                "stale_marker": "must_be_regenerated",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = ensure_apollo_control_handoff_report(run_dir, refresh=False)
+    regenerated = _json(existing_path)
+
+    assert result["status"] == "generated"
+    assert result["report_status"] == "pass"
+    assert result["failure_stage"] == "none"
+    assert "stale_marker" not in regenerated
+    assert regenerated["control_channel"]["message_count"] == 10
+
+
 def test_process_crash_tcmalloc_is_process_health_failure(tmp_path: Path) -> None:
     run_dir = _copy_case(tmp_path)
     (run_dir / "artifacts" / "control.err.log").write_text(

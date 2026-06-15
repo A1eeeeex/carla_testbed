@@ -619,6 +619,65 @@ def test_refresh_regenerates_route_and_planning_reports_when_raw_inputs_exist(
     assert regenerated_planning["nonempty_trajectory_ratio"] == 0.75
 
 
+def test_non_refresh_regenerates_stale_planning_when_raw_inputs_exist(
+    tmp_path: Path,
+) -> None:
+    suite_root = _copy_suite(tmp_path)
+    lane = suite_root / "lane_keep_097"
+    planning_report_path = lane / "analysis" / "planning_materialization" / "planning_materialization_report.json"
+    planning_report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "planning_materialization.v1",
+                "verdict": "insufficient_data",
+                "blocking_reasons": ["planning_runtime_messages_missing"],
+                "stale_marker": "must_be_regenerated",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifacts = lane / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "planning_topic_debug_summary.json").write_text(
+        json.dumps(
+            {
+                "total_messages_received": 4,
+                "messages_with_nonzero_trajectory_points": 3,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifacts / "planning_topic_debug.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "timestamp": float(index),
+                    "planning_header_sequence_num": index,
+                    "trajectory_point_count": 10 if index else 0,
+                    "reference_line_count": 1,
+                }
+            )
+            for index in range(4)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = postprocess_natural_driving_runs(suite_root, out_dir=tmp_path / "out")
+    lane_result = next(run for run in report["runs"] if run["run_id"] == "lane_keep_097")
+    regenerated_planning = json.loads(
+        Path(lane_result["planning_materialization"]["path"]).read_text(encoding="utf-8")
+    )
+
+    assert lane_result["planning_materialization"]["status"] == "generated"
+    assert "stale_marker" not in regenerated_planning
+    assert regenerated_planning["planning_message_count"] == 4
+
+
 def test_postprocess_writes_insufficient_channel_report_when_stats_missing(tmp_path: Path) -> None:
     suite_root = _copy_suite(tmp_path)
     lane = suite_root / "lane_keep_097"
