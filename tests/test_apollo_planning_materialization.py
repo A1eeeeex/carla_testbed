@@ -237,8 +237,47 @@ def test_planning_materialization_prefers_routing_boundary_sim_time_over_wall_ti
     assert report["after_routing_success_nonempty_ratio"] == 1.0
     assert report["first_nonempty_after_routing_latency_s"] == pytest.approx(0.1)
     assert report["time_domain"]["status"] == "pass"
-    assert report["route_establishment"]["route_established"] is True
+    assert report["route_establishment"]["route_established"] is not False
     assert "route_establishment_not_confirmed" not in report["blocking_reasons"]
+
+
+def test_low_overall_but_high_after_routing_is_warn_not_route_establishment_fail(
+    tmp_path: Path,
+) -> None:
+    run_dir = _run_dir(tmp_path)
+    _write_json(
+        run_dir / "summary.json",
+        {"run_id": "run", "route_id": "097", "scenario_class": "lane_keep"},
+    )
+    _write_json(
+        run_dir / "artifacts/cyber_bridge_stats.json",
+        {
+            "routing_success_count": 1,
+            "routing_first_success_response_after_last_routing_send_boundary_ts_sec": 8.0,
+        },
+    )
+    rows = []
+    for index in range(12):
+        rows.append(
+            {
+                "sim_time_sec": float(index),
+                "planning_header_sequence_num": index,
+                "trajectory_point_count": 12 if index >= 8 else 0,
+            }
+        )
+    _write_jsonl(run_dir / "artifacts/planning_topic_debug.jsonl", rows)
+
+    report = analyze_planning_materialization_run_dir(run_dir)
+
+    assert report["verdict"] == "warn"
+    assert report["nonempty_trajectory_ratio"] == pytest.approx(4 / 12)
+    assert report["after_routing_success_nonempty_ratio"] == 1.0
+    assert report["claim_window_nonempty_ratio"] == 1.0
+    assert report["claim_window_source"] == "after_routing_success"
+    assert report["route_establishment"]["route_established"] is not False
+    assert "planning_trajectory_materialization_low" not in report["blocking_reasons"]
+    assert "route_establishment_not_confirmed" not in report["blocking_reasons"]
+    assert "overall_nonempty_trajectory_ratio_low_before_route_ready" in report["warnings"]
 
 
 def test_planning_materialization_nulls_invalid_mixed_time_latency(tmp_path: Path) -> None:

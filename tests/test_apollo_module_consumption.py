@@ -364,6 +364,45 @@ def test_module_consumption_warns_on_transient_reference_line_empty_after_route_
     assert report["status"] == "warn"
     assert "reference_line_provider_not_ready_empty_planning" not in report["blocking_reasons"]
     assert "reference_line_provider_not_ready_empty_planning_transient" in report["warnings"]
+    assert report["planning_materialization_claim_window"]["ready"] is True
+
+
+def test_module_consumption_warns_on_transient_reference_line_empty_in_claim_window(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "verdict": "warn",
+            "nonempty_trajectory_ratio": 0.47,
+            "after_routing_success_nonempty_ratio": 0.95,
+            "claim_window_nonempty_ratio": 0.95,
+            "claim_window_source": "after_routing_success",
+            "first_nonempty_after_routing_latency_s": 0.2,
+            "route_establishment": {
+                "route_established": True,
+                "routing_success_count": 1,
+                "planning_nonempty_after_routing_success_ratio": 0.95,
+                "blocking_reasons": [],
+            },
+            "empty_reason_histogram": {
+                "reference_line_provider_not_ready": 4,
+                "routing_not_ready": 91,
+            },
+            "warnings": ["overall_nonempty_trajectory_ratio_low_before_route_ready"],
+        },
+    )
+
+    report = analyze_apollo_module_consumption_run_dir(run_dir)
+
+    assert report["status"] == "warn"
+    assert "reference_line_provider_not_ready_empty_planning" not in report["blocking_reasons"]
+    assert "reference_line_provider_not_ready_empty_planning_transient" in report["warnings"]
+    assert report["planning_materialization_claim_window"]["ready"] is True
+    assert report["planning_materialization_claim_window"]["claim_window_nonempty_ratio"] == 0.95
+    assert report["planning_materialization_claim_window"]["claim_window_source"] == "after_routing_success"
 
 
 def test_module_consumption_distinguishes_partial_routing_consumption_from_route_establishment_failure(

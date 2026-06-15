@@ -14,7 +14,10 @@ from carla_testbed.analysis.apollo_control_handoff import (
     analyze_apollo_control_handoff,
     write_apollo_control_handoff_report,
 )
-from carla_testbed.analysis.apollo_module_consumption import analyze_apollo_module_consumption_run_dir
+from carla_testbed.analysis.apollo_module_consumption import (
+    analyze_apollo_module_consumption_run_dir,
+    write_apollo_module_consumption_report,
+)
 from carla_testbed.analysis.apollo_reference_line_contract import (
     analyze_apollo_reference_line_contract_run_dir,
     write_apollo_reference_line_contract_report,
@@ -22,7 +25,10 @@ from carla_testbed.analysis.apollo_reference_line_contract import (
 from carla_testbed.analysis.chassis_gt_contract import analyze_chassis_gt_contract_files
 from carla_testbed.analysis.channel_cadence_diagnosis import analyze_channel_cadence_diagnosis_run_dir
 from carla_testbed.analysis.obstacle_gt_contract import analyze_obstacle_gt_contract_file
-from carla_testbed.analysis.planning_materialization import analyze_planning_materialization_run_dir
+from carla_testbed.analysis.planning_materialization import (
+    analyze_planning_materialization_run_dir,
+    write_planning_materialization_report,
+)
 from carla_testbed.analysis.prediction_evidence import analyze_prediction_evidence_run_dir
 from carla_testbed.analysis.assist_ledger import build_runtime_assist_ledger
 
@@ -108,11 +114,25 @@ def analyze_apollo_link_health(
             if _planning_materialization_has_runtime_evidence(regenerated_planning) or not payloads.get("planning_materialization"):
                 payloads["planning_materialization"] = regenerated_planning
                 source_kinds["planning_materialization"] = "regenerated_from_run_artifacts"
+                outputs = write_planning_materialization_report(
+                    regenerated_planning,
+                    root / "analysis" / "planning_materialization",
+                )
+                inputs["planning_materialization"] = Path(
+                    outputs["planning_materialization_report"]
+                )
         if _should_regenerate_apollo_module_consumption(payloads.get("apollo_module_consumption")):
             regenerated_consumption = analyze_apollo_module_consumption_run_dir(root)
             if _apollo_module_consumption_has_runtime_evidence(regenerated_consumption) or not payloads.get("apollo_module_consumption"):
                 payloads["apollo_module_consumption"] = regenerated_consumption
                 source_kinds["apollo_module_consumption"] = "regenerated_from_run_artifacts"
+                outputs = write_apollo_module_consumption_report(
+                    regenerated_consumption,
+                    root / "analysis" / "apollo_module_consumption",
+                )
+                inputs["apollo_module_consumption"] = Path(
+                    outputs["apollo_module_consumption_report"]
+                )
         if _should_regenerate_apollo_reference_line_contract(
             payloads.get("apollo_reference_line_contract")
         ) and _apollo_reference_line_contract_raw_inputs_available(root):
@@ -1412,6 +1432,8 @@ def _route_establishment_layer(
                 "after_routing_success_nonempty_ratio": report.get(
                     "after_routing_success_nonempty_ratio"
                 ),
+                "claim_window_nonempty_ratio": report.get("claim_window_nonempty_ratio"),
+                "claim_window_source": report.get("claim_window_source"),
                 "first_nonempty_after_routing_latency_s": report.get(
                     "first_nonempty_after_routing_latency_s"
                 ),
@@ -2151,6 +2173,12 @@ def _no_assist_layer(
                 "after_routing_segment_available"
             ],
             "planning_nonempty_ratio_after_first_nonempty": planning_nonempty["after_first_nonempty"],
+            "planning_materialization_claim_window_ratio": planning_nonempty[
+                "planning_materialization_claim_window_ratio"
+            ],
+            "planning_materialization_claim_window_source": planning_nonempty[
+                "planning_materialization_claim_window_source"
+            ],
             "control_rx_count": control_rx_count,
             "control_tx_count": control_tx_count,
             "control_apply_count": control_apply_count,
@@ -3352,6 +3380,16 @@ def _planning_nonempty_claim_metric(
         planning_materialization.get("nonempty_trajectory_ratio"),
         planning_metrics.get("nonempty_trajectory_ratio"),
     )
+    planning_materialization_claim_ratio = _first_num(
+        planning_materialization.get("claim_window_nonempty_ratio"),
+        planning_metrics.get("claim_window_nonempty_ratio"),
+    )
+    planning_materialization_claim_source = _first_text(
+        planning_materialization,
+        "claim_window_source",
+        planning_metrics,
+        "claim_window_source",
+    )
     topic_overall = _planning_nonempty_ratio(planning_topic_debug_summary)
     summary_ratio = _first_num(
         _nested(summary, "metrics.planning_nonempty_ratio"),
@@ -3379,6 +3417,8 @@ def _planning_nonempty_claim_metric(
             if claim_ratio is not None and claim_source
             else None
         ),
+        "planning_materialization_claim_window_ratio": planning_materialization_claim_ratio,
+        "planning_materialization_claim_window_source": planning_materialization_claim_source,
         "after_routing_segment_available": after_routing,
         "after_first_nonempty": after_first_nonempty,
     }

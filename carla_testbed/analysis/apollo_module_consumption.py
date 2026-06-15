@@ -131,8 +131,9 @@ def analyze_apollo_module_consumption(
     reference_line_not_ready_count = int(
         empty_reason_histogram.get("reference_line_provider_not_ready", 0) or 0
     )
+    claim_window = _materialization_claim_window(planning_materialization)
     if reference_line_not_ready_count > 0:
-        if _route_establishment_true(planning_materialization) and planning_materialization.get("verdict") == "pass":
+        if claim_window["ready"]:
             warnings.append("reference_line_provider_not_ready_empty_planning_transient")
         else:
             blocking.append("reference_line_provider_not_ready_empty_planning")
@@ -200,6 +201,9 @@ def analyze_apollo_module_consumption(
         "apollo_route_contract_blocking_reasons": list(route_contract.get("blocking_reasons") or []),
         "pattern_counts": dict(pattern_counts),
         "empty_reason_histogram": empty_reason_histogram,
+        "planning_materialization_verdict": planning_materialization.get("verdict")
+        or planning_materialization.get("status"),
+        "planning_materialization_claim_window": claim_window,
         "planning_input_age": age_metrics,
         "input_freshness_attribution": freshness if isinstance(freshness, Mapping) else {},
         "topic_publish_coverage": publish_coverage,
@@ -235,7 +239,10 @@ def write_apollo_module_consumption_report(report: Mapping[str, Any], out_dir: s
 
 
 def _materialized_after_route(planning_materialization: Mapping[str, Any]) -> bool:
-    if planning_materialization.get("verdict") != "pass":
+    claim_window = _materialization_claim_window(planning_materialization)
+    if claim_window["ready"]:
+        return True
+    if planning_materialization.get("verdict") not in {"pass", "warn"}:
         return False
     route_establishment = planning_materialization.get("route_establishment")
     if not isinstance(route_establishment, Mapping):
@@ -252,6 +259,46 @@ def _materialized_after_route(planning_materialization: Mapping[str, Any]) -> bo
     return latency_s is None or latency_s <= 1.0
 
 
+def _materialization_claim_window(planning_materialization: Mapping[str, Any]) -> dict[str, Any]:
+    route_establishment = planning_materialization.get("route_establishment")
+    route_established = (
+        route_establishment.get("route_established")
+        if isinstance(route_establishment, Mapping)
+        else None
+    )
+    claim_ratio = _num(planning_materialization.get("claim_window_nonempty_ratio"))
+    claim_source = planning_materialization.get("claim_window_source")
+    after_routing_ratio = _num(planning_materialization.get("after_routing_success_nonempty_ratio"))
+    if after_routing_ratio is None and isinstance(route_establishment, Mapping):
+        after_routing_ratio = _num(
+            route_establishment.get("planning_nonempty_after_routing_success_ratio")
+        )
+    if claim_ratio is None:
+        claim_ratio = after_routing_ratio
+        if claim_source is None and after_routing_ratio is not None:
+            claim_source = "after_routing_success"
+    verdict = planning_materialization.get("verdict") or planning_materialization.get("status")
+    ready = bool(
+        route_established is True
+        and verdict in {"pass", "warn"}
+        and claim_ratio is not None
+        and claim_ratio >= 0.80
+    )
+    return {
+        "ready": ready,
+        "route_established": route_established,
+        "verdict": verdict,
+        "claim_window_nonempty_ratio": claim_ratio,
+        "claim_window_source": claim_source,
+        "after_routing_success_nonempty_ratio": after_routing_ratio,
+        "boundary": (
+            "A high claim-window ratio can downgrade pre-route empty planning rows "
+            "to transient module-consumption evidence. It does not make the whole "
+            "run claim-grade or satisfy no-assist natural-driving gates."
+        ),
+    }
+
+
 def apollo_module_consumption_summary_md(report: Mapping[str, Any]) -> str:
     return "\n".join(
         [
@@ -264,6 +311,8 @@ def apollo_module_consumption_summary_md(report: Mapping[str, Any]) -> str:
             f"- Consumed route length m: `{report.get('consumed_route_total_length_m')}`",
             f"- Consumed route lane signature: `{report.get('consumed_route_lane_signature')}`",
             f"- Prediction mode: `{report.get('prediction_mode')}`",
+            f"- Planning materialization verdict: `{report.get('planning_materialization_verdict')}`",
+            f"- Planning materialization claim window: `{json.dumps(report.get('planning_materialization_claim_window') or {}, sort_keys=True)}`",
             f"- Pattern counts: `{json.dumps(report.get('pattern_counts') or {}, sort_keys=True)}`",
             f"- Empty reason histogram: `{json.dumps(report.get('empty_reason_histogram') or {}, sort_keys=True)}`",
             f"- Blocking reasons: `{', '.join(report.get('blocking_reasons') or []) or 'none'}`",

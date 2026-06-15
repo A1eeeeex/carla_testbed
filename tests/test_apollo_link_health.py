@@ -1946,9 +1946,85 @@ def test_planning_and_module_consumption_use_run_artifacts_when_reports_are_plac
     assert route_layer["status"] == "pass"
     assert "planning_runtime_messages_missing" not in route_layer["blocking_reasons"]
     assert route_layer["key_metrics"]["planning_message_count"] == 100
+    refreshed_planning = json.loads(
+        (
+            run_dir / "analysis/planning_materialization/planning_materialization_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert refreshed_planning["schema_version"] == "planning_materialization.v1"
+    assert refreshed_planning["verdict"] == "pass"
     assert consumption_layer["artifact_paths"]["source_kind"] == "regenerated_from_run_artifacts"
     assert "apollo_module_runtime_logs_missing" not in consumption_layer["blocking_reasons"]
     assert consumption_layer["key_metrics"]["routing_response_consumed_by_planning"] is True
+    refreshed_consumption = json.loads(
+        (
+            run_dir / "analysis/apollo_module_consumption/apollo_module_consumption_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert refreshed_consumption["schema_version"] == "apollo_module_consumption.v1"
+    assert refreshed_consumption["status"] == "warn"
+    assert refreshed_consumption["blocking_reasons"] == []
+
+
+def test_route_establishment_uses_after_routing_materialization_without_claiming_overall_pass(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization_report.v1",
+            "status": "insufficient_data",
+            "route_establishment": {"route_established": False},
+            "blocking_reasons": ["planning_runtime_messages_missing"],
+        },
+    )
+    stats_path = run_dir / "artifacts/cyber_bridge_stats.json"
+    stats = json.loads(stats_path.read_text(encoding="utf-8"))
+    stats["routing_first_success_response_after_last_routing_send_boundary_ts_sec"] = 8.0
+    _write_json(stats_path, stats)
+    rows = []
+    for index in range(12):
+        rows.append(
+            {
+                "sim_time_sec": float(index),
+                "planning_header_sequence_num": index,
+                "trajectory_point_count": 12 if index >= 8 else 0,
+            }
+        )
+    _write_jsonl(run_dir / "artifacts/planning_topic_debug.jsonl", rows)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    route_layer = report["layers"]["route_establishment"]
+    no_assist = report["layers"]["no_assist_claim_boundary"]
+
+    assert route_layer["artifact_paths"]["source_kind"] == "regenerated_from_run_artifacts"
+    assert route_layer["status"] == "warn"
+    assert abs(route_layer["key_metrics"]["nonempty_trajectory_ratio"] - (4 / 12)) < 1e-12
+    assert route_layer["key_metrics"]["after_routing_success_nonempty_ratio"] == 1.0
+    assert route_layer["key_metrics"]["claim_window_nonempty_ratio"] == 1.0
+    assert route_layer["key_metrics"]["claim_window_source"] == "after_routing_success"
+    assert "planning_trajectory_materialization_low" not in route_layer["blocking_reasons"]
+    refreshed_planning = json.loads(
+        (
+            run_dir / "analysis/planning_materialization/planning_materialization_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert refreshed_planning["verdict"] == "warn"
+    assert refreshed_planning["claim_window_source"] == "after_routing_success"
+    refreshed_consumption = json.loads(
+        (
+            run_dir / "analysis/apollo_module_consumption/apollo_module_consumption_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert refreshed_consumption["schema_version"] == "apollo_module_consumption.v1"
+    assert "reference_line_provider_not_ready_empty_planning" not in refreshed_consumption[
+        "blocking_reasons"
+    ]
+    assert no_assist["status"] == "fail"
+    assert "planning_nonempty_ratio_not_claim_grade" in no_assist["blocking_reasons"]
+    assert abs(no_assist["key_metrics"]["planning_nonempty_ratio"] - (4 / 12)) < 1e-12
+    assert report["primary_blocker"] == "no_assist_claim_boundary:planning_nonempty_ratio_not_claim_grade"
 
 
 def test_route_contract_placeholder_regenerates_from_decoded_routing_response(tmp_path: Path) -> None:

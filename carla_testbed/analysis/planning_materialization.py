@@ -234,19 +234,14 @@ def analyze_planning_materialization_files(
         missing_fields=missing_fields,
         empty_reason_histogram=empty_reason_histogram,
     )
-    verdict = _verdict(nonempty_ratio, missing_fields)
-    blocking_reasons: list[str] = []
-    if verdict == "fail":
-        blocking_reasons.append("planning_trajectory_materialization_low")
-    elif verdict == "insufficient_data":
-        blocking_reasons.append("planning_materialization_insufficient_data")
-
     route_establishment = _route_establishment(
         summary_payload=summary_payload,
         bridge_payload=bridge_payload,
+        overall_nonempty_ratio=nonempty_ratio,
         nonempty_after_routing_ratio=after_routing_ratio,
         first_nonempty_after_routing_latency_s=first_nonempty_after_routing_latency_s,
     )
+    warnings.extend(str(item) for item in route_establishment.get("warnings") or [])
     time_domain = _time_domain_diagnostics(
         planning_rows=planning_rows,
         topic_rows=topic_rows,
@@ -268,6 +263,15 @@ def analyze_planning_materialization_files(
             route_establishment.setdefault("blocking_reasons", []).append(
                 "route_establishment_time_domain_unverified"
             )
+    claim_window = _claim_window_materialization(
+        nonempty_ratio=nonempty_ratio,
+        after_routing_ratio=after_routing_ratio,
+        route_establishment=route_establishment,
+        missing_fields=missing_fields,
+    )
+    verdict = str(claim_window["status"])
+    blocking_reasons: list[str] = list(claim_window["blocking_reasons"])
+    warnings.extend(str(item) for item in claim_window["warnings"])
     if route_establishment["route_established"] is False:
         blocking_reasons.append("route_establishment_not_confirmed")
     suspected_layers = _suspected_layers(
@@ -297,12 +301,16 @@ def analyze_planning_materialization_files(
         "route_segment_count_max": route_segment_count_max,
         "after_routing_success_nonempty_ratio": after_routing_ratio,
         "after_localization_chassis_ready_nonempty_ratio": after_loc_chassis_ready_ratio,
+        "claim_window_nonempty_ratio": claim_window["ratio"],
+        "claim_window_source": claim_window["source"],
         "metrics": {
             "planning_message_count": planning_message_count,
             "materialization_status": materialization_status,
             "nonempty_trajectory_count": nonempty_count,
             "empty_trajectory_count": empty_count,
             "nonempty_trajectory_ratio": nonempty_ratio,
+            "claim_window_nonempty_ratio": claim_window["ratio"],
+            "claim_window_source": claim_window["source"],
             "trajectory_point_count_max": trajectory_point_count_max,
             "reference_line_count_max": reference_line_count_max,
             "route_segment_count_max": route_segment_count_max,
@@ -374,6 +382,8 @@ def planning_materialization_summary_md(report: Mapping[str, Any]) -> str:
         f"- Non-empty trajectories: {report.get('nonempty_trajectory_count')}",
         f"- Non-empty ratio: {_fmt_ratio(report.get('nonempty_trajectory_ratio'))}",
         f"- After routing success ratio: {_fmt_ratio(report.get('after_routing_success_nonempty_ratio'))}",
+        f"- Claim-window ratio: {_fmt_ratio(report.get('claim_window_nonempty_ratio'))}",
+        f"- Claim-window source: {report.get('claim_window_source')}",
         f"- Longest empty streak: {report.get('longest_empty_streak')}",
         f"- Route established: {route_establishment.get('route_established')}",
         f"- Blocking reasons: {', '.join(report.get('blocking_reasons') or []) or 'none'}",
@@ -721,6 +731,7 @@ def _route_establishment(
     *,
     summary_payload: Mapping[str, Any],
     bridge_payload: Mapping[str, Any],
+    overall_nonempty_ratio: float | None,
     nonempty_after_routing_ratio: float | None,
     first_nonempty_after_routing_latency_s: float | None,
 ) -> dict[str, Any]:
@@ -742,9 +753,12 @@ def _route_establishment(
     if routing_success_count is None or routing_success_count < 1:
         route_established = False
         reasons.append("routing_success_missing")
-    if nonempty_after_routing_ratio is None:
+    warnings: list[str] = []
+    if nonempty_after_routing_ratio is None and (overall_nonempty_ratio is None or overall_nonempty_ratio < 0.80):
         route_established = False
         reasons.append("planning_nonempty_after_routing_missing")
+    elif nonempty_after_routing_ratio is None:
+        warnings.append("planning_nonempty_after_routing_missing_using_overall_fallback")
     elif nonempty_after_routing_ratio < 0.80:
         route_established = False
         reasons.append("planning_nonempty_after_routing_below_threshold")
@@ -761,6 +775,7 @@ def _route_establishment(
         "route_completion_ratio": route_completion,
         "route_established": route_established,
         "blocking_reasons": sorted(set(reasons)),
+        "warnings": sorted(set(warnings)),
     }
 
 
@@ -911,14 +926,66 @@ def _top_log_errors(paths: Iterable[Path], *, limit: int = 8) -> list[dict[str, 
     return [{"message": key, "count": count} for key, count in counter.most_common(limit)]
 
 
-def _verdict(nonempty_ratio: float | None, missing_fields: Sequence[str]) -> str:
+def _claim_window_materialization(
+    *,
+    nonempty_ratio: float | None,
+    after_routing_ratio: float | None,
+    route_establishment: Mapping[str, Any],
+    missing_fields: Sequence[str],
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    blocking: list[str] = []
+    route_established = route_establishment.get("route_established")
     if missing_fields or nonempty_ratio is None:
-        return "insufficient_data"
+        return {
+            "status": "insufficient_data",
+            "ratio": nonempty_ratio,
+            "source": "overall",
+            "blocking_reasons": ["planning_materialization_insufficient_data"],
+            "warnings": warnings,
+        }
+    if route_established is False:
+        blocking.append("planning_trajectory_materialization_low")
+        return {
+            "status": "fail",
+            "ratio": after_routing_ratio if after_routing_ratio is not None else nonempty_ratio,
+            "source": "after_routing_success" if after_routing_ratio is not None else "overall",
+            "blocking_reasons": blocking,
+            "warnings": warnings,
+        }
     if nonempty_ratio >= 0.80:
-        return "pass"
+        return {
+            "status": "pass",
+            "ratio": nonempty_ratio,
+            "source": "overall",
+            "blocking_reasons": blocking,
+            "warnings": warnings,
+        }
+    if after_routing_ratio is not None and after_routing_ratio >= 0.80:
+        warnings.append("overall_nonempty_trajectory_ratio_low_before_route_ready")
+        return {
+            "status": "warn",
+            "ratio": after_routing_ratio,
+            "source": "after_routing_success",
+            "blocking_reasons": blocking,
+            "warnings": warnings,
+        }
     if nonempty_ratio >= 0.50:
-        return "warn"
-    return "fail"
+        return {
+            "status": "warn",
+            "ratio": nonempty_ratio,
+            "source": "overall",
+            "blocking_reasons": blocking,
+            "warnings": warnings,
+        }
+    blocking.append("planning_trajectory_materialization_low")
+    return {
+        "status": "fail",
+        "ratio": nonempty_ratio,
+        "source": "overall",
+        "blocking_reasons": blocking,
+        "warnings": warnings,
+    }
 
 
 def _find_first(root: Path, rels: Sequence[str]) -> Path | None:
