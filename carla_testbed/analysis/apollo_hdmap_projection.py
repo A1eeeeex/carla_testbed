@@ -9,10 +9,10 @@ from typing import Any, Iterable, Mapping, Sequence
 OFFICIAL_SOURCE = "apollo_hdmap_api"
 HDMAP_PROJECTION_REPORT_SCHEMA_VERSION = "apollo_hdmap_projection_report.v1"
 
-HDMAP_HEADING_WARN_RAD = 0.03
-HDMAP_HEADING_FAIL_RAD = 0.05
-HDMAP_LATERAL_WARN_M = 0.30
-HDMAP_LATERAL_FAIL_M = 0.50
+HDMAP_HEADING_WARN_RAD = 0.02
+HDMAP_HEADING_FAIL_RAD = 0.03
+HDMAP_LATERAL_WARN_M = 0.20
+HDMAP_LATERAL_FAIL_M = 0.30
 HDMAP_MIN_CLAIM_GRADE_ROWS = 50
 HDMAP_MIN_OK_RATIO = 0.95
 HDMAP_MIN_PROJECTION_COVERAGE_M = 30.0
@@ -113,10 +113,10 @@ def summarize_apollo_hdmap_projection(
 ) -> dict[str, Any]:
     all_rows = [dict(row) for row in (rows or [])]
     official_rows = [row for row in all_rows if str(row.get("source") or "") == OFFICIAL_SOURCE]
-    ok_rows = [row for row in official_rows if str(row.get("status") or "").lower() == "ok"]
-    status_counts = Counter(str(row.get("status") or "missing") for row in official_rows)
+    ok_rows = [row for row in official_rows if _projection_status(row) == "ok"]
+    status_counts = Counter(_projection_status(row) or "missing" for row in official_rows)
     environment_unavailable_count = sum(
-        1 for row in official_rows if str(row.get("status") or "").lower() == "environment_unavailable"
+        1 for row in official_rows if _projection_status(row) == "environment_unavailable"
     )
     only_environment_unavailable = bool(
         official_rows and environment_unavailable_count == len(official_rows)
@@ -152,6 +152,10 @@ def summarize_apollo_hdmap_projection(
     insufficient: list[str] = []
     suspected_layers: list[str] = []
     missing_fields: list[str] = []
+    start_goal_rows = [
+        row for row in official_rows if str(row.get("sample_type") or "").lower() in {"start", "goal"}
+    ]
+    route_rows = [row for row in official_rows if str(row.get("sample_type") or "").lower() == "route"]
 
     if not all_rows:
         artifact_present = bool(artifact_file_exists)
@@ -217,6 +221,14 @@ def summarize_apollo_hdmap_projection(
     elif official_rows and not ok_rows:
         blocking.append("apollo_hdmap_projection_no_ok_rows")
         suspected_layers.extend(["map_alignment", "lane_id", "routing_snap"])
+    if start_goal_rows and any(_projection_status(row) != "ok" for row in start_goal_rows):
+        blocking.append("start_goal_projection_failed")
+        suspected_layers.extend(["map_alignment", "routing_snap"])
+    if route_rows:
+        route_ok_ratio = sum(1 for row in route_rows if _projection_status(row) == "ok") / len(route_rows)
+        if route_ok_ratio < HDMAP_MIN_OK_RATIO:
+            blocking.append("route_projection_coverage_low")
+            suspected_layers.extend(["map_alignment", "lane_id", "routing_snap"])
 
     if official_rows and heading_p95 is None:
         missing_fields.append("heading_error_rad")
@@ -301,6 +313,13 @@ def summarize_apollo_hdmap_projection(
         "map_identity_consistent": len(map_names) <= 1 and len(map_dirs) <= 1,
         "status_counts": dict(status_counts),
         "environment_unavailable_count": environment_unavailable_count,
+        "start_goal_sample_count": len(start_goal_rows),
+        "route_sample_count": len(route_rows),
+        "route_sample_ok_ratio": (
+            sum(1 for row in route_rows if _projection_status(row) == "ok") / len(route_rows)
+            if route_rows
+            else None
+        ),
         "heading_error_p95_rad": heading_p95,
         "lateral_error_p95_m": lateral_p95,
         "nearest_lane_id_topk": _topk(str(row.get("nearest_lane_id") or "") for row in official_rows),
@@ -339,6 +358,10 @@ def _read_json(path: Path) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _projection_status(row: Mapping[str, Any]) -> str:
+    return str(row.get("projection_status") or row.get("status") or "").lower()
 
 
 def _p95_abs(values: Iterable[float | None]) -> float | None:

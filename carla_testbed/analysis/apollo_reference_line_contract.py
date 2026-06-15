@@ -44,6 +44,7 @@ def analyze_apollo_reference_line_contract_files(
     localization_contract_path: str | Path | None = None,
     planning_materialization_path: str | Path | None = None,
     hdmap_projection_path: str | Path | None = None,
+    route_contract_path: str | Path | None = None,
     run_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     source = {
@@ -56,6 +57,7 @@ def analyze_apollo_reference_line_contract_files(
         "localization_contract_path": _path_str(localization_contract_path),
         "planning_materialization_path": _path_str(planning_materialization_path),
         "hdmap_projection_path": _path_str(hdmap_projection_path),
+        "route_contract_path": _path_str(route_contract_path),
     }
     contract_rows = _read_jsonl(contract_path)
     planning_rows = _read_jsonl(planning_topic_debug_path)
@@ -64,6 +66,7 @@ def analyze_apollo_reference_line_contract_files(
     timeseries_rows = _read_csv(debug_timeseries_path)
     localization_contract = _read_json(localization_contract_path)
     planning_materialization = _read_json(planning_materialization_path)
+    route_contract = _read_json(route_contract_path)
     hdmap_rows = _read_hdmap_projection(hdmap_projection_path)
 
     rows = _normalized_rows(
@@ -77,6 +80,7 @@ def analyze_apollo_reference_line_contract_files(
         rows,
         localization_contract=localization_contract,
         planning_materialization=planning_materialization,
+        route_contract=route_contract,
         hdmap_projection_rows=hdmap_rows,
         source=source,
     )
@@ -87,6 +91,7 @@ def analyze_apollo_reference_line_contract(
     *,
     localization_contract: Mapping[str, Any] | None = None,
     planning_materialization: Mapping[str, Any] | None = None,
+    route_contract: Mapping[str, Any] | None = None,
     hdmap_projection_rows: Sequence[Mapping[str, Any]] | None = None,
     source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -108,6 +113,7 @@ def analyze_apollo_reference_line_contract(
             rows=[],
             localization_contract=localization_contract,
             planning_materialization=planning_materialization,
+            route_contract=route_contract,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
             contracts=contracts,
@@ -131,6 +137,7 @@ def analyze_apollo_reference_line_contract(
             rows=normalized,
             localization_contract=localization_contract,
             planning_materialization=planning_materialization,
+            route_contract=route_contract,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
             contracts=contracts,
@@ -149,6 +156,7 @@ def analyze_apollo_reference_line_contract(
             rows=normalized,
             localization_contract=localization_contract,
             planning_materialization=planning_materialization,
+            route_contract=route_contract,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
             contracts=contracts,
@@ -161,6 +169,7 @@ def analyze_apollo_reference_line_contract(
         rows=normalized,
         localization_contract=localization_contract,
         planning_materialization=planning_materialization,
+        route_contract=route_contract,
         hdmap_projection_rows=hdmap_projection_rows,
         source=source,
         contracts=contracts,
@@ -398,6 +407,7 @@ def _report(
     rows: Sequence[Mapping[str, Any]],
     localization_contract: Mapping[str, Any] | None,
     planning_materialization: Mapping[str, Any] | None,
+    route_contract: Mapping[str, Any] | None,
     hdmap_projection_rows: Sequence[Mapping[str, Any]] | None,
     source: Mapping[str, Any] | None,
     contracts: Mapping[str, Any] | None = None,
@@ -410,6 +420,12 @@ def _report(
         status,
         warnings=list(warnings),
         planning_materialization=planning_materialization,
+    )
+    status, warnings, blocking_reasons = _gate_on_route_contract(
+        status,
+        warnings=warnings,
+        blocking_reasons=list(blocking_reasons),
+        route_contract=route_contract,
     )
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
@@ -426,6 +442,7 @@ def _report(
         "apollo_hdmap_projection": hdmap_projection,
         "localization_contract_status": _report_status(localization_contract),
         "planning_materialization_status": _report_status(planning_materialization),
+        "apollo_route_contract_status": _report_status(route_contract),
         "source": dict(source or {}),
         "interpretation_boundary": INTERPRETATION_BOUNDARY,
     }
@@ -721,6 +738,33 @@ def _downgrade_for_planning_materialization(
     if status in {"pass", "warn"}:
         return "insufficient_data", warnings
     return status, warnings
+
+
+def _gate_on_route_contract(
+    status: str,
+    *,
+    warnings: list[str],
+    blocking_reasons: list[str],
+    route_contract: Mapping[str, Any] | None,
+) -> tuple[str, list[str], list[str]]:
+    if not isinstance(route_contract, Mapping) or not route_contract:
+        warnings.append("apollo_route_contract_missing_reference_line_claim_downgraded")
+        if status in {"pass", "warn"}:
+            return "insufficient_data", warnings, blocking_reasons
+        return status, warnings, blocking_reasons
+    route_status = _report_status(route_contract)
+    if route_status == "pass":
+        return status, warnings, blocking_reasons
+    reason = f"apollo_route_contract_{route_status or 'unknown'}"
+    if route_status == "fail":
+        blocking_reasons.append("apollo_route_contract_not_pass")
+        if status in {"pass", "warn", "insufficient_data"}:
+            return "fail", warnings, blocking_reasons
+        return status, warnings, blocking_reasons
+    warnings.append(f"{reason}_reference_line_claim_downgraded")
+    if status in {"pass", "warn"}:
+        return "insufficient_data", warnings, blocking_reasons
+    return status, warnings, blocking_reasons
 
 
 def _evidence(rows: Sequence[Mapping[str, Any]], hdmap_projection: Mapping[str, Any]) -> dict[str, Any]:
@@ -1136,6 +1180,13 @@ def _resolve_run_sources(root: Path) -> dict[str, Path | None]:
             ],
         ),
         "hdmap_projection_path": _find_first(root, ["artifacts/apollo_hdmap_projection.jsonl", "analysis/apollo_hdmap_projection/apollo_hdmap_projection.json"]),
+        "route_contract_path": _find_first(
+            root,
+            [
+                "analysis/apollo_route_contract/apollo_route_contract_report.json",
+                "apollo_route_contract_report.json",
+            ],
+        ),
     }
 
 

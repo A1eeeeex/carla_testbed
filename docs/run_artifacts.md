@@ -186,6 +186,22 @@ run-local diagnostics include:
   allowing the legacy runner to redirect evidence into a sibling `__NN`
   directory.
 - `analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json`
+- `artifacts/map_identity_report.json`
+- `artifacts/lane_equivalence_town01.json`
+- `analysis/apollo_map_route_alignment/apollo_map_route_alignment_report.json`
+
+`map_identity_report.json` records the observed Apollo map root candidates,
+bridge effective map file, Dreamview selected map when available, projection
+exporter map dir, and base/routing/sim map hashes. `lane_equivalence_town01.json`
+records ordered CARLA-route and Apollo-routing lane signatures; it must not
+pass from unordered set overlap or lane-id string equality alone.
+`apollo_map_route_alignment_report.json` separates `static_map_identity`,
+`runtime_projection`, `routing_response`, and `planning_reference_line` layers,
+then emits diagnoses such as `projection_missing`, `projection_geometry_bad`,
+`lane_equivalence_missing`, `boundary_transition_ambiguous`,
+`heading_convention_mismatch`, `routing_not_claim_route`, or
+`reference_line_missing`. This is still a precondition report, not a closed-loop
+natural-driving pass.
 - `analysis/apollo_module_consumption/apollo_module_consumption_report.json`
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`
 - `artifacts/control_apply_trace.jsonl`

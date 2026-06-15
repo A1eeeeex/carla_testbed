@@ -39,20 +39,21 @@
 10. `apollo_reference_chain.md`
 11. `apollo_reproduction.md`
 12. `apollo_town01_truth_natural_driving.md`
-13. `apollo_link_alignment_matrix.md`
-14. `town01_route_health.md`
-15. `platform_run_plan.md`
-16. `carla_direct_ab.md`
-17. `calibration_pipeline.md`
-18. `autoware_recording.md`
-19. `run_artifacts.md`
-20. `scenario_player.md`
-21. `testing.md`
-22. `legacy.md`
-23. `dual_machine_workflow.md`
-24. `migration_followstop_playbook.md`
-25. `apollo10_gt_sim.md`
-26. `gt_truth_simulation_pipeline.md`
+13. `apollo_town01_hdmap_alignment.md`
+14. `apollo_link_alignment_matrix.md`
+15. `town01_route_health.md`
+16. `platform_run_plan.md`
+17. `carla_direct_ab.md`
+18. `calibration_pipeline.md`
+19. `autoware_recording.md`
+20. `run_artifacts.md`
+21. `scenario_player.md`
+22. `testing.md`
+23. `legacy.md`
+24. `dual_machine_workflow.md`
+25. `migration_followstop_playbook.md`
+26. `apollo10_gt_sim.md`
+27. `gt_truth_simulation_pipeline.md`
 
 ## 主要文档分组
 - 展示与总览:
@@ -92,6 +93,7 @@
   - `apollo_reference_chain.md`
   - `apollo_link_alignment_matrix.md`
   - `apollo_reproduction.md`
+  - `apollo_town01_hdmap_alignment.md`
   - `apollo_town01_truth_natural_driving.md`
   - `town01_route_health.md`
   - `platform_run_plan.md`

@@ -9,6 +9,7 @@ from carla_testbed.analysis.apollo_route_contract import (
     APOLLO_ROUTE_CONTRACT_SCHEMA_VERSION,
     ROUTE_DEFINITION_CLAIM_SCHEMA_VERSION,
     analyze_apollo_route_contract_run_dir,
+    build_lane_equivalence_town01,
     build_route_definition_claim,
     write_apollo_route_contract_report,
 )
@@ -192,6 +193,113 @@ def test_cross_namespace_carla_waypoint_lane_mismatch_requires_equivalence_not_f
     assert report["claim_route_contract"]["materialized"] is True
 
 
+def test_cross_namespace_lane_equivalence_can_be_verified_from_route_projection_rows(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    meta = manifest["metadata"]["scenario_metadata"]
+    meta.update(
+        {
+            "route_length_m": 229.18,
+            "route_length_m_role": "legacy_selection_straight_line_distance",
+            "route_length_m_claim_grade": False,
+            "claim_route_length_m": 388.41,
+            "claim_route_length_source": "route_trace_s_span",
+            "route_trace_source": "town01_forward_waypoint_trace",
+            "spawn": {"x": 2.0, "y": 208.6},
+            "goal": {"x": 154.0, "y": 37.1},
+            "spawn_lane": {"road_id": 15, "section_id": 0, "lane_id": 1},
+            "goal_lane": {"road_id": 25, "section_id": 0, "lane_id": -1},
+            "route_trace": [
+                {"x": 2.0, "y": 208.6, "s": 0.0, "lane_id": "15:0:1"},
+                {"x": 2.0, "y": 8.6, "s": 200.0, "lane_id": "13:0:-1"},
+                {"x": 15.0, "y": 2.0, "s": 216.0, "lane_id": "3:0:1"},
+                {"x": 80.0, "y": 1.9, "s": 280.0, "lane_id": "117:0:1"},
+                {"x": 105.0, "y": 1.9, "s": 306.0, "lane_id": "2:0:1"},
+                {"x": 145.0, "y": 1.9, "s": 346.0, "lane_id": "83:0:1"},
+                {"x": 154.0, "y": 37.1, "s": 388.41, "lane_id": "25:0:-1"},
+            ],
+        }
+    )
+    _write_json(run_dir / "manifest.json", manifest)
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "source": "/apollo/raw_routing_response",
+            "status": "pass",
+            "lane_segments": [
+                {"lane_id": "15_1_1", "start_s": 107.5, "end_s": 307.6},
+                {"lane_id": "13_1_-1", "start_s": 0.0, "end_s": 14.0},
+                {"lane_id": "3_1_1", "start_s": 0.0, "end_s": 68.3},
+                {"lane_id": "82_4_1", "start_s": 0.0, "end_s": 1.3},
+                {"lane_id": "82_3_1", "start_s": 0.0, "end_s": 10.9},
+                {"lane_id": "82_2_1", "start_s": 0.0, "end_s": 9.6},
+                {"lane_id": "82_1_1", "start_s": 0.0, "end_s": 1.3},
+                {"lane_id": "2_1_1", "start_s": 0.0, "end_s": 42.2},
+                {"lane_id": "31_1_-1", "start_s": 0.0, "end_s": 15.6},
+                {"lane_id": "25_1_-1", "start_s": 0.0, "end_s": 26.3},
+            ],
+            "total_length_m": 390.13,
+        },
+    )
+    trusted_projection = {
+        "applied": True,
+        "accepted": True,
+        "trusted_lane_centerline": True,
+        "distance_m": 0.01,
+        "signed_lateral_error_m": 0.01,
+    }
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "claim",
+                "routing_request_kind": "claim_route",
+                "start_projection": trusted_projection,
+                "goal_projection": trusted_projection,
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "route_segment_total_length": 390.13,
+                "routing_lane_window_count": 7,
+                "routing_lane_window_signature": "15_1_1 | 13_1_-1 | 3_1_1 | 82_4_1 | 2_1_1 | 31_1_-1 | 25_1_-1",
+                "routing_unique_lane_signature": "15_1_1 | 13_1_-1 | 3_1_1 | 82_4_1 | 82_3_1 | 82_2_1 | 82_1_1 | 2_1_1 | 31_1_-1 | 25_1_-1",
+            }
+        ],
+    )
+    rows = _lane_equivalence_projection_rows(
+        [
+            ("15:1", "15_1_1"),
+            ("13:-1", "13_1_-1"),
+            ("3:1", "3_1_1"),
+            ("117:1", "82_4_1"),
+            ("2:1", "2_1_1"),
+            ("83:1", "31_1_-1"),
+            ("25:-1", "25_1_-1"),
+        ]
+    )
+    _write_jsonl(run_dir / "artifacts/apollo_hdmap_projection.jsonl", rows)
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+    lane_report = build_lane_equivalence_town01(report, hdmap_projection_rows=rows)
+
+    assert report["lane_equivalence_status"] == "verified_equivalence"
+    assert "scenario_apollo_lane_namespace_equivalence_unverified" not in report["warnings"]
+    assert lane_report["status"] == "pass"
+    pairs = {
+        row["scenario_lane_key"]: row["apollo_lane_key"]
+        for row in lane_report["equivalence"]
+    }
+    assert pairs["117:1"] == "82:1"
+    assert pairs["83:1"] == "31:-1"
+    assert all(row["confidence"] == "verified" for row in lane_report["equivalence"])
+
+
 def test_cross_namespace_lane_mismatch_without_hdmap_projection_is_insufficient_not_fail(
     tmp_path: Path,
 ) -> None:
@@ -274,6 +382,43 @@ def test_cross_namespace_lane_mismatch_without_hdmap_projection_is_insufficient_
     assert "apollo_hdmap_projection_required_for_cross_namespace_lane_equivalence" in report["warnings"]
     assert "apollo_routing_lane_sequence_mismatch" not in report["blocking_reasons"]
     assert "apollo_routing_missing_scenario_lane" not in report["blocking_reasons"]
+
+
+def test_route_contract_writes_lane_equivalence_artifact(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "source": "/apollo/routing_response",
+            "status": "pass",
+            "lane_segments": [{"lane_id": "15_1_1", "start_s": 0.0, "end_s": 230.0}],
+            "total_length_m": 230.0,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "claim",
+                "routing_request_kind": "claim_route",
+                "start_raw_x": 2.0,
+                "start_raw_y": -249.0,
+                "goal_raw_x": 2.0,
+                "goal_raw_y": -19.0,
+            }
+        ],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+    lane_report = build_lane_equivalence_town01(report)
+    outputs = write_apollo_route_contract_report(report, run_dir / "analysis" / "apollo_route_contract")
+
+    assert lane_report["schema_version"] == "lane_equivalence_town01.v2"
+    assert "lane_equivalence_town01_artifact" in outputs
+    lane_path = run_dir / "artifacts" / "lane_equivalence_town01.json"
+    assert lane_path.is_file()
+    payload = json.loads(lane_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "lane_equivalence_town01.v2"
 
 
 def test_cross_namespace_lane_mismatch_uses_trusted_routing_projection_when_transform_missing(
@@ -963,3 +1108,28 @@ def test_route_contract_cli_writes_report(tmp_path: Path) -> None:
     assert report["status"] == "pass"
     assert report["last_routing_response"]["source"] == "routing_response_decoded"
     assert (out_dir / "apollo_route_contract_summary.md").is_file()
+
+
+def _lane_equivalence_projection_rows(pairs: list[tuple[str, str]]) -> list[dict]:
+    rows: list[dict] = []
+    for index, (carla_lane_key, apollo_lane_id) in enumerate(pairs):
+        for sample_offset in range(3):
+            rows.append(
+                {
+                    "source": "apollo_hdmap_api",
+                    "status": "ok",
+                    "projection_status": "ok",
+                    "sample_type": "route",
+                    "route_index": index * 10 + sample_offset,
+                    "route_s": float(index * 50 + sample_offset * 5),
+                    "carla_lane_key": carla_lane_key,
+                    "carla_lane_id": f"{carla_lane_key.split(':', 1)[0]}:0:{carla_lane_key.split(':', 1)[1]}",
+                    "nearest_lane_id": apollo_lane_id,
+                    "projection_s": float(index * 10 + sample_offset),
+                    "projection_l": 0.05,
+                    "lateral_error_m": 0.05,
+                    "heading_error_rad": 0.002,
+                    "lane_heading_at_s": 0.0,
+                }
+            )
+    return rows

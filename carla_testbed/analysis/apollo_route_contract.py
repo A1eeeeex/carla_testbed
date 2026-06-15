@@ -16,6 +16,7 @@ from carla_testbed.analysis.routing_response_decoded import read_routing_respons
 
 APOLLO_ROUTE_CONTRACT_SCHEMA_VERSION = "apollo_route_contract.v1"
 ROUTE_DEFINITION_CLAIM_SCHEMA_VERSION = "route_definition_claim.v1"
+LANE_EQUIVALENCE_SCHEMA_VERSION = "lane_equivalence_town01.v2"
 
 MAX_ABS_ROUTE_LENGTH_DIFF_M = 20.0
 MAX_REL_ROUTE_LENGTH_DIFF = 0.15
@@ -26,6 +27,10 @@ GOAL_NEAR_THRESHOLD_RATIO = 0.8
 MAX_GOAL_SNAP_DISTANCE_M = 3.0
 MAX_GOAL_LATERAL_ERROR_M = 1.0
 MAX_EXTRA_LANE_WINDOWS_FOR_CLAIM = 2
+MAX_LANE_EQUIVALENCE_LATERAL_P95_M = 0.30
+MAX_LANE_EQUIVALENCE_HEADING_P95_RAD = 0.03
+MIN_LANE_EQUIVALENCE_DOMINANT_RATIO = 0.80
+LANE_EQUIVALENCE_BOUNDARY_DISTANCE_M = 2.0
 
 
 def analyze_apollo_route_contract_run_dir(
@@ -303,6 +308,27 @@ def analyze_apollo_route_contract(
         directly_comparable=lane_namespaces_directly_comparable,
         projection_source=projection.get("source"),
     )
+    verified_lane_equivalence = _verified_lane_equivalence_from_projection(
+        scenario_sequence=scenario_lane_sequence,
+        apollo_sequence=apollo_lane_sequence,
+        rows=hdmap_rows,
+    )
+    if (
+        lane_equivalence_status == "cross_namespace_unverified"
+        and verified_lane_equivalence.get("status") != "insufficient_data"
+    ):
+        lane_equivalence = verified_lane_equivalence
+        warnings = [
+            warning
+            for warning in warnings
+            if warning != "scenario_apollo_lane_namespace_equivalence_unverified"
+        ]
+        if verified_lane_equivalence.get("status") == "pass":
+            lane_equivalence_status = "verified_equivalence"
+        else:
+            lane_equivalence_status = "mismatch"
+            blocking.extend(str(item) for item in verified_lane_equivalence.get("blocking_reasons") or [])
+            warnings.extend(str(item) for item in verified_lane_equivalence.get("warnings") or [])
 
     route_identity = _route_identity(
         scenario=scenario,
@@ -460,7 +486,515 @@ def write_apollo_route_contract_report(report: Mapping[str, Any], out_dir: str |
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_text(json.dumps(route_claim, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         outputs["route_definition_claim_artifact"] = str(artifact_path)
+    lane_equivalence = build_lane_equivalence_town01(report)
+    lane_artifact_path = _lane_equivalence_artifact_path(report, output)
+    if lane_artifact_path is not None:
+        lane_artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        lane_artifact_path.write_text(
+            json.dumps(lane_equivalence, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        outputs["lane_equivalence_town01_artifact"] = str(lane_artifact_path)
     return outputs
+
+
+def build_lane_equivalence_town01(
+    report: Mapping[str, Any],
+    *,
+    hdmap_projection_rows: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    lane_equivalence = report.get("lane_equivalence")
+    if not isinstance(lane_equivalence, Mapping):
+        lane_equivalence = {}
+    scenario_sequence = list(
+        report.get("scenario_route_lane_sequence")
+        or report.get("scenario_route_lane_keys")
+        or lane_equivalence.get("scenario_sequence")
+        or []
+    )
+    apollo_sequence = list(
+        report.get("apollo_routing_lane_sequence")
+        or report.get("apollo_routing_lane_keys")
+        or lane_equivalence.get("apollo_sequence")
+        or []
+    )
+    raw_status = str(report.get("lane_equivalence_status") or lane_equivalence.get("status") or "")
+    verified = _verified_lane_equivalence_from_projection(
+        scenario_sequence=scenario_sequence,
+        apollo_sequence=apollo_sequence,
+        rows=list(hdmap_projection_rows or []),
+    )
+    if verified.get("status") != "insufficient_data":
+        return verified
+    if lane_equivalence.get("verification_source") == "apollo_hdmap_api_route_samples":
+        return dict(lane_equivalence)
+    blocking: list[str] = []
+    warnings: list[str] = []
+    missing: list[str] = []
+    if raw_status in {"direct_match", "verified_equivalence"}:
+        status = "pass"
+    elif raw_status in {"cross_namespace_unverified", "not_evaluated", ""}:
+        status = "insufficient_data"
+        missing.append("verified_lane_equivalence_table")
+        missing.extend(str(item) for item in verified.get("missing_fields") or [])
+        warnings.append("lane_namespace_mismatch_or_unmapped")
+    else:
+        status = "fail"
+        blocking.append("apollo_routing_not_claim_route")
+    if not scenario_sequence:
+        missing.append("carla_route_lane_signature")
+    if not apollo_sequence:
+        missing.append("apollo_routing_lane_window_signature")
+    if missing and status == "pass":
+        status = "insufficient_data"
+    first_mismatch = lane_equivalence.get("first_mismatch")
+    if not isinstance(first_mismatch, Mapping):
+        first_mismatch = _first_lane_mismatch(scenario_sequence, apollo_sequence)
+    equivalence_table = list(lane_equivalence.get("equivalence_table") or [])
+    return {
+        "schema_version": LANE_EQUIVALENCE_SCHEMA_VERSION,
+        "status": status,
+        "carla_route_lane_signature": scenario_sequence,
+        "apollo_routing_lane_window_signature": apollo_sequence,
+        "apollo_unique_lane_signature": _sequence_from_signature(
+            report.get("apollo_routing_unique_lane_signature")
+        ),
+        "lane_namespace_notes": {
+            "carla": str(report.get("scenario_lane_namespace") or "carla_waypoint_or_opendrive"),
+            "apollo": str(report.get("apollo_lane_namespace") or "apollo_hdmap"),
+        },
+        "pairs": equivalence_table,
+        "equivalence": equivalence_table,
+        "first_mismatch": dict(first_mismatch) if isinstance(first_mismatch, Mapping) else None,
+        "blocking_reasons": sorted(set(blocking)),
+        "warnings": sorted(set(warnings)),
+        "missing_fields": sorted(set(missing)),
+        "source": {
+            "apollo_route_contract_status": report.get("status"),
+            "lane_equivalence_status": raw_status or None,
+            "projection_source": lane_equivalence.get("projection_source"),
+        },
+        "claim_boundary": (
+            "CARLA waypoint/OpenDRIVE lane ids and Apollo HDMap lane ids are not "
+            "interchangeable. Ordered lane windows require verified equivalence; "
+            "set overlap alone is not claim-grade evidence."
+        ),
+    }
+
+
+def _verified_lane_equivalence_from_projection(
+    *,
+    scenario_sequence: Sequence[Any],
+    apollo_sequence: Sequence[Any],
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    official_rows = [
+        row
+        for row in rows
+        if str(row.get("source") or "") == "apollo_hdmap_api"
+        and str(row.get("status") or row.get("projection_status") or "") == "ok"
+        and row.get("nearest_lane_id")
+        and row.get("carla_lane_key")
+    ]
+    scenario = [str(item) for item in scenario_sequence if str(item or "").strip()]
+    apollo = [str(item) for item in apollo_sequence if str(item or "").strip()]
+    if not rows:
+        return _lane_equivalence_insufficient("apollo_hdmap_projection_rows")
+    if not official_rows:
+        return _lane_equivalence_insufficient("route_projection_carla_lane_key")
+    if not scenario:
+        return _lane_equivalence_insufficient("carla_route_lane_signature")
+    if not apollo:
+        return _lane_equivalence_insufficient("apollo_routing_lane_window_signature")
+
+    sorted_rows = sorted(
+        official_rows,
+        key=lambda row: (
+            _num(row.get("route_index"))
+            if _num(row.get("route_index")) is not None
+            else _num(row.get("source_index")) or 0.0,
+            _num(row.get("route_s")) or 0.0,
+        ),
+    )
+    rows_by_carla: dict[str, list[Mapping[str, Any]]] = {}
+    for row in sorted_rows:
+        key = str(row.get("carla_lane_key") or "").strip()
+        if not key:
+            continue
+        rows_by_carla.setdefault(key, []).append(row)
+
+    projected_carla_sequence = _unique_keep_order(
+        [str(row.get("carla_lane_key") or "") for row in sorted_rows]
+    )
+    blocking: list[str] = []
+    warnings: list[str] = []
+    missing: list[str] = []
+    if projected_carla_sequence and projected_carla_sequence != scenario:
+        blocking.append("route_sample_carla_lane_sequence_mismatch")
+
+    pairs: list[dict[str, Any]] = []
+    dominant_by_carla: dict[str, str] = {}
+    for index, carla_lane in enumerate(scenario):
+        lane_rows = rows_by_carla.get(carla_lane, [])
+        expected_apollo = apollo[index] if index < len(apollo) else None
+        if not lane_rows:
+            missing.append(f"route_projection_samples_for_{carla_lane}")
+            pairs.append(_insufficient_lane_pair(index, carla_lane, expected_apollo))
+            continue
+        apollo_counts: dict[str, int] = {}
+        for row in lane_rows:
+            apollo_key = _lane_key(str(row.get("nearest_lane_id") or ""))
+            if apollo_key:
+                apollo_counts[apollo_key] = apollo_counts.get(apollo_key, 0) + 1
+        if not apollo_counts:
+            missing.append(f"nearest_apollo_lane_for_{carla_lane}")
+            pairs.append(_insufficient_lane_pair(index, carla_lane, expected_apollo))
+            continue
+        apollo_lane, dominant_count = sorted(apollo_counts.items(), key=lambda item: (-item[1], item[0]))[0]
+        dominant_by_carla[carla_lane] = apollo_lane
+        pair = _lane_equivalence_pair_debug(
+            index=index,
+            carla_lane=carla_lane,
+            expected_apollo_lane=expected_apollo,
+            dominant_apollo_lane=apollo_lane,
+            lane_rows=lane_rows,
+        )
+        blocking.extend(f"{carla_lane}:{reason}" for reason in pair.get("blocking_reasons") or [])
+        warnings.extend(f"{carla_lane}:{reason}" for reason in pair.get("warnings") or [])
+        pairs.append(pair)
+
+    projected_apollo_sequence = [dominant_by_carla[lane] for lane in scenario if lane in dominant_by_carla]
+    if projected_apollo_sequence and projected_apollo_sequence != apollo:
+        blocking.append("projected_apollo_lane_sequence_mismatch")
+    if missing:
+        status = "insufficient_data" if not blocking else "fail"
+    elif blocking:
+        status = "fail"
+    else:
+        status = "pass"
+    return {
+        "schema_version": LANE_EQUIVALENCE_SCHEMA_VERSION,
+        "status": status,
+        "carla_route_lane_signature": scenario,
+        "apollo_routing_lane_window_signature": apollo,
+        "projected_carla_lane_signature": projected_carla_sequence,
+        "projected_apollo_lane_signature": projected_apollo_sequence,
+        "pairs": pairs,
+        "equivalence": pairs,
+        "first_mismatch": _first_lane_mismatch(scenario, apollo),
+        "blocking_reasons": sorted(set(blocking)),
+        "warnings": sorted(set(warnings)),
+        "missing_fields": sorted(set(missing)),
+        "verification_source": "apollo_hdmap_api_route_samples",
+        "thresholds": {
+            "max_lateral_p95_m": MAX_LANE_EQUIVALENCE_LATERAL_P95_M,
+            "max_heading_p95_rad": MAX_LANE_EQUIVALENCE_HEADING_P95_RAD,
+            "min_dominant_sample_ratio": MIN_LANE_EQUIVALENCE_DOMINANT_RATIO,
+        },
+        "source": {
+            "projection_source": "apollo_hdmap_api",
+            "route_sample_count": len(official_rows),
+        },
+        "claim_boundary": (
+            "This verifies ordered CARLA route lane to Apollo HDMap lane equivalence "
+            "from official Apollo HDMap projection rows. It is route/map identity "
+            "evidence, not closed-loop driving evidence."
+        ),
+    }
+
+
+def _insufficient_lane_pair(
+    index: int,
+    carla_lane: str,
+    expected_apollo_lane: str | None,
+) -> dict[str, Any]:
+    return {
+        "index": index,
+        "carla_lane_key": carla_lane,
+        "scenario_lane_key": carla_lane,
+        "candidate_apollo_lane_id": expected_apollo_lane,
+        "apollo_lane_key": expected_apollo_lane,
+        "status": "insufficient_data",
+        "classification": "sampling_density_insufficient",
+        "sample_count": 0,
+        "dominant_sample_ratio": 0.0,
+        "lateral_error_p50_m": None,
+        "lateral_error_p95_m": None,
+        "lateral_error_max_m": None,
+        "heading_error_p50_rad": None,
+        "heading_error_p95_rad": None,
+        "heading_error_max_rad": None,
+        "failed_samples": [],
+        "topology": _empty_pair_topology(),
+        "heading_diagnosis": {
+            "route_heading_source": "unknown",
+            "apollo_heading_source": "hdmap_lane_tangent",
+            "heading_error_p95_rad": None,
+            "heading_error_concentrated_at_boundary": False,
+            "sampling_spacing_p95_m": None,
+            "classification": "unknown",
+        },
+        "evidence": [],
+        "blocking_reasons": [],
+        "warnings": ["route_projection_samples_missing"],
+    }
+
+
+def _lane_equivalence_pair_debug(
+    *,
+    index: int,
+    carla_lane: str,
+    expected_apollo_lane: str | None,
+    dominant_apollo_lane: str,
+    lane_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    dominant_count = sum(
+        1 for row in lane_rows if _lane_key(str(row.get("nearest_lane_id") or "")) == dominant_apollo_lane
+    )
+    dominant_ratio = dominant_count / float(len(lane_rows)) if lane_rows else 0.0
+    lateral_p50 = _p50_abs(row.get("lateral_error_m") for row in lane_rows)
+    lateral_p95 = _p95_abs(row.get("lateral_error_m") for row in lane_rows)
+    lateral_max = _max_abs(row.get("lateral_error_m") for row in lane_rows)
+    heading_p50 = _p50_abs(row.get("heading_error_rad") for row in lane_rows)
+    heading_p95 = _p95_abs(row.get("heading_error_rad") for row in lane_rows)
+    heading_max = _max_abs(row.get("heading_error_rad") for row in lane_rows)
+    route_s_min = _min_number(row.get("route_s") for row in lane_rows)
+    route_s_max = _max_number(row.get("route_s") for row in lane_rows)
+    route_span = (
+        route_s_max - route_s_min
+        if route_s_max is not None and route_s_min is not None
+        else None
+    )
+    route_spacing_p95 = _sample_spacing_p95(lane_rows)
+    raw_apollo_ids = sorted(
+        {
+            str(row.get("nearest_lane_id"))
+            for row in lane_rows
+            if row.get("nearest_lane_id")
+        }
+    )
+    expected = expected_apollo_lane or dominant_apollo_lane
+    failed_samples = _failed_lane_samples(
+        lane_rows=lane_rows,
+        expected_apollo_lane=expected,
+        route_s_min=route_s_min,
+        route_s_max=route_s_max,
+    )
+    lane_mismatch_failures = [
+        row
+        for row in failed_samples
+        if row.get("projected_apollo_lane_key") != expected
+    ]
+    all_lane_mismatch_failures_are_boundary = bool(lane_mismatch_failures) and all(
+        bool(row.get("is_boundary_sample")) for row in lane_mismatch_failures
+    )
+    heading_failures = [
+        row
+        for row in failed_samples
+        if _num(row.get("heading_error_rad")) is not None
+        and abs(float(row["heading_error_rad"])) >= MAX_LANE_EQUIVALENCE_HEADING_P95_RAD
+    ]
+    heading_failures_boundary = bool(heading_failures) and all(
+        bool(row.get("is_boundary_sample")) for row in heading_failures
+    )
+
+    blocking: list[str] = []
+    warnings: list[str] = []
+    if dominant_ratio < MIN_LANE_EQUIVALENCE_DOMINANT_RATIO:
+        blocking.append("dominant_apollo_lane_ratio_low")
+    if lateral_p95 is None:
+        blocking.append("lateral_error_missing")
+    elif lateral_p95 >= MAX_LANE_EQUIVALENCE_LATERAL_P95_M:
+        blocking.append("lateral_error_p95_high")
+    if heading_p95 is None:
+        blocking.append("heading_error_missing")
+    elif heading_p95 >= MAX_LANE_EQUIVALENCE_HEADING_P95_RAD:
+        blocking.append("heading_error_p95_high")
+    if route_spacing_p95 is not None and route_spacing_p95 >= 5.0:
+        warnings.append("route_sampling_spacing_high")
+    if all_lane_mismatch_failures_are_boundary:
+        warnings.append("lane_mismatch_concentrated_at_boundary")
+    if heading_failures_boundary:
+        warnings.append("heading_error_concentrated_at_boundary")
+
+    classification = _classify_lane_pair(
+        blocking=blocking,
+        all_lane_mismatch_failures_are_boundary=all_lane_mismatch_failures_are_boundary,
+        heading_failures_boundary=heading_failures_boundary,
+        route_spacing_p95=route_spacing_p95,
+        has_lane_mismatch=bool(lane_mismatch_failures),
+    )
+    status = (
+        "verified"
+        if not blocking
+        else "ambiguous"
+        if classification in {"boundary_transition_ambiguous", "sampling_density_insufficient"}
+        else "failed"
+    )
+    heading_classification = _heading_classification(
+        heading_p95=heading_p95,
+        heading_failures_boundary=heading_failures_boundary,
+        route_spacing_p95=route_spacing_p95,
+        route_span=route_span,
+    )
+    return {
+        "index": index,
+        "carla_lane_key": carla_lane,
+        "scenario_lane_key": carla_lane,
+        "candidate_apollo_lane_id": expected,
+        "apollo_lane_key": dominant_apollo_lane,
+        "exact_match": carla_lane == dominant_apollo_lane,
+        "status": status,
+        "confidence": "verified" if status == "verified" else status,
+        "classification": classification,
+        "sample_count": len(lane_rows),
+        "dominant_sample_ratio": dominant_ratio,
+        "lateral_error_p50_m": lateral_p50,
+        "lateral_error_p95_m": lateral_p95,
+        "lateral_error_max_m": lateral_max,
+        "heading_error_p50_rad": heading_p50,
+        "heading_error_p95_rad": heading_p95,
+        "heading_error_max_rad": heading_max,
+        "direction_consistent": bool(heading_p95 is not None and heading_p95 < MAX_LANE_EQUIVALENCE_HEADING_P95_RAD),
+        "route_s_min": route_s_min,
+        "route_s_max": route_s_max,
+        "projection_s_min": _min_number(row.get("projection_s") for row in lane_rows),
+        "projection_s_max": _max_number(row.get("projection_s") for row in lane_rows),
+        "raw_apollo_lane_ids": raw_apollo_ids,
+        "failed_samples": failed_samples,
+        "topology": _empty_pair_topology(),
+        "heading_diagnosis": {
+            "route_heading_source": "route_trace" if any(row.get("carla_heading") is not None for row in lane_rows) else "unknown",
+            "apollo_heading_source": "hdmap_lane_tangent",
+            "heading_error_p95_rad": heading_p95,
+            "heading_error_concentrated_at_boundary": heading_failures_boundary,
+            "sampling_spacing_p95_m": route_spacing_p95,
+            "classification": heading_classification,
+        },
+        "evidence": ["apollo_hdmap_api_route_samples"],
+        "blocking_reasons": blocking,
+        "warnings": warnings,
+        "verification_source": "apollo_hdmap_api_route_samples",
+    }
+
+
+def _failed_lane_samples(
+    *,
+    lane_rows: Sequence[Mapping[str, Any]],
+    expected_apollo_lane: str | None,
+    route_s_min: float | None,
+    route_s_max: float | None,
+) -> list[dict[str, Any]]:
+    failed: list[dict[str, Any]] = []
+    for row in lane_rows:
+        projected_key = _lane_key(str(row.get("nearest_lane_id") or ""))
+        lateral = _num(row.get("lateral_error_m"))
+        heading = _num(row.get("heading_error_rad"))
+        lane_mismatch = expected_apollo_lane is not None and projected_key != expected_apollo_lane
+        lateral_high = lateral is not None and abs(lateral) >= MAX_LANE_EQUIVALENCE_LATERAL_P95_M
+        heading_high = heading is not None and abs(heading) >= MAX_LANE_EQUIVALENCE_HEADING_P95_RAD
+        if not (lane_mismatch or lateral_high or heading_high):
+            continue
+        route_s = _num(row.get("route_s"))
+        distance_to_start = (
+            abs(route_s - route_s_min)
+            if route_s is not None and route_s_min is not None
+            else None
+        )
+        distance_to_end = (
+            abs(route_s_max - route_s)
+            if route_s is not None and route_s_max is not None
+            else None
+        )
+        is_boundary = any(
+            value is not None and value <= LANE_EQUIVALENCE_BOUNDARY_DISTANCE_M
+            for value in (distance_to_start, distance_to_end)
+        )
+        failed.append(
+            {
+                "route_index": row.get("route_index") or row.get("sample_index") or row.get("source_index"),
+                "route_s": route_s,
+                "projected_apollo_lane_id": row.get("nearest_lane_id"),
+                "projected_apollo_lane_key": projected_key,
+                "expected_apollo_lane_id": expected_apollo_lane,
+                "lateral_error_m": lateral,
+                "heading_error_rad": heading,
+                "distance_to_expected_lane_start_m": distance_to_start,
+                "distance_to_expected_lane_end_m": distance_to_end,
+                "is_boundary_sample": is_boundary,
+                "boundary_transition_explains_mismatch": bool(is_boundary and lane_mismatch),
+            }
+        )
+    return failed
+
+
+def _classify_lane_pair(
+    *,
+    blocking: Sequence[str],
+    all_lane_mismatch_failures_are_boundary: bool,
+    heading_failures_boundary: bool,
+    route_spacing_p95: float | None,
+    has_lane_mismatch: bool,
+) -> str:
+    if not blocking:
+        return "verified_equivalent"
+    if "dominant_apollo_lane_ratio_low" in blocking and all_lane_mismatch_failures_are_boundary:
+        return "boundary_transition_ambiguous"
+    if "heading_error_p95_high" in blocking:
+        if heading_failures_boundary:
+            return "boundary_transition_ambiguous"
+        if route_spacing_p95 is not None and route_spacing_p95 >= 5.0:
+            return "sampling_density_insufficient"
+        return "heading_convention_mismatch"
+    if has_lane_mismatch:
+        return "routing_not_claim_route"
+    if "lateral_error_p95_high" in blocking:
+        return "routing_not_claim_route"
+    return "topology_mismatch"
+
+
+def _heading_classification(
+    *,
+    heading_p95: float | None,
+    heading_failures_boundary: bool,
+    route_spacing_p95: float | None,
+    route_span: float | None,
+) -> str:
+    if heading_p95 is None:
+        return "unknown"
+    if heading_p95 < MAX_LANE_EQUIVALENCE_HEADING_P95_RAD:
+        return "ok"
+    if heading_failures_boundary:
+        return "curve_chord_vs_tangent"
+    if route_spacing_p95 is not None and route_spacing_p95 >= 5.0:
+        return "sparse_route_sampling"
+    if route_span is not None and route_span <= 15.0:
+        return "curve_chord_vs_tangent"
+    return "heading_convention_mismatch"
+
+
+def _empty_pair_topology() -> dict[str, Any]:
+    return {
+        "apollo_predecessors": [],
+        "apollo_successors": [],
+        "projected_lane_is_neighbor_or_successor": False,
+        "projected_lane_is_successor": False,
+        "projected_lane_is_predecessor": False,
+        "projected_lane_is_connector_or_junction": False,
+        "boundary_transition_explains_mismatch": False,
+        "topology_evidence_available": False,
+    }
+
+
+def _lane_equivalence_insufficient(field: str) -> dict[str, Any]:
+    return {
+        "schema_version": LANE_EQUIVALENCE_SCHEMA_VERSION,
+        "status": "insufficient_data",
+        "blocking_reasons": [],
+        "warnings": ["lane_equivalence_projection_metadata_missing"],
+        "missing_fields": [field],
+        "verification_source": None,
+    }
 
 
 def build_route_definition_claim(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -631,6 +1165,49 @@ def _route_definition_claim_artifact_path(report: Mapping[str, Any], output: Pat
     if not is_under_run:
         return None
     return run_dir / "artifacts" / "route_definition_claim.json"
+
+
+def _lane_equivalence_artifact_path(report: Mapping[str, Any], output: Path) -> Path | None:
+    source = report.get("source")
+    if not isinstance(source, Mapping):
+        return None
+    raw_run_dir = source.get("run_dir")
+    if raw_run_dir in {None, ""}:
+        return None
+    run_dir = Path(str(raw_run_dir)).expanduser()
+    try:
+        run_dir_resolved = run_dir.resolve()
+        output_resolved = output.resolve()
+    except OSError:
+        return None
+    try:
+        is_under_run = output_resolved.is_relative_to(run_dir_resolved)
+    except AttributeError:
+        is_under_run = str(output_resolved).startswith(str(run_dir_resolved))
+    if not is_under_run:
+        return None
+    return run_dir / "artifacts" / "lane_equivalence_town01.json"
+
+
+def _first_lane_mismatch(
+    scenario_sequence: Sequence[Any],
+    apollo_sequence: Sequence[Any],
+) -> dict[str, Any] | None:
+    max_len = max(len(scenario_sequence), len(apollo_sequence))
+    for index in range(max_len):
+        scenario = scenario_sequence[index] if index < len(scenario_sequence) else None
+        apollo = apollo_sequence[index] if index < len(apollo_sequence) else None
+        if scenario != apollo:
+            return {"index": index, "carla": scenario, "apollo": apollo}
+    return None
+
+
+def _sequence_from_signature(value: Any) -> list[str]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [str(item) for item in value if item not in {None, ""}]
+    if not isinstance(value, str) or not value.strip():
+        return []
+    return [part.strip() for part in value.split("|") if part.strip()]
 
 
 def _resolve_frame_transform(
@@ -1634,3 +2211,41 @@ def _num(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if number == number else None
+
+
+def _p95_abs(values: Sequence[Any]) -> float | None:
+    nums = sorted(abs(value) for value in (_num(item) for item in values) if value is not None)
+    if not nums:
+        return None
+    index = min(len(nums) - 1, int(math.ceil(0.95 * len(nums)) - 1))
+    return nums[index]
+
+
+def _p50_abs(values: Sequence[Any]) -> float | None:
+    nums = sorted(abs(value) for value in (_num(item) for item in values) if value is not None)
+    if not nums:
+        return None
+    return nums[len(nums) // 2]
+
+
+def _max_abs(values: Sequence[Any]) -> float | None:
+    nums = [abs(value) for value in (_num(item) for item in values) if value is not None]
+    return max(nums) if nums else None
+
+
+def _min_number(values: Sequence[Any]) -> float | None:
+    nums = [value for value in (_num(item) for item in values) if value is not None]
+    return min(nums) if nums else None
+
+
+def _max_number(values: Sequence[Any]) -> float | None:
+    nums = [value for value in (_num(item) for item in values) if value is not None]
+    return max(nums) if nums else None
+
+
+def _sample_spacing_p95(rows: Sequence[Mapping[str, Any]]) -> float | None:
+    route_s = sorted(value for value in (_num(row.get("route_s")) for row in rows) if value is not None)
+    if len(route_s) < 2:
+        return None
+    deltas = [right - left for left, right in zip(route_s, route_s[1:]) if right >= left]
+    return _p95_abs(deltas)

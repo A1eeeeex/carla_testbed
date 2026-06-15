@@ -108,8 +108,8 @@ def test_high_heading_error_fails_with_suspected_layers(tmp_path: Path) -> None:
 def test_claim_grade_projection_uses_strict_heading_and_lateral_thresholds(tmp_path: Path) -> None:
     heading_path = tmp_path / "heading.jsonl"
     lateral_path = tmp_path / "lateral.jsonl"
-    _write_jsonl(heading_path, _projection_rows(heading_error_rad=0.06, lateral_error_m=0.05))
-    _write_jsonl(lateral_path, _projection_rows(heading_error_rad=0.01, lateral_error_m=0.60))
+    _write_jsonl(heading_path, _projection_rows(heading_error_rad=0.031, lateral_error_m=0.05))
+    _write_jsonl(lateral_path, _projection_rows(heading_error_rad=0.01, lateral_error_m=0.31))
 
     heading_report = analyze_apollo_hdmap_projection_file(heading_path)
     lateral_report = analyze_apollo_hdmap_projection_file(lateral_path)
@@ -118,6 +118,41 @@ def test_claim_grade_projection_uses_strict_heading_and_lateral_thresholds(tmp_p
     assert "apollo_hdmap_projection_heading_error_high" in heading_report["blocking_reasons"]
     assert lateral_report["status"] == "fail"
     assert "apollo_hdmap_projection_lateral_error_high" in lateral_report["blocking_reasons"]
+
+
+def test_start_goal_projection_failure_blocks_alignment_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "apollo_hdmap_projection.jsonl"
+    rows = _projection_rows(heading_error_rad=0.01, lateral_error_m=0.05)
+    rows[0]["sample_type"] = "start"
+    rows[0]["status"] = "no_lane"
+    rows[0]["projection_status"] = "no_lane"
+    _write_jsonl(path, rows)
+
+    report = analyze_apollo_hdmap_projection_file(path)
+
+    assert report["status"] == "fail"
+    assert "start_goal_projection_failed" in report["blocking_reasons"]
+
+
+def test_route_projection_low_ok_ratio_blocks_coverage(tmp_path: Path) -> None:
+    path = tmp_path / "apollo_hdmap_projection.jsonl"
+    rows = _projection_rows(heading_error_rad=0.01, lateral_error_m=0.05)
+    for row in rows:
+        row["sample_type"] = "route"
+    rows[-1]["status"] = "out_of_map"
+    rows[-1]["projection_status"] = "out_of_map"
+    rows[-2]["status"] = "no_lane"
+    rows[-2]["projection_status"] = "no_lane"
+    rows[-3]["status"] = "error"
+    rows[-3]["projection_status"] = "error"
+    rows[-4]["status"] = "no_lane"
+    rows[-4]["projection_status"] = "no_lane"
+    _write_jsonl(path, rows)
+
+    report = analyze_apollo_hdmap_projection_file(path)
+
+    assert report["status"] == "fail"
+    assert "route_projection_coverage_low" in report["blocking_reasons"]
 
 
 def test_claim_grade_projection_requires_minimum_sample_count(tmp_path: Path) -> None:
@@ -226,6 +261,40 @@ def test_parse_map_xysl_output() -> None:
     }
 
 
+def test_project_sample_emits_alignment_schema_aliases() -> None:
+    sample = LocalizationProjectionSample(
+        timestamp=12.5,
+        x=1.5,
+        y=-250.8,
+        heading=1.57,
+        source_artifact="sample.jsonl",
+        source_index=3,
+        sample_type="route",
+        metadata={"carla_lane_id": "117:0:1", "carla_lane_key": "117:1", "route_s": 281.0},
+    )
+
+    row = project_sample_with_map_xysl(
+        sample,
+        MapXyslConfig(docker_container=None),
+        command_runner=lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="lane_id[15_1_1], s[66.746709], l[0.050000], heading[1.570000]\n",
+            stderr="",
+        ),
+    )
+
+    assert row["sample_type"] == "route"
+    assert row["sample_index"] == 3
+    assert row["x_apollo"] == 1.5
+    assert row["y_apollo"] == -250.8
+    assert row["heading_apollo"] == 1.57
+    assert row["projection_status"] == "ok"
+    assert row["carla_lane_id"] == "117:0:1"
+    assert row["carla_lane_key"] == "117:1"
+    assert row["route_s"] == 281.0
+
+
 def test_build_map_xysl_command_uses_docker_by_default() -> None:
     command = build_map_xysl_command(
         LocalizationProjectionSample(
@@ -323,9 +392,9 @@ def test_projection_samples_can_include_route_json_start_goal(tmp_path: Path) ->
     run_dir = tmp_path / "run"
     route = {
         "points": [
-            {"x": 1.0, "y": 2.0, "heading": 0.1},
-            {"x": 2.0, "y": 2.5, "heading": 0.2},
-            {"x": 3.0, "y": 3.0, "heading": 0.3},
+                {"x": 1.0, "y": 2.0, "heading": 0.1, "lane_id": "117:0:1", "s": 10.0},
+                {"x": 2.0, "y": 2.5, "heading": 0.2, "lane_id": "117:0:1", "s": 15.0},
+                {"x": 3.0, "y": 3.0, "heading": 0.3, "lane_id": "83:0:1", "s": 20.0},
         ]
     }
     (run_dir / "route.json").parent.mkdir(parents=True, exist_ok=True)
@@ -344,6 +413,7 @@ def test_projection_samples_can_include_route_json_start_goal(tmp_path: Path) ->
         (2.0, 2.5, 0.2),
     ]
     assert all(sample.source_artifact.endswith("route.json") for sample in samples)
+    assert [sample.metadata.get("carla_lane_key") for sample in samples] == ["117:1", "83:1", "117:1"]
 
 
 def test_projection_samples_can_include_manifest_route_trace_with_frame_transform(tmp_path: Path) -> None:
@@ -354,9 +424,9 @@ def test_projection_samples_can_include_manifest_route_trace_with_frame_transfor
             "metadata": {
                 "scenario_metadata": {
                     "route_trace": [
-                        {"x": 2.0, "y": 208.0, "z": 0.0, "heading": -1.57079632679, "s": 0.0},
-                        {"x": 2.0, "y": 108.0, "z": 0.0, "heading": -1.57079632679, "s": 100.0},
-                        {"x": 2.0, "y": 8.0, "z": 0.0, "heading": -1.57079632679, "s": 200.0},
+                        {"x": 2.0, "y": 208.0, "z": 0.0, "heading": -1.57079632679, "s": 0.0, "lane_id": "15:0:1"},
+                        {"x": 2.0, "y": 108.0, "z": 0.0, "heading": -1.57079632679, "s": 100.0, "lane_id": "15:0:1"},
+                        {"x": 2.0, "y": 8.0, "z": 0.0, "heading": -1.57079632679, "s": 200.0, "lane_id": "13:0:-1"},
                     ]
                 }
             }
@@ -395,6 +465,7 @@ def test_projection_samples_can_include_manifest_route_trace_with_frame_transfor
     ]
     assert all(abs((sample.heading or 0.0) - 1.57079632679) < 1e-9 for sample in samples)
     assert all("manifest.json:metadata.scenario_metadata.route_trace" in sample.source_artifact for sample in samples)
+    assert [sample.metadata.get("carla_lane_key") for sample in samples] == ["15:1", "13:-1", "15:1"]
 
 
 def test_projection_samples_transform_runtime_route_json_carla_frame(tmp_path: Path) -> None:

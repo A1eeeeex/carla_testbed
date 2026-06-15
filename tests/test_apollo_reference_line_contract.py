@@ -71,6 +71,7 @@ def test_apollo_hdmap_projection_pass_lifts_claim_grade_evidence(tmp_path: Path)
         heading_error_rad=0.01,
         lateral_error_m=0.05,
     )
+    _write_route_contract(run_dir, status="pass")
 
     report = analyze_apollo_reference_line_contract_run_dir(run_dir)
 
@@ -79,6 +80,23 @@ def test_apollo_hdmap_projection_pass_lifts_claim_grade_evidence(tmp_path: Path)
     assert report["evidence"]["apollo_hdmap_projection_claim_grade"] is True
     assert report["apollo_hdmap_projection"]["status"] == "pass"
     assert report["apollo_hdmap_projection"]["claim_grade"] is True
+    assert report["apollo_route_contract_status"] == "pass"
+
+
+def test_route_contract_fail_blocks_reference_line_pass(tmp_path: Path) -> None:
+    run_dir = _copy_case(tmp_path, "pass")
+    _write_hdmap_projection(
+        run_dir / "artifacts" / "apollo_hdmap_projection.jsonl",
+        heading_error_rad=0.01,
+        lateral_error_m=0.05,
+    )
+    _write_route_contract(run_dir, status="fail", blocking_reasons=["lane_equivalence_missing"])
+
+    report = analyze_apollo_reference_line_contract_run_dir(run_dir)
+
+    assert report["status"] == "fail"
+    assert report["apollo_route_contract_status"] == "fail"
+    assert "apollo_route_contract_not_pass" in report["blocking_reasons"]
 
 
 def test_planning_materialization_fail_downgrades_reference_line_claim_window(tmp_path: Path) -> None:
@@ -562,6 +580,7 @@ def _read_json(path: Path) -> dict:
 
 
 def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -595,3 +614,18 @@ def _write_hdmap_projection(path: Path, *, heading_error_rad: float, lateral_err
             }
         )
     path.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n", encoding="utf-8")
+
+
+def _write_route_contract(run_dir: Path, *, status: str, blocking_reasons: list[str] | None = None) -> None:
+    _write_json(
+        run_dir / "analysis" / "apollo_route_contract" / "apollo_route_contract_report.json",
+        {
+            "schema_version": "apollo_route_contract.v1",
+            "status": status,
+            "blocking_reasons": list(blocking_reasons or []),
+            "warnings": [],
+            "scenario_route_lane_sequence": ["lane_097"],
+            "apollo_routing_lane_sequence": ["lane_097"],
+            "lane_equivalence_status": "verified_equivalence" if status == "pass" else "mismatch",
+        },
+    )

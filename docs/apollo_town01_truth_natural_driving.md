@@ -813,12 +813,14 @@ python tools/export_apollo_hdmap_projection.py \
 python tools/analyze_apollo_hdmap_projection.py \
   --projection "$RUN/artifacts/apollo_hdmap_projection.jsonl" \
   --out "$RUN/analysis/apollo_hdmap_projection"
+python tools/analyze_apollo_map_identity.py --run-dir "$RUN"
 python tools/analyze_apollo_localization_contract.py --run-dir "$RUN"
 python tools/analyze_apollo_route_contract.py --run-dir "$RUN" --out "$RUN/analysis/apollo_route_contract"
 python tools/analyze_routing_response_decoded.py \
   --input "$RUN/artifacts/routing_response_decoded.json" \
   --out "$RUN/analysis/routing_response_decoded"
 python tools/analyze_apollo_reference_line_contract.py --run-dir "$RUN"
+python tools/analyze_apollo_map_route_alignment.py --run-dir "$RUN"
 python tools/analyze_apollo_planning_materialization.py --run-dir "$RUN"
 python tools/analyze_apollo_module_consumption.py --run-dir "$RUN" --out "$RUN/analysis/apollo_module_consumption"
 python tools/analyze_apollo_prediction_evidence.py --run-dir "$RUN" --out "$RUN/analysis/prediction_evidence"
@@ -1339,6 +1341,8 @@ The expected postprocess sequence for a single run is:
 RUN=runs/<run_id>
 python tools/analyze_apollo_localization_contract.py --run-dir "$RUN"
 python tools/analyze_apollo_chassis_gt_contract.py --run-dir "$RUN"
+python tools/analyze_apollo_map_identity.py --run-dir "$RUN"
+python tools/analyze_apollo_map_route_alignment.py --run-dir "$RUN"
 python tools/analyze_control_attribution.py --run-dir "$RUN" --out "$RUN/analysis/control_attribution"
 python tools/postprocess_town01_natural_driving.py --suite-root "$RUN" --out "$RUN/analysis/natural_driving" --refresh
 python tools/analyze_apollo_link_health.py --run-dir "$RUN" --out "$RUN/analysis/apollo_link_health"

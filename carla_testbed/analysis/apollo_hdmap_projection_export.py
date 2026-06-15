@@ -6,7 +6,7 @@ import re
 import shlex
 import subprocess
 from collections.abc import Sequence as SequenceABC
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -35,6 +35,8 @@ class LocalizationProjectionSample:
     heading: float | None
     source_artifact: str
     source_index: int
+    sample_type: str = "ego"
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -104,7 +106,12 @@ def load_localization_projection_samples(
                 frame_transform=frame_transform,
             )
         if include_start_goal and route_samples:
-            selected_samples.extend([route_samples[0], route_samples[-1]])
+            selected_samples.extend(
+                [
+                    replace(route_samples[0], sample_type="start", source_index=0),
+                    replace(route_samples[-1], sample_type="goal", source_index=len(route_samples) - 1),
+                ]
+            )
         if include_route_samples:
             selected_samples.extend(route_samples)
     return _limit_samples(_dedupe_samples(selected_samples), max_samples=max_samples)
@@ -242,7 +249,14 @@ def project_sample_with_map_xysl(
         if sample.heading is not None and lane_heading is not None
         else None
     )
-    return {
+    row = {
+        "sample_type": sample.sample_type,
+        "sample_index": sample.source_index,
+        "sim_time": sample.timestamp,
+        "apollo_time": None,
+        "x_apollo": sample.x,
+        "y_apollo": sample.y,
+        "heading_apollo": sample.heading,
         "timestamp": sample.timestamp,
         "localization_x": sample.x,
         "localization_y": sample.y,
@@ -259,6 +273,7 @@ def project_sample_with_map_xysl(
         "map_name": config.map_name,
         "map_dir": config.map_dir,
         "status": status,
+        "projection_status": status,
         "exporter_backend": "apollo_map_xysl",
         "source_artifact": sample.source_artifact,
         "source_index": sample.source_index,
@@ -267,6 +282,10 @@ def project_sample_with_map_xysl(
         "command": " ".join(shlex.quote(part) for part in command),
         "raw_output_excerpt": output[:1000],
     }
+    for key, value in sample.metadata.items():
+        if key not in row:
+            row[str(key)] = value
+    return row
 
 
 def build_map_xysl_command(sample: LocalizationProjectionSample, config: MapXyslConfig) -> list[str]:
@@ -382,7 +401,12 @@ def _samples_from_route_json(
         timestamp = _first_number(item, ["sim_time_sec", "timestamp", "time_sec"])
         if x is None or y is None:
             continue
+        sample_metadata = _route_sample_metadata(item, index=index)
         if points_are_carla_frame and frame_transform is not None:
+            sample_metadata.setdefault("carla_x", x)
+            sample_metadata.setdefault("carla_y", y)
+            sample_metadata.setdefault("carla_z", z)
+            sample_metadata.setdefault("carla_heading", heading)
             apollo_point = carla_point_to_apollo(Vector3(x=x, y=y, z=z), frame_transform)
             x = apollo_point.x
             y = apollo_point.y
@@ -395,6 +419,8 @@ def _samples_from_route_json(
                 heading=heading,
                 source_artifact=str(path),
                 source_index=index,
+                sample_type="route",
+                metadata=sample_metadata,
             )
         )
     return samples
@@ -443,6 +469,11 @@ def _samples_from_manifest_route_trace(
         z = _first_number(item, ["z", "carla_z"]) or 0.0
         if x is None or y is None:
             continue
+        sample_metadata = _route_sample_metadata(item, index=index)
+        sample_metadata.setdefault("carla_x", x)
+        sample_metadata.setdefault("carla_y", y)
+        sample_metadata.setdefault("carla_z", z)
+        sample_metadata.setdefault("carla_heading", item.get("heading"))
         apollo_point = carla_point_to_apollo(Vector3(x=x, y=y, z=z), frame_transform)
         heading = _carla_heading_to_apollo(item.get("heading"), frame_transform)
         samples.append(
@@ -453,6 +484,8 @@ def _samples_from_manifest_route_trace(
                 heading=heading,
                 source_artifact=f"{path}:metadata.scenario_metadata.route_trace",
                 source_index=index,
+                sample_type="route",
+                metadata=sample_metadata,
             )
         )
     return samples
@@ -498,6 +531,44 @@ def _sample_from_mapping(
         source_artifact=source_artifact,
         source_index=source_index,
     )
+
+
+def _route_sample_metadata(item: Mapping[str, Any], *, index: int) -> dict[str, Any]:
+    lane_id = _route_sample_lane_id(item)
+    metadata: dict[str, Any] = {
+        "route_index": index,
+        "route_s": _first_number(item, ["s", "route_s", "distance_s"]),
+        "carla_lane_id": lane_id,
+        "carla_lane_key": _carla_lane_key(lane_id),
+    }
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
+def _route_sample_lane_id(item: Mapping[str, Any]) -> str | None:
+    lane_id = item.get("lane_id")
+    if lane_id is not None and str(lane_id).strip():
+        return str(lane_id)
+    road = item.get("road_id")
+    section = item.get("section_id", 0)
+    lane = item.get("lane")
+    if lane is None:
+        lane = item.get("lane_id_value")
+    if road is None or lane is None:
+        return None
+    return f"{road}:{section}:{lane}"
+
+
+def _carla_lane_key(lane_id: str | None) -> str | None:
+    if not lane_id:
+        return None
+    text = str(lane_id).strip()
+    if not text:
+        return None
+    sep = ":" if ":" in text else "_"
+    parts = text.split(sep)
+    if len(parts) < 3:
+        return text
+    return f"{parts[0]}:{parts[-1]}"
 
 
 def _dedupe_samples(samples: Sequence[LocalizationProjectionSample]) -> list[LocalizationProjectionSample]:
