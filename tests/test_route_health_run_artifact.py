@@ -4,7 +4,11 @@ import json
 import shutil
 from pathlib import Path
 
-from carla_testbed.analysis.route_health_report import analyze_route_health_run_dir, route_health_inspect_summary
+from carla_testbed.analysis.route_health_report import (
+    analyze_route_health_run_dir,
+    load_bridge_control_decode_rows,
+    route_health_inspect_summary,
+)
 from carla_testbed.cli import main as cli_main
 
 
@@ -39,6 +43,29 @@ def test_run_dir_generates_route_health_analysis_files(tmp_path: Path) -> None:
     assert payload["route_geometry"]["curve_segments_count"] == 1
     assert payload["run_metrics"]["lateral_error_max_m"] == 0.3
     assert result["outputs"]["route_health_json"] == str(out_dir / "route_health.json")
+
+
+def test_bridge_control_decode_loader_skips_truncated_jsonl_tail(tmp_path: Path) -> None:
+    path = tmp_path / "bridge_control_decode.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "ts_sec": 1.0,
+                "parsed_control": {"steer": 0.2, "throttle": 10.0, "brake": 0.0},
+                "output_to_carla": {"steer": 0.05, "throttle": 0.1, "brake": 0.0},
+            },
+            sort_keys=True,
+        )
+        + "\n"
+        + '{"ts_sec": 1.05, "parsed_control":',
+        encoding="utf-8",
+    )
+
+    rows = load_bridge_control_decode_rows(path)
+
+    assert len(rows) == 1
+    assert rows[0]["sim_time"] == 1.0
+    assert rows[0]["apollo_steer_raw"] == 0.2
 
 
 def test_run_dir_missing_route_graceful_degrade(tmp_path: Path) -> None:

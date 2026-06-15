@@ -586,7 +586,13 @@ def load_bridge_control_decode_rows(path: str | Path) -> list[dict[str, Any]]:
             text = line.strip()
             if not text:
                 continue
-            payload = json.loads(text)
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                # Interrupted online runs can leave the last supplemental
+                # bridge decode JSONL row truncated. Keep the valid evidence
+                # rows instead of making route-health postprocess crash.
+                continue
             if not isinstance(payload, Mapping):
                 raise ValueError(f"bridge decode row must be an object at {decode_path}:{line_number}")
             parsed = payload.get("parsed_control")

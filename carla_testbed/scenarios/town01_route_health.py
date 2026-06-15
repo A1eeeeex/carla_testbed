@@ -34,6 +34,8 @@ def _safe_float(value: Any) -> Optional[float]:
 
 @dataclass
 class Town01RouteHealthConfig:
+    scenario_class: str = "lane_keep"
+    capability_profile: str = "lane_keep"
     random_seed: int = 1
     ego_id: str = "hero"
     vehicle_blueprint_id: str = ""
@@ -950,6 +952,8 @@ class Town01RouteHealthScenario(Scenario):
         claim_route_length_m = float(route_trace_length_m) if route_trace_length_m is not None else legacy_route_length_m
         self._selected_meta = {
             "scene_type": "town01_route_health_random_spawn_cruise",
+            "scenario_class": str(self.cfg.scenario_class or "lane_keep"),
+            "capability_profile": str(self.cfg.capability_profile or self.cfg.scenario_class or "lane_keep"),
             "route_id": route_id,
             "map": "Town01",
             "route_selected_from_corpus": bool(selected_route_record is not None),

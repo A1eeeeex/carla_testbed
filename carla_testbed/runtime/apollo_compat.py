@@ -1367,6 +1367,8 @@ def _route_trace_payload(
         "map": map_name,
         "map_name": map_name,
         "source": "artifacts/scenario_metadata.json:route_trace",
+        "coordinate_frame": "carla_world",
+        "target_projection_frame": "apollo_map",
         "status": "pass",
         "points": [dict(point) for point in points],
         "spawn_pose": scenario_metadata.get("spawn"),

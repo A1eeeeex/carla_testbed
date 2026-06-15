@@ -2486,6 +2486,20 @@ def main():
         traffic_lights_cfg = ((effective_cfg.get("scenario", {}) or {}).get("traffic_lights", {}) or {})
         scenario = Town01RouteHealthScenario(
             Town01RouteHealthConfig(
+                scenario_class=str(
+                    route_health_cfg.get(
+                        "scenario_class",
+                        ((effective_cfg.get("run", {}) or {}).get("scenario_class", "lane_keep")),
+                    )
+                    or "lane_keep"
+                ),
+                capability_profile=str(
+                    route_health_cfg.get(
+                        "capability_profile",
+                        ((effective_cfg.get("run", {}) or {}).get("capability_profile", "lane_keep")),
+                    )
+                    or "lane_keep"
+                ),
                 random_seed=int(
                     route_health_cfg.get("random_seed", ((effective_cfg.get("run", {}) or {}).get("seed", 1)))
                 ),

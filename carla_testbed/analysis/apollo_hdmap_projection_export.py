@@ -10,6 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from carla_testbed.adapters.apollo.frame_transform import (
+    ApolloFrameTransform,
+    Vector3,
+    carla_forward_to_heading,
+    carla_point_to_apollo,
+    load_frame_transform,
+)
 from carla_testbed.analysis.apollo_hdmap_projection import OFFICIAL_SOURCE
 
 MAP_XYSL_LINE_RE = re.compile(
@@ -50,6 +57,7 @@ def load_localization_projection_samples(
     max_samples: int | None = 250,
     include_route_samples: bool = False,
     include_start_goal: bool = False,
+    frame_transform_path: str | Path | None = None,
 ) -> list[LocalizationProjectionSample]:
     """Load Apollo-map localization samples without depending on Apollo runtime.
 
@@ -87,7 +95,14 @@ def load_localization_projection_samples(
             selected_samples.extend(samples)
             break
     if run_dir and (include_route_samples or include_start_goal):
-        route_samples = _samples_from_route_json(Path(run_dir).expanduser() / "route.json")
+        root = Path(run_dir).expanduser()
+        frame_transform = _load_optional_frame_transform(frame_transform_path)
+        route_samples = _samples_from_route_json(root / "route.json", frame_transform=frame_transform)
+        if not route_samples:
+            route_samples = _samples_from_manifest_route_trace(
+                root / "manifest.json",
+                frame_transform=frame_transform,
+            )
         if include_start_goal and route_samples:
             selected_samples.extend([route_samples[0], route_samples[-1]])
         if include_route_samples:
@@ -104,6 +119,7 @@ def export_apollo_hdmap_projection_jsonl(
     max_samples: int | None = 250,
     include_route_samples: bool = False,
     include_start_goal: bool = False,
+    frame_transform_path: str | Path | None = None,
     min_route_s_coverage: float | None = None,
     command_runner: CommandRunner = subprocess.run,
 ) -> dict[str, Any]:
@@ -114,6 +130,7 @@ def export_apollo_hdmap_projection_jsonl(
         max_samples=max_samples,
         include_route_samples=include_route_samples,
         include_start_goal=include_start_goal,
+        frame_transform_path=frame_transform_path,
     )
     output_path = Path(out_path).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,6 +190,7 @@ def export_apollo_hdmap_projection_jsonl(
         "non_ok_status_counts": _status_counts(non_ok_rows),
         "include_route_samples": include_route_samples,
         "include_start_goal": include_start_goal,
+        "frame_transform_path": str(Path(frame_transform_path).expanduser()) if frame_transform_path else None,
         "min_route_s_coverage_m": min_route_s_coverage,
         "projection_s_coverage_m": projection_s_coverage_m,
         "map_name": cfg.map_name,
@@ -332,7 +350,11 @@ def _samples_from_json(path: Path) -> list[LocalizationProjectionSample]:
     return [sample] if sample is not None else []
 
 
-def _samples_from_route_json(path: Path) -> list[LocalizationProjectionSample]:
+def _samples_from_route_json(
+    path: Path,
+    *,
+    frame_transform: ApolloFrameTransform | None = None,
+) -> list[LocalizationProjectionSample]:
     if not path.exists():
         return []
     try:
@@ -346,16 +368,25 @@ def _samples_from_route_json(path: Path) -> list[LocalizationProjectionSample]:
         points = payload.get("route_trace")
     if not isinstance(points, SequenceABC) or isinstance(points, (str, bytes)):
         return []
+    points_are_carla_frame = _route_json_points_are_carla_frame(payload)
+    if points_are_carla_frame and frame_transform is None:
+        return []
     samples: list[LocalizationProjectionSample] = []
     for index, item in enumerate(points):
         if not isinstance(item, Mapping):
             continue
         x = _first_number(item, ["x", "localization_x", "map_x"])
         y = _first_number(item, ["y", "localization_y", "map_y"])
+        z = _first_number(item, ["z", "localization_z", "map_z"]) or 0.0
         heading = _first_number(item, ["heading", "yaw_rad", "yaw", "localization_heading"])
         timestamp = _first_number(item, ["sim_time_sec", "timestamp", "time_sec"])
         if x is None or y is None:
             continue
+        if points_are_carla_frame and frame_transform is not None:
+            apollo_point = carla_point_to_apollo(Vector3(x=x, y=y, z=z), frame_transform)
+            x = apollo_point.x
+            y = apollo_point.y
+            heading = _carla_heading_to_apollo(heading, frame_transform)
         samples.append(
             LocalizationProjectionSample(
                 timestamp=timestamp,
@@ -367,6 +398,80 @@ def _samples_from_route_json(path: Path) -> list[LocalizationProjectionSample]:
             )
         )
     return samples
+
+
+def _route_json_points_are_carla_frame(payload: Mapping[str, Any]) -> bool:
+    frame_keys = (
+        payload.get("coordinate_frame"),
+        payload.get("source_frame"),
+        payload.get("points_frame"),
+        payload.get("frame"),
+    )
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+    frame_keys = (*frame_keys, metadata.get("coordinate_frame"), metadata.get("route_trace_frame"))
+    if any(str(value or "").strip().lower() == "carla_world" for value in frame_keys):
+        return True
+    schema_version = str(payload.get("schema_version") or "")
+    source = str(payload.get("source") or "")
+    return schema_version == "runtime_route_trace.v1" and "scenario_metadata" in source
+
+
+def _samples_from_manifest_route_trace(
+    path: Path,
+    *,
+    frame_transform: ApolloFrameTransform | None,
+) -> list[LocalizationProjectionSample]:
+    if frame_transform is None or not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, Mapping):
+        return []
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+    scenario = metadata.get("scenario_metadata") if isinstance(metadata.get("scenario_metadata"), Mapping) else {}
+    points = scenario.get("route_trace")
+    if not isinstance(points, SequenceABC) or isinstance(points, (str, bytes)):
+        return []
+    samples: list[LocalizationProjectionSample] = []
+    for index, item in enumerate(points):
+        if not isinstance(item, Mapping):
+            continue
+        x = _first_number(item, ["x", "carla_x"])
+        y = _first_number(item, ["y", "carla_y"])
+        z = _first_number(item, ["z", "carla_z"]) or 0.0
+        if x is None or y is None:
+            continue
+        apollo_point = carla_point_to_apollo(Vector3(x=x, y=y, z=z), frame_transform)
+        heading = _carla_heading_to_apollo(item.get("heading"), frame_transform)
+        samples.append(
+            LocalizationProjectionSample(
+                timestamp=_first_number(item, ["sim_time_sec", "timestamp", "time_sec"]),
+                x=apollo_point.x,
+                y=apollo_point.y,
+                heading=heading,
+                source_artifact=f"{path}:metadata.scenario_metadata.route_trace",
+                source_index=index,
+            )
+        )
+    return samples
+
+
+def _load_optional_frame_transform(path: str | Path | None) -> ApolloFrameTransform | None:
+    if not path:
+        return None
+    return load_frame_transform(Path(path).expanduser())
+
+
+def _carla_heading_to_apollo(value: Any, frame_transform: ApolloFrameTransform) -> float | None:
+    heading = _float(value)
+    if heading is None:
+        return None
+    return carla_forward_to_heading(
+        Vector3(x=math.cos(heading), y=math.sin(heading), z=0.0),
+        frame_transform,
+    )
 
 
 def _sample_from_mapping(

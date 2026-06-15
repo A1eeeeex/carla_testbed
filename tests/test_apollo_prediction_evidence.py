@@ -111,6 +111,53 @@ def test_static_lane_keep_uses_default_matrix_bypass_reason(tmp_path: Path) -> N
     assert report["bypass_reason"]
 
 
+def test_scenario_metadata_artifact_supplies_scenario_class_for_run_dir(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path, scenario_class="unknown")
+    _write_json(run_dir / "summary.json", {"run_id": "run", "planning_requires_prediction": True})
+    _write_json(run_dir / "manifest.json", {"run_id": "run"})
+    _write_json(
+        run_dir / "artifacts/scenario_metadata.json",
+        {
+            "route_id": "town01_rh_spawn097_goal046",
+            "scenario_class": "lane_keep",
+            "capability_profile": "lane_keep",
+        },
+    )
+    _channel_stats(run_dir, prediction_count=0, obstacle_count=4)
+
+    report = analyze_prediction_evidence_run_dir(run_dir)
+
+    assert report["scenario_class"] == "lane_keep"
+    assert report["route_id"] == "town01_rh_spawn097_goal046"
+    assert report["prediction_mode"] == "bypassed_with_gt_obstacles"
+    assert report["verdict"] == "warn"
+    assert report["hard_gate_eligible"] is False
+
+
+def test_nested_manifest_scenario_metadata_supplies_scenario_class(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path, scenario_class="unknown")
+    _write_json(run_dir / "summary.json", {"run_id": "run", "planning_requires_prediction": True})
+    _write_json(
+        run_dir / "manifest.json",
+        {
+            "run_id": "run",
+            "metadata": {
+                "scenario_metadata": {
+                    "route_id": "town01_rh_spawn097_goal046",
+                    "scenario_class": "lane_keep",
+                }
+            },
+        },
+    )
+    _channel_stats(run_dir, prediction_count=0, obstacle_count=4)
+
+    report = analyze_prediction_evidence_run_dir(run_dir)
+
+    assert report["scenario_class"] == "lane_keep"
+    assert report["route_id"] == "town01_rh_spawn097_goal046"
+    assert report["prediction_bypass_scope"] == "static_lane_keep_diagnostic"
+
+
 def test_bypassed_with_reason_lane_keep_warns(tmp_path: Path) -> None:
     run_dir = _run_dir(
         tmp_path,

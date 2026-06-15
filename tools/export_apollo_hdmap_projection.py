@@ -41,6 +41,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-map-filename", default="base_map.txt", help="Apollo base map filename.")
     parser.add_argument("--map-name", default="Town01", help="Map name recorded in output rows.")
     parser.add_argument("--map-xysl-bin", default="/opt/apollo/neo/bin/map_xysl", help="Apollo map_xysl binary path.")
+    parser.add_argument(
+        "--frame-transform",
+        help=(
+            "Optional CARLA world -> Apollo map transform YAML. Required if "
+            "--include-route-samples should fall back to manifest route_trace."
+        ),
+    )
     parser.add_argument("--timeout-s", type=float, default=15.0, help="Per-sample command timeout.")
     parser.add_argument(
         "--max-samples",
@@ -108,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         max_samples=args.max_samples,
         include_route_samples=args.include_route_samples,
         include_start_goal=args.include_start_goal,
+        frame_transform_path=args.frame_transform,
         min_route_s_coverage=args.min_route_s_coverage,
     )
     payload: dict[str, object] = {"export": export_status}

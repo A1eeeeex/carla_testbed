@@ -11,6 +11,7 @@
 # -----------------------------------------------------------------------------
 run:
   seed: 1
+  capability_profile: lane_keep
   ticks: 700
   fixed_delta_seconds: 0.05
   wall_time_pacing:
@@ -59,6 +60,8 @@ scenario:
     objects_hz: 10.0
     markers_hz: 10.0
   route_health:
+    scenario_class: lane_keep
+    capability_profile: lane_keep
     random_seed: 1
     strict_spawn: false
     spawn_min_forward_length_m: 160.0

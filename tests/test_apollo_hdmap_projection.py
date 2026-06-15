@@ -346,6 +346,130 @@ def test_projection_samples_can_include_route_json_start_goal(tmp_path: Path) ->
     assert all(sample.source_artifact.endswith("route.json") for sample in samples)
 
 
+def test_projection_samples_can_include_manifest_route_trace_with_frame_transform(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "manifest.json",
+        {
+            "metadata": {
+                "scenario_metadata": {
+                    "route_trace": [
+                        {"x": 2.0, "y": 208.0, "z": 0.0, "heading": -1.57079632679, "s": 0.0},
+                        {"x": 2.0, "y": 108.0, "z": 0.0, "heading": -1.57079632679, "s": 100.0},
+                        {"x": 2.0, "y": 8.0, "z": 0.0, "heading": -1.57079632679, "s": 200.0},
+                    ]
+                }
+            }
+        },
+    )
+    transform_path = tmp_path / "apollo_frame_transform.yaml"
+    _write_json(
+        transform_path,
+        {
+            "map_name": "Town01",
+            "source_frame": "carla_world",
+            "target_frame": "apollo_map",
+            "transform": {
+                "tx": 0.0,
+                "ty": 0.0,
+                "tz": 0.0,
+                "yaw_rad": 0.0,
+                "scale": 1.0,
+                "y_flip": True,
+            },
+        },
+    )
+
+    samples = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_route_samples=True,
+        include_start_goal=True,
+        frame_transform_path=transform_path,
+        max_samples=0,
+    )
+
+    assert [(round(sample.x, 3), round(sample.y, 3)) for sample in samples] == [
+        (2.0, -208.0),
+        (2.0, -8.0),
+        (2.0, -108.0),
+    ]
+    assert all(abs((sample.heading or 0.0) - 1.57079632679) < 1e-9 for sample in samples)
+    assert all("manifest.json:metadata.scenario_metadata.route_trace" in sample.source_artifact for sample in samples)
+
+
+def test_projection_samples_transform_runtime_route_json_carla_frame(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "route.json",
+        {
+            "schema_version": "runtime_route_trace.v1",
+            "source": "artifacts/scenario_metadata.json:route_trace",
+            "coordinate_frame": "carla_world",
+            "target_projection_frame": "apollo_map",
+            "points": [
+                {"x": 2.0, "y": 208.0, "z": 0.0, "heading": -1.57079632679, "s": 0.0},
+                {"x": 2.0, "y": 108.0, "z": 0.0, "heading": -1.57079632679, "s": 100.0},
+                {"x": 2.0, "y": 8.0, "z": 0.0, "heading": -1.57079632679, "s": 200.0},
+            ],
+        },
+    )
+    transform_path = tmp_path / "apollo_frame_transform.yaml"
+    _write_json(
+        transform_path,
+        {
+            "transform": {
+                "tx": 0.0,
+                "ty": 0.0,
+                "tz": 0.0,
+                "yaw_rad": 0.0,
+                "scale": 1.0,
+                "y_flip": True,
+            }
+        },
+    )
+
+    samples = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_start_goal=True,
+        include_route_samples=True,
+        frame_transform_path=transform_path,
+        max_samples=0,
+    )
+
+    assert [(round(sample.x, 3), round(sample.y, 3)) for sample in samples] == [
+        (2.0, -208.0),
+        (2.0, -8.0),
+        (2.0, -108.0),
+    ]
+    assert all(abs((sample.heading or 0.0) - 1.57079632679) < 1e-9 for sample in samples)
+    assert all(sample.source_artifact.endswith("route.json") for sample in samples)
+
+
+def test_projection_samples_skip_runtime_route_json_carla_frame_without_transform(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "route.json",
+        {
+            "schema_version": "runtime_route_trace.v1",
+            "source": "artifacts/scenario_metadata.json:route_trace",
+            "coordinate_frame": "carla_world",
+            "points": [
+                {"x": 2.0, "y": 208.0, "heading": -1.57079632679},
+                {"x": 2.0, "y": 108.0, "heading": -1.57079632679},
+            ],
+        },
+    )
+
+    samples = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_start_goal=True,
+        include_route_samples=True,
+        max_samples=0,
+    )
+
+    assert samples == []
+
+
 def test_export_projection_jsonl_with_mocked_apollo_map_xysl(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_jsonl(
@@ -417,6 +541,70 @@ def test_export_projection_records_requested_route_s_coverage_gap(tmp_path: Path
     assert status["failure_reason"] == "route_s_coverage_below_requested_min"
     assert status["projection_s_coverage_m"] == 0.0
     assert "apollo_hdmap_projection_route_s_coverage_below_requested_min" in status["warnings"]
+
+
+def test_export_projection_uses_manifest_route_trace_for_requested_coverage(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "manifest.json",
+        {
+            "metadata": {
+                "scenario_metadata": {
+                    "route_trace": [
+                        {"x": 2.0, "y": 208.0, "heading": -1.57079632679},
+                        {"x": 2.0, "y": 108.0, "heading": -1.57079632679},
+                    ]
+                }
+            }
+        },
+    )
+    transform_path = tmp_path / "apollo_frame_transform.yaml"
+    _write_json(
+        transform_path,
+        {
+            "transform": {
+                "tx": 0.0,
+                "ty": 0.0,
+                "tz": 0.0,
+                "yaw_rad": 0.0,
+                "scale": 1.0,
+                "y_flip": True,
+            }
+        },
+    )
+
+    def fake_runner(*args, **kwargs):
+        command = args[0]
+        command_text = command[-1] if command[:2] == ["docker", "exec"] else " ".join(command)
+        if "--y=-208" in command_text:
+            s = 0.0
+        elif "--y=-108" in command_text:
+            s = 100.0
+        else:
+            s = 50.0
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout=f"lane_id[15_1_1], s[{s}], l[0.1], heading[1.570796]\n",
+            stderr="",
+        )
+
+    out_path = run_dir / "artifacts" / "apollo_hdmap_projection.jsonl"
+    status = export_apollo_hdmap_projection_jsonl(
+        run_dir=run_dir,
+        out_path=out_path,
+        include_route_samples=True,
+        include_start_goal=True,
+        frame_transform_path=transform_path,
+        min_route_s_coverage=90.0,
+        command_runner=fake_runner,
+    )
+    rows = [json.loads(line) for line in out_path.read_text(encoding="utf-8").splitlines()]
+
+    assert status["status"] == "pass"
+    assert status["projection_s_coverage_m"] == 100.0
+    assert status["frame_transform_path"] == str(transform_path)
+    assert len(rows) == 2
 
 
 def test_export_projection_jsonl_records_map_xysl_timeout(tmp_path: Path) -> None:
@@ -510,3 +698,8 @@ def _projection_rows(*, heading_error_rad: float, lateral_error_m: float) -> lis
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n", encoding="utf-8")
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

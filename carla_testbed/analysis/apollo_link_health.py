@@ -2121,6 +2121,11 @@ def _blocker_summary(layers: Mapping[str, Mapping[str, Any]]) -> tuple[str | Non
         secondary = [item for item in blockers if item != hdmap_reference_gap]
         return hdmap_reference_gap, secondary
 
+    localization_gap = _localization_evidence_gap_primary(layers)
+    if localization_gap:
+        secondary = [item for item in blockers if item != localization_gap]
+        return localization_gap, secondary
+
     claim_boundary_primary = _semantic_primary_for_claim_boundary(layers)
     if claim_boundary_primary:
         secondary = [item for item in blockers if item != claim_boundary_primary]
@@ -2275,6 +2280,24 @@ def _hdmap_reference_evidence_gap_primary(layers: Mapping[str, Mapping[str, Any]
     reference = layers.get("planning_reference_line", {})
     if reference.get("status") == "insufficient_data":
         return _layer_blocker_name("planning_reference_line", reference)
+    return None
+
+
+def _localization_evidence_gap_primary(layers: Mapping[str, Mapping[str, Any]]) -> str | None:
+    """Localization contract gaps should be fixed before closed-loop claim-boundary issues."""
+    for prerequisite in (
+        "environment_world",
+        "bridge_runtime",
+        "channel_health",
+        "route_establishment",
+        "hdmap_projection",
+        "planning_reference_line",
+    ):
+        if not _non_blocking(layers.get(prerequisite, {})):
+            return None
+    localization = layers.get("localization_gt_contract", {})
+    if localization.get("status") in BLOCKING_STATUSES or localization.get("blocking_reasons"):
+        return _layer_blocker_name("localization_gt_contract", localization)
     return None
 
 

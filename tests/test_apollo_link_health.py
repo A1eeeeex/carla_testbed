@@ -714,6 +714,42 @@ def test_hdmap_runtime_unavailable_outranks_prediction_claim_boundary(tmp_path: 
     assert report["can_claim_unassisted_natural_driving"] is False
 
 
+def test_localization_gap_outranks_prediction_claim_boundary_after_map_evidence_passes(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    loc_path = run_dir / "analysis/localization_contract/localization_contract_report.json"
+    loc = json.loads(loc_path.read_text(encoding="utf-8"))
+    loc["verdict"] = {
+        "status": "insufficient_data",
+        "blocking_reasons": [],
+    }
+    loc["missing_fields"] = ["vehicle_reference_hard_gate_eligible"]
+    _write_json(loc_path, loc)
+    _write_json(
+        run_dir / "analysis/prediction_evidence/prediction_evidence_report.json",
+        {
+            "schema_version": "prediction_evidence.v1",
+            "scenario_class": None,
+            "prediction_mode": "bypassed_with_gt_obstacles",
+            "prediction_channel_available": False,
+            "prediction_message_count": None,
+            "planning_requires_prediction": True,
+            "hard_gate_eligible": False,
+            "blocking_capabilities": ["closed_loop"],
+            "warnings": ["prediction_bypass_not_allowed_for_scenario"],
+            "verdict": "fail",
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert report["primary_blocker"] == "localization_gt_contract:insufficient_data"
+    assert "prediction_evidence:closed_loop" in report["secondary_blockers"]
+    assert "prediction_evidence:closed_loop" in report["why_not_claimable"]
+    assert report["can_claim_unassisted_natural_driving"] is False
+
+
 def test_independent_hdmap_projection_report_is_consumed(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     loc_path = run_dir / "analysis/localization_contract/localization_contract_report.json"

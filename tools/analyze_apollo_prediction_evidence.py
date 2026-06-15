@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cyber-bridge-stats", help="cyber_bridge_stats.json.")
     parser.add_argument("--summary", help="summary.json.")
     parser.add_argument("--manifest", help="manifest.json.")
+    parser.add_argument("--scenario-metadata", help="artifacts/scenario_metadata.json.")
     parser.add_argument("--planning-topic-debug-summary", help="planning_topic_debug_summary.json.")
     parser.add_argument("--obstacle-gt-contract", help="obstacle_gt_contract_report.json.")
     parser.add_argument("--prediction-log", action="append", default=[], help="Prediction log file.")
@@ -55,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
             bridge_runtime_stats=args.cyber_bridge_stats,
             summary=args.summary,
             manifest=args.manifest,
+            scenario_metadata=args.scenario_metadata,
             planning_topic_debug_summary=args.planning_topic_debug_summary,
             obstacle_gt_contract=args.obstacle_gt_contract,
             prediction_logs=args.prediction_log,

@@ -59,6 +59,7 @@ def analyze_prediction_evidence_run_dir(
                 ],
             )
         ),
+        scenario_metadata=_read_json(root / "artifacts" / "scenario_metadata.json"),
         prediction_log_paths=_find_prediction_logs(root),
         replacement_matrix=_load_replacement_matrix(replacement_matrix_path),
     )
@@ -72,6 +73,7 @@ def analyze_prediction_evidence_files(
     manifest: str | Path | None = None,
     planning_topic_debug_summary: str | Path | None = None,
     obstacle_gt_contract: str | Path | None = None,
+    scenario_metadata: str | Path | None = None,
     prediction_logs: Sequence[str | Path] | None = None,
     replacement_matrix_path: str | Path | None = DEFAULT_REPLACEMENT_MATRIX,
 ) -> dict[str, Any]:
@@ -90,6 +92,7 @@ def analyze_prediction_evidence_files(
         obstacle_gt_contract=_read_json(
             Path(obstacle_gt_contract).expanduser() if obstacle_gt_contract else None
         ),
+        scenario_metadata=_read_json(Path(scenario_metadata).expanduser() if scenario_metadata else None),
         prediction_log_paths=[
             Path(path).expanduser() for path in prediction_logs or [] if Path(path).expanduser().exists()
         ],
@@ -105,6 +108,7 @@ def analyze_prediction_evidence(
     bridge_runtime_stats: Mapping[str, Any] | None = None,
     planning_topic_debug_summary: Mapping[str, Any] | None = None,
     obstacle_gt_contract: Mapping[str, Any] | None = None,
+    scenario_metadata: Mapping[str, Any] | None = None,
     prediction_log_paths: Sequence[Path] = (),
     replacement_matrix: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -114,11 +118,36 @@ def analyze_prediction_evidence(
     bridge_runtime_stats = bridge_runtime_stats or {}
     planning_topic_debug_summary = planning_topic_debug_summary or {}
     obstacle_gt_contract = obstacle_gt_contract or {}
+    scenario_metadata = scenario_metadata or {}
     replacement_matrix = replacement_matrix or {}
 
-    scenario_class = _first_text(summary, "scenario_class", manifest, "scenario_class")
+    manifest_metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), Mapping) else {}
+    nested_scenario_metadata = (
+        manifest_metadata.get("scenario_metadata")
+        if isinstance(manifest_metadata.get("scenario_metadata"), Mapping)
+        else {}
+    )
+    scenario_class = _first_text(
+        summary,
+        "scenario_class",
+        manifest,
+        "scenario_class",
+        scenario_metadata,
+        "scenario_class",
+        nested_scenario_metadata,
+        "scenario_class",
+    )
     run_id = _first_text(summary, "run_id", manifest, "run_id")
-    route_id = _first_text(summary, "route_id", manifest, "route_id")
+    route_id = _first_text(
+        summary,
+        "route_id",
+        manifest,
+        "route_id",
+        scenario_metadata,
+        "route_id",
+        nested_scenario_metadata,
+        "route_id",
+    )
     planning_requires_prediction = _planning_requires_prediction(
         summary,
         manifest,

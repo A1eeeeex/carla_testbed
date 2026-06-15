@@ -285,6 +285,8 @@ def test_transition_backend_materializes_route_json_from_scenario_route_trace(
     assert route["route_id"] == "town01_rh_spawn097_goal046"
     assert route["map"] == "Town01"
     assert route["source"] == "artifacts/scenario_metadata.json:route_trace"
+    assert route["coordinate_frame"] == "carla_world"
+    assert route["target_projection_frame"] == "apollo_map"
     assert len(route["points"]) == 3
     assert route["points"][0]["lane_id"] == "15:0:1"
     assert route["metadata"]["claim_route_length_m"] == 10.0

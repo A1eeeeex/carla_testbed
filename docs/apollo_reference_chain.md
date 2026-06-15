@@ -221,6 +221,22 @@ obstacle, junction, and traffic-light claims still require native prediction or
 an explicit scenario override; `/apollo/perception/obstacles` is not counted as
 `/apollo/prediction`.
 
+For online runs, `scenario_class` must be explicit in `summary.json`,
+`manifest.json`, or `artifacts/scenario_metadata.json`. If the class is missing,
+the prediction analyzer keeps the run non-claimable instead of guessing that a
+route-health sample is lane-keep. Current Town01 route-health profiles therefore
+write `scenario_class=lane_keep` as metadata, while the prediction gate still
+blocks closed-loop natural-driving claims unless native prediction is observed.
+
+When exporting Apollo HDMap projection samples, `route.json` entries produced
+from `artifacts/scenario_metadata.json:route_trace` are CARLA-world route
+points, not Apollo-map points. Use
+`tools/export_apollo_hdmap_projection.py --frame-transform
+configs/town01/apollo_frame_transform.example.yaml --include-route-samples` so
+the exporter converts them before calling Apollo `map_xysl`; without an explicit
+frame transform these route samples are skipped rather than treated as
+claim-grade Apollo map evidence.
+
 Generate module-consumption evidence for a run:
 
 ```bash
