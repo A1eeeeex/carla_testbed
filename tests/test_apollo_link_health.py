@@ -1966,6 +1966,83 @@ def test_planning_and_module_consumption_use_run_artifacts_when_reports_are_plac
     assert refreshed_consumption["blocking_reasons"] == []
 
 
+def test_control_health_uses_run_artifacts_when_report_is_placeholder(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/control_health/control_health_report.json",
+        {
+            "schema_version": "control_health_report.v1",
+            "status": "insufficient_data",
+            "failure_reason": "missing_control_trace_fields",
+            "raw_mapped_applied_control_available": False,
+            "blocking_reasons": ["control_runtime_trace_missing"],
+            "missing_fields": ["apollo_steer_raw", "bridge_steer_mapped"],
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/control_decode_debug.jsonl",
+        [
+            {
+                "parsed_control": {
+                    "control_latency_ms": 1.0,
+                    "throttle": 0.2,
+                    "brake": 0.0,
+                    "steer": 0.0,
+                },
+                "output_to_carla": {
+                    "mapped_throttle_cmd": 0.2,
+                    "mapped_brake_cmd": 0.0,
+                    "mapped_carla_steer_cmd": 0.0,
+                    "throttle": 0.2,
+                    "brake": 0.0,
+                    "steer": 0.0,
+                },
+            }
+        ],
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    layer = report["layers"]["control_mapping_apply"]
+
+    assert layer["artifact_paths"]["source_kind"] == "regenerated_from_run_artifacts"
+    assert "control_runtime_trace_missing" not in layer["blocking_reasons"]
+    refreshed = json.loads(
+        (run_dir / "analysis/control_health/control_health_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert refreshed["schema_version"] == "control_health_report.v1"
+    assert refreshed["failure_reason"] != "missing_control_trace_fields"
+    assert refreshed["source"]["control_decode_debug_path"] is not None
+    assert refreshed["metrics"]["control_decode_debug"]["line_count"] == 1
+
+
+def test_control_health_existing_fail_report_is_not_overwritten(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/control_health/control_health_report.json",
+        {
+            "schema_version": "control_health_report.v1",
+            "status": "fail",
+            "failure_reason": "applied_actuation_oscillation",
+            "raw_mapped_applied_control_available": True,
+            "metrics": {"sentinel": "keep_existing_failure"},
+            "warnings": [],
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    layer = report["layers"]["control_mapping_apply"]
+
+    assert layer["artifact_paths"]["source_kind"] == "report"
+    refreshed = json.loads(
+        (run_dir / "analysis/control_health/control_health_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert refreshed["metrics"]["sentinel"] == "keep_existing_failure"
+
+
 def test_route_establishment_uses_after_routing_materialization_without_claiming_overall_pass(
     tmp_path: Path,
 ) -> None:

@@ -24,6 +24,10 @@ from carla_testbed.analysis.apollo_reference_line_contract import (
 )
 from carla_testbed.analysis.chassis_gt_contract import analyze_chassis_gt_contract_files
 from carla_testbed.analysis.channel_cadence_diagnosis import analyze_channel_cadence_diagnosis_run_dir
+from carla_testbed.analysis.control_health import (
+    analyze_control_health_run_dir,
+    write_control_health_report,
+)
 from carla_testbed.analysis.obstacle_gt_contract import analyze_obstacle_gt_contract_file
 from carla_testbed.analysis.planning_materialization import (
     analyze_planning_materialization_run_dir,
@@ -165,6 +169,20 @@ def analyze_apollo_link_health(
                 inputs["apollo_control_handoff"] = Path(
                     outputs["apollo_control_handoff_report"]
                 )
+        if _should_regenerate_control_health(
+            payloads.get("control_health")
+        ) and _control_health_raw_inputs_available(root):
+            regenerated_control_health = analyze_control_health_run_dir(root)
+            if _control_health_has_runtime_evidence(
+                regenerated_control_health
+            ) or not payloads.get("control_health"):
+                payloads["control_health"] = regenerated_control_health
+                source_kinds["control_health"] = "regenerated_from_run_artifacts"
+                outputs = write_control_health_report(
+                    regenerated_control_health,
+                    root / "analysis" / "control_health",
+                )
+                inputs["control_health"] = Path(outputs["control_health_report"])
         if _should_regenerate_prediction_evidence(payloads.get("prediction_evidence")):
             regenerated_prediction = analyze_prediction_evidence_run_dir(root)
             if _prediction_evidence_has_boundary(regenerated_prediction):
@@ -254,6 +272,7 @@ def analyze_apollo_link_health(
         "control_mapping_apply": _control_health_layer(
             payloads.get("control_health"),
             inputs.get("control_health"),
+            source_kind=source_kinds.get("control_health", "report"),
         ),
         "perception_gt_obstacles": _obstacle_gt_layer(
             payloads.get("obstacle_gt_contract"),
@@ -1366,6 +1385,70 @@ def _apollo_control_handoff_has_runtime_evidence(report: Mapping[str, Any]) -> b
     )
 
 
+def _should_regenerate_control_health(report: Mapping[str, Any] | None) -> bool:
+    if not report:
+        return True
+    if report.get("schema_version") != "control_health_report.v1":
+        return True
+    status = _normalize_status(report.get("status"))
+    if status == "fail":
+        return False
+    failure_reason = str(report.get("failure_reason") or "").strip()
+    missing_fields = {str(item) for item in report.get("missing_fields") or [] if item}
+    metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+    control_decode = (
+        metrics.get("control_decode_debug")
+        if isinstance(metrics.get("control_decode_debug"), Mapping)
+        else {}
+    )
+    no_runtime_trace = (
+        failure_reason
+        in {
+            "missing_control_trace_fields",
+            "control_runtime_trace_missing",
+            "missing_control_trace",
+        }
+        or "control_runtime_trace_missing" in missing_fields
+        or report.get("raw_mapped_applied_control_available") is not True
+        or not control_decode
+    )
+    return status == "insufficient_data" and no_runtime_trace
+
+
+def _control_health_raw_inputs_available(root: Path) -> bool:
+    return any(
+        (root / relative).is_file()
+        for relative in (
+            "timeseries.csv",
+            "timeseries.jsonl",
+            "artifacts/debug_timeseries.csv",
+            "artifacts/control_decode_debug.jsonl",
+            "artifacts/bridge_control_decode.jsonl",
+            "artifacts/control_apply_trace.jsonl",
+            "artifacts/cyber_control_bridge.err.log",
+            "artifacts/cyber_control_bridge.out.log",
+        )
+    )
+
+
+def _control_health_has_runtime_evidence(report: Mapping[str, Any]) -> bool:
+    metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+    control_decode = (
+        metrics.get("control_decode_debug")
+        if isinstance(metrics.get("control_decode_debug"), Mapping)
+        else {}
+    )
+    source = report.get("source") if isinstance(report.get("source"), Mapping) else {}
+    return bool(
+        report.get("raw_mapped_applied_control_available") is True
+        or _first_num(metrics.get("nonzero_applied_control_frames")) is not None
+        or _first_num(control_decode.get("line_count")) is not None
+        or source.get("timeseries_path")
+        or source.get("control_decode_debug_path")
+        or source.get("control_apply_trace_path")
+    )
+
+
 def _should_regenerate_prediction_evidence(report: Mapping[str, Any] | None) -> bool:
     if not report:
         return False
@@ -1702,7 +1785,12 @@ def _control_handoff_layer(
     )
 
 
-def _control_health_layer(report: Mapping[str, Any] | None, path: Path | None) -> dict[str, Any]:
+def _control_health_layer(
+    report: Mapping[str, Any] | None,
+    path: Path | None,
+    *,
+    source_kind: str = "report",
+) -> dict[str, Any]:
     if not report:
         return _missing_report_layer(
             path=path,
@@ -1753,7 +1841,7 @@ def _control_health_layer(report: Mapping[str, Any] | None, path: Path | None) -
             "mapped_applied_brake_abs_error_p95": _nested(report, "metrics.mapped_applied_brake_abs_error_p95"),
             "route_s_after_first_applied_control_delta_m": _nested(report, "metrics.route_s_after_first_applied_control_delta_m"),
         },
-        artifact_paths={"control_health": str(path) if path else None},
+        artifact_paths={"control_health": str(path) if path else None, "source_kind": source_kind},
         next_action=_control_health_next_action(semantics_primary),
     )
 
