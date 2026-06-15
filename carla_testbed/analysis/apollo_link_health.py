@@ -1813,6 +1813,12 @@ def _control_health_layer(
     semantics_suspected = report.get("control_semantics_suspected_factors")
     if not isinstance(semantics_suspected, list):
         semantics_suspected = list(semantics.get("suspected_factors") or [])
+    oscillation_diagnosis = _nested(report, "metrics.control_oscillation_diagnosis")
+    if not isinstance(oscillation_diagnosis, Mapping):
+        oscillation_diagnosis = _control_oscillation_diagnosis_from_control_health(
+            report,
+            semantics,
+        )
     return _layer(
         status=_normalize_status(report.get("status")),
         blocking_reasons=[reason for reason in [report.get("failure_reason")] if reason and report.get("status") == "fail"],
@@ -1822,6 +1828,7 @@ def _control_health_layer(
             "control_semantics_primary_factor": semantics_primary,
             "control_semantics_suspected_factors": semantics_suspected,
             "control_semantics_evidence": dict(semantics),
+            "control_oscillation_diagnosis": dict(oscillation_diagnosis),
             "control_handoff_status": report.get("control_handoff_status"),
             "control_process_health": _nested(report, "metrics.control_process_health"),
             "oscillation_decomposition": _nested(report, "metrics.oscillation_decomposition"),
@@ -1852,11 +1859,18 @@ def _control_health_layer(
             "route_s_after_first_applied_control_delta_m": _nested(report, "metrics.route_s_after_first_applied_control_delta_m"),
         },
         artifact_paths={"control_health": str(path) if path else None, "source_kind": source_kind},
-        next_action=_control_health_next_action(semantics_primary),
+        next_action=_control_health_next_action(semantics_primary, oscillation_diagnosis),
     )
 
 
-def _control_health_next_action(semantics_primary: Any) -> str:
+def _control_health_next_action(
+    semantics_primary: Any,
+    oscillation_diagnosis: Mapping[str, Any] | None = None,
+) -> str:
+    if isinstance(oscillation_diagnosis, Mapping):
+        target = oscillation_diagnosis.get("next_debug_target")
+        if isinstance(target, str) and target:
+            return target
     if semantics_primary:
         return (
             "If localization/reference-line is non-blocking, inspect Apollo Control simple_lon "
@@ -1868,6 +1882,113 @@ def _control_health_next_action(semantics_primary: Any) -> str:
         "plus trajectory_consume_correlation/planning_trajectory_correlation before tuning bridge "
         "mapping or actuation."
     )
+
+
+def _control_oscillation_diagnosis_from_control_health(
+    report: Mapping[str, Any],
+    semantics: Mapping[str, Any],
+) -> dict[str, Any]:
+    metrics = report.get("metrics")
+    metrics = metrics if isinstance(metrics, Mapping) else {}
+    cadence = metrics.get("gt_state_sampling_cadence")
+    cadence = cadence if isinstance(cadence, Mapping) else {}
+    claim_boundary = metrics.get("control_mapping_claim_boundary")
+    claim_boundary = claim_boundary if isinstance(claim_boundary, Mapping) else {}
+    oscillation = metrics.get("oscillation_decomposition")
+    oscillation = oscillation if isinstance(oscillation, Mapping) else {}
+    layers = oscillation.get("layers")
+    layers = layers if isinstance(layers, Mapping) else {}
+    layer_statuses = {
+        str(name): layer.get("status")
+        for name, layer in layers.items()
+        if isinstance(layer, Mapping)
+    }
+    factors = [str(item) for item in semantics.get("suspected_factors") or []]
+    control_to_chassis_ratio = _num(cadence.get("control_to_chassis_count_ratio"))
+    control_to_localization_ratio = _num(cadence.get("control_to_localization_count_ratio"))
+    gt_state_oversampling_present = (
+        control_to_chassis_ratio is not None
+        and control_to_chassis_ratio > 5.0
+    ) or (
+        control_to_localization_ratio is not None
+        and control_to_localization_ratio > 5.0
+    )
+    raw_command_oscillation_present = (
+        layer_statuses.get("apollo_raw_command") == "fail"
+        or "apollo_simple_lon_acceleration_cmd_sign_switching" in factors
+        or report.get("failure_reason") == "apollo_raw_command_oscillation"
+    )
+    same_trajectory_switching_present = "same_trajectory_longitudinal_control_switching" in factors
+    planning_sequence_update_present = (
+        "planning_sequence_update_correlates_with_switches" in factors
+    )
+    suspected_layers: list[str] = []
+    if raw_command_oscillation_present:
+        suspected_layers.append("apollo_raw_control_semantics")
+    if same_trajectory_switching_present or planning_sequence_update_present:
+        suspected_layers.append("planning_control_semantics")
+    if gt_state_oversampling_present:
+        suspected_layers.append("gt_state_sampling_cadence")
+    if claim_boundary.get("claim_grade_control_mapping") is not True:
+        suspected_layers.append("control_mapping_claim_boundary")
+    suspected_layers = _dedupe_preserve_order(suspected_layers)
+    primary = "insufficient_data"
+    if raw_command_oscillation_present and (
+        same_trajectory_switching_present or planning_sequence_update_present
+    ):
+        primary = "planning_control_semantics"
+    elif raw_command_oscillation_present:
+        primary = "apollo_raw_control_semantics"
+    elif gt_state_oversampling_present:
+        primary = "gt_state_sampling_cadence"
+    elif suspected_layers:
+        primary = suspected_layers[0]
+    if primary == "planning_control_semantics":
+        next_debug_target = (
+            "Inspect control_trajectory_consume_debug and planning_topic_debug rows around "
+            "throttle/brake transitions; confirm whether Apollo simple_lon switches on the "
+            "same consumed trajectory before tuning bridge mapping."
+        )
+    elif primary == "gt_state_sampling_cadence":
+        next_debug_target = (
+            "Compare Apollo control loop cadence with GT localization/chassis publish cadence "
+            "and CARLA sync tick timing; treat cadence changes as diagnostic until behavior "
+            "gates pass."
+        )
+    else:
+        next_debug_target = (
+            "Collect row-level Apollo control, consumed trajectory, GT state cadence, and "
+            "raw/mapped/applied traces."
+        )
+    dominant_by_source = semantics.get("dominant_by_source")
+    if not isinstance(dominant_by_source, Mapping):
+        dominant_by_source = {}
+    return {
+        "available": bool(semantics.get("available") or cadence.get("available") or layer_statuses),
+        "primary_suspected_layer": primary,
+        "suspected_layers": suspected_layers,
+        "raw_command_oscillation_present": raw_command_oscillation_present,
+        "same_trajectory_switching_present": same_trajectory_switching_present,
+        "planning_sequence_update_correlates_with_switches": planning_sequence_update_present,
+        "gt_state_oversampling_present": gt_state_oversampling_present,
+        "control_to_chassis_count_ratio": control_to_chassis_ratio,
+        "control_to_localization_count_ratio": control_to_localization_ratio,
+        "control_rx_wall_hz": _num(cadence.get("control_rx_wall_hz")),
+        "chassis_wall_hz": _num(cadence.get("chassis_wall_hz")),
+        "localization_wall_hz": _num(cadence.get("localization_wall_hz")),
+        "claim_grade_control_mapping": bool(claim_boundary.get("claim_grade_control_mapping")),
+        "dominant_oscillation_layer": oscillation.get("dominant_oscillation_layer"),
+        "oscillation_layer_statuses": layer_statuses,
+        "control_semantics_primary_source": semantics.get("primary_source"),
+        "control_semantics_primary_factor": semantics.get("primary_factor"),
+        "control_semantics_dominant_by_source": dict(dominant_by_source),
+        "control_semantics_suspected_factors": factors,
+        "next_debug_target": next_debug_target,
+        "interpretation_caveat": (
+            "Synthesized by link-health from older control_health fields. It is attribution "
+            "evidence only and cannot override natural-driving claim gates."
+        ),
+    }
 
 
 def _control_semantics_from_control_health(report: Mapping[str, Any]) -> dict[str, Any]:

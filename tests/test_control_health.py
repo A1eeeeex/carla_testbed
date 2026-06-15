@@ -622,6 +622,19 @@ def test_control_health_reads_simple_lon_debug_from_raw_control_dump(tmp_path: P
     assert cadence["control_to_chassis_count_ratio"] == 10.0
     assert cadence["control_rx_wall_hz"] == 20.0
     assert cadence["chassis_wall_hz"] == 2.0
+    diagnosis = report["metrics"]["control_oscillation_diagnosis"]
+    assert diagnosis["available"] is True
+    assert diagnosis["primary_suspected_layer"] == "planning_control_semantics"
+    assert diagnosis["raw_command_oscillation_present"] is True
+    assert diagnosis["gt_state_oversampling_present"] is True
+    assert diagnosis["control_to_chassis_count_ratio"] == 10.0
+    assert diagnosis["claim_grade_control_mapping"] is False
+    assert "gt_state_sampling_cadence" in diagnosis["suspected_layers"]
+    assert "control_mapping_claim_boundary" in diagnosis["suspected_layers"]
+    assert (
+        diagnosis["control_semantics_primary_factor"]
+        == "planning_trajectory_length_switching"
+    )
     assert "apollo_control_oversamples_gt_state" in report["warnings"]
     assert "gt_state_wall_rate_low_relative_to_control" in report["warnings"]
     assert "apollo_control_current_acceleration_spiky" in report["warnings"]

@@ -92,6 +92,13 @@ the highest-value control diagnostic target without reimplementing the nested
 debug parsing. These fields are diagnostic summaries only; they do not override
 localization, HDMap projection, reference-line, control-handoff, or
 natural-driving gates.
+The same report also writes
+`metrics.control_oscillation_diagnosis`, a compact roll-up for operator triage.
+It flags whether raw Apollo command switching is present, whether switching
+occurs on the same consumed trajectory, whether GT localization/chassis is
+being oversampled by the Apollo control loop, whether legacy mapping is only
+smoke/debug evidence, and which next debug target should be inspected first.
+This roll-up is still attribution evidence, not a capability verdict.
 Trace-file presence alone is not control evidence. Rows whose raw, mapped, and
 applied command fields are all null are treated as no-command placeholders; they
 can document that the bridge loop ran, but they cannot clear raw/mapped/applied

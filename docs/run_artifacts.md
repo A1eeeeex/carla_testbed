@@ -677,6 +677,12 @@ When simple_lon or trajectory-consume debug evidence is present,
 summaries are designed for `apollo_link_health_report.json` and operator
 triage; they are not a standalone root-cause proof and must not bypass missing
 localization, HDMap projection, reference-line, or natural-driving evidence.
+`metrics.control_oscillation_diagnosis` is the compact operator-facing roll-up
+of the same evidence. It records raw-command oscillation presence,
+same-trajectory switching, GT-state over-sampling, legacy/calibrated mapping
+claim boundary, dominant source factors, and `next_debug_target`. It is an
+artifact navigation aid; it does not convert a failed or incomplete run into a
+natural-driving pass in `natural_driving_report.json`.
 If the trace exists but raw, mapped, and applied command fields are all null,
 it is a no-command placeholder. That artifact is useful for loop/cadence
 debugging, but it cannot satisfy raw/mapped/applied control evidence or a

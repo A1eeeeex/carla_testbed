@@ -362,6 +362,9 @@ def analyze_control_health_run_dir(
         manifest=manifest,
         cyber_bridge_stats=cyber_bridge_stats,
     )
+    report_metrics["control_oscillation_diagnosis"] = _control_oscillation_diagnosis(
+        report_metrics
+    )
     missing_fields = _missing_control_fields(rows)
     external_control_evidence_available = _external_control_evidence_available(
         control_bridge_log=control_bridge_log,
@@ -1066,6 +1069,165 @@ def _control_mapping_claim_boundary(
         "interpretation": (
             "Legacy mapping can support smoke/debug evidence only. Claim-grade actuation "
             "requires physical/calibrated mapping or an explicit vehicle calibration profile."
+        ),
+    }
+
+
+def _control_oscillation_diagnosis(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    """Roll up raw-control, GT-state cadence, and mapping-boundary evidence.
+
+    This is intentionally diagnostic. It narrows the next inspection target but
+    must not be used to bypass upstream localization/reference-line gates.
+    """
+    semantics = _control_semantics_summary(metrics)
+    factors = [str(item) for item in semantics.get("suspected_factors") or []]
+    dominant_by_source = semantics.get("dominant_by_source")
+    if not isinstance(dominant_by_source, Mapping):
+        dominant_by_source = {}
+
+    cadence = metrics.get("gt_state_sampling_cadence")
+    cadence = cadence if isinstance(cadence, Mapping) else {}
+    cadence_warnings = _gt_state_sampling_warnings(metrics)
+    control_to_chassis_ratio = _num(cadence.get("control_to_chassis_count_ratio"))
+    control_to_localization_ratio = _num(cadence.get("control_to_localization_count_ratio"))
+    gt_state_oversampling_present = (
+        "apollo_control_oversamples_gt_state" in cadence_warnings
+        or (control_to_chassis_ratio is not None and control_to_chassis_ratio > 5.0)
+        or (control_to_localization_ratio is not None and control_to_localization_ratio > 5.0)
+    )
+
+    claim_boundary = metrics.get("control_mapping_claim_boundary")
+    claim_boundary = claim_boundary if isinstance(claim_boundary, Mapping) else {}
+    claim_grade_mapping = bool(claim_boundary.get("claim_grade_control_mapping"))
+    mapping_warnings = [str(item) for item in claim_boundary.get("warnings") or []]
+    legacy_mapping_smoke_only = "legacy_mapping_smoke_only" in mapping_warnings
+
+    preconditions = metrics.get("upstream_contract_preconditions")
+    preconditions = preconditions if isinstance(preconditions, Mapping) else {}
+    upstream_nonblocking = bool(preconditions.get("control_oscillation_analysis_eligible"))
+
+    oscillation = metrics.get("oscillation_decomposition")
+    oscillation = oscillation if isinstance(oscillation, Mapping) else {}
+    layers = oscillation.get("layers")
+    layers = layers if isinstance(layers, Mapping) else {}
+    layer_statuses = {
+        str(name): layer.get("status")
+        for name, layer in layers.items()
+        if isinstance(layer, Mapping)
+    }
+
+    raw_command_oscillation_present = (
+        layer_statuses.get("apollo_raw_command") == "fail"
+        or "apollo_simple_lon_acceleration_cmd_sign_switching" in factors
+    )
+    same_trajectory_switching_present = "same_trajectory_longitudinal_control_switching" in factors
+    planning_sequence_update_present = (
+        "planning_sequence_update_correlates_with_switches" in factors
+    )
+    matched_reference_jump_present = (
+        "matched_or_reference_point_jump" in factors
+        or "trajectory_station_or_path_remain_jump" in factors
+    )
+
+    suspected_layers: list[str] = []
+    if raw_command_oscillation_present:
+        suspected_layers.append("apollo_raw_control_semantics")
+    if same_trajectory_switching_present or planning_sequence_update_present:
+        suspected_layers.append("planning_control_semantics")
+    if matched_reference_jump_present:
+        suspected_layers.append("reference_line_or_target_point_semantics")
+    if gt_state_oversampling_present:
+        suspected_layers.append("gt_state_sampling_cadence")
+    if layer_statuses.get("bridge_apply_cadence") == "fail":
+        suspected_layers.append("bridge_apply_cadence")
+    if layer_statuses.get("bridge_mapped_command") == "fail":
+        suspected_layers.append("bridge_mapping")
+    if layer_statuses.get("carla_applied_command") == "fail":
+        suspected_layers.append("carla_apply")
+    if layer_statuses.get("vehicle_response") == "fail":
+        suspected_layers.append("vehicle_response")
+    if legacy_mapping_smoke_only or not claim_grade_mapping:
+        suspected_layers.append("control_mapping_claim_boundary")
+    suspected_layers = _dedupe_preserve_order(suspected_layers)
+
+    primary_suspected_layer = "insufficient_data"
+    if raw_command_oscillation_present and (
+        same_trajectory_switching_present or planning_sequence_update_present
+    ):
+        primary_suspected_layer = "planning_control_semantics"
+    elif raw_command_oscillation_present:
+        primary_suspected_layer = "apollo_raw_control_semantics"
+    elif layer_statuses.get("bridge_apply_cadence") == "fail":
+        primary_suspected_layer = "bridge_apply_cadence"
+    elif layer_statuses.get("bridge_mapped_command") == "fail":
+        primary_suspected_layer = "bridge_mapping"
+    elif layer_statuses.get("carla_applied_command") == "fail":
+        primary_suspected_layer = "carla_apply"
+    elif layer_statuses.get("vehicle_response") == "fail":
+        primary_suspected_layer = "vehicle_response"
+    elif gt_state_oversampling_present:
+        primary_suspected_layer = "gt_state_sampling_cadence"
+    elif suspected_layers:
+        primary_suspected_layer = suspected_layers[0]
+
+    if primary_suspected_layer == "planning_control_semantics":
+        next_debug_target = (
+            "Inspect control_trajectory_consume_debug and planning_topic_debug rows around "
+            "throttle/brake transitions; confirm whether Apollo simple_lon switches on the "
+            "same consumed trajectory before tuning bridge mapping."
+        )
+    elif primary_suspected_layer == "gt_state_sampling_cadence":
+        next_debug_target = (
+            "Compare Apollo control loop cadence with GT localization/chassis publish cadence "
+            "and CARLA sync tick timing; treat cadence changes as diagnostic until behavior "
+            "gates pass."
+        )
+    elif primary_suspected_layer in {"bridge_mapping", "bridge_apply_cadence", "carla_apply"}:
+        next_debug_target = (
+            "Inspect raw->mapped->applied trace and bridge apply cadence before changing PID "
+            "or actuator mapping parameters."
+        )
+    elif primary_suspected_layer == "apollo_raw_control_semantics":
+        next_debug_target = (
+            "Inspect Apollo raw ControlCommand debug fields and consumed planning trajectory "
+            "near command sign switches; do not smooth mapped output to hide raw switching."
+        )
+    else:
+        next_debug_target = (
+            "Collect row-level Apollo control, consumed trajectory, GT state cadence, and "
+            "raw/mapped/applied traces."
+        )
+
+    return {
+        "available": bool(semantics.get("available") or cadence.get("available") or layer_statuses),
+        "primary_suspected_layer": primary_suspected_layer,
+        "suspected_layers": suspected_layers,
+        "raw_command_oscillation_present": raw_command_oscillation_present,
+        "same_trajectory_switching_present": same_trajectory_switching_present,
+        "planning_sequence_update_correlates_with_switches": planning_sequence_update_present,
+        "matched_or_reference_point_jump_present": matched_reference_jump_present,
+        "gt_state_oversampling_present": gt_state_oversampling_present,
+        "gt_state_sampling_warnings": cadence_warnings,
+        "control_to_chassis_count_ratio": control_to_chassis_ratio,
+        "control_to_localization_count_ratio": control_to_localization_ratio,
+        "control_rx_wall_hz": _num(cadence.get("control_rx_wall_hz")),
+        "chassis_wall_hz": _num(cadence.get("chassis_wall_hz")),
+        "localization_wall_hz": _num(cadence.get("localization_wall_hz")),
+        "legacy_mapping_smoke_only": legacy_mapping_smoke_only,
+        "claim_grade_control_mapping": claim_grade_mapping,
+        "upstream_contracts_nonblocking": upstream_nonblocking,
+        "dominant_oscillation_layer": oscillation.get("dominant_oscillation_layer"),
+        "oscillation_layer_statuses": layer_statuses,
+        "control_semantics_primary_source": semantics.get("primary_source"),
+        "control_semantics_primary_factor": semantics.get("primary_factor"),
+        "control_semantics_dominant_by_source": dict(dominant_by_source),
+        "control_semantics_suspected_factors": factors,
+        "next_debug_target": next_debug_target,
+        "interpretation_caveat": (
+            "This diagnosis is evidence for attribution, not a capability verdict. It must not "
+            "turn a run into natural-driving pass, and it does not prove Apollo algorithm "
+            "limitation unless localization, HDMap projection, reference-line, and control "
+            "handoff evidence are non-blocking."
         ),
     }
 

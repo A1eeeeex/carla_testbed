@@ -1553,15 +1553,23 @@ def test_control_oscillation_becomes_primary_only_after_localization_and_referen
     )
     assert metrics["control_semantics_primary_factor"] == "planning_trajectory_length_switching"
     assert "planning_trajectory_length_switching" in metrics["control_semantics_suspected_factors"]
+    diagnosis = metrics["control_oscillation_diagnosis"]
+    assert diagnosis["primary_suspected_layer"] == "planning_control_semantics"
+    assert diagnosis["raw_command_oscillation_present"] is True
+    assert diagnosis["gt_state_oversampling_present"] is True
+    assert diagnosis["control_to_chassis_count_ratio"] == 10.0
+    assert "control_mapping_claim_boundary" in diagnosis["suspected_layers"]
     assert (
         metrics["control_semantics_evidence"]["dominant_by_source"][
             "longitudinal_oscillation_attribution"
         ]
         == "apollo_simple_lon_acceleration_cmd_sign_switching"
     )
-    assert "planning_trajectory_length_switching" in report["layers"]["control_mapping_apply"][
-        "next_action"
-    ]
+    next_action = report["layers"]["control_mapping_apply"]["next_action"]
+    assert (
+        "planning_trajectory_length_switching" in next_action
+        or "control_trajectory_consume_debug" in next_action
+    )
     assert (
         metrics["planning_log_fallback_diagnostics"]["dominant_suspected_factor"]
         == "trajectory_stitcher_matched_point_lon_diff_replans"
