@@ -85,7 +85,64 @@ def test_id_same_but_heading_high_is_heading_issue_not_pass() -> None:
     }
 
 
-def test_boundary_sample_projecting_to_neighbor_is_boundary_ambiguous() -> None:
+def test_raw_heading_high_with_local_chord_evidence_is_non_blocking() -> None:
+    report = build_lane_equivalence_town01(
+        _route_contract(["13:-1"], ["13:-1"]),
+        hdmap_projection_rows=[
+            {
+                **_row(
+                    carla_lane_key="13:-1",
+                    nearest_lane_id="13_1_-1",
+                    route_index=index,
+                    route_s=float(index * 4.0),
+                    heading_error_rad=0.04,
+                ),
+                "route_chord_heading_error_rad": 0.01,
+                "route_trace_heading_error_rad": 0.04,
+            }
+            for index in range(5)
+        ],
+    )
+
+    pair = report["pairs"][0]
+    assert report["status"] == "pass"
+    assert pair["status"] == "verified"
+    assert pair["classification"] == "verified_equivalent"
+    assert pair["heading_error_p95_rad"] == 0.01
+    assert pair["raw_heading_error_p95_rad"] == 0.04
+    assert "raw_heading_error_explained_by_transition_heading_policy" in pair["warnings"]
+
+
+def test_short_connector_heading_uses_core_sample_not_transition_edge() -> None:
+    route_s_values = [0.0, 3.7, 7.6, 11.7]
+    heading_errors = [0.09, 0.0309, 0.019, 0.07]
+    report = build_lane_equivalence_town01(
+        _route_contract(["13:-1"], ["13:-1"]),
+        hdmap_projection_rows=[
+            _row(
+                carla_lane_key="13:-1",
+                nearest_lane_id="13_1_-1",
+                route_index=index,
+                route_s=route_s,
+                heading_error_rad=heading_error,
+                lateral_error_m=0.003,
+            )
+            for index, (route_s, heading_error) in enumerate(zip(route_s_values, heading_errors))
+        ],
+    )
+
+    pair = report["pairs"][0]
+    assert report["status"] == "pass"
+    assert pair["status"] == "verified"
+    assert pair["classification"] == "verified_equivalent"
+    assert pair["heading_error_policy"] == "transition_core_or_local_chord"
+    assert pair["heading_error_claim_sample_count"] == 1
+    assert pair["heading_error_p95_rad"] == 0.019
+    assert pair["raw_heading_error_p95_rad"] == 0.09
+    assert "raw_heading_error_explained_by_transition_heading_policy" in pair["warnings"]
+
+
+def test_boundary_sample_projecting_to_neighbor_is_non_blocking_when_interior_matches() -> None:
     report = build_lane_equivalence_town01(
         _route_contract(["83:1"], ["31:-1"]),
         hdmap_projection_rows=[
@@ -97,9 +154,12 @@ def test_boundary_sample_projecting_to_neighbor_is_boundary_ambiguous() -> None:
     )
 
     pair = report["pairs"][0]
-    assert report["status"] == "fail"
-    assert pair["status"] == "ambiguous"
-    assert pair["classification"] == "boundary_transition_ambiguous"
+    assert report["status"] == "pass"
+    assert pair["status"] == "verified"
+    assert pair["classification"] == "verified_equivalent"
+    assert pair["dominant_sample_ratio"] >= 0.8
+    assert pair["raw_dominant_sample_ratio"] < 0.8
+    assert "dominant_apollo_lane_ratio_low_only_at_boundary" in pair["warnings"]
     assert pair["failed_samples"][0]["is_boundary_sample"] is True
     assert pair["failed_samples"][0]["boundary_transition_explains_mismatch"] is True
 

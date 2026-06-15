@@ -237,6 +237,14 @@ the exporter converts them before calling Apollo `map_xysl`; without an explicit
 frame transform these route samples are skipped rather than treated as
 claim-grade Apollo map evidence.
 
+For CARLA route-trace samples, the exporter records both transformed trace
+heading and local chord heading. `apollo_route_contract_report.json` uses that
+extra evidence to distinguish junction/short-connector boundary samples from
+the core lane-equivalence claim. Raw heading spikes and boundary lane spillover
+remain in `lane_equivalence_town01.json` as warnings; they do not become a
+natural-driving pass without a passing `natural_driving_report.json`, and they
+must not be hidden by rewriting Apollo routing truth.
+
 Generate module-consumption evidence for a run:
 
 ```bash

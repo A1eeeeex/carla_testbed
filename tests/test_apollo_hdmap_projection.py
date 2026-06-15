@@ -583,6 +583,67 @@ def test_export_projection_jsonl_with_mocked_apollo_map_xysl(tmp_path: Path) -> 
     assert abs(rows[0]["heading_error_rad"] - (1.570800987 - 1.570666)) < 1e-9
 
 
+def test_export_route_projection_records_trace_and_chord_heading_errors(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "route.json",
+        {
+            "schema_version": "runtime_route_trace.v1",
+            "source": "artifacts/scenario_metadata.json:route_trace",
+            "coordinate_frame": "carla_world",
+            "points": [
+                {"x": 0.0, "y": 0.0, "z": 0.0, "heading": 0.0, "s": 0.0, "lane_id": "13:0:-1"},
+                {"x": 10.0, "y": 0.0, "z": 0.0, "heading": 0.0, "s": 10.0, "lane_id": "13:0:-1"},
+                {"x": 10.0, "y": 10.0, "z": 0.0, "heading": 0.0, "s": 20.0, "lane_id": "13:0:-1"},
+            ],
+        },
+    )
+    transform_path = tmp_path / "apollo_frame_transform.yaml"
+    _write_json(
+        transform_path,
+        {
+            "transform": {
+                "tx": 0.0,
+                "ty": 0.0,
+                "tz": 0.0,
+                "yaw_rad": 0.0,
+                "scale": 1.0,
+                "y_flip": True,
+            }
+        },
+    )
+
+    def fake_runner(*args, **kwargs):
+        command = args[0]
+        command_text = command[-1] if command[:2] == ["docker", "exec"] else " ".join(command)
+        lane_heading = -0.785398163397 if "--x=10" in command_text and "--y=-10" not in command_text else 0.0
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout=f"lane_id[13_1_-1], s[10.0], l[0.1], heading[{lane_heading}]\n",
+            stderr="",
+        )
+
+    out_path = run_dir / "artifacts" / "apollo_hdmap_projection.jsonl"
+    status = export_apollo_hdmap_projection_jsonl(
+        run_dir=run_dir,
+        out_path=out_path,
+        include_route_samples=True,
+        frame_transform_path=transform_path,
+        command_runner=fake_runner,
+    )
+    rows = [json.loads(line) for line in out_path.read_text(encoding="utf-8").splitlines()]
+    middle = rows[1]
+
+    assert status["status"] == "pass"
+    assert middle["route_heading_source"] == "route_chord"
+    assert abs(middle["heading_apollo"] + 0.785398163397) < 1e-9
+    assert abs(middle["route_chord_heading_apollo"] + 0.785398163397) < 1e-9
+    assert middle["route_trace_heading_apollo"] == 0.0
+    assert abs(middle["route_chord_heading_error_rad"]) < 1e-9
+    assert abs(middle["route_trace_heading_error_rad"] - 0.785398163397) < 1e-9
+
+
 def test_export_projection_records_requested_route_s_coverage_gap(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     (run_dir / "route.json").parent.mkdir(parents=True, exist_ok=True)

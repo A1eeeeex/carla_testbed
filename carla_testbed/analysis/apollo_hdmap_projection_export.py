@@ -249,6 +249,16 @@ def project_sample_with_map_xysl(
         if sample.heading is not None and lane_heading is not None
         else None
     )
+    route_trace_heading_error = _heading_error_from_metadata(
+        sample.metadata,
+        "route_trace_heading_apollo",
+        lane_heading,
+    )
+    route_chord_heading_error = _heading_error_from_metadata(
+        sample.metadata,
+        "route_chord_heading_apollo",
+        lane_heading,
+    )
     row = {
         "sample_type": sample.sample_type,
         "sample_index": sample.source_index,
@@ -282,6 +292,10 @@ def project_sample_with_map_xysl(
         "command": " ".join(shlex.quote(part) for part in command),
         "raw_output_excerpt": output[:1000],
     }
+    if route_trace_heading_error is not None:
+        row["route_trace_heading_error_rad"] = route_trace_heading_error
+    if route_chord_heading_error is not None:
+        row["route_chord_heading_error_rad"] = route_chord_heading_error
     for key, value in sample.metadata.items():
         if key not in row:
             row[str(key)] = value
@@ -390,6 +404,11 @@ def _samples_from_route_json(
     points_are_carla_frame = _route_json_points_are_carla_frame(payload)
     if points_are_carla_frame and frame_transform is None:
         return []
+    chord_headings = _route_chord_headings(
+        points,
+        frame_transform=frame_transform,
+        points_are_carla_frame=points_are_carla_frame,
+    )
     samples: list[LocalizationProjectionSample] = []
     for index, item in enumerate(points):
         if not isinstance(item, Mapping):
@@ -410,7 +429,16 @@ def _samples_from_route_json(
             apollo_point = carla_point_to_apollo(Vector3(x=x, y=y, z=z), frame_transform)
             x = apollo_point.x
             y = apollo_point.y
-            heading = _carla_heading_to_apollo(heading, frame_transform)
+            trace_heading = _carla_heading_to_apollo(heading, frame_transform)
+            chord_heading = chord_headings.get(index)
+            if trace_heading is not None:
+                sample_metadata["route_trace_heading_apollo"] = trace_heading
+            if chord_heading is not None:
+                sample_metadata["route_chord_heading_apollo"] = chord_heading
+            sample_metadata["route_heading_source"] = (
+                "route_chord" if chord_heading is not None else "route_trace"
+            )
+            heading = chord_heading if chord_heading is not None else trace_heading
         samples.append(
             LocalizationProjectionSample(
                 timestamp=timestamp,
@@ -460,6 +488,11 @@ def _samples_from_manifest_route_trace(
     points = scenario.get("route_trace")
     if not isinstance(points, SequenceABC) or isinstance(points, (str, bytes)):
         return []
+    chord_headings = _route_chord_headings(
+        points,
+        frame_transform=frame_transform,
+        points_are_carla_frame=True,
+    )
     samples: list[LocalizationProjectionSample] = []
     for index, item in enumerate(points):
         if not isinstance(item, Mapping):
@@ -475,7 +508,16 @@ def _samples_from_manifest_route_trace(
         sample_metadata.setdefault("carla_z", z)
         sample_metadata.setdefault("carla_heading", item.get("heading"))
         apollo_point = carla_point_to_apollo(Vector3(x=x, y=y, z=z), frame_transform)
-        heading = _carla_heading_to_apollo(item.get("heading"), frame_transform)
+        trace_heading = _carla_heading_to_apollo(item.get("heading"), frame_transform)
+        chord_heading = chord_headings.get(index)
+        if trace_heading is not None:
+            sample_metadata["route_trace_heading_apollo"] = trace_heading
+        if chord_heading is not None:
+            sample_metadata["route_chord_heading_apollo"] = chord_heading
+        sample_metadata["route_heading_source"] = (
+            "route_chord" if chord_heading is not None else "route_trace"
+        )
+        heading = chord_heading if chord_heading is not None else trace_heading
         samples.append(
             LocalizationProjectionSample(
                 timestamp=_first_number(item, ["sim_time_sec", "timestamp", "time_sec"]),
@@ -505,6 +547,61 @@ def _carla_heading_to_apollo(value: Any, frame_transform: ApolloFrameTransform) 
         Vector3(x=math.cos(heading), y=math.sin(heading), z=0.0),
         frame_transform,
     )
+
+
+def _heading_error_from_metadata(
+    metadata: Mapping[str, Any],
+    key: str,
+    lane_heading: Any,
+) -> float | None:
+    heading = _float(metadata.get(key))
+    lane = _float(lane_heading)
+    if heading is None or lane is None:
+        return None
+    return normalize_angle(float(heading) - float(lane))
+
+
+def _route_chord_headings(
+    points: SequenceABC,
+    *,
+    frame_transform: ApolloFrameTransform | None,
+    points_are_carla_frame: bool,
+) -> dict[int, float]:
+    coords: dict[int, tuple[float, float]] = {}
+    for index, item in enumerate(points):
+        if not isinstance(item, Mapping):
+            continue
+        x = _first_number(item, ["x", "localization_x", "map_x", "carla_x"])
+        y = _first_number(item, ["y", "localization_y", "map_y", "carla_y"])
+        z = _first_number(item, ["z", "localization_z", "map_z", "carla_z"]) or 0.0
+        if x is None or y is None:
+            continue
+        if points_are_carla_frame:
+            if frame_transform is None:
+                continue
+            point = carla_point_to_apollo(Vector3(x=x, y=y, z=z), frame_transform)
+            coords[index] = (point.x, point.y)
+        else:
+            coords[index] = (float(x), float(y))
+    if len(coords) < 2:
+        return {}
+    indexes = sorted(coords)
+    headings: dict[int, float] = {}
+    for pos, index in enumerate(indexes):
+        prev_index = indexes[pos - 1] if pos > 0 else None
+        next_index = indexes[pos + 1] if pos + 1 < len(indexes) else None
+        if prev_index is None and next_index is None:
+            continue
+        start_index = prev_index if prev_index is not None else index
+        end_index = next_index if next_index is not None else index
+        start = coords[start_index]
+        end = coords[end_index]
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+            continue
+        headings[index] = math.atan2(dy, dx)
+    return headings
 
 
 def _sample_from_mapping(

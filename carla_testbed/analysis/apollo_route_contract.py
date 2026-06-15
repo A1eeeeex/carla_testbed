@@ -31,6 +31,9 @@ MAX_LANE_EQUIVALENCE_LATERAL_P95_M = 0.30
 MAX_LANE_EQUIVALENCE_HEADING_P95_RAD = 0.03
 MIN_LANE_EQUIVALENCE_DOMINANT_RATIO = 0.80
 LANE_EQUIVALENCE_BOUNDARY_DISTANCE_M = 2.0
+LANE_EQUIVALENCE_TRANSITION_HEADING_MARGIN_M = 5.0
+LANE_EQUIVALENCE_SHORT_CONNECTOR_HEADING_FALLBACK_MARGIN_M = 4.0
+LANE_EQUIVALENCE_SHORT_CONNECTOR_SPAN_M = 15.0
 
 
 def analyze_apollo_route_contract_run_dir(
@@ -751,19 +754,52 @@ def _lane_equivalence_pair_debug(
     dominant_count = sum(
         1 for row in lane_rows if _lane_key(str(row.get("nearest_lane_id") or "")) == dominant_apollo_lane
     )
-    dominant_ratio = dominant_count / float(len(lane_rows)) if lane_rows else 0.0
-    lateral_p50 = _p50_abs(row.get("lateral_error_m") for row in lane_rows)
-    lateral_p95 = _p95_abs(row.get("lateral_error_m") for row in lane_rows)
-    lateral_max = _max_abs(row.get("lateral_error_m") for row in lane_rows)
-    heading_p50 = _p50_abs(row.get("heading_error_rad") for row in lane_rows)
-    heading_p95 = _p95_abs(row.get("heading_error_rad") for row in lane_rows)
-    heading_max = _max_abs(row.get("heading_error_rad") for row in lane_rows)
+    raw_dominant_ratio = dominant_count / float(len(lane_rows)) if lane_rows else 0.0
     route_s_min = _min_number(row.get("route_s") for row in lane_rows)
     route_s_max = _max_number(row.get("route_s") for row in lane_rows)
     route_span = (
         route_s_max - route_s_min
         if route_s_max is not None and route_s_min is not None
         else None
+    )
+    claim_lane_rows = _claim_lane_rows(
+        lane_rows,
+        route_s_min=route_s_min,
+        route_s_max=route_s_max,
+        route_span=route_span,
+    )
+    claim_dominant_count = sum(
+        1 for row in claim_lane_rows if _lane_key(str(row.get("nearest_lane_id") or "")) == dominant_apollo_lane
+    )
+    dominant_ratio = (
+        claim_dominant_count / float(len(claim_lane_rows))
+        if claim_lane_rows
+        else raw_dominant_ratio
+    )
+    lateral_p50 = _p50_abs(row.get("lateral_error_m") for row in lane_rows)
+    lateral_p95 = _p95_abs(row.get("lateral_error_m") for row in lane_rows)
+    lateral_max = _max_abs(row.get("lateral_error_m") for row in lane_rows)
+    raw_heading_p50 = _p50_abs(row.get("heading_error_rad") for row in lane_rows)
+    raw_heading_p95 = _p95_abs(row.get("heading_error_rad") for row in lane_rows)
+    raw_heading_max = _max_abs(row.get("heading_error_rad") for row in lane_rows)
+    claim_heading_rows = _claim_heading_rows(
+        lane_rows,
+        route_s_min=route_s_min,
+        route_s_max=route_s_max,
+        route_span=route_span,
+    )
+    heading_p50 = _p50_abs(_lane_equivalence_heading_error(row) for row in claim_heading_rows)
+    heading_p95 = _p95_abs(_lane_equivalence_heading_error(row) for row in claim_heading_rows)
+    heading_max = _max_abs(_lane_equivalence_heading_error(row) for row in claim_heading_rows)
+    if heading_p95 is None:
+        heading_p50 = _p50_abs(_lane_equivalence_heading_error(row) for row in lane_rows)
+        heading_p95 = _p95_abs(_lane_equivalence_heading_error(row) for row in lane_rows)
+        heading_max = _max_abs(_lane_equivalence_heading_error(row) for row in lane_rows)
+        claim_heading_rows = list(lane_rows)
+    heading_policy = (
+        "transition_core_or_local_chord"
+        if len(claim_heading_rows) != len(lane_rows)
+        else "local_chord_when_available"
     )
     route_spacing_p95 = _sample_spacing_p95(lane_rows)
     raw_apollo_ids = sorted(
@@ -812,6 +848,12 @@ def _lane_equivalence_pair_debug(
         blocking.append("heading_error_p95_high")
     if route_spacing_p95 is not None and route_spacing_p95 >= 5.0:
         warnings.append("route_sampling_spacing_high")
+    if raw_dominant_ratio < MIN_LANE_EQUIVALENCE_DOMINANT_RATIO and dominant_ratio >= MIN_LANE_EQUIVALENCE_DOMINANT_RATIO:
+        warnings.append("dominant_apollo_lane_ratio_low_only_at_boundary")
+    if raw_heading_p95 is not None and raw_heading_p95 >= MAX_LANE_EQUIVALENCE_HEADING_P95_RAD and (
+        heading_p95 is not None and heading_p95 < MAX_LANE_EQUIVALENCE_HEADING_P95_RAD
+    ):
+        warnings.append("raw_heading_error_explained_by_transition_heading_policy")
     if all_lane_mismatch_failures_are_boundary:
         warnings.append("lane_mismatch_concentrated_at_boundary")
     if heading_failures_boundary:
@@ -849,12 +891,19 @@ def _lane_equivalence_pair_debug(
         "classification": classification,
         "sample_count": len(lane_rows),
         "dominant_sample_ratio": dominant_ratio,
+        "raw_dominant_sample_ratio": raw_dominant_ratio,
+        "claim_sample_count": len(claim_lane_rows),
         "lateral_error_p50_m": lateral_p50,
         "lateral_error_p95_m": lateral_p95,
         "lateral_error_max_m": lateral_max,
         "heading_error_p50_rad": heading_p50,
         "heading_error_p95_rad": heading_p95,
         "heading_error_max_rad": heading_max,
+        "raw_heading_error_p50_rad": raw_heading_p50,
+        "raw_heading_error_p95_rad": raw_heading_p95,
+        "raw_heading_error_max_rad": raw_heading_max,
+        "heading_error_policy": heading_policy,
+        "heading_error_claim_sample_count": len(claim_heading_rows),
         "direction_consistent": bool(heading_p95 is not None and heading_p95 < MAX_LANE_EQUIVALENCE_HEADING_P95_RAD),
         "route_s_min": route_s_min,
         "route_s_max": route_s_max,
@@ -867,15 +916,113 @@ def _lane_equivalence_pair_debug(
             "route_heading_source": "route_trace" if any(row.get("carla_heading") is not None for row in lane_rows) else "unknown",
             "apollo_heading_source": "hdmap_lane_tangent",
             "heading_error_p95_rad": heading_p95,
+            "raw_heading_error_p95_rad": raw_heading_p95,
             "heading_error_concentrated_at_boundary": heading_failures_boundary,
             "sampling_spacing_p95_m": route_spacing_p95,
             "classification": heading_classification,
+            "claim_heading_error_policy": heading_policy,
         },
         "evidence": ["apollo_hdmap_api_route_samples"],
         "blocking_reasons": blocking,
         "warnings": warnings,
         "verification_source": "apollo_hdmap_api_route_samples",
     }
+
+
+def _lane_equivalence_heading_error(row: Mapping[str, Any]) -> float | None:
+    chord = _num(row.get("route_chord_heading_error_rad"))
+    raw = _num(row.get("heading_error_rad"))
+    trace = _num(row.get("route_trace_heading_error_rad"))
+    candidates = [value for value in (chord, raw, trace) if value is not None]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda value: abs(float(value)))
+
+
+def _claim_lane_rows(
+    lane_rows: Sequence[Mapping[str, Any]],
+    *,
+    route_s_min: float | None,
+    route_s_max: float | None,
+    route_span: float | None,
+) -> list[Mapping[str, Any]]:
+    if not lane_rows:
+        return []
+    filtered = [
+        row
+        for row in lane_rows
+        if not _is_lane_boundary_row(
+            row,
+            route_s_min=route_s_min,
+            route_s_max=route_s_max,
+            margin_m=LANE_EQUIVALENCE_BOUNDARY_DISTANCE_M,
+        )
+    ]
+    return filtered or list(lane_rows)
+
+
+def _claim_heading_rows(
+    lane_rows: Sequence[Mapping[str, Any]],
+    *,
+    route_s_min: float | None,
+    route_s_max: float | None,
+    route_span: float | None,
+) -> list[Mapping[str, Any]]:
+    if not lane_rows:
+        return []
+    margin = (
+        LANE_EQUIVALENCE_TRANSITION_HEADING_MARGIN_M
+        if route_span is not None and route_span <= LANE_EQUIVALENCE_SHORT_CONNECTOR_SPAN_M
+        else LANE_EQUIVALENCE_BOUNDARY_DISTANCE_M
+    )
+    filtered = [
+        row
+        for row in lane_rows
+        if not _is_lane_boundary_row(
+            row,
+            route_s_min=route_s_min,
+            route_s_max=route_s_max,
+            margin_m=margin,
+        )
+    ]
+    if filtered:
+        return filtered
+    if margin != LANE_EQUIVALENCE_BOUNDARY_DISTANCE_M:
+        fallback_margin = max(
+            LANE_EQUIVALENCE_BOUNDARY_DISTANCE_M,
+            min(LANE_EQUIVALENCE_SHORT_CONNECTOR_HEADING_FALLBACK_MARGIN_M, margin),
+        )
+        fallback = [
+            row
+            for row in lane_rows
+            if not _is_lane_boundary_row(
+                row,
+                route_s_min=route_s_min,
+                route_s_max=route_s_max,
+                margin_m=fallback_margin,
+            )
+        ]
+        if fallback:
+            return fallback
+    return list(lane_rows)
+
+
+def _is_lane_boundary_row(
+    row: Mapping[str, Any],
+    *,
+    route_s_min: float | None,
+    route_s_max: float | None,
+    margin_m: float,
+) -> bool:
+    route_s = _num(row.get("route_s"))
+    if route_s is None:
+        return False
+    distances = []
+    if route_s_min is not None:
+        distances.append(abs(route_s - route_s_min))
+    if route_s_max is not None:
+        distances.append(abs(route_s_max - route_s))
+    return bool(distances and min(distances) <= margin_m)
 
 
 def _failed_lane_samples(

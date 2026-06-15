@@ -123,10 +123,13 @@ instead of pass.
 
 Verified lane equivalence requires route projection rows with `carla_lane_key`,
 `route_s`, `nearest_lane_id`, `projection_l`, and `heading_error_rad` from
-`source="apollo_hdmap_api"`. The route sample projection should prove each CARLA
-lane maps to one dominant Apollo lane, with lateral p95 <= `0.30 m`, heading p95
-<= `0.03 rad`, and ordered projected Apollo lane windows matching the decoded
-RoutingResponse.
+`source="apollo_hdmap_api"`. For route-trace samples, the exporter also records
+`route_trace_heading_error_rad`, `route_chord_heading_error_rad`, and
+`route_heading_source` so the report can separate raw trace heading diagnostics
+from the heading evidence used for claim-grade lane equivalence. The route
+sample projection should prove each CARLA lane maps to one dominant Apollo lane,
+with lateral p95 <= `0.30 m`, claim heading p95 <= `0.03 rad`, and ordered
+projected Apollo lane windows matching the decoded RoutingResponse.
 
 `lane_equivalence_town01.json` is pair-level evidence. A pair can be
 `verified`, `ambiguous`, `failed`, or `insufficient_data`, with a classification
@@ -136,8 +139,11 @@ such as `verified_equivalent`, `boundary_transition_ambiguous`,
 enough: an exact id match with high heading error still cannot pass. Lane id
 difference is also not automatically wrong: a CARLA lane and an Apollo lane can
 be verified equivalent if official projection rows prove the same physical lane.
-If a boundary sample projects to a different Apollo lane or heading p95 exceeds
-the threshold, keep the result as route/lane identity failure or
+Boundary samples are kept in the artifact and reported as warnings when they
+explain raw dominant-ratio or heading spikes. They can only become non-blocking
+when the core route samples still prove one dominant Apollo lane, low lateral
+error, claim heading below threshold, and ordered RoutingResponse compatibility.
+If the core samples fail, keep the result as route/lane identity failure or
 `insufficient_data`; do not tune control to mask it.
 
 Do not rewrite scenario route truth from Apollo RoutingResponse, and do not
@@ -147,17 +153,26 @@ enable fallback routing to make the report green.
 
 For the latest 2026-06-15 online evidence family, `map_contract_guard.json`
 shows Apollo runtime and bridge map roots resolving to `carla_town01`, with
-base/routing/sim map hashes recorded. Official HDMap projection can pass when
-`map_xysl` exports rows. Route-sample projection narrowed the remaining blocker:
-`117:1 -> 82:1` is a verified-equivalent candidate from geometry/heading
-evidence, with topology evidence still marked unavailable. `83:1 -> 31:-1`
-currently classifies as boundary/heading ambiguity rather than a proven bad map:
-one route-boundary sample projects to `37:1` and heading p95 exceeds `0.03 rad`.
-`13:-1` is an exact id match but still fails the pair gate because heading p95
-exceeds `0.03 rad`; that is a heading-convention or sampling-density problem to
-verify before blaming routing. This remains an alignment gate, not a
-natural-driving pass; any later pass claim must be backed by
-`natural_driving_report.json`.
+base/routing/sim map hashes recorded. Re-exporting
+`runs/apollo_p0p1_metadata_online_20260615_115705` with
+`tools/export_apollo_hdmap_projection.py --include-route-samples
+--include-start-goal --min-route-s-coverage 300` produced 143 official
+`source="apollo_hdmap_api"` rows, `projection_s_coverage_m=303.78`, and
+`analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json`
+`status=pass`.
+
+After route chord heading and boundary-core interpretation were added,
+`analysis/apollo_route_contract/apollo_route_contract_report.json` for that run
+is `status=pass` with `lane_equivalence_status=verified_equivalence` and no
+blocking reasons. `117:1 -> 82:1`, `83:1 -> 31:-1`, and exact-match `13:-1`
+are all verified-equivalent. The raw boundary/transition issues remain visible
+as warnings, for example `83:1` has a boundary sample projecting to `37:1`, and
+`13:-1` records raw heading error above threshold while the core claim sample is
+within threshold. `apollo_map_route_alignment_report.json` is therefore
+`status=warn`, `diagnosis=pass`: route/routing alignment is no longer the
+primary blocker, but Planning reference-line evidence still carries warnings.
+This is not a natural-driving pass; any later pass claim must still be backed by
+`natural_driving_report.json` and the no-interference claim artifacts.
 
 ## If You Need To Change Maps Later
 

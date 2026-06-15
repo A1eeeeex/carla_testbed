@@ -439,6 +439,13 @@ misleading lane-sequence hard fail across namespaces. That still does not prove
 lane equivalence; the report should keep
 `lane_equivalence_status=cross_namespace_unverified` until official HDMap
 projection or an explicit lane-equivalence artifact closes the gap.
+Official route projection rows can also carry
+`route_trace_heading_error_rad`, `route_chord_heading_error_rad`, and
+`route_heading_source`. These fields let the lane-equivalence artifact keep raw
+route-trace heading diagnostics while evaluating short connector and junction
+transition lanes from core/chord evidence. A boundary sample may become a
+warning instead of a blocker only when the non-boundary route samples still
+prove dominant lane, lateral, heading, and ordered RoutingResponse consistency.
 `apollo_route_contract_report.json` uses the claim/trace length for
 `scenario_route_length_m` when present and still preserves the legacy field as
 `scenario_route_legacy_length_m` / `scenario_route_legacy_length_role` for
