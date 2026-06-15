@@ -6,6 +6,10 @@ import re
 from typing import Any, Mapping, Sequence
 
 from carla_testbed.analysis.apollo_channel_health import analyze_apollo_channel_health_files
+from carla_testbed.analysis.apollo_route_contract import (
+    analyze_apollo_route_contract_run_dir,
+    write_apollo_route_contract_report,
+)
 from carla_testbed.analysis.apollo_module_consumption import analyze_apollo_module_consumption_run_dir
 from carla_testbed.analysis.chassis_gt_contract import analyze_chassis_gt_contract_files
 from carla_testbed.analysis.channel_cadence_diagnosis import analyze_channel_cadence_diagnosis_run_dir
@@ -67,6 +71,7 @@ def analyze_apollo_link_health(
     *,
     run_dir: str | Path | None = None,
 ) -> dict[str, Any]:
+    inputs = dict(inputs)
     root = Path(run_dir).expanduser() if run_dir is not None else None
     payloads = {name: _read_json(path) for name, path in inputs.items() if name != "suite_manifest"}
     suite_manifest = _read_json(inputs.get("suite_manifest"))
@@ -76,6 +81,20 @@ def analyze_apollo_link_health(
     scenario_class = _first_text(summary, "scenario_class", manifest, "scenario_class")
     source_kinds: dict[str, str] = {}
     if root is not None:
+        if _should_regenerate_apollo_route_contract(
+            payloads.get("apollo_route_contract")
+        ) and _apollo_route_contract_raw_inputs_available(root):
+            regenerated_route_contract = analyze_apollo_route_contract_run_dir(root)
+            if _apollo_route_contract_has_runtime_evidence(regenerated_route_contract) or not payloads.get(
+                "apollo_route_contract"
+            ):
+                payloads["apollo_route_contract"] = regenerated_route_contract
+                source_kinds["apollo_route_contract"] = "regenerated_from_run_artifacts"
+                outputs = write_apollo_route_contract_report(
+                    regenerated_route_contract,
+                    root / "analysis" / "apollo_route_contract",
+                )
+                inputs["apollo_route_contract"] = Path(outputs["apollo_route_contract_report"])
         if _should_regenerate_planning_materialization(payloads.get("planning_materialization")):
             regenerated_planning = analyze_planning_materialization_run_dir(root)
             if _planning_materialization_has_runtime_evidence(regenerated_planning) or not payloads.get("planning_materialization"):
@@ -152,6 +171,7 @@ def analyze_apollo_link_health(
             source_kind=source_kinds.get("planning_materialization", "report"),
             route_contract=payloads.get("apollo_route_contract"),
             route_contract_path=inputs.get("apollo_route_contract"),
+            route_contract_source_kind=source_kinds.get("apollo_route_contract", "report"),
             summary=summary,
             bridge_stats=cyber_bridge_stats,
             planning_topic_debug_summary=payloads.get("planning_topic_debug_summary", {}),
@@ -1102,6 +1122,43 @@ def _apollo_module_consumption_has_runtime_evidence(report: Mapping[str, Any]) -
     )
 
 
+def _should_regenerate_apollo_route_contract(report: Mapping[str, Any] | None) -> bool:
+    if not report:
+        return True
+    if report.get("schema_version") != "apollo_route_contract.v1":
+        return True
+    decoded = report.get("routing_response_decoded")
+    decoded_available = isinstance(decoded, Mapping) and decoded.get("available") is True
+    blockers = {str(item) for item in (report.get("blocking_reasons") or []) if item}
+    status = _normalize_status(report.get("status"))
+    if status == "insufficient_data" and "routing_response_runtime_evidence_missing" in blockers:
+        return True
+    if not decoded_available and "routing_response_runtime_evidence_missing" in blockers:
+        return True
+    return False
+
+
+def _apollo_route_contract_raw_inputs_available(root: Path) -> bool:
+    return any(
+        (root / relative).is_file()
+        for relative in (
+            "artifacts/routing_response_decoded.json",
+            "artifacts/routing_response_decoded.jsonl",
+            "routing_response_decoded.json",
+            "routing_response_decoded.jsonl",
+        )
+    )
+
+
+def _apollo_route_contract_has_runtime_evidence(report: Mapping[str, Any]) -> bool:
+    decoded = report.get("routing_response_decoded")
+    last_response = report.get("last_routing_response")
+    return bool(
+        (isinstance(decoded, Mapping) and decoded.get("available") is True)
+        or (isinstance(last_response, Mapping) and last_response.get("available") is True)
+    )
+
+
 def _should_regenerate_prediction_evidence(report: Mapping[str, Any] | None) -> bool:
     if not report:
         return False
@@ -1134,6 +1191,7 @@ def _route_establishment_layer(
     source_kind: str,
     route_contract: Mapping[str, Any] | None,
     route_contract_path: Path | None,
+    route_contract_source_kind: str,
     summary: Mapping[str, Any],
     bridge_stats: Mapping[str, Any],
     planning_topic_debug_summary: Mapping[str, Any],
@@ -1206,6 +1264,7 @@ def _route_establishment_layer(
                 "planning_materialization": str(path) if path else None,
                 "apollo_route_contract": str(route_contract_path) if route_contract_path else None,
                 "source_kind": source_kind,
+                "route_contract_source_kind": route_contract_source_kind,
             },
             next_action=(
                 "If route establishment fails, inspect Apollo route contract and planning "
@@ -1296,6 +1355,7 @@ def _route_establishment_layer(
             "planning_materialization": str(path) if path else None,
             "apollo_route_contract": str(route_contract_path) if route_contract_path else None,
             "source_kind": source_kind,
+            "route_contract_source_kind": route_contract_source_kind,
         },
         next_action=(
             "Generate planning_materialization_report.json and apollo_route_contract_report.json; "

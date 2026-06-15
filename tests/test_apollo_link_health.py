@@ -19,6 +19,11 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n", encoding="utf-8")
+
+
 def _base_run(tmp_path: Path) -> Path:
     run_dir = tmp_path / "run"
     _write_json(
@@ -1944,6 +1949,89 @@ def test_planning_and_module_consumption_use_run_artifacts_when_reports_are_plac
     assert consumption_layer["artifact_paths"]["source_kind"] == "regenerated_from_run_artifacts"
     assert "apollo_module_runtime_logs_missing" not in consumption_layer["blocking_reasons"]
     assert consumption_layer["key_metrics"]["routing_response_consumed_by_planning"] is True
+
+
+def test_route_contract_placeholder_regenerates_from_decoded_routing_response(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["metadata"] = {
+        "scenario_metadata": {
+            "route_id": "lane097",
+            "route_length_m": 230.0,
+            "spawn": {"x": 2.0, "y": 249.0},
+            "goal": {"x": 2.0, "y": 19.0},
+            "spawn_lane": {"road_id": 15, "section_id": 0, "lane_id": 1},
+            "goal_lane": {"road_id": 15, "section_id": 0, "lane_id": 1},
+            "route_trace": [
+                {"x": 2.0, "y": 249.0, "s": 0.0, "lane_id": "15:0:1"},
+                {"x": 2.0, "y": 19.0, "s": 230.0, "lane_id": "15:0:1"},
+            ],
+        }
+    }
+    _write_json(run_dir / "manifest.json", manifest)
+    _write_json(
+        run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json",
+        {
+            "schema_version": "apollo_route_contract_report.v1",
+            "status": "insufficient_data",
+            "blocking_reasons": ["routing_response_runtime_evidence_missing"],
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "schema_version": "routing_response_decoded.v1",
+            "source": "/apollo/raw_routing_response",
+            "planning_facing_channel": "/apollo/routing_response",
+            "raw_routing_response_channel": "/apollo/raw_routing_response",
+            "lane_segments": [{"lane_id": "15_1_1", "start_s": 66.9, "end_s": 296.9}],
+            "lane_sequence_signature": ["15_1_1"],
+            "lane_segment_count": 1,
+            "total_length_m": 230.0,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "claim",
+                "routing_request_kind": "claim_route",
+                "start_raw_x": 2.0,
+                "start_raw_y": -249.0,
+                "goal_raw_x": 2.0,
+                "goal_raw_y": -19.0,
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "route_segment_total_length": 230.0,
+                "routing_lane_window_count": 1,
+                "routing_lane_window_signature": "15_1_1@66.9->296.9",
+                "routing_unique_lane_signature": "15_1_1",
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/apollo_hdmap_projection.jsonl",
+        [{"source": "apollo_hdmap_api", "nearest_lane_id": "15_1_1"}],
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    route_layer = report["layers"]["route_establishment"]
+    route_contract = json.loads(
+        (run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert route_layer["artifact_paths"]["route_contract_source_kind"] == "regenerated_from_run_artifacts"
+    assert "routing_response_runtime_evidence_missing" not in route_layer["blocking_reasons"]
+    assert route_contract["routing_response_decoded"]["available"] is True
+    assert route_contract["last_routing_response"]["source"] == "routing_response_decoded"
+    assert route_layer["key_metrics"]["apollo_routing_total_length_m"] == 230.0
 
 
 def test_planning_gap_channel_fail_prefers_reference_line_context(tmp_path: Path) -> None:
