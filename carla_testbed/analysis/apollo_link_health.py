@@ -23,7 +23,10 @@ from carla_testbed.analysis.apollo_reference_line_contract import (
     write_apollo_reference_line_contract_report,
 )
 from carla_testbed.analysis.chassis_gt_contract import analyze_chassis_gt_contract_files
-from carla_testbed.analysis.channel_cadence_diagnosis import analyze_channel_cadence_diagnosis_run_dir
+from carla_testbed.analysis.channel_cadence_diagnosis import (
+    analyze_channel_cadence_diagnosis_run_dir,
+    write_channel_cadence_diagnosis_report,
+)
 from carla_testbed.analysis.control_health import (
     analyze_control_health_run_dir,
     write_control_health_report,
@@ -195,6 +198,13 @@ def analyze_apollo_link_health(
             if regenerated_cadence.get("status") != "insufficient_data" or not payloads.get("channel_cadence_diagnosis"):
                 payloads["channel_cadence_diagnosis"] = regenerated_cadence
                 source_kinds["channel_cadence_diagnosis"] = "regenerated_from_run_artifacts"
+                outputs = write_channel_cadence_diagnosis_report(
+                    regenerated_cadence,
+                    root / "analysis" / "channel_cadence_diagnosis",
+                )
+                inputs["channel_cadence_diagnosis"] = Path(
+                    outputs["channel_cadence_diagnosis_report"]
+                )
 
     layers = {
         "environment_world": _environment_world_layer(

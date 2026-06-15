@@ -2536,6 +2536,12 @@ def test_channel_cadence_diagnosis_refines_channel_primary(tmp_path: Path) -> No
     )
     assert channel_layer["key_metrics"]["channel_cadence_top_gap_windows"][0]["channel_name"] == "localization"
     assert channel_layer["artifact_paths"]["channel_cadence_source_kind"] == "regenerated_from_run_artifacts"
+    cadence_path = run_dir / "analysis/channel_cadence_diagnosis/channel_cadence_diagnosis_report.json"
+    assert channel_layer["artifact_paths"]["channel_cadence_diagnosis"] == str(cadence_path)
+    assert cadence_path.is_file()
+    cadence_report = json.loads(cadence_path.read_text(encoding="utf-8"))
+    assert cadence_report["schema_version"] == "channel_cadence_diagnosis.v1"
+    assert cadence_report["primary_cadence_issue"] == "localization:isolated_header_sim_gap_over_contract"
 
 
 def test_missing_obstacle_contract_blocks_unassisted_claim(tmp_path: Path) -> None:
