@@ -5328,6 +5328,8 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
             ticks=700,
             comparison_label="stage6_probe",
         )
+        self.assertIn("run.claim_profile=true", overrides)
+        self.assertIn("run.materialization_probe=true", overrides)
         self.assertIn("algo.apollo.stage6_reference_line.enabled=true", overrides)
         self.assertIn(
             "algo.apollo.stage6_reference_line.clear_lane_follow_cache_on_new_command=true",

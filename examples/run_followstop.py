@@ -38,6 +38,7 @@ import yaml
 from algo.registry import get_adapter
 from carla_testbed.config import HarnessConfig
 from carla_testbed.config.rig_loader import apply_overrides, load_rig_file, load_rig_preset, rig_to_specs
+from carla_testbed.config.sensor_capture import sensor_capture_enabled_from_config
 from carla_testbed.control import LegacyControllerConfig
 from carla_testbed.evaluation import (
     applied_control_health_from_timeseries,
@@ -3096,9 +3097,7 @@ def main():
             opts=record_opts,
         ) if record_modes else None
 
-        sensor_capture_enabled = True
-        if effective_cfg.get("record", {}).get("sensors", {}).get("enable") is False:
-            sensor_capture_enabled = False
+        sensor_capture_enabled, sensor_capture_config_source = sensor_capture_enabled_from_config(effective_cfg)
         external_stack = stack in {"autoware", "apollo"}
         apollo_cfg_effective = ((effective_cfg.get("algo", {}) or {}).get("apollo", {}) or {})
         apollo_direct_no_ros2 = bool(
@@ -3288,6 +3287,8 @@ def main():
                 if not isinstance(manifest_metadata, dict):
                     manifest_metadata = {}
                 manifest_metadata["scenario_metadata"] = scenario_meta
+                manifest_metadata["sensor_capture_enabled"] = bool(sensor_capture_enabled)
+                manifest_metadata["sensor_capture_config_source"] = sensor_capture_config_source
                 manifest_data["metadata"] = manifest_metadata
                 if isinstance(scenario_meta.get("traffic_light_control"), dict):
                     manifest_data["traffic_light_control"] = scenario_meta["traffic_light_control"]
@@ -3884,6 +3885,8 @@ def main():
         )
         summary_data["comparison_label"] = str((run_mode_cfg.get("comparison_label") or "")).strip()
         summary_data["adapter_started"] = adapter_started
+        summary_data["sensor_capture_enabled"] = bool(sensor_capture_enabled)
+        summary_data["sensor_capture_config_source"] = sensor_capture_config_source
         if adapter_fail_reason:
             summary_data["adapter_fail_reason"] = adapter_fail_reason
         control_rx_count = _safe_int(apollo_cyber_bridge_stats.get("control_rx_count"))

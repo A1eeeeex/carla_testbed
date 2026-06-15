@@ -229,6 +229,41 @@ def test_generic_external_stack_is_promoted_only_with_apollo_control_evidence(tm
     assert report["control_chain_status"] == "apollo_control_attributed"
 
 
+def test_runtime_control_evidence_can_promote_when_handoff_report_is_incomplete(tmp_path: Path) -> None:
+    rows = _base_rows()
+    trace = _write_rows(tmp_path / "timeseries.csv", rows)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"control_source": "external_stack"}), encoding="utf-8")
+    handoff = tmp_path / "apollo_control_handoff_report.json"
+    handoff.write_text(
+        json.dumps(
+            {
+                "status": "insufficient_data",
+                "control_channel": {"name": "/apollo/control"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    bridge = tmp_path / "bridge_health_summary.json"
+    bridge.write_text(json.dumps({"control_apply_path": "ros2_control_bridge"}), encoding="utf-8")
+    stats = tmp_path / "cyber_bridge_stats.json"
+    stats.write_text(json.dumps({"control_rx_count": 12, "control_tx_count": 11}), encoding="utf-8")
+
+    report = analyze_control_attribution(
+        trace,
+        manifest_json=manifest,
+        control_handoff_json=handoff,
+        bridge_health_json=bridge,
+        cyber_bridge_stats_json=stats,
+    )
+
+    assert report["control_source"] == "/apollo/control"
+    assert report["applied_control_source"] == "apollo_control"
+    assert report["control_chain_status"] == "apollo_control_attributed"
+    assert report["control_source_evidence"]["status"] == "warn"
+    assert "control_handoff_status_not_claim_grade_but_runtime_control_seen" in report["control_source_evidence"]["warnings"]
+
+
 def test_explicit_non_apollo_control_source_is_not_promoted_by_apollo_evidence(tmp_path: Path) -> None:
     rows = _base_rows()
     trace = _write_rows(tmp_path / "timeseries.csv", rows)
@@ -468,3 +503,108 @@ def test_cli_run_dir_writes_report_from_debug_timeseries(tmp_path: Path) -> None
     assert payload["status"] in {"pass", "warn"}
     report = json.loads((out / "control_attribution_report.json").read_text(encoding="utf-8"))
     assert report["resolved_fields"]["apollo_steer_raw"] == "apollo_desired_steer"
+
+
+def test_run_dir_prefers_control_apply_trace_over_sparse_timeseries(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "artifacts").mkdir(parents=True)
+    _write_rows(
+        run_dir / "timeseries.csv",
+        [
+            {
+                **_base_rows()[0],
+                "apollo_steer_raw": "",
+                "bridge_steer_mapped": "",
+                "carla_steer_applied": "",
+                "ego_yaw_rate": "",
+            }
+        ],
+    )
+    (run_dir / "artifacts" / "control_apply_trace.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "schema_version": "control_apply_trace.v1",
+                    "timestamp": 10.0 + index,
+                    "control_latency_ms": 5.0,
+                    "apollo_raw": {"throttle": 0.2, "brake": 0.0, "steer": 0.2},
+                    "bridge_mapped": {
+                        "throttle": 0.2,
+                        "brake": 0.0,
+                        "steer": 0.05,
+                        "mapped_throttle_cmd": 0.2,
+                        "mapped_brake_cmd": 0.0,
+                        "mapped_carla_steer_cmd": 0.05,
+                    },
+                    "carla_applied": {"throttle": 0.2, "brake": 0.0, "steer": 0.05},
+                    "vehicle_response": {"yaw_rate_rad_s": 0.02},
+                }
+            )
+            for index in range(3)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(json.dumps({"control_source": "/apollo/control"}), encoding="utf-8")
+    (run_dir / "config.resolved.yaml").write_text(
+        "backend:\n"
+        "  params:\n"
+        "    legacy_algo:\n"
+        "      apollo:\n"
+        "        control_mapping:\n"
+        "          steer_scale: 0.25\n"
+        "          steer_sign: 1.0\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_attribution_run_dir(run_dir)
+
+    assert report["source"]["control_input_path"].endswith("artifacts/control_apply_trace.jsonl")
+    assert report["resolved_fields"]["apollo_steer_raw"] == "apollo_raw.steer"
+    assert report["resolved_fields"]["bridge_steer_mapped"] == "bridge_mapped.steer"
+    assert report["control_chain_status"] == "apollo_control_attributed"
+    assert report["verdict"]["status"] == "pass"
+
+
+def test_ros2_control_apply_trace_marks_same_row_applied_longitudinal_diagnostic(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "artifacts").mkdir(parents=True)
+    (run_dir / "artifacts" / "control_apply_trace.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "schema_version": "control_apply_trace.v1",
+                    "timestamp": 10.0 + index,
+                    "control_latency_ms": 5.0,
+                    "apollo_raw": {"throttle": 0.4, "brake": 0.0, "steer": 0.2},
+                    "bridge_mapped": {
+                        "throttle": 0.6,
+                        "brake": 0.0,
+                        "steer": 0.05,
+                        "mapped_throttle_cmd": 0.6,
+                        "mapped_brake_cmd": 0.0,
+                        "mapped_carla_steer_cmd": 0.05,
+                    },
+                    "carla_applied": {"throttle": 0.0, "brake": 0.0, "steer": 0.05},
+                    "vehicle_response": {"yaw_rate_rad_s": 0.02},
+                    "throttle_scale": 1.5,
+                    "steer_scale": 0.25,
+                    "steering_sign": 1.0,
+                }
+            )
+            for index in range(3)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(json.dumps({"control_source": "/apollo/control"}), encoding="utf-8")
+    (run_dir / "artifacts" / "bridge_health_summary.json").write_text(
+        json.dumps({"control_apply_path": "ros2_control_bridge"}), encoding="utf-8"
+    )
+
+    report = analyze_control_attribution_run_dir(run_dir)
+
+    throttle = report["attribution"]["throttle_raw_mapped_applied_consistency"]
+    assert throttle["status"] == "pass"
+    assert throttle["mapped_to_applied_status"] == "diagnostic_only_async_ros2_control_bridge"
+    assert report["attribution"]["dominant_breakpoint"] == "none"

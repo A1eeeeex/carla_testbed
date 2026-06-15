@@ -90,6 +90,9 @@ CONTROL_FIELD_ALIASES = {
     "control_latency_ms": ["control_latency_ms"],
     "steer_scale": ["steer_scale"],
     "steering_sign": ["steering_sign", "steer_sign"],
+    "throttle_scale": ["throttle_scale"],
+    "brake_scale": ["brake_scale"],
+    "brake_deadzone": ["brake_deadzone"],
 }
 
 
@@ -103,6 +106,7 @@ def analyze_control_attribution_run_dir(
     control_input = _find_first(
         root,
         [
+            "artifacts/control_apply_trace.jsonl",
             "artifacts/debug_timeseries.csv",
             "timeseries.csv",
             "timeseries.jsonl",
@@ -175,6 +179,9 @@ def analyze_control_attribution(
         warnings.append("steering_sign_missing_assumed_positive")
     if steer_scale is None and raw_available and mapped_available:
         missing_fields.append("steer_scale")
+    throttle_scale = _first_number_from_sources("throttle_scale", rows, summary, manifest, config)
+    brake_scale = _first_number_from_sources("brake_scale", rows, summary, manifest, config)
+    brake_deadzone = _first_number_from_sources("brake_deadzone", rows, summary, manifest, config)
 
     raw_to_mapped = _raw_to_mapped_steer_consistency(
         rows,
@@ -188,19 +195,26 @@ def analyze_control_attribution(
         "carla_steer_applied",
         max_error_p95=active_thresholds["max_mapped_applied_steer_error_p95"],
     )
-    throttle_consistency = _triple_consistency(
+    async_ros2_control_apply_trace = _is_async_ros2_control_apply_trace(input_path, bridge_health)
+    throttle_consistency = _longitudinal_triple_consistency(
         rows,
         "throttle_raw",
         "throttle_mapped",
         "throttle_applied",
+        scale=throttle_scale,
+        deadzone=None,
         max_error_p95=active_thresholds["max_longitudinal_error_p95"],
+        ignore_mapped_applied_error=async_ros2_control_apply_trace,
     )
-    brake_consistency = _triple_consistency(
+    brake_consistency = _longitudinal_triple_consistency(
         rows,
         "brake_raw",
         "brake_mapped",
         "brake_applied",
+        scale=brake_scale,
+        deadzone=brake_deadzone,
         max_error_p95=active_thresholds["max_longitudinal_error_p95"],
+        ignore_mapped_applied_error=async_ros2_control_apply_trace,
     )
     vehicle_response = _applied_steer_to_yaw_response(rows, thresholds=active_thresholds)
     source_semantics = _source_control_semantics(rows, thresholds=active_thresholds)
@@ -234,7 +248,7 @@ def analyze_control_attribution(
         bridge_health=bridge_health,
         cyber_bridge_stats=cyber_bridge_stats,
     )
-    if _can_promote_generic_external_source(control_source) and control_source_evidence.get("status") == "pass":
+    if _can_promote_generic_external_source(control_source) and control_source_evidence.get("status") in {"pass", "warn"}:
         control_source = str(control_source_evidence["control_source"])
     applied_control_source = _normalize_applied_control_source(control_source)
     control_chain_status = _control_chain_status(
@@ -267,6 +281,11 @@ def analyze_control_attribution(
         "source_control_semantics": source_semantics,
         "dominant_breakpoint": dominant,
         "control_chain_status": control_chain_status,
+        "applied_control_observation_mode": (
+            "async_ros2_control_bridge_same_row_measurement_diagnostic_only"
+            if async_ros2_control_apply_trace
+            else "same_row_applied_control"
+        ),
     }
     verdict_status = "pass"
     failure_reason = None
@@ -292,6 +311,9 @@ def analyze_control_attribution(
         "actuator_mapping_mode": _first_text_from_sources("actuator_mapping_mode", rows, summary, manifest, config),
         "steer_scale": steer_scale,
         "steering_sign": steering_sign,
+        "throttle_scale": throttle_scale,
+        "brake_scale": brake_scale,
+        "brake_deadzone": brake_deadzone,
         "calibration_profile_id": _first_text_from_sources("calibration_profile_id", rows, summary, manifest),
         "control_source": control_source,
         "applied_control_source": applied_control_source,
@@ -389,20 +411,35 @@ def _derive_apollo_control_source_evidence(
         or _text_from_flat(flat_bridge, "ingress_egress.control_apply_path")
     )
     reasons: list[str] = []
+    warnings: list[str] = []
+    direct_control_seen = (
+        control_channel == "/apollo/control"
+        and (rx_count or 0.0) > 0.0
+        and ((apply_count or 0.0) > 0.0 or (tx_count or 0.0) > 0.0)
+    )
     if control_channel != "/apollo/control":
         reasons.append("apollo_control_channel_not_verified")
-    if handoff_status not in {"pass", "warn", None}:
+    if handoff_status not in {"pass", "warn", None} and not direct_control_seen:
         reasons.append("control_handoff_status_blocking")
-    if channel_status not in {"pass", "warn", None}:
+    elif handoff_status not in {"pass", "warn", None}:
+        warnings.append("control_handoff_status_not_claim_grade_but_runtime_control_seen")
+    if channel_status not in {"pass", "warn", None} and not direct_control_seen:
         reasons.append("control_channel_status_blocking")
+    elif channel_status not in {"pass", "warn", None}:
+        warnings.append("control_channel_status_missing_but_runtime_control_seen")
     if (apply_count or 0.0) <= 0.0 and (tx_count or 0.0) <= 0.0:
         reasons.append("control_apply_or_tx_count_missing")
     if (rx_count or 0.0) <= 0.0:
         reasons.append("control_rx_count_missing")
-    status = "insufficient_data" if reasons else "pass"
+    if reasons:
+        status = "insufficient_data"
+    elif warnings:
+        status = "warn"
+    else:
+        status = "pass"
     return {
         "status": status,
-        "control_source": "/apollo/control" if status == "pass" else None,
+        "control_source": "/apollo/control" if status in {"pass", "warn"} else None,
         "control_channel": control_channel,
         "control_handoff_status": handoff_status,
         "control_channel_status": channel_status,
@@ -411,11 +448,24 @@ def _derive_apollo_control_source_evidence(
         "control_tx_count": tx_count,
         "control_apply_path": control_apply_path,
         "blocking_reasons": reasons,
+        "warnings": warnings,
         "interpretation": (
             "Generic harness metadata such as external_stack is not sufficient. "
             "Apollo control attribution requires /apollo/control channel evidence plus rx/tx/apply counters."
         ),
     }
+
+
+def _is_async_ros2_control_apply_trace(input_path: Path, bridge_health: Mapping[str, Any]) -> bool:
+    if input_path.name != "control_apply_trace.jsonl":
+        return False
+    flat_bridge = _flatten_mapping(bridge_health) if bridge_health else {}
+    control_apply_path = (
+        _text_from_flat(flat_bridge, "control_apply_path")
+        or _text_from_flat(flat_bridge, "bridge_transport.control_apply_path")
+        or _text_from_flat(flat_bridge, "ingress_egress.control_apply_path")
+    )
+    return control_apply_path == "ros2_control_bridge"
 
 
 def _dominant_breakpoint(
@@ -551,6 +601,72 @@ def _triple_consistency(
         "raw_to_mapped_error_p95": raw_mapped["error_p95"],
         "mapped_to_applied_error_p95": mapped_applied["error_p95"],
         "sample_count": min(int(raw_mapped["sample_count"]), int(mapped_applied["sample_count"])),
+    }
+
+
+def _longitudinal_triple_consistency(
+    rows: Sequence[Mapping[str, Any]],
+    raw_field: str,
+    mapped_field: str,
+    applied_field: str,
+    *,
+    scale: float | None,
+    deadzone: float | None,
+    max_error_p95: float,
+    ignore_mapped_applied_error: bool = False,
+) -> dict[str, Any]:
+    raw_mapped_errors: list[float] = []
+    mapped_applied_errors: list[float] = []
+    effective_scale = 1.0 if scale is None else float(scale)
+    effective_deadzone = 0.0 if deadzone is None else max(0.0, float(deadzone))
+    for row in rows:
+        raw = _value_for_field(row, raw_field)
+        mapped = _value_for_field(row, mapped_field)
+        applied = _value_for_field(row, applied_field)
+        if raw is not None and mapped is not None:
+            expected = _clamp(raw * effective_scale, 0.0, 1.0)
+            if expected <= effective_deadzone:
+                expected = 0.0
+            raw_mapped_errors.append(abs(expected - mapped))
+        if mapped is not None and applied is not None:
+            mapped_applied_errors.append(abs(mapped - applied))
+    raw_mapped_error = _percentile(raw_mapped_errors, 0.95)
+    mapped_applied_error = _percentile(mapped_applied_errors, 0.95)
+    raw_mapped_status = _error_status(raw_mapped_error, max_error_p95)
+    mapped_applied_status = _error_status(mapped_applied_error, max_error_p95)
+    statuses = {raw_mapped_status}
+    if not ignore_mapped_applied_error:
+        statuses.add(mapped_applied_status)
+    if "fail" in statuses:
+        status = "fail"
+    elif "insufficient_data" in statuses:
+        status = "insufficient_data"
+    elif "warn" in statuses:
+        status = "warn"
+    else:
+        status = "pass"
+    return {
+        "status": status,
+        "raw_to_mapped_error_p95": raw_mapped_error,
+        "mapped_to_applied_error_p95": mapped_applied_error,
+        "raw_to_mapped_status": raw_mapped_status,
+        "mapped_to_applied_status": (
+            "diagnostic_only_async_ros2_control_bridge"
+            if ignore_mapped_applied_error
+            else mapped_applied_status
+        ),
+        "sample_count": min(len(raw_mapped_errors), len(mapped_applied_errors)),
+        "expected_raw_to_mapped": (
+            f"{mapped_field} ~= clamp({raw_field} * scale, 0, 1)"
+            + (" with deadzone" if effective_deadzone > 0.0 else "")
+        ),
+        "scale": scale,
+        "deadzone": deadzone,
+        "mapped_to_applied_evaluation": (
+            "diagnostic_only_async_ros2_control_bridge"
+            if ignore_mapped_applied_error
+            else "same_row"
+        ),
     }
 
 
@@ -784,8 +900,12 @@ def _first_text_from_sources(
 
 
 def _value_for_field(row: Mapping[str, Any], field: str) -> float | None:
+    flat = _flatten_mapping(row)
     for alias in CONTROL_FIELD_ALIASES.get(field, [field]):
         value = _num(row.get(alias))
+        if value is not None:
+            return value
+        value = _num(flat.get(alias))
         if value is not None:
             return value
     return None
@@ -793,9 +913,12 @@ def _value_for_field(row: Mapping[str, Any], field: str) -> float | None:
 
 def _resolved_fields(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     resolved: dict[str, str] = {}
+    flat_rows = [_flatten_mapping(row) for row in rows]
     for field, aliases in CONTROL_FIELD_ALIASES.items():
         for alias in aliases:
-            if any(_num(row.get(alias)) is not None for row in rows):
+            if any(_num(row.get(alias)) is not None for row in rows) or any(
+                _num(row.get(alias)) is not None for row in flat_rows
+            ):
                 resolved[field] = alias
                 break
     return resolved

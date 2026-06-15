@@ -882,6 +882,86 @@ def test_control_health_apollo_raw_command_oscillation_is_separate_layer(tmp_pat
     assert layers["bridge_mapped_command"]["status"] == "pass"
 
 
+def test_control_health_flags_gt_state_freshness_when_same_trajectory_oversampled(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    rows = []
+    for index in range(12):
+        throttle = 0.8 if index % 2 == 0 else 0.0
+        brake = 0.0 if index % 2 == 0 else 0.7
+        rows.append(
+            {
+                "schema_version": "control_apply_trace.v1",
+                "timestamp": 10.0 + index * 0.025,
+                "sim_time": 1.0,
+                "world_frame": 123,
+                "control_latency_ms": 2.0,
+                "control_input_trajectory_header_sequence_num": 88,
+                "apollo_control": {
+                    "header_sequence_num": 88,
+                    "header_timestamp_sec": 9.9,
+                },
+                "gt_state": {
+                    "sim_time_sec": 1.0,
+                    "world_frame": 123,
+                    "age_wall_ms": 25.0 * (index + 1),
+                    "same_world_frame_control_cycle_streak": index + 1,
+                },
+                "apollo_raw": {"throttle": throttle, "brake": brake, "steer": 0.0},
+                "bridge_mapped": {"throttle": throttle, "brake": brake, "steer": 0.0},
+                "carla_applied": {"throttle": throttle, "brake": brake, "steer": 0.0},
+                "vehicle_response": {"speed_mps": 1.0, "yaw_rate_rad_s": 0.0},
+            }
+        )
+    (artifact_dir / "control_apply_trace.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    (artifact_dir / "control_trajectory_consume_debug_live.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "planning_header_sequence_num_used": 88,
+                    "latest_planning_trajectory_point_count": 20,
+                    "effective_planning_source": "matched_seq",
+                    "latest_planning_msg_age_ms": 20.0 + index,
+                    "trajectory_first_point_relative_time": 0.0,
+                    "trajectory_last_point_relative_time": 8.0,
+                }
+            )
+            for index in range(12)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifact_dir / "cyber_bridge_stats.json").write_text(
+        json.dumps(
+            {
+                "publish_elapsed_wall_sec": 1.0,
+                "loc_count": 2,
+                "chassis_count": 2,
+                "control_rx_count": 20,
+                "control_tx_count": 20,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+
+    diagnosis = report["metrics"]["control_oscillation_diagnosis"]
+    assert report["failure_reason"] == "apollo_raw_command_oscillation"
+    assert diagnosis["raw_command_oscillation_present"] is True
+    assert diagnosis["same_trajectory_switching_present"] is True
+    assert diagnosis["gt_state_oversampling_present"] is True
+    assert diagnosis["control_input_freshness_root_cause_candidate"] is True
+    assert diagnosis["primary_suspected_layer"] == "gt_state_sampling_cadence"
+
+
 def test_control_health_prioritizes_apply_cadence_before_actuation_tuning(tmp_path: Path) -> None:
     run_dir = _copy_run(tmp_path)
     csv_path = run_dir / "timeseries.csv"

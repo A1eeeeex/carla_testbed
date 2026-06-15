@@ -575,6 +575,21 @@ raw, mapped, applied, and response evidence. If it reports
 `source_control_semantics`, that still does not prove Apollo algorithm
 limitation; route/reference-line/matched-target semantics must be checked.
 
+The `2026-06-15` control-freshness online smoke
+`runs/town01_capability_online_chain_20260615_173001/...control_freshness_fix_20260615c...`
+is diagnostic evidence only, not a natural-driving pass; a pass claim still
+requires `natural_driving_report.json`. It proves the folded
+sensor-capture config was honored (`sensor_capture_enabled=false`,
+`sensor_capture` p95 around `1e-6s`) and Apollo reached routing/planning/control
+(`routing_success_count=1`, `/apollo/control` rx/tx observed). Recomputed
+`control_attribution_report.json` is `pass` with
+`control_chain_status=apollo_control_attributed`, while `control_health` remains
+`warn` and link health still blocks on route establishment / planning
+materialization latency. In the ROS2 control-bridge path, same-row measured
+applied throttle/brake in `control_apply_trace.jsonl` is diagnostic-only because
+the actual CARLA apply happens asynchronously; do not turn that sampling lag
+into a CARLA apply failure or a claim-grade pass.
+
 For lateral semantics, add:
 
 - `apollo_lateral_semantics_report.json`;

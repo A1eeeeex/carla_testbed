@@ -80,13 +80,31 @@ def build_control_apply_trace_payload(
     raw_msg = raw_payload.get("raw_control_msg_dump") or raw_payload.get("apollo_control_raw") or {}
     if not isinstance(raw_msg, Mapping):
         raw_msg = {}
+    gt_state = stats.get("last_gt_state_publish", {}) or {}
+    if not isinstance(gt_state, Mapping):
+        gt_state = {}
 
-    return {
+    payload = {
         "schema_version": "control_apply_trace.v1",
         "event_type": "control_apply",
-        "timestamp": finite_or_none(row.get("ts_sec")),
-        "sim_time": finite_or_none(row.get("sim_time")),
-        "world_frame": finite_or_none(row.get("frame_id")),
+        "timestamp": first_finite(
+            row.get("ts_sec"),
+            control_out.get("control_timestamp"),
+            control_in.get("control_timestamp"),
+            raw_payload.get("ts_sec"),
+        ),
+        "sim_time": first_finite(
+            row.get("sim_time"),
+            gt_state.get("sim_time_sec"),
+            control_out.get("gt_state_sim_time_sec"),
+            control_in.get("gt_state_sim_time_sec"),
+        ),
+        "world_frame": first_finite(
+            row.get("frame_id"),
+            gt_state.get("world_frame"),
+            control_out.get("gt_state_world_frame"),
+            control_in.get("gt_state_world_frame"),
+        ),
         "route_id": row.get("route_id"),
         "route_s": finite_or_none(row.get("route_s")),
         "actuator_mapping_mode": first_value(row.get("actuator_mapping_mode"), control_out.get("actuator_mapping_mode")),
@@ -104,6 +122,39 @@ def build_control_apply_trace_payload(
             control_in.get("control_message_age_ms"),
         ),
         "planning_message_age_ms": first_finite(row.get("planning_message_age_ms"), control_out.get("planning_message_age_ms")),
+        "gt_state": {
+            "sim_time_sec": first_finite(
+                gt_state.get("sim_time_sec"),
+                control_out.get("gt_state_sim_time_sec"),
+                control_in.get("gt_state_sim_time_sec"),
+            ),
+            "world_frame": first_finite(
+                gt_state.get("world_frame"),
+                control_out.get("gt_state_world_frame"),
+                control_in.get("gt_state_world_frame"),
+            ),
+            "publish_wall_time_sec": first_finite(gt_state.get("publish_wall_time_sec")),
+            "sample_reason": first_value(
+                gt_state.get("sample_reason"),
+                control_out.get("gt_state_sample_reason"),
+                control_in.get("gt_state_sample_reason"),
+            ),
+            "fresh_sample": bool(first_value(gt_state.get("fresh_sample"), False)),
+            "localization_sequence_num": first_finite(gt_state.get("localization_sequence_num")),
+            "chassis_sequence_num": first_finite(gt_state.get("chassis_sequence_num")),
+            "age_wall_ms": first_finite(
+                control_out.get("gt_state_age_wall_ms"),
+                control_in.get("gt_state_age_wall_ms"),
+            ),
+            "age_sim_ms": first_finite(
+                control_out.get("gt_state_age_sim_ms"),
+                control_in.get("gt_state_age_sim_ms"),
+            ),
+            "same_world_frame_control_cycle_streak": first_finite(
+                control_out.get("same_gt_world_frame_control_cycle_streak"),
+                control_in.get("same_gt_world_frame_control_cycle_streak"),
+            ),
+        },
         **build_longitudinal_debug_fields(row, control_in, raw_msg),
         "apollo_control": {
             "header_sequence_num": first_finite(
@@ -180,6 +231,40 @@ def build_control_apply_trace_payload(
             "trajectory_contract_guard_applied": row.get("trajectory_contract_guard_applied"),
         },
     }
+    _populate_flat_control_fields(payload)
+    return payload
+
+
+def _populate_flat_control_fields(payload: dict[str, Any]) -> None:
+    """Keep control traces readable by analyzers that expect flat time-series fields."""
+    apollo_raw = payload.get("apollo_raw") if isinstance(payload.get("apollo_raw"), Mapping) else {}
+    bridge_mapped = payload.get("bridge_mapped") if isinstance(payload.get("bridge_mapped"), Mapping) else {}
+    carla_applied = payload.get("carla_applied") if isinstance(payload.get("carla_applied"), Mapping) else {}
+    apollo_control = payload.get("apollo_control") if isinstance(payload.get("apollo_control"), Mapping) else {}
+    vehicle_response = payload.get("vehicle_response") if isinstance(payload.get("vehicle_response"), Mapping) else {}
+
+    flat_values = {
+        "control_header_sequence_num": apollo_control.get("header_sequence_num"),
+        "control_header_timestamp_sec": apollo_control.get("header_timestamp_sec"),
+        "control_rx_timestamp": apollo_control.get("rx_timestamp"),
+        "control_timestamp": apollo_control.get("control_timestamp"),
+        "throttle_raw": apollo_raw.get("throttle"),
+        "brake_raw": apollo_raw.get("brake"),
+        "apollo_steer_raw": apollo_raw.get("steer"),
+        "apollo_gear": apollo_raw.get("gear"),
+        "apollo_estop": apollo_raw.get("estop"),
+        "throttle_mapped": bridge_mapped.get("throttle", bridge_mapped.get("mapped_throttle_cmd")),
+        "brake_mapped": bridge_mapped.get("brake", bridge_mapped.get("mapped_brake_cmd")),
+        "bridge_steer_mapped": bridge_mapped.get("steer", bridge_mapped.get("mapped_carla_steer_cmd")),
+        "throttle_applied": carla_applied.get("throttle"),
+        "brake_applied": carla_applied.get("brake"),
+        "carla_steer_applied": carla_applied.get("steer"),
+        "ego_speed": vehicle_response.get("speed_mps"),
+        "ego_yaw_rate": vehicle_response.get("yaw_rate_rad_s"),
+    }
+    for key, value in flat_values.items():
+        if value is not None and payload.get(key) is None:
+            payload[key] = value
 
 
 def build_longitudinal_debug_fields(

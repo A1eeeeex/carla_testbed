@@ -8258,11 +8258,58 @@ class ApolloGtBridge:
             if control_header_ts is not None
             else None
         )
+        gt_state_publish = self.stats.get("last_gt_state_publish", {}) or {}
+        if not isinstance(gt_state_publish, dict):
+            gt_state_publish = {}
+        gt_publish_wall = _finite_or_none(gt_state_publish.get("publish_wall_time_sec"))
+        gt_sim_time = _finite_or_none(gt_state_publish.get("sim_time_sec"))
+        gt_world_frame = gt_state_publish.get("world_frame")
+        try:
+            gt_world_frame_int = int(gt_world_frame) if gt_world_frame is not None else None
+        except Exception:
+            gt_world_frame_int = None
+        gt_state_age_wall_ms = (
+            max(0.0, (control_ts - gt_publish_wall) * 1000.0)
+            if gt_publish_wall is not None
+            else None
+        )
+        latest_sim_time = _finite_or_none(getattr(self, "_latest_sim_time_sec", None))
+        gt_state_age_sim_ms = (
+            max(0.0, (latest_sim_time - gt_sim_time) * 1000.0)
+            if latest_sim_time is not None and gt_sim_time is not None
+            else None
+        )
+        previous_control_gt_world_frame = getattr(self, "_last_control_gt_world_frame", None)
+        if gt_world_frame_int is not None and previous_control_gt_world_frame == gt_world_frame_int:
+            self._same_gt_world_frame_control_cycle_streak = int(
+                getattr(self, "_same_gt_world_frame_control_cycle_streak", 0) or 0
+            ) + 1
+        elif gt_world_frame_int is not None:
+            self._same_gt_world_frame_control_cycle_streak = 1
+            self._last_control_gt_world_frame = gt_world_frame_int
+        else:
+            self._same_gt_world_frame_control_cycle_streak = 0
+            self._last_control_gt_world_frame = None
+        gt_freshness_fields = {
+            "gt_state_sim_time_sec": gt_sim_time,
+            "gt_state_world_frame": gt_world_frame_int,
+            "gt_state_publish_wall_time_sec": gt_publish_wall,
+            "gt_state_sample_reason": gt_state_publish.get("sample_reason"),
+            "gt_state_fresh_sample": bool(gt_state_publish.get("fresh_sample", False)),
+            "gt_state_age_wall_ms": gt_state_age_wall_ms,
+            "gt_state_age_sim_ms": gt_state_age_sim_ms,
+            "gt_state_localization_sequence_num": gt_state_publish.get("localization_sequence_num"),
+            "gt_state_chassis_sequence_num": gt_state_publish.get("chassis_sequence_num"),
+            "same_gt_world_frame_control_cycle_streak": int(
+                getattr(self, "_same_gt_world_frame_control_cycle_streak", 0) or 0
+            ),
+        }
         self.stats["last_control_in"].update(
             {
                 "control_timestamp": control_ts,
                 "control_latency_ms": control_latency_ms,
                 "control_message_age_ms": control_message_age_ms,
+                **gt_freshness_fields,
             }
         )
         self.stats["last_control_out"].update(
@@ -8273,6 +8320,7 @@ class ApolloGtBridge:
                 "control_message_age_ms": control_message_age_ms,
                 "planning_timestamp": latest_planning_header_ts if latest_planning_header_ts is not None else latest_planning_ts,
                 "planning_message_age_ms": latest_planning_age_ms,
+                **gt_freshness_fields,
             }
         )
         raw_dump = {
@@ -8389,6 +8437,18 @@ class ApolloGtBridge:
             "control_rx_timestamp": control_rx_ts,
             "control_latency_ms": control_latency_ms,
             "control_message_age_ms": control_message_age_ms,
+            "gt_state_sim_time_sec": gt_freshness_fields.get("gt_state_sim_time_sec"),
+            "gt_state_world_frame": gt_freshness_fields.get("gt_state_world_frame"),
+            "gt_state_publish_wall_time_sec": gt_freshness_fields.get(
+                "gt_state_publish_wall_time_sec"
+            ),
+            "gt_state_sample_reason": gt_freshness_fields.get("gt_state_sample_reason"),
+            "gt_state_fresh_sample": gt_freshness_fields.get("gt_state_fresh_sample"),
+            "gt_state_age_wall_ms": gt_freshness_fields.get("gt_state_age_wall_ms"),
+            "gt_state_age_sim_ms": gt_freshness_fields.get("gt_state_age_sim_ms"),
+            "same_gt_world_frame_control_cycle_streak": gt_freshness_fields.get(
+                "same_gt_world_frame_control_cycle_streak"
+            ),
             "wall_time_sec": timing.get("wall_time_sec"),
             "sim_time_sec": timing.get("sim_time_sec"),
             "world_frame": timing.get("world_frame"),
@@ -10638,6 +10698,22 @@ class ApolloGtBridge:
                             "sample_reason": sample_reason,
                         },
                     )
+                    self.stats["last_gt_state_publish"] = {
+                        "schema_version": "apollo_gt_state_publish.v1",
+                        "publish_wall_time_sec": time.time(),
+                        "sim_time_sec": _finite_or_none(ts_sec),
+                        "world_frame": self._latest_world_frame,
+                        "sample_reason": sample_reason,
+                        "fresh_sample": sample_reason == "fresh_sample",
+                        "localization_sequence_num": self._header_sequence_num(loc),
+                        "chassis_sequence_num": self._header_sequence_num(ch),
+                        "localization_header_timestamp_sec": _finite_or_none(
+                            self._header_timestamp_sec(loc)
+                        ),
+                        "chassis_header_timestamp_sec": _finite_or_none(
+                            self._header_timestamp_sec(ch)
+                        ),
+                    }
                     ex = float(pose_info["map_x"])
                     ey = float(pose_info["map_y"])
                     phase_start_wall_s = time.time()

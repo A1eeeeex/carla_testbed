@@ -1120,7 +1120,10 @@ def _control_oscillation_diagnosis(metrics: Mapping[str, Any]) -> dict[str, Any]
         layer_statuses.get("apollo_raw_command") == "fail"
         or "apollo_simple_lon_acceleration_cmd_sign_switching" in factors
     )
-    same_trajectory_switching_present = "same_trajectory_longitudinal_control_switching" in factors
+    same_trajectory_switching_present = (
+        "same_trajectory_longitudinal_control_switching" in factors
+        or "intra_trajectory_longitudinal_switches_present" in factors
+    )
     planning_sequence_update_present = (
         "planning_sequence_update_correlates_with_switches" in factors
     )
@@ -1161,7 +1164,14 @@ def _control_oscillation_diagnosis(metrics: Mapping[str, Any]) -> dict[str, Any]
     suspected_layers = _dedupe_preserve_order(suspected_layers)
 
     primary_suspected_layer = "insufficient_data"
-    if raw_command_oscillation_present and (
+    if (
+        raw_command_oscillation_present
+        and same_trajectory_switching_present
+        and gt_state_oversampling_present
+        and not planning_sequence_update_present
+    ):
+        primary_suspected_layer = "gt_state_sampling_cadence"
+    elif raw_command_oscillation_present and (
         same_trajectory_switching_present or planning_sequence_update_present
     ):
         primary_suspected_layer = "planning_control_semantics"
@@ -1229,6 +1239,9 @@ def _control_oscillation_diagnosis(metrics: Mapping[str, Any]) -> dict[str, Any]
         ),
         "matched_or_reference_point_jump_present": matched_reference_jump_present,
         "gt_state_oversampling_present": gt_state_oversampling_present,
+        "control_input_freshness_root_cause_candidate": bool(
+            raw_command_oscillation_present and gt_state_oversampling_present
+        ),
         "gt_state_sampling_warnings": cadence_warnings,
         "control_to_chassis_count_ratio": control_to_chassis_ratio,
         "control_to_localization_count_ratio": control_to_localization_ratio,

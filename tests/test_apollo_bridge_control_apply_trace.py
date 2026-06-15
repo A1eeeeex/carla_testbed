@@ -50,6 +50,9 @@ def test_control_apply_trace_falls_back_to_latest_control_cache() -> None:
             "control_timestamp": 12.31,
             "control_latency_ms": 3.0,
             "control_message_age_ms": 4.0,
+            "gt_state_age_wall_ms": 25.0,
+            "gt_state_age_sim_ms": 0.0,
+            "same_gt_world_frame_control_cycle_streak": 3,
         },
         "last_control_out": {
             "actuator_mapping_mode": "legacy",
@@ -64,6 +67,15 @@ def test_control_apply_trace_falls_back_to_latest_control_cache() -> None:
             "planning_message_age_ms": 5.0,
             "throttle_brake_mutual_exclusion_applied": False,
             "throttle_brake_hysteresis_held": False,
+        },
+        "last_gt_state_publish": {
+            "sim_time_sec": 1.0,
+            "world_frame": 123,
+            "publish_wall_time_sec": 12.285,
+            "sample_reason": "fresh_sample",
+            "fresh_sample": True,
+            "localization_sequence_num": 7,
+            "chassis_sequence_num": 7,
         },
     }
 
@@ -86,13 +98,22 @@ def test_control_apply_trace_falls_back_to_latest_control_cache() -> None:
     assert payload["apollo_raw"]["throttle"] == 0.42
     assert payload["apollo_raw"]["brake"] == 0.0
     assert payload["apollo_raw"]["steer"] == 0.1
+    assert payload["throttle_raw"] == 0.42
+    assert payload["brake_raw"] == 0.0
+    assert payload["apollo_steer_raw"] == 0.1
     assert payload["bridge_mapped"]["throttle"] == 0.42
     assert payload["bridge_mapped"]["brake"] == 0.0
     assert payload["bridge_mapped"]["steer"] == 0.025
     assert payload["bridge_mapped"]["mapped_carla_steer_cmd"] == 0.025
+    assert payload["throttle_mapped"] == 0.42
+    assert payload["brake_mapped"] == 0.0
+    assert payload["bridge_steer_mapped"] == 0.025
     assert payload["carla_applied"]["throttle"] == 0.4
     assert payload["carla_applied"]["brake"] == 0.0
     assert payload["carla_applied"]["steer"] == 0.02
+    assert payload["throttle_applied"] == 0.4
+    assert payload["brake_applied"] == 0.0
+    assert payload["carla_steer_applied"] == 0.02
     assert payload["apollo_control"]["header_sequence_num"] == 42.0
     assert payload["apollo_control"]["header_timestamp_sec"] == 12.25
     assert payload["apollo_control"]["rx_timestamp"] == 12.3
@@ -115,3 +136,10 @@ def test_control_apply_trace_falls_back_to_latest_control_cache() -> None:
     assert payload["control_message_age_ms"] == 4.0
     assert payload["planning_message_age_ms"] == 5.0
     assert payload["actuator_mapping_mode"] == "legacy"
+    assert payload["gt_state"]["sim_time_sec"] == 1.0
+    assert payload["gt_state"]["world_frame"] == 123.0
+    assert payload["gt_state"]["sample_reason"] == "fresh_sample"
+    assert payload["gt_state"]["fresh_sample"] is True
+    assert payload["gt_state"]["age_wall_ms"] == 25.0
+    assert payload["gt_state"]["age_sim_ms"] == 0.0
+    assert payload["gt_state"]["same_world_frame_control_cycle_streak"] == 3.0

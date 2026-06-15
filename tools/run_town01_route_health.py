@@ -1392,6 +1392,8 @@ def _overrides_for_flags(
 ) -> List[str]:
     overrides = [
         f"run.ticks={int(ticks)}",
+        "run.claim_profile=true",
+        "run.materialization_probe=true",
         f"scenario.route_health.route_corpus_path={str(corpus_path)}",
         f"scenario.route_health.route_id={route_id}",
         f"run.comparison_label={comparison_label}",
