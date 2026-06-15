@@ -2034,6 +2034,165 @@ def test_route_contract_placeholder_regenerates_from_decoded_routing_response(tm
     assert route_layer["key_metrics"]["apollo_routing_total_length_m"] == 230.0
 
 
+def test_reference_line_placeholder_regenerates_from_runtime_artifacts(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
+        {
+            "schema_version": "apollo_reference_line_contract_report.v1",
+            "status": "insufficient_data",
+            "blocking_reasons": ["apollo_reference_line_runtime_evidence_missing"],
+            "warnings": [],
+        },
+    )
+    planning_rows = []
+    control_rows = []
+    projection_rows = []
+    for index in range(60):
+        ts_sec = index * 0.05
+        planning_rows.append(
+            {
+                "ts_sec": ts_sec,
+                "localization_heading": 1.57,
+                "trajectory_point_count": 10,
+                "first_trajectory_point_theta": 1.571,
+                "reference_line_count": 1,
+                "reference_line_provider_status": "ready",
+                "route_segment_count": 1,
+                "lane_id_first": "15_1_1",
+            }
+        )
+        control_rows.append(
+            {
+                "ts_sec": ts_sec,
+                "debug_simple_lat_ref_heading": 1.57,
+                "debug_simple_lat_heading": 1.57,
+                "debug_simple_lat_heading_error": 0.0,
+                "debug_simple_lat_lateral_error": 0.02,
+            }
+        )
+        projection_rows.append(
+            {
+                "timestamp": ts_sec,
+                "source": "apollo_hdmap_api",
+                "status": "ok",
+                "nearest_lane_id": "15_1_1",
+                "heading_error_rad": 0.01,
+                "lateral_error_m": 0.04,
+                "projection_s": float(index),
+            }
+        )
+    _write_jsonl(run_dir / "artifacts/planning_topic_debug.jsonl", planning_rows)
+    _write_jsonl(run_dir / "artifacts/bridge_control_decode.jsonl", control_rows)
+    _write_jsonl(run_dir / "artifacts/apollo_hdmap_projection.jsonl", projection_rows)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    layer = report["layers"]["planning_reference_line"]
+    refreshed = json.loads(
+        (
+            run_dir
+            / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert layer["artifact_paths"]["source_kind"] == "regenerated_from_run_artifacts"
+    assert layer["status"] == "pass"
+    assert "apollo_reference_line_runtime_evidence_missing" not in layer["blocking_reasons"]
+    assert layer["key_metrics"]["evidence"]["planning_reference_available"] is True
+    assert layer["key_metrics"]["apollo_hdmap_projection"]["claim_grade"] is True
+    assert refreshed["source"]["planning_topic_debug_path"].endswith("planning_topic_debug.jsonl")
+    assert refreshed["source"]["control_decode_debug_path"].endswith("bridge_control_decode.jsonl")
+
+
+def test_control_handoff_placeholder_regenerates_from_runtime_artifacts(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
+        {
+            "schema_version": "apollo_control_handoff.v1",
+            "status": "insufficient_data",
+            "verdict": "insufficient_data",
+            "failure_stage": "insufficient_data",
+            "blocking_reasons": ["control_runtime_messages_missing"],
+            "warnings": [],
+        },
+    )
+    _write_json(
+        run_dir / "channel_stats.json",
+        {
+            "channels": {
+                channel: {
+                    "message_count": 100,
+                    "hz": 20.0,
+                    "max_gap_ms": 60.0,
+                    "timestamp_monotonic": True,
+                    "sequence_monotonic": True,
+                }
+                for channel in (
+                    "/apollo/planning",
+                    "/apollo/localization/pose",
+                    "/apollo/canbus/chassis",
+                    "/apollo/control",
+                )
+            }
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/control_handoff_summary.json",
+        {
+            "control_process_started": True,
+            "control_handoff_status": "control_consuming_with_nonzero_planning",
+            "control_consume_row_count": 2,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/bridge_control_decode.jsonl",
+        [
+            {
+                "ts_sec": 0.0,
+                "apollo_steer_raw": 0.01,
+                "throttle_raw": 20.0,
+                "brake_raw": 0.0,
+                "bridge_steer_mapped": 0.01,
+                "throttle_mapped": 0.2,
+                "brake_mapped": 0.0,
+            },
+            {
+                "ts_sec": 0.05,
+                "apollo_steer_raw": 0.01,
+                "throttle_raw": 20.0,
+                "brake_raw": 0.0,
+                "bridge_steer_mapped": 0.01,
+                "throttle_mapped": 0.2,
+                "brake_mapped": 0.0,
+            },
+        ],
+    )
+    (run_dir / "timeseries.csv").write_text(
+        "sim_time,ego_speed,route_s,carla_steer_applied,throttle_applied,brake_applied,ego_yaw_rate\n"
+        "0.0,1.0,0.0,0.01,0.2,0.0,0.001\n"
+        "0.05,1.3,0.3,0.01,0.2,0.0,0.001\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    layer = report["layers"]["routing_planning_control_handoff"]
+    refreshed = json.loads(
+        (
+            run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert layer["artifact_paths"]["source_kind"] == "regenerated_from_run_artifacts"
+    assert layer["status"] == "warn"
+    assert "control_runtime_messages_missing" not in layer["blocking_reasons"]
+    assert layer["key_metrics"]["control_message_count"] == 100
+    assert layer["key_metrics"]["control_rx_count"] == 100
+    assert layer["key_metrics"]["apply_control_count"] == 100
+    assert refreshed["failure_stage"] == "none"
+    assert refreshed["mapping_and_apply"]["raw_mapped_applied_available"] is True
+
+
 def test_planning_gap_channel_fail_prefers_reference_line_context(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     _write_json(

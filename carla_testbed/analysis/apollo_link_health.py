@@ -10,7 +10,15 @@ from carla_testbed.analysis.apollo_route_contract import (
     analyze_apollo_route_contract_run_dir,
     write_apollo_route_contract_report,
 )
+from carla_testbed.analysis.apollo_control_handoff import (
+    analyze_apollo_control_handoff,
+    write_apollo_control_handoff_report,
+)
 from carla_testbed.analysis.apollo_module_consumption import analyze_apollo_module_consumption_run_dir
+from carla_testbed.analysis.apollo_reference_line_contract import (
+    analyze_apollo_reference_line_contract_run_dir,
+    write_apollo_reference_line_contract_report,
+)
 from carla_testbed.analysis.chassis_gt_contract import analyze_chassis_gt_contract_files
 from carla_testbed.analysis.channel_cadence_diagnosis import analyze_channel_cadence_diagnosis_run_dir
 from carla_testbed.analysis.obstacle_gt_contract import analyze_obstacle_gt_contract_file
@@ -105,6 +113,38 @@ def analyze_apollo_link_health(
             if _apollo_module_consumption_has_runtime_evidence(regenerated_consumption) or not payloads.get("apollo_module_consumption"):
                 payloads["apollo_module_consumption"] = regenerated_consumption
                 source_kinds["apollo_module_consumption"] = "regenerated_from_run_artifacts"
+        if _should_regenerate_apollo_reference_line_contract(
+            payloads.get("apollo_reference_line_contract")
+        ) and _apollo_reference_line_contract_raw_inputs_available(root):
+            regenerated_reference = analyze_apollo_reference_line_contract_run_dir(root)
+            if _apollo_reference_line_contract_has_runtime_evidence(
+                regenerated_reference
+            ) or not payloads.get("apollo_reference_line_contract"):
+                payloads["apollo_reference_line_contract"] = regenerated_reference
+                source_kinds["apollo_reference_line_contract"] = "regenerated_from_run_artifacts"
+                outputs = write_apollo_reference_line_contract_report(
+                    regenerated_reference,
+                    root / "analysis" / "apollo_reference_line_contract",
+                )
+                inputs["apollo_reference_line_contract"] = Path(
+                    outputs["apollo_reference_line_contract_report"]
+                )
+        if _should_regenerate_apollo_control_handoff(
+            payloads.get("apollo_control_handoff")
+        ) and _apollo_control_handoff_raw_inputs_available(root):
+            regenerated_handoff = analyze_apollo_control_handoff(run_dir=root)
+            if _apollo_control_handoff_has_runtime_evidence(
+                regenerated_handoff
+            ) or not payloads.get("apollo_control_handoff"):
+                payloads["apollo_control_handoff"] = regenerated_handoff
+                source_kinds["apollo_control_handoff"] = "regenerated_from_run_artifacts"
+                outputs = write_apollo_control_handoff_report(
+                    regenerated_handoff,
+                    root / "analysis" / "apollo_control_handoff",
+                )
+                inputs["apollo_control_handoff"] = Path(
+                    outputs["apollo_control_handoff_report"]
+                )
         if _should_regenerate_prediction_evidence(payloads.get("prediction_evidence")):
             regenerated_prediction = analyze_prediction_evidence_run_dir(root)
             if _prediction_evidence_has_boundary(regenerated_prediction):
@@ -184,6 +224,7 @@ def analyze_apollo_link_health(
         "routing_planning_control_handoff": _control_handoff_layer(
             payloads.get("apollo_control_handoff"),
             inputs.get("apollo_control_handoff"),
+            source_kind=source_kinds.get("apollo_control_handoff", "report"),
             summary=summary,
             bridge_stats=cyber_bridge_stats,
             planning_topic_debug_summary=payloads.get("planning_topic_debug_summary", {}),
@@ -228,6 +269,10 @@ def analyze_apollo_link_health(
             summary=summary,
         ),
     }
+    layers["planning_reference_line"]["artifact_paths"]["source_kind"] = source_kinds.get(
+        "apollo_reference_line_contract",
+        "report",
+    )
 
     primary, secondary = _blocker_summary(layers)
     can_claim = _can_claim_unassisted(layers)
@@ -1159,6 +1204,148 @@ def _apollo_route_contract_has_runtime_evidence(report: Mapping[str, Any]) -> bo
     )
 
 
+def _should_regenerate_apollo_reference_line_contract(report: Mapping[str, Any] | None) -> bool:
+    if not report:
+        return False
+    if report.get("schema_version") not in {
+        "apollo_reference_line_contract.v1",
+        "apollo_reference_line_contract_report.v1",
+    }:
+        return False
+    status = _normalize_status(report.get("status"))
+    if status == "fail":
+        return False
+    blockers = {str(item) for item in report.get("blocking_reasons") or [] if item}
+    if blockers and blockers != {"apollo_reference_line_runtime_evidence_missing"}:
+        return False
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), Mapping) else {}
+    metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+    runtime_missing = "apollo_reference_line_runtime_evidence_missing" in blockers
+    no_reference_evidence = not any(
+        evidence.get(key) is not None
+        for key in (
+            "planning_reference_available",
+            "control_reference_available",
+            "nonempty_trajectory_ratio",
+        )
+    )
+    no_reference_metrics = not any(
+        metrics.get(key) is not None
+        for key in (
+            "planning_ref_heading_error_p95_rad",
+            "control_ref_heading_error_p95_rad",
+            "control_lateral_error_p95_m",
+        )
+    )
+    return status == "insufficient_data" and (
+        runtime_missing or no_reference_evidence or no_reference_metrics
+    )
+
+
+def _apollo_reference_line_contract_raw_inputs_available(root: Path) -> bool:
+    return any(
+        (root / relative).is_file()
+        for relative in (
+            "artifacts/apollo_reference_line_contract.jsonl",
+            "apollo_reference_line_contract.jsonl",
+            "artifacts/planning_topic_debug.jsonl",
+            "planning_topic_debug.jsonl",
+            "artifacts/planning_route_segment_debug.jsonl",
+            "planning_route_segment_debug.jsonl",
+            "artifacts/control_decode_debug.jsonl",
+            "artifacts/bridge_control_decode.jsonl",
+            "control_decode_debug.jsonl",
+            "bridge_control_decode.jsonl",
+            "artifacts/debug_timeseries.csv",
+            "debug_timeseries.csv",
+            "timeseries.csv",
+        )
+    )
+
+
+def _apollo_reference_line_contract_has_runtime_evidence(report: Mapping[str, Any]) -> bool:
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), Mapping) else {}
+    metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+    source = report.get("source") if isinstance(report.get("source"), Mapping) else {}
+    has_source = any(
+        source.get(key)
+        for key in (
+            "planning_topic_debug_path",
+            "planning_route_segment_debug_path",
+            "control_decode_debug_path",
+            "debug_timeseries_path",
+        )
+    )
+    return bool(
+        has_source
+        or evidence.get("planning_reference_available") is not None
+        or evidence.get("control_reference_available") is not None
+        or _first_num(evidence.get("nonempty_trajectory_ratio")) is not None
+        or _first_num(metrics.get("planning_ref_heading_error_p95_rad")) is not None
+        or _first_num(metrics.get("control_ref_heading_error_p95_rad")) is not None
+    )
+
+
+def _should_regenerate_apollo_control_handoff(report: Mapping[str, Any] | None) -> bool:
+    if not report:
+        return False
+    if report.get("schema_version") != "apollo_control_handoff.v1":
+        return False
+    status = _normalize_status(report.get("verdict") or report.get("status"))
+    if status == "fail":
+        return False
+    blockers = {str(item) for item in report.get("blocking_reasons") or [] if item}
+    if blockers and blockers != {"control_runtime_messages_missing"}:
+        return False
+    runtime_missing = "control_runtime_messages_missing" in blockers
+    no_control_channel = not isinstance(report.get("control_channel"), Mapping) or _first_num(
+        _nested(report, "control_channel.message_count")
+    ) is None
+    no_bridge_receive = not isinstance(report.get("bridge_receive"), Mapping) or _first_num(
+        _nested(report, "bridge_receive.control_rx_count")
+    ) is None
+    no_apply = not isinstance(report.get("mapping_and_apply"), Mapping) or _first_num(
+        _nested(report, "mapping_and_apply.apply_control_count")
+    ) is None
+    return status == "insufficient_data" and (
+        runtime_missing or no_control_channel or no_bridge_receive or no_apply
+    )
+
+
+def _apollo_control_handoff_raw_inputs_available(root: Path) -> bool:
+    return any(
+        (root / relative).is_file()
+        for relative in (
+            "artifacts/cyber_bridge_stats.json",
+            "cyber_bridge_stats.json",
+            "artifacts/channel_stats.json",
+            "channel_stats.json",
+            "artifacts/control_handoff_summary.json",
+            "control_handoff_summary.json",
+            "artifacts/apollo_control_deferred_survival.json",
+            "apollo_control_deferred_survival.json",
+            "artifacts/control_decode_debug.jsonl",
+            "artifacts/bridge_control_decode.jsonl",
+            "control_decode_debug.jsonl",
+            "bridge_control_decode.jsonl",
+            "artifacts/direct_bridge_control_apply.jsonl",
+            "direct_bridge_control_apply.jsonl",
+            "timeseries.csv",
+            "timeseries.jsonl",
+        )
+    )
+
+
+def _apollo_control_handoff_has_runtime_evidence(report: Mapping[str, Any]) -> bool:
+    return bool(
+        _first_num(_nested(report, "control_channel.message_count")) is not None
+        or _first_num(_nested(report, "bridge_receive.control_rx_count")) is not None
+        or _first_num(_nested(report, "mapping_and_apply.apply_control_count")) is not None
+        or _first_num(_nested(report, "vehicle_response.route_s_delta_m")) is not None
+        or _first_num(_nested(report, "vehicle_response.speed_delta_mps")) is not None
+    )
+
+
 def _should_regenerate_prediction_evidence(report: Mapping[str, Any] | None) -> bool:
     if not report:
         return False
@@ -1369,6 +1556,7 @@ def _control_handoff_layer(
     report: Mapping[str, Any] | None,
     path: Path | None,
     *,
+    source_kind: str,
     summary: Mapping[str, Any],
     bridge_stats: Mapping[str, Any],
     planning_topic_debug_summary: Mapping[str, Any],
@@ -1485,6 +1673,7 @@ def _control_handoff_layer(
         },
         artifact_paths={
             "apollo_control_handoff": str(path) if path else None,
+            "source_kind": source_kind,
             "command_materialization_summary": str(command_materialization_path) if command_materialization_path else None,
         },
         next_action="If failed, follow the handoff stage: process -> input readiness -> control channel -> bridge receive -> raw decode -> apply -> response.",
