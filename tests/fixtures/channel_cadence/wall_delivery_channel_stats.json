@@ -1,0 +1,76 @@
+{
+  "schema_version": "channel_stats.v1",
+  "source": "synthetic",
+  "channels": {
+    "/apollo/localization/pose": {
+      "message_count": 120,
+      "hz": 20.0,
+      "header_sim_hz": 20.0,
+      "fresh_world_frame_hz": 20.0,
+      "delivery_wall_hz": 3.0,
+      "max_gap_ms": 50.0,
+      "gap_p95_ms": 50.0,
+      "gap_count_over_250ms": 0,
+      "gap_count_over_1000ms": 0,
+      "timestamp_monotonic": true,
+      "sequence_monotonic": true,
+      "stale_count": 0,
+      "duplicate_timestamp_count": 0,
+      "promotion_grade_evidence": true
+    },
+    "/apollo/canbus/chassis": {
+      "message_count": 120,
+      "hz": 20.0,
+      "header_sim_hz": 20.0,
+      "fresh_world_frame_hz": 20.0,
+      "delivery_wall_hz": 3.0,
+      "max_gap_ms": 50.0,
+      "gap_p95_ms": 50.0,
+      "gap_count_over_250ms": 0,
+      "gap_count_over_1000ms": 0,
+      "timestamp_monotonic": true,
+      "sequence_monotonic": true,
+      "stale_count": 0,
+      "duplicate_timestamp_count": 0,
+      "promotion_grade_evidence": true
+    },
+    "/apollo/perception/obstacles": {
+      "message_count": 120,
+      "hz": 20.0,
+      "header_sim_hz": 20.0,
+      "max_gap_ms": 50.0,
+      "gap_p95_ms": 50.0,
+      "timestamp_monotonic": true,
+      "sequence_monotonic": true,
+      "stale_count": 0
+    },
+    "/apollo/perception/traffic_light": {
+      "message_count": 120,
+      "hz": 20.0,
+      "header_sim_hz": 20.0,
+      "max_gap_ms": 50.0,
+      "gap_p95_ms": 50.0,
+      "timestamp_monotonic": true,
+      "sequence_monotonic": true,
+      "stale_count": 0
+    },
+    "/apollo/planning": {
+      "message_count": 120,
+      "hz": 10.0,
+      "max_gap_ms": 100.0,
+      "gap_p95_ms": 100.0,
+      "timestamp_monotonic": true,
+      "sequence_monotonic": true,
+      "stale_count": 0
+    },
+    "/apollo/control": {
+      "message_count": 120,
+      "hz": 10.0,
+      "max_gap_ms": 100.0,
+      "gap_p95_ms": 100.0,
+      "timestamp_monotonic": true,
+      "sequence_monotonic": true,
+      "stale_count": 0
+    }
+  }
+}

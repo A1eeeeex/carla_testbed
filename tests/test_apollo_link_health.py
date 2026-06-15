@@ -1987,6 +1987,45 @@ def test_required_channel_missing_remains_channel_primary(tmp_path: Path) -> Non
     assert "planning_reference_line:insufficient_data" in report["secondary_blockers"]
 
 
+def test_channel_cadence_diagnosis_refines_channel_primary(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    stats_src = Path("tests/fixtures/channel_cadence/header_sim_gap_channel_stats.json")
+    (run_dir / "channel_stats.json").write_text(stats_src.read_text(encoding="utf-8"), encoding="utf-8")
+    tick_src = Path("tests/fixtures/channel_cadence/carla_tick_health_summary.json")
+    (run_dir / "artifacts/carla_tick_health_summary.json").write_text(
+        tick_src.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    gap_src = Path("tests/fixtures/channel_cadence/publish_gap_trace.jsonl")
+    (run_dir / "artifacts/publish_gap_trace.jsonl").write_text(
+        gap_src.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    topic_src = Path("tests/fixtures/channel_cadence/topic_publish_stats.jsonl")
+    (run_dir / "artifacts/topic_publish_stats.jsonl").write_text(
+        topic_src.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    tick_log_src = Path("tests/fixtures/channel_cadence/carla_tick_health.jsonl")
+    (run_dir / "artifacts/carla_tick_health.jsonl").write_text(
+        tick_log_src.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (run_dir / "analysis/apollo_channel_health/apollo_channel_health_report.json").unlink()
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    channel_layer = report["layers"]["channel_health"]
+
+    assert report["primary_blocker"] == "channel_health:localization:isolated_header_sim_gap_over_contract"
+    assert channel_layer["key_metrics"]["channel_cadence_status"] == "fail"
+    assert (
+        channel_layer["key_metrics"]["channel_cadence_primary_issue"]
+        == "localization:isolated_header_sim_gap_over_contract"
+    )
+    assert channel_layer["key_metrics"]["channel_cadence_top_gap_windows"][0]["channel_name"] == "localization"
+    assert channel_layer["artifact_paths"]["channel_cadence_source_kind"] == "regenerated_from_run_artifacts"
+
+
 def test_missing_obstacle_contract_blocks_unassisted_claim(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     (run_dir / "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json").unlink()

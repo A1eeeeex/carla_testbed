@@ -1,0 +1,2 @@
+{"event_type":"frame_loop_timing","sim_time_s":1.05,"wall_time_s":10.05,"frame_loop_wall_duration_s":0.30,"frame_post_tick_wall_duration_s":0.29,"inter_tick_wall_interval_s":0.05,"stage_durations_s":{"sensor_capture":0.28,"gt_publish_and_hooks":0.001}}
+{"event_type":"frame_loop_timing","sim_time_s":1.40,"wall_time_s":10.40,"frame_loop_wall_duration_s":0.06,"frame_post_tick_wall_duration_s":0.05,"inter_tick_wall_interval_s":0.35,"stage_durations_s":{"sensor_capture":0.04,"gt_publish_and_hooks":0.001}}

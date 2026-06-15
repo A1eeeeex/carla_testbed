@@ -134,6 +134,8 @@ run-local diagnostics include:
 - `artifacts/carla_tick_health_summary.json`
 - `artifacts/topic_publish_stats.jsonl`
 - `analysis/apollo_channel_health/apollo_channel_health_report.json`
+- `analysis/channel_cadence_diagnosis/channel_cadence_diagnosis_report.json`
+- `analysis/channel_cadence_diagnosis/channel_cadence_diagnosis_summary.md`
 - `analysis/localization_contract/localization_contract_report.json`
 - `analysis/localization_contract/localization_contract_summary.md`
 - `analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json` when
@@ -211,6 +213,16 @@ run-local diagnostics include:
 `artifact_completeness_report.json` as `insufficient_data`. This keeps the
 evidence chain persisted in the run directory instead of relying on an in-memory
 check or visual observation.
+
+`channel_cadence_diagnosis_report.json` is an explanation artifact for
+`apollo_channel_health_report.json`. It separates header/sim-time cadence,
+wall-time delivery cadence, stale or duplicate timestamp evidence, and
+publisher gap traces. When `artifacts/topic_publish_stats.jsonl`,
+`artifacts/publish_gap_trace.jsonl`, and `artifacts/carla_tick_health.jsonl`
+exist, it also reports top gap windows with skip-reason and CARLA tick-stage
+correlation. It must not turn a channel-health failure into a pass; instead it
+should explain whether the next fix belongs in GT publisher cadence, Apollo
+output cadence, artifact delivery/time-axis interpretation, or missing evidence.
 
 `artifact_completeness_report.json` separates declared summary/report
 completeness from physical raw evidence completeness. Claim or materialization
@@ -721,6 +733,14 @@ Only the claim-facing ratio can support a natural-driving pass.
 row evidence including writer/stats/publish-loop p95, async queue depth, and
 artifact writer queue lag. Artifact backpressure keeps a run diagnostic until
 fresh localization/chassis cadence recovers.
+
+Duplicate `stage5_*` map/reference-line debug JSONL streams are optional
+high-volume diagnostics. Online claim profiles may set
+`bridge.stage5_debug_artifact_sample_stride` to sample those duplicate streams
+while preserving the primary reference-line artifacts; the bridge records
+sampled-out counts in `artifacts/cyber_bridge_stats.json`. Sampling those
+duplicates does not relax required channel, localization, HDMap, reference-line,
+or control artifacts.
 
 ## Current Implementation
 

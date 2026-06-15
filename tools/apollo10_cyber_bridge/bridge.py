@@ -1632,6 +1632,11 @@ class ApolloGtBridge:
             0.0,
             float(bridge_cfg.get("artifact_stats_flush_interval_s", 0.0) or 0.0),
         )
+        self.stage5_debug_artifact_sample_stride = max(
+            1,
+            int(bridge_cfg.get("stage5_debug_artifact_sample_stride", 1) or 1),
+        )
+        self._stage5_debug_artifact_sample_counters: Counter[str] = Counter()
         self._last_artifact_stats_flush_sec = time.time()
         self._artifact_pending_rows: Dict[str, int] = {}
         self._artifact_last_flush_sec: Dict[str, float] = {}
@@ -1651,6 +1656,10 @@ class ApolloGtBridge:
             "flush_interval_s": self.artifact_flush_interval_s,
             "flush_max_pending_rows": self.artifact_flush_max_pending_rows,
             "stats_flush_interval_s": self.artifact_stats_flush_interval_s,
+            "stage5_debug_artifact_sample_stride": self.stage5_debug_artifact_sample_stride,
+            "stage5_debug_artifact_seen_counts": {},
+            "stage5_debug_artifact_sampled_out_counts": {},
+            "stage5_debug_artifact_written_counts": {},
             "flush_count": 0,
         }
         self._start_artifact_writer()
@@ -3448,7 +3457,40 @@ class ApolloGtBridge:
 
     def _record_reroute_decision_event(self, payload: Dict[str, Any]) -> None:
         self._append_jsonl(self.reroute_decision_debug_path, payload)
-        self._append_jsonl(self.stage5_reroute_decision_debug_path, payload)
+        self._append_stage5_debug_jsonl(
+            "stage5_reroute_decision_debug",
+            self.stage5_reroute_decision_debug_path,
+            payload,
+        )
+
+    def _should_write_stage5_debug_artifact(self, artifact_name: str) -> bool:
+        stride = max(1, int(getattr(self, "stage5_debug_artifact_sample_stride", 1) or 1))
+        buffering = self.stats.setdefault("artifact_buffering", {})
+        buffering["stage5_debug_artifact_sample_stride"] = stride
+        seen_counts = buffering.setdefault("stage5_debug_artifact_seen_counts", {})
+        sampled_out_counts = buffering.setdefault("stage5_debug_artifact_sampled_out_counts", {})
+        written_counts = buffering.setdefault("stage5_debug_artifact_written_counts", {})
+        counters = getattr(self, "_stage5_debug_artifact_sample_counters", None)
+        if counters is None:
+            counters = Counter()
+            self._stage5_debug_artifact_sample_counters = counters
+        counters[artifact_name] += 1
+        count = int(counters[artifact_name])
+        seen_counts[artifact_name] = count
+        if stride <= 1 or count == 1 or (count % stride) == 0:
+            written_counts[artifact_name] = int(written_counts.get(artifact_name, 0) or 0) + 1
+            return True
+        sampled_out_counts[artifact_name] = int(sampled_out_counts.get(artifact_name, 0) or 0) + 1
+        return False
+
+    def _append_stage5_debug_jsonl(
+        self,
+        artifact_name: str,
+        path: Path,
+        payload: Dict[str, Any],
+    ) -> None:
+        if self._should_write_stage5_debug_artifact(artifact_name):
+            self._append_jsonl(path, payload)
 
     def _projection_debug_summary(self, projection: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return build_projection_debug_summary_impl(projection)
@@ -5842,12 +5884,28 @@ class ApolloGtBridge:
             "host_container_map_path_mapping": dict(self.host_container_map_path_mapping or {}),
         }
         self._append_jsonl(self.apollo_map_runtime_debug_path, map_runtime_row)
-        self._append_jsonl(self.stage5_apollo_map_runtime_debug_path, map_runtime_row)
+        self._append_stage5_debug_jsonl(
+            "stage5_apollo_map_runtime_debug",
+            self.stage5_apollo_map_runtime_debug_path,
+            map_runtime_row,
+        )
         self._append_jsonl(self.apollo_reference_line_debug_path, enriched_route_debug)
         self._append_jsonl(self.apollo_route_segment_debug_path, enriched_route_debug)
-        self._append_jsonl(self.stage5_apollo_reference_line_debug_path, enriched_route_debug)
-        self._append_jsonl(self.stage5_apollo_route_segment_debug_path, enriched_route_debug)
-        self._append_jsonl(self.stage5_apollo_lane_follow_map_debug_path, enriched_route_debug)
+        self._append_stage5_debug_jsonl(
+            "stage5_apollo_reference_line_debug",
+            self.stage5_apollo_reference_line_debug_path,
+            enriched_route_debug,
+        )
+        self._append_stage5_debug_jsonl(
+            "stage5_apollo_route_segment_debug",
+            self.stage5_apollo_route_segment_debug_path,
+            enriched_route_debug,
+        )
+        self._append_stage5_debug_jsonl(
+            "stage5_apollo_lane_follow_map_debug",
+            self.stage5_apollo_lane_follow_map_debug_path,
+            enriched_route_debug,
+        )
         if self._planning_first_route_debug_ts_sec is None:
             self._planning_first_route_debug_ts_sec = now_sec
             self._planning_first_route_debug_last_reroute_ts_sec = current_last_routing_send_ts

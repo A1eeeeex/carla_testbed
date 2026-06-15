@@ -29,6 +29,7 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
                     "artifact_flush_interval_s": 0.5,
                     "artifact_flush_max_pending_rows": 200,
                     "artifact_stats_flush_interval_s": 1.0,
+                    "stage5_debug_artifact_sample_stride": 10,
                     "claim_grade": {
                         "enabled": True,
                         "stale_world_frame_policy": "skip",
@@ -68,6 +69,7 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
     assert bridge["artifact_flush_interval_s"] == 0.5
     assert bridge["artifact_flush_max_pending_rows"] == 200
     assert bridge["artifact_stats_flush_interval_s"] == 1.0
+    assert bridge["stage5_debug_artifact_sample_stride"] == 10
     assert control_mapping["steer_scale"] == 0.25
     assert control_mapping["steering_percent_normalization"] == "legacy_double_percent"
     assert claim_grade["enabled"] is True

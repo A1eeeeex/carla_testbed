@@ -8,6 +8,7 @@ from typing import Any, Mapping, Sequence
 from carla_testbed.analysis.apollo_channel_health import analyze_apollo_channel_health_files
 from carla_testbed.analysis.apollo_module_consumption import analyze_apollo_module_consumption_run_dir
 from carla_testbed.analysis.chassis_gt_contract import analyze_chassis_gt_contract_files
+from carla_testbed.analysis.channel_cadence_diagnosis import analyze_channel_cadence_diagnosis_run_dir
 from carla_testbed.analysis.obstacle_gt_contract import analyze_obstacle_gt_contract_file
 from carla_testbed.analysis.planning_materialization import analyze_planning_materialization_run_dir
 from carla_testbed.analysis.prediction_evidence import analyze_prediction_evidence_run_dir
@@ -90,6 +91,13 @@ def analyze_apollo_link_health(
             if _prediction_evidence_has_boundary(regenerated_prediction):
                 payloads["prediction_evidence"] = regenerated_prediction
                 source_kinds["prediction_evidence"] = "regenerated_from_run_artifacts"
+        if inputs.get("channel_stats") is not None and _should_regenerate_channel_cadence(
+            payloads.get("channel_cadence_diagnosis")
+        ):
+            regenerated_cadence = analyze_channel_cadence_diagnosis_run_dir(root)
+            if regenerated_cadence.get("status") != "insufficient_data" or not payloads.get("channel_cadence_diagnosis"):
+                payloads["channel_cadence_diagnosis"] = regenerated_cadence
+                source_kinds["channel_cadence_diagnosis"] = "regenerated_from_run_artifacts"
 
     layers = {
         "environment_world": _environment_world_layer(
@@ -105,6 +113,9 @@ def analyze_apollo_link_health(
             inputs.get("apollo_channel_health"),
             stats_path=inputs.get("channel_stats"),
             scenario_class=scenario_class,
+            cadence_report=payloads.get("channel_cadence_diagnosis"),
+            cadence_path=inputs.get("channel_cadence_diagnosis"),
+            cadence_source_kind=source_kinds.get("channel_cadence_diagnosis", "report"),
         ),
         "localization_gt_contract": _localization_layer(
             payloads.get("localization_contract"),
@@ -308,6 +319,9 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
         ),
         "channel_health": (
             "failed_channels",
+            "channel_cadence_primary_issue",
+            "channel_cadence_status",
+            "channel_cadence_top_gap_windows",
             "planning_status",
             "planning_primary_time_axis",
             "planning_time_axis_diagnosis",
@@ -520,6 +534,13 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
                 "analysis/apollo_channel_health/apollo_channel_health_report.json",
                 "apollo_channel_health_report.json",
                 "artifacts/apollo_channel_health_report.json",
+            ],
+        ),
+        "channel_cadence_diagnosis": _find_first(
+            root,
+            [
+                "analysis/channel_cadence_diagnosis/channel_cadence_diagnosis_report.json",
+                "channel_cadence_diagnosis_report.json",
             ],
         ),
         "channel_stats": _find_first(root, ["channel_stats.json", "artifacts/channel_stats.json"]),
@@ -1094,6 +1115,14 @@ def _prediction_evidence_has_boundary(report: Mapping[str, Any]) -> bool:
     return str(report.get("prediction_mode") or "").strip() not in {"", "unknown"}
 
 
+def _should_regenerate_channel_cadence(report: Mapping[str, Any] | None) -> bool:
+    if not report:
+        return True
+    if report.get("schema_version") != "channel_cadence_diagnosis.v1":
+        return True
+    return _normalize_status(report.get("status")) == "insufficient_data"
+
+
 def _route_establishment_layer(
     report: Mapping[str, Any] | None,
     path: Path | None,
@@ -1549,6 +1578,9 @@ def _channel_health_layer(
     *,
     stats_path: Path | None = None,
     scenario_class: str | None = None,
+    cadence_report: Mapping[str, Any] | None = None,
+    cadence_path: Path | None = None,
+    cadence_source_kind: str = "report",
 ) -> dict[str, Any]:
     source_kind = "report"
     if _channel_report_needs_stats_fallback(report) and stats_path is not None and stats_path.exists():
@@ -1566,6 +1598,7 @@ def _channel_health_layer(
             path=path,
             next_action="Generate apollo_channel_health_report.json from channel_stats before behavior claims.",
         )
+    cadence_report = cadence_report if isinstance(cadence_report, Mapping) else {}
     channel_results = report.get("channel_results") if isinstance(report.get("channel_results"), Mapping) else {}
     failed_channels: list[str] = []
     failed_details: dict[str, Any] = {}
@@ -1590,6 +1623,11 @@ def _channel_health_layer(
             "timestamp_failures": report.get("timestamp_failures") or [],
             "failed_channels": failed_channels,
             "failed_channel_details": failed_details,
+            "channel_cadence_status": cadence_report.get("status"),
+            "channel_cadence_primary_issue": cadence_report.get("primary_cadence_issue"),
+            "channel_cadence_blocking_reasons": cadence_report.get("blocking_reasons") or [],
+            "channel_cadence_top_gap_windows": cadence_report.get("top_gap_windows") or [],
+            "channel_cadence_next_action": cadence_report.get("next_action"),
             "planning_status": planning_result.get("status"),
             "planning_issues": list(planning_result.get("issues") or []),
             "planning_message_count": planning_result.get("message_count"),
@@ -1609,9 +1647,14 @@ def _channel_health_layer(
         artifact_paths={
             "channel_health": str(path) if path else None,
             "channel_stats": str(stats_path) if stats_path else None,
+            "channel_cadence_diagnosis": str(cadence_path) if cadence_path else None,
             "source_kind": source_kind,
+            "channel_cadence_source_kind": cadence_source_kind if cadence_report else None,
         },
-        next_action="Generate/inspect apollo_channel_health_report.json; required channel absence is a transport issue, while planning-only gaps must be interpreted with planning/reference-line artifacts.",
+        next_action=str(
+            cadence_report.get("next_action")
+            or "Generate/inspect apollo_channel_health_report.json; required channel absence is a transport issue, while planning-only gaps must be interpreted with planning/reference-line artifacts."
+        ),
     )
 
 
@@ -2254,6 +2297,11 @@ def _actual_lateral_drift_primary(layers: Mapping[str, Mapping[str, Any]]) -> st
 def _layer_blocker_name(name: str, layer: Mapping[str, Any]) -> str:
     reasons = list(layer.get("blocking_reasons") or [])
     insufficient_reasons = _layer_insufficient_reasons(layer)
+    metrics = layer.get("key_metrics") if isinstance(layer.get("key_metrics"), Mapping) else {}
+    if name == "channel_health":
+        cadence_primary = metrics.get("channel_cadence_primary_issue")
+        if cadence_primary:
+            return f"{name}:{cadence_primary}"
     if name == "route_establishment":
         preferred = (
             *ROUTE_CONTRACT_BLOCKER_PRIORITY,

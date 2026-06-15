@@ -138,6 +138,9 @@ algo:
       artifact_flush_interval_s: 0.5
       artifact_flush_max_pending_rows: 200
       artifact_stats_flush_interval_s: 1.0
+      # Primary route/reference-line artifacts stay per-event; duplicate stage5
+      # debug streams are sampled to reduce publish-loop IO pressure.
+      stage5_debug_artifact_sample_stride: 10
       claim_grade:
         enabled: true
         stale_world_frame_policy: skip

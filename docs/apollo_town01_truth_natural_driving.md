@@ -23,6 +23,15 @@ Natural-driving channel health contract:
 - analyzer: `carla_testbed.analysis.apollo_channel_health`
 - report: `apollo_channel_health_report.json`
 
+Channel cadence diagnosis:
+
+- analyzer: `carla_testbed.analysis.channel_cadence_diagnosis`
+- report: `channel_cadence_diagnosis_report.json`
+- purpose: explain channel-health failures by separating header/sim-time
+  cadence, wall-time/artifact delivery cadence, duplicate or stale timestamps,
+  and GT publisher gap traces. This report is diagnostic evidence only; it
+  does not weaken the channel-health gate or prove behavior correctness.
+
 Apollo Control handoff evidence:
 
 - analyzer: `carla_testbed.analysis.apollo_control_handoff`
@@ -1300,6 +1309,13 @@ queue depth as explicit backpressure evidence instead of letting diagnostic
 JSONL writes silently slow `/apollo/localization/pose` or
 `/apollo/canbus/chassis`. A run with artifact backpressure or large publish-gap
 p95 values is diagnostic until channel health recovers.
+
+Primary map/reference-line debug artifacts remain per-event evidence. Duplicate
+`stage5_*` debug streams may be sampled with
+`bridge.stage5_debug_artifact_sample_stride` in online claim probes to reduce IO
+pressure; `cyber_bridge_stats.json.artifact_buffering` records seen, written,
+and sampled-out counts. This sampling is not a channel-health pass condition:
+localization/chassis max-gap gates still use the observed channel artifacts.
 
 ## P0/P1 Online Triage Boundary
 

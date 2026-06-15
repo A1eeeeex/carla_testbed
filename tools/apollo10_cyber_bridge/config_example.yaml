@@ -27,6 +27,10 @@ bridge:
   artifact_flush_interval_s: 0.0
   artifact_flush_max_pending_rows: 0
   artifact_stats_flush_interval_s: 0.0
+  # Stage5 files duplicate primary map/reference-line diagnostics and can be
+  # sampled in claim probes to keep diagnostic IO from starving GT channels.
+  # 1 keeps legacy per-event output.
+  stage5_debug_artifact_sample_stride: 1
   claim_grade:
     enabled: false
     stale_world_frame_policy: republish_debug

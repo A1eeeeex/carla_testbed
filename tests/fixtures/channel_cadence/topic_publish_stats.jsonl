@@ -1,0 +1,6 @@
+{"channel":"/apollo/localization/pose","wall_time_sec":10.00,"sim_time_sec":1.00,"header_timestamp_sec":1.00,"sequence_num":1,"frame_id":"map","fresh_sample":true}
+{"channel":"/apollo/localization/pose","wall_time_sec":10.05,"sim_time_sec":1.05,"header_timestamp_sec":1.05,"sequence_num":2,"frame_id":"map","fresh_sample":true}
+{"channel":"/apollo/localization/pose","wall_time_sec":10.40,"sim_time_sec":1.40,"header_timestamp_sec":1.40,"sequence_num":3,"frame_id":"map","fresh_sample":true}
+{"channel":"/apollo/canbus/chassis","wall_time_sec":10.00,"sim_time_sec":1.00,"header_timestamp_sec":1.00,"sequence_num":1,"frame_id":"map","fresh_sample":true}
+{"channel":"/apollo/canbus/chassis","wall_time_sec":10.05,"sim_time_sec":1.05,"header_timestamp_sec":1.05,"sequence_num":2,"frame_id":"map","fresh_sample":true}
+{"channel":"/apollo/canbus/chassis","wall_time_sec":10.10,"sim_time_sec":1.10,"header_timestamp_sec":1.10,"sequence_num":3,"frame_id":"map","fresh_sample":true}

@@ -825,6 +825,7 @@ PY
             "artifact_async_queue_max_rows",
             "artifact_async_queue_soft_limit_rows",
             "artifact_flush_max_pending_rows",
+            "stage5_debug_artifact_sample_stride",
         ):
             if key in apollo_bridge_cfg:
                 bridge[key] = int(apollo_bridge_cfg[key])
