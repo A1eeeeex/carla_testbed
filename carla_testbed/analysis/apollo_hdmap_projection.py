@@ -89,6 +89,7 @@ def apollo_hdmap_projection_summary_md(report: Mapping[str, Any]) -> str:
             f"- Official row count: `{projection.get('official_row_count')}`",
             f"- OK row count: `{projection.get('ok_row_count')}`",
             f"- OK ratio: `{projection.get('ok_ratio')}`",
+            f"- Environment unavailable rows: `{projection.get('environment_unavailable_count')}`",
             f"- Sim-time coverage ratio: `{projection.get('sim_time_coverage_ratio')}`",
             f"- Projection-s coverage m: `{projection.get('projection_s_coverage_m')}`",
             f"- Route-s coverage ratio: `{projection.get('route_s_coverage_ratio')}`",
@@ -114,6 +115,12 @@ def summarize_apollo_hdmap_projection(
     official_rows = [row for row in all_rows if str(row.get("source") or "") == OFFICIAL_SOURCE]
     ok_rows = [row for row in official_rows if str(row.get("status") or "").lower() == "ok"]
     status_counts = Counter(str(row.get("status") or "missing") for row in official_rows)
+    environment_unavailable_count = sum(
+        1 for row in official_rows if str(row.get("status") or "").lower() == "environment_unavailable"
+    )
+    only_environment_unavailable = bool(
+        official_rows and environment_unavailable_count == len(official_rows)
+    )
     heading_p95 = _p95_abs(_num(row.get("heading_error_rad")) for row in ok_rows)
     lateral_p95 = _p95_abs(_num(row.get("lateral_error_m")) for row in ok_rows)
     timestamps = [_num(row.get("timestamp")) for row in ok_rows]
@@ -203,7 +210,11 @@ def summarize_apollo_hdmap_projection(
         warnings.append("apollo_hdmap_projection_source_not_official")
         missing_fields.append("source=apollo_hdmap_api")
 
-    if official_rows and not ok_rows:
+    if only_environment_unavailable:
+        warnings.append("apollo_hdmap_projection_environment_unavailable")
+        insufficient.append("apollo_hdmap_projection_runtime_unavailable")
+        missing_fields.append("apollo_map_xysl_runtime")
+    elif official_rows and not ok_rows:
         blocking.append("apollo_hdmap_projection_no_ok_rows")
         suspected_layers.extend(["map_alignment", "lane_id", "routing_snap"])
 
@@ -236,7 +247,7 @@ def summarize_apollo_hdmap_projection(
         warnings.append("apollo_hdmap_projection_non_ok_rows_present")
     if official_rows and len(ok_rows) < HDMAP_MIN_CLAIM_GRADE_ROWS:
         insufficient.append("apollo_hdmap_projection_sample_count_low")
-    if ok_ratio is not None and ok_ratio < HDMAP_MIN_OK_RATIO:
+    if ok_ratio is not None and ok_ratio < HDMAP_MIN_OK_RATIO and not only_environment_unavailable:
         blocking.append("apollo_hdmap_projection_ok_ratio_low")
     if official_rows and projection_s_coverage_m is None:
         missing_fields.append("projection_s")
@@ -289,6 +300,7 @@ def summarize_apollo_hdmap_projection(
         "route_s_coverage_threshold_m": route_s_coverage_threshold_m,
         "map_identity_consistent": len(map_names) <= 1 and len(map_dirs) <= 1,
         "status_counts": dict(status_counts),
+        "environment_unavailable_count": environment_unavailable_count,
         "heading_error_p95_rad": heading_p95,
         "lateral_error_p95_m": lateral_p95,
         "nearest_lane_id_topk": _topk(str(row.get("nearest_lane_id") or "") for row in official_rows),

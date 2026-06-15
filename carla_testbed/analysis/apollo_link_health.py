@@ -2116,6 +2116,11 @@ def _blocker_summary(layers: Mapping[str, Mapping[str, Any]]) -> tuple[str | Non
         secondary = [item for item in blockers if item != semantic_primary]
         return semantic_primary, secondary
 
+    hdmap_reference_gap = _hdmap_reference_evidence_gap_primary(layers)
+    if hdmap_reference_gap:
+        secondary = [item for item in blockers if item != hdmap_reference_gap]
+        return hdmap_reference_gap, secondary
+
     claim_boundary_primary = _semantic_primary_for_claim_boundary(layers)
     if claim_boundary_primary:
         secondary = [item for item in blockers if item != claim_boundary_primary]
@@ -2257,6 +2262,22 @@ def _semantic_primary_for_claim_boundary(layers: Mapping[str, Mapping[str, Any]]
     return None
 
 
+def _hdmap_reference_evidence_gap_primary(layers: Mapping[str, Mapping[str, Any]]) -> str | None:
+    """HDMap/reference evidence gaps should outrank generic claim-boundary failures."""
+    for prerequisite in ("environment_world", "bridge_runtime", "channel_health", "route_establishment"):
+        if not _non_blocking(layers.get(prerequisite, {})):
+            return None
+
+    hdmap = layers.get("hdmap_projection", {})
+    if hdmap.get("status") == "insufficient_data":
+        return _layer_blocker_name("hdmap_projection", hdmap)
+
+    reference = layers.get("planning_reference_line", {})
+    if reference.get("status") == "insufficient_data":
+        return _layer_blocker_name("planning_reference_line", reference)
+    return None
+
+
 def _all_blockers(layers: Mapping[str, Mapping[str, Any]]) -> list[str]:
     blockers: list[str] = []
     for name in LAYER_ORDER:
@@ -2325,6 +2346,19 @@ def _layer_blocker_name(name: str, layer: Mapping[str, Any]) -> str:
         reason_set = set(reasons)
         for reason in preferred:
             if reason in reason_set:
+                return f"{name}:{reason}"
+    if name == "hdmap_projection":
+        preferred_insufficient = (
+            "apollo_hdmap_projection_runtime_unavailable",
+            "apollo_hdmap_projection_route_s_coverage_missing",
+            "apollo_hdmap_projection_sample_count_low",
+            "apollo_hdmap_projection_metrics_missing",
+            "apollo_hdmap_projection_rows_missing",
+            "apollo_hdmap_projection_empty",
+        )
+        insufficient_set = set(insufficient_reasons)
+        for reason in preferred_insufficient:
+            if reason in insufficient_set:
                 return f"{name}:{reason}"
     if name == "routing_planning_control_handoff":
         preferred = (

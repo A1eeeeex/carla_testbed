@@ -457,6 +457,17 @@ def _export_failure_reason(
 
 def _status_from_map_xysl_output(output: str) -> str:
     lowered = (output or "").lower()
+    if (
+        "container" in lowered
+        and (
+            "is not running" in lowered
+            or "no such container" in lowered
+            or "is paused" in lowered
+        )
+    ) or "cannot connect to the docker daemon" in lowered:
+        return "environment_unavailable"
+    if "no such file or directory" in lowered or "command not found" in lowered:
+        return "environment_unavailable"
     if "get_nearest_lane failed" in lowered or "lane is null" in lowered:
         return "no_lane"
     if "outside" in lowered or "out_of_map" in lowered:

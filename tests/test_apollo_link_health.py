@@ -638,6 +638,82 @@ def test_hdmap_projection_empty_reason_reaches_link_health(tmp_path: Path) -> No
     assert layer["next_action"] == "Run tools/export_apollo_hdmap_projection.py."
 
 
+def test_hdmap_runtime_unavailable_outranks_prediction_claim_boundary(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json",
+        {
+            "schema_version": "apollo_hdmap_projection_report.v1",
+            "status": "insufficient_data",
+            "claim_grade": False,
+            "projection": {
+                "file_present": True,
+                "official_source_available": True,
+                "status": "insufficient_data",
+                "claim_grade": False,
+                "status_counts": {"environment_unavailable": 60},
+                "environment_unavailable_count": 60,
+                "blocking_reasons": [],
+                "insufficient_reasons": [
+                    "apollo_hdmap_projection_route_s_coverage_missing",
+                    "apollo_hdmap_projection_runtime_unavailable",
+                    "apollo_hdmap_projection_sample_count_low",
+                ],
+                "missing_fields": ["apollo_map_xysl_runtime", "projection_s"],
+                "warnings": ["apollo_hdmap_projection_environment_unavailable"],
+            },
+            "blocking_reasons": [],
+            "insufficient_reasons": [
+                "apollo_hdmap_projection_route_s_coverage_missing",
+                "apollo_hdmap_projection_runtime_unavailable",
+                "apollo_hdmap_projection_sample_count_low",
+            ],
+            "missing_fields": ["apollo_map_xysl_runtime", "projection_s"],
+            "warnings": ["apollo_hdmap_projection_environment_unavailable"],
+        },
+    )
+    _write_json(
+        run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
+        {
+            "schema_version": "apollo_reference_line_contract.v1",
+            "status": "insufficient_data",
+            "blocking_reasons": [],
+            "warnings": ["apollo_hdmap_projection_runtime_unavailable"],
+            "evidence": {"planning_reference_available": True},
+            "apollo_hdmap_projection": {
+                "file_present": True,
+                "official_source_available": True,
+                "status": "insufficient_data",
+                "claim_grade": False,
+                "insufficient_reasons": ["apollo_hdmap_projection_runtime_unavailable"],
+                "blocking_reasons": [],
+                "warnings": ["apollo_hdmap_projection_environment_unavailable"],
+            },
+        },
+    )
+    _write_json(
+        run_dir / "analysis/prediction_evidence/prediction_evidence_report.json",
+        {
+            "schema_version": "prediction_evidence.v1",
+            "scenario_class": "lane_keep",
+            "prediction_mode": "missing",
+            "prediction_channel_available": False,
+            "prediction_message_count": 0,
+            "planning_requires_prediction": True,
+            "hard_gate_eligible": False,
+            "blocking_capabilities": ["closed_loop"],
+            "warnings": [],
+            "verdict": "fail",
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert report["primary_blocker"] == "hdmap_projection:apollo_hdmap_projection_runtime_unavailable"
+    assert "prediction_evidence:closed_loop" in report["secondary_blockers"]
+    assert report["can_claim_unassisted_natural_driving"] is False
+
+
 def test_independent_hdmap_projection_report_is_consumed(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     loc_path = run_dir / "analysis/localization_contract/localization_contract_report.json"

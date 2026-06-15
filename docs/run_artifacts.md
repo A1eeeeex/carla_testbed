@@ -417,6 +417,12 @@ HDMap ids. It should record
 `apollo_hdmap_projection_for_lane_equivalence`, and keep the run
 `insufficient_data` until official Apollo HDMap projection or an explicit lane
 equivalence artifact is present.
+If the Apollo routing request itself includes trusted start/goal projections
+onto Apollo lanes, the route contract may use those projections to avoid a
+misleading lane-sequence hard fail across namespaces. That still does not prove
+lane equivalence; the report should keep
+`lane_equivalence_status=cross_namespace_unverified` until official HDMap
+projection or an explicit lane-equivalence artifact closes the gap.
 `apollo_route_contract_report.json` uses the claim/trace length for
 `scenario_route_length_m` when present and still preserves the legacy field as
 `scenario_route_legacy_length_m` / `scenario_route_legacy_length_role` for
@@ -597,6 +603,11 @@ present.
 missing file is `artifact_missing`, existing zero-row file is `artifact_empty`,
 and non-empty rows are `projection_rows_present`. Only rows with
 `source=apollo_hdmap_api` can support claim-grade HDMap/reference-line evidence.
+Rows whose `status` is `environment_unavailable` mean the exporter could not
+reach the Apollo HDMap runtime, for example because the Apollo Docker container
+or `map_xysl` command was unavailable. Treat that as `insufficient_data` and a
+runtime/exporter wiring gap, not as proof of map alignment, lane direction, or
+Planning algorithm failure.
 
 The archive contains `package_manifest.json`, which records included files,
 omitted large artifacts, missing required row-level evidence, and

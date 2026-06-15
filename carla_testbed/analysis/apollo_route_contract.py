@@ -261,6 +261,8 @@ def analyze_apollo_route_contract(
     )
     goal_compatible = goal_error is not None and goal_error <= MAX_GOAL_ERROR_M
     start_compatible = start_error is None or start_error <= MAX_GOAL_ERROR_M
+    routing_request_projection_compatible = _routing_request_projection_pair_compatible(last_routing_request)
+    endpoint_compatible = (goal_compatible and start_compatible) or routing_request_projection_compatible
     has_claim_projection = bool(projection.get("available"))
     lane_equivalence_status = "not_evaluated"
     if scenario_lane_keys and apollo_lane_keys:
@@ -272,9 +274,11 @@ def analyze_apollo_route_contract(
                 blocking.append("apollo_routing_missing_scenario_lane")
             if lane_window_sequence_mismatch:
                 blocking.append("apollo_routing_lane_sequence_mismatch")
-        elif length_compatible and goal_compatible and start_compatible:
+        elif length_compatible and endpoint_compatible:
             lane_equivalence_status = "cross_namespace_unverified"
             warnings.append("scenario_apollo_lane_namespace_equivalence_unverified")
+            if routing_request_projection_compatible and not (goal_compatible and start_compatible):
+                warnings.append("routing_request_projection_used_for_endpoint_compatibility")
             if not has_claim_projection:
                 missing.append("apollo_hdmap_projection_for_lane_equivalence")
                 warnings.append("apollo_hdmap_projection_required_for_cross_namespace_lane_equivalence")
@@ -401,6 +405,7 @@ def analyze_apollo_route_contract(
         "apollo_goal_xy": apollo_goal,
         "start_xy_error_m": start_error,
         "goal_xy_error_m": goal_error,
+        "routing_request_projection_compatible": routing_request_projection_compatible,
         "routing_length_delta_m": length_delta,
         "routing_length_ratio": length_ratio,
         "routing_length_tolerance_m": length_tolerance,
@@ -980,6 +985,29 @@ def _projection_summary(value: Any) -> dict[str, Any]:
         "reason": _text_or_none(value.get("reason")),
         "reject_reason": _text_or_none(value.get("reject_reason")),
     }
+
+
+def _routing_request_projection_pair_compatible(request: Mapping[str, Any]) -> bool:
+    if not isinstance(request, Mapping):
+        return False
+    start = request.get("start_projection")
+    goal = request.get("goal_projection")
+    if not isinstance(start, Mapping) or not isinstance(goal, Mapping):
+        return False
+    return _routing_request_projection_compatible(start) and _routing_request_projection_compatible(goal)
+
+
+def _routing_request_projection_compatible(projection: Mapping[str, Any]) -> bool:
+    accepted = _parse_bool(projection.get("accepted")) is True
+    trusted = _parse_bool(projection.get("trusted_lane_centerline")) is True
+    snap_distance = _num(projection.get("distance_m"))
+    lateral_error = _num(projection.get("signed_lateral_error_m"))
+    return bool(
+        accepted
+        and trusted
+        and (snap_distance is None or snap_distance <= MAX_GOAL_SNAP_DISTANCE_M)
+        and (lateral_error is None or abs(lateral_error) <= MAX_GOAL_LATERAL_ERROR_M)
+    )
 
 
 def _scenario_route(manifest: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[str, Any]:

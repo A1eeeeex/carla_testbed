@@ -17,6 +17,7 @@ from carla_testbed.analysis.apollo_hdmap_projection_export import (
     export_apollo_hdmap_projection_jsonl,
     load_localization_projection_samples,
     parse_map_xysl_xy_to_sl_output,
+    project_sample_with_map_xysl,
 )
 
 
@@ -156,6 +157,34 @@ def test_claim_grade_projection_fails_inconsistent_map_identity(tmp_path: Path) 
 
     assert report["status"] == "fail"
     assert "apollo_hdmap_projection_map_identity_inconsistent" in report["blocking_reasons"]
+
+
+def test_environment_unavailable_projection_is_insufficient_not_map_fail(tmp_path: Path) -> None:
+    path = tmp_path / "apollo_hdmap_projection.jsonl"
+    rows = _projection_rows(heading_error_rad=0.01, lateral_error_m=0.05)
+    for row in rows:
+        row.update(
+            {
+                "status": "environment_unavailable",
+                "nearest_lane_id": None,
+                "projection_s": None,
+                "projection_l": None,
+                "heading_error_rad": None,
+                "lateral_error_m": None,
+                "raw_output_excerpt": "Error response from daemon: container abc is not running",
+            }
+        )
+    _write_jsonl(path, rows)
+
+    report = analyze_apollo_hdmap_projection_file(path)
+
+    assert report["status"] == "insufficient_data"
+    assert report["claim_grade"] is False
+    assert report["projection"]["environment_unavailable_count"] == len(rows)
+    assert "apollo_hdmap_projection_runtime_unavailable" in report["insufficient_reasons"]
+    assert "apollo_map_xysl_runtime" in report["missing_fields"]
+    assert "apollo_hdmap_projection_no_ok_rows" not in report["blocking_reasons"]
+    assert "map_alignment" not in report["suspected_failure_layers"]
 
 
 def test_cli_writes_projection_report(tmp_path: Path) -> None:
@@ -421,6 +450,35 @@ def test_export_projection_jsonl_records_map_xysl_timeout(tmp_path: Path) -> Non
     assert status["non_ok_row_count"] == 1
     assert rows[0]["status"] == "error"
     assert rows[0]["command_timeout"] is True
+
+
+def test_project_sample_classifies_docker_container_unavailable() -> None:
+    sample = LocalizationProjectionSample(
+        timestamp=1.0,
+        x=1.0,
+        y=2.0,
+        heading=0.0,
+        source_artifact="sample.jsonl",
+        source_index=0,
+    )
+
+    def fake_runner(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=1,
+            stdout="",
+            stderr="Error response from daemon: container abc is not running\n",
+        )
+
+    row = project_sample_with_map_xysl(
+        sample,
+        MapXyslConfig(docker_container="apollo_container"),
+        command_runner=fake_runner,
+    )
+
+    assert row["status"] == "environment_unavailable"
+    assert row["command_exit_code"] == 1
+    assert "container abc is not running" in row["raw_output_excerpt"]
 
 
 def _projection_rows(*, heading_error_rad: float, lateral_error_m: float) -> list[dict]:
