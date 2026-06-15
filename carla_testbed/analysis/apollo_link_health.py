@@ -1904,6 +1904,16 @@ def _control_oscillation_diagnosis_from_control_health(
         if isinstance(layer, Mapping)
     }
     factors = [str(item) for item in semantics.get("suspected_factors") or []]
+    control_debug = _nested(report, "metrics.control_decode_debug")
+    control_debug = control_debug if isinstance(control_debug, Mapping) else {}
+    planning_correlation = control_debug.get("planning_trajectory_correlation")
+    planning_correlation = planning_correlation if isinstance(planning_correlation, Mapping) else {}
+    transition_window_summary = planning_correlation.get("transition_window_summary")
+    transition_window_summary = (
+        transition_window_summary
+        if isinstance(transition_window_summary, Mapping)
+        else {}
+    )
     control_to_chassis_ratio = _num(cadence.get("control_to_chassis_count_ratio"))
     control_to_localization_ratio = _num(cadence.get("control_to_localization_count_ratio"))
     gt_state_oversampling_present = (
@@ -1970,6 +1980,18 @@ def _control_oscillation_diagnosis_from_control_health(
         "raw_command_oscillation_present": raw_command_oscillation_present,
         "same_trajectory_switching_present": same_trajectory_switching_present,
         "planning_sequence_update_correlates_with_switches": planning_sequence_update_present,
+        "transition_window_dominant_mode": transition_window_summary.get(
+            "dominant_transition_mode"
+        ),
+        "same_planning_sequence_transition_ratio": transition_window_summary.get(
+            "same_planning_sequence_ratio"
+        ),
+        "planning_sequence_changed_transition_ratio": transition_window_summary.get(
+            "planning_sequence_changed_ratio"
+        ),
+        "transition_window_summary_available": bool(
+            transition_window_summary.get("available")
+        ),
         "gt_state_oversampling_present": gt_state_oversampling_present,
         "control_to_chassis_count_ratio": control_to_chassis_ratio,
         "control_to_localization_count_ratio": control_to_localization_ratio,

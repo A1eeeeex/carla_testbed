@@ -1124,6 +1124,16 @@ def _control_oscillation_diagnosis(metrics: Mapping[str, Any]) -> dict[str, Any]
     planning_sequence_update_present = (
         "planning_sequence_update_correlates_with_switches" in factors
     )
+    control_debug = metrics.get("control_decode_debug")
+    control_debug = control_debug if isinstance(control_debug, Mapping) else {}
+    planning_correlation = control_debug.get("planning_trajectory_correlation")
+    planning_correlation = planning_correlation if isinstance(planning_correlation, Mapping) else {}
+    transition_window_summary = planning_correlation.get("transition_window_summary")
+    transition_window_summary = (
+        transition_window_summary
+        if isinstance(transition_window_summary, Mapping)
+        else {}
+    )
     matched_reference_jump_present = (
         "matched_or_reference_point_jump" in factors
         or "trajectory_station_or_path_remain_jump" in factors
@@ -1205,6 +1215,18 @@ def _control_oscillation_diagnosis(metrics: Mapping[str, Any]) -> dict[str, Any]
         "raw_command_oscillation_present": raw_command_oscillation_present,
         "same_trajectory_switching_present": same_trajectory_switching_present,
         "planning_sequence_update_correlates_with_switches": planning_sequence_update_present,
+        "transition_window_dominant_mode": transition_window_summary.get(
+            "dominant_transition_mode"
+        ),
+        "same_planning_sequence_transition_ratio": transition_window_summary.get(
+            "same_planning_sequence_ratio"
+        ),
+        "planning_sequence_changed_transition_ratio": transition_window_summary.get(
+            "planning_sequence_changed_ratio"
+        ),
+        "transition_window_summary_available": bool(
+            transition_window_summary.get("available")
+        ),
         "matched_or_reference_point_jump_present": matched_reference_jump_present,
         "gt_state_oversampling_present": gt_state_oversampling_present,
         "gt_state_sampling_warnings": cadence_warnings,
@@ -3335,6 +3357,14 @@ def _planning_trajectory_correlation(
         "transition_count": transition_count,
         "aligned_transition_count": aligned_count,
         "transition_buckets": buckets,
+        "transition_window_summary": _planning_transition_window_summary(
+            trace_rows=trace_rows,
+            consume_rows=consume_rows,
+            planning_by_seq=planning_by_seq,
+            route_by_seq=route_by_seq,
+            transition_indices=transition_indices,
+            aligned_transition_indices=aligned_transition_indices,
+        ),
         "suspected_factors": suspected_factors,
         "dominant_suspected_factor": suspected_factors[0] if suspected_factors else None,
         "interpretation_caveat": (
@@ -3348,6 +3378,186 @@ def _planning_trajectory_correlation(
             "trajectory_total_time_delta_s": 1.0,
         },
         "examples": examples,
+    }
+
+
+def _planning_transition_window_summary(
+    *,
+    trace_rows: Sequence[Mapping[str, Any]],
+    consume_rows: Sequence[Mapping[str, Any]],
+    planning_by_seq: Mapping[int, Mapping[str, Any]],
+    route_by_seq: Mapping[int, Mapping[str, Any]],
+    transition_indices: Sequence[int],
+    aligned_transition_indices: Sequence[int],
+) -> dict[str, Any]:
+    windows: list[dict[str, Any]] = []
+    planning_sequence_counts: dict[str, int] = {}
+    same_sequence_count = 0
+    changed_sequence_count = 0
+    speed_fallback_count = 0
+    speed_reference_deltas: list[float] = []
+    acceleration_cmd_deltas: list[float] = []
+    path_remain_deltas: list[float] = []
+    planning_ages: list[float] = []
+
+    for index in aligned_transition_indices:
+        if not (0 < index < len(trace_rows) and index < len(consume_rows)):
+            continue
+        prev_trace = trace_rows[index - 1]
+        cur_trace = trace_rows[index]
+        prev_consume = consume_rows[index - 1]
+        cur_consume = consume_rows[index]
+        prev_seq = _int(prev_consume.get("planning_header_sequence_num_used"))
+        cur_seq = _int(cur_consume.get("planning_header_sequence_num_used"))
+        if prev_seq == cur_seq:
+            same_sequence_count += 1
+        else:
+            changed_sequence_count += 1
+        if cur_seq is not None:
+            key = str(cur_seq)
+            planning_sequence_counts[key] = planning_sequence_counts.get(key, 0) + 1
+        cur_planning = planning_by_seq.get(cur_seq) if cur_seq is not None else None
+        cur_route = route_by_seq.get(cur_seq) if cur_seq is not None else None
+        if isinstance(cur_planning, Mapping) and cur_planning.get("trajectory_type") == "SPEED_FALLBACK":
+            speed_fallback_count += 1
+        if (
+            delta := _delta(
+                prev_trace.get("debug_simple_lon_speed_reference_mps"),
+                cur_trace.get("debug_simple_lon_speed_reference_mps"),
+            )
+        ) is not None:
+            speed_reference_deltas.append(delta)
+        if (
+            delta := _delta(
+                prev_trace.get("debug_simple_lon_acceleration_cmd_mps2"),
+                cur_trace.get("debug_simple_lon_acceleration_cmd_mps2"),
+            )
+        ) is not None:
+            acceleration_cmd_deltas.append(delta)
+        if (
+            delta := _delta(
+                prev_trace.get("debug_simple_lon_path_remain_m"),
+                cur_trace.get("debug_simple_lon_path_remain_m"),
+            )
+        ) is not None:
+            path_remain_deltas.append(delta)
+        if (age := _num(cur_consume.get("latest_planning_msg_age_ms"))) is not None:
+            planning_ages.append(age)
+        if len(windows) < 8:
+            windows.append(
+                {
+                    "row_index": [index - 1, index],
+                    "state": [
+                        _longitudinal_command_state(prev_trace),
+                        _longitudinal_command_state(cur_trace),
+                    ],
+                    "trace_ts_sec": [
+                        _num(prev_trace.get("ts_sec")),
+                        _num(cur_trace.get("ts_sec")),
+                    ],
+                    "control_sequence_num": [
+                        _int(prev_trace.get("control_header_sequence_num")),
+                        _int(cur_trace.get("control_header_sequence_num")),
+                    ],
+                    "planning_sequence_num": [prev_seq, cur_seq],
+                    "same_planning_sequence": prev_seq == cur_seq,
+                    "effective_planning_source": [
+                        prev_consume.get("effective_planning_source"),
+                        cur_consume.get("effective_planning_source"),
+                    ],
+                    "planning_age_ms": [
+                        _num(prev_consume.get("latest_planning_msg_age_ms")),
+                        _num(cur_consume.get("latest_planning_msg_age_ms")),
+                    ],
+                    "trajectory_type": (
+                        cur_planning.get("trajectory_type")
+                        if isinstance(cur_planning, Mapping)
+                        else None
+                    ),
+                    "route_segment_status": {
+                        "reference_line_provider_status": (
+                            cur_route.get("reference_line_provider_status")
+                            if isinstance(cur_route, Mapping)
+                            else None
+                        ),
+                        "lane_follow_map_status": (
+                            cur_route.get("lane_follow_map_status")
+                            if isinstance(cur_route, Mapping)
+                            else None
+                        ),
+                        "create_route_segments_status": (
+                            cur_route.get("create_route_segments_status")
+                            if isinstance(cur_route, Mapping)
+                            else None
+                        ),
+                    },
+                    "speed_reference_mps": [
+                        _num(prev_trace.get("debug_simple_lon_speed_reference_mps")),
+                        _num(cur_trace.get("debug_simple_lon_speed_reference_mps")),
+                    ],
+                    "acceleration_cmd_mps2": [
+                        _num(prev_trace.get("debug_simple_lon_acceleration_cmd_mps2")),
+                        _num(cur_trace.get("debug_simple_lon_acceleration_cmd_mps2")),
+                    ],
+                    "path_remain_m": [
+                        _num(prev_trace.get("debug_simple_lon_path_remain_m")),
+                        _num(cur_trace.get("debug_simple_lon_path_remain_m")),
+                    ],
+                    "station_error_m": [
+                        _num(prev_trace.get("debug_simple_lon_station_error_m")),
+                        _num(cur_trace.get("debug_simple_lon_station_error_m")),
+                    ],
+                }
+            )
+
+    aligned_count = len(aligned_transition_indices)
+    same_ratio = _safe_div(same_sequence_count, aligned_count)
+    changed_ratio = _safe_div(changed_sequence_count, aligned_count)
+    if same_ratio is not None and same_ratio >= 0.75:
+        dominant_mode = "same_planning_sequence"
+    elif changed_ratio is not None and changed_ratio >= 0.75:
+        dominant_mode = "planning_sequence_update"
+    elif aligned_count:
+        dominant_mode = "mixed"
+    else:
+        dominant_mode = "insufficient_data"
+    top_sequences = [
+        {"planning_sequence_num": key, "transition_count": count}
+        for key, count in sorted(
+            planning_sequence_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:8]
+    ]
+    return {
+        "available": bool(aligned_count),
+        "transition_count": len(transition_indices),
+        "aligned_transition_count": aligned_count,
+        "same_planning_sequence_count": same_sequence_count,
+        "planning_sequence_changed_count": changed_sequence_count,
+        "same_planning_sequence_ratio": same_ratio,
+        "planning_sequence_changed_ratio": changed_ratio,
+        "dominant_transition_mode": dominant_mode,
+        "speed_fallback_transition_count": speed_fallback_count,
+        "top_planning_sequences": top_sequences,
+        "planning_age_p95_ms": _percentile(planning_ages, 0.95),
+        "speed_reference_delta_p95_abs_mps": _percentile(
+            [abs(item) for item in speed_reference_deltas],
+            0.95,
+        ),
+        "acceleration_cmd_delta_p95_abs_mps2": _percentile(
+            [abs(item) for item in acceleration_cmd_deltas],
+            0.95,
+        ),
+        "path_remain_delta_p95_abs_m": _percentile(
+            [abs(item) for item in path_remain_deltas],
+            0.95,
+        ),
+        "sample_windows": windows,
+        "interpretation_caveat": (
+            "Transition windows are row-level attribution evidence. Same-planning-sequence "
+            "switching narrows the next debug target to Apollo Control/simple_lon behavior "
+            "on a consumed trajectory; it does not prove a standalone algorithm root cause."
+        ),
     }
 
 

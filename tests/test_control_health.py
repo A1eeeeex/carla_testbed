@@ -589,6 +589,14 @@ def test_control_health_reads_simple_lon_debug_from_raw_control_dump(tmp_path: P
     assert planning["transition_buckets"]["trajectory_last_point_jump_gt_5m"] == 1
     assert planning["transition_buckets"]["speed_fallback_involved"] == 1
     assert planning["dominant_suspected_factor"] == "planning_trajectory_length_switching"
+    window = planning["transition_window_summary"]
+    assert window["available"] is True
+    assert window["transition_count"] == 1
+    assert window["aligned_transition_count"] == 1
+    assert window["planning_sequence_changed_count"] == 1
+    assert window["same_planning_sequence_count"] == 0
+    assert window["dominant_transition_mode"] == "planning_sequence_update"
+    assert window["sample_windows"][0]["same_planning_sequence"] is False
     assert report["control_semantics_primary_factor"] == "planning_trajectory_length_switching"
     assert "planning_trajectory_length_switching" in report["control_semantics_suspected_factors"]
     assert (
@@ -631,6 +639,8 @@ def test_control_health_reads_simple_lon_debug_from_raw_control_dump(tmp_path: P
     assert diagnosis["claim_grade_control_mapping"] is False
     assert "gt_state_sampling_cadence" in diagnosis["suspected_layers"]
     assert "control_mapping_claim_boundary" in diagnosis["suspected_layers"]
+    assert diagnosis["transition_window_dominant_mode"] == "planning_sequence_update"
+    assert diagnosis["planning_sequence_changed_transition_ratio"] == 1.0
     assert (
         diagnosis["control_semantics_primary_factor"]
         == "planning_trajectory_length_switching"

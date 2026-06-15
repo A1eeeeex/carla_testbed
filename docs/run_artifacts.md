@@ -683,6 +683,11 @@ same-trajectory switching, GT-state over-sampling, legacy/calibrated mapping
 claim boundary, dominant source factors, and `next_debug_target`. It is an
 artifact navigation aid; it does not convert a failed or incomplete run into a
 natural-driving pass in `natural_driving_report.json`.
+`metrics.control_decode_debug.planning_trajectory_correlation.transition_window_summary`
+is the lower-level row navigation aid. It tells reviewers whether command
+switches mostly occur inside the same consumed Planning sequence or at Planning
+sequence updates, and provides small sample windows for the exact rows to
+inspect.
 If the trace exists but raw, mapped, and applied command fields are all null,
 it is a no-command placeholder. That artifact is useful for loop/cadence
 debugging, but it cannot satisfy raw/mapped/applied control evidence or a

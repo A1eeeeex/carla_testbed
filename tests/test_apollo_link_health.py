@@ -1520,6 +1520,12 @@ def test_control_oscillation_becomes_primary_only_after_localization_and_referen
             "trajectory_path_length_delta_gt_5m": 8,
             "speed_fallback_involved": 6,
         },
+        "transition_window_summary": {
+            "available": True,
+            "dominant_transition_mode": "planning_sequence_update",
+            "same_planning_sequence_ratio": 0.25,
+            "planning_sequence_changed_ratio": 0.75,
+        },
         "dominant_suspected_factor": "planning_trajectory_length_switching",
     }
     control["metrics"]["planning_log_fallback_diagnostics"] = {
@@ -1558,6 +1564,8 @@ def test_control_oscillation_becomes_primary_only_after_localization_and_referen
     assert diagnosis["raw_command_oscillation_present"] is True
     assert diagnosis["gt_state_oversampling_present"] is True
     assert diagnosis["control_to_chassis_count_ratio"] == 10.0
+    assert diagnosis["transition_window_dominant_mode"] == "planning_sequence_update"
+    assert diagnosis["planning_sequence_changed_transition_ratio"] == 0.75
     assert "control_mapping_claim_boundary" in diagnosis["suspected_layers"]
     assert (
         metrics["control_semantics_evidence"]["dominant_by_source"][

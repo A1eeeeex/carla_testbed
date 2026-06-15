@@ -99,6 +99,12 @@ occurs on the same consumed trajectory, whether GT localization/chassis is
 being oversampled by the Apollo control loop, whether legacy mapping is only
 smoke/debug evidence, and which next debug target should be inspected first.
 This roll-up is still attribution evidence, not a capability verdict.
+For row-level navigation, inspect
+`metrics.control_decode_debug.planning_trajectory_correlation.transition_window_summary`.
+It records the ratio of throttle/brake transitions that happen within the same
+Planning sequence versus transitions aligned with a Planning sequence update,
+plus small sample windows with row indices, states, planning age, trajectory
+type, speed reference, acceleration command, and path-remain values.
 Trace-file presence alone is not control evidence. Rows whose raw, mapped, and
 applied command fields are all null are treated as no-command placeholders; they
 can document that the bridge loop ran, but they cannot clear raw/mapped/applied
