@@ -37,6 +37,14 @@ The legacy harness still writes CSV-oriented frame data.
   the world actually loaded by CARLA.
 - `scenario_name`
 - `backend_name`
+- Phase 1 backend input contract fields when available:
+  - `backend_type`
+  - `backend`
+  - `input_contract`
+  - `adapter_path`
+  - `available_truth_fields`
+  - `output_control_mode`
+  - `transport_mode`
 - `algorithm_variant_id` and `algorithm_variant_manifest_path` for any
   capability claim. The variant manifest must resolve inside the package and
   identify the same variant; missing or mismatched variant metadata keeps the
@@ -114,6 +122,42 @@ include:
 
 Future backends may prefer `timeseries.jsonl` for structured per-frame records.
 Both forms should stay run-local.
+
+## Phase 1 Scenario Comparison Artifacts
+
+Phase 1 comparison does not require a natural-driving report. It requires
+simple, backend-neutral artifacts that make target selection, longitudinal
+response, and run validity explicit.
+
+Additional run-local artifacts:
+
+- `artifacts/fixed_scene_resolved.json`
+  - should include `target_actor_contract` when the scenario has a target
+    actor.
+- `artifacts/scenario_actor_trace.jsonl`
+  - fixed-scene actor state trace; used by `v-t-gap` extraction.
+- `analysis/v_t_gap/v_t_gap_report.json`
+- `analysis/v_t_gap/v_t_gap.csv`
+  - fields include `sim_time_s`, `ego_speed_mps`, `target_speed_mps`,
+    `gap_m`, `relative_speed_mps`, `target_actor_id`,
+    `target_actor_role`, and `gap_method`.
+  - `gap_method=center_distance_fallback` or
+    `existing_lead_gap_m_degraded` is diagnostic/degraded evidence, not a
+    claim-grade bumper gap.
+- `analysis/phase1_status/phase1_status.json`
+  - status is one of `success`, `degraded`, `failed`, or `invalid`.
+  - invalid runs are setup/artifact/config/backend-readiness problems and must
+    not count as backend losses.
+
+Comparison directory artifacts:
+
+- `comparison_manifest.json`
+- `comparison_summary.json`
+- optional `comparison_curves/`
+
+`comparison_status=comparable` is allowed only when participating runs are
+evaluable. If any run is invalid, the comparison is `partially_evaluable` or
+`invalid`; it must not declare a backend winner from invalid setup evidence.
 
 ## `logs/`
 

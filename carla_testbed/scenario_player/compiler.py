@@ -11,6 +11,7 @@ from carla_testbed.scenario_player.schema import (
     validate_fixed_scene_storyboard,
     validate_fixed_scene_template,
 )
+from carla_testbed.scenario_player.target_actor import resolve_target_actor_contract
 
 
 def compile_fixed_scene_template(template_cfg: Mapping[str, Any]) -> dict[str, Any]:
@@ -67,6 +68,7 @@ def _base_storyboard(template: Mapping[str, Any], scene_id: str) -> dict[str, An
             "claim_boundary": "fixed_scene_playback_is_scenario_setup_not_ego_capability_evidence",
         },
     }
+    payload["target_actor_contract"] = resolve_target_actor_contract(payload)
     return payload
 
 
@@ -185,6 +187,7 @@ def _compile_static_lead_stop(template: Mapping[str, Any], scene_id: str) -> dic
     storyboard["storyboard"]["phases"] = [
         {
             "id": "lead_hold_stop",
+            "completion_required": False,
             "start": {"type": "simulation_time", "op": ">=", "value": 0.0},
             "actions": [
                 {

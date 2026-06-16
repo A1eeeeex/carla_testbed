@@ -67,6 +67,27 @@ before connecting Apollo or Autoware.
 but its claim boundary is always diagnostic-only. A successful builtin run does
 not prove Apollo or Autoware natural-driving capability.
 
+For Phase 1 comparison work, `carla_builtin` is the current runtime
+implementation of the `PlanningControlBackend` target category. The runtime
+name should remain `carla_builtin`; manifest fields carry the category:
+
+- `backend_type=planning_control_backend`
+- `input_contract=scene_truth_direct`
+- `adapter_path=carla_testbed.scenario_player.builtin_ego_runner`
+- `available_truth_fields` listing ego, target actor, fixed-scene, and route
+  context truth used by the controller
+- `output_control_mode=carla_vehicle_control`
+
+This makes the input asymmetry explicit. Phase 1 compares scenario-level
+closed-loop behavior; it is not an identical-input Apollo-vs-builtin algorithm
+benchmark.
+
+`apollo_cyberrt` is the Phase 1 `ApolloBackend` / reference backend category
+and should declare `backend_type=apollo_reference_backend` plus its
+truth-input GT replacement contract in manifests and launch plans. Missing
+fixed-scene Apollo runtime artifacts should make a run `invalid`, not an
+Apollo behavior loss.
+
 ## Legacy IO
 
 `io/` is deprecated compatibility. It exists so historical scripts and contract

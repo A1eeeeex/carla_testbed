@@ -14,7 +14,13 @@ class StackContract:
     backend: str
     starts_carla: bool
     starts_external_stack: bool
+    backend_type: str = "unknown"
     middleware: str = "none"
+    input_contract: str = "unspecified"
+    adapter_path: str = "unspecified"
+    available_truth_fields: list[str] = field(default_factory=list)
+    output_control_mode: str = "unspecified"
+    transport_mode: str = "none"
     required_inputs: list[str] = field(default_factory=list)
     expected_outputs: list[str] = field(default_factory=list)
     required_recorders: list[str] = field(default_factory=list)
@@ -25,9 +31,15 @@ class StackContract:
     def to_dict(self) -> dict[str, Any]:
         return {
             "backend": self.backend,
+            "backend_type": self.backend_type,
             "starts_carla": self.starts_carla,
             "starts_external_stack": self.starts_external_stack,
             "middleware": self.middleware,
+            "input_contract": self.input_contract,
+            "adapter_path": self.adapter_path,
+            "available_truth_fields": list(self.available_truth_fields),
+            "output_control_mode": self.output_control_mode,
+            "transport_mode": self.transport_mode,
             "required_inputs": list(self.required_inputs),
             "expected_outputs": list(self.expected_outputs),
             "required_recorders": list(self.required_recorders),

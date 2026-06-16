@@ -78,6 +78,33 @@ def test_fixed_scene_contract_fails_when_required_phase_does_not_complete(tmp_pa
     ]
 
 
+def test_static_lead_hold_phase_does_not_require_completion_for_short_smoke(tmp_path) -> None:
+    template = load_fixed_scene_template("configs/scenarios/baguang/follow_stop_static_300m.yaml")
+    storyboard = compile_fixed_scene_template(template)
+    storyboard_path = tmp_path / "fixed_scene_resolved.json"
+    trace_path = tmp_path / "scenario_actor_trace.jsonl"
+    events_path = tmp_path / "scenario_phase_events.jsonl"
+    storyboard_path.write_text(json.dumps(storyboard), encoding="utf-8")
+    trace_path.write_text(
+        json.dumps({"schema_version": "scenario_actor_trace.v1", "scene_id": storyboard["scene_id"], "phase": "lead_hold_stop", "actor_role": "lead_vehicle"}) + "\n",
+        encoding="utf-8",
+    )
+    events_path.write_text(
+        json.dumps({"schema_version": "scenario_phase_event.v1", "scene_id": storyboard["scene_id"], "phase": "lead_hold_stop", "event": "phase_started"}) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_fixed_scene_contract(
+        storyboard_path=storyboard_path,
+        trace_path=trace_path,
+        events_path=events_path,
+    )
+
+    assert report["status"] == "pass"
+    assert report["required_completion_phases"] == []
+    assert "fixed_scene_required_phase_not_completed" not in report["blocking_reasons"]
+
+
 def test_fixed_scene_contract_writes_report_files(tmp_path) -> None:
     storyboard_path, trace_path, events_path = _write_fixed_scene_fixture(tmp_path)
     report = analyze_fixed_scene_contract(storyboard_path=storyboard_path, trace_path=trace_path, events_path=events_path)

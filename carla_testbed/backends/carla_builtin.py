@@ -17,7 +17,18 @@ class CarlaBuiltinBackend:
             backend=self.name,
             starts_carla=True,
             starts_external_stack=False,
+            backend_type="planning_control_backend",
             middleware="none",
+            input_contract="scene_truth_direct",
+            adapter_path="carla_testbed.scenario_player.builtin_ego_runner",
+            available_truth_fields=[
+                "ego_state",
+                "target_actor_state",
+                "fixed_scene_roles",
+                "route_waypoint_context",
+            ],
+            output_control_mode="carla_vehicle_control",
+            transport_mode="direct_python_api",
             required_inputs=["fixed_scene_storyboard", "carla_world"],
             expected_outputs=[
                 "manifest.json",
@@ -61,6 +72,8 @@ class CarlaBuiltinBackend:
             "runtime_dispatched": False,
             "legacy_dispatch": "tools/run_builtin_ego_fixed_scene.py",
             "claim_boundary": "diagnostic_only_not_natural_driving_evidence",
+            "backend_type": "planning_control_backend",
+            "input_contract": "scene_truth_direct",
         }
 
     def build_launch_plan(self, plan: RunPlan) -> LaunchPlan:

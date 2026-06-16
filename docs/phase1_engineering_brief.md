@@ -441,10 +441,10 @@ Status definitions:
 | PlanningControlBackend | Self-written planning/control baseline backend | PARTIAL | `carla_testbed/backends/carla_builtin.py`; `configs/platforms/carla_builtin.yaml`; `configs/algorithms/builtin/simple_acc_route_follower.yaml`; `carla_testbed/control/simple_acc_route_follower.py`; `tests/test_builtin_ego_controller.py` | Current name is `carla_builtin`; it is diagnostic-only and not yet formalized as `PlanningControlBackend`. | Add naming/manifest fields that identify the backend input contract without changing runtime behavior. |
 | ScenarioRun artifact structure | Per-run artifact envelope | PARTIAL | `docs/run_artifacts.md`; `carla_testbed/record/artifact_store.py`; `tests/unit/recording/test_artifact_store.py`; `carla_testbed/scenario_player/builtin_ego_runner.py` | Existing paths differ from the recommended Phase 1 layout; some online tools still write richer legacy artifacts. | Add a non-invasive artifact completeness checker for Phase 1 ScenarioRun. |
 | ScenarioComparison artifact structure | Backend comparison envelope | PARTIAL | `carla_testbed/analysis/baguang_stack_comparison.py`; `tools/analyze_baguang_stack_comparison.py`; `tests/test_baguang_stack_comparison.py` | Existing comparison is Baguang/stack-specific and assisted-profile oriented. | Generalize comparison manifest/summary names around ScenarioCase without changing existing analyzer. |
-| v-t-gap extraction | Core longitudinal behavior curves | NOT_YET | No dedicated Phase 1 `v-t-gap` extractor or `comparison_curves/` writer found during 2026-06-16 scan. | Timeseries and lead-gap fields exist in some runs, but curve extraction is not a stable artifact. | Add `analysis/phase1_vtgap.py` consuming explicit target actor traces and ego timeseries. |
-| target actor declaration | Bind scenario target vehicle | PARTIAL | `configs/scenarios/*` role blocks; `carla_testbed/scenario_player/schema.py`; `carla_testbed/scenario_player/trace.py`; `docs/scenario_player.md` | Target role exists as `lead_vehicle` in many scenes, but a normalized `target_actor` field for comparison is not frozen. | Add a read-only target-role resolver for P0 scenarios. |
-| bumper-to-bumper gap calculation | Define `gap_t` consistently | NOT_YET | `simple_acc_route_follower.py` records `lead_gap_m`, but no evidence of bumper geometry correction was found. | Current gap appears center/pose based in controller metadata. | Add explicit vehicle-length-aware gap utility and fixture tests. |
-| run status classification | Separate success/degraded/failed/invalid | PARTIAL | `summary.json` writers; `carla_testbed/analysis/baguang_stack_comparison.py`; `docs/run_artifacts.md` | Current statuses vary by tool (`pass/warn/fail`, `success`, `insufficient_data`); Phase 1 taxonomy is not centralized. | Add a Phase 1 status normalizer that maps existing tool statuses conservatively. |
+| v-t-gap extraction | Core longitudinal behavior curves | PARTIAL | `carla_testbed/analysis/v_t_gap.py`; `tools/extract_v_t_gap.py`; `tests/test_v_t_gap_extractor.py` | Extractor exists and supports `timeseries.csv/jsonl` plus actor traces, but online cross-backend comparison evidence is still missing. | Add online run evidence and optional comparison curves. |
+| target actor declaration | Bind scenario target vehicle | PARTIAL | `configs/scenarios/*` role blocks; `carla_testbed/scenario_player/target_actor.py`; `carla_testbed/scenario_player/compiler.py`; `tests/test_target_actor_resolver.py` | Resolver exists and writes `target_actor_contract`, but target transition semantics still need online validation for P1 cases. | Use the contract in v-t-gap and comparison reports. |
+| bumper-to-bumper gap calculation | Define `gap_t` consistently | PARTIAL | `carla_testbed/analysis/gap.py`; `tests/test_bumper_gap.py` | Utility exists, but many current online traces lack actor length/width fields and may use degraded fallback. | Add dimensions to runtime traces where available. |
+| run status classification | Separate success/degraded/failed/invalid | PARTIAL | `carla_testbed/analysis/phase1_status.py`; `tools/classify_phase1_run.py`; `tests/test_phase1_status_classifier.py` | Classifier exists, but legacy online paths do not all write Phase 1 status automatically. | Run classifier in postprocess and online validation scripts. |
 | failure_reason classification | Separate backend failure from invalid run | PARTIAL | Existing `summary.fail_reason` usage; `docs/run_artifacts.md`; analysis modules under `carla_testbed/analysis/` | Many analyzers have failure reasons, but Phase 1 invalid-vs-failed boundary is not frozen. | Add failure reason enum docs plus a small classifier over summary/artifact completeness. |
 | manifest input contract | Record backend input contract and truth fields | PARTIAL | `StackContract` in `carla_testbed/backends/base.py`; `configs/algorithms/apollo/apollo10_carla_gt.yaml`; `configs/algorithms/builtin/simple_acc_route_follower.yaml`; `RunArtifactStore.write_manifest()` | Backend input contract is available in planning/facade layers, but not guaranteed in every online run manifest. | Add manifest enrichment for `backend_input_contract` in dry-run and builtin paths first. |
 | executable control trace | Prove backend-produced throttle/brake/steer | PARTIAL | `artifacts/ego_control_trace.jsonl` in `carla_testbed/scenario_player/builtin_ego_runner.py`; Apollo control traces in `tools/apollo10_cyber_bridge/`; `tests/test_apollo_control_handoff.py` | Trace schemas differ between builtin and Apollo paths. | Add a thin normalization report for executable control traces. |
@@ -453,10 +453,28 @@ Status definitions:
 | timeseries.* | Per-frame metrics surface | PARTIAL | `docs/run_artifacts.md`; `builtin_ego_runner.py`; many analyzers read `timeseries.csv`; `RunArtifactStore.timeseries_jsonl_path` | `timeseries.csv` and `timeseries.jsonl` both exist, but target actor and bumper gap fields are not unified. | Add Phase 1 minimal timeseries field contract and require analyzers to declare consumed format. |
 | events.jsonl writer | Write discrete run events | DONE | `RunArtifactStore.open_events()`; `tests/unit/recording/test_artifact_store.py`; `docs/run_artifacts.md` | Writer exists, but this does not define Phase 1 event names. | Keep writer stable. |
 | Phase 1 event vocabulary | Define target activation and invalid-run events | PARTIAL | Existing `events.jsonl` usage; `docs/run_artifacts.md`; scenario phase events in `carla_testbed/scenario_player/trace.py` | Phase 1 event names for target activation and invalid-run reasons are not frozen. | Add optional Phase 1 event vocabulary. |
-| comparison report | Compare multiple backend runs | PARTIAL | `tools/analyze_baguang_stack_comparison.py`; `tests/test_baguang_stack_comparison.py` | Existing report is not yet generic ScenarioComparison. | Add generic wrapper or report schema while keeping Baguang analyzer as a fixture source. |
+| comparison report | Compare multiple backend runs | PARTIAL | `carla_testbed/analysis/scenario_comparison.py`; `tools/compare_scenario_runs.py`; `tests/test_scenario_comparison.py`; `tools/analyze_baguang_stack_comparison.py`; `tests/test_baguang_stack_comparison.py` | Generic report exists, but online Apollo-vs-builtin ScenarioComparison evidence is still missing. | Use it on one builtin and one Apollo fixed-scene run. |
 | docs overclaim guard tests | Prevent broad overclaiming in tracked docs | DONE | `tests/test_docs_no_overclaim.py`; `tests/test_docs_claim_artifacts.py`; `docs/README.md` | Guard tests exist, but they do not by themselves make Phase 1 docs complete. | Keep Phase 1 brief under docs guard. |
 | Phase 1 docs claim consistency | Keep Phase 1 language aligned with actual evidence | PARTIAL | `docs/phase1_engineering_brief.md`; docs guard tests | This brief is a first scope freeze; future Phase 1 docs still need to cite exact artifacts when claims mature. | Review future Phase 1 docs against this brief and docs guard. |
 | tests / fixtures | CI-safe verification | PARTIAL | `tests/test_fixed_scene_*`; `tests/test_platform_*`; `tests/test_builtin_ego_controller.py`; `tests/test_baguang_stack_comparison.py` | Missing tests for generic `ScenarioRun`, generic `ScenarioComparison`, and `v-t-gap` extraction. | Add focused tests for Phase 1 status and v-t-gap extraction. |
+
+Implementation note added after the 2026-06-16 review:
+
+- `carla_testbed/scenario_player/target_actor.py` provides the first explicit
+  target actor resolver and writes `target_actor_contract` into compiled
+  fixed-scene storyboards.
+- `carla_testbed/analysis/gap.py` defines the first bumper-to-bumper gap
+  utility. Center-distance fallback is marked degraded.
+- `carla_testbed/analysis/v_t_gap.py` extracts Phase 1 `v-t-gap` artifacts from
+  `timeseries.*` and `scenario_actor_trace.jsonl`.
+- `carla_testbed/analysis/phase1_status.py` centralizes
+  `success/degraded/failed/invalid` run status classification.
+- `carla_testbed/analysis/scenario_comparison.py` writes the first generic
+  ScenarioComparison report.
+
+These additions improve the offline Phase 1 evaluation spine. They do not by
+themselves prove online CARLA playback, Apollo fixed-scene compatibility, or
+backend behavior quality.
 
 ## Important Current Findings
 
@@ -488,10 +506,17 @@ PARTIAL findings:
 
 NOT_YET findings:
 
-- Dedicated `v-t-gap` extraction with `comparison_curves/`.
-- Bumper-to-bumper gap calculation.
 - Explicit `lead_hard_brake` scenario.
-- Central Phase 1 run status and failure-reason classifier.
+- Online ApolloBackend vs PlanningControlBackend ScenarioComparison evidence.
+
+New PARTIAL findings from the offline Phase 1 spine:
+
+- Dedicated `v-t-gap` extraction exists, but online comparison curves are not
+  yet attached to a real Apollo-vs-builtin comparison directory.
+- Bumper-to-bumper gap calculation exists, but online traces still need
+  vehicle dimension fields to avoid degraded center-distance fallback.
+- Central Phase 1 run status/failure-reason classification exists, but legacy
+  online paths do not yet invoke it automatically.
 
 UNKNOWN findings:
 

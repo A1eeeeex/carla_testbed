@@ -18,7 +18,19 @@ class ApolloCyberRTBackend:
             backend=self.name,
             starts_carla=True,
             starts_external_stack=True,
+            backend_type="apollo_reference_backend",
             middleware="cyberrt",
+            input_contract="apollo_truth_input_gt_replacement",
+            adapter_path="tools/apollo10_cyber_bridge",
+            available_truth_fields=[
+                "gt_localization",
+                "gt_chassis",
+                "gt_obstacles",
+                "gt_traffic_lights_when_configured",
+                "routing_goal",
+            ],
+            output_control_mode="apollo_control_to_carla_vehicle_control",
+            transport_mode="cyberrt",
             required_inputs=[
                 "/apollo/localization/pose",
                 "/apollo/canbus/chassis",
@@ -59,6 +71,8 @@ class ApolloCyberRTBackend:
             "runtime_dispatched": False,
             "legacy_dispatch": "tools/apollo10_cyber_bridge or existing configs/io runner",
             "compatibility_backend": plan.platform.params.get("compatibility_backend"),
+            "backend_type": "apollo_reference_backend",
+            "input_contract": "apollo_truth_input_gt_replacement",
         }
 
     def build_launch_plan(self, plan: RunPlan) -> LaunchPlan:

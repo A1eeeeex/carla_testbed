@@ -106,6 +106,11 @@ def analyze_fixed_scene_contract(
         for phase in phases
         if phase.get("id") is not None and bool(phase.get("required", True))
     ]
+    required_completion_phases = [
+        str(phase.get("id"))
+        for phase in phases
+        if phase.get("id") is not None and bool(phase.get("required", True)) and _phase_requires_completion(phase)
+    ]
     started_phases = sorted(
         {
             str(row.get("phase"))
@@ -122,7 +127,7 @@ def analyze_fixed_scene_contract(
     )
     missing_started_phases = sorted(set(phase_ids) - set(started_phases))
     missing_required_phases = sorted(set(required_phases) - set(started_phases))
-    missing_completed_required_phases = sorted(set(required_phases) - set(completed_phases))
+    missing_completed_required_phases = sorted(set(required_completion_phases) - set(completed_phases))
     stop_before_required_phase_completed = bool(
         event_rows
         and trace_rows
@@ -158,6 +163,7 @@ def analyze_fixed_scene_contract(
         "roles": roles,
         "phase_ids": phase_ids,
         "required_phases": required_phases,
+        "required_completion_phases": required_completion_phases,
         "action_types": phase_action_types(storyboard or {}),
         "trace_row_count": len(trace_rows),
         "phase_event_count": len(event_rows),
@@ -177,8 +183,8 @@ def analyze_fixed_scene_contract(
                 len(required_phases),
             ),
             "required_phase_completion_ratio": _ratio(
-                len(set(required_phases) & set(completed_phases)),
-                len(required_phases),
+                len(set(required_completion_phases) & set(completed_phases)),
+                len(required_completion_phases),
             ),
             "trace_row_count": len(trace_rows),
             "phase_event_count": len(event_rows),
@@ -277,6 +283,12 @@ def _spawn_feasibility_pass(spawn_feasibility: Any) -> bool | None:
         isinstance(item, Mapping) and item.get("status") in {"pass", "not_applicable"}
         for item in spawn_feasibility.values()
     )
+
+
+def _phase_requires_completion(phase: Mapping[str, Any]) -> bool:
+    if phase.get("completion_required") is False:
+        return False
+    return True
 
 
 def _duration_policy_check(storyboard: Mapping[str, Any], trace_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
