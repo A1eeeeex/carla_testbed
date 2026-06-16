@@ -138,12 +138,22 @@ algo:
       artifact_async_write_enabled: true
       artifact_async_queue_max_rows: 8192
       artifact_async_queue_soft_limit_rows: 4096
-      artifact_flush_interval_s: 0.5
-      artifact_flush_max_pending_rows: 200
-      artifact_stats_flush_interval_s: 1.0
+      # Do not flush/write summary artifacts from the 20 Hz GT publish hot path.
+      # They are force-flushed at shutdown; periodic flushes showed writer
+      # backpressure large enough to break localization/chassis cadence.
+      artifact_flush_interval_s: 0.0
+      artifact_flush_max_pending_rows: 0
+      artifact_stats_flush_interval_s: 0.0
       # Primary route/reference-line artifacts stay per-event; duplicate stage5
       # debug streams are sampled to reduce publish-loop IO pressure.
       stage5_debug_artifact_sample_stride: 10
+      # High-rate control debug is diagnostic-only; keep claim evidence below
+      # per-frame but avoid starving GT input channels.
+      control_debug_artifact_sample_stride: 10
+      # Online 097 probes showed artifact writer lag can coincide with isolated
+      # localization/chassis sim-gap failures. Keep claim evidence sampled
+      # enough for p95/route-progress analysis, but do not write every 2 frames.
+      claim_evidence_artifact_sample_stride: 5
       claim_grade:
         enabled: true
         stale_world_frame_policy: skip
@@ -152,6 +162,14 @@ algo:
       max_obstacles: 64
       radius_m: 120.0
       localization_back_offset_m: 1.4235
+      localization_acceleration_filter:
+        # Conservative GT input-quality filter. It limits physically implausible
+        # finite-difference acceleration spikes before Apollo simple_lon consumes
+        # localization, without smoothing bridge mapped/applied control.
+        enabled: true
+        alpha: 0.35
+        max_abs_mps2: 4.0
+        max_delta_mps2: 1.0
       map_file: ${APOLLO_MAP_ROOT}/carla_town01/base_map.txt
       debug_dump_control_raw: true
       front_obstacle_behavior:

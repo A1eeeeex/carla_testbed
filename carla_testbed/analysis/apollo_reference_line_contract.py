@@ -419,6 +419,9 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Non-empty trajectory ratio: `{evidence.get('nonempty_trajectory_ratio')}`",
             f"- Reference-line provider ready ratio: `{evidence.get('reference_line_provider_ready_ratio')}`",
             f"- Planning ref heading p95 rad: `{metrics.get('planning_ref_heading_error_p95_rad')}`",
+            f"- Normal trajectory heading p95 rad: `{metrics.get('normal_trajectory_heading_error_p95_rad')}`",
+            f"- PATH_FALLBACK trajectory ratio: `{metrics.get('path_fallback_trajectory_ratio')}`",
+            f"- PATH_FALLBACK heading p95 rad: `{metrics.get('path_fallback_heading_error_p95_rad')}`",
             f"- Control ref heading p95 rad: `{metrics.get('control_ref_heading_error_p95_rad')}`",
             f"- Control lateral error p95 m: `{metrics.get('control_lateral_error_p95_m')}`",
             f"- Apollo HDMap projection status: `{hdmap_projection.get('status')}`",
@@ -510,31 +513,60 @@ def _planning_trajectory_contract(
     available = bool(evidence.get("planning_reference_available"))
     nonempty_ratio = _num(evidence.get("nonempty_trajectory_ratio"))
     claim_window_ratio = _num(evidence.get("planning_claim_window_nonempty_trajectory_ratio"))
+    effective_nonempty_ratio = claim_window_ratio if claim_window_ratio is not None else nonempty_ratio
     reference_line_zero_ratio = _num(metrics.get("reference_line_count_zero_ratio"))
     ready_ratio = _num(evidence.get("reference_line_provider_ready_ratio"))
     planning_heading_p95 = _num(metrics.get("planning_ref_heading_error_p95_rad"))
+    normal_heading_p95 = _num(metrics.get("normal_trajectory_heading_error_p95_rad"))
+    path_fallback_ratio = _num(metrics.get("path_fallback_trajectory_ratio"))
+    path_fallback_heading_p95 = _num(metrics.get("path_fallback_heading_error_p95_rad"))
+    claim_window_materialized = (
+        effective_nonempty_ratio is not None
+        and effective_nonempty_ratio >= MIN_NONEMPTY_TRAJECTORY_RATIO
+    )
+    heading_evidence_available = planning_heading_p95 is not None
 
     if not rows:
         missing.append("planning_trajectory_rows")
     if not available:
         missing.append("planning_trajectory_reference")
-    if available and nonempty_ratio is not None and nonempty_ratio < MIN_NONEMPTY_TRAJECTORY_RATIO:
-        if nonempty_ratio <= 0.0 and (reference_line_zero_ratio or 0.0) >= 0.50:
+    if available and effective_nonempty_ratio is not None and effective_nonempty_ratio < MIN_NONEMPTY_TRAJECTORY_RATIO:
+        if effective_nonempty_ratio <= 0.0 and (reference_line_zero_ratio or 0.0) >= 0.50:
             blocking.append("planning_trajectory_empty_with_zero_reference_line_count")
         else:
             warnings.append("nonempty_trajectory_ratio_low")
     if available and reference_line_zero_ratio is not None and reference_line_zero_ratio >= 0.50:
-        if nonempty_ratio is not None and nonempty_ratio > 0.0:
+        if claim_window_materialized and heading_evidence_available:
+            pass
+        elif effective_nonempty_ratio is not None and effective_nonempty_ratio > 0.0:
             warnings.append("reference_line_count_zero_debug_counter_with_nonempty_trajectory")
-    if ready_ratio is not None and ready_ratio < MIN_PROVIDER_READY_RATIO:
+    if (
+        ready_ratio is not None
+        and ready_ratio < MIN_PROVIDER_READY_RATIO
+        and not (claim_window_materialized and heading_evidence_available)
+    ):
         warnings.append("reference_line_provider_ready_ratio_low")
-    _apply_heading_threshold(
-        planning_heading_p95,
-        warnings=warnings,
-        blocking=blocking,
-        warn_reason="planning_reference_heading_error_elevated",
-        fail_reason="planning_reference_heading_error_high",
+    fallback_driven_heading_error = (
+        planning_heading_p95 is not None
+        and planning_heading_p95 >= FAIL_HEADING_RAD
+        and path_fallback_ratio is not None
+        and path_fallback_ratio > 0.0
+        and path_fallback_heading_p95 is not None
+        and path_fallback_heading_p95 >= FAIL_HEADING_RAD
+        and (normal_heading_p95 is None or normal_heading_p95 < FAIL_HEADING_RAD)
     )
+    if fallback_driven_heading_error:
+        blocking.append("planning_path_fallback_heading_error_high")
+    else:
+        _apply_heading_threshold(
+            planning_heading_p95,
+            warnings=warnings,
+            blocking=blocking,
+            warn_reason="planning_reference_heading_error_elevated",
+            fail_reason="planning_reference_heading_error_high",
+        )
+    if path_fallback_ratio is not None and path_fallback_ratio > 0.0:
+        warnings.append("planning_path_fallback_trajectory_present")
     if available and planning_heading_p95 is None:
         missing.append("planning_ref_heading_error_p95_rad")
     status = _contract_status(
@@ -553,6 +585,7 @@ def _planning_trajectory_contract(
             "nonempty_trajectory_ratio": nonempty_ratio,
             "planning_claim_window_nonempty_trajectory_ratio": claim_window_ratio,
             "planning_claim_window_source": evidence.get("planning_claim_window_source"),
+            "effective_nonempty_trajectory_ratio": effective_nonempty_ratio,
             "nonempty_trajectory_ratio_after_routing_segment_available": evidence.get(
                 "nonempty_trajectory_ratio_after_routing_segment_available"
             ),
@@ -561,6 +594,11 @@ def _planning_trajectory_contract(
             ),
             "reference_line_provider_ready_ratio": ready_ratio,
             "planning_ref_heading_error_p95_rad": planning_heading_p95,
+            "normal_trajectory_heading_error_p95_rad": normal_heading_p95,
+            "path_fallback_trajectory_ratio": path_fallback_ratio,
+            "path_fallback_heading_error_p95_rad": path_fallback_heading_p95,
+            "path_fallback_first_kappa_p95_abs": metrics.get("path_fallback_first_kappa_p95_abs"),
+            "path_fallback_onset": metrics.get("path_fallback_onset"),
             "reference_line_count_zero_ratio": reference_line_zero_ratio,
             "routing_segment_count_zero_ratio": metrics.get("routing_segment_count_zero_ratio"),
             "trajectory_first_theta_vs_segment_heading_p95_rad": metrics.get("trajectory_first_theta_vs_segment_heading_p95_rad"),
@@ -849,6 +887,23 @@ def _metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:
             _first_number(row, "computed.localization_to_planning_first_heading_error_rad")
             for row in rows
         ),
+        "normal_trajectory_heading_error_p95_rad": _p95_abs(
+            _first_number(row, "computed.localization_to_planning_first_heading_error_rad")
+            for row in rows
+            if _planning_trajectory_nonempty(row) and not _planning_trajectory_is_path_fallback(row)
+        ),
+        "path_fallback_heading_error_p95_rad": _p95_abs(
+            _first_number(row, "computed.localization_to_planning_first_heading_error_rad")
+            for row in rows
+            if _planning_trajectory_is_path_fallback(row)
+        ),
+        "path_fallback_first_kappa_p95_abs": _p95_abs(
+            _first_number(row, "planning.first_trajectory_point_kappa")
+            for row in rows
+            if _planning_trajectory_is_path_fallback(row)
+        ),
+        "path_fallback_onset": _path_fallback_onset(rows),
+        "path_fallback_trajectory_ratio": _trajectory_type_ratio(rows, "PATH_FALLBACK"),
         "control_ref_heading_error_p95_rad": _p95_abs(
             _first_number(row, "computed.localization_to_control_ref_heading_error_rad")
             for row in rows
@@ -955,6 +1010,60 @@ def _routing_segment_available(row: Mapping[str, Any]) -> bool:
 
 def _planning_trajectory_nonempty(row: Mapping[str, Any]) -> bool:
     return (_num(_nested(row, "planning.trajectory_point_count")) or 0.0) > 0.0
+
+
+def _planning_trajectory_is_path_fallback(row: Mapping[str, Any]) -> bool:
+    return str(_nested(row, "planning.trajectory_type") or "").strip().upper() == "PATH_FALLBACK"
+
+
+def _trajectory_type_ratio(rows: Sequence[Mapping[str, Any]], trajectory_type: str) -> float | None:
+    nonempty = [row for row in rows if _planning_trajectory_nonempty(row)]
+    if not nonempty:
+        return None
+    expected = trajectory_type.strip().upper()
+    count = sum(
+        1
+        for row in nonempty
+        if str(_nested(row, "planning.trajectory_type") or "").strip().upper() == expected
+    )
+    return count / len(nonempty)
+
+
+def _path_fallback_onset(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    previous_nonempty: Mapping[str, Any] | None = None
+    for index, row in enumerate(rows):
+        if not _planning_trajectory_nonempty(row):
+            continue
+        if _planning_trajectory_is_path_fallback(row):
+            return {
+                "row_index": index,
+                "timestamp": _nested(row, "timestamp"),
+                "sim_time_sec": _nested(row, "sim_time_sec"),
+                "planning_sequence_num": _nested(row, "planning.planning_header_sequence_num"),
+                "trajectory_point_count": _nested(row, "planning.trajectory_point_count"),
+                "first_trajectory_point_theta": _nested(row, "planning.first_trajectory_point_theta"),
+                "first_trajectory_point_kappa": _nested(row, "planning.first_trajectory_point_kappa"),
+                "heading_error_rad": _nested(row, "computed.localization_to_planning_first_heading_error_rad"),
+                "lane_ids": _nested(row, "planning.lane_ids"),
+                "target_lane_ids": _nested(row, "planning.target_lane_ids"),
+                "previous_trajectory_type": (
+                    _nested(previous_nonempty, "planning.trajectory_type")
+                    if previous_nonempty is not None
+                    else None
+                ),
+                "previous_heading_error_rad": (
+                    _nested(previous_nonempty, "computed.localization_to_planning_first_heading_error_rad")
+                    if previous_nonempty is not None
+                    else None
+                ),
+                "previous_first_trajectory_point_kappa": (
+                    _nested(previous_nonempty, "planning.first_trajectory_point_kappa")
+                    if previous_nonempty is not None
+                    else None
+                ),
+            }
+        previous_nonempty = row
+    return None
 
 
 def _lane_ids(rows: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
@@ -1208,6 +1317,7 @@ def _resolve_run_sources(root: Path) -> dict[str, Path | None]:
         "planning_materialization_path": _find_first(
             root,
             [
+                "analysis/apollo_planning_materialization/planning_materialization_report.json",
                 "analysis/planning_materialization/planning_materialization_report.json",
                 "planning_materialization_report.json",
             ],

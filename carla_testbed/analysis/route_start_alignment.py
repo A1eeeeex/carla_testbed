@@ -327,7 +327,16 @@ def _alignment_recommendation(
             "action": "none",
             "reason": "no_spawn_lateral_alignment_probe_recommended",
         }
-    if reason == "spawn_lateral_offset_high" and initial.get("rear_axle_offset_compatible") is True:
+    initial_cte = _num(initial.get("cross_track_error_m"))
+    initial_lateral_high = (
+        initial_cte is not None
+        and abs(float(initial_cte)) > float(DEFAULT_THRESHOLDS["max_initial_cross_track_error_warn_m"])
+    )
+    if (
+        reason == "spawn_lateral_offset_high"
+        and initial.get("rear_axle_offset_compatible") is True
+        and (not initial_lateral_high or not _failure_anchor_actionable(failure))
+    ):
         return {
             "available": False,
             "action": "none",
@@ -336,8 +345,8 @@ def _alignment_recommendation(
             "failure_route_s": failure.get("route_s"),
             "notes": (
                 "The route definition spawn is laterally offset from the route start, but the observed "
-                "initial ego alignment is already compatible with the expected rear-axle frame. Do not "
-                "repeat the same ego_offset_y_m probe from this report alone."
+                "initial lateral alignment is already low and the longitudinal rear-axle frame is "
+                "compatible. Do not repeat the same ego_offset_y_m probe from this report alone."
             ),
         }
     correction = -float(lateral)

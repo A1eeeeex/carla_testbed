@@ -27,6 +27,10 @@ from carla_testbed.analysis.channel_cadence_diagnosis import (
     analyze_channel_cadence_diagnosis_run_dir,
     write_channel_cadence_diagnosis_report,
 )
+from carla_testbed.analysis.localization_contract import (
+    analyze_localization_contract_files,
+    write_localization_contract_report,
+)
 from carla_testbed.analysis.control_health import (
     analyze_control_health_run_dir,
     write_control_health_report,
@@ -38,6 +42,9 @@ from carla_testbed.analysis.planning_materialization import (
 )
 from carla_testbed.analysis.prediction_evidence import analyze_prediction_evidence_run_dir
 from carla_testbed.analysis.assist_ledger import build_runtime_assist_ledger
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_APOLLO_FRAME_TRANSFORM = _REPO_ROOT / "configs" / "town01" / "apollo_frame_transform.example.yaml"
 
 APOLLO_LINK_HEALTH_SCHEMA_VERSION = "apollo_link_health.v1"
 
@@ -105,7 +112,11 @@ def analyze_apollo_link_health(
         if _should_regenerate_apollo_route_contract(
             payloads.get("apollo_route_contract")
         ) and _apollo_route_contract_raw_inputs_available(root):
-            regenerated_route_contract = analyze_apollo_route_contract_run_dir(root)
+            frame_transform = DEFAULT_APOLLO_FRAME_TRANSFORM if DEFAULT_APOLLO_FRAME_TRANSFORM.is_file() else None
+            regenerated_route_contract = analyze_apollo_route_contract_run_dir(
+                root,
+                frame_transform=frame_transform,
+            )
             if _apollo_route_contract_has_runtime_evidence(regenerated_route_contract) or not payloads.get(
                 "apollo_route_contract"
             ):
@@ -172,6 +183,26 @@ def analyze_apollo_link_health(
                 inputs["apollo_control_handoff"] = Path(
                     outputs["apollo_control_handoff_report"]
                 )
+        if _should_regenerate_localization_contract(
+            payloads.get("localization_contract")
+        ) and _localization_contract_raw_inputs_available(root):
+            frame_transform = DEFAULT_APOLLO_FRAME_TRANSFORM if DEFAULT_APOLLO_FRAME_TRANSFORM.is_file() else None
+            regenerated_localization = analyze_localization_contract_files(
+                run_dir=root,
+                frame_transform_path=frame_transform,
+            )
+            if _localization_contract_has_runtime_evidence(
+                regenerated_localization
+            ) or not payloads.get("localization_contract"):
+                payloads["localization_contract"] = regenerated_localization
+                source_kinds["localization_contract"] = "regenerated_from_run_artifacts"
+                outputs = write_localization_contract_report(
+                    regenerated_localization,
+                    root / "analysis" / "localization_contract",
+                )
+                inputs["localization_contract"] = Path(
+                    outputs["localization_contract_report"]
+                )
         if _should_regenerate_control_health(
             payloads.get("control_health")
         ) and _control_health_raw_inputs_available(root):
@@ -227,6 +258,8 @@ def analyze_apollo_link_health(
         "localization_gt_contract": _localization_layer(
             payloads.get("localization_contract"),
             inputs.get("localization_contract"),
+            source_kind=source_kinds.get("localization_contract", "report"),
+            run_dir=root,
         ),
         "chassis_gt_contract": _chassis_gt_layer(
             payloads.get("chassis_gt_contract"),
@@ -466,11 +499,15 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
         "hdmap_projection": (
             "official_source_available",
             "claim_grade",
+            "sample_type_counts",
             "sim_time_coverage_ratio",
             "projection_s_coverage_m",
             "route_s_coverage_ratio",
             "heading_error_p95_rad",
             "lateral_error_p95_m",
+            "static_route_lateral_error_p95_m",
+            "runtime_ego_projection_status",
+            "runtime_ego_lateral_error_p95_m",
         ),
         "planning_reference_line": (
             "metrics",
@@ -525,9 +562,16 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
         ),
         "control_mapping_apply": (
             "failure_reason",
+            "control_oscillation_primary_suspected_layer",
+            "control_oscillation_transition_mode",
+            "control_oscillation_raw_switch_count",
+            "control_oscillation_compact",
+            "control_oscillation_diagnosis",
+            "control_semantics_primary_factor",
+            "control_semantics_suspected_factors",
+            "route_s_after_first_applied_control_delta_m",
             "oscillation_decomposition",
             "control_mapping_claim_boundary",
-            "route_s_after_first_applied_control_delta_m",
         ),
         "prediction_evidence": (
             "prediction_mode",
@@ -604,6 +648,13 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
                 "planning_topic_debug_summary.json",
             ],
         ),
+        "routing_response_decoded": _find_first(
+            root,
+            [
+                "artifacts/routing_response_decoded.json",
+                "routing_response_decoded.json",
+            ],
+        ),
         "command_materialization_summary": _find_first(
             root,
             [
@@ -614,6 +665,7 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
         "planning_materialization": _find_first(
             root,
             [
+                "analysis/apollo_planning_materialization/planning_materialization_report.json",
                 "analysis/planning_materialization/planning_materialization_report.json",
                 "planning_materialization_report.json",
             ],
@@ -856,10 +908,18 @@ def _bridge_runtime_layer(
     bridge_health = payloads.get("bridge_health_summary", {})
     transport = payloads.get("bridge_transport_summary", {})
     cyber_stats = payloads.get("cyber_bridge_stats", {})
+    planning_summary = payloads.get("planning_topic_debug_summary", {})
+    routing_response_decoded = payloads.get("routing_response_decoded", {})
     preflight = _first_text(summary, "bridge_runtime_preflight_status", bridge_health, "bridge_runtime_preflight_status")
     runtime_import_ok = _bool_or_none(_first_raw(summary, "bridge_runtime_import_ok", bridge_health, "bridge_runtime_import_ok"))
     routing_materialized = _bool_or_none(summary.get("routing_materialized"))
     planning_materialized = _bool_or_none(summary.get("planning_materialized"))
+    routing_raw_materialized = _routing_raw_materialized(summary, cyber_stats, routing_response_decoded)
+    planning_raw_materialized = _planning_raw_materialized(summary, planning_summary)
+    if routing_materialized is False and routing_raw_materialized:
+        routing_materialized = True
+    if planning_materialized is False and planning_raw_materialized:
+        planning_materialized = True
     missing = [
         name
         for name in ("cyber_bridge_stats", "bridge_health_summary", "bridge_transport_summary")
@@ -877,6 +937,10 @@ def _bridge_runtime_layer(
         status = "fail"
         blocking.append("bridge_materialization_missing")
     else:
+        if routing_raw_materialized and summary.get("routing_materialized") is False:
+            warnings.append("summary_routing_materialized_false_overridden_by_raw_artifacts")
+        if planning_raw_materialized and summary.get("planning_materialized") is False:
+            warnings.append("summary_planning_materialized_false_overridden_by_raw_artifacts")
         status = "warn" if warnings else "pass"
     return _layer(
         status=status,
@@ -887,6 +951,8 @@ def _bridge_runtime_layer(
             "bridge_runtime_import_ok": runtime_import_ok,
             "routing_materialized": routing_materialized,
             "planning_materialized": planning_materialized,
+            "routing_raw_materialized": routing_raw_materialized,
+            "planning_raw_materialized": planning_raw_materialized,
             "routing_success_count": _first_raw(summary, "routing_success_count", cyber_stats, "routing_success_count"),
             "control_rx_count": _first_raw(cyber_stats, "control_rx_count", cyber_stats, "control", "rx_count"),
             "transport_status": transport.get("status") or transport.get("verdict"),
@@ -896,7 +962,40 @@ def _bridge_runtime_layer(
     )
 
 
-def _localization_layer(report: Mapping[str, Any] | None, path: Path | None) -> dict[str, Any]:
+def _routing_raw_materialized(
+    summary: Mapping[str, Any],
+    cyber_stats: Mapping[str, Any],
+    routing_response_decoded: Mapping[str, Any],
+) -> bool:
+    if _num(_first_raw(summary, "routing_success_count", cyber_stats, "routing_success_count")):
+        return True
+    if _num(routing_response_decoded.get("total_length_m")):
+        return True
+    if routing_response_decoded.get("lane_window_signature") or routing_response_decoded.get("route_lane_signature"):
+        return True
+    if routing_response_decoded.get("lane_windows") or routing_response_decoded.get("road"):
+        return True
+    return False
+
+
+def _planning_raw_materialized(
+    summary: Mapping[str, Any],
+    planning_summary: Mapping[str, Any],
+) -> bool:
+    if _num(_first_raw(summary, "planning_message_count", planning_summary, "total_messages_received")):
+        return True
+    if _num(planning_summary.get("messages_with_nonzero_trajectory_points")):
+        return True
+    return False
+
+
+def _localization_layer(
+    report: Mapping[str, Any] | None,
+    path: Path | None,
+    *,
+    source_kind: str = "report",
+    run_dir: Path | None = None,
+) -> dict[str, Any]:
     if not report:
         return _missing_report_layer(
             path=path,
@@ -914,7 +1013,7 @@ def _localization_layer(report: Mapping[str, Any] | None, path: Path | None) -> 
             "HDMap lateral error matches CARLA route cross-track; inspect Apollo lateral "
             "target/reference semantics and raw/mapped/applied steering before changing map or transform."
         )
-    return _layer(
+    layer = _layer(
         status=status,
         blocking_reasons=blocking,
         warnings=warnings,
@@ -932,6 +1031,62 @@ def _localization_layer(report: Mapping[str, Any] | None, path: Path | None) -> 
         },
         artifact_paths={"localization_contract": str(path) if path else None},
         next_action=next_action,
+    )
+    layer["artifact_paths"]["source_kind"] = source_kind
+    if run_dir is not None:
+        layer["artifact_paths"]["run_dir"] = str(run_dir)
+    return layer
+
+
+def _should_regenerate_localization_contract(report: Mapping[str, Any] | None) -> bool:
+    if not report:
+        return True
+    status = _normalize_status(_nested(report, "verdict.status") or report.get("status"))
+    if status == "fail":
+        return False
+    blocking = {
+        str(item)
+        for item in (
+            _nested(report, "verdict.blocking_reasons")
+            or report.get("blocking_reasons")
+            or []
+        )
+        if item
+    }
+    if blocking and blocking != {"localization_runtime_samples_missing"}:
+        return False
+    channel = report.get("channel") if isinstance(report.get("channel"), Mapping) else {}
+    reference = report.get("reference_point") if isinstance(report.get("reference_point"), Mapping) else {}
+    return (
+        status == "insufficient_data"
+        and (
+            "localization_runtime_samples_missing" in blocking
+            or not isinstance(report.get("time"), Mapping)
+            or _first_num(channel.get("message_count")) is None
+            or reference.get("position_uses_vrp") is not True
+        )
+    )
+
+
+def _localization_contract_raw_inputs_available(root: Path) -> bool:
+    return any(
+        _find_first(root, candidates) is not None
+        for candidates in (
+            ("artifacts/debug_timeseries.csv", "debug_timeseries.csv"),
+            ("channel_stats.json", "artifacts/channel_stats.json"),
+        )
+    )
+
+
+def _localization_contract_has_runtime_evidence(report: Mapping[str, Any]) -> bool:
+    channel = report.get("channel") if isinstance(report.get("channel"), Mapping) else {}
+    reference = report.get("reference_point") if isinstance(report.get("reference_point"), Mapping) else {}
+    time = report.get("time") if isinstance(report.get("time"), Mapping) else {}
+    return bool(
+        _first_num(channel.get("message_count")) is not None
+        or _first_num(channel.get("fresh_sample_count")) is not None
+        or time.get("measurement_time_source") is not None
+        or reference.get("position_uses_vrp") is not None
     )
 
 
@@ -1157,6 +1312,28 @@ def _hdmap_projection_layer(
             "insufficient_reasons": insufficient_reasons,
             "heading_error_p95_rad": projection.get("heading_error_p95_rad"),
             "lateral_error_p95_m": projection.get("lateral_error_p95_m"),
+            "sample_type_counts": projection.get("sample_type_counts"),
+            "claim_evidence_scope": projection.get("claim_evidence_scope"),
+            "static_route_lateral_error_p95_m": _nested(
+                projection,
+                "static_route_projection.lateral_error_p95_m",
+            ),
+            "static_route_heading_error_p95_rad": _nested(
+                projection,
+                "static_route_projection.heading_error_p95_rad",
+            ),
+            "runtime_ego_projection_status": _nested(
+                projection,
+                "runtime_ego_projection.status",
+            ),
+            "runtime_ego_lateral_error_p95_m": _nested(
+                projection,
+                "runtime_ego_projection.lateral_error_p95_m",
+            ),
+            "runtime_ego_heading_error_p95_rad": _nested(
+                projection,
+                "runtime_ego_projection.heading_error_p95_rad",
+            ),
             "sim_time_coverage_ratio": projection.get("sim_time_coverage_ratio"),
             "projection_s_coverage_m": projection.get("projection_s_coverage_m"),
             "route_s_coverage_ratio": projection.get("route_s_coverage_ratio"),
@@ -1229,6 +1406,14 @@ def _should_regenerate_apollo_route_contract(report: Mapping[str, Any] | None) -
         return True
     if not decoded_available and "routing_response_runtime_evidence_missing" in blockers:
         return True
+    warnings = {str(item) for item in report.get("warnings") or [] if item}
+    stale_projection_or_transform = {
+        "apollo_hdmap_projection_missing",
+        "apollo_hdmap_projection_required_for_cross_namespace_lane_equivalence",
+        "apollo_route_xy_comparison_frame_transform_missing",
+    }
+    if status in {"warn", "insufficient_data"} and warnings & stale_projection_or_transform:
+        return True
     return False
 
 
@@ -1262,13 +1447,19 @@ def _should_regenerate_apollo_reference_line_contract(report: Mapping[str, Any] 
     }:
         return False
     status = _normalize_status(report.get("status"))
-    if status == "fail":
-        return False
     blockers = {str(item) for item in report.get("blocking_reasons") or [] if item}
-    if blockers and blockers != {"apollo_reference_line_runtime_evidence_missing"}:
-        return False
     evidence = report.get("evidence") if isinstance(report.get("evidence"), Mapping) else {}
     metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+    if (
+        status == "fail"
+        and "planning_reference_heading_error_high" in blockers
+        and "path_fallback_trajectory_ratio" not in metrics
+    ):
+        return True
+    if status == "fail":
+        return False
+    if blockers and blockers != {"apollo_reference_line_runtime_evidence_missing"}:
+        return False
     runtime_missing = "apollo_reference_line_runtime_evidence_missing" in blockers
     no_reference_evidence = not any(
         evidence.get(key) is not None
@@ -1819,12 +2010,27 @@ def _control_health_layer(
             report,
             semantics,
         )
+    compact_oscillation = _control_oscillation_compact_metrics(
+        report=report,
+        semantics=semantics,
+        oscillation_diagnosis=oscillation_diagnosis,
+    )
     return _layer(
         status=_normalize_status(report.get("status")),
         blocking_reasons=[reason for reason in [report.get("failure_reason")] if reason and report.get("status") == "fail"],
         warnings=list(report.get("warnings") or []),
         key_metrics={
             "failure_reason": report.get("failure_reason"),
+            "control_oscillation_primary_suspected_layer": compact_oscillation.get(
+                "primary_suspected_layer"
+            ),
+            "control_oscillation_transition_mode": compact_oscillation.get(
+                "transition_window_dominant_mode"
+            ),
+            "control_oscillation_raw_switch_count": compact_oscillation.get(
+                "apollo_raw_throttle_brake_switch_count"
+            ),
+            "control_oscillation_compact": compact_oscillation,
             "control_semantics_primary_factor": semantics_primary,
             "control_semantics_suspected_factors": semantics_suspected,
             "control_semantics_evidence": dict(semantics),
@@ -1861,6 +2067,95 @@ def _control_health_layer(
         artifact_paths={"control_health": str(path) if path else None, "source_kind": source_kind},
         next_action=_control_health_next_action(semantics_primary, oscillation_diagnosis),
     )
+
+
+def _control_oscillation_compact_metrics(
+    *,
+    report: Mapping[str, Any],
+    semantics: Mapping[str, Any],
+    oscillation_diagnosis: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Expose the high-signal oscillation attribution fields for link summaries."""
+    oscillation = _nested(report, "metrics.oscillation_decomposition")
+    oscillation = oscillation if isinstance(oscillation, Mapping) else {}
+    layers = oscillation.get("layers")
+    layers = layers if isinstance(layers, Mapping) else {}
+    raw_layer = layers.get("apollo_raw_command")
+    raw_layer = raw_layer if isinstance(raw_layer, Mapping) else {}
+    mapped_layer = layers.get("bridge_mapped_command")
+    mapped_layer = mapped_layer if isinstance(mapped_layer, Mapping) else {}
+    applied_layer = layers.get("carla_applied_command")
+    applied_layer = applied_layer if isinstance(applied_layer, Mapping) else {}
+    cadence_layer = layers.get("bridge_apply_cadence")
+    cadence_layer = cadence_layer if isinstance(cadence_layer, Mapping) else {}
+
+    transition_summary = _nested(
+        report,
+        "metrics.control_decode_debug.planning_trajectory_correlation.transition_window_summary",
+    )
+    transition_summary = transition_summary if isinstance(transition_summary, Mapping) else {}
+    trajectory_consume = _nested(
+        report,
+        "metrics.control_decode_debug.trajectory_consume_correlation",
+    )
+    trajectory_consume = trajectory_consume if isinstance(trajectory_consume, Mapping) else {}
+    longitudinal = _nested(
+        report,
+        "metrics.control_decode_debug.longitudinal_oscillation_attribution",
+    )
+    longitudinal = longitudinal if isinstance(longitudinal, Mapping) else {}
+    longitudinal_buckets = longitudinal.get("transition_buckets")
+    longitudinal_buckets = longitudinal_buckets if isinstance(longitudinal_buckets, Mapping) else {}
+
+    return {
+        "dominant_oscillation_layer": oscillation.get("dominant_oscillation_layer"),
+        "primary_suspected_layer": oscillation_diagnosis.get("primary_suspected_layer"),
+        "control_semantics_primary_source": semantics.get("primary_source"),
+        "control_semantics_primary_factor": semantics.get("primary_factor"),
+        "apollo_raw_status": raw_layer.get("status"),
+        "apollo_raw_reason": raw_layer.get("reason"),
+        "apollo_raw_throttle_brake_switch_count": raw_layer.get("throttle_brake_switch_count"),
+        "bridge_mapped_status": mapped_layer.get("status"),
+        "carla_applied_status": applied_layer.get("status"),
+        "bridge_apply_cadence_status": cadence_layer.get("status"),
+        "bridge_apply_observed_hz": cadence_layer.get("observed_apply_world_frame_hz"),
+        "bridge_apply_configured_hz": cadence_layer.get("configured_apply_hz"),
+        "bridge_apply_same_frame_drop_ratio": cadence_layer.get("same_frame_drop_ratio"),
+        "bridge_apply_same_frame_drop_expected_from_sync_tick": cadence_layer.get(
+            "same_frame_drop_expected_from_sync_tick"
+        ),
+        "transition_window_dominant_mode": transition_summary.get("dominant_transition_mode"),
+        "planning_sequence_changed_ratio": transition_summary.get(
+            "planning_sequence_changed_ratio"
+        ),
+        "planning_debug_exact_pair_coverage_ratio": _nested(
+            report,
+            "metrics.control_decode_debug.planning_trajectory_correlation.planning_debug_exact_pair_coverage_ratio",
+        ),
+        "planning_debug_missing_transition_ratio": _nested(
+            report,
+            "metrics.control_decode_debug.planning_trajectory_correlation.planning_debug_missing_transition_ratio",
+        ),
+        "same_planning_sequence_ratio": transition_summary.get("same_planning_sequence_ratio"),
+        "path_remain_delta_p95_abs_m": transition_summary.get("path_remain_delta_p95_abs_m"),
+        "acceleration_cmd_delta_p95_abs_mps2": transition_summary.get(
+            "acceleration_cmd_delta_p95_abs_mps2"
+        ),
+        "trajectory_consume_transition_count": trajectory_consume.get("transition_count"),
+        "simple_lon_acceleration_cmd_sign_flip_count": longitudinal_buckets.get(
+            "acceleration_cmd_sign_flip"
+        ),
+        "simple_lon_path_remain_large_jump_count": longitudinal_buckets.get(
+            "path_remain_large_jump"
+        ),
+        "simple_lon_path_remain_large_drop_count": longitudinal_buckets.get(
+            "path_remain_large_drop"
+        ),
+        "interpretation_caveat": (
+            "Compact attribution only. It identifies where to inspect next and must not "
+            "be used to smooth/clamp bridge output or bypass natural-driving gates."
+        ),
+    }
 
 
 def _control_health_next_action(
@@ -1914,6 +2209,19 @@ def _control_oscillation_diagnosis_from_control_health(
         if isinstance(transition_window_summary, Mapping)
         else {}
     )
+    planning_debug_exact_pair_coverage_ratio = _num(
+        planning_correlation.get("planning_debug_exact_pair_coverage_ratio")
+    )
+    planning_debug_missing_transition_ratio = _num(
+        planning_correlation.get("planning_debug_missing_transition_ratio")
+    )
+    planning_debug_sequence_coverage_low = (
+        "planning_debug_sequence_coverage_low" in factors
+        or (
+            planning_debug_exact_pair_coverage_ratio is not None
+            and planning_debug_exact_pair_coverage_ratio < 0.5
+        )
+    )
     control_to_chassis_ratio = _num(cadence.get("control_to_chassis_count_ratio"))
     control_to_localization_ratio = _num(cadence.get("control_to_localization_count_ratio"))
     gt_state_oversampling_present = (
@@ -1935,6 +2243,8 @@ def _control_oscillation_diagnosis_from_control_health(
     suspected_layers: list[str] = []
     if raw_command_oscillation_present:
         suspected_layers.append("apollo_raw_control_semantics")
+    if planning_debug_sequence_coverage_low:
+        suspected_layers.append("planning_debug_sequence_coverage")
     if same_trajectory_switching_present or planning_sequence_update_present:
         suspected_layers.append("planning_control_semantics")
     if gt_state_oversampling_present:
@@ -1943,7 +2253,9 @@ def _control_oscillation_diagnosis_from_control_health(
         suspected_layers.append("control_mapping_claim_boundary")
     suspected_layers = _dedupe_preserve_order(suspected_layers)
     primary = "insufficient_data"
-    if raw_command_oscillation_present and (
+    if raw_command_oscillation_present and planning_debug_sequence_coverage_low:
+        primary = "planning_debug_sequence_coverage"
+    elif raw_command_oscillation_present and (
         same_trajectory_switching_present or planning_sequence_update_present
     ):
         primary = "planning_control_semantics"
@@ -1953,7 +2265,13 @@ def _control_oscillation_diagnosis_from_control_health(
         primary = "gt_state_sampling_cadence"
     elif suspected_layers:
         primary = suspected_layers[0]
-    if primary == "planning_control_semantics":
+    if primary == "planning_debug_sequence_coverage":
+        next_debug_target = (
+            "Close planning_topic_debug exact sequence coverage for throttle/brake "
+            "transition windows before claiming a Planning/simple_lon root cause; compare "
+            "control_input trajectory sequence with observed /apollo/planning debug rows."
+        )
+    elif primary == "planning_control_semantics":
         next_debug_target = (
             "Inspect control_trajectory_consume_debug and planning_topic_debug rows around "
             "throttle/brake transitions; confirm whether Apollo simple_lon switches on the "
@@ -1989,6 +2307,9 @@ def _control_oscillation_diagnosis_from_control_health(
         "planning_sequence_changed_transition_ratio": transition_window_summary.get(
             "planning_sequence_changed_ratio"
         ),
+        "planning_debug_sequence_coverage_low": planning_debug_sequence_coverage_low,
+        "planning_debug_exact_pair_coverage_ratio": planning_debug_exact_pair_coverage_ratio,
+        "planning_debug_missing_transition_ratio": planning_debug_missing_transition_ratio,
         "transition_window_summary_available": bool(
             transition_window_summary.get("available")
         ),
@@ -2250,7 +2571,10 @@ def _prediction_layer(
             ),
         )
     status = _normalize_status(report.get("verdict") or report.get("status"))
-    blocking = list(report.get("blocking_capabilities") or [])
+    blocking = _prediction_blocking_capabilities_for_scenario(
+        report.get("blocking_capabilities") or [],
+        scenario_class=scenario_class,
+    )
     if status in {"pass", "warn"} and report.get("hard_gate_eligible") is not True:
         blocking.append("prediction_not_hard_gate_eligible")
         status = "insufficient_data"
@@ -2267,6 +2591,7 @@ def _prediction_layer(
             "planning_requires_prediction": report.get("planning_requires_prediction"),
             "hard_gate_eligible": report.get("hard_gate_eligible"),
             "bypass_reason": report.get("bypass_reason"),
+            "prediction_bypass_scope": report.get("prediction_bypass_scope"),
             "blocking_capabilities": report.get("blocking_capabilities") or [],
         },
         artifact_paths={
@@ -2278,6 +2603,28 @@ def _prediction_layer(
             "or an explicit GT prediction/bypass boundary in prediction_evidence_report.json."
         ),
     )
+
+
+def _prediction_blocking_capabilities_for_scenario(
+    capabilities: Sequence[Any],
+    *,
+    scenario_class: str | None,
+) -> list[str]:
+    values = [str(item) for item in capabilities if str(item)]
+    scenario = str(scenario_class or "").strip()
+    if scenario in {"lane_keep", "lane_keep_097"}:
+        return [
+            item
+            for item in values
+            if item not in {"dynamic_obstacle", "junction", "traffic_light"}
+        ]
+    if scenario.startswith("traffic_light"):
+        return [item for item in values if item in {"closed_loop", "traffic_light"}]
+    if scenario in {"junction", "junction_turn"}:
+        return [item for item in values if item in {"closed_loop", "junction"}]
+    if scenario in {"dynamic_obstacle", "follow_stop"}:
+        return [item for item in values if item in {"closed_loop", "dynamic_obstacle"}]
+    return values
 
 
 def _no_assist_layer(
@@ -3637,8 +3984,25 @@ def _planning_nonempty_claim_metric(
         summary.get("planning_nonempty_ratio"),
         _nested(control_handoff, "input_readiness.planning_nonempty_ratio"),
     )
-    ratio = _first_num(planning_materialization_ratio, summary_ratio, topic_overall, reference_overall)
-    if planning_materialization_ratio is not None:
+    planning_claim_source_text = str(planning_materialization_claim_source or "")
+    claim_window_can_support_no_assist = (
+        planning_materialization_claim_ratio is not None
+        and planning_claim_source_text == "after_first_nonempty_trajectory"
+    )
+    ratio = _first_num(
+        planning_materialization_claim_ratio if claim_window_can_support_no_assist else None,
+        planning_materialization_ratio,
+        summary_ratio,
+        topic_overall,
+        reference_overall,
+    )
+    if claim_window_can_support_no_assist:
+        source = (
+            f"planning_materialization.{planning_materialization_claim_source}"
+            if planning_materialization_claim_source
+            else "planning_materialization.claim_window"
+        )
+    elif planning_materialization_ratio is not None:
         source = "planning_materialization.overall"
     elif summary_ratio is not None:
         source = "summary_or_control_handoff"
@@ -3651,7 +4015,12 @@ def _planning_nonempty_claim_metric(
     return {
         "ratio": ratio,
         "source": source,
-        "overall_ratio": ratio,
+        "overall_ratio": _first_num(
+            planning_materialization_ratio,
+            summary_ratio,
+            topic_overall,
+            reference_overall,
+        ),
         "filtered_ratio": claim_ratio,
         "filtered_ratio_source": (
             f"apollo_reference_line_contract.{claim_source}"

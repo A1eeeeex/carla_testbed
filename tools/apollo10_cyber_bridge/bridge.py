@@ -313,6 +313,11 @@ def _localization_acceleration_from_velocity(
     vx: float,
     vy: float,
     vz: float,
+    *,
+    previous_acceleration: Optional[Tuple[float, float, float]] = None,
+    smoothing_alpha: float = 1.0,
+    max_abs_mps2: Optional[float] = None,
+    max_delta_mps2: Optional[float] = None,
 ) -> Tuple[float, float, float, str]:
     if previous_sample is None:
         return 0.0, 0.0, 0.0, "initial_sample_missing_previous_velocity"
@@ -320,12 +325,54 @@ def _localization_acceleration_from_velocity(
     dt = float(timestamp_sec) - float(prev_timestamp)
     if not math.isfinite(dt) or dt <= 1e-9:
         return 0.0, 0.0, 0.0, "stale_timestamp_republish"
-    return (
+    raw = (
         (float(vx) - float(prev_vx)) / dt,
         (float(vy) - float(prev_vy)) / dt,
         (float(vz) - float(prev_vz)) / dt,
-        "finite_difference",
     )
+    filtered = _filter_localization_acceleration(
+        raw,
+        previous_acceleration=previous_acceleration,
+        smoothing_alpha=smoothing_alpha,
+        max_abs_mps2=max_abs_mps2,
+        max_delta_mps2=max_delta_mps2,
+    )
+    source = "finite_difference_filtered" if filtered != raw else "finite_difference"
+    return filtered[0], filtered[1], filtered[2], source
+
+
+def _filter_localization_acceleration(
+    raw_acceleration: Tuple[float, float, float],
+    *,
+    previous_acceleration: Optional[Tuple[float, float, float]] = None,
+    smoothing_alpha: float = 1.0,
+    max_abs_mps2: Optional[float] = None,
+    max_delta_mps2: Optional[float] = None,
+) -> Tuple[float, float, float]:
+    alpha = _clamp(float(smoothing_alpha), 0.0, 1.0)
+    out: List[float] = []
+    changed = False
+    for index, raw_value in enumerate(raw_acceleration):
+        value = float(raw_value)
+        prev_value = None
+        if previous_acceleration is not None and len(previous_acceleration) > index:
+            prev_value = float(previous_acceleration[index])
+        if prev_value is not None and alpha < 1.0:
+            value = alpha * value + (1.0 - alpha) * prev_value
+        if prev_value is not None and max_delta_mps2 is not None and max_delta_mps2 > 0.0:
+            value = _clamp(
+                value,
+                prev_value - float(max_delta_mps2),
+                prev_value + float(max_delta_mps2),
+            )
+        if max_abs_mps2 is not None and max_abs_mps2 > 0.0:
+            value = _clamp(value, -float(max_abs_mps2), float(max_abs_mps2))
+        if abs(value - float(raw_value)) > 1e-9:
+            changed = True
+        out.append(value)
+    if not changed:
+        return raw_acceleration
+    return out[0], out[1], out[2]
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -1487,6 +1534,26 @@ class ApolloGtBridge:
             "localization_publish_policy": self.localization_publish_policy,
             "chassis_publish_policy": self.chassis_publish_policy,
         }
+        accel_filter_cfg = bridge_cfg.get("localization_acceleration_filter", {}) or {}
+        self.localization_acceleration_filter_enabled = bool(accel_filter_cfg.get("enabled", False))
+        self.localization_acceleration_filter_alpha = _clamp(
+            _safe_float(accel_filter_cfg.get("alpha"), 1.0), 0.0, 1.0
+        )
+        self.localization_acceleration_filter_max_abs_mps2 = (
+            _safe_float(accel_filter_cfg.get("max_abs_mps2"), 0.0) or None
+        )
+        self.localization_acceleration_filter_max_delta_mps2 = (
+            _safe_float(accel_filter_cfg.get("max_delta_mps2"), 0.0) or None
+        )
+        self._last_localization_acceleration_sample: Optional[Tuple[float, float, float]] = None
+        self.stats["localization_acceleration_filter"] = {
+            "enabled": self.localization_acceleration_filter_enabled,
+            "alpha": self.localization_acceleration_filter_alpha,
+            "max_abs_mps2": self.localization_acceleration_filter_max_abs_mps2,
+            "max_delta_mps2": self.localization_acceleration_filter_max_delta_mps2,
+            "source": "finite_difference_filter",
+            "claim_boundary": "gt_input_quality_only_not_control_smoothing",
+        }
         self.max_obstacles = int(bridge_cfg.get("max_obstacles", 64))
         self.radius_m = float(bridge_cfg.get("radius_m", 120.0))
         self.localization_back_offset_m = float(
@@ -1636,7 +1703,17 @@ class ApolloGtBridge:
             1,
             int(bridge_cfg.get("stage5_debug_artifact_sample_stride", 1) or 1),
         )
+        self.control_debug_artifact_sample_stride = max(
+            1,
+            int(bridge_cfg.get("control_debug_artifact_sample_stride", 1) or 1),
+        )
+        self.claim_evidence_artifact_sample_stride = max(
+            1,
+            int(bridge_cfg.get("claim_evidence_artifact_sample_stride", 1) or 1),
+        )
         self._stage5_debug_artifact_sample_counters: Counter[str] = Counter()
+        self._control_debug_artifact_sample_counters: Counter[str] = Counter()
+        self._claim_evidence_artifact_sample_counters: Counter[str] = Counter()
         self._last_artifact_stats_flush_sec = time.time()
         self._artifact_pending_rows: Dict[str, int] = {}
         self._artifact_last_flush_sec: Dict[str, float] = {}
@@ -1660,6 +1737,14 @@ class ApolloGtBridge:
             "stage5_debug_artifact_seen_counts": {},
             "stage5_debug_artifact_sampled_out_counts": {},
             "stage5_debug_artifact_written_counts": {},
+            "control_debug_artifact_sample_stride": self.control_debug_artifact_sample_stride,
+            "control_debug_artifact_seen_counts": {},
+            "control_debug_artifact_sampled_out_counts": {},
+            "control_debug_artifact_written_counts": {},
+            "claim_evidence_artifact_sample_stride": self.claim_evidence_artifact_sample_stride,
+            "claim_evidence_artifact_seen_counts": {},
+            "claim_evidence_artifact_sampled_out_counts": {},
+            "claim_evidence_artifact_written_counts": {},
             "flush_count": 0,
         }
         self._start_artifact_writer()
@@ -2770,7 +2855,12 @@ class ApolloGtBridge:
 
     def _coerce_float(self, value: Any, default: float, field: str, source: str) -> float:
         if value is None or value == "":
-            self._warn_bad_value(field, value, source)
+            # publish_row is a wide diagnostic/evidence row. Many fields are
+            # optional and intentionally absent for a given controller/profile;
+            # analyzers should handle those as missing fields instead of making
+            # the 20 Hz GT publish loop print/rate-limit warnings.
+            if source != "publish_row":
+                self._warn_bad_value(field, value, source)
             return float(default)
         try:
             return float(value)
@@ -2936,7 +3026,11 @@ class ApolloGtBridge:
         pending = int(pending_rows.get(key, 0) or 0)
         now = time.time()
         interval_s = max(0.0, float(getattr(self, "artifact_flush_interval_s", 0.5) or 0.0))
-        max_pending = max(1, int(getattr(self, "artifact_flush_max_pending_rows", 100) or 100))
+        max_pending_raw = getattr(self, "artifact_flush_max_pending_rows", 100)
+        try:
+            max_pending = int(max_pending_raw)
+        except Exception:
+            max_pending = 100
         previous_flush = float(last_flush.get(key, now) or now)
         due = force or (
             (max_pending > 0 and pending >= max_pending)
@@ -3122,6 +3216,8 @@ class ApolloGtBridge:
     def _record_control_apply_trace(self, row: Dict[str, Any], measured: Dict[str, Any]) -> None:
         path = getattr(self, "control_apply_trace_path", None)
         if path is None:
+            return
+        if not self._should_write_claim_evidence_artifact("control_apply_trace"):
             return
         payload = build_control_apply_trace_payload(row, measured, self.stats)
         self._append_jsonl(Path(path), payload)
@@ -3491,6 +3587,8 @@ class ApolloGtBridge:
         return None
 
     def _record_obstacle_contract_event(self, payload: Dict[str, Any]) -> None:
+        if not self._should_write_claim_evidence_artifact("obstacle_gt_contract"):
+            return
         self._append_jsonl(self.obstacle_contract_debug_path, payload)
 
     def _ego_actor_id_for_obstacle_contract(self) -> Optional[Any]:
@@ -3537,6 +3635,60 @@ class ApolloGtBridge:
     ) -> None:
         if self._should_write_stage5_debug_artifact(artifact_name):
             self._append_jsonl(path, payload)
+
+    def _should_write_control_debug_artifact(self, artifact_name: str) -> bool:
+        stride = max(1, int(getattr(self, "control_debug_artifact_sample_stride", 1) or 1))
+        buffering = self.stats.setdefault("artifact_buffering", {})
+        buffering["control_debug_artifact_sample_stride"] = stride
+        seen_counts = buffering.setdefault("control_debug_artifact_seen_counts", {})
+        sampled_out_counts = buffering.setdefault("control_debug_artifact_sampled_out_counts", {})
+        written_counts = buffering.setdefault("control_debug_artifact_written_counts", {})
+        counters = getattr(self, "_control_debug_artifact_sample_counters", None)
+        if counters is None:
+            counters = Counter()
+            self._control_debug_artifact_sample_counters = counters
+        counters[artifact_name] += 1
+        count = int(counters[artifact_name])
+        seen_counts[artifact_name] = count
+        if stride <= 1 or count == 1 or (count % stride) == 0:
+            written_counts[artifact_name] = int(written_counts.get(artifact_name, 0) or 0) + 1
+            return True
+        sampled_out_counts[artifact_name] = int(sampled_out_counts.get(artifact_name, 0) or 0) + 1
+        return False
+
+    def _append_control_debug_jsonl(
+        self,
+        artifact_name: str,
+        path: Path,
+        payload: Dict[str, Any],
+    ) -> None:
+        if self._should_write_control_debug_artifact(artifact_name):
+            self._append_jsonl(path, payload)
+
+    def _should_write_claim_evidence_artifact(self, artifact_name: str) -> bool:
+        stride = max(
+            1,
+            int(getattr(self, "claim_evidence_artifact_sample_stride", 1) or 1),
+        )
+        buffering = self.stats.setdefault("artifact_buffering", {})
+        buffering["claim_evidence_artifact_sample_stride"] = stride
+        seen_counts = buffering.setdefault("claim_evidence_artifact_seen_counts", {})
+        sampled_out_counts = buffering.setdefault(
+            "claim_evidence_artifact_sampled_out_counts", {}
+        )
+        written_counts = buffering.setdefault("claim_evidence_artifact_written_counts", {})
+        counters = getattr(self, "_claim_evidence_artifact_sample_counters", None)
+        if counters is None:
+            counters = Counter()
+            self._claim_evidence_artifact_sample_counters = counters
+        counters[artifact_name] += 1
+        count = int(counters[artifact_name])
+        seen_counts[artifact_name] = count
+        if stride <= 1 or count == 1 or (count % stride) == 0:
+            written_counts[artifact_name] = int(written_counts.get(artifact_name, 0) or 0) + 1
+            return True
+        sampled_out_counts[artifact_name] = int(sampled_out_counts.get(artifact_name, 0) or 0) + 1
+        return False
 
     def _projection_debug_summary(self, projection: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return build_projection_debug_summary_impl(projection)
@@ -7032,10 +7184,14 @@ class ApolloGtBridge:
         out.write_text(json.dumps(payload, indent=2))
 
     def _write_debug_row(self, row: Dict[str, Any]) -> None:
+        if not self._should_write_claim_evidence_artifact("debug_timeseries"):
+            return
         self._write_csv_row(self.debug_csv_path, row)
         self._debug_csv_header_written = True
 
     def _record_apollo_reference_line_contract_event(self, row: Dict[str, Any]) -> None:
+        if not self._should_write_claim_evidence_artifact("apollo_reference_line_contract"):
+            return
         payload: Dict[str, Any] = {}
         if isinstance(getattr(self, "_planning_last_event", None), dict):
             payload.update(self._planning_last_event)
@@ -7136,9 +7292,30 @@ class ApolloGtBridge:
             vx,
             vy,
             vz,
+            previous_acceleration=(
+                getattr(self, "_last_localization_acceleration_sample", None)
+                if getattr(self, "localization_acceleration_filter_enabled", False)
+                else None
+            ),
+            smoothing_alpha=(
+                getattr(self, "localization_acceleration_filter_alpha", 1.0)
+                if getattr(self, "localization_acceleration_filter_enabled", False)
+                else 1.0
+            ),
+            max_abs_mps2=(
+                getattr(self, "localization_acceleration_filter_max_abs_mps2", None)
+                if getattr(self, "localization_acceleration_filter_enabled", False)
+                else None
+            ),
+            max_delta_mps2=(
+                getattr(self, "localization_acceleration_filter_max_delta_mps2", None)
+                if getattr(self, "localization_acceleration_filter_enabled", False)
+                else None
+            ),
         )
         if acceleration_source != "stale_timestamp_republish":
             self._last_localization_velocity_sample = (header_ts_sec, vx, vy, vz)
+            self._last_localization_acceleration_sample = (ax, ay, az)
         acceleration_right_vrf = s_yaw * ax - c_yaw * ay
         acceleration_forward_vrf = c_yaw * ax + s_yaw * ay
         angular_velocity_source = (
@@ -7170,6 +7347,9 @@ class ApolloGtBridge:
                 "angular_velocity_source": angular_velocity_source,
                 "acceleration_source": acceleration_source,
                 "acceleration_semantics": "finite_difference_or_physical",
+                "localization_acceleration_filter_enabled": getattr(
+                    self, "localization_acceleration_filter_enabled", False
+                ),
             },
         )
         write_localization_estimate_to_pb(loc, localization_payload)
@@ -7210,6 +7390,9 @@ class ApolloGtBridge:
                 "linear_acceleration_vrf_y": acceleration_forward_vrf,
                 "linear_acceleration_vrf_z": az,
                 "acceleration_source": acceleration_source,
+                "localization_acceleration_filter_enabled": getattr(
+                    self, "localization_acceleration_filter_enabled", False
+                ),
                 "uncertainty_policy": localization_debug["localization_uncertainty_policy"],
                 "msf_status_policy": localization_debug["localization_msf_status_policy"],
                 "sensor_status_policy": localization_debug["localization_sensor_status_policy"],
@@ -8551,9 +8734,14 @@ class ApolloGtBridge:
                 effective_planning.get("planning_header_timestamp_sec")
             ),
         }
-        self._append_jsonl(self.control_trajectory_consume_live_path, control_consume_live)
+        self._append_control_debug_jsonl(
+            "control_trajectory_consume_debug_live",
+            self.control_trajectory_consume_live_path,
+            control_consume_live,
+        )
         if self.debug_dump_control_raw:
-            self._append_jsonl(
+            self._append_control_debug_jsonl(
+                "apollo_control_raw",
                 self.apollo_control_raw_path,
                 {
                     "ts_sec": control_ts,
@@ -8561,7 +8749,8 @@ class ApolloGtBridge:
                     "selected_steering_field": steer_source,
                 },
             )
-            self._append_jsonl(
+            self._append_control_debug_jsonl(
+                "bridge_control_decode",
                 self.bridge_control_decode_path,
                 {
                     "ts_sec": control_ts,
@@ -8695,7 +8884,11 @@ class ApolloGtBridge:
                     "control_gear_location": self._proto_scalar(raw_fields.get("gear_location")),
                 },
             )
-            self._append_jsonl(self.control_decode_dump_path, raw_dump)
+            self._append_control_debug_jsonl(
+                "control_decode_debug",
+                self.control_decode_dump_path,
+                raw_dump,
+            )
         if (time.time() - self._last_control_print_sec) >= 1.0 and self.debug_dump_control_raw:
             print(
                 "[bridge][control_raw] steer_src=%s raw_steer=%s parsed(%.3f,%.3f,%.3f) out(%.3f,%.3f,%.3f)"
@@ -10693,7 +10886,20 @@ class ApolloGtBridge:
                 "mode": "deadline",
             }
 
-        last_stats_flush = 0.0
+        last_stats_flush = time.time()
+
+        def maybe_write_periodic_stats(now_s: float) -> None:
+            nonlocal last_stats_flush
+            interval_s = max(
+                0.0,
+                float(getattr(self, "artifact_stats_flush_interval_s", 0.0) or 0.0),
+            )
+            if interval_s <= 0.0:
+                return
+            if (now_s - last_stats_flush) >= interval_s:
+                self._write_stats()
+                last_stats_flush = now_s
+
         while not self.stop_event.is_set():
             loop_start_wall_s = time.time()
             loop_published_gt = False
@@ -10758,9 +10964,7 @@ class ApolloGtBridge:
                             loop_start_wall_s=loop_start_wall_s,
                         )
                         now = time.time()
-                        if (now - last_stats_flush) >= 1.0:
-                            self._write_stats()
-                            last_stats_flush = now
+                        maybe_write_periodic_stats(now)
                         self._record_publish_loop_timing(
                             start_wall_s=loop_start_wall_s,
                             end_wall_s=time.time(),
@@ -10794,9 +10998,7 @@ class ApolloGtBridge:
                             loop_start_wall_s=loop_start_wall_s,
                         )
                         now = time.time()
-                        if (now - last_stats_flush) >= 1.0:
-                            self._write_stats()
-                            last_stats_flush = now
+                        maybe_write_periodic_stats(now)
                         self._record_publish_loop_timing(
                             start_wall_s=loop_start_wall_s,
                             end_wall_s=time.time(),
@@ -11987,9 +12189,7 @@ class ApolloGtBridge:
                     loop_start_wall_s=loop_start_wall_s,
                     publish_loop_duration_s=publish_loop_duration_s,
                 )
-            if (now - last_stats_flush) >= 1.0:
-                self._write_stats()
-                last_stats_flush = now
+            maybe_write_periodic_stats(now)
             sleep_until_next_publish_cycle()
 
         self._write_stats()

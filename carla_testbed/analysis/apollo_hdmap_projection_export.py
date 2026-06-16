@@ -25,6 +25,7 @@ MAP_XYSL_LINE_RE = re.compile(
     r"l\[(?P<l>[-+0-9.eE]+)\],\s*"
     r"heading\[(?P<heading>[-+0-9.eE]+)\]"
 )
+ROUTE_DENSIFICATION_MAX_HEADING_DELTA_RAD = 0.05
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ def load_localization_projection_samples(
     include_route_samples: bool = False,
     include_start_goal: bool = False,
     frame_transform_path: str | Path | None = None,
+    route_sample_step_m: float | None = None,
 ) -> list[LocalizationProjectionSample]:
     """Load Apollo-map localization samples without depending on Apollo runtime.
 
@@ -105,6 +107,11 @@ def load_localization_projection_samples(
                 root / "manifest.json",
                 frame_transform=frame_transform,
             )
+        if include_route_samples:
+            route_samples = _densify_route_samples(
+                route_samples,
+                step_m=route_sample_step_m,
+            )
         if include_start_goal and route_samples:
             selected_samples.extend(
                 [
@@ -127,6 +134,7 @@ def export_apollo_hdmap_projection_jsonl(
     include_route_samples: bool = False,
     include_start_goal: bool = False,
     frame_transform_path: str | Path | None = None,
+    route_sample_step_m: float | None = None,
     min_route_s_coverage: float | None = None,
     command_runner: CommandRunner = subprocess.run,
 ) -> dict[str, Any]:
@@ -138,6 +146,7 @@ def export_apollo_hdmap_projection_jsonl(
         include_route_samples=include_route_samples,
         include_start_goal=include_start_goal,
         frame_transform_path=frame_transform_path,
+        route_sample_step_m=route_sample_step_m,
     )
     output_path = Path(out_path).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,6 +206,7 @@ def export_apollo_hdmap_projection_jsonl(
         "non_ok_status_counts": _status_counts(non_ok_rows),
         "include_route_samples": include_route_samples,
         "include_start_goal": include_start_goal,
+        "route_sample_step_m": route_sample_step_m,
         "frame_transform_path": str(Path(frame_transform_path).expanduser()) if frame_transform_path else None,
         "min_route_s_coverage_m": min_route_s_coverage,
         "projection_s_coverage_m": projection_s_coverage_m,
@@ -467,6 +477,14 @@ def _route_json_points_are_carla_frame(payload: Mapping[str, Any]) -> bool:
         return True
     schema_version = str(payload.get("schema_version") or "")
     source = str(payload.get("source") or "")
+    source_lower = source.strip().lower()
+    if source_lower in {
+        "town01_forward_waypoint_trace",
+        "baguang_forward_waypoint_trace",
+    }:
+        return True
+    if "scenario_metadata" in source_lower or "carla" in source_lower:
+        return True
     return schema_version == "runtime_route_trace.v1" and "scenario_metadata" in source
 
 
@@ -604,6 +622,149 @@ def _route_chord_headings(
     return headings
 
 
+def _densify_route_samples(
+    samples: Sequence[LocalizationProjectionSample],
+    *,
+    step_m: float | None,
+) -> list[LocalizationProjectionSample]:
+    step = _float(step_m)
+    if step is None or step <= 0.0 or len(samples) < 2:
+        return list(samples)
+    densified: list[LocalizationProjectionSample] = []
+    for index, sample in enumerate(samples):
+        densified.append(sample)
+        if index + 1 >= len(samples):
+            continue
+        next_sample = samples[index + 1]
+        if sample.sample_type != "route" or next_sample.sample_type != "route":
+            continue
+        lane_key = str(sample.metadata.get("carla_lane_key") or "").strip()
+        next_lane_key = str(next_sample.metadata.get("carla_lane_key") or "").strip()
+        if not lane_key or lane_key != next_lane_key:
+            continue
+        heading_delta = _route_segment_heading_delta(sample, next_sample)
+        if (
+            heading_delta is None
+            or heading_delta > ROUTE_DENSIFICATION_MAX_HEADING_DELTA_RAD
+        ):
+            continue
+        distance = _route_segment_distance(sample, next_sample)
+        if distance is None or distance <= step:
+            continue
+        insert_count = max(0, int(math.floor(distance / step)) - 1)
+        if insert_count <= 0:
+            continue
+        segment_heading = math.atan2(next_sample.y - sample.y, next_sample.x - sample.x)
+        for offset in range(1, insert_count + 1):
+            fraction = offset / float(insert_count + 1)
+            metadata = dict(sample.metadata)
+            metadata.update(
+                {
+                    "route_index": _interpolate_optional_number(
+                        sample.metadata.get("route_index"),
+                        next_sample.metadata.get("route_index"),
+                        fraction,
+                    ),
+                    "route_s": _interpolate_optional_number(
+                        sample.metadata.get("route_s"),
+                        next_sample.metadata.get("route_s"),
+                        fraction,
+                    ),
+                    "route_chord_heading_apollo": segment_heading,
+                    "route_heading_source": "densified_route_chord",
+                    "route_sample_step_m": step,
+                    "densified_route_sample": True,
+                    "densified_from_route_indices": [
+                        sample.metadata.get("route_index", sample.source_index),
+                        next_sample.metadata.get("route_index", next_sample.source_index),
+                    ],
+                }
+            )
+            for axis in ("x", "y", "z"):
+                key = f"carla_{axis}"
+                value = _interpolate_optional_number(
+                    sample.metadata.get(key),
+                    next_sample.metadata.get(key),
+                    fraction,
+                )
+                if value is not None:
+                    metadata[key] = value
+            trace_heading = _interpolate_optional_angle(
+                sample.metadata.get("route_trace_heading_apollo"),
+                next_sample.metadata.get("route_trace_heading_apollo"),
+                fraction,
+            )
+            if trace_heading is not None:
+                metadata["route_trace_heading_apollo"] = trace_heading
+            carla_heading = _interpolate_optional_angle(
+                sample.metadata.get("carla_heading"),
+                next_sample.metadata.get("carla_heading"),
+                fraction,
+            )
+            if carla_heading is not None:
+                metadata["carla_heading"] = carla_heading
+            source_index = int(sample.source_index * 1000 + offset)
+            densified.append(
+                LocalizationProjectionSample(
+                    timestamp=_interpolate_optional_number(
+                        sample.timestamp,
+                        next_sample.timestamp,
+                        fraction,
+                    ),
+                    x=sample.x + (next_sample.x - sample.x) * fraction,
+                    y=sample.y + (next_sample.y - sample.y) * fraction,
+                    heading=segment_heading,
+                    source_artifact=sample.source_artifact,
+                    source_index=source_index,
+                    sample_type="route",
+                    metadata={key: value for key, value in metadata.items() if value is not None},
+                )
+            )
+    return densified
+
+
+def _route_segment_distance(
+    sample: LocalizationProjectionSample,
+    next_sample: LocalizationProjectionSample,
+) -> float | None:
+    route_s = _float(sample.metadata.get("route_s"))
+    next_route_s = _float(next_sample.metadata.get("route_s"))
+    if route_s is not None and next_route_s is not None and next_route_s > route_s:
+        return next_route_s - route_s
+    distance = math.hypot(next_sample.x - sample.x, next_sample.y - sample.y)
+    return distance if distance > 0.0 else None
+
+
+def _route_segment_heading_delta(
+    sample: LocalizationProjectionSample,
+    next_sample: LocalizationProjectionSample,
+) -> float | None:
+    first = _float(sample.metadata.get("route_trace_heading_apollo"))
+    second = _float(next_sample.metadata.get("route_trace_heading_apollo"))
+    if first is None or second is None:
+        first = _float(sample.heading)
+        second = _float(next_sample.heading)
+    if first is None or second is None:
+        return None
+    return abs(normalize_angle(second - first))
+
+
+def _interpolate_optional_number(first: Any, second: Any, fraction: float) -> float | None:
+    a = _float(first)
+    b = _float(second)
+    if a is None or b is None:
+        return None
+    return a + (b - a) * fraction
+
+
+def _interpolate_optional_angle(first: Any, second: Any, fraction: float) -> float | None:
+    a = _float(first)
+    b = _float(second)
+    if a is None or b is None:
+        return None
+    return normalize_angle(a + normalize_angle(b - a) * fraction)
+
+
 def _sample_from_mapping(
     payload: Mapping[str, Any],
     *,
@@ -692,11 +853,71 @@ def _limit_samples(
     selected = list(samples)
     if max_samples is None or max_samples <= 0 or len(selected) <= max_samples:
         return selected
+    route_indexes = [index for index, sample in enumerate(selected) if sample.sample_type == "route"]
+    pinned_indexes = [
+        index for index, sample in enumerate(selected) if sample.sample_type in {"start", "goal"}
+    ]
+    if route_indexes:
+        return _limit_samples_with_route_priority(
+            selected,
+            route_indexes=route_indexes,
+            pinned_indexes=pinned_indexes,
+            max_samples=max_samples,
+        )
     if max_samples == 1:
         return [selected[-1]]
     step = (len(selected) - 1) / float(max_samples - 1)
     indexes = sorted({round(i * step) for i in range(max_samples)})
     return [selected[index] for index in indexes]
+
+
+def _limit_samples_with_route_priority(
+    samples: Sequence[LocalizationProjectionSample],
+    *,
+    route_indexes: Sequence[int],
+    pinned_indexes: Sequence[int],
+    max_samples: int,
+) -> list[LocalizationProjectionSample]:
+    pinned = sorted(set(pinned_indexes))
+    if len(pinned) >= max_samples:
+        return [samples[index] for index in _limit_indexes(pinned, max_samples)]
+    remaining = max_samples - len(pinned)
+    other_indexes = [
+        index
+        for index, sample in enumerate(samples)
+        if index not in set(pinned) and sample.sample_type != "route"
+    ]
+    route_budget = min(len(route_indexes), max(1, int(math.ceil(remaining * 0.8))))
+    other_budget = max(0, remaining - route_budget)
+    if len(other_indexes) < other_budget:
+        route_budget = min(len(route_indexes), route_budget + other_budget - len(other_indexes))
+        other_budget = len(other_indexes)
+    elif len(route_indexes) < route_budget:
+        other_budget = min(len(other_indexes), other_budget + route_budget - len(route_indexes))
+        route_budget = len(route_indexes)
+    selected_indexes = set(pinned)
+    selected_indexes.update(_limit_indexes(route_indexes, route_budget))
+    selected_indexes.update(_limit_indexes(other_indexes, other_budget))
+    if len(selected_indexes) < max_samples:
+        remaining_indexes = [
+            index for index in range(len(samples)) if index not in selected_indexes
+        ]
+        selected_indexes.update(
+            _limit_indexes(remaining_indexes, max_samples - len(selected_indexes))
+        )
+    return [samples[index] for index in sorted(selected_indexes)]
+
+
+def _limit_indexes(indexes: Sequence[int], max_count: int) -> list[int]:
+    selected = list(indexes)
+    if max_count <= 0:
+        return []
+    if len(selected) <= max_count:
+        return selected
+    if max_count == 1:
+        return [selected[-1]]
+    step = (len(selected) - 1) / float(max_count - 1)
+    return [selected[index] for index in sorted({round(i * step) for i in range(max_count)})]
 
 
 def _status_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:

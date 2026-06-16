@@ -169,6 +169,61 @@ def test_route_start_alignment_does_not_repeat_compensated_static_spawn_probe(tm
     )
 
 
+def test_route_start_alignment_recommends_probe_when_initial_lateral_error_remains_high(
+    tmp_path: Path,
+) -> None:
+    run_dir = _write_run(tmp_path)
+    timeline_path = run_dir / "analysis" / "failure_timeline" / "failure_timeline_report.json"
+    timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+    timeline["route_start_gate"] = {
+        "route_s_at_anchor": 21.6,
+        "anchor_before_route_start": False,
+        "anchor_near_route_start": False,
+        "window_route_s_min": 20.0,
+        "window_route_s_max": 23.0,
+    }
+    timeline["anchor_event"] = {
+        "event_type": "lane_invasion",
+        "row_context": {
+            "route_s": 21.6,
+            "cross_track_error": 0.46,
+            "heading_error": 0.006,
+        },
+    }
+    timeline_path.write_text(json.dumps(timeline, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    timeseries_path = run_dir / "timeseries.csv"
+    with timeseries_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "sim_time",
+                "route_s",
+                "cross_track_error",
+                "heading_error",
+                "ego_speed",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "sim_time": "0.0",
+                "route_s": "-1.4235",
+                "cross_track_error": "0.46",
+                "heading_error": "0.0",
+                "ego_speed": "0.0",
+            }
+        )
+
+    report = analyze_route_start_alignment_run_dir(run_dir)
+
+    assert report["status"] == "warn"
+    assert report["reason"] == "spawn_lateral_offset_high"
+    assert report["initial_ego_alignment"]["rear_axle_offset_compatible"] is True
+    assert report["recommendation"]["available"] is True
+    assert report["recommendation"]["action"] == "probe_spawn_lateral_alignment"
+    assert report["recommendation"]["recommended_ego_offset_y_delta_m"] == -0.45
+
+
 def test_route_start_alignment_ignores_non_actionable_semantic_anchor_without_ordering_findings(
     tmp_path: Path,
 ) -> None:

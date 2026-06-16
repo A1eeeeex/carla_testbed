@@ -589,6 +589,32 @@ def test_finite_difference_acceleration_source_is_preferred_over_initial_sample(
     assert report["acceptance_checklist"]["acceleration_semantics"]["status"] == "pass"
 
 
+def test_filtered_finite_difference_acceleration_remains_claim_grade() -> None:
+    rows = _read_csv(TIMESERIES)
+    for index, row in enumerate(rows):
+        row["acceleration_source"] = (
+            "initial_sample_missing_previous_velocity"
+            if index == 0
+            else "finite_difference_filtered"
+        )
+        row["linear_acceleration_x"] = "0.0"
+        row["linear_acceleration_vrf_x"] = "0.0"
+
+    report = analyze_localization_contract(
+        timeseries_rows=rows,
+        channel_stats=_read_json(CHANNEL_STATS),
+        route_health=_read_json(ROUTE_HEALTH),
+        frame_transform=load_frame_transform(FRAME_TRANSFORM),
+        vehicle_reference=load_vehicle_reference(VEHICLE_REFERENCE),
+        source=_runtime_reference_source(),
+    )
+
+    assert report["kinematics"]["linear_acceleration_source"] == "finite_difference_filtered"
+    assert report["kinematics"]["physical_linear_acceleration_available"] is True
+    assert report["kinematics"]["linear_acceleration_claim_grade"] is True
+    assert report["acceptance_checklist"]["acceleration_semantics"]["status"] == "pass"
+
+
 def test_vehicle_reference_confidence_assumed_blocks_claim_grade() -> None:
     report = analyze_localization_contract(
         timeseries_rows=_read_csv(TIMESERIES),

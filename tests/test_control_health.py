@@ -588,6 +588,9 @@ def test_control_health_reads_simple_lon_debug_from_raw_control_dump(tmp_path: P
     assert planning["transition_buckets"]["trajectory_path_length_delta_gt_5m"] == 1
     assert planning["transition_buckets"]["trajectory_last_point_jump_gt_5m"] == 1
     assert planning["transition_buckets"]["speed_fallback_involved"] == 1
+    assert planning["planning_debug_exact_pair_count"] == 1
+    assert planning["planning_debug_exact_pair_coverage_ratio"] == 1.0
+    assert planning["planning_debug_missing_transition_ratio"] == 0.0
     assert planning["dominant_suspected_factor"] == "planning_trajectory_length_switching"
     window = planning["transition_window_summary"]
     assert window["available"] is True
@@ -618,6 +621,7 @@ def test_control_health_reads_simple_lon_debug_from_raw_control_dump(tmp_path: P
     fallback = report["metrics"]["planning_log_fallback_diagnostics"]
     assert fallback["available"] is True
     assert fallback["matched_point_lon_diff_replan_count"] == 1
+
     assert fallback["matched_point_lon_diff_p95_m"] == 2.75
     assert fallback["piecewise_jerk_speed_optimizer_fail_count"] == 2
     assert fallback["speed_fallback_due_to_algorithm_failure_count"] == 1
@@ -634,20 +638,198 @@ def test_control_health_reads_simple_lon_debug_from_raw_control_dump(tmp_path: P
     assert diagnosis["available"] is True
     assert diagnosis["primary_suspected_layer"] == "planning_control_semantics"
     assert diagnosis["raw_command_oscillation_present"] is True
+    assert diagnosis["planning_debug_sequence_coverage_low"] is False
+    assert diagnosis["planning_debug_exact_pair_coverage_ratio"] == 1.0
     assert diagnosis["gt_state_oversampling_present"] is True
     assert diagnosis["control_to_chassis_count_ratio"] == 10.0
     assert diagnosis["claim_grade_control_mapping"] is False
     assert "gt_state_sampling_cadence" in diagnosis["suspected_layers"]
     assert "control_mapping_claim_boundary" in diagnosis["suspected_layers"]
-    assert diagnosis["transition_window_dominant_mode"] == "planning_sequence_update"
-    assert diagnosis["planning_sequence_changed_transition_ratio"] == 1.0
-    assert (
-        diagnosis["control_semantics_primary_factor"]
-        == "planning_trajectory_length_switching"
-    )
     assert "apollo_control_oversamples_gt_state" in report["warnings"]
     assert "gt_state_wall_rate_low_relative_to_control" in report["warnings"]
     assert "apollo_control_current_acceleration_spiky" in report["warnings"]
+
+
+def test_control_health_marks_low_planning_debug_sequence_coverage(tmp_path: Path) -> None:
+    run_dir = _copy_run(tmp_path)
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    (artifact_dir / "control_decode_debug.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "raw_control_msg_dump": {
+                        "control_header_sequence_num": index + 30,
+                        "throttle": 100.0 if index == 0 else 0.0,
+                        "brake": 0.0 if index == 0 else 50.0,
+                        "debug_simple_lon_acceleration_cmd": 0.5 if index == 0 else -0.5,
+                        "debug_simple_lon_path_remain": 20.0 if index == 0 else 19.0,
+                        "debug_simple_lon_station_error": 1.0,
+                    },
+                    "mapped_throttle_cmd": 1.0 if index == 0 else 0.0,
+                    "mapped_brake_cmd": 0.0 if index == 0 else 0.5,
+                    "mapped_carla_steer_cmd": 0.0,
+                }
+            )
+            for index in range(2)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifact_dir / "control_trajectory_consume_debug.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "planning_header_sequence_num_used": 40 + index,
+                    "latest_planning_trajectory_point_count": 100,
+                    "effective_planning_source": "matched_seq",
+                    "control_input_candidate_source": "primary",
+                    "latest_planning_msg_age_ms": 100.0,
+                    "trajectory_first_point_relative_time": -0.2,
+                    "trajectory_last_point_relative_time": 7.0,
+                }
+            )
+            for index in range(2)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifact_dir / "planning_topic_debug.jsonl").write_text(
+        json.dumps(
+            {
+                "planning_header_sequence_num": 40,
+                "trajectory_point_count": 120,
+                "trajectory_total_path_length": 30.0,
+                "trajectory_total_time": 7.0,
+                "trajectory_relative_time_min_sec": -0.2,
+                "trajectory_relative_time_max_sec": 7.0,
+                "first_trajectory_point_x": 0.0,
+                "first_trajectory_point_y": 0.0,
+                "last_trajectory_point_x": 30.0,
+                "last_trajectory_point_y": 0.0,
+                "trajectory_type": "NORMAL",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+    planning = report["metrics"]["control_decode_debug"]["planning_trajectory_correlation"]
+
+    assert planning["transition_count"] == 1
+    assert planning["transition_buckets"]["planning_debug_missing_for_sequence"] == 1
+    assert planning["planning_debug_exact_pair_count"] == 0
+    assert planning["planning_debug_exact_pair_coverage_ratio"] == 0.0
+    assert planning["planning_debug_missing_transition_ratio"] == 1.0
+    assert planning["dominant_suspected_factor"] == "planning_debug_sequence_coverage_low"
+    assert "planning_debug_sequence_coverage_low" in planning["suspected_factors"]
+    diagnosis = report["metrics"]["control_oscillation_diagnosis"]
+    assert diagnosis["primary_suspected_layer"] == "planning_debug_sequence_coverage"
+    assert diagnosis["planning_debug_sequence_coverage_low"] is True
+    assert diagnosis["planning_debug_exact_pair_coverage_ratio"] == 0.0
+    assert diagnosis["transition_window_dominant_mode"] == "planning_sequence_update"
+    assert diagnosis["planning_sequence_changed_transition_ratio"] == 1.0
+
+
+def test_control_health_flags_saturated_steering_target_with_low_mapped_steer(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    (artifact_dir / "control_decode_debug.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "raw_control_msg_dump": {
+                        "control_header_sequence_num": 100 + index,
+                        "throttle": 0.0,
+                        "brake": 0.0,
+                        "steering_target": -100.0,
+                    },
+                    "parsed_control": {
+                        "control_latency_ms": 1.0,
+                        "steer": -0.01,
+                        "steering_normalized_for_mapping": -0.01,
+                    },
+                    "output_to_carla": {
+                        "mapped_throttle_cmd": 0.0,
+                        "mapped_brake_cmd": 0.0,
+                        "mapped_carla_steer_cmd": -0.0025,
+                    },
+                    "carla_applied": {"steer": -0.0025},
+                }
+            )
+            for index in range(12)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+    saturation = report["metrics"]["control_decode_debug"]["steering_mapping_saturation"]
+
+    assert saturation["status"] == "warn"
+    assert saturation["reason"] == "raw_steering_target_saturated_but_mapped_steer_low"
+    assert saturation["saturated_raw_steering_target_count"] == 12
+    assert saturation["saturated_raw_low_mapped_ratio"] == 1.0
+    assert saturation["mapped_steer_abs_p95_when_raw_saturated"] == pytest.approx(0.0025)
+    assert saturation["dominant_suspected_factor"] == "bridge_steering_normalization_or_scale"
+    diagnosis = report["metrics"]["control_oscillation_diagnosis"]
+    assert diagnosis["steering_mapping_saturation_present"] is True
+    assert "bridge_steering_normalization_or_scale" in diagnosis["suspected_layers"]
+
+
+def test_control_health_merges_auxiliary_steering_saturation_from_decode_trace(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    (artifact_dir / "control_apply_trace.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "event_type": "control_apply",
+                    "timestamp": index * 0.05,
+                    "apollo_raw": {"throttle": 0.0, "brake": 0.0, "steer": -0.01},
+                    "bridge_mapped": {"throttle": 0.0, "brake": 0.0, "steer": -0.0025},
+                    "carla_applied": {"throttle": 0.0, "brake": 0.0, "steer": -0.0025},
+                }
+            )
+            for index in range(4)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifact_dir / "control_decode_debug.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "raw_control_msg_dump": {
+                        "control_header_sequence_num": 200 + index,
+                        "steering_target": -100.0,
+                    },
+                    "parsed_control": {"steering_normalized_for_mapping": -0.01},
+                    "output_to_carla": {"mapped_carla_steer_cmd": -0.0025},
+                    "carla_applied": {"steer": -0.0025},
+                }
+            )
+            for index in range(4)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+    decode = report["metrics"]["control_decode_debug"]
+    saturation = decode["steering_mapping_saturation"]
+
+    assert decode["auxiliary_source_used_for"] == ["steering_mapping_saturation"]
+    assert saturation["available"] is True
+    assert saturation["status"] == "warn"
+    assert saturation["saturated_raw_low_mapped_ratio"] == 1.0
 
 
 def test_control_health_accepts_live_control_trajectory_consume_debug(

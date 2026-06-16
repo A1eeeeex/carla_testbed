@@ -537,6 +537,7 @@ def _input_readiness(
     planning_count = _first_number(
         planning_summary.get("message_count"),
         planning_summary.get("planning_message_count"),
+        planning_summary.get("total_messages_received"),
         control_handoff_inputs.get("planning_message_count"),
         control_handoff_debug.get("planning_message_count"),
         summary.get("planning_message_count"),
@@ -545,6 +546,7 @@ def _input_readiness(
     nonempty = _first_number(
         planning_summary.get("nonempty_trajectory_count"),
         planning_summary.get("nonempty_count"),
+        planning_summary.get("messages_with_nonzero_trajectory_points"),
         control_handoff_inputs.get("planning_nonempty_count"),
         summary.get("planning_nonempty_count"),
     )

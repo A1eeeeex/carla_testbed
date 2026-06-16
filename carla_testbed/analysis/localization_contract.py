@@ -1482,7 +1482,11 @@ def _analyze_kinematics(
         acceleration_source = "unknown"
     linear_accel_field_present = _has_any(rows, "acceleration") or _bool_field_available(rows, "linear_acceleration_available")
     physical_linear_accel_available = bool(linear_accel_field_present and str(acceleration_source or "") not in {"zero_filled", "missing"})
-    linear_accel_claim_grade = bool(physical_linear_accel_available and str(acceleration_source or "") in {"carla_actor", "finite_difference"})
+    linear_accel_claim_grade = bool(
+        physical_linear_accel_available
+        and str(acceleration_source or "")
+        in {"carla_actor", "finite_difference", "finite_difference_filtered"}
+    )
     if str(acceleration_source or "") == "zero_filled":
         warnings.append("acceleration_zero_filled")
     linear_accel_vrf_present = _has_any(rows, "linear_acceleration_vrf") or _bool_field_available(rows, "linear_acceleration_vrf_available")
@@ -1798,6 +1802,7 @@ def _first_row_value(rows: list[dict[str, Any]], canonical_field: str) -> Any:
 def _preferred_acceleration_source(rows: list[dict[str, Any]]) -> str | None:
     priority = {
         "finite_difference": 5,
+        "finite_difference_filtered": 5,
         "carla_actor": 5,
         "measured": 5,
         "initial_sample_missing_previous_velocity": 2,

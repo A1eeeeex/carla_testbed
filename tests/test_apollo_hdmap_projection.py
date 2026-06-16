@@ -120,6 +120,30 @@ def test_claim_grade_projection_uses_strict_heading_and_lateral_thresholds(tmp_p
     assert "apollo_hdmap_projection_lateral_error_high" in lateral_report["blocking_reasons"]
 
 
+def test_route_projection_claim_does_not_fail_on_runtime_ego_lateral_drift(tmp_path: Path) -> None:
+    path = tmp_path / "apollo_hdmap_projection.jsonl"
+    rows = []
+    for row in _projection_rows(heading_error_rad=0.001, lateral_error_m=0.0):
+        row["sample_type"] = "route"
+        row["route_s"] = row["projection_s"]
+        rows.append(row)
+    for row in _projection_rows(heading_error_rad=0.01, lateral_error_m=0.95):
+        row["sample_type"] = "ego"
+        rows.append(row)
+    _write_jsonl(path, rows)
+
+    report = analyze_apollo_hdmap_projection_file(path)
+
+    assert report["status"] == "pass"
+    assert report["claim_grade"] is True
+    assert report["projection"]["claim_evidence_scope"] == "route_start_goal"
+    assert report["projection"]["lateral_error_p95_m"] == 0.0
+    assert report["projection"]["static_route_projection"]["lateral_error_p95_m"] == 0.0
+    assert report["projection"]["runtime_ego_projection"]["status"] == "fail"
+    assert report["projection"]["runtime_ego_projection"]["lateral_error_p95_m"] == 0.95
+    assert "apollo_hdmap_projection_lateral_error_high" not in report["blocking_reasons"]
+
+
 def test_start_goal_projection_failure_blocks_alignment_evidence(tmp_path: Path) -> None:
     path = tmp_path / "apollo_hdmap_projection.jsonl"
     rows = _projection_rows(heading_error_rad=0.01, lateral_error_m=0.05)
@@ -514,6 +538,184 @@ def test_projection_samples_transform_runtime_route_json_carla_frame(tmp_path: P
     ]
     assert all(abs((sample.heading or 0.0) - 1.57079632679) < 1e-9 for sample in samples)
     assert all(sample.source_artifact.endswith("route.json") for sample in samples)
+
+
+def test_projection_samples_transform_town01_waypoint_trace_without_frame_marker(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "route.json",
+        {
+            "source": "town01_forward_waypoint_trace",
+            "metadata": {"route_selected_from_corpus": True},
+            "points": [
+                {
+                    "x": 2.0189006328582764,
+                    "y": 249.42996215820312,
+                    "z": 0.0,
+                    "heading": 4.712519475278103,
+                    "s": 0.0,
+                    "lane_id": "15:0:1",
+                },
+                {
+                    "x": 2.0195534229278564,
+                    "y": 244.42996215820312,
+                    "z": 0.0,
+                    "heading": 4.712519475278103,
+                    "s": 5.0,
+                    "lane_id": "15:0:1",
+                },
+            ],
+        },
+    )
+    transform_path = tmp_path / "apollo_frame_transform.yaml"
+    _write_json(
+        transform_path,
+        {
+            "transform": {
+                "tx": 0.0,
+                "ty": 0.0,
+                "tz": 0.0,
+                "yaw_rad": 0.0,
+                "scale": 1.0,
+                "y_flip": True,
+            }
+        },
+    )
+
+    without_transform = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_route_samples=True,
+        include_start_goal=True,
+        max_samples=0,
+    )
+    samples = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_route_samples=True,
+        include_start_goal=True,
+        frame_transform_path=transform_path,
+        max_samples=0,
+    )
+
+    assert without_transform == []
+    assert [(round(sample.x, 3), round(sample.y, 3)) for sample in samples] == [
+        (2.019, -249.43),
+        (2.02, -244.43),
+    ]
+    assert all(sample.heading is not None and sample.heading > 1.5 for sample in samples)
+    assert samples[0].metadata["carla_y"] == 249.42996215820312
+    assert samples[0].metadata["route_trace_heading_apollo"] > 1.5
+
+
+def test_projection_route_samples_can_be_densified_within_same_lane(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "route.json",
+        {
+            "points": [
+                {"x": 0.0, "y": 0.0, "heading": 0.0, "s": 0.0, "lane_id": "13:0:-1"},
+                {"x": 4.0, "y": 0.0, "heading": 0.0, "s": 4.0, "lane_id": "13:0:-1"},
+                {"x": 8.0, "y": 0.0, "heading": 0.0, "s": 8.0, "lane_id": "13:0:-1"},
+            ]
+        },
+    )
+
+    samples = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_route_samples=True,
+        max_samples=0,
+        route_sample_step_m=2.0,
+    )
+
+    assert [(sample.x, sample.metadata.get("route_s")) for sample in samples] == [
+        (0.0, 0.0),
+        (2.0, 2.0),
+        (4.0, 4.0),
+        (6.0, 6.0),
+        (8.0, 8.0),
+    ]
+    assert samples[1].metadata["densified_route_sample"] is True
+    assert samples[1].metadata["route_heading_source"] == "densified_route_chord"
+    assert samples[1].heading == 0.0
+
+
+def test_projection_route_densification_does_not_cross_lane_boundaries(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "route.json",
+        {
+            "points": [
+                {"x": 0.0, "y": 0.0, "heading": 0.0, "s": 0.0, "lane_id": "13:0:-1"},
+                {"x": 10.0, "y": 0.0, "heading": 0.0, "s": 10.0, "lane_id": "15:0:1"},
+            ]
+        },
+    )
+
+    samples = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_route_samples=True,
+        max_samples=0,
+        route_sample_step_m=1.0,
+    )
+
+    assert len(samples) == 2
+    assert [sample.metadata.get("carla_lane_key") for sample in samples] == ["13:-1", "15:1"]
+
+
+def test_projection_route_densification_skips_curved_segments(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "route.json",
+        {
+            "points": [
+                {"x": 0.0, "y": 0.0, "heading": 0.0, "s": 0.0, "lane_id": "13:0:-1"},
+                {"x": 4.0, "y": 1.0, "heading": 0.4, "s": 4.0, "lane_id": "13:0:-1"},
+            ]
+        },
+    )
+
+    samples = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_route_samples=True,
+        max_samples=0,
+        route_sample_step_m=1.0,
+    )
+
+    assert len(samples) == 2
+    assert not any(sample.metadata.get("densified_route_sample") for sample in samples)
+
+
+def test_projection_sample_limit_prioritizes_route_samples(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_jsonl(
+        run_dir / "artifacts" / "apollo_reference_line_contract.jsonl",
+        [
+            {
+                "timestamp": float(index),
+                "localization": {"x": float(index), "y": 100.0, "heading": 0.0},
+            }
+            for index in range(100)
+        ],
+    )
+    _write_json(
+        run_dir / "route.json",
+        {
+            "points": [
+                {"x": float(index), "y": 0.0, "heading": 0.0, "s": float(index), "lane_id": "13:0:-1"}
+                for index in range(100)
+            ]
+        },
+    )
+
+    samples = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_route_samples=True,
+        max_samples=20,
+    )
+
+    route_count = sum(1 for sample in samples if sample.sample_type == "route")
+    ego_count = sum(1 for sample in samples if sample.sample_type == "ego")
+    assert route_count == 16
+    assert ego_count == 4
 
 
 def test_projection_samples_skip_runtime_route_json_carla_frame_without_transform(tmp_path: Path) -> None:

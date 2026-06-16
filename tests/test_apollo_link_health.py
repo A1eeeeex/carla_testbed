@@ -8,6 +8,8 @@ from pathlib import Path
 
 from carla_testbed.analysis.apollo_link_health import (
     APOLLO_LINK_HEALTH_SCHEMA_VERSION,
+    _should_regenerate_apollo_route_contract,
+    _should_regenerate_apollo_reference_line_contract,
     analyze_apollo_link_health_run_dir,
     apollo_link_health_summary_md,
     write_apollo_link_health_report,
@@ -306,6 +308,31 @@ def _base_run(tmp_path: Path) -> Path:
     return run_dir
 
 
+def test_reference_line_fail_report_without_path_fallback_metrics_is_regenerated() -> None:
+    stale_report = {
+        "schema_version": "apollo_reference_line_contract.v1",
+        "status": "fail",
+        "blocking_reasons": ["planning_reference_heading_error_high"],
+        "metrics": {
+            "planning_ref_heading_error_p95_rad": 0.31,
+            "control_ref_heading_error_p95_rad": 0.0,
+        },
+    }
+
+    fresh_report = {
+        "schema_version": "apollo_reference_line_contract.v1",
+        "status": "fail",
+        "blocking_reasons": ["planning_path_fallback_heading_error_high"],
+        "metrics": {
+            "planning_ref_heading_error_p95_rad": 0.31,
+            "path_fallback_trajectory_ratio": 0.10,
+        },
+    }
+
+    assert _should_regenerate_apollo_reference_line_contract(stale_report) is True
+    assert _should_regenerate_apollo_reference_line_contract(fresh_report) is False
+
+
 def test_all_green_link_health_is_claimable(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
 
@@ -368,11 +395,15 @@ def test_prediction_evidence_unknown_placeholder_is_regenerated_as_explicit_bypa
 
     assert layer["artifact_paths"]["source_kind"] == "regenerated_from_run_artifacts"
     assert layer["key_metrics"]["prediction_mode"] == "bypassed_with_gt_obstacles"
-    assert layer["key_metrics"]["hard_gate_eligible"] is False
+    assert layer["key_metrics"]["prediction_bypass_scope"] == "static_lane_keep_no_dynamic_obstacles"
+    assert layer["key_metrics"]["hard_gate_eligible"] is True
     assert "prediction_status_unknown" not in layer["blocking_reasons"]
-    assert "prediction_not_hard_gate_eligible" in layer["blocking_reasons"]
-    assert "prediction_evidence:hard_gate_eligible_false" in report["why_not_claimable"]
-    assert report["can_claim_unassisted_natural_driving"] is False
+    assert "prediction_not_hard_gate_eligible" not in layer["blocking_reasons"]
+    assert "prediction_evidence:hard_gate_eligible_false" not in report["why_not_claimable"]
+    assert not any(
+        reason.startswith("prediction_evidence:")
+        for reason in report["why_not_claimable"]
+    )
 
 
 def test_missing_module_consumption_blocks_claim(tmp_path: Path) -> None:
@@ -455,6 +486,62 @@ def test_low_planning_materialization_is_primary_blocker(tmp_path: Path) -> None
     assert layer["status"] == "fail"
     assert layer["key_metrics"]["nonempty_trajectory_ratio"] == 14 / 550
     assert "route_establishment_latency" in layer["blocking_reasons"]
+
+
+def test_apollo_planning_materialization_report_takes_precedence_over_stale_legacy_report(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "verdict": "fail",
+            "planning_message_count": 81,
+            "nonempty_trajectory_ratio": 0.61,
+            "claim_window_nonempty_ratio": 0.61,
+            "claim_window_source": "after_routing_success",
+            "blocking_reasons": [
+                "planning_trajectory_materialization_low",
+                "route_establishment_not_confirmed",
+            ],
+        },
+    )
+    _write_json(
+        run_dir / "analysis/apollo_planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "verdict": "warn",
+            "planning_message_count": 81,
+            "nonempty_trajectory_ratio": 0.61,
+            "after_first_nonempty_trajectory_ratio": 1.0,
+            "claim_window_nonempty_ratio": 1.0,
+            "claim_window_source": "after_first_nonempty_trajectory",
+            "route_establishment": {
+                "route_established": True,
+                "blocking_reasons": [],
+            },
+            "blocking_reasons": [],
+            "warnings": [
+                "planning_nonempty_after_routing_low_but_sustained_after_first_nonempty"
+            ],
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    layer = report["layers"]["route_establishment"]
+
+    assert report["primary_blocker"] != "route_establishment:planning_trajectory_materialization_low"
+    assert layer["status"] == "warn"
+    assert layer["key_metrics"]["claim_window_nonempty_ratio"] == 1.0
+    assert layer["key_metrics"]["claim_window_source"] == "after_first_nonempty_trajectory"
+    assert "planning_trajectory_materialization_low" not in layer["blocking_reasons"]
+    no_assist = report["layers"]["no_assist_claim_boundary"]
+    assert no_assist["key_metrics"]["planning_materialization_claim_window_ratio"] == 1.0
+    assert (
+        no_assist["key_metrics"]["planning_materialization_claim_window_source"]
+        == "after_first_nonempty_trajectory"
+    )
 
 
 def test_apollo_route_contract_mismatch_is_route_establishment_blocker(tmp_path: Path) -> None:
@@ -1091,6 +1178,42 @@ def test_runtime_contract_not_required_points_to_true_lateral_rerun(tmp_path: Pa
     assert report["can_claim_unassisted_natural_driving"] is False
 
 
+def test_bridge_runtime_uses_raw_materialization_when_summary_flags_are_stale(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["routing_materialized"] = False
+    summary["planning_materialized"] = False
+    summary["routing_success_count"] = 1
+    summary["planning_message_count"] = 12
+    _write_json(summary_path, summary)
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "lane_window_signature": "15_1_1@0.0->10.0",
+            "total_length_m": 10.0,
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "total_messages_received": 12,
+            "messages_with_nonzero_trajectory_points": 10,
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    bridge = report["layers"]["bridge_runtime"]
+    assert bridge["status"] == "warn"
+    assert "bridge_materialization_missing" not in bridge["blocking_reasons"]
+    assert bridge["key_metrics"]["routing_raw_materialized"] is True
+    assert bridge["key_metrics"]["planning_raw_materialized"] is True
+    assert "summary_routing_materialized_false_overridden_by_raw_artifacts" in bridge["warnings"]
+    assert "summary_planning_materialized_false_overridden_by_raw_artifacts" in bridge["warnings"]
+    assert report["primary_blocker"] != "bridge_runtime:bridge_materialization_missing"
+
+
 def test_raw_handoff_artifact_prioritizes_routing_before_no_assist_claim(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     (run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json").unlink()
@@ -1528,6 +1651,25 @@ def test_control_oscillation_becomes_primary_only_after_localization_and_referen
         },
         "dominant_suspected_factor": "planning_trajectory_length_switching",
     }
+    control["metrics"]["oscillation_decomposition"] = {
+        "dominant_oscillation_layer": "apollo_raw_command",
+        "layers": {
+            "apollo_raw_command": {
+                "status": "fail",
+                "reason": "throttle_brake_switching",
+                "throttle_brake_switch_count": 12,
+            },
+            "bridge_mapped_command": {"status": "fail"},
+            "carla_applied_command": {"status": "fail"},
+            "bridge_apply_cadence": {
+                "status": "pass",
+                "observed_apply_world_frame_hz": 19.8,
+                "configured_apply_hz": 20.0,
+                "same_frame_drop_ratio": 0.05,
+                "same_frame_drop_expected_from_sync_tick": True,
+            },
+        },
+    }
     control["metrics"]["planning_log_fallback_diagnostics"] = {
         "matched_point_lon_diff_replan_count": 4,
         "piecewise_jerk_speed_optimizer_fail_count": 2,
@@ -1573,11 +1715,22 @@ def test_control_oscillation_becomes_primary_only_after_localization_and_referen
         ]
         == "apollo_simple_lon_acceleration_cmd_sign_switching"
     )
+    compact = metrics["control_oscillation_compact"]
+    assert compact["dominant_oscillation_layer"] == "apollo_raw_command"
+    assert compact["primary_suspected_layer"] == "planning_control_semantics"
+    assert compact["apollo_raw_throttle_brake_switch_count"] == 12
+    assert compact["bridge_apply_cadence_status"] == "pass"
+    assert compact["bridge_apply_same_frame_drop_expected_from_sync_tick"] is True
+    assert compact["transition_window_dominant_mode"] == "planning_sequence_update"
+    assert compact["planning_sequence_changed_ratio"] == 0.75
     next_action = report["layers"]["control_mapping_apply"]["next_action"]
     assert (
         "planning_trajectory_length_switching" in next_action
         or "control_trajectory_consume_debug" in next_action
     )
+    summary = apollo_link_health_summary_md(report)
+    assert "control_oscillation_compact" in summary
+    assert "planning_control_semantics" in summary
     assert (
         metrics["planning_log_fallback_diagnostics"]["dominant_suspected_factor"]
         == "trajectory_stitcher_matched_point_lon_diff_replans"
@@ -1934,6 +2087,123 @@ def test_chassis_gt_contract_uses_run_artifacts_when_report_is_placeholder(tmp_p
     assert report["can_claim_unassisted_natural_driving"] is False
 
 
+def test_localization_contract_uses_run_artifacts_when_report_is_placeholder(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/localization_contract/localization_contract_report.json",
+        {
+            "schema_version": "apollo_localization_contract.v1",
+            "verdict": {
+                "status": "insufficient_data",
+                "blocking_reasons": ["localization_runtime_samples_missing"],
+            },
+            "channel": {"status": "insufficient_data", "message_count": 0},
+        },
+    )
+    _write_json(
+        run_dir / "channel_stats.json",
+        {
+            "schema_version": "channel_stats.v1",
+            "channels": {
+                "/apollo/localization/pose": {
+                    "message_count": 3,
+                    "hz": 20.0,
+                    "max_gap_ms": 50.0,
+                    "timestamp_monotonic": True,
+                    "sequence_monotonic": True,
+                    "stale_count": 0,
+                }
+            },
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/cyber_bridge_stats.json",
+        {
+            "routing_success_count": 1,
+            "control_rx_count": 100,
+            "control_tx_count": 100,
+            "apply_control_count": 100,
+            "localization": {
+                "reference_mode": "rear_axle",
+                "back_offset_m": 1.4235,
+                "expected_rear_axle_back_offset_m": 1.4235,
+            },
+            "last_pose_debug": {
+                "localization_frame_id": "map",
+                "localization_reference_mode": "rear_axle",
+                "localization_back_offset_m": 1.4235,
+                "vehicle_reference_confidence": "verified",
+                "vehicle_reference_hard_gate_eligible": True,
+            },
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/ros2_gt_live_stats.json",
+        {
+            "reference": {
+                "localization_reference_mode": "vehicle_origin",
+                "apollo_control_state_reference": "rear_axle_input_com_internal",
+            }
+        },
+    )
+    (run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+    (run_dir / "artifacts/debug_timeseries.csv").write_text(
+        "\n".join(
+            [
+                (
+                    "ts_sec,localization_header_timestamp_sec,localization_measurement_time,"
+                    "localization_sequence_num,localization_frame_id,localization_time_base,"
+                    "localization_heading,localization_orientation_qx,localization_orientation_qy,"
+                    "localization_orientation_qz,localization_orientation_qw,decoded_orientation_heading,"
+                    "decoded_orientation_heading_diff_rad,orientation_heading_diff_rad,heading_source,"
+                    "orientation_convention,heading_error,e_psi_deg,lane_inside,lane_dist_m,e_y_m,"
+                    "localization_speed_mps,chassis_speed_mps,velocity_norm_vs_chassis_speed_mps,"
+                    "localization_chassis_timestamp_delta_ms,ego_yaw_rate_rad_s,heading_fd_yaw_rate_rad_s,"
+                    "localization_angular_velocity_unit,linear_acceleration_x,linear_acceleration_vrf_x,"
+                    "linear_acceleration_available,linear_acceleration_vrf_available,"
+                    "angular_velocity_vrf_available,acceleration_source,planning_message_age_ms,"
+                    "localization_uncertainty_policy,localization_msf_status_policy,"
+                    "localization_sensor_status_policy"
+                ),
+                (
+                    "0.00,0.00,0.00,1,map,sim_time,0.0,0.0,0.0,-0.7071067811865475,0.7071067811865476,0.0,"
+                    "0.0,0.0,odom_quaternion_yaw_after_frame_transform,RFU_to_ENU,"
+                    "0.01,0.5,true,0.02,0.02,5.0,5.0,0.0,0.0,0.0,0.0,rad_per_s,"
+                    "0.0,0.0,true,true,true,carla_actor,10.0,not_modelled_gt_truth,"
+                    "not_applicable_gt_truth,not_applicable_gt_truth"
+                ),
+                (
+                    "0.05,0.05,0.05,2,map,sim_time,0.0,0.0,0.0,-0.7071067811865475,0.7071067811865476,0.0,"
+                    "0.0,0.0,odom_quaternion_yaw_after_frame_transform,RFU_to_ENU,"
+                    "0.01,0.5,true,0.02,0.02,5.2,5.2,0.0,0.0,0.0,0.0,rad_per_s,"
+                    "0.0,0.0,true,true,true,carla_actor,11.0,not_modelled_gt_truth,"
+                    "not_applicable_gt_truth,not_applicable_gt_truth"
+                ),
+                (
+                    "0.10,0.10,0.10,3,map,sim_time,0.0,0.0,0.0,-0.7071067811865475,0.7071067811865476,0.0,"
+                    "0.0,0.0,odom_quaternion_yaw_after_frame_transform,RFU_to_ENU,"
+                    "0.01,0.5,true,0.02,0.02,5.4,5.4,0.0,0.0,0.0,0.0,rad_per_s,"
+                    "0.0,0.0,true,true,true,carla_actor,12.0,not_modelled_gt_truth,"
+                    "not_applicable_gt_truth,not_applicable_gt_truth"
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    layer = report["layers"]["localization_gt_contract"]
+
+    assert layer["status"] == "warn"
+    assert layer["artifact_paths"]["source_kind"] == "regenerated_from_run_artifacts"
+    assert layer["key_metrics"]["channel_status"] == "pass"
+    assert layer["key_metrics"]["position_uses_vrp"] is True
+    assert layer["key_metrics"]["vehicle_reference_hard_gate_eligible"] is True
+    assert layer["key_metrics"]["measurement_header_delta_ms_p95"] == 0.0
+    assert "localization_gt_contract:insufficient_data" not in report["why_not_claimable"]
+
+
 def test_planning_and_module_consumption_use_run_artifacts_when_reports_are_placeholder(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     _write_json(
@@ -2201,6 +2471,17 @@ def test_route_contract_placeholder_regenerates_from_decoded_routing_response(tm
     assert route_contract["routing_response_decoded"]["available"] is True
     assert route_contract["last_routing_response"]["source"] == "routing_response_decoded"
     assert route_layer["key_metrics"]["apollo_routing_total_length_m"] == 230.0
+
+
+def test_stale_route_contract_warn_regenerates_after_projection_or_transform_available() -> None:
+    report = {
+        "schema_version": "apollo_route_contract.v1",
+        "status": "warn",
+        "warnings": ["apollo_route_xy_comparison_frame_transform_missing"],
+        "routing_response_decoded": {"available": True},
+    }
+
+    assert _should_regenerate_apollo_route_contract(report) is True
 
 
 def test_reference_line_placeholder_regenerates_from_runtime_artifacts(tmp_path: Path) -> None:

@@ -99,6 +99,20 @@ def test_route_start_probe_plan_uses_alignment_recommendation_for_low_completion
     assert plan["claim_boundary"]["does_not_enable_physical_mapping"] is True
 
 
+def test_route_start_probe_plan_maps_derived_scenario_id_to_suite_runner_id(tmp_path: Path) -> None:
+    source = _route_completion_source_run()
+    source.update({"scenario_id": "lane_keep_town01_rh_spawn097_goal046"})
+
+    plan = build_route_start_probe_plan(_report(source), source_report_path=tmp_path / "report.json")
+
+    assert plan["status"] == "ready"
+    probe = plan["probes"][0]
+    assert probe["scenario_id"] == "lane_keep_town01_rh_spawn097_goal046"
+    assert probe["runner_scenario_id"] == "lane_keep_097"
+    assert "--scenarios lane_keep_097" in probe["command"]
+    assert "--scenario-id lane_keep_town01_rh_spawn097_goal046" in probe["result_command"]
+
+
 def test_route_start_probe_plan_handles_spawn_offset_with_later_collision() -> None:
     source = _route_completion_source_run()
     source.update(
@@ -122,13 +136,31 @@ def test_route_start_probe_plan_handles_spawn_offset_with_later_collision() -> N
     assert plan["claim_boundary"]["does_not_enable_physical_mapping"] is True
 
 
-def test_route_start_probe_plan_does_not_repeat_compensated_probe() -> None:
+def test_route_start_probe_plan_trusts_explicit_alignment_recommendation() -> None:
     source = _route_completion_source_run()
     source.update(
         {
             "failure_reason": "lane_invasion",
             "route_completion": 0.93,
             "initial_rear_axle_offset_compatible": True,
+        }
+    )
+
+    plan = build_route_start_probe_plan(_report(source))
+
+    assert plan["status"] == "ready"
+    assert plan["probe_count"] == 1
+    assert plan["probes"][0]["candidate_reason"] == "route_start_alignment:spawn_lateral_offset_high"
+
+
+def test_route_start_probe_plan_skips_when_alignment_report_has_no_recommendation() -> None:
+    source = _route_completion_source_run()
+    source.update(
+        {
+            "failure_reason": "lane_invasion",
+            "route_completion": 0.93,
+            "initial_rear_axle_offset_compatible": True,
+            "recommended_ego_offset_y_delta_m": None,
         }
     )
 

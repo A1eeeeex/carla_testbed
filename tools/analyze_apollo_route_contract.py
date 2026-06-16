@@ -15,6 +15,8 @@ from carla_testbed.analysis.apollo_route_contract import (  # noqa: E402
     write_apollo_route_contract_report,
 )
 
+DEFAULT_TOWN01_FRAME_TRANSFORM = REPO_ROOT / "configs" / "town01" / "apollo_frame_transform.example.yaml"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -24,7 +26,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--frame-transform",
         default=None,
-        help="Optional CARLA world to Apollo map transform YAML for XY comparison.",
+        help=(
+            "Optional CARLA world to Apollo map transform YAML for XY comparison. "
+            "Defaults to configs/town01/apollo_frame_transform.example.yaml "
+            "when that file exists."
+        ),
     )
     parser.add_argument("--out", required=True, help="Output directory.")
     return parser
@@ -32,9 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    frame_transform = args.frame_transform
+    if frame_transform is None and DEFAULT_TOWN01_FRAME_TRANSFORM.is_file():
+        frame_transform = str(DEFAULT_TOWN01_FRAME_TRANSFORM)
     report = analyze_apollo_route_contract_run_dir(
         args.run_dir,
-        frame_transform=args.frame_transform,
+        frame_transform=frame_transform,
     )
     outputs = write_apollo_route_contract_report(report, args.out)
     print(

@@ -826,10 +826,12 @@ Required run artifacts:
   may be `native_observed`, explicitly bypassed for a permitted static
   diagnostic case, or `not_required_for_case`; missing or unknown prediction
   state cannot silently pass the chain. Static lane-keep bypass with GT
-  obstacles is diagnostic-only for natural-driving claim boundaries unless a
-  scenario-specific override explicitly downgrades the claim. Link-health may
-  refresh a stale `prediction_mode=unknown` placeholder from channel stats and
-  the replacement matrix, but the refreshed bypass remains non-claim-grade for
+  obstacles can support only the static lane-keep gate when the bypass reason
+  and scope are explicit. It must still block dynamic-obstacle, junction, and
+  traffic-light claim extrapolation unless a scenario-specific override
+  explicitly downgrades the claim. Link-health may refresh a stale
+  `prediction_mode=unknown` placeholder from channel stats and the replacement
+  matrix, but the refreshed bypass remains non-claim-grade for full
   closed-loop natural driving.
 - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`.
 - `analysis/control_health/control_health_report.json`.
@@ -942,6 +944,11 @@ Minimum pass thresholds for a claim-grade packet:
   `source=apollo_hdmap_api`, `ok_ratio >= 0.95`, heading `p95 < 0.05 rad`,
   lateral error `p95 < 0.50 m`, and lane-id compatibility with Planning
   `lane_id` or `target_lane_id` evidence.
+  When route samples come from CARLA waypoint traces such as
+  `town01_forward_waypoint_trace`, projection export must apply the configured
+  CARLA-world to Apollo-map frame transform before calling Apollo HDMap APIs;
+  treating those route JSON points as already being Apollo map coordinates can
+  create false large lateral-error failures.
   Too few projection rows or too little projected route-s coverage is
   `insufficient_data`, not a projection-quality failure; it still blocks
   `can_claim_unassisted_natural_driving=true` until a longer or denser
@@ -1370,9 +1377,13 @@ p95 values is diagnostic until channel health recovers.
 Primary map/reference-line debug artifacts remain per-event evidence. Duplicate
 `stage5_*` debug streams may be sampled with
 `bridge.stage5_debug_artifact_sample_stride` in online claim probes to reduce IO
-pressure; `cyber_bridge_stats.json.artifact_buffering` records seen, written,
-and sampled-out counts. This sampling is not a channel-health pass condition:
-localization/chassis max-gap gates still use the observed channel artifacts.
+pressure; high-rate claim evidence may also use
+`bridge.claim_evidence_artifact_sample_stride` when artifact writer lag starts
+to coincide with localization/chassis sim-gap failures.
+`cyber_bridge_stats.json.artifact_buffering` records seen, written, and
+sampled-out counts. This
+sampling is not a channel-health pass condition: localization/chassis max-gap
+gates still use the observed channel artifacts.
 
 ## P0/P1 Online Triage Boundary
 
@@ -1404,3 +1415,61 @@ brake, or `steer_scale`. Control oscillation and raw/mapped/applied mismatch
 remain important secondary evidence, but they should not be used to claim an
 Apollo algorithm limitation until localization and Apollo reference-line
 contracts are non-blocking.
+
+For `lane_keep_097`, route-start lateral alignment probes are diagnostic only.
+If `route_start_alignment_report.json` recommends
+`scenario.route_health.ego_offset_y_m`, run exactly one probe using the generated
+`route_start_probe_plan.json` command and then evaluate it with
+`analyze_route_start_probe_result.py`. A probe that increases route completion
+but leaves lane invasions, `apollo_reference_line_contract` blockers, or
+`control_health` blockers unresolved cannot be promoted into the nominal
+configuration. The `2026-06-16` probe with
+`ego_offset_y_m=0.5089201844029378` improved route progress but remained
+`insufficient_data`: HDMap projection and route contract passed, while
+`planning_path_fallback_heading_error_high`, raw control oscillation, and
+`target_point_semantics` warnings remained. The refreshed reference-line
+contract showed normal trajectory heading p95 near `0.014 rad`, but
+`PATH_FALLBACK` trajectory heading p95 near `0.305 rad` with a fallback ratio
+near `0.067`. The first fallback onset was at `sim_time_sec≈140.93` on lane
+`15_1_1`; the previous normal trajectory already had heading error near
+`0.128 rad`, and the first fallback row jumped to about `0.277 rad` with
+`first_trajectory_point_kappa≈-0.108`. That result shifts the next L1
+iteration back to Apollo Planning fallback / target-point semantics, not to
+`steer_scale`, physical mapping, or a permanent spawn offset.
+
+The same refreshed run now records steering normalization evidence in
+`control_health_report.json`. `steering_mapping_saturation` found 53 samples
+where Apollo `steering_target` was saturated while mapped CARLA steer stayed
+near `0.0025`, so bridge steering normalization is a valid diagnostic A/B
+candidate after the Planning fallback blocker is understood. This is not a
+claim-grade reason to change nominal `steer_scale` or enable physical mapping.
+
+The `2026-06-16` nominal `lane_keep_097` run under
+`runs/apollo_l1_nominal_lane_keep_20260616_125404` clarified a postprocess
+pitfall. Exporting HDMap projection without the CARLA-world to Apollo-map frame
+transform produced only runtime `ego` samples, so the report failed on ego
+lateral drift (`runtime_ego_projection.lateral_error_p95_m≈1.17m`). Re-exporting
+with `configs/town01/apollo_frame_transform.example.yaml` produced `route` /
+`start` / `goal` samples and changed the static HDMap layer to claim-grade
+`pass`: static route lateral p95 `0.0m`, heading p95 about `6e-7rad`, route
+contract `pass`, and reference-line contract `warn` only for
+`planning_path_fallback_trajectory_present`. After this refresh,
+`apollo_link_health.primary_blocker` moved to
+`control_mapping_apply:apollo_raw_command_oscillation`; static map/route/HDMap
+identity should no longer be treated as the primary blocker for that sample.
+The same run still cannot claim L1 natural driving because `control_health` is
+`fail`, `natural_driving_report` remains `insufficient_data`, and lane invasion
+evidence is present in the online summary. The next iteration should decompose
+Apollo raw command oscillation against Planning/simple_lon debug and applied
+actuation cadence, not tune `steer_scale` or promote route-start offsets.
+That decomposition points away from bridge apply cadence as the first fix:
+raw throttle/brake switches are `19`, bridge apply cadence is `pass` at about
+`18.75Hz` for configured `20Hz`, and sync-tick same-frame drops are expected.
+After adding exact planning-debug coverage accounting, `apollo_link_health`
+reports `control_oscillation_primary_suspected_layer=
+planning_debug_sequence_coverage`: only `1/19` throttle/brake transition
+windows had an exact pair of `/apollo/planning` debug rows
+(`planning_debug_exact_pair_coverage_ratio≈0.0526`). The useful next probe is
+therefore to close Planning topic debug sequence coverage for the consumed
+trajectory windows before claiming a Planning/simple_lon root cause; it is not
+throttle/brake smoothing or actuator retuning.

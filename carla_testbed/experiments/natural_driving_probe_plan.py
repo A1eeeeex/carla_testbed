@@ -41,10 +41,11 @@ def build_route_start_probe_plan(
         if candidate_reason is None:
             continue
         delta = _num(run.get("recommended_ego_offset_y_delta_m"))
-        scenario_id = str(run.get("scenario_id") or "").strip()
-        if delta is None or not scenario_id:
+        source_scenario_id = str(run.get("scenario_id") or "").strip()
+        if delta is None or not source_scenario_id:
             continue
-        out_dir = root / f"{scenario_id}_route_start_alignment_probe"
+        runner_scenario_id = _runner_scenario_id_for_run(run, suite_path) or source_scenario_id
+        out_dir = root / f"{source_scenario_id}_route_start_alignment_probe"
         override = f"scenario.route_health.ego_offset_y_m={delta:.16g}"
         command_parts = [
             str(python_exec),
@@ -54,7 +55,7 @@ def build_route_start_probe_plan(
             "--out",
             str(out_dir),
             "--scenarios",
-            scenario_id,
+            runner_scenario_id,
             "--config",
             str(route_health_config),
             "--continue-on-failure",
@@ -80,16 +81,17 @@ def build_route_start_probe_plan(
                 "--out",
                 str(result_out_dir),
                 "--scenario-id",
-                scenario_id,
+                source_scenario_id,
                 "--fail-on-status",
                 "negative,insufficient_data",
             ]
             result_command = " ".join(shlex.quote(part) for part in result_command_parts)
         probes.append(
             {
-                "probe_id": f"{scenario_id}_route_start_alignment_probe",
+                "probe_id": f"{source_scenario_id}_route_start_alignment_probe",
                 "source_run_id": run.get("run_id"),
-                "scenario_id": scenario_id,
+                "scenario_id": source_scenario_id,
+                "runner_scenario_id": runner_scenario_id,
                 "scenario_class": run.get("scenario_class"),
                 "route_id": run.get("route_id"),
                 "failure_reason": run.get("failure_reason"),
@@ -152,6 +154,40 @@ def build_route_start_probe_plan_from_file(
     if not isinstance(payload, Mapping):
         raise ValueError(f"natural driving report must be a JSON object: {path}")
     return build_route_start_probe_plan(payload, source_report_path=path, **kwargs)
+
+
+def _runner_scenario_id_for_run(run: Mapping[str, Any], suite_path: str | Path) -> str | None:
+    route_id = str(run.get("route_id") or "").strip()
+    if not route_id:
+        return None
+    try:
+        import yaml
+    except Exception:
+        return None
+    path = Path(suite_path)
+    if not path.exists():
+        return None
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    scenarios = payload.get("scenarios") if isinstance(payload, Mapping) else None
+    if not isinstance(scenarios, Sequence) or isinstance(scenarios, (str, bytes)):
+        return None
+    for item in scenarios:
+        if not isinstance(item, Mapping):
+            continue
+        scenario_id = str(item.get("scenario_id") or "").strip()
+        if not scenario_id:
+            continue
+        candidates = {
+            str(item.get("route_id") or "").strip(),
+            str(item.get("stable_id") or "").strip(),
+            str(item.get("route_ref") or "").strip(),
+        }
+        if route_id in candidates:
+            return scenario_id
+    return None
 
 
 def write_route_start_probe_plan(plan: Mapping[str, Any], out_dir: str | Path) -> dict[str, str]:
@@ -600,8 +636,6 @@ def _route_start_probe_candidate_reason(run: Mapping[str, Any]) -> str | None:
     if failure_reason == "route_start_lane_invasion":
         return "route_start_lane_invasion"
     route_start_reason = str(run.get("route_start_alignment_reason") or "")
-    if route_start_reason == "spawn_lateral_offset_high" and run.get("initial_rear_axle_offset_compatible") is True:
-        return None
     if route_start_reason in {
         "failure_before_route_start",
         "failure_near_route_start",

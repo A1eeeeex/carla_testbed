@@ -123,6 +123,47 @@ def test_planning_materialization_fail_downgrades_reference_line_claim_window(tm
     assert "planning_materialization_failed_reference_line_claim_downgraded" in report["warnings"]
 
 
+def test_apollo_planning_materialization_report_takes_precedence_over_stale_legacy_report(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_case(tmp_path, "pass")
+    _write_hdmap_projection(
+        run_dir / "artifacts" / "apollo_hdmap_projection.jsonl",
+        heading_error_rad=0.01,
+        lateral_error_m=0.05,
+    )
+    _write_route_contract(run_dir, status="pass")
+    _write_json(
+        run_dir / "analysis" / "planning_materialization" / "planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "verdict": "fail",
+            "blocking_reasons": ["planning_trajectory_materialization_low"],
+        },
+    )
+    _write_json(
+        run_dir
+        / "analysis"
+        / "apollo_planning_materialization"
+        / "planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "verdict": "warn",
+            "blocking_reasons": [],
+            "warnings": ["planning_nonempty_after_routing_low_but_sustained_after_first_nonempty"],
+            "claim_window_nonempty_ratio": 1.0,
+            "claim_window_source": "after_first_nonempty_trajectory",
+        },
+    )
+
+    report = analyze_apollo_reference_line_contract_run_dir(run_dir)
+
+    assert report["status"] == "pass"
+    assert report["planning_materialization_status"] == "warn"
+    assert "analysis/apollo_planning_materialization" in report["source"]["planning_materialization_path"]
+    assert "planning_materialization_failed_reference_line_claim_downgraded" not in report["warnings"]
+
+
 def test_apollo_hdmap_projection_missing_is_explicit_insufficient_data() -> None:
     report = analyze_apollo_reference_line_contract_run_dir(FIXTURE_ROOT / "pass")
 
@@ -191,8 +232,8 @@ def test_nonempty_trajectory_with_zero_reference_line_count_is_not_old_empty_blo
 
     report = analyze_apollo_reference_line_contract(rows)
 
-    assert report["contracts"]["planning_trajectory"]["status"] == "warn"
-    assert "reference_line_count_zero_debug_counter_with_nonempty_trajectory" in report["warnings"]
+    assert report["contracts"]["planning_trajectory"]["status"] == "pass"
+    assert "reference_line_count_zero_debug_counter_with_nonempty_trajectory" not in report["warnings"]
     assert "reference_line_count_zero_with_empty_trajectory" not in report["blocking_reasons"]
     assert "planning_trajectory_empty_with_zero_reference_line_count" not in report["blocking_reasons"]
 
@@ -237,6 +278,152 @@ def test_nonempty_ratio_claim_window_excludes_pre_routing_startup_empty_messages
     assert evidence["planning_claim_window_nonempty_trajectory_ratio"] == pytest.approx(2 / 3)
     assert evidence["planning_claim_window_source"] == "after_routing_segment_available"
     assert planning_contract["key_metrics"]["planning_claim_window_nonempty_trajectory_ratio"] == pytest.approx(2 / 3)
+    assert planning_contract["key_metrics"]["effective_nonempty_trajectory_ratio"] == pytest.approx(2 / 3)
+
+
+def test_claim_window_materialized_reference_line_ignores_pre_route_empty_debug_counters() -> None:
+    rows = []
+    for _index in range(5):
+        rows.append(
+            {
+                "routing": {"routing_segment_count": None},
+                "planning": {
+                    "trajectory_point_count": 0,
+                    "routing_segment_count": None,
+                    "reference_line_count": 0,
+                    "reference_line_provider_status": "failed",
+                },
+                "computed": {"planning_reference_available": False, "control_reference_available": False},
+            }
+        )
+    for _index in range(10):
+        rows.append(
+            {
+                "routing": {"routing_segment_count": 1},
+                "planning": {
+                    "trajectory_point_count": 20,
+                    "routing_segment_count": 1,
+                    "first_trajectory_point_theta": 0.01,
+                    "reference_line_count": 0,
+                    "reference_line_provider_status": "failed",
+                },
+                "computed": {
+                    "localization_to_planning_first_heading_error_rad": 0.01,
+                    "planning_reference_available": True,
+                    "control_reference_available": False,
+                },
+            }
+        )
+
+    report = analyze_apollo_reference_line_contract(rows)
+    planning_contract = report["contracts"]["planning_trajectory"]
+
+    assert planning_contract["status"] == "pass"
+    assert planning_contract["key_metrics"]["planning_claim_window_nonempty_trajectory_ratio"] == 1.0
+    assert planning_contract["key_metrics"]["effective_nonempty_trajectory_ratio"] == 1.0
+    assert "nonempty_trajectory_ratio_low" not in planning_contract["warnings"]
+    assert "reference_line_provider_ready_ratio_low" not in planning_contract["warnings"]
+    assert "reference_line_count_zero_debug_counter_with_nonempty_trajectory" not in planning_contract["warnings"]
+
+
+def test_path_fallback_heading_error_gets_specific_blocker() -> None:
+    rows = []
+    for _index in range(10):
+        rows.append(
+            {
+                "localization": {"heading": 0.0},
+                "planning": {
+                    "trajectory_point_count": 20,
+                    "trajectory_type": "NORMAL",
+                    "first_trajectory_point_theta": 0.01,
+                    "first_trajectory_point_kappa": 0.0,
+                    "reference_line_count": 0,
+                    "routing_segment_count": 1,
+                },
+                "routing": {"routing_segment_count": 1},
+                "computed": {
+                    "localization_to_planning_first_heading_error_rad": 0.01,
+                    "planning_reference_available": True,
+                    "control_reference_available": False,
+                },
+            }
+        )
+    for _index in range(4):
+        rows.append(
+            {
+                "localization": {"heading": 0.0},
+                "planning": {
+                    "trajectory_point_count": 20,
+                    "trajectory_type": "PATH_FALLBACK",
+                    "first_trajectory_point_theta": 0.31,
+                    "first_trajectory_point_kappa": -0.11,
+                    "reference_line_count": 0,
+                    "routing_segment_count": 1,
+                },
+                "routing": {"routing_segment_count": 1},
+                "computed": {
+                    "localization_to_planning_first_heading_error_rad": 0.31,
+                    "planning_reference_available": True,
+                    "control_reference_available": False,
+                },
+            }
+        )
+
+    report = analyze_apollo_reference_line_contract(rows)
+    planning_contract = report["contracts"]["planning_trajectory"]
+
+    assert planning_contract["status"] == "fail"
+    assert "planning_path_fallback_heading_error_high" in planning_contract["blocking_reasons"]
+    assert "planning_reference_heading_error_high" not in planning_contract["blocking_reasons"]
+    assert "planning_path_fallback_trajectory_present" in planning_contract["warnings"]
+    assert planning_contract["key_metrics"]["normal_trajectory_heading_error_p95_rad"] == pytest.approx(0.01)
+    assert planning_contract["key_metrics"]["path_fallback_heading_error_p95_rad"] == pytest.approx(0.31)
+    assert planning_contract["key_metrics"]["path_fallback_trajectory_ratio"] == pytest.approx(4 / 14)
+    assert planning_contract["key_metrics"]["path_fallback_first_kappa_p95_abs"] == pytest.approx(0.11)
+    assert planning_contract["key_metrics"]["path_fallback_onset"] == {
+        "first_trajectory_point_kappa": -0.11,
+        "first_trajectory_point_theta": 0.31,
+        "heading_error_rad": 0.31,
+        "lane_ids": None,
+        "planning_sequence_num": None,
+        "previous_first_trajectory_point_kappa": 0.0,
+        "previous_heading_error_rad": 0.01,
+        "previous_trajectory_type": "NORMAL",
+        "row_index": 10,
+        "sim_time_sec": None,
+        "target_lane_ids": None,
+        "timestamp": None,
+        "trajectory_point_count": 20,
+    }
+
+
+def test_normal_trajectory_heading_error_keeps_generic_reference_line_blocker() -> None:
+    rows = [
+        {
+            "localization": {"heading": 0.0},
+            "planning": {
+                "trajectory_point_count": 20,
+                "trajectory_type": "NORMAL",
+                "first_trajectory_point_theta": 0.31,
+                "reference_line_count": 1,
+                "reference_line_provider_status": "ready",
+                "routing_segment_count": 1,
+            },
+            "routing": {"routing_segment_count": 1},
+            "computed": {
+                "localization_to_planning_first_heading_error_rad": 0.31,
+                "planning_reference_available": True,
+                "control_reference_available": False,
+            },
+        }
+    ]
+
+    report = analyze_apollo_reference_line_contract(rows)
+    planning_contract = report["contracts"]["planning_trajectory"]
+
+    assert planning_contract["status"] == "fail"
+    assert "planning_reference_heading_error_high" in planning_contract["blocking_reasons"]
+    assert "planning_path_fallback_heading_error_high" not in planning_contract["blocking_reasons"]
 
 
 def test_missing_control_reference_is_separate_contract_insufficient_data() -> None:

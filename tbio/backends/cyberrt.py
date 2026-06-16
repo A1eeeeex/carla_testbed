@@ -2319,6 +2319,9 @@ class CyberRTBackend(Backend):
     def _apollo_control_pipeline_cfg(self) -> Dict[str, Any]:
         return (self._apollo_cfg().get("control_pipeline", {}) or {})
 
+    def _apollo_control_runtime_cfg(self) -> Dict[str, Any]:
+        return (self._apollo_cfg().get("control_runtime", {}) or {})
+
     def _global_flagfile_map_overlay_shell(self) -> str:
         """Point Apollo modules at the CARLA run map before launch.
 
@@ -2563,6 +2566,7 @@ class CyberRTBackend(Backend):
         planning_cfg = self._apollo_planning_cfg()
         stitch = planning_cfg.get("enable_reference_line_stitching")
         trajectory_stitcher = planning_cfg.get("enable_trajectory_stitcher")
+        control_interactive_replan = planning_cfg.get("enable_control_interactive_replan")
         default_cruise_speed = planning_cfg.get("default_cruise_speed_mps")
         planning_upper_speed_limit = planning_cfg.get("planning_upper_speed_limit_mps")
         smoother_config_filename = self._planning_smoother_config_filename(planning_cfg)
@@ -2571,6 +2575,7 @@ class CyberRTBackend(Backend):
         if (
             stitch is None
             and trajectory_stitcher is None
+            and control_interactive_replan is None
             and default_cruise_speed is None
             and planning_upper_speed_limit is None
             and smoother_config_filename is None
@@ -2596,6 +2601,10 @@ class CyberRTBackend(Backend):
         if trajectory_stitcher is not None:
             desired_trajectory_stitcher = "true" if bool(trajectory_stitcher) else "false"
             script_parts.append("prefixes.append('--enable_trajectory_stitcher='); ")
+        desired_control_interactive_replan = None
+        if control_interactive_replan is not None:
+            desired_control_interactive_replan = "true" if bool(control_interactive_replan) else "false"
+            script_parts.append("prefixes.append('--enable_control_interactive_replan='); ")
         if default_cruise_speed is not None:
             script_parts.append("prefixes.append('--default_cruise_speed='); ")
         if planning_upper_speed_limit is not None:
@@ -2608,6 +2617,10 @@ class CyberRTBackend(Backend):
         if desired_trajectory_stitcher is not None:
             script_parts.append(
                 f"lines.append('--enable_trajectory_stitcher={desired_trajectory_stitcher}'); "
+            )
+        if desired_control_interactive_replan is not None:
+            script_parts.append(
+                f"lines.append('--enable_control_interactive_replan={desired_control_interactive_replan}'); "
             )
         if default_cruise_speed is not None:
             script_parts.append(f"lines.append('--default_cruise_speed={float(default_cruise_speed):.3f}'); ")
@@ -2703,6 +2716,98 @@ class CyberRTBackend(Backend):
                 "p.parent.mkdir(parents=True, exist_ok=True); "
                 f"p.write_text({content!r})"
             )
+            + "; "
+            + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)
+        )
+
+    def _control_runtime_interval_ms(self) -> Optional[int]:
+        cfg = self._apollo_control_runtime_cfg()
+        raw_ms = cfg.get("control_interval_ms")
+        if raw_ms is None:
+            raw_period = cfg.get("control_period_s")
+            if raw_period is None:
+                return None
+            try:
+                raw_ms = float(raw_period) * 1000.0
+            except Exception:
+                return None
+        try:
+            interval_ms = int(round(float(raw_ms)))
+        except Exception:
+            return None
+        return interval_ms if interval_ms > 0 else None
+
+    def _control_runtime_period_s(self) -> Optional[float]:
+        cfg = self._apollo_control_runtime_cfg()
+        raw_period = cfg.get("control_period_s")
+        if raw_period is not None:
+            try:
+                period = float(raw_period)
+            except Exception:
+                return None
+            return period if period > 0.0 else None
+        interval_ms = self._control_runtime_interval_ms()
+        if interval_ms is None:
+            return None
+        return interval_ms / 1000.0
+
+    def _control_dag_overlay_shell(self) -> str:
+        interval_ms = self._control_runtime_interval_ms()
+        overlay_path = "/apollo_workspace/conf_overlay/modules/control/control_component/dag/control.dag"
+        target_path = "/apollo/modules/control/control_component/dag/control.dag"
+        if interval_ms is None:
+            return self._managed_overlay_link_shell(overlay_path, target_path, enabled=False)
+        script = (
+            "from pathlib import Path; import re; "
+            "cands=["
+            "'/apollo/modules/control/control_component/dag/control.dag',"
+            "'/opt/apollo/neo/share/modules/control/control_component/dag/control.dag',"
+            "'/opt/apollo/neo/src/modules/control/control_component/dag/control.dag'"
+            "]; "
+            "src=next((cand for cand in cands if Path(cand).exists()), ''); "
+            "text=(Path(src).read_text() if src else "
+            "'module_config {\\n    module_library : \"modules/control/control_component/libcontrol_component.so\"\\n"
+            "    timer_components {\\n        class_name : \"ControlComponent\"\\n"
+            "        config {\\n            name: \"control\"\\n"
+            "            flag_file_path: \"modules/control/control_component/conf/control.conf\"\\n"
+            "            interval: 10\\n        }\\n    }\\n}\\n'); "
+            f"text=re.sub(r'interval:\\s*\\d+', 'interval: {interval_ms}', text, count=1); "
+            f"out=Path({overlay_path!r}); "
+            "out.parent.mkdir(parents=True, exist_ok=True); "
+            "out.write_text(text)"
+        )
+        return (
+            "python3 -c "
+            + shlex.quote(script)
+            + "; "
+            + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)
+        )
+
+    def _control_flags_overlay_shell(self) -> str:
+        control_period_s = self._control_runtime_period_s()
+        overlay_path = "/apollo_workspace/conf_overlay/modules/control/control_component/conf/control.conf"
+        target_path = "/apollo/modules/control/control_component/conf/control.conf"
+        if control_period_s is None:
+            return self._managed_overlay_link_shell(overlay_path, target_path, enabled=False)
+        script_parts = [
+            "from pathlib import Path; ",
+            "cands=[",
+            "'/apollo/modules/control/control_component/conf/control.conf',",
+            "'/opt/apollo/neo/share/modules/control/control_component/conf/control.conf',",
+            "'/opt/apollo/neo/src/modules/control/control_component/conf/control.conf'",
+            "]; ",
+            "src=next((cand for cand in cands if Path(cand).exists()), ''); ",
+            "lines=((Path(src).read_text().splitlines()) if src else ['--pipeline_file=modules/control/control_component/conf/pipeline.pb.txt']); ",
+            "prefixes=['--control_period=']; ",
+            "lines=[ln for ln in lines if not any(ln.startswith(prefix) for prefix in prefixes)]; ",
+            f"lines.append('--control_period={float(control_period_s):.3f}'); ",
+            f"out=Path({overlay_path!r}); ",
+            "out.parent.mkdir(parents=True, exist_ok=True); ",
+            "out.write_text('\\n'.join(lines)+'\\n')",
+        ]
+        return (
+            "python3 -c "
+            + shlex.quote("".join(script_parts))
             + "; "
             + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)
         )
@@ -2892,6 +2997,8 @@ class CyberRTBackend(Backend):
                 self._speed_bounds_decider_overlay_shell(),
                 self._speed_decider_overlay_shell(),
                 self._public_road_planner_overlay_shell(),
+                self._control_dag_overlay_shell(),
+                self._control_flags_overlay_shell(),
                 self._control_pipeline_overlay_shell(),
                 "declare -A lf_map=( "
                 "[lane_change_path.pb.txt]=lane_change_path "

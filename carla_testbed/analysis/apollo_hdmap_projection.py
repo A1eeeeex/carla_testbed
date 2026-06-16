@@ -93,8 +93,10 @@ def apollo_hdmap_projection_summary_md(report: Mapping[str, Any]) -> str:
             f"- Sim-time coverage ratio: `{projection.get('sim_time_coverage_ratio')}`",
             f"- Projection-s coverage m: `{projection.get('projection_s_coverage_m')}`",
             f"- Route-s coverage ratio: `{projection.get('route_s_coverage_ratio')}`",
+            f"- Claim evidence scope: `{projection.get('claim_evidence_scope') or 'all_ok_rows'}`",
             f"- Heading error p95 rad: `{projection.get('heading_error_p95_rad')}`",
             f"- Lateral error p95 m: `{projection.get('lateral_error_p95_m')}`",
+            f"- Ego runtime lateral p95 m: `{_nested(projection, 'runtime_ego_projection.lateral_error_p95_m')}`",
             f"- Nearest lane ids: `{', '.join(projection.get('nearest_lane_id_topk') or []) or 'none'}`",
             f"- Warnings: `{', '.join(report.get('warnings') or []) or 'none'}`",
             f"- Insufficient reasons: `{', '.join(report.get('insufficient_reasons') or []) or 'none'}`",
@@ -121,8 +123,28 @@ def summarize_apollo_hdmap_projection(
     only_environment_unavailable = bool(
         official_rows and environment_unavailable_count == len(official_rows)
     )
-    heading_p95 = _p95_abs(_num(row.get("heading_error_rad")) for row in ok_rows)
-    lateral_p95 = _p95_abs(_num(row.get("lateral_error_m")) for row in ok_rows)
+    start_goal_rows = [
+        row for row in official_rows if str(row.get("sample_type") or "").lower() in {"start", "goal"}
+    ]
+    route_rows = [row for row in official_rows if str(row.get("sample_type") or "").lower() == "route"]
+    ego_rows = [row for row in official_rows if str(row.get("sample_type") or "").lower() == "ego"]
+    static_rows = [row for row in official_rows if str(row.get("sample_type") or "").lower() in {"start", "goal", "route"}]
+    ok_static_rows = [row for row in static_rows if _projection_status(row) == "ok"]
+    ok_ego_rows = [row for row in ego_rows if _projection_status(row) == "ok"]
+    # Map/HDMap projection claim is about whether the claimed route/start/goal
+    # lands on Apollo HDMap lanes. Ego runtime samples are still reported, but
+    # they reflect behavior/localization/control drift and must not make the map
+    # identity gate fail when static route projection is already available.
+    claim_rows = ok_static_rows if ok_static_rows else ok_rows
+    claim_evidence_scope = "route_start_goal" if ok_static_rows else "all_ok_rows"
+    heading_p95 = _p95_abs(_num(row.get("heading_error_rad")) for row in claim_rows)
+    lateral_p95 = _p95_abs(_num(row.get("lateral_error_m")) for row in claim_rows)
+    all_heading_p95 = _p95_abs(_num(row.get("heading_error_rad")) for row in ok_rows)
+    all_lateral_p95 = _p95_abs(_num(row.get("lateral_error_m")) for row in ok_rows)
+    ego_heading_p95 = _p95_abs(_num(row.get("heading_error_rad")) for row in ok_ego_rows)
+    ego_lateral_p95 = _p95_abs(_num(row.get("lateral_error_m")) for row in ok_ego_rows)
+    static_heading_p95 = _p95_abs(_num(row.get("heading_error_rad")) for row in ok_static_rows)
+    static_lateral_p95 = _p95_abs(_num(row.get("lateral_error_m")) for row in ok_static_rows)
     timestamps = [_num(row.get("timestamp")) for row in ok_rows]
     projection_s_values = [_num(row.get("projection_s")) for row in ok_rows]
     sim_time_coverage_s = _span(timestamps)
@@ -152,10 +174,6 @@ def summarize_apollo_hdmap_projection(
     insufficient: list[str] = []
     suspected_layers: list[str] = []
     missing_fields: list[str] = []
-    start_goal_rows = [
-        row for row in official_rows if str(row.get("sample_type") or "").lower() in {"start", "goal"}
-    ]
-    route_rows = [row for row in official_rows if str(row.get("sample_type") or "").lower() == "route"]
 
     if not all_rows:
         artifact_present = bool(artifact_file_exists)
@@ -308,23 +326,48 @@ def summarize_apollo_hdmap_projection(
         "sim_time_coverage_ratio": sim_time_coverage_ratio,
         "projection_s_coverage_m": projection_s_coverage_m,
         "expected_route_distance_m": expected_route_distance_m,
-        "route_s_coverage_ratio": route_s_coverage_ratio,
-        "route_s_coverage_threshold_m": route_s_coverage_threshold_m,
-        "map_identity_consistent": len(map_names) <= 1 and len(map_dirs) <= 1,
-        "status_counts": dict(status_counts),
-        "environment_unavailable_count": environment_unavailable_count,
-        "start_goal_sample_count": len(start_goal_rows),
-        "route_sample_count": len(route_rows),
-        "route_sample_ok_ratio": (
-            sum(1 for row in route_rows if _projection_status(row) == "ok") / len(route_rows)
-            if route_rows
-            else None
-        ),
-        "heading_error_p95_rad": heading_p95,
-        "lateral_error_p95_m": lateral_p95,
-        "nearest_lane_id_topk": _topk(str(row.get("nearest_lane_id") or "") for row in official_rows),
-        "map_name_topk": _topk(str(row.get("map_name") or "") for row in official_rows),
-        "map_dir_topk": _topk(str(row.get("map_dir") or "") for row in official_rows),
+            "route_s_coverage_ratio": route_s_coverage_ratio,
+            "route_s_coverage_threshold_m": route_s_coverage_threshold_m,
+            "map_identity_consistent": len(map_names) <= 1 and len(map_dirs) <= 1,
+            "status_counts": dict(status_counts),
+            "environment_unavailable_count": environment_unavailable_count,
+            "sample_type_counts": dict(
+                Counter(str(row.get("sample_type") or "unspecified").lower() for row in official_rows)
+            ),
+            "start_goal_sample_count": len(start_goal_rows),
+            "route_sample_count": len(route_rows),
+            "route_sample_ok_ratio": (
+                sum(1 for row in route_rows if _projection_status(row) == "ok") / len(route_rows)
+                if route_rows
+                else None
+            ),
+            "claim_evidence_scope": claim_evidence_scope,
+            "heading_error_p95_rad": heading_p95,
+            "lateral_error_p95_m": lateral_p95,
+            "all_samples_projection": {
+                "heading_error_p95_rad": all_heading_p95,
+                "lateral_error_p95_m": all_lateral_p95,
+                "row_count": len(ok_rows),
+            },
+            "static_route_projection": {
+                "available": bool(ok_static_rows),
+                "heading_error_p95_rad": static_heading_p95,
+                "lateral_error_p95_m": static_lateral_p95,
+                "row_count": len(ok_static_rows),
+            },
+            "runtime_ego_projection": {
+                "available": bool(ego_rows),
+                "heading_error_p95_rad": ego_heading_p95,
+                "lateral_error_p95_m": ego_lateral_p95,
+                "row_count": len(ok_ego_rows),
+                "status": _runtime_projection_status(ego_heading_p95, ego_lateral_p95),
+                "interpretation": (
+                    "Runtime ego projection is behavior/localization evidence, not static map identity evidence."
+                ),
+            },
+            "nearest_lane_id_topk": _topk(str(row.get("nearest_lane_id") or "") for row in official_rows),
+            "map_name_topk": _topk(str(row.get("map_name") or "") for row in official_rows),
+            "map_dir_topk": _topk(str(row.get("map_dir") or "") for row in official_rows),
         "warnings": sorted(set(warnings)),
         "blocking_reasons": sorted(set(blocking)),
         "insufficient_reasons": sorted(set(insufficient)),
@@ -358,6 +401,29 @@ def _read_json(path: Path) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _nested(mapping: Mapping[str, Any], dotted_key: str) -> Any:
+    current: Any = mapping
+    for key in dotted_key.split("."):
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _runtime_projection_status(heading_p95: float | None, lateral_p95: float | None) -> str:
+    if heading_p95 is None and lateral_p95 is None:
+        return "insufficient_data"
+    if (heading_p95 is not None and heading_p95 >= HDMAP_HEADING_FAIL_RAD) or (
+        lateral_p95 is not None and lateral_p95 >= HDMAP_LATERAL_FAIL_M
+    ):
+        return "fail"
+    if (heading_p95 is not None and heading_p95 >= HDMAP_HEADING_WARN_RAD) or (
+        lateral_p95 is not None and lateral_p95 >= HDMAP_LATERAL_WARN_M
+    ):
+        return "warn"
+    return "pass"
 
 
 def _projection_status(row: Mapping[str, Any]) -> str:

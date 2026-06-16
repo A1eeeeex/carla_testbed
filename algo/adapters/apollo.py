@@ -826,6 +826,8 @@ PY
             "artifact_async_queue_soft_limit_rows",
             "artifact_flush_max_pending_rows",
             "stage5_debug_artifact_sample_stride",
+            "control_debug_artifact_sample_stride",
+            "claim_evidence_artifact_sample_stride",
         ):
             if key in apollo_bridge_cfg:
                 bridge[key] = int(apollo_bridge_cfg[key])
@@ -837,6 +839,10 @@ PY
                 bridge[key] = float(apollo_bridge_cfg[key])
         if isinstance(apollo_bridge_cfg.get("claim_grade"), dict):
             bridge["claim_grade"] = dict(apollo_bridge_cfg["claim_grade"])
+        if isinstance(apollo_bridge_cfg.get("localization_acceleration_filter"), dict):
+            bridge["localization_acceleration_filter"] = dict(
+                apollo_bridge_cfg["localization_acceleration_filter"]
+            )
         bridge["claim_profile"] = bool(bridge_run_cfg.get("claim_profile", False))
         bridge["materialization_probe"] = bool(
             bridge_run_cfg.get("materialization_probe", False)

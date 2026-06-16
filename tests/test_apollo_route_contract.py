@@ -300,6 +300,56 @@ def test_cross_namespace_lane_equivalence_can_be_verified_from_route_projection_
     assert all(row["confidence"] == "verified" for row in lane_report["equivalence"])
 
 
+def test_boundary_heading_ambiguous_lane_equivalence_is_not_hard_fail() -> None:
+    report = {
+        "lane_equivalence_status": "cross_namespace_unverified",
+        "scenario_route_lane_sequence": ["13:-1"],
+        "apollo_routing_lane_sequence": ["13:-1"],
+    }
+    rows = [
+        {
+            "source": "apollo_hdmap_api",
+            "status": "ok",
+            "projection_status": "ok",
+            "sample_type": "route",
+            "route_index": 0,
+            "route_s": 200.0,
+            "carla_lane_key": "13:-1",
+            "nearest_lane_id": "13_1_-1",
+            "projection_l": 0.001,
+            "lateral_error_m": 0.001,
+            "heading_error_rad": 0.09,
+            "route_chord_heading_error_rad": 0.09,
+            "route_trace_heading_error_rad": 0.09,
+            "lane_heading_at_s": 0.0,
+        },
+        {
+            "source": "apollo_hdmap_api",
+            "status": "ok",
+            "projection_status": "ok",
+            "sample_type": "route",
+            "route_index": 1,
+            "route_s": 207.6,
+            "carla_lane_key": "13:-1",
+            "nearest_lane_id": "13_1_-1",
+            "projection_l": 0.002,
+            "lateral_error_m": 0.002,
+            "heading_error_rad": 0.02,
+            "route_chord_heading_error_rad": 0.02,
+            "route_trace_heading_error_rad": 0.01,
+            "lane_heading_at_s": 0.0,
+        },
+    ]
+
+    lane_report = build_lane_equivalence_town01(report, hdmap_projection_rows=rows)
+
+    assert lane_report["status"] == "ambiguous"
+    assert "lane_equivalence_ambiguous_for_13:-1" in lane_report["missing_fields"]
+    assert "13:-1:heading_error_p95_high" in lane_report["warnings"]
+    assert "13:-1:heading_error_p95_high" not in lane_report["blocking_reasons"]
+    assert lane_report["equivalence"][0]["status"] == "ambiguous"
+
+
 def test_cross_namespace_lane_mismatch_without_hdmap_projection_is_insufficient_not_fail(
     tmp_path: Path,
 ) -> None:
@@ -1108,6 +1158,59 @@ def test_route_contract_cli_writes_report(tmp_path: Path) -> None:
     assert report["status"] == "pass"
     assert report["last_routing_response"]["source"] == "routing_response_decoded"
     assert (out_dir / "apollo_route_contract_summary.md").is_file()
+
+
+def test_route_contract_cli_defaults_town01_frame_transform(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "source": "/apollo/routing_response",
+            "lane_segments": [{"lane_id": "15_1_1", "start_s": 66.9, "end_s": 298.9}],
+            "total_length_m": 232.0,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [{"start_raw_x": 2.0, "start_raw_y": -249.0, "goal_raw_x": 2.0, "goal_raw_y": -19.0}],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/apollo_hdmap_projection.jsonl",
+        [{"source": "apollo_hdmap_api", "nearest_lane_id": "15_1_1"}],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "route_segment_total_length": 232.0,
+                "routing_lane_window_count": 1,
+                "routing_lane_window_signature": "15_1_1@66.9->298.9",
+            }
+        ],
+    )
+    out_dir = tmp_path / "out_default_transform"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/analyze_apollo_route_contract.py",
+            "--run-dir",
+            str(run_dir),
+            "--out",
+            str(out_dir),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    report = json.loads((out_dir / "apollo_route_contract_report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "pass"
+    assert report["source"]["frame_transform"].endswith(
+        "configs/town01/apollo_frame_transform.example.yaml"
+    )
+    assert "apollo_route_xy_comparison_frame_transform_missing" not in report["warnings"]
 
 
 def _lane_equivalence_projection_rows(pairs: list[tuple[str, str]]) -> list[dict]:

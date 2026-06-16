@@ -163,6 +163,7 @@ def analyze_planning_materialization_files(
         if routing_success_ts is not None and _row_time(row) is not None and _row_time(row) >= routing_success_ts
     ]
     after_routing_ratio = _nonempty_ratio(rows_after_routing) if rows_after_routing else None
+    after_first_nonempty_ratio = _nonempty_ratio_after_first_nonempty(planning_rows)
 
     loc_ready, chassis_ready = _localization_chassis_ready(topic_rows)
     after_loc_chassis_ready_ratio = (
@@ -239,6 +240,7 @@ def analyze_planning_materialization_files(
         bridge_payload=bridge_payload,
         overall_nonempty_ratio=nonempty_ratio,
         nonempty_after_routing_ratio=after_routing_ratio,
+        nonempty_after_first_nonempty_ratio=after_first_nonempty_ratio,
         first_nonempty_after_routing_latency_s=first_nonempty_after_routing_latency_s,
     )
     warnings.extend(str(item) for item in route_establishment.get("warnings") or [])
@@ -266,6 +268,7 @@ def analyze_planning_materialization_files(
     claim_window = _claim_window_materialization(
         nonempty_ratio=nonempty_ratio,
         after_routing_ratio=after_routing_ratio,
+        after_first_nonempty_ratio=after_first_nonempty_ratio,
         route_establishment=route_establishment,
         missing_fields=missing_fields,
     )
@@ -273,7 +276,10 @@ def analyze_planning_materialization_files(
     blocking_reasons: list[str] = list(claim_window["blocking_reasons"])
     warnings.extend(str(item) for item in claim_window["warnings"])
     if route_establishment["route_established"] is False:
-        blocking_reasons.append("route_establishment_not_confirmed")
+        if verdict == "fail":
+            blocking_reasons.append("route_establishment_not_confirmed")
+        else:
+            warnings.append("route_establishment_not_confirmed")
     suspected_layers = _suspected_layers(
         missing_fields=missing_fields,
         warnings=warnings,
@@ -300,6 +306,7 @@ def analyze_planning_materialization_files(
         "reference_line_count_max": reference_line_count_max,
         "route_segment_count_max": route_segment_count_max,
         "after_routing_success_nonempty_ratio": after_routing_ratio,
+        "after_first_nonempty_trajectory_ratio": after_first_nonempty_ratio,
         "after_localization_chassis_ready_nonempty_ratio": after_loc_chassis_ready_ratio,
         "claim_window_nonempty_ratio": claim_window["ratio"],
         "claim_window_source": claim_window["source"],
@@ -315,6 +322,7 @@ def analyze_planning_materialization_files(
             "reference_line_count_max": reference_line_count_max,
             "route_segment_count_max": route_segment_count_max,
             "after_routing_success_nonempty_ratio": after_routing_ratio,
+            "after_first_nonempty_trajectory_ratio": after_first_nonempty_ratio,
             "after_localization_chassis_ready_nonempty_ratio": after_loc_chassis_ready_ratio,
             "longest_empty_streak": longest_empty_streak,
         },
@@ -733,6 +741,7 @@ def _route_establishment(
     bridge_payload: Mapping[str, Any],
     overall_nonempty_ratio: float | None,
     nonempty_after_routing_ratio: float | None,
+    nonempty_after_first_nonempty_ratio: float | None,
     first_nonempty_after_routing_latency_s: float | None,
 ) -> dict[str, Any]:
     routing_success_count = _int_or_none(
@@ -759,17 +768,38 @@ def _route_establishment(
         reasons.append("planning_nonempty_after_routing_missing")
     elif nonempty_after_routing_ratio is None:
         warnings.append("planning_nonempty_after_routing_missing_using_overall_fallback")
-    elif nonempty_after_routing_ratio < 0.80:
+    elif (
+        nonempty_after_routing_ratio < 0.80
+        and (
+            nonempty_after_first_nonempty_ratio is None
+            or nonempty_after_first_nonempty_ratio < 0.80
+        )
+    ):
         route_established = False
         reasons.append("planning_nonempty_after_routing_below_threshold")
+    elif nonempty_after_routing_ratio < 0.80:
+        warnings.append("planning_nonempty_after_routing_low_but_sustained_after_first_nonempty")
     if fail_reason == "ROUTE_ESTABLISHMENT_LATENCY_SEC":
-        route_established = False
-        reasons.append("route_establishment_latency")
+        if _has_postprocess_route_progress_evidence(
+            routing_success_count=routing_success_count,
+            nonempty_after_routing_ratio=nonempty_after_routing_ratio,
+            nonempty_after_first_nonempty_ratio=nonempty_after_first_nonempty_ratio,
+            first_nonempty_after_routing_latency_s=first_nonempty_after_routing_latency_s,
+            route_completion=route_completion,
+            route_distance=route_distance,
+        ):
+            warnings.append(
+                "summary_route_establishment_latency_overridden_by_postprocess_progress_evidence"
+            )
+        else:
+            route_established = False
+            reasons.append("route_establishment_latency")
     if route_established is None:
         route_established = True
     return {
         "routing_success_count": routing_success_count,
         "planning_nonempty_after_routing_success_ratio": nonempty_after_routing_ratio,
+        "planning_nonempty_after_first_nonempty_ratio": nonempty_after_first_nonempty_ratio,
         "first_nonempty_after_routing_latency_s": first_nonempty_after_routing_latency_s,
         "route_distance_achieved_m": route_distance,
         "route_completion_ratio": route_completion,
@@ -777,6 +807,37 @@ def _route_establishment(
         "blocking_reasons": sorted(set(reasons)),
         "warnings": sorted(set(warnings)),
     }
+
+
+def _has_postprocess_route_progress_evidence(
+    *,
+    routing_success_count: int | None,
+    nonempty_after_routing_ratio: float | None,
+    nonempty_after_first_nonempty_ratio: float | None,
+    first_nonempty_after_routing_latency_s: float | None,
+    route_completion: float | None,
+    route_distance: float | None,
+) -> bool:
+    if routing_success_count is None or routing_success_count < 1:
+        return False
+    sustained_ratio = (
+        nonempty_after_routing_ratio
+        if nonempty_after_routing_ratio is not None and nonempty_after_routing_ratio >= 0.80
+        else nonempty_after_first_nonempty_ratio
+    )
+    if sustained_ratio is None or sustained_ratio < 0.80:
+        return False
+    if (
+        first_nonempty_after_routing_latency_s is not None
+        and first_nonempty_after_routing_latency_s > 45.0
+    ):
+        return False
+    return bool(
+        route_distance is not None
+        and route_distance > 1.0
+        and route_completion is not None
+        and route_completion > 0.01
+    )
 
 
 def _localization_chassis_ready(topic_rows: Sequence[Mapping[str, Any]]) -> tuple[bool | None, bool | None]:
@@ -855,6 +916,13 @@ def _nonempty_ratio(rows: Sequence[Mapping[str, Any]]) -> float | None:
     return float(sum(1 for row in rows if _trajectory_point_count(row) > 0)) / float(len(rows))
 
 
+def _nonempty_ratio_after_first_nonempty(rows: Sequence[Mapping[str, Any]]) -> float | None:
+    for index, row in enumerate(rows):
+        if _trajectory_point_count(row) > 0:
+            return _nonempty_ratio(rows[index:])
+    return None
+
+
 def _first_nonempty_timestamp(rows: Sequence[Mapping[str, Any]]) -> float | None:
     for row in rows:
         if _trajectory_point_count(row) > 0:
@@ -930,6 +998,7 @@ def _claim_window_materialization(
     *,
     nonempty_ratio: float | None,
     after_routing_ratio: float | None,
+    after_first_nonempty_ratio: float | None,
     route_establishment: Mapping[str, Any],
     missing_fields: Sequence[str],
 ) -> dict[str, Any]:
@@ -945,11 +1014,22 @@ def _claim_window_materialization(
             "warnings": warnings,
         }
     if route_established is False:
+        ratio = after_routing_ratio if after_routing_ratio is not None else nonempty_ratio
+        source = "after_routing_success" if after_routing_ratio is not None else "overall"
+        if ratio is not None and ratio >= 0.80:
+            warnings.append("route_establishment_not_confirmed_with_materialized_planning")
+            return {
+                "status": "warn",
+                "ratio": ratio,
+                "source": source,
+                "blocking_reasons": blocking,
+                "warnings": warnings,
+            }
         blocking.append("planning_trajectory_materialization_low")
         return {
             "status": "fail",
-            "ratio": after_routing_ratio if after_routing_ratio is not None else nonempty_ratio,
-            "source": "after_routing_success" if after_routing_ratio is not None else "overall",
+            "ratio": ratio,
+            "source": source,
             "blocking_reasons": blocking,
             "warnings": warnings,
         }
@@ -967,6 +1047,17 @@ def _claim_window_materialization(
             "status": "warn",
             "ratio": after_routing_ratio,
             "source": "after_routing_success",
+            "blocking_reasons": blocking,
+            "warnings": warnings,
+        }
+    if after_first_nonempty_ratio is not None and after_first_nonempty_ratio >= 0.80:
+        warnings.append("overall_nonempty_trajectory_ratio_low_before_first_nonempty")
+        if after_routing_ratio is not None:
+            warnings.append("after_routing_nonempty_ratio_low_before_first_nonempty")
+        return {
+            "status": "warn",
+            "ratio": after_first_nonempty_ratio,
+            "source": "after_first_nonempty_trajectory",
             "blocking_reasons": blocking,
             "warnings": warnings,
         }

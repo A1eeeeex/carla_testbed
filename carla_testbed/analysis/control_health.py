@@ -660,6 +660,7 @@ def _control_semantics_summary(metrics: Mapping[str, Any]) -> dict[str, Any]:
         control_debug = {}
     sources: dict[str, Mapping[str, Any]] = {}
     for name in (
+        "steering_mapping_saturation",
         "longitudinal_oscillation_attribution",
         "trajectory_consume_correlation",
         "planning_trajectory_correlation",
@@ -693,6 +694,7 @@ def _control_semantics_summary(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "planning_trajectory_correlation",
         "trajectory_consume_correlation",
         "longitudinal_oscillation_attribution",
+        "steering_mapping_saturation",
         "planning_log_fallback_diagnostics",
     ):
         factor = dominant_by_source.get(name)
@@ -754,6 +756,12 @@ def _merge_auxiliary_control_decode_debug(
     ):
         out["longitudinal_oscillation_attribution"] = auxiliary_attribution
         out["auxiliary_source_used_for"].append("longitudinal_oscillation_attribution")
+
+    primary_steering = primary.get("steering_mapping_saturation")
+    auxiliary_steering = auxiliary.get("steering_mapping_saturation")
+    if not _report_available(primary_steering) and _report_available(auxiliary_steering):
+        out["steering_mapping_saturation"] = auxiliary_steering
+        out["auxiliary_source_used_for"].append("steering_mapping_saturation")
 
     return out
 
@@ -1137,18 +1145,36 @@ def _control_oscillation_diagnosis(metrics: Mapping[str, Any]) -> dict[str, Any]
         if isinstance(transition_window_summary, Mapping)
         else {}
     )
+    planning_debug_exact_pair_coverage_ratio = _num(
+        planning_correlation.get("planning_debug_exact_pair_coverage_ratio")
+    )
+    planning_debug_missing_transition_ratio = _num(
+        planning_correlation.get("planning_debug_missing_transition_ratio")
+    )
+    planning_debug_sequence_coverage_low = (
+        "planning_debug_sequence_coverage_low" in factors
+        or (
+            planning_debug_exact_pair_coverage_ratio is not None
+            and planning_debug_exact_pair_coverage_ratio < 0.5
+        )
+    )
     matched_reference_jump_present = (
         "matched_or_reference_point_jump" in factors
         or "trajectory_station_or_path_remain_jump" in factors
     )
+    steering_mapping_saturation_present = "bridge_steering_normalization_or_scale" in factors
 
     suspected_layers: list[str] = []
     if raw_command_oscillation_present:
         suspected_layers.append("apollo_raw_control_semantics")
+    if planning_debug_sequence_coverage_low:
+        suspected_layers.append("planning_debug_sequence_coverage")
     if same_trajectory_switching_present or planning_sequence_update_present:
         suspected_layers.append("planning_control_semantics")
     if matched_reference_jump_present:
         suspected_layers.append("reference_line_or_target_point_semantics")
+    if steering_mapping_saturation_present:
+        suspected_layers.append("bridge_steering_normalization_or_scale")
     if gt_state_oversampling_present:
         suspected_layers.append("gt_state_sampling_cadence")
     if layer_statuses.get("bridge_apply_cadence") == "fail":
@@ -1171,12 +1197,16 @@ def _control_oscillation_diagnosis(metrics: Mapping[str, Any]) -> dict[str, Any]
         and not planning_sequence_update_present
     ):
         primary_suspected_layer = "gt_state_sampling_cadence"
+    elif raw_command_oscillation_present and planning_debug_sequence_coverage_low:
+        primary_suspected_layer = "planning_debug_sequence_coverage"
     elif raw_command_oscillation_present and (
         same_trajectory_switching_present or planning_sequence_update_present
     ):
         primary_suspected_layer = "planning_control_semantics"
     elif raw_command_oscillation_present:
         primary_suspected_layer = "apollo_raw_control_semantics"
+    elif steering_mapping_saturation_present:
+        primary_suspected_layer = "bridge_steering_normalization_or_scale"
     elif layer_statuses.get("bridge_apply_cadence") == "fail":
         primary_suspected_layer = "bridge_apply_cadence"
     elif layer_statuses.get("bridge_mapped_command") == "fail":
@@ -1190,7 +1220,13 @@ def _control_oscillation_diagnosis(metrics: Mapping[str, Any]) -> dict[str, Any]
     elif suspected_layers:
         primary_suspected_layer = suspected_layers[0]
 
-    if primary_suspected_layer == "planning_control_semantics":
+    if primary_suspected_layer == "planning_debug_sequence_coverage":
+        next_debug_target = (
+            "Close planning_topic_debug exact sequence coverage for throttle/brake "
+            "transition windows before claiming a Planning/simple_lon root cause; compare "
+            "control_input trajectory sequence with observed /apollo/planning debug rows."
+        )
+    elif primary_suspected_layer == "planning_control_semantics":
         next_debug_target = (
             "Inspect control_trajectory_consume_debug and planning_topic_debug rows around "
             "throttle/brake transitions; confirm whether Apollo simple_lon switches on the "
@@ -1206,6 +1242,11 @@ def _control_oscillation_diagnosis(metrics: Mapping[str, Any]) -> dict[str, Any]
         next_debug_target = (
             "Inspect raw->mapped->applied trace and bridge apply cadence before changing PID "
             "or actuator mapping parameters."
+        )
+    elif primary_suspected_layer == "bridge_steering_normalization_or_scale":
+        next_debug_target = (
+            "Run a diagnostic-only steering normalization A/B after reference-line evidence is "
+            "non-blocking; do not change nominal steer_scale or promote the run as claim-grade."
         )
     elif primary_suspected_layer == "apollo_raw_control_semantics":
         next_debug_target = (
@@ -1234,10 +1275,14 @@ def _control_oscillation_diagnosis(metrics: Mapping[str, Any]) -> dict[str, Any]
         "planning_sequence_changed_transition_ratio": transition_window_summary.get(
             "planning_sequence_changed_ratio"
         ),
+        "planning_debug_sequence_coverage_low": planning_debug_sequence_coverage_low,
+        "planning_debug_exact_pair_coverage_ratio": planning_debug_exact_pair_coverage_ratio,
+        "planning_debug_missing_transition_ratio": planning_debug_missing_transition_ratio,
         "transition_window_summary_available": bool(
             transition_window_summary.get("available")
         ),
         "matched_or_reference_point_jump_present": matched_reference_jump_present,
+        "steering_mapping_saturation_present": steering_mapping_saturation_present,
         "gt_state_oversampling_present": gt_state_oversampling_present,
         "control_input_freshness_root_cause_candidate": bool(
             raw_command_oscillation_present and gt_state_oversampling_present
@@ -2337,6 +2382,7 @@ def _analyze_control_decode_debug(
         "longitudinal_debug": _longitudinal_debug_summary(trace_rows),
         "longitudinal_oscillation_attribution": _longitudinal_oscillation_attribution(trace_rows),
         "control_sequence_diagnostics": _control_sequence_diagnostics(trace_rows),
+        "steering_mapping_saturation": _steering_mapping_saturation(trace_rows),
         "trajectory_consume_correlation": _trajectory_consume_correlation(
             trace_rows,
             trajectory_consume_path=trajectory_consume_path,
@@ -2497,6 +2543,14 @@ def _control_decode_payload_to_trace_row(payload: Mapping[str, Any]) -> dict[str
             parsed_map.get("steer"),
             parsed_map.get("steering_normalized_for_mapping"),
             output_map.get("steering_normalized_for_mapping"),
+        ),
+        "apollo_steering_target_pct": _first_number(
+            payload.get("apollo_steering_target_pct"),
+            payload.get("steering_target"),
+            apollo_raw_map.get("steering_target"),
+            parsed_map.get("steering_target"),
+            output_map.get("steering_target"),
+            raw_dump_map.get("steering_target"),
         ),
         "throttle_mapped": _first_number(
             payload.get("mapped_throttle_cmd"),
@@ -2802,6 +2856,120 @@ def _control_sequence_diagnostics(rows: Sequence[Mapping[str, Any]]) -> dict[str
             unique_rows,
             throttle_fields=("throttle_applied",),
             brake_fields=("brake_applied",),
+        ),
+    }
+
+
+def _steering_mapping_saturation(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    raw_targets: list[float] = []
+    normalized_values: list[float] = []
+    mapped_values_when_saturated: list[float] = []
+    applied_values_when_saturated: list[float] = []
+    saturated_count = 0
+    saturated_low_mapped_count = 0
+    saturated_low_applied_count = 0
+    examples: list[dict[str, Any]] = []
+    raw_pct_saturation_threshold = 99.0
+    low_mapped_abs_threshold = 0.02
+    low_applied_abs_threshold = 0.02
+
+    for index, row in enumerate(rows):
+        raw_pct = _first_row_number(
+            row,
+            "apollo_steering_target_pct",
+            "raw_steering_target_pct",
+            "steering_target",
+        )
+        if raw_pct is None:
+            continue
+        raw_targets.append(float(raw_pct))
+        normalized = _first_row_number(
+            row,
+            "apollo_steer_raw",
+            "raw_steer",
+            "steering_normalized_for_mapping",
+        )
+        mapped = _first_row_number(row, "bridge_steer_mapped", "mapped_carla_steer_cmd")
+        applied = _first_row_number(row, "carla_steer_applied")
+        if normalized is not None:
+            normalized_values.append(float(normalized))
+
+        saturated = abs(float(raw_pct)) >= raw_pct_saturation_threshold
+        if not saturated:
+            continue
+        saturated_count += 1
+        low_mapped = mapped is not None and abs(float(mapped)) <= low_mapped_abs_threshold
+        low_applied = applied is not None and abs(float(applied)) <= low_applied_abs_threshold
+        if mapped is not None:
+            mapped_values_when_saturated.append(abs(float(mapped)))
+        if applied is not None:
+            applied_values_when_saturated.append(abs(float(applied)))
+        if low_mapped:
+            saturated_low_mapped_count += 1
+        if low_applied:
+            saturated_low_applied_count += 1
+        if len(examples) < 5 and (low_mapped or low_applied):
+            examples.append(
+                {
+                    "row_index": index,
+                    "ts_sec": row.get("ts_sec"),
+                    "control_header_sequence_num": row.get("control_header_sequence_num"),
+                    "apollo_steering_target_pct": raw_pct,
+                    "apollo_steer_raw": normalized,
+                    "bridge_steer_mapped": mapped,
+                    "carla_steer_applied": applied,
+                }
+            )
+
+    low_mapped_ratio = _safe_div(float(saturated_low_mapped_count), float(saturated_count))
+    low_applied_ratio = _safe_div(float(saturated_low_applied_count), float(saturated_count))
+    if not raw_targets:
+        status = "insufficient_data"
+        reason = "apollo_steering_target_missing"
+    elif saturated_count > 0 and (low_mapped_ratio or 0.0) >= 0.5:
+        status = "warn"
+        reason = "raw_steering_target_saturated_but_mapped_steer_low"
+    else:
+        status = "pass"
+        reason = None
+
+    suspected_factors = []
+    dominant = None
+    if status == "warn":
+        dominant = "bridge_steering_normalization_or_scale"
+        suspected_factors.append(dominant)
+
+    return {
+        "available": bool(raw_targets),
+        "status": status,
+        "reason": reason,
+        "sample_count": len(raw_targets),
+        "raw_pct_saturation_threshold": raw_pct_saturation_threshold,
+        "low_mapped_abs_threshold": low_mapped_abs_threshold,
+        "low_applied_abs_threshold": low_applied_abs_threshold,
+        "raw_steering_target_abs_p95": _percentile([abs(value) for value in raw_targets], 0.95),
+        "raw_steering_target_abs_max": max((abs(value) for value in raw_targets), default=None),
+        "normalized_steer_abs_p95": _percentile([abs(value) for value in normalized_values], 0.95),
+        "saturated_raw_steering_target_count": saturated_count,
+        "saturated_raw_low_mapped_count": saturated_low_mapped_count,
+        "saturated_raw_low_mapped_ratio": low_mapped_ratio,
+        "saturated_raw_low_applied_count": saturated_low_applied_count,
+        "saturated_raw_low_applied_ratio": low_applied_ratio,
+        "mapped_steer_abs_p95_when_raw_saturated": _percentile(
+            mapped_values_when_saturated,
+            0.95,
+        ),
+        "applied_steer_abs_p95_when_raw_saturated": _percentile(
+            applied_values_when_saturated,
+            0.95,
+        ),
+        "dominant_suspected_factor": dominant,
+        "suspected_factors": suspected_factors,
+        "examples": examples,
+        "interpretation": (
+            "This is diagnostic evidence only. A saturated Apollo steering_target with "
+            "near-zero mapped/applied steer suggests a steering normalization or scale "
+            "candidate for A/B validation, not permission to change steer_scale blindly."
         ),
     }
 
@@ -3272,6 +3440,7 @@ def _planning_trajectory_correlation(
         "planning_sequence_changed": 0,
         "same_planning_sequence": 0,
         "planning_debug_missing_for_sequence": 0,
+        "planning_debug_exact_pair_found": 0,
         "trajectory_point_count_changed": 0,
         "trajectory_path_length_delta_gt_5m": 0,
         "trajectory_total_time_delta_gt_1s": 0,
@@ -3303,6 +3472,7 @@ def _planning_trajectory_correlation(
         if prev_planning is None or cur_planning is None:
             buckets["planning_debug_missing_for_sequence"] += 1
         else:
+            buckets["planning_debug_exact_pair_found"] += 1
             _compare_planning_trajectory_transition(
                 buckets,
                 prev_planning=prev_planning,
@@ -3339,7 +3509,15 @@ def _planning_trajectory_correlation(
 
     transition_count = len(transition_indices)
     aligned_count = len(aligned_transition_indices)
+    exact_pair_count = int(buckets["planning_debug_exact_pair_found"])
+    exact_pair_coverage_ratio = _safe_div(exact_pair_count, aligned_count)
+    missing_transition_ratio = _safe_div(
+        int(buckets["planning_debug_missing_for_sequence"]),
+        aligned_count,
+    )
     suspected_factors: list[str] = []
+    if aligned_count and (exact_pair_coverage_ratio or 0.0) < 0.5:
+        suspected_factors.append("planning_debug_sequence_coverage_low")
     if aligned_count and buckets["trajectory_path_length_delta_gt_5m"] / aligned_count >= 0.4:
         suspected_factors.append("planning_trajectory_length_switching")
     if aligned_count and buckets["trajectory_last_point_jump_gt_5m"] / aligned_count >= 0.4:
@@ -3369,6 +3547,9 @@ def _planning_trajectory_correlation(
         "malformed_line_count": consume_malformed + planning_malformed + route_malformed,
         "transition_count": transition_count,
         "aligned_transition_count": aligned_count,
+        "planning_debug_exact_pair_count": exact_pair_count,
+        "planning_debug_exact_pair_coverage_ratio": exact_pair_coverage_ratio,
+        "planning_debug_missing_transition_ratio": missing_transition_ratio,
         "transition_buckets": buckets,
         "transition_window_summary": _planning_transition_window_summary(
             trace_rows=trace_rows,
@@ -4498,6 +4679,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
         f"- mapped_applied_brake_abs_error_p95: `{metrics.get('mapped_applied_brake_abs_error_p95')}`",
         f"- upstream_contract_preconditions: `{_markdown_upstream_contract_preconditions(metrics)}`",
         f"- oscillation_decomposition: `{_markdown_oscillation_decomposition(metrics)}`",
+        f"- steering_mapping_saturation: `{_markdown_steering_mapping_saturation(metrics)}`",
         f"- control_mapping_claim_boundary: `{metrics.get('control_mapping_claim_boundary')}`",
         f"- control_bridge_log: `{_markdown_control_bridge_log(metrics)}`",
         f"- direct_control_apply_log: `{_markdown_direct_control_apply_log(metrics)}`",
@@ -4570,6 +4752,28 @@ def _markdown_oscillation_decomposition(metrics: Mapping[str, Any]) -> dict[str,
         "bridge_apply_cadence": (layers.get("bridge_apply_cadence") or {}).get("status")
         if isinstance(layers.get("bridge_apply_cadence"), Mapping)
         else None,
+    }
+
+
+def _markdown_steering_mapping_saturation(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    control_decode = metrics.get("control_decode_debug")
+    if not isinstance(control_decode, Mapping):
+        return {"available": False}
+    saturation = control_decode.get("steering_mapping_saturation")
+    if not isinstance(saturation, Mapping):
+        return {"available": False}
+    return {
+        "available": saturation.get("available"),
+        "status": saturation.get("status"),
+        "reason": saturation.get("reason"),
+        "raw_steering_target_abs_p95": saturation.get("raw_steering_target_abs_p95"),
+        "saturated_raw_steering_target_count": saturation.get(
+            "saturated_raw_steering_target_count"
+        ),
+        "saturated_raw_low_mapped_ratio": saturation.get("saturated_raw_low_mapped_ratio"),
+        "mapped_steer_abs_p95_when_raw_saturated": saturation.get(
+            "mapped_steer_abs_p95_when_raw_saturated"
+        ),
     }
 
 

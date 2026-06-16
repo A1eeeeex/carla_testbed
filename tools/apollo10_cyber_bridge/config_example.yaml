@@ -31,6 +31,12 @@ bridge:
   # sampled in claim probes to keep diagnostic IO from starving GT channels.
   # 1 keeps legacy per-event output.
   stage5_debug_artifact_sample_stride: 1
+  # High-rate control debug files are diagnostic evidence. Use >1 in claim
+  # probes when artifact IO backpressure is visible; 1 keeps legacy output.
+  control_debug_artifact_sample_stride: 1
+  # Claim evidence files feed route/reference/localization/control reports.
+  # Keep this at 1 unless a run is explicitly diagnostic-only.
+  claim_evidence_artifact_sample_stride: 1
   claim_grade:
     enabled: false
     stale_world_frame_policy: republish_debug
@@ -39,6 +45,14 @@ bridge:
   max_obstacles: 64
   radius_m: 120.0
   localization_back_offset_m: 0.0
+  localization_acceleration_filter:
+    # Disabled by default for legacy compatibility. Claim-grade lane-keep
+    # profiles may enable this to remove finite-difference GT acceleration
+    # spikes before Apollo simple_lon consumes localization.
+    enabled: false
+    alpha: 1.0
+    max_abs_mps2: 0.0
+    max_delta_mps2: 0.0
   map_file: ""
   map_bounds_file: ""
   debug_pose_print: false

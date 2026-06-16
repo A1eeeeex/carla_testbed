@@ -109,6 +109,149 @@ def test_high_nonempty_ratio_passes_materialization(tmp_path: Path) -> None:
     assert report["metrics"]["nonempty_trajectory_ratio"] == 0.9
 
 
+def test_route_establishment_latency_does_not_mask_materialized_planning(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path)
+    _write_json(
+        run_dir / "artifacts/cyber_bridge_stats.json",
+        {
+            "routing_success_count": 1,
+            "routing_first_success_response_ts_sec": 5.0,
+        },
+    )
+    rows = [
+        {
+            "timestamp": float(index),
+            "planning_header_sequence_num": index,
+            "trajectory_point_count": 20 if index >= 5 else 0,
+        }
+        for index in range(10)
+    ]
+    _write_jsonl(run_dir / "artifacts/planning_topic_debug.jsonl", rows)
+
+    report = analyze_planning_materialization_run_dir(run_dir)
+
+    assert report["verdict"] == "warn"
+    assert report["claim_window_source"] == "after_routing_success"
+    assert report["claim_window_nonempty_ratio"] == 1.0
+    assert report["route_establishment"]["route_established"] is False
+    assert "route_establishment_latency" in report["route_establishment"]["blocking_reasons"]
+    assert "route_establishment_not_confirmed" in report["warnings"]
+    assert "route_establishment_not_confirmed_with_materialized_planning" in report["warnings"]
+    assert "planning_trajectory_materialization_low" not in report["blocking_reasons"]
+    assert "route_establishment_not_confirmed" not in report["blocking_reasons"]
+
+
+def test_route_establishment_latency_is_overridden_by_progress_evidence(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path)
+    _write_json(
+        run_dir / "summary.json",
+        {
+            "run_id": "run",
+            "route_id": "097",
+            "scenario_class": "lane_keep",
+            "fail_reason": "ROUTE_ESTABLISHMENT_LATENCY_SEC",
+            "route_completion_ratio": 0.56,
+            "route_distance_achieved_m": 129.0,
+            "routing_success_count": 1,
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/cyber_bridge_stats.json",
+        {
+            "routing_success_count": 1,
+            "routing_first_success_response_ts_sec": 5.0,
+        },
+    )
+    rows = [
+        {
+            "sim_time_sec": float(index),
+            "planning_header_sequence_num": index,
+            "trajectory_point_count": 20 if index >= 5 else 0,
+        }
+        for index in range(10)
+    ]
+    _write_jsonl(run_dir / "artifacts/planning_topic_debug.jsonl", rows)
+    topic_rows = []
+    for index in range(10):
+        topic_rows.extend(
+            [
+                {"sim_time_sec": float(index), "channel": "/apollo/localization/pose"},
+                {"sim_time_sec": float(index), "channel": "/apollo/canbus/chassis"},
+            ]
+        )
+    _write_jsonl(
+        run_dir / "artifacts/topic_publish_stats.jsonl",
+        topic_rows,
+    )
+
+    report = analyze_planning_materialization_run_dir(run_dir)
+
+    assert report["verdict"] == "warn"
+    assert report["route_establishment"]["route_established"] is True
+    assert report["route_establishment"]["blocking_reasons"] == []
+    assert "route_establishment_latency" not in report["blocking_reasons"]
+    assert (
+        "summary_route_establishment_latency_overridden_by_postprocess_progress_evidence"
+        in report["warnings"]
+    )
+
+
+def test_route_establishment_uses_sustained_tail_after_first_nonempty(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path)
+    _write_json(
+        run_dir / "summary.json",
+        {
+            "run_id": "run",
+            "route_id": "097",
+            "scenario_class": "lane_keep",
+            "fail_reason": "ROUTE_ESTABLISHMENT_LATENCY_SEC",
+            "route_completion_ratio": 0.38,
+            "route_distance_achieved_m": 88.0,
+            "routing_success_count": 1,
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/cyber_bridge_stats.json",
+        {
+            "routing_success_count": 1,
+            "routing_first_success_response_after_last_routing_send_boundary_ts_sec": 100.0,
+        },
+    )
+    rows = []
+    for index in range(20):
+        rows.append(
+            {
+                "sim_time_sec": 100.0 + index * 0.1,
+                "planning_header_sequence_num": index,
+                "routing_segment_count": 1 if index >= 2 else 0,
+                "trajectory_point_count": 80 if index >= 10 else 0,
+            }
+        )
+    _write_jsonl(run_dir / "artifacts/planning_topic_debug.jsonl", rows)
+    topic_rows = []
+    for index in range(20):
+        topic_rows.extend(
+            [
+                {"sim_time_sec": 100.0 + index * 0.1, "channel": "/apollo/localization/pose"},
+                {"sim_time_sec": 100.0 + index * 0.1, "channel": "/apollo/canbus/chassis"},
+            ]
+        )
+    _write_jsonl(run_dir / "artifacts/topic_publish_stats.jsonl", topic_rows)
+
+    report = analyze_planning_materialization_run_dir(run_dir)
+
+    assert report["verdict"] == "warn"
+    assert report["after_routing_success_nonempty_ratio"] == pytest.approx(10 / 20)
+    assert report["after_first_nonempty_trajectory_ratio"] == 1.0
+    assert report["claim_window_nonempty_ratio"] == 1.0
+    assert report["claim_window_source"] == "after_first_nonempty_trajectory"
+    assert report["route_establishment"]["route_established"] is True
+    assert report["route_establishment"]["blocking_reasons"] == []
+    assert "planning_nonempty_after_routing_low_but_sustained_after_first_nonempty" in report["warnings"]
+    assert "after_routing_nonempty_ratio_low_before_first_nonempty" in report["warnings"]
+    assert "summary_route_establishment_latency_overridden_by_postprocess_progress_evidence" in report["warnings"]
+
+
 def test_empty_trajectory_rows_include_asof_input_evidence(tmp_path: Path) -> None:
     run_dir = _run_dir(tmp_path)
     _write_jsonl(

@@ -328,6 +328,10 @@ def analyze_apollo_route_contract(
         ]
         if verified_lane_equivalence.get("status") == "pass":
             lane_equivalence_status = "verified_equivalence"
+        elif verified_lane_equivalence.get("status") == "ambiguous":
+            lane_equivalence_status = "ambiguous"
+            missing.extend(str(item) for item in verified_lane_equivalence.get("missing_fields") or [])
+            warnings.extend(str(item) for item in verified_lane_equivalence.get("warnings") or [])
         else:
             lane_equivalence_status = "mismatch"
             blocking.extend(str(item) for item in verified_lane_equivalence.get("blocking_reasons") or [])
@@ -662,17 +666,29 @@ def _verified_lane_equivalence_from_projection(
             dominant_apollo_lane=apollo_lane,
             lane_rows=lane_rows,
         )
-        blocking.extend(f"{carla_lane}:{reason}" for reason in pair.get("blocking_reasons") or [])
+        pair_blocking = [str(reason) for reason in pair.get("blocking_reasons") or []]
+        if _pair_is_boundary_heading_ambiguous(pair, pair_blocking):
+            missing.append(f"lane_equivalence_ambiguous_for_{carla_lane}")
+            warnings.extend(f"{carla_lane}:{reason}" for reason in pair_blocking)
+        else:
+            blocking.extend(f"{carla_lane}:{reason}" for reason in pair_blocking)
         warnings.extend(f"{carla_lane}:{reason}" for reason in pair.get("warnings") or [])
         pairs.append(pair)
 
     projected_apollo_sequence = [dominant_by_carla[lane] for lane in scenario if lane in dominant_by_carla]
     if projected_apollo_sequence and projected_apollo_sequence != apollo:
         blocking.append("projected_apollo_lane_sequence_mismatch")
-    if missing:
-        status = "insufficient_data" if not blocking else "fail"
-    elif blocking:
+    ambiguous_missing = [
+        item for item in missing if str(item).startswith("lane_equivalence_ambiguous_for_")
+    ]
+    if blocking:
         status = "fail"
+    elif missing and len(ambiguous_missing) == len(missing):
+        status = "ambiguous"
+    elif missing:
+        status = "insufficient_data"
+    elif any(pair.get("status") == "ambiguous" for pair in pairs):
+        status = "ambiguous"
     else:
         status = "pass"
     return {
@@ -688,6 +704,17 @@ def _verified_lane_equivalence_from_projection(
         "blocking_reasons": sorted(set(blocking)),
         "warnings": sorted(set(warnings)),
         "missing_fields": sorted(set(missing)),
+        "ambiguous_reasons": sorted(
+            {
+                reason
+                for pair in pairs
+                for reason in (
+                    [f"{pair.get('scenario_lane_key')}:boundary_transition_ambiguous"]
+                    if pair.get("status") == "ambiguous"
+                    else []
+                )
+            }
+        ),
         "verification_source": "apollo_hdmap_api_route_samples",
         "thresholds": {
             "max_lateral_p95_m": MAX_LANE_EQUIVALENCE_LATERAL_P95_M,
@@ -927,6 +954,29 @@ def _lane_equivalence_pair_debug(
         "warnings": warnings,
         "verification_source": "apollo_hdmap_api_route_samples",
     }
+
+
+def _pair_is_boundary_heading_ambiguous(
+    pair: Mapping[str, Any],
+    blocking_reasons: Sequence[str],
+) -> bool:
+    reasons = {str(reason) for reason in blocking_reasons}
+    if not reasons:
+        return False
+    if reasons != {"heading_error_p95_high"}:
+        return False
+    if str(pair.get("classification") or "") not in {
+        "boundary_transition_ambiguous",
+        "sampling_density_insufficient",
+    }:
+        return False
+    diagnosis = pair.get("heading_diagnosis")
+    if not isinstance(diagnosis, Mapping):
+        return False
+    if diagnosis.get("heading_error_concentrated_at_boundary") is True:
+        return True
+    spacing = _num(diagnosis.get("sampling_spacing_p95_m"))
+    return bool(spacing is not None and spacing >= 5.0)
 
 
 def _lane_equivalence_heading_error(row: Mapping[str, Any]) -> float | None:

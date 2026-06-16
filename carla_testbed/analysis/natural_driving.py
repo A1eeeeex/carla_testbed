@@ -1224,7 +1224,7 @@ def _unassisted_claimability(
 
     handoff_status = str(apollo_control_handoff.get("verdict") or "").strip()
     handoff_stage = str(apollo_control_handoff.get("failure_stage") or "").strip()
-    if handoff_status != "pass" or handoff_stage not in {"", "none"}:
+    if handoff_status not in PASS_WARN_STATUSES or handoff_stage not in {"", "none"}:
         reasons.append("control_handoff_not_pass")
     if handoff_stage in {"process_health", "control_process", "process_crash"}:
         reasons.append("control_process_failed")
@@ -3221,7 +3221,7 @@ def _apollo_control_handoff_evidence_verdict(
             f"apollo_control_handoff_{stage}",
             [f"apollo_control_handoff.failure_stage.{stage}"],
         )
-    if verdict != "pass":
+    if verdict not in PASS_WARN_STATUSES:
         return (
             "insufficient_data",
             "apollo_control_handoff_not_pass",

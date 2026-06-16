@@ -228,6 +228,30 @@ def test_planning_ready_control_missing_fails_control_channel(tmp_path: Path) ->
     assert report["input_readiness"]["status"] in {"pass", "warn"}
 
 
+def test_input_readiness_accepts_online_planning_topic_debug_field_names(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_case(tmp_path)
+    summary = _json(run_dir / "summary.json")
+    summary.pop("planning_nonempty_count", None)
+    summary["planning_materialized"] = False
+    _write_json(run_dir / "summary.json", summary)
+    _write_json(
+        run_dir / "artifacts" / "planning_topic_debug_summary.json",
+        {
+            "total_messages_received": 112,
+            "messages_with_nonzero_trajectory_points": 73,
+        },
+    )
+
+    report = analyze_apollo_control_handoff(run_dir=run_dir)
+
+    assert report["input_readiness"]["planning_message_count"] == 112
+    assert report["input_readiness"]["planning_nonempty_count"] == 73
+    assert "planning_empty" not in report["input_readiness"]["failure_reasons"]
+    assert report["failure_stage"] == "none"
+
+
 def test_control_channel_present_but_bridge_missing_fails_bridge_receive(tmp_path: Path) -> None:
     run_dir = _copy_case(tmp_path)
     bridge = _json(run_dir / "artifacts" / "cyber_bridge_stats.json")
@@ -397,6 +421,32 @@ def test_natural_driving_failed_handoff_report_blocks_hard_pass(tmp_path: Path) 
     assert lane["failure_reason"] == "apollo_control_handoff_control_channel"
     assert lane["apollo_control_handoff_status"] == "fail"
     assert lane["apollo_control_handoff_failure_stage"] == "control_channel"
+
+
+def test_natural_driving_accepts_nonblocking_handoff_warn(tmp_path: Path) -> None:
+    suite = tmp_path / "suite"
+    shutil.copytree(NATURAL_FIXTURE, suite)
+    handoff_path = (
+        suite
+        / "lane_keep_097"
+        / "analysis"
+        / "apollo_control_handoff"
+        / "apollo_control_handoff_report.json"
+    )
+    payload = _json(handoff_path)
+    payload["verdict"] = "warn"
+    payload["failure_stage"] = "none"
+    payload["warnings"] = ["control_pad_requirement_unknown"]
+    payload["blocking_reasons"] = []
+    _write_json(handoff_path, payload)
+
+    report = analyze_natural_driving_suite(suite)
+    lane = next(row for row in report["run_results"] if row["scenario_id"] == "lane_keep_097")
+
+    assert lane["apollo_control_handoff_status"] == "warn"
+    assert lane["apollo_control_handoff_failure_stage"] == "none"
+    assert "apollo_control_handoff.verdict" not in lane["missing_fields"]
+    assert "control_handoff_not_pass" not in lane["why_not_claimable"]
 
 
 def test_ab_candidate_positive_blocked_when_handoff_fails() -> None:

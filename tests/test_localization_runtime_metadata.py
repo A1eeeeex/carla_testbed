@@ -80,3 +80,24 @@ def test_runtime_localization_acceleration_uses_velocity_finite_difference() -> 
     )
     assert (ax, ay, az) == pytest.approx((0.0, 0.0, 0.0))
     assert source == "stale_timestamp_republish"
+
+
+def test_runtime_localization_acceleration_filter_limits_finite_difference_spikes() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+
+    ax, ay, az, source = bridge._localization_acceleration_from_velocity(
+        (10.0, 0.0, 0.0, 0.0),
+        10.05,
+        0.0,
+        0.8,
+        0.0,
+        previous_acceleration=(0.0, 0.0, 0.0),
+        smoothing_alpha=0.35,
+        max_abs_mps2=4.0,
+        max_delta_mps2=1.0,
+    )
+
+    assert (ax, ay, az) == pytest.approx((0.0, 1.0, 0.0))
+    assert source == "finite_difference_filtered"

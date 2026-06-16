@@ -213,6 +213,36 @@ def test_bridge_artifact_writers_reuse_handles_and_flush(tmp_path: Path) -> None
     adapter._flush_artifact_buffers(close=True)
 
 
+def test_bridge_zero_max_pending_rows_disables_automatic_artifact_flush(tmp_path: Path) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+    adapter.artifact_async_write_enabled = False
+    adapter._artifact_write_queue = None
+    adapter._jsonl_artifact_handles = {}
+    adapter._csv_artifact_states = {}
+    adapter._artifact_pending_rows = {}
+    adapter._artifact_last_flush_sec = {}
+    adapter._artifact_write_lock = bridge.threading.Lock()
+    adapter._split_csv_headers_written = {}
+    adapter.artifact_flush_interval_s = 0.0
+    adapter.artifact_flush_max_pending_rows = 0
+
+    jsonl_path = tmp_path / "artifact.jsonl"
+    adapter._append_jsonl(jsonl_path, {"sample": 1})
+    adapter._append_jsonl(jsonl_path, {"sample": 2})
+
+    buffering = adapter.stats.setdefault("artifact_buffering", {})
+    assert buffering.get("flush_count", 0) == 0
+    assert adapter._artifact_pending_rows[str(jsonl_path)] == 2
+
+    adapter._flush_artifact_buffers(close=True)
+    assert adapter.stats["artifact_buffering"]["flush_count"] == 1
+    assert jsonl_path.read_text(encoding="utf-8").count("\n") == 2
+
+
 def test_bridge_async_artifact_writer_drains_on_flush(tmp_path: Path) -> None:
     _install_fake_protobuf()
     _install_fake_carla()
@@ -346,6 +376,97 @@ def test_bridge_stage5_debug_artifacts_can_be_sampled_without_backpressure(tmp_p
     assert "artifact_backpressure_claim_blocking" not in buffering
 
 
+def test_bridge_control_debug_artifacts_can_be_sampled_without_backpressure(tmp_path: Path) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+    adapter.control_debug_artifact_sample_stride = 4
+    adapter._control_debug_artifact_sample_counters = bridge.Counter()
+    writes = []
+    adapter._append_jsonl = lambda path, payload: writes.append((path, dict(payload)))
+
+    for index in range(1, 10):
+        adapter._append_control_debug_jsonl(
+            "control_decode_debug",
+            tmp_path / "control_decode_debug.jsonl",
+            {"index": index},
+        )
+
+    assert [payload["index"] for _, payload in writes] == [1, 4, 8]
+    buffering = adapter.stats["artifact_buffering"]
+    assert buffering["control_debug_artifact_sample_stride"] == 4
+    assert buffering["control_debug_artifact_seen_counts"] == {"control_decode_debug": 9}
+    assert buffering["control_debug_artifact_written_counts"] == {"control_decode_debug": 3}
+    assert buffering["control_debug_artifact_sampled_out_counts"] == {"control_decode_debug": 6}
+    assert "artifact_backpressure_claim_blocking" not in buffering
+
+
+def test_bridge_claim_evidence_artifacts_use_independent_sampling(tmp_path: Path) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+    adapter.control_debug_artifact_sample_stride = 10
+    adapter.claim_evidence_artifact_sample_stride = 1
+    adapter._claim_evidence_artifact_sample_counters = bridge.Counter()
+
+    decisions = [
+        adapter._should_write_claim_evidence_artifact("apollo_reference_line_contract")
+        for _ in range(5)
+    ]
+
+    assert decisions == [True, True, True, True, True]
+    buffering = adapter.stats["artifact_buffering"]
+    assert buffering["claim_evidence_artifact_sample_stride"] == 1
+    assert buffering["claim_evidence_artifact_seen_counts"] == {
+        "apollo_reference_line_contract": 5
+    }
+    assert buffering["claim_evidence_artifact_written_counts"] == {
+        "apollo_reference_line_contract": 5
+    }
+    assert buffering["claim_evidence_artifact_sampled_out_counts"] == {}
+    assert "control_debug_artifact_seen_counts" not in buffering
+
+
+def test_bridge_publish_row_missing_optional_float_does_not_warn(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    warnings = []
+    monkeypatch.setattr(
+        adapter,
+        "_warn_bad_value",
+        lambda field, value, source: warnings.append((field, value, source)),
+    )
+
+    value = adapter._coerce_float(None, float("nan"), "desired_out.optional", "publish_row")
+
+    assert math.isnan(value)
+    assert warnings == []
+
+
+def test_bridge_non_publish_row_missing_float_still_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    warnings = []
+    monkeypatch.setattr(
+        adapter,
+        "_warn_bad_value",
+        lambda field, value, source: warnings.append((field, value, source)),
+    )
+
+    value = adapter._coerce_float(None, 0.0, "throttle", "apollo.control")
+
+    assert value == pytest.approx(0.0)
+    assert warnings == [("throttle", None, "apollo.control")]
+
+
 def test_bridge_write_stats_records_diagnostic_write_durations(tmp_path: Path) -> None:
     _install_fake_protobuf()
     _install_fake_carla()
@@ -375,6 +496,14 @@ def test_bridge_write_stats_records_diagnostic_write_durations(tmp_path: Path) -
         assert buffering[key] >= 0.0
         assert buffering[f"{key}_max"] >= buffering[key]
     assert adapter.stats_path.is_file()
+
+
+def test_bridge_run_loop_uses_configured_periodic_stats_flush() -> None:
+    source = Path("tools/apollo10_cyber_bridge/bridge.py").read_text(encoding="utf-8")
+    assert "def maybe_write_periodic_stats" in source
+    assert 'getattr(self, "artifact_stats_flush_interval_s", 0.0)' in source
+    assert "if interval_s <= 0.0:" in source
+    assert "if (now - last_stats_flush) >= 1.0:" not in source
 
 
 def test_bridge_publish_gap_trace_records_skip_reason_and_queue_depth(tmp_path: Path) -> None:

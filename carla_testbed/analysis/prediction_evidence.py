@@ -217,14 +217,19 @@ def analyze_prediction_evidence(
     elif bypass_reason and _scenario_allows_bypass(scenario_class, explicit_allow_dynamic_bypass):
         prediction_mode = "bypassed_with_gt_obstacles"
         verdict = "warn"
-        # Bypass evidence is useful for static diagnostics, but it is not native
-        # /apollo/prediction evidence and cannot satisfy a claim-grade closed loop gate.
-        hard_gate_eligible = False
+        # Static lane-keep has no interaction target for Apollo Prediction to
+        # forecast. A declared bypass can support the lane-keep gate, but it is
+        # still not native /apollo/prediction evidence and must not be
+        # generalized to dynamic/junction/traffic-light claims.
+        hard_gate_eligible = True
         claim_boundary_downgraded = True
         prediction_bypass_scope = (
-            "explicit_scenario_override" if explicit_scenario_override else "static_lane_keep_diagnostic"
+            "explicit_scenario_override"
+            if explicit_scenario_override
+            else "static_lane_keep_no_dynamic_obstacles"
         )
-        blocking_capabilities.extend(["closed_loop"])
+        if not explicit_scenario_override:
+            blocking_capabilities.extend(["dynamic_obstacle", "junction", "traffic_light"])
         warnings.append("prediction_bypassed_with_reason")
     elif bypass_reason:
         prediction_mode = "bypassed_with_gt_obstacles"

@@ -19,6 +19,8 @@ from carla_testbed.analysis.apollo_hdmap_projection_export import (  # noqa: E40
     export_apollo_hdmap_projection_jsonl,
 )
 
+DEFAULT_TOWN01_FRAME_TRANSFORM = REPO_ROOT / "configs" / "town01" / "apollo_frame_transform.example.yaml"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -44,8 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--frame-transform",
         help=(
-            "Optional CARLA world -> Apollo map transform YAML. Required if "
-            "--include-route-samples should fall back to manifest route_trace."
+            "Optional CARLA world -> Apollo map transform YAML. Defaults to "
+            "configs/town01/apollo_frame_transform.example.yaml for Town01 "
+            "route/start/goal projection when that file exists."
         ),
     )
     parser.add_argument("--timeout-s", type=float, default=15.0, help="Per-sample command timeout.")
@@ -62,6 +65,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-route-samples",
         action="store_true",
         help="Also project route.json points so route-s coverage can become claim-grade.",
+    )
+    parser.add_argument(
+        "--route-sample-step-m",
+        type=float,
+        default=1.0,
+        help=(
+            "When --include-route-samples is set, densify same-lane route "
+            "segments to this spacing before projection. <=0 disables "
+            "densification."
+        ),
     )
     parser.add_argument(
         "--include-start-goal",
@@ -107,6 +120,13 @@ def main(argv: list[str] | None = None) -> int:
         map_xysl_bin=args.map_xysl_bin,
         timeout_s=args.timeout_s,
     )
+    frame_transform = args.frame_transform
+    if (
+        frame_transform is None
+        and (args.include_route_samples or args.include_start_goal)
+        and DEFAULT_TOWN01_FRAME_TRANSFORM.is_file()
+    ):
+        frame_transform = str(DEFAULT_TOWN01_FRAME_TRANSFORM)
     export_status = export_apollo_hdmap_projection_jsonl(
         run_dir=run_dir,
         input_path=args.input,
@@ -115,7 +135,8 @@ def main(argv: list[str] | None = None) -> int:
         max_samples=args.max_samples,
         include_route_samples=args.include_route_samples,
         include_start_goal=args.include_start_goal,
-        frame_transform_path=args.frame_transform,
+        frame_transform_path=frame_transform,
+        route_sample_step_m=args.route_sample_step_m if args.include_route_samples else None,
         min_route_s_coverage=args.min_route_s_coverage,
     )
     payload: dict[str, object] = {"export": export_status}

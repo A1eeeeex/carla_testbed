@@ -798,6 +798,14 @@ sampled-out counts in `artifacts/cyber_bridge_stats.json`. Sampling those
 duplicates does not relax required channel, localization, HDMap, reference-line,
 or control artifacts.
 
+High-rate claim-evidence rows may also be sampled with
+`bridge.claim_evidence_artifact_sample_stride` when
+`cyber_bridge_stats.json.artifact_buffering` or `publish_gap_trace.jsonl` show
+artifact writer lag coinciding with localization/chassis publish-loop gaps. This
+only reduces diagnostic IO pressure. It does not change Apollo channel-health
+thresholds, and a run with localization/chassis max-gap failures remains
+diagnostic until the channel reports recover.
+
 ## Current Implementation
 
 `carla_testbed.record.artifact_store.RunArtifactStore` owns the standard file
