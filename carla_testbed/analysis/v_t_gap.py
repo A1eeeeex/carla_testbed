@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from carla_testbed.analysis.gap import ActorKinematics2D, bumper_to_bumper_gap
 
-VT_GAP_SCHEMA_VERSION = "phase1_v_t_gap.v1"
+VT_GAP_SCHEMA_VERSION = "v_t_gap.v1"
 
 
 def extract_v_t_gap(

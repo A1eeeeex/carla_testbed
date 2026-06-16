@@ -99,18 +99,29 @@ def _catalog_entry(
             matched.append((path, payload))
 
     evidence_paths = [str(path.relative_to(root)) for path, _ in matched]
+    evidence = [_evidence(path, root, "case_yaml") for path, _ in matched]
+    online = _discover_online_evidence(root, aliases)
+    evidence.extend(online["evidence"])
     missing_items: list[str] = []
     if not matched:
         return {
             "scenario": canonical_id,
             "priority": priority,
+            "status": STATUS_NOT_YET,
             "overall_status": STATUS_NOT_YET,
             "case_yaml_status": STATUS_NOT_YET,
+            "template_status": STATUS_NOT_YET,
             "fixed_scene_compile_status": STATUS_NOT_YET,
             "target_actor_status": "missing",
+            "carla_online_status": online["carla_online_status"],
+            "apollo_online_status": online["apollo_online_status"],
+            "v_t_gap_status": online["v_t_gap_status"],
             "v_t_gap_readiness": STATUS_NOT_YET,
+            "comparison_status": online["comparison_status"],
             "comparison_readiness": STATUS_NOT_YET,
+            "evidence": online["evidence"],
             "evidence_paths": [],
+            "missing": ["scenario_case_yaml"],
             "missing_items": ["scenario_case_yaml"],
             "notes": ["YAML existence is required but not sufficient for Phase 1 readiness."],
         }
@@ -125,6 +136,7 @@ def _catalog_entry(
                 storyboard = compile_fixed_scene_template(template)
                 compile_status = STATUS_DONE
                 target_status = str(storyboard.get("target_actor_contract", {}).get("status") or "missing")
+                evidence.append(_evidence(matched[0][0], root, "fixed_scene_compile"))
                 break
             except Exception as exc:
                 compile_status = STATUS_UNKNOWN
@@ -138,24 +150,53 @@ def _catalog_entry(
         missing_items.append("fixed_scene_compile")
     if target_status == "missing":
         missing_items.append("target_actor")
-    missing_items.extend(["v_t_gap_extractor_output", "scenario_comparison_report"])
+    v_t_gap_readiness = _phase1_readiness_from_status(online["v_t_gap_status"])
+    comparison_readiness = _comparison_readiness(online)
+    if online["carla_online_status"] != STATUS_DONE:
+        missing_items.append("carla_online_evidence")
+    if online["apollo_online_status"] != STATUS_DONE:
+        missing_items.append("apollo_online_evidence")
+    if v_t_gap_readiness == STATUS_NOT_YET:
+        missing_items.append("v_t_gap_extractor_output")
+    if comparison_readiness == STATUS_NOT_YET:
+        missing_items.append("scenario_comparison_report")
+    elif comparison_readiness != STATUS_DONE:
+        missing_items.append("cross_backend_scenario_comparison")
     overall = STATUS_PARTIAL
     if canonical_id == "lead_hard_brake":
         overall = STATUS_NOT_YET
+    elif (
+        compile_status == STATUS_DONE
+        and target_status in {"resolved", "not_required"}
+        and online["carla_online_status"] == STATUS_DONE
+        and online["apollo_online_status"] == STATUS_DONE
+        and v_t_gap_readiness == STATUS_DONE
+        and comparison_readiness == STATUS_DONE
+    ):
+        overall = STATUS_DONE
     elif compile_status == STATUS_DONE and target_status in {"resolved", "not_required"}:
         overall = STATUS_PARTIAL
 
+    missing = sorted(set(missing_items))
     return {
         "scenario": canonical_id,
         "priority": priority,
+        "status": overall,
         "overall_status": overall,
         "case_yaml_status": STATUS_DONE,
+        "template_status": compile_status,
         "fixed_scene_compile_status": compile_status,
         "target_actor_status": target_status,
-        "v_t_gap_readiness": STATUS_NOT_YET,
-        "comparison_readiness": STATUS_NOT_YET,
+        "carla_online_status": online["carla_online_status"],
+        "apollo_online_status": online["apollo_online_status"],
+        "v_t_gap_status": online["v_t_gap_status"],
+        "v_t_gap_readiness": v_t_gap_readiness,
+        "comparison_status": online["comparison_status"],
+        "comparison_readiness": comparison_readiness,
+        "evidence": evidence,
         "evidence_paths": evidence_paths,
-        "missing_items": sorted(set(missing_items)),
+        "missing": missing,
+        "missing_items": missing,
         "compile_errors": compile_errors,
         "notes": ["YAML existence is not treated as ready without target/gap/comparison evidence."],
     }
@@ -167,21 +208,25 @@ def _catalog_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"Schema: `{report.get('schema_version')}`",
         "",
-        "| Scenario | Priority | Status | Case YAML | Fixed Scene | Target | Missing |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Scenario | Priority | Status | Case YAML | Template | Target | CARLA online | Apollo online | v-t-gap | Comparison | Missing |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in report.get("scenarios") or []:
         if not isinstance(item, Mapping):
             continue
         missing = ", ".join(str(value) for value in item.get("missing_items") or []) or "-"
         lines.append(
-            "| {scenario} | {priority} | {overall} | {case} | {fixed} | {target} | {missing} |".format(
+            "| {scenario} | {priority} | {overall} | {case} | {template} | {target} | {carla} | {apollo} | {vtgap} | {comparison} | {missing} |".format(
                 scenario=item.get("scenario"),
                 priority=item.get("priority"),
                 overall=item.get("overall_status"),
                 case=item.get("case_yaml_status"),
-                fixed=item.get("fixed_scene_compile_status"),
+                template=item.get("template_status") or item.get("fixed_scene_compile_status"),
                 target=item.get("target_actor_status"),
+                carla=item.get("carla_online_status"),
+                apollo=item.get("apollo_online_status"),
+                vtgap=item.get("v_t_gap_status"),
+                comparison=item.get("comparison_status"),
                 missing=missing,
             )
         )
@@ -196,3 +241,152 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return dict(data) if isinstance(data, Mapping) else {}
+
+
+def _discover_online_evidence(root: Path, aliases: set[str]) -> dict[str, Any]:
+    evidence: list[dict[str, Any]] = []
+    carla_online_status = STATUS_NOT_YET
+    apollo_online_status = STATUS_NOT_YET
+    v_t_gap_status: str = STATUS_NOT_YET
+    comparison_status: str = STATUS_NOT_YET
+    comparison_backend_count = 0
+
+    runs_dir = root / "runs"
+    if runs_dir.exists():
+        for manifest_path in sorted(runs_dir.rglob("manifest.json")):
+            if "comparisons" in manifest_path.parts:
+                continue
+            run_dir = manifest_path.parent
+            manifest = _read_json(manifest_path)
+            if not _matches_scenario(manifest, aliases, run_dir.name):
+                continue
+            backend = str(manifest.get("backend_name") or manifest.get("backend") or "")
+            phase1_status = _read_json(run_dir / "analysis" / "phase1_status" / "phase1_status.json")
+            evidence_status = STATUS_DONE if phase1_status else STATUS_PARTIAL
+            evidence_type = "online_run"
+            if backend == "carla_builtin":
+                evidence_type = "CARLA_online"
+                carla_online_status = _best_readiness(carla_online_status, evidence_status)
+            elif backend == "apollo_cyberrt":
+                evidence_type = "Apollo_online"
+                apollo_online_status = _best_readiness(apollo_online_status, evidence_status)
+            evidence.append(
+                _evidence(
+                    run_dir,
+                    root,
+                    evidence_type,
+                    status=evidence_status,
+                    note=f"backend={backend or 'unknown'}; phase1_status={phase1_status.get('status') or 'missing'}",
+                )
+            )
+            gap_report = _read_json(run_dir / "analysis" / "v_t_gap" / "v_t_gap_report.json")
+            if gap_report:
+                v_t_gap_status = str(gap_report.get("status") or "unknown")
+                evidence.append(
+                    _evidence(
+                        run_dir / "analysis" / "v_t_gap" / "v_t_gap_report.json",
+                        root,
+                        "v_t_gap",
+                        status=_phase1_readiness_from_status(v_t_gap_status),
+                    )
+                )
+
+    comparison_dir = runs_dir / "comparisons"
+    if comparison_dir.exists():
+        for summary_path in sorted(comparison_dir.rglob("comparison_summary.json")):
+            summary = _read_json(summary_path)
+            if not _matches_scenario(summary, aliases, summary_path.parent.name):
+                continue
+            comparison_status = str(summary.get("comparison_status") or "unknown")
+            backends = {
+                str(run.get("backend"))
+                for run in summary.get("participating_runs") or []
+                if isinstance(run, Mapping) and run.get("backend")
+            }
+            comparison_backend_count = max(comparison_backend_count, len(backends))
+            evidence.append(
+                _evidence(
+                    summary_path,
+                    root,
+                    "comparison_online",
+                    status=STATUS_DONE if comparison_status == "comparable" else STATUS_PARTIAL,
+                    note=f"comparison_status={comparison_status}; backend_count={len(backends)}",
+                )
+            )
+
+    return {
+        "evidence": evidence,
+        "carla_online_status": carla_online_status,
+        "apollo_online_status": apollo_online_status,
+        "v_t_gap_status": v_t_gap_status,
+        "comparison_status": comparison_status,
+        "comparison_backend_count": comparison_backend_count,
+    }
+
+
+def _evidence(
+    path: Path,
+    root: Path,
+    evidence_type: str,
+    *,
+    status: str = STATUS_DONE,
+    note: str | None = None,
+) -> dict[str, Any]:
+    try:
+        path_text = str(path.relative_to(root))
+    except ValueError:
+        path_text = str(path)
+    item: dict[str, Any] = {"path": path_text, "evidence_type": evidence_type, "status": status}
+    if note:
+        item["note"] = note
+    return item
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(data) if isinstance(data, Mapping) else {}
+
+
+def _matches_scenario(payload: Mapping[str, Any], aliases: set[str], path_hint: str = "") -> bool:
+    values = [
+        str(payload.get("scenario") or ""),
+        str(payload.get("scenario_id") or ""),
+        str(payload.get("scenario_class") or ""),
+        str(payload.get("template") or ""),
+        path_hint,
+    ]
+    if isinstance(payload.get("fixed_scene"), Mapping):
+        values.append(str(payload["fixed_scene"].get("template") or ""))
+    return any(_value_matches_alias(value, aliases) for value in values if value)
+
+
+def _value_matches_alias(value: str, aliases: set[str]) -> bool:
+    return any(value == alias or alias in value for alias in aliases)
+
+
+def _phase1_readiness_from_status(status: str) -> str:
+    if status in {STATUS_DONE, "pass", "warn", "not_applicable"}:
+        return STATUS_DONE
+    if status in {"invalid", "fail", "failed", "unknown", STATUS_UNKNOWN}:
+        return STATUS_PARTIAL
+    return STATUS_NOT_YET
+
+
+def _comparison_readiness(online: Mapping[str, Any]) -> str:
+    status = str(online.get("comparison_status") or STATUS_NOT_YET)
+    backend_count = int(online.get("comparison_backend_count") or 0)
+    if status == "comparable" and backend_count >= 2:
+        return STATUS_DONE
+    if status in {"comparable", "partially_evaluable", "invalid", "unknown"}:
+        return STATUS_PARTIAL
+    return STATUS_NOT_YET
+
+
+def _best_readiness(current: str, candidate: str) -> str:
+    order = {STATUS_NOT_YET: 0, STATUS_UNKNOWN: 1, STATUS_PARTIAL: 2, STATUS_DONE: 3}
+    return candidate if order.get(candidate, 0) > order.get(current, 0) else current

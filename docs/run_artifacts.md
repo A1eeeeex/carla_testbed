@@ -40,6 +40,10 @@ The legacy harness still writes CSV-oriented frame data.
 - Phase 1 backend input contract fields when available:
   - `backend_type`
   - `backend`
+  - `backend_name`
+  - `starts_runtime`
+  - `starts_apollo`
+  - `starts_autoware`
   - `input_contract`
   - `adapter_path`
   - `available_truth_fields`
@@ -137,6 +141,7 @@ Additional run-local artifacts:
 - `artifacts/scenario_actor_trace.jsonl`
   - fixed-scene actor state trace; used by `v-t-gap` extraction.
 - `analysis/v_t_gap/v_t_gap_report.json`
+  - schema: `v_t_gap.v1`
 - `analysis/v_t_gap/v_t_gap.csv`
   - fields include `sim_time_s`, `ego_speed_mps`, `target_speed_mps`,
     `gap_m`, `relative_speed_mps`, `target_actor_id`,
@@ -163,11 +168,23 @@ Comparison directory artifacts:
 
 - `comparison_manifest.json`
 - `comparison_summary.json`
+  - schema: `phase1_comparison.v1`
 - optional `comparison_curves/`
 
 `comparison_status=comparable` is allowed only when participating runs are
 evaluable. If any run is invalid, the comparison is `partially_evaluable` or
 `invalid`; it must not declare a backend winner from invalid setup evidence.
+
+Scenario catalog artifacts:
+
+- `phase1_scenario_catalog.json`
+- `phase1_scenario_catalog.md`
+
+The catalog is a review/orchestration artifact, not run evidence by itself. It
+lists each P0/P1 case with separate `case_yaml_status`, `template_status`,
+`carla_online_status`, `apollo_online_status`, `v_t_gap_status`, and
+`comparison_status` fields. A scenario with YAML/template evidence but missing
+online or comparison evidence must remain `PARTIAL` or `NOT_YET`, never `DONE`.
 
 ## `logs/`
 

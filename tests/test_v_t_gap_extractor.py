@@ -13,6 +13,7 @@ def test_v_t_gap_extracts_bumper_gap_from_timeseries_and_actor_trace(tmp_path) -
 
     report = extract_v_t_gap(run_dir=run)
 
+    assert report["schema_version"] == "v_t_gap.v1"
     assert report["status"] == "pass"
     assert report["row_count"] == 2
     assert report["rows"][0]["gap_m"] == 16.0
@@ -33,6 +34,7 @@ def test_v_t_gap_missing_target_contract_is_invalid(tmp_path) -> None:
 
     report = extract_v_t_gap(run_dir=run)
 
+    assert report["schema_version"] == "v_t_gap.v1"
     assert report["status"] == "invalid"
     assert report["invalid_reason"] == "missing_target_actor"
 

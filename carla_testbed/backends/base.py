@@ -31,9 +31,13 @@ class StackContract:
     def to_dict(self) -> dict[str, Any]:
         return {
             "backend": self.backend,
+            "backend_name": self.backend,
             "backend_type": self.backend_type,
             "starts_carla": self.starts_carla,
             "starts_external_stack": self.starts_external_stack,
+            "starts_runtime": self.starts_carla or self.starts_external_stack,
+            "starts_apollo": self.needs_local_apollo,
+            "starts_autoware": self.needs_local_autoware,
             "middleware": self.middleware,
             "input_contract": self.input_contract,
             "adapter_path": self.adapter_path,

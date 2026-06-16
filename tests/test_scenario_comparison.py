@@ -12,6 +12,7 @@ def test_two_evaluable_runs_are_comparable(tmp_path) -> None:
 
     report = compare_scenario_runs([run_a, run_b])
 
+    assert report["schema_version"] == "phase1_comparison.v1"
     assert report["comparison_status"] == "comparable"
     assert all(item["counts_as_backend_loss"] is False for item in report["backend_results"])
 

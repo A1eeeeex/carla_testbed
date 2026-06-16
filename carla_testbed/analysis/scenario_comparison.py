@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 
 from carla_testbed.analysis.phase1_status import classify_phase1_run
 
-SCENARIO_COMPARISON_SCHEMA_VERSION = "phase1_scenario_comparison.v1"
+SCENARIO_COMPARISON_SCHEMA_VERSION = "phase1_comparison.v1"
 
 
 def compare_scenario_runs(run_dirs: Sequence[str | Path]) -> dict[str, Any]:
