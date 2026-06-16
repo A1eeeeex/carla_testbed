@@ -14,6 +14,12 @@ class ScenarioActorState:
     z: float | None = None
     yaw_rad: float | None = None
     speed_mps: float | None = None
+    length_m: float | None = None
+    width_m: float | None = None
+    height_m: float | None = None
+    bbox_extent_x_m: float | None = None
+    bbox_extent_y_m: float | None = None
+    bbox_extent_z_m: float | None = None
     route_s: float | None = None
     lane_id: str | None = None
     applied_control: Mapping[str, Any] | None = None
@@ -28,6 +34,12 @@ class ScenarioActorState:
             z=_optional_float(data.get("z")),
             yaw_rad=_optional_float(data.get("yaw_rad", data.get("yaw"))),
             speed_mps=_optional_float(data.get("speed_mps", data.get("actual_speed_mps"))),
+            length_m=_optional_float(data.get("length_m", data.get("actor_length_m"))),
+            width_m=_optional_float(data.get("width_m", data.get("actor_width_m"))),
+            height_m=_optional_float(data.get("height_m", data.get("actor_height_m"))),
+            bbox_extent_x_m=_optional_float(data.get("bbox_extent_x_m")),
+            bbox_extent_y_m=_optional_float(data.get("bbox_extent_y_m")),
+            bbox_extent_z_m=_optional_float(data.get("bbox_extent_z_m")),
             route_s=_optional_float(data.get("route_s")),
             lane_id=_optional_text(data.get("lane_id")),
             applied_control=data.get("applied_control") if isinstance(data.get("applied_control"), Mapping) else None,

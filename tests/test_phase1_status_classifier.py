@@ -14,7 +14,7 @@ def test_missing_timeseries_is_invalid_not_backend_failure(tmp_path) -> None:
     report = classify_phase1_run(run)
 
     assert report["status"] == "invalid"
-    assert report["failure_reason"] == "missing_required_artifact"
+    assert report["failure_reason"] == "no_timeseries"
     assert report["evaluable"] is False
 
 
@@ -48,8 +48,40 @@ def test_negative_gap_is_failed_unsafe_gap(tmp_path) -> None:
     assert report["evaluable"] is True
 
 
+def test_large_final_gap_is_degraded(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps({"status": "pass", "rows": [{"gap_m": 120.0}], "target_actor_contract": {"status": "resolved"}}),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "degraded"
+    assert report["failure_reason"] == "large_final_gap"
+    assert report["evaluable"] is True
+
+
+def test_missing_v_t_gap_report_is_invalid_missing_required_artifact(tmp_path) -> None:
+    run = _base_run(tmp_path)
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "invalid"
+    assert report["failure_reason"] == "missing_required_artifact"
+    assert report["evaluable"] is False
+
+
 def test_phase1_status_writer(tmp_path) -> None:
     run = _base_run(tmp_path)
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps({"status": "pass", "rows": [{"gap_m": 10.0}], "target_actor_contract": {"status": "resolved"}}),
+        encoding="utf-8",
+    )
     report = classify_phase1_run(run)
 
     outputs = write_phase1_status(report, tmp_path / "out")

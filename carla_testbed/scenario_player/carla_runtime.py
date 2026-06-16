@@ -541,6 +541,7 @@ def _actor_state(role: str, actor: Any | None, *, world: Any | None = None) -> S
     location = getattr(transform, "location", None)
     rotation = getattr(transform, "rotation", None)
     route_projection = _actor_route_projection(world, transform)
+    dimensions = _actor_dimensions(actor)
     return ScenarioActorState(
         role=role,
         actor_id=getattr(actor, "id", None),
@@ -549,10 +550,41 @@ def _actor_state(role: str, actor: Any | None, *, world: Any | None = None) -> S
         z=_float_attr(location, "z"),
         yaw_rad=math.radians(_float_attr(rotation, "yaw", 0.0) or 0.0),
         speed_mps=_vector_norm(velocity),
+        length_m=dimensions.get("length_m"),
+        width_m=dimensions.get("width_m"),
+        height_m=dimensions.get("height_m"),
+        bbox_extent_x_m=dimensions.get("bbox_extent_x_m"),
+        bbox_extent_y_m=dimensions.get("bbox_extent_y_m"),
+        bbox_extent_z_m=dimensions.get("bbox_extent_z_m"),
         route_s=route_projection.get("route_s"),
         lane_id=route_projection.get("lane_id"),
         applied_control=_control_dict(control),
     )
+
+
+def _actor_dimensions(actor: Any | None) -> dict[str, float | None]:
+    bbox = getattr(actor, "bounding_box", None) if actor is not None else None
+    extent = getattr(bbox, "extent", None)
+    if extent is None:
+        return {
+            "length_m": None,
+            "width_m": None,
+            "height_m": None,
+            "bbox_extent_x_m": None,
+            "bbox_extent_y_m": None,
+            "bbox_extent_z_m": None,
+        }
+    extent_x = _float_attr(extent, "x")
+    extent_y = _float_attr(extent, "y")
+    extent_z = _float_attr(extent, "z")
+    return {
+        "length_m": 2.0 * extent_x if extent_x is not None else None,
+        "width_m": 2.0 * extent_y if extent_y is not None else None,
+        "height_m": 2.0 * extent_z if extent_z is not None else None,
+        "bbox_extent_x_m": extent_x,
+        "bbox_extent_y_m": extent_y,
+        "bbox_extent_z_m": extent_z,
+    }
 
 
 def _actor_route_projection(world: Any | None, transform: Any | None) -> dict[str, Any]:

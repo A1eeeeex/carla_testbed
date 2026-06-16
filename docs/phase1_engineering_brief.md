@@ -471,6 +471,10 @@ Implementation note added after the 2026-06-16 review:
   `success/degraded/failed/invalid` run status classification.
 - `carla_testbed/analysis/scenario_comparison.py` writes the first generic
   ScenarioComparison report.
+- `carla_testbed/analysis/phase1_postprocess.py` closes the run-local Phase 1
+  artifact spine by writing `analysis/v_t_gap/`,
+  `analysis/phase1_status/`, and artifact completeness for a completed
+  ScenarioRun.
 
 These additions improve the offline Phase 1 evaluation spine. They do not by
 themselves prove online CARLA playback, Apollo fixed-scene compatibility, or
@@ -513,10 +517,12 @@ New PARTIAL findings from the offline Phase 1 spine:
 
 - Dedicated `v-t-gap` extraction exists, but online comparison curves are not
   yet attached to a real Apollo-vs-builtin comparison directory.
-- Bumper-to-bumper gap calculation exists, but online traces still need
-  vehicle dimension fields to avoid degraded center-distance fallback.
-- Central Phase 1 run status/failure-reason classification exists, but legacy
-  online paths do not yet invoke it automatically.
+- Bumper-to-bumper gap calculation exists and `carla_builtin` fixed-scene
+  traces now write CARLA bbox-derived vehicle dimensions when CARLA exposes
+  them. Old traces without dimensions remain degraded diagnostic evidence.
+- Central Phase 1 run status/failure-reason classification exists, and the
+  `carla_builtin` fixed-scene runner invokes it automatically after each run.
+  Legacy and Apollo online paths still need explicit integration.
 
 UNKNOWN findings:
 

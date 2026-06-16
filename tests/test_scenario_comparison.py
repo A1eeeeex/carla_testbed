@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 
 from carla_testbed.analysis.scenario_comparison import compare_scenario_runs, write_scenario_comparison
@@ -45,6 +46,7 @@ def test_scenario_comparison_writer(tmp_path) -> None:
 
     assert outputs["manifest"].endswith("comparison_manifest.json")
     assert outputs["summary"].endswith("comparison_summary.json")
+    assert outputs["v_t_gap_csv"].endswith("comparison_curves/v_t_gap.csv")
 
 
 def _write_run(tmp_path, name, backend, backend_type, status, reason=None, scenario_id="follow_stop_static"):
@@ -69,4 +71,36 @@ def _write_run(tmp_path, name, backend, backend_type, status, reason=None, scena
         ),
         encoding="utf-8",
     )
+    v_t_gap_dir = run / "analysis" / "v_t_gap"
+    v_t_gap_dir.mkdir(parents=True)
+    (v_t_gap_dir / "v_t_gap_report.json").write_text(json.dumps({"status": "pass", "rows": []}), encoding="utf-8")
+    with (v_t_gap_dir / "v_t_gap.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "sim_time_s",
+                "ego_speed_mps",
+                "target_speed_mps",
+                "gap_m",
+                "relative_speed_mps",
+                "target_actor_id",
+                "target_actor_role",
+                "gap_method",
+                "gap_degraded",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "sim_time_s": 0.0,
+                "ego_speed_mps": 1.0,
+                "target_speed_mps": 0.0,
+                "gap_m": 10.0,
+                "relative_speed_mps": -1.0,
+                "target_actor_id": "lead-1",
+                "target_actor_role": "lead_vehicle",
+                "gap_method": "bumper_to_bumper_longitudinal_projection",
+                "gap_degraded": "False",
+            }
+        )
     return run

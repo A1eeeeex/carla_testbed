@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -36,6 +37,7 @@ def compare_scenario_runs(run_dirs: Sequence[str | Path]) -> dict[str, Any]:
         "reason": reason,
         "participating_runs": runs,
         "invalid_runs": [run for run in runs if run.get("phase1_status") == "invalid"],
+        "evaluable_runs": [run for run in runs if run.get("phase1_status") != "invalid"],
         "backend_results": _backend_results(runs, comparison_status=comparison_status),
         "claim_boundary": (
             "ScenarioComparison compares evaluable Phase 1 runs only; invalid runs are setup/artifact issues "
@@ -50,6 +52,8 @@ def write_scenario_comparison(report: Mapping[str, Any], out_dir: str | Path) ->
     manifest_path = output / "comparison_manifest.json"
     summary_path = output / "comparison_summary.json"
     md_path = output / "comparison_summary.md"
+    curves_dir = output / "comparison_curves"
+    curves_path = curves_dir / "v_t_gap.csv"
     manifest = {
         "schema_version": "phase1_scenario_comparison_manifest.v1",
         "scenario_id": report.get("scenario_id"),
@@ -59,7 +63,11 @@ def write_scenario_comparison(report: Mapping[str, Any], out_dir: str | Path) ->
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     summary_path.write_text(json.dumps(dict(report), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     md_path.write_text(_summary_markdown(report), encoding="utf-8")
-    return {"manifest": str(manifest_path), "summary": str(summary_path), "markdown": str(md_path)}
+    curve_written = _write_combined_v_t_gap(report, curves_path)
+    outputs = {"manifest": str(manifest_path), "summary": str(summary_path), "markdown": str(md_path)}
+    if curve_written:
+        outputs["v_t_gap_csv"] = str(curves_path)
+    return outputs
 
 
 def _run_entry(run_dir: Path) -> dict[str, Any]:
@@ -136,3 +144,43 @@ def _read_json(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return dict(data) if isinstance(data, Mapping) else {}
+
+
+def _write_combined_v_t_gap(report: Mapping[str, Any], output_path: Path) -> bool:
+    rows: list[dict[str, Any]] = []
+    for run in report.get("participating_runs") or []:
+        if not isinstance(run, Mapping):
+            continue
+        csv_path = Path(str((run.get("artifact_paths") or {}).get("v_t_gap", ""))).with_name("v_t_gap.csv")
+        if not csv_path.exists():
+            continue
+        with csv_path.open("r", encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                enriched = dict(row)
+                enriched["run_id"] = run.get("run_id")
+                enriched["backend"] = run.get("backend")
+                enriched["backend_type"] = run.get("backend_type")
+                rows.append(enriched)
+    if not rows:
+        return False
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "run_id",
+        "backend",
+        "backend_type",
+        "sim_time_s",
+        "ego_speed_mps",
+        "target_speed_mps",
+        "gap_m",
+        "relative_speed_mps",
+        "target_actor_id",
+        "target_actor_role",
+        "gap_method",
+        "gap_degraded",
+    ]
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key) for key in fieldnames})
+    return True

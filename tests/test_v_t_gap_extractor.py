@@ -17,6 +17,8 @@ def test_v_t_gap_extracts_bumper_gap_from_timeseries_and_actor_trace(tmp_path) -
     assert report["row_count"] == 2
     assert report["rows"][0]["gap_m"] == 16.0
     assert report["rows"][0]["gap_method"] == "bumper_to_bumper_longitudinal_projection"
+    assert report["rows"][0]["gap_degraded"] is False
+    assert report["gap_method_counts"]["bumper_to_bumper_longitudinal_projection"] == 2
     assert report["rows"][0]["target_actor_role"] == "lead_vehicle"
 
 
@@ -48,6 +50,8 @@ def test_v_t_gap_prefers_actor_trace_longitudinal_gap_when_dimensions_missing(tm
     assert report["status"] == "warn"
     assert report["rows"][0]["gap_m"] == 300.0
     assert report["rows"][0]["gap_method"] == "actor_trace_longitudinal_gap_degraded"
+    assert report["rows"][0]["gap_degraded"] is True
+    assert report["degraded_reason_counts"]["actor_trace_longitudinal_gap_degraded"] == 2
 
 
 def test_v_t_gap_writer_outputs_csv_and_report(tmp_path) -> None:

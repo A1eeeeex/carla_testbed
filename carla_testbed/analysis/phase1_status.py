@@ -38,39 +38,51 @@ def classify_phase1_run(run_dir: str | Path) -> dict[str, Any]:
     manifest = _read_json(root / "manifest.json")
     summary = _read_json(root / "summary.json")
     v_t_gap = _read_json(root / "analysis" / "v_t_gap" / "v_t_gap_report.json")
-    required = ["manifest.json", "summary.json"]
-    missing = [name for name in required if not (root / name).exists()]
-    if not (root / "timeseries.csv").exists() and not (root / "timeseries.jsonl").exists():
-        missing.append("timeseries.*")
-    if missing:
-        return _status(root, manifest, summary, "invalid", "missing_required_artifact", missing, v_t_gap)
+    required_artifacts = _required_artifacts(root)
+    missing = [name for name, state in required_artifacts.items() if state == "missing"]
+    if required_artifacts["timeseries"] == "missing":
+        return _status(root, manifest, summary, "invalid", "no_timeseries", missing, v_t_gap, required_artifacts)
+    base_missing = [name for name in ("manifest", "summary") if required_artifacts[name] == "missing"]
+    if base_missing:
+        return _status(root, manifest, summary, "invalid", "missing_required_artifact", missing, v_t_gap, required_artifacts)
 
     target_contract = _target_contract(root, v_t_gap)
     if target_contract.get("status") == "missing":
-        return _status(root, manifest, summary, "invalid", "missing_target_actor", [], v_t_gap)
+        return _status(root, manifest, summary, "invalid", "missing_target_actor", [], v_t_gap, required_artifacts)
+    if not v_t_gap and target_contract.get("status") != "not_required":
+        return _status(
+            root,
+            manifest,
+            summary,
+            "invalid",
+            "missing_required_artifact",
+            ["analysis/v_t_gap/v_t_gap_report.json"],
+            v_t_gap,
+            required_artifacts,
+        )
 
     if v_t_gap and v_t_gap.get("status") == "invalid":
         reason = str(v_t_gap.get("invalid_reason") or "missing_required_artifact")
         if reason not in INVALID_REASONS:
             reason = "missing_required_artifact"
-        return _status(root, manifest, summary, "invalid", reason, [], v_t_gap)
+        return _status(root, manifest, summary, "invalid", reason, [], v_t_gap, required_artifacts)
 
     if _summary_failed_by_setup(summary):
-        return _status(root, manifest, summary, "invalid", "setup_failed", [], v_t_gap)
+        return _status(root, manifest, summary, "invalid", "setup_failed", [], v_t_gap, required_artifacts)
     if _backend_not_ready(summary, manifest):
-        return _status(root, manifest, summary, "invalid", "backend_not_ready", [], v_t_gap)
+        return _status(root, manifest, summary, "invalid", "backend_not_ready", [], v_t_gap, required_artifacts)
     if _fixed_scene_failed(summary):
-        return _status(root, manifest, summary, "invalid", "fixed_scene_failed", [], v_t_gap)
+        return _status(root, manifest, summary, "invalid", "fixed_scene_failed", [], v_t_gap, required_artifacts)
 
     failed = _failed_reason(summary, v_t_gap)
     if failed:
-        return _status(root, manifest, summary, "failed", failed, [], v_t_gap)
+        return _status(root, manifest, summary, "failed", failed, [], v_t_gap, required_artifacts)
 
     degraded = _degraded_reason(summary, v_t_gap)
     if degraded:
-        return _status(root, manifest, summary, "degraded", degraded, [], v_t_gap)
+        return _status(root, manifest, summary, "degraded", degraded, [], v_t_gap, required_artifacts)
 
-    return _status(root, manifest, summary, "success", None, [], v_t_gap)
+    return _status(root, manifest, summary, "success", None, [], v_t_gap, required_artifacts)
 
 
 def write_phase1_status(report: Mapping[str, Any], out_dir: str | Path) -> dict[str, str]:
@@ -97,7 +109,9 @@ def _status(
     reason: str | None,
     missing_artifacts: list[str],
     v_t_gap: Mapping[str, Any],
+    required_artifacts: Mapping[str, str],
 ) -> dict[str, Any]:
+    original_reason = summary.get("fail_reason") or summary.get("failure_reason")
     return {
         "schema_version": PHASE1_STATUS_SCHEMA_VERSION,
         "run_dir": str(root),
@@ -107,12 +121,25 @@ def _status(
         "backend_type": manifest.get("backend_type"),
         "status": status,
         "failure_reason": reason,
+        "original_failure_reason": original_reason,
         "evaluable": status != "invalid",
         "missing_artifacts": missing_artifacts,
+        "required_artifacts": dict(required_artifacts),
         "v_t_gap_status": v_t_gap.get("status") if v_t_gap else None,
         "summary_status": summary.get("status"),
         "summary_success": summary.get("success"),
         "claim_boundary": "phase1_status_is_scenario_evaluation_not_natural_driving_claim",
+    }
+
+
+def _required_artifacts(root: Path) -> dict[str, str]:
+    return {
+        "manifest": "present" if (root / "manifest.json").exists() else "missing",
+        "summary": "present" if (root / "summary.json").exists() else "missing",
+        "timeseries": "present" if (root / "timeseries.csv").exists() or (root / "timeseries.jsonl").exists() else "missing",
+        "v_t_gap_report": "present"
+        if (root / "analysis" / "v_t_gap" / "v_t_gap_report.json").exists()
+        else "missing",
     }
 
 
@@ -154,8 +181,23 @@ def _degraded_reason(summary: Mapping[str, Any], v_t_gap: Mapping[str, Any]) -> 
     reason = str(summary.get("degraded_reason") or "")
     if reason in DEGRADED_REASONS:
         return reason
+    rows = v_t_gap.get("rows") if isinstance(v_t_gap.get("rows"), list) else []
+    final_gap = _final_gap(rows)
+    if final_gap is not None and final_gap > 60.0:
+        return "large_final_gap"
     if v_t_gap.get("status") == "warn":
         return "large_final_gap"
+    return None
+
+
+def _final_gap(rows: Any) -> float | None:
+    if not rows:
+        return None
+    for row in reversed(rows):
+        if isinstance(row, Mapping):
+            gap = _to_float(row.get("gap_m"))
+            if gap is not None:
+                return gap
     return None
 
 

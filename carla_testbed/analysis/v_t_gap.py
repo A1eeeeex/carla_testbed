@@ -138,6 +138,7 @@ def write_v_t_gap_report(report: Mapping[str, Any], out_dir: str | Path) -> dict
             "target_actor_id",
             "target_actor_role",
             "gap_method",
+            "gap_degraded",
         ]
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -165,7 +166,8 @@ def _extract_rows(
         row: dict[str, Any]
         trace_longitudinal_gap = _float_value(target or {}, "longitudinal_to_ego_m")
         if trace_longitudinal_gap is not None and (
-            _float_value(ts, "ego_length_m") is None or _float_value(target or {}, "length_m", "vehicle_length_m") is None
+            _float_value(ts, "ego_length_m", "actor_length_m", "length_m") is None
+            or _float_value(target or {}, "length_m", "actor_length_m", "vehicle_length_m") is None
         ):
             row = {
                 "gap_m": trace_longitudinal_gap,
@@ -175,6 +177,7 @@ def _extract_rows(
                     else None
                 ),
                 "gap_method": "actor_trace_longitudinal_gap_degraded",
+                "gap_degraded": True,
             }
         elif target and _has_pose(ts) and _has_pose(target):
             gap = bumper_to_bumper_gap(
@@ -183,22 +186,23 @@ def _extract_rows(
                     y=float(_float_value(ts, "ego_y", "y") or 0.0),
                     yaw_rad=float(_float_value(ts, "ego_yaw_rad", "ego_yaw", "yaw_rad", "yaw") or 0.0),
                     speed_mps=ego_speed,
-                    length_m=_float_value(ts, "ego_length_m"),
-                    width_m=_float_value(ts, "ego_width_m"),
+                    length_m=_float_value(ts, "ego_length_m", "actor_length_m", "length_m"),
+                    width_m=_float_value(ts, "ego_width_m", "actor_width_m", "width_m"),
                 ),
                 ActorKinematics2D(
                     x=float(_float_value(target, "x") or 0.0),
                     y=float(_float_value(target, "y") or 0.0),
                     yaw_rad=float(_float_value(target, "yaw_rad", "yaw") or 0.0),
                     speed_mps=target_speed,
-                    length_m=_float_value(target, "length_m", "vehicle_length_m"),
-                    width_m=_float_value(target, "width_m", "vehicle_width_m"),
+                    length_m=_float_value(target, "length_m", "actor_length_m", "vehicle_length_m"),
+                    width_m=_float_value(target, "width_m", "actor_width_m", "vehicle_width_m"),
                 ),
             )
             row = {
                 "gap_m": gap.get("gap_m"),
                 "relative_speed_mps": gap.get("relative_speed_mps"),
                 "gap_method": gap.get("gap_method"),
+                "gap_degraded": bool(gap.get("degraded")),
             }
         elif _float_value(ts, "lead_gap_m") is not None:
             row = {
@@ -209,6 +213,7 @@ def _extract_rows(
                     else None
                 ),
                 "gap_method": "existing_lead_gap_m_degraded",
+                "gap_degraded": True,
             }
         else:
             continue
@@ -238,16 +243,30 @@ def _report(
     warnings: list[str],
     invalid_reason: str | None = None,
 ) -> dict[str, Any]:
+    gap_method_counts = _counts(str(row.get("gap_method")) for row in rows if row.get("gap_method"))
+    degraded_reason_counts = _counts(
+        str(row.get("gap_method"))
+        for row in rows
+        if row.get("gap_degraded") or str(row.get("gap_method") or "").endswith("_degraded")
+    )
+    target_ids = [row.get("target_actor_id") for row in rows if row.get("target_actor_id") not in {None, ""}]
     return {
         "schema_version": VT_GAP_SCHEMA_VERSION,
         "status": status,
         "invalid_reason": invalid_reason,
+        "failure_reason": invalid_reason,
         "timeseries_format": timeseries_path.suffix.lstrip(".") if timeseries_path else None,
         "timeseries_path": str(timeseries_path) if timeseries_path else None,
         "actor_trace_path": str(actor_trace_path) if actor_trace_path else None,
         "fixed_scene_resolved_path": str(fixed_scene_resolved_path) if fixed_scene_resolved_path else None,
         "target_actor_contract": dict(target_contract),
+        "target_actor_role": target_contract.get("target_actor_role"),
+        "target_actor_id": target_ids[0] if target_ids else target_contract.get("target_actor_id"),
         "row_count": len(rows),
+        "rows_count": len(rows),
+        "gap_method_counts": gap_method_counts,
+        "degraded_reason_counts": degraded_reason_counts,
+        "gap_status": status,
         "rows": rows,
         "missing_fields": missing_fields,
         "warnings": warnings,
@@ -341,3 +360,10 @@ def _nearest_trace(rows: list[dict[str, Any]], sim_time: float) -> dict[str, Any
     if not rows:
         return None
     return min(rows, key=lambda row: abs(_time_key(row) - round(sim_time, 3)))
+
+
+def _counts(values: Any) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for value in values:
+        result[str(value)] = result.get(str(value), 0) + 1
+    return result

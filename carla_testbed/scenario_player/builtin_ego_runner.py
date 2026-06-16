@@ -11,6 +11,7 @@ from carla_testbed.analysis.fixed_scene_contract import (
     analyze_fixed_scene_contract_run_dir,
     write_fixed_scene_contract_report,
 )
+from carla_testbed.analysis.phase1_postprocess import run_phase1_postprocess
 from carla_testbed.analysis.scenario_actor_contract import (
     analyze_scenario_actor_contract_run_dir,
     write_scenario_actor_contract_report,
@@ -81,9 +82,11 @@ def run_builtin_ego_fixed_scene(
     cleanup_errors: list[str] = []
     trace_path = artifacts / "ego_control_trace.jsonl"
     timeseries_path = run_root / "timeseries.csv"
+    events_path = run_root / "events.jsonl"
     start_wall = time.time()
     ticks = 0
     try:
+        _append_event(events_path, {"event": "run_started", "wall_time_s": start_wall})
         ego = _spawn_ego(world, spawn_index=spawn_index)
         _tick_world_if_available(world)
         _set_initial_speed(ego, _safe_call(ego, "get_transform"), _ego_initial_speed(storyboard))
@@ -107,6 +110,13 @@ def run_builtin_ego_fixed_scene(
                     "ego_speed_mps",
                     "ego_x",
                     "ego_y",
+                    "ego_yaw_rad",
+                    "ego_length_m",
+                    "ego_width_m",
+                    "ego_height_m",
+                    "bbox_extent_x_m",
+                    "bbox_extent_y_m",
+                    "bbox_extent_z_m",
                     "lead_gap_m",
                     "lead_speed_mps",
                     "throttle",
@@ -154,6 +164,7 @@ def run_builtin_ego_fixed_scene(
                 trace_fh.write(json.dumps(trace_row, sort_keys=True) + "\n")
                 lead = command.metadata
                 ego_pos = ego_state.pose.position
+                ego_dimensions = _actor_dimensions(ego)
                 writer.writerow(
                     {
                         "sim_time": sim_time,
@@ -161,6 +172,13 @@ def run_builtin_ego_fixed_scene(
                         "ego_speed_mps": command.metadata.get("ego_speed_mps"),
                         "ego_x": ego_pos.x,
                         "ego_y": ego_pos.y,
+                        "ego_yaw_rad": _yaw_from_actor(ego),
+                        "ego_length_m": ego_dimensions.get("length_m"),
+                        "ego_width_m": ego_dimensions.get("width_m"),
+                        "ego_height_m": ego_dimensions.get("height_m"),
+                        "bbox_extent_x_m": ego_dimensions.get("bbox_extent_x_m"),
+                        "bbox_extent_y_m": ego_dimensions.get("bbox_extent_y_m"),
+                        "bbox_extent_z_m": ego_dimensions.get("bbox_extent_z_m"),
                         "lead_gap_m": lead.get("lead_gap_m"),
                         "lead_speed_mps": lead.get("lead_speed_mps"),
                         "throttle": command.throttle,
@@ -185,6 +203,7 @@ def run_builtin_ego_fixed_scene(
             cleanup_errors.append(f"restore_world_settings_failed:{type(exc).__name__}: {exc}")
 
     end_wall = time.time()
+    _append_event(events_path, {"event": "run_finished", "wall_time_s": end_wall, "ticks": ticks})
     manifest = {
         "schema_version": "builtin_ego_fixed_scene_manifest.v1",
         "run_id": run_root.name,
@@ -192,6 +211,7 @@ def run_builtin_ego_fixed_scene(
         "scenario_class": storyboard.get("scenario_class"),
         "map": town,
         "backend": "carla_builtin",
+        "backend_name": "carla_builtin",
         "backend_type": "planning_control_backend",
         "algorithm_variant_id": "simple_acc_route_follower",
         "input_contract": "scene_truth_direct",
@@ -204,6 +224,7 @@ def run_builtin_ego_fixed_scene(
         ],
         "output_control_mode": "carla_vehicle_control",
         "transport_mode": "direct_python_api",
+        "starts_runtime": True,
         "ego_control_source": "carla_testbed_builtin_controller",
         "scenario_actor_control_source": "fixed_scene_player",
         "background_traffic_control_source": "none",
@@ -239,6 +260,16 @@ def run_builtin_ego_fixed_scene(
         "scenario_actor_contract_status": actor_report.get("status"),
     }
     (run_root / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    phase1_postprocess = run_phase1_postprocess(run_root)
+    summary.update(
+        {
+            "v_t_gap_status": phase1_postprocess.get("v_t_gap_status"),
+            "phase1_status": phase1_postprocess.get("phase1_status"),
+            "phase1_failure_reason": phase1_postprocess.get("phase1_failure_reason"),
+            "artifact_completeness_status": phase1_postprocess.get("artifact_completeness_status"),
+        }
+    )
+    (run_root / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return {
         "schema_version": "builtin_ego_fixed_scene_result.v1",
         "run_dir": str(run_root),
@@ -247,8 +278,10 @@ def run_builtin_ego_fixed_scene(
         "summary": str(run_root / "summary.json"),
         "ego_control_trace": str(trace_path),
         "timeseries": str(timeseries_path),
+        "events": str(events_path),
         "fixed_scene_contract": fixed_paths,
         "scenario_actor_contract": actor_paths,
+        "phase1_postprocess": phase1_postprocess,
     }
 
 
@@ -375,6 +408,14 @@ def _ego_state_from_actor(world: Any, actor: Any, stamp: FrameStamp) -> EgoState
     )
 
 
+def _yaw_from_actor(actor: Any) -> float | None:
+    transform = _safe_call(actor, "get_transform")
+    rotation = getattr(transform, "rotation", None)
+    if rotation is None:
+        return None
+    return math.radians(_float_attr(rotation, "yaw", 0.0))
+
+
 def _scene_truth_from_runtime(world: Any, runtime: CarlaFixedSceneRuntime, ego: EgoState, stamp: FrameStamp) -> SceneTruth:
     obstacles: list[ObstacleTruth] = []
     for role, actor in runtime.actors.items():
@@ -462,6 +503,37 @@ def _vector_norm(vector: Any) -> float:
     y = _float_attr(vector, "y", 0.0)
     z = _float_attr(vector, "z", 0.0)
     return math.sqrt(x * x + y * y + z * z)
+
+
+def _actor_dimensions(actor: Any | None) -> dict[str, float | None]:
+    bbox = getattr(actor, "bounding_box", None) if actor is not None else None
+    extent = getattr(bbox, "extent", None)
+    if extent is None:
+        return {
+            "length_m": None,
+            "width_m": None,
+            "height_m": None,
+            "bbox_extent_x_m": None,
+            "bbox_extent_y_m": None,
+            "bbox_extent_z_m": None,
+        }
+    extent_x = _float_attr(extent, "x", 0.0)
+    extent_y = _float_attr(extent, "y", 0.0)
+    extent_z = _float_attr(extent, "z", 0.0)
+    return {
+        "length_m": 2.0 * extent_x,
+        "width_m": 2.0 * extent_y,
+        "height_m": 2.0 * extent_z,
+        "bbox_extent_x_m": extent_x,
+        "bbox_extent_y_m": extent_y,
+        "bbox_extent_z_m": extent_z,
+    }
+
+
+def _append_event(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(dict(payload), sort_keys=True) + "\n")
 
 
 def _float_attr(obj: Any, name: str, default: float = 0.0) -> float:

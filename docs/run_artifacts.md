@@ -140,7 +140,10 @@ Additional run-local artifacts:
 - `analysis/v_t_gap/v_t_gap.csv`
   - fields include `sim_time_s`, `ego_speed_mps`, `target_speed_mps`,
     `gap_m`, `relative_speed_mps`, `target_actor_id`,
-    `target_actor_role`, and `gap_method`.
+    `target_actor_role`, `gap_method`, and `gap_degraded`.
+  - `gap_method=bumper_to_bumper_longitudinal_projection` is the preferred
+    Phase 1 follow-target gap evidence and requires ego/target vehicle
+    dimensions from runtime traces.
   - `gap_method=center_distance_fallback` or
     `existing_lead_gap_m_degraded` is diagnostic/degraded evidence, not a
     claim-grade bumper gap.
@@ -148,6 +151,13 @@ Additional run-local artifacts:
   - status is one of `success`, `degraded`, `failed`, or `invalid`.
   - invalid runs are setup/artifact/config/backend-readiness problems and must
     not count as backend losses.
+- `analysis/phase1_status/artifact_completeness.json`
+  - records whether the Phase 1 run-local artifact spine is present.
+
+`carla_builtin` fixed-scene runs invoke the Phase 1 postprocess spine after
+runtime completion. The postprocess writes `analysis/v_t_gap/`,
+`analysis/phase1_status/`, and artifact completeness without changing control
+behavior.
 
 Comparison directory artifacts:
 

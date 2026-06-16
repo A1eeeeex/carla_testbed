@@ -7,6 +7,19 @@ This repository builds and evaluates a CARLA–ROS2–Apollo ground-truth simula
 - Secondary goal: improve diagnosability, repeatability, and acceptance evaluation for the end-to-end pipeline.
 - Tertiary goal: keep the stack extensible for later sensor simulation and scenario-library integration.
 
+## Current Phase 1 Scope
+- Phase 1 is a multi-backend scenario-platform engineering track, not an
+  Apollo-only capability claim.
+- Apollo remains the reference external AD-stack backend, while
+  `carla_builtin` / `simple_acc_route_follower` is the current
+  PlanningControlBackend category implementation for scenario playback,
+  artifact, and comparison validation.
+- Invalid Phase 1 runs such as `backend_not_ready`,
+  `missing_required_artifact`, or `missing_target_actor` are setup/evidence
+  failures and must not be counted as backend behavior losses.
+- A successful `carla_builtin` run is diagnostic scenario evidence only; it is
+  not Apollo, Autoware, or natural-driving capability evidence.
+
 ## Canonical Documentation Layers
 - `AGENTS.md`
   - Repo-wide execution manual, workflow rules, and documentation ownership.

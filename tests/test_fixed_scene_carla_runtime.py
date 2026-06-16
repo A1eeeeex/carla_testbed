@@ -57,6 +57,8 @@ def test_carla_runtime_applies_follow_stop_controls(tmp_path) -> None:
     event_rows = [json.loads(line) for line in (tmp_path / "scenario_phase_events.jsonl").read_text().splitlines()]
     assert trace_rows[-1]["actor_role"] == "lead_vehicle"
     assert trace_rows[-1]["phase"] == "lead_hold_stop"
+    assert trace_rows[-1]["actor_length_m"] == 4.4
+    assert trace_rows[-1]["bbox_extent_x_m"] == 2.2
     assert [row["phase"] for row in event_rows if row["event"] == "phase_started"] == [
         "lead_cruise",
         "lead_brake_to_stop",
@@ -244,6 +246,7 @@ class _FakeActor:
         self.id = actor_id
         self.transform = transform
         self.blueprint = blueprint
+        self.bounding_box = _BoundingBox(_Vector(2.2, 0.9, 0.8))
         self.velocity = _Vector(0.0, 0.0, 0.0)
         self.last_control = None
         self.target_velocity = None
@@ -300,3 +303,8 @@ class _Vector:
         self.x = x
         self.y = y
         self.z = z
+
+
+class _BoundingBox:
+    def __init__(self, extent):
+        self.extent = extent
