@@ -13,7 +13,7 @@ def test_follow_stop_static_resolves_lead_vehicle_target() -> None:
 
     assert contract["status"] == "resolved"
     assert contract["target_actor_role"] == "lead_vehicle"
-    assert contract["source"] == "p0_fallback"
+    assert contract["source"] == "scenario_case_explicit"
 
 
 def test_cut_in_aliases_cutin_vehicle_to_current_lead_role() -> None:
@@ -26,6 +26,7 @@ def test_cut_in_aliases_cutin_vehicle_to_current_lead_role() -> None:
     assert contract["target_actor_role"] == "lead_vehicle"
     assert contract["role_aliases"] == {"cutin_vehicle": "lead_vehicle"}
     assert contract["activation"]["active_after_phase"] == "cut_in_lane_change"
+    assert contract["source"] == "scenario_case_explicit"
 
 
 def test_lane_keep_target_not_required() -> None:

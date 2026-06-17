@@ -68,6 +68,8 @@ def _base_storyboard(template: Mapping[str, Any], scene_id: str) -> dict[str, An
             "claim_boundary": "fixed_scene_playback_is_scenario_setup_not_ego_capability_evidence",
         },
     }
+    if isinstance(template.get("target_actor"), Mapping):
+        payload["target_actor"] = copy.deepcopy(dict(template["target_actor"]))
     payload["target_actor_contract"] = resolve_target_actor_contract(payload)
     return payload
 

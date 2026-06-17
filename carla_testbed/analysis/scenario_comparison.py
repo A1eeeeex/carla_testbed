@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -60,14 +61,18 @@ def write_scenario_comparison(report: Mapping[str, Any], out_dir: str | Path) ->
     summary_path = output / "comparison_summary.json"
     md_path = output / "comparison_summary.md"
     curves_dir = output / "comparison_curves"
-    curves_path = curves_dir / "v_t_gap.csv"
+    curves_path = curves_dir / "v_t_gap_combined.csv"
     manifest = {
         "schema_version": "phase1_scenario_comparison_manifest.v1",
+        "generated_at_wall_s": time.time(),
         "scenario_id": report.get("scenario_id"),
         "comparison_status": report.get("comparison_status"),
         "comparison_target_status": report.get("comparison_target_status"),
         "backend_coverage": report.get("backend_coverage"),
         "participating_run_dirs": [run.get("run_dir") for run in report.get("participating_runs") or []],
+        "evaluable_run_dirs": [run.get("run_dir") for run in report.get("evaluable_runs") or []],
+        "invalid_run_dirs": [run.get("run_dir") for run in report.get("invalid_runs") or []],
+        "claim_boundary": report.get("claim_boundary"),
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     summary_path.write_text(json.dumps(dict(report), indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -221,6 +226,8 @@ def _write_combined_v_t_gap(report: Mapping[str, Any], output_path: Path) -> boo
     for run in report.get("participating_runs") or []:
         if not isinstance(run, Mapping):
             continue
+        if run.get("phase1_status") == "invalid" or run.get("evaluable") is False:
+            continue
         csv_path = Path(str((run.get("artifact_paths") or {}).get("v_t_gap", ""))).with_name("v_t_gap.csv")
         if not csv_path.exists():
             continue
@@ -247,6 +254,7 @@ def _write_combined_v_t_gap(report: Mapping[str, Any], output_path: Path) -> boo
         "target_actor_role",
         "gap_method",
         "gap_degraded",
+        "gap_degraded_reason",
     ]
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)

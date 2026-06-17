@@ -139,6 +139,7 @@ def write_v_t_gap_report(report: Mapping[str, Any], out_dir: str | Path) -> dict
             "target_actor_role",
             "gap_method",
             "gap_degraded",
+            "gap_degraded_reason",
         ]
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -178,6 +179,7 @@ def _extract_rows(
                 ),
                 "gap_method": "actor_trace_longitudinal_gap_degraded",
                 "gap_degraded": True,
+                "gap_degraded_reason": "missing_actor_bbox_or_length",
             }
         elif target and _has_pose(ts) and _has_pose(target):
             gap = bumper_to_bumper_gap(
@@ -203,6 +205,9 @@ def _extract_rows(
                 "relative_speed_mps": gap.get("relative_speed_mps"),
                 "gap_method": gap.get("gap_method"),
                 "gap_degraded": bool(gap.get("degraded")),
+                "gap_degraded_reason": (
+                    "missing_actor_bbox_or_length" if gap.get("degraded") else None
+                ),
             }
         elif _float_value(ts, "lead_gap_m") is not None:
             row = {
@@ -214,6 +219,7 @@ def _extract_rows(
                 ),
                 "gap_method": "existing_lead_gap_m_degraded",
                 "gap_degraded": True,
+                "gap_degraded_reason": "missing_actor_trace_or_bbox_using_existing_lead_gap",
             }
         else:
             continue

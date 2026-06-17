@@ -4,6 +4,12 @@ map: straight_road_for_baguang
 route_id: straight_road_for_baguang_mainline_lead_accel_20m
 scenario_class: lead_vehicle_accel
 gate_role: diagnostic_gate
+target_actor:
+  required: true
+  role: lead_vehicle
+  activation:
+    activation_semantics: active_from_scenario_start
+    active_after_phase: null
 fixed_scene:
   schema_version: fixed_scene_template.v1
   template: lead_vehicle_accel_decel

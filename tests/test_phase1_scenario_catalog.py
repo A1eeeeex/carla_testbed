@@ -58,3 +58,44 @@ def test_phase1_catalog_ingests_explicit_evidence_root_without_overclaiming(tmp_
     assert follow_stop["comparison_readiness"] == "NOT_YET"
     assert follow_stop["overall_status"] == "PARTIAL"
     assert any(item["evidence_type"] == "CARLA_online" for item in follow_stop["evidence"])
+
+
+def test_phase1_catalog_does_not_count_invalid_apollo_scaffold_as_online_done(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    run = evidence_root / "phase1_apollo_follow_stop"
+    (run / "analysis" / "phase1_status").mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "phase1_apollo_follow_stop",
+                "scenario_id": "baguang_follow_stop_static_300m",
+                "scenario_class": "follow_stop_static",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "analysis" / "phase1_status" / "phase1_status.json").write_text(
+        json.dumps(
+            {
+                "status": "invalid",
+                "failure_reason": "backend_not_ready",
+                "evaluable": False,
+                "scenario_id": "baguang_follow_stop_static_300m",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_phase1_scenario_catalog(".", evidence_root=evidence_root)
+    follow_stop = {item["scenario"]: item for item in report["scenarios"]}["follow_stop_static"]
+
+    assert follow_stop["apollo_online_status"] == "PARTIAL"
+    assert follow_stop["overall_status"] == "PARTIAL"
+    assert any(
+        item["evidence_type"] == "Apollo_online"
+        and item["status"] == "PARTIAL"
+        and "phase1_status=invalid" in item.get("note", "")
+        for item in follow_stop["evidence"]
+    )

@@ -372,6 +372,7 @@ Suggested degraded reasons:
 - `large_final_gap`
 - `small_final_gap`
 - `unstable_control`
+- `degraded_gap_method`
 
 The important boundary is: scenario-player, artifact, config, or bridge setup
 problems are `invalid`, not backend performance failures.
@@ -466,11 +467,19 @@ Implementation note added after the 2026-06-16 review:
 - `carla_testbed/analysis/gap.py` defines the first bumper-to-bumper gap
   utility. Center-distance fallback is marked degraded.
 - `carla_testbed/analysis/v_t_gap.py` extracts Phase 1 `v-t-gap` artifacts from
-  `timeseries.*` and `scenario_actor_trace.jsonl`.
+  `timeseries.*` and `scenario_actor_trace.jsonl`. Its CSV surface records
+  `gap_degraded_reason` so a review can distinguish bbox-based bumper gap from
+  diagnostic fallback gap.
 - `carla_testbed/analysis/phase1_status.py` centralizes
-  `success/degraded/failed/invalid` run status classification.
+  `success/degraded/failed/invalid` run status classification. Preflight/setup
+  invalid reasons such as `backend_not_ready` take priority over missing raw
+  traces, so an Apollo scaffold without runtime artifacts is not rewritten as a
+  behavior failure or plain `no_timeseries`.
 - `carla_testbed/analysis/scenario_comparison.py` writes the first generic
-  ScenarioComparison report.
+  ScenarioComparison report. Combined `v-t-gap` curves are written as
+  `comparison_curves/v_t_gap_combined.csv` and include only evaluable runs;
+  invalid runs remain visible in the manifest/summary but are excluded from
+  behavior curves.
 - `carla_testbed/analysis/phase1_postprocess.py` closes the run-local Phase 1
   artifact spine by writing `analysis/v_t_gap/`,
   `analysis/phase1_status/`, and artifact completeness for a completed
@@ -496,6 +505,26 @@ themselves prove online CARLA playback, Apollo fixed-scene compatibility, or
 backend behavior quality.
 
 ## Important Current Findings
+
+Latest local validation snapshot, `2026-06-17`:
+
+- Full CI-friendly pytest passed locally: `1686 passed`.
+- A CARLA-windowed `carla_builtin` Baguang `follow_stop_static_300m` diagnostic
+  sample produced complete Phase 1 run-local artifacts under
+  `runs/phase1_online_builtin_follow_stop_static_20260617_111639/`.
+  The sample is `phase1_status=success`, `artifact_completeness_status=pass`,
+  and `v_t_gap_status=pass` with `400` bbox-based
+  `bumper_to_bumper_longitudinal_projection` rows.
+- The matching Apollo fixed-scene scaffold remains
+  `phase1_status=invalid/failure_reason=backend_not_ready` under
+  `runs/phase1_apollo_follow_stop_static_scaffold_20260617_111658/`.
+  This is correct until Apollo fixed-scene runtime compatibility is migrated.
+- The generated comparison remains `partially_evaluable` with
+  `comparison_target_status=missing_evaluable_apollo_reference_backend`.
+  Its combined v-t-gap curve includes only the evaluable `carla_builtin` run.
+- The generated catalog still reports `0` DONE scenarios, `7` PARTIAL, and
+  `1` NOT_YET. This means Phase 1 evidence quality improved, but the platform
+  is not Phase 1 complete.
 
 DONE findings:
 
@@ -535,6 +564,10 @@ New PARTIAL findings from the offline Phase 1 spine:
 - Dedicated `v-t-gap` extraction exists with schema `v_t_gap.v1`. Local
   builtin online runs can produce it, but online Apollo-vs-builtin comparison
   curves are still missing.
+- Degraded gap methods are now represented separately from behavioral large
+  final gap outcomes. A run that only has center-distance or legacy lead-gap
+  fallback can be evaluable/degraded, but the fallback is not claim-grade
+  bumper-to-bumper gap evidence.
 - Bumper-to-bumper gap calculation exists and `carla_builtin` fixed-scene
   traces now write CARLA bbox-derived vehicle dimensions when CARLA exposes
   them. Old traces without dimensions remain degraded diagnostic evidence.

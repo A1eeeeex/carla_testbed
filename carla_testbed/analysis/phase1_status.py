@@ -30,6 +30,7 @@ DEGRADED_REASONS = {
     "large_final_gap",
     "small_final_gap",
     "unstable_control",
+    "degraded_gap_method",
 }
 
 
@@ -40,11 +41,21 @@ def classify_phase1_run(run_dir: str | Path) -> dict[str, Any]:
     v_t_gap = _read_json(root / "analysis" / "v_t_gap" / "v_t_gap_report.json")
     required_artifacts = _required_artifacts(root)
     missing = [name for name, state in required_artifacts.items() if state == "missing"]
-    if required_artifacts["timeseries"] == "missing":
-        return _status(root, manifest, summary, "invalid", "no_timeseries", missing, v_t_gap, required_artifacts)
+
+    # Setup/preflight reasons dominate missing raw artifacts. An Apollo scaffold
+    # that did not start runtime should remain backend_not_ready, not no_timeseries.
+    if _summary_failed_by_setup(summary):
+        return _status(root, manifest, summary, "invalid", "setup_failed", [], v_t_gap, required_artifacts)
+    if _backend_not_ready(summary, manifest):
+        return _status(root, manifest, summary, "invalid", "backend_not_ready", [], v_t_gap, required_artifacts)
+    if _fixed_scene_failed(summary):
+        return _status(root, manifest, summary, "invalid", "fixed_scene_failed", [], v_t_gap, required_artifacts)
+
     base_missing = [name for name in ("manifest", "summary") if required_artifacts[name] == "missing"]
     if base_missing:
         return _status(root, manifest, summary, "invalid", "missing_required_artifact", missing, v_t_gap, required_artifacts)
+    if required_artifacts["timeseries"] == "missing":
+        return _status(root, manifest, summary, "invalid", "no_timeseries", missing, v_t_gap, required_artifacts)
 
     target_contract = _target_contract(root, v_t_gap)
     if target_contract.get("status") == "missing":
@@ -66,13 +77,6 @@ def classify_phase1_run(run_dir: str | Path) -> dict[str, Any]:
         if reason not in INVALID_REASONS:
             reason = "missing_required_artifact"
         return _status(root, manifest, summary, "invalid", reason, [], v_t_gap, required_artifacts)
-
-    if _summary_failed_by_setup(summary):
-        return _status(root, manifest, summary, "invalid", "setup_failed", [], v_t_gap, required_artifacts)
-    if _backend_not_ready(summary, manifest):
-        return _status(root, manifest, summary, "invalid", "backend_not_ready", [], v_t_gap, required_artifacts)
-    if _fixed_scene_failed(summary):
-        return _status(root, manifest, summary, "invalid", "fixed_scene_failed", [], v_t_gap, required_artifacts)
 
     failed = _failed_reason(summary, v_t_gap)
     if failed:
@@ -220,12 +224,16 @@ def _degraded_reason(summary: Mapping[str, Any], v_t_gap: Mapping[str, Any]) -> 
     reason = str(summary.get("degraded_reason") or "")
     if reason in DEGRADED_REASONS:
         return reason
+    if v_t_gap.get("status") == "warn" and (
+        v_t_gap.get("degraded_reason_counts") or v_t_gap.get("gap_method_counts")
+    ):
+        return "degraded_gap_method"
     rows = v_t_gap.get("rows") if isinstance(v_t_gap.get("rows"), list) else []
     final_gap = _final_gap(rows)
     if final_gap is not None and final_gap > 60.0:
         return "large_final_gap"
     if v_t_gap.get("status") == "warn":
-        return "large_final_gap"
+        return "degraded_gap_method"
     return None
 
 

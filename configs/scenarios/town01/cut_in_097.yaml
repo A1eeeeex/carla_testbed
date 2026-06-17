@@ -4,6 +4,12 @@ map: Town01
 route_id: town01_rh_spawn097_goal046
 scenario_class: cut_in
 gate_role: diagnostic_gate
+target_actor:
+  required: true
+  role: cutin_vehicle
+  activation:
+    activation_semantics: active_after_phase
+    active_after_phase: cut_in_lane_change
 fixed_scene:
   schema_version: fixed_scene_template.v1
   template: cut_in

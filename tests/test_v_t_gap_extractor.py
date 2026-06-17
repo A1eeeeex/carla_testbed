@@ -53,6 +53,7 @@ def test_v_t_gap_prefers_actor_trace_longitudinal_gap_when_dimensions_missing(tm
     assert report["rows"][0]["gap_m"] == 300.0
     assert report["rows"][0]["gap_method"] == "actor_trace_longitudinal_gap_degraded"
     assert report["rows"][0]["gap_degraded"] is True
+    assert report["rows"][0]["gap_degraded_reason"] == "missing_actor_bbox_or_length"
     assert report["degraded_reason_counts"]["actor_trace_longitudinal_gap_degraded"] == 2
 
 
@@ -64,6 +65,9 @@ def test_v_t_gap_writer_outputs_csv_and_report(tmp_path) -> None:
 
     assert outputs["report"].endswith("v_t_gap_report.json")
     assert (tmp_path / "out" / "v_t_gap.csv").exists()
+    with (tmp_path / "out" / "v_t_gap.csv").open("r", encoding="utf-8") as handle:
+        header = handle.readline().strip().split(",")
+    assert "gap_degraded_reason" in header
 
 
 def _write_run_fixture(tmp_path):

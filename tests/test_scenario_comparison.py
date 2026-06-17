@@ -51,9 +51,26 @@ def test_scenario_comparison_writer(tmp_path) -> None:
 
     assert outputs["manifest"].endswith("comparison_manifest.json")
     assert outputs["summary"].endswith("comparison_summary.json")
-    assert outputs["v_t_gap_csv"].endswith("comparison_curves/v_t_gap.csv")
+    assert outputs["v_t_gap_csv"].endswith("comparison_curves/v_t_gap_combined.csv")
     written = json.loads((tmp_path / "comparison" / "comparison_summary.json").read_text(encoding="utf-8"))
     assert written["comparison_target_status"] == "apollo_vs_planning_control_evaluable"
+    manifest = json.loads((tmp_path / "comparison" / "comparison_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["evaluable_run_dirs"]
+    assert manifest["claim_boundary"]
+
+
+def test_scenario_comparison_curve_excludes_invalid_runs(tmp_path) -> None:
+    run_a = _write_run(tmp_path, "apollo", "apollo_cyberrt", "apollo_reference_backend", "invalid", "backend_not_ready")
+    run_b = _write_run(tmp_path, "builtin", "carla_builtin", "planning_control_backend", "success")
+    report = compare_scenario_runs([run_a, run_b])
+
+    outputs = write_scenario_comparison(report, tmp_path / "comparison")
+
+    with (tmp_path / "comparison" / "comparison_curves" / "v_t_gap_combined.csv").open(
+        "r", encoding="utf-8"
+    ) as handle:
+        rows = list(csv.DictReader(handle))
+    assert {row["run_id"] for row in rows} == {"builtin"}
 
 
 def test_same_backend_comparison_is_not_phase1_target_complete(tmp_path) -> None:
@@ -115,6 +132,7 @@ def _write_run(tmp_path, name, backend, backend_type, status, reason=None, scena
                 "target_actor_role",
                 "gap_method",
                 "gap_degraded",
+                "gap_degraded_reason",
             ],
         )
         writer.writeheader()
@@ -129,6 +147,7 @@ def _write_run(tmp_path, name, backend, backend_type, status, reason=None, scena
                 "target_actor_role": "lead_vehicle",
                 "gap_method": "bumper_to_bumper_longitudinal_projection",
                 "gap_degraded": "False",
+                "gap_degraded_reason": "",
             }
         )
     return run

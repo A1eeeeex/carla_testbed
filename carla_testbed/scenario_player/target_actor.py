@@ -45,6 +45,20 @@ def resolve_target_actor_contract(
         or "unknown"
     )
     roles = scenario.get("roles") if isinstance(scenario.get("roles"), Mapping) else {}
+    target_config = scenario.get("target_actor") if isinstance(scenario.get("target_actor"), Mapping) else {}
+    if target_config and target_config.get("required") is False:
+        return {
+            "schema_version": TARGET_ACTOR_CONTRACT_SCHEMA_VERSION,
+            "status": "not_required",
+            "required": False,
+            "scenario_class": scenario_class,
+            "target_actor_role": None,
+            "source": "scenario_case_explicit",
+            "role_aliases": {},
+            "activation": _activation_semantics(scenario_class, scenario),
+            "invalid_reason": None,
+            "warnings": [],
+        }
     explicit = _explicit_target_actor(scenario)
     warnings: list[str] = []
     role_aliases: dict[str, str] = {}
@@ -116,6 +130,13 @@ def _explicit_target_actor(scenario: Mapping[str, Any]) -> str | None:
 
 
 def _activation_semantics(scenario_class: str, scenario: Mapping[str, Any]) -> dict[str, Any]:
+    target_config = scenario.get("target_actor") if isinstance(scenario.get("target_actor"), Mapping) else {}
+    activation = target_config.get("activation") if isinstance(target_config.get("activation"), Mapping) else None
+    if activation is not None:
+        return {
+            "active_after_phase": activation.get("active_after_phase"),
+            "activation_semantics": str(activation.get("activation_semantics") or "active_from_scenario_start"),
+        }
     if scenario_class in {"cut_in", "cut_in_simple"}:
         phases = []
         storyboard = scenario.get("storyboard") if isinstance(scenario.get("storyboard"), Mapping) else {}

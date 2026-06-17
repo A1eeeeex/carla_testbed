@@ -28,6 +28,12 @@ success_criteria: {}
 Concrete scenarios can embed a `fixed_scene` block, such as
 `configs/scenarios/town01/follow_stop_097.yaml`.
 
+Phase 1 longitudinal cases should also declare a top-level `target_actor`
+contract. The compiler copies this into `artifacts/fixed_scene_resolved.json`
+as `target_actor_contract`. Legacy P0 fallback rules remain only for old case
+files; v-t-gap and ScenarioComparison should not guess a nearest front vehicle
+as their primary target-selection logic.
+
 Baguang fixed-scene scenarios are also available for quick lead-vehicle
 diagnostics on `straight_road_for_baguang`:
 

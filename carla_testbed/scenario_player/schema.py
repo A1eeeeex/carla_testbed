@@ -72,6 +72,8 @@ def extract_template_config(data: Mapping[str, Any]) -> dict[str, Any]:
         template.setdefault("route_id", data.get("route_id"))
         template.setdefault("scenario_class", data.get("scenario_class"))
         template.setdefault("gate_role", data.get("gate_role"))
+        if isinstance(data.get("target_actor"), Mapping):
+            template.setdefault("target_actor", dict(data["target_actor"]))
         template.setdefault("schema_version", FIXED_SCENE_TEMPLATE_SCHEMA_VERSION)
         return template
     raise ValueError("expected fixed_scene_template.v1 or scenario file with fixed_scene block")

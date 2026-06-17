@@ -4,6 +4,12 @@ map: Town01
 route_id: town01_rh_spawn097_goal046
 scenario_class: follow_stop
 gate_role: diagnostic_gate
+target_actor:
+  required: true
+  role: lead_vehicle
+  activation:
+    activation_semantics: active_from_scenario_start
+    active_after_phase: null
 fixed_scene:
   schema_version: fixed_scene_template.v1
   template: follow_stop

@@ -145,7 +145,8 @@ Additional run-local artifacts:
 - `analysis/v_t_gap/v_t_gap.csv`
   - fields include `sim_time_s`, `ego_speed_mps`, `target_speed_mps`,
     `gap_m`, `relative_speed_mps`, `target_actor_id`,
-    `target_actor_role`, `gap_method`, and `gap_degraded`.
+    `target_actor_role`, `gap_method`, `gap_degraded`, and
+    `gap_degraded_reason`.
   - `gap_method=bumper_to_bumper_longitudinal_projection` is the preferred
     Phase 1 follow-target gap evidence and requires ego/target vehicle
     dimensions from runtime traces.
@@ -182,6 +183,11 @@ Comparison directory artifacts:
     Apollo backend visible while `comparison_target_status` reports that there
     is no evaluable Apollo reference backend.
 - optional `comparison_curves/`
+  - when present, the generic Phase 1 comparison writer emits
+    `comparison_curves/v_t_gap_combined.csv`.
+  - the combined curve includes evaluable runs only. Invalid runs remain in
+    `comparison_manifest.json` and `comparison_summary.json`, but they are not
+    merged into behavior curves and cannot be counted as backend losses.
 
 `comparison_status=comparable` is allowed only when participating runs are
 evaluable. If any run is invalid, the comparison is `partially_evaluable` or
