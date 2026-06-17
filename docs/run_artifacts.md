@@ -172,11 +172,28 @@ Comparison directory artifacts:
 - `comparison_manifest.json`
 - `comparison_summary.json`
   - schema: `phase1_comparison.v1`
+  - includes `comparison_status`, `comparison_target_status`, and
+    `backend_coverage`.
+  - `comparison_target_status=apollo_vs_planning_control_evaluable` is the
+    Phase 1 target comparison shape. Same-backend comparisons are valid
+    regression evidence but are labeled `same_backend_regression`, not Phase 1
+    ApolloBackend-vs-PlanningControlBackend completion.
+  - if an Apollo run is present but invalid, `backend_coverage` keeps the
+    Apollo backend visible while `comparison_target_status` reports that there
+    is no evaluable Apollo reference backend.
 - optional `comparison_curves/`
 
 `comparison_status=comparable` is allowed only when participating runs are
 evaluable. If any run is invalid, the comparison is `partially_evaluable` or
 `invalid`; it must not declare a backend winner from invalid setup evidence.
+
+`tools/run_phase1_scenario.py` can create a CI-safe Phase 1 scaffold for
+backend readiness checks. For `apollo_cyberrt` fixed-scene scenarios it writes
+`manifest.json`, `preflight.json`, `summary.json`, and
+`analysis/phase1_status/phase1_status.json` with
+`status=invalid/failure_reason=backend_not_ready` when the fixed-scene Apollo
+runtime is not migrated. That scaffold is ingestible by ScenarioComparison, but
+it is not online behavior evidence and must not count as an Apollo backend loss.
 
 Scenario catalog artifacts:
 
@@ -186,8 +203,11 @@ Scenario catalog artifacts:
 The catalog is a review/orchestration artifact, not run evidence by itself. It
 lists each P0/P1 case with separate `case_yaml_status`, `template_status`,
 `carla_online_status`, `apollo_online_status`, `v_t_gap_status`, and
-`comparison_status` fields. A scenario with YAML/template evidence but missing
-online or comparison evidence must remain `PARTIAL` or `NOT_YET`, never `DONE`.
+`comparison_status` / `comparison_target_status` fields. A scenario with
+YAML/template evidence but missing online or target-comparison evidence must
+remain `PARTIAL` or `NOT_YET`, never `DONE`. `tools/phase1_scenario_catalog.py`
+supports `--evidence-root` for review packs or copied run evidence; without it,
+the catalog scans `<repo>/runs`.
 
 ## `logs/`
 

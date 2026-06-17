@@ -41,21 +41,27 @@ SCENARIO_CLASS_ALIASES = {
 }
 
 
-def analyze_phase1_scenario_catalog(repo_root: str | Path = ".") -> dict[str, Any]:
+def analyze_phase1_scenario_catalog(
+    repo_root: str | Path = ".",
+    *,
+    evidence_root: str | Path | None = None,
+) -> dict[str, Any]:
     root = Path(repo_root).resolve()
+    evidence_base = Path(evidence_root).expanduser().resolve() if evidence_root else None
     scenario_files = sorted((root / "configs" / "scenarios").glob("**/*.yaml"))
     scenario_payloads = [_load_yaml(path) for path in scenario_files]
     entries = [
-        _catalog_entry(root, scenario_id, "P0", scenario_files, scenario_payloads)
+        _catalog_entry(root, scenario_id, "P0", scenario_files, scenario_payloads, evidence_root=evidence_base)
         for scenario_id in P0_SCENARIOS
     ]
     entries.extend(
-        _catalog_entry(root, scenario_id, "P1", scenario_files, scenario_payloads)
+        _catalog_entry(root, scenario_id, "P1", scenario_files, scenario_payloads, evidence_root=evidence_base)
         for scenario_id in P1_SCENARIOS
     )
     return {
         "schema_version": PHASE1_SCENARIO_CATALOG_SCHEMA_VERSION,
         "repo_root": str(root),
+        "evidence_root": str(evidence_base) if evidence_base else str(root / "runs"),
         "p0_scenarios": list(P0_SCENARIOS),
         "p1_scenarios": list(P1_SCENARIOS),
         "scenarios": entries,
@@ -89,6 +95,8 @@ def _catalog_entry(
     priority: str,
     scenario_files: list[Path],
     scenario_payloads: list[dict[str, Any]],
+    *,
+    evidence_root: Path | None = None,
 ) -> dict[str, Any]:
     aliases = SCENARIO_CLASS_ALIASES[canonical_id]
     matched: list[tuple[Path, dict[str, Any]]] = []
@@ -100,7 +108,7 @@ def _catalog_entry(
 
     evidence_paths = [str(path.relative_to(root)) for path, _ in matched]
     evidence = [_evidence(path, root, "case_yaml") for path, _ in matched]
-    online = _discover_online_evidence(root, aliases)
+    online = _discover_online_evidence(root, aliases, evidence_root=evidence_root)
     evidence.extend(online["evidence"])
     missing_items: list[str] = []
     if not matched:
@@ -118,6 +126,7 @@ def _catalog_entry(
             "v_t_gap_status": online["v_t_gap_status"],
             "v_t_gap_readiness": STATUS_NOT_YET,
             "comparison_status": online["comparison_status"],
+            "comparison_target_status": online["comparison_target_status"],
             "comparison_readiness": STATUS_NOT_YET,
             "evidence": online["evidence"],
             "evidence_paths": [],
@@ -192,6 +201,7 @@ def _catalog_entry(
         "v_t_gap_status": online["v_t_gap_status"],
         "v_t_gap_readiness": v_t_gap_readiness,
         "comparison_status": online["comparison_status"],
+        "comparison_target_status": online["comparison_target_status"],
         "comparison_readiness": comparison_readiness,
         "evidence": evidence,
         "evidence_paths": evidence_paths,
@@ -208,15 +218,15 @@ def _catalog_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"Schema: `{report.get('schema_version')}`",
         "",
-        "| Scenario | Priority | Status | Case YAML | Template | Target | CARLA online | Apollo online | v-t-gap | Comparison | Missing |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Scenario | Priority | Status | Case YAML | Template | Target | CARLA online | Apollo online | v-t-gap | Comparison | Comparison target | Missing |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in report.get("scenarios") or []:
         if not isinstance(item, Mapping):
             continue
         missing = ", ".join(str(value) for value in item.get("missing_items") or []) or "-"
         lines.append(
-            "| {scenario} | {priority} | {overall} | {case} | {template} | {target} | {carla} | {apollo} | {vtgap} | {comparison} | {missing} |".format(
+            "| {scenario} | {priority} | {overall} | {case} | {template} | {target} | {carla} | {apollo} | {vtgap} | {comparison} | {comparison_target} | {missing} |".format(
                 scenario=item.get("scenario"),
                 priority=item.get("priority"),
                 overall=item.get("overall_status"),
@@ -227,6 +237,7 @@ def _catalog_markdown(report: Mapping[str, Any]) -> str:
                 apollo=item.get("apollo_online_status"),
                 vtgap=item.get("v_t_gap_status"),
                 comparison=item.get("comparison_status"),
+                comparison_target=item.get("comparison_target_status"),
                 missing=missing,
             )
         )
@@ -243,15 +254,21 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return dict(data) if isinstance(data, Mapping) else {}
 
 
-def _discover_online_evidence(root: Path, aliases: set[str]) -> dict[str, Any]:
+def _discover_online_evidence(
+    root: Path,
+    aliases: set[str],
+    *,
+    evidence_root: Path | None = None,
+) -> dict[str, Any]:
     evidence: list[dict[str, Any]] = []
     carla_online_status = STATUS_NOT_YET
     apollo_online_status = STATUS_NOT_YET
     v_t_gap_status: str = STATUS_NOT_YET
     comparison_status: str = STATUS_NOT_YET
+    comparison_target_status: str = STATUS_NOT_YET
     comparison_backend_count = 0
 
-    runs_dir = root / "runs"
+    runs_dir = evidence_root or (root / "runs")
     if runs_dir.exists():
         for manifest_path in sorted(runs_dir.rglob("manifest.json")):
             if "comparisons" in manifest_path.parts:
@@ -262,7 +279,13 @@ def _discover_online_evidence(root: Path, aliases: set[str]) -> dict[str, Any]:
                 continue
             backend = str(manifest.get("backend_name") or manifest.get("backend") or "")
             phase1_status = _read_json(run_dir / "analysis" / "phase1_status" / "phase1_status.json")
-            evidence_status = STATUS_DONE if phase1_status else STATUS_PARTIAL
+            phase1_state = str(phase1_status.get("status") or "")
+            phase1_evaluable = phase1_status.get("evaluable")
+            evidence_status = (
+                STATUS_DONE
+                if phase1_status and phase1_state != "invalid" and phase1_evaluable is not False
+                else STATUS_PARTIAL
+            )
             evidence_type = "online_run"
             if backend == "carla_builtin":
                 evidence_type = "CARLA_online"
@@ -291,13 +314,13 @@ def _discover_online_evidence(root: Path, aliases: set[str]) -> dict[str, Any]:
                     )
                 )
 
-    comparison_dir = runs_dir / "comparisons"
-    if comparison_dir.exists():
-        for summary_path in sorted(comparison_dir.rglob("comparison_summary.json")):
+    if runs_dir.exists():
+        for summary_path in sorted(runs_dir.rglob("comparison_summary.json")):
             summary = _read_json(summary_path)
             if not _matches_scenario(summary, aliases, summary_path.parent.name):
                 continue
             comparison_status = str(summary.get("comparison_status") or "unknown")
+            comparison_target_status = str(summary.get("comparison_target_status") or "unknown_backend_coverage")
             backends = {
                 str(run.get("backend"))
                 for run in summary.get("participating_runs") or []
@@ -309,8 +332,17 @@ def _discover_online_evidence(root: Path, aliases: set[str]) -> dict[str, Any]:
                     summary_path,
                     root,
                     "comparison_online",
-                    status=STATUS_DONE if comparison_status == "comparable" else STATUS_PARTIAL,
-                    note=f"comparison_status={comparison_status}; backend_count={len(backends)}",
+                    status=(
+                        STATUS_DONE
+                        if comparison_status == "comparable"
+                        and comparison_target_status == "apollo_vs_planning_control_evaluable"
+                        else STATUS_PARTIAL
+                    ),
+                    note=(
+                        f"comparison_status={comparison_status}; "
+                        f"comparison_target_status={comparison_target_status}; "
+                        f"backend_count={len(backends)}"
+                    ),
                 )
             )
 
@@ -320,6 +352,7 @@ def _discover_online_evidence(root: Path, aliases: set[str]) -> dict[str, Any]:
         "apollo_online_status": apollo_online_status,
         "v_t_gap_status": v_t_gap_status,
         "comparison_status": comparison_status,
+        "comparison_target_status": comparison_target_status,
         "comparison_backend_count": comparison_backend_count,
     }
 
@@ -379,8 +412,8 @@ def _phase1_readiness_from_status(status: str) -> str:
 
 def _comparison_readiness(online: Mapping[str, Any]) -> str:
     status = str(online.get("comparison_status") or STATUS_NOT_YET)
-    backend_count = int(online.get("comparison_backend_count") or 0)
-    if status == "comparable" and backend_count >= 2:
+    target_status = str(online.get("comparison_target_status") or "")
+    if status == "comparable" and target_status == "apollo_vs_planning_control_evaluable":
         return STATUS_DONE
     if status in {"comparable", "partially_evaluable", "invalid", "unknown"}:
         return STATUS_PARTIAL

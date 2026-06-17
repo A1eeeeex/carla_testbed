@@ -30,10 +30,17 @@ def compare_scenario_runs(run_dirs: Sequence[str | Path]) -> dict[str, Any]:
     else:
         comparison_status = "comparable"
         reason = None
+    backend_coverage = _backend_coverage(runs)
+    comparison_target_status = _comparison_target_status(
+        comparison_status=comparison_status,
+        backend_coverage=backend_coverage,
+    )
     return {
         "schema_version": SCENARIO_COMPARISON_SCHEMA_VERSION,
         "scenario_id": scenario_ids[0] if len(scenario_ids) == 1 else None,
         "comparison_status": comparison_status,
+        "comparison_target_status": comparison_target_status,
+        "backend_coverage": backend_coverage,
         "reason": reason,
         "participating_runs": runs,
         "invalid_runs": [run for run in runs if run.get("phase1_status") == "invalid"],
@@ -58,6 +65,8 @@ def write_scenario_comparison(report: Mapping[str, Any], out_dir: str | Path) ->
         "schema_version": "phase1_scenario_comparison_manifest.v1",
         "scenario_id": report.get("scenario_id"),
         "comparison_status": report.get("comparison_status"),
+        "comparison_target_status": report.get("comparison_target_status"),
+        "backend_coverage": report.get("backend_coverage"),
         "participating_run_dirs": [run.get("run_dir") for run in report.get("participating_runs") or []],
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -114,13 +123,74 @@ def _backend_results(runs: list[dict[str, Any]], *, comparison_status: str) -> l
     return results
 
 
+def _backend_coverage(runs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    by_type: dict[str, int] = {}
+    evaluable_by_type: dict[str, int] = {}
+    by_backend: dict[str, int] = {}
+    evaluable_by_backend: dict[str, int] = {}
+    unknown_backend_type_count = 0
+    for run in runs:
+        backend_type = str(run.get("backend_type") or "unknown")
+        backend = str(run.get("backend") or "unknown")
+        if backend_type == "unknown":
+            unknown_backend_type_count += 1
+        by_type[backend_type] = by_type.get(backend_type, 0) + 1
+        by_backend[backend] = by_backend.get(backend, 0) + 1
+        if bool(run.get("evaluable")):
+            evaluable_by_type[backend_type] = evaluable_by_type.get(backend_type, 0) + 1
+            evaluable_by_backend[backend] = evaluable_by_backend.get(backend, 0) + 1
+    return {
+        "backend_types": sorted(by_type),
+        "evaluable_backend_types": sorted(evaluable_by_type),
+        "by_backend_type": by_type,
+        "evaluable_by_backend_type": evaluable_by_type,
+        "by_backend": by_backend,
+        "evaluable_by_backend": evaluable_by_backend,
+        "apollo_reference_backend": by_type.get("apollo_reference_backend", 0),
+        "planning_control_backend": by_type.get("planning_control_backend", 0),
+        "evaluable_apollo_reference_backend": evaluable_by_type.get("apollo_reference_backend", 0),
+        "evaluable_planning_control_backend": evaluable_by_type.get("planning_control_backend", 0),
+        "unknown_backend_type_count": unknown_backend_type_count,
+    }
+
+
+def _comparison_target_status(*, comparison_status: str, backend_coverage: Mapping[str, Any]) -> str:
+    if int(backend_coverage.get("unknown_backend_type_count") or 0) > 0:
+        return "unknown_backend_coverage"
+    apollo = int(backend_coverage.get("evaluable_apollo_reference_backend") or 0)
+    planning = int(backend_coverage.get("evaluable_planning_control_backend") or 0)
+    all_types = set(str(item) for item in backend_coverage.get("backend_types") or [])
+    if comparison_status == "comparable" and apollo > 0 and planning > 0:
+        return "apollo_vs_planning_control_evaluable"
+    if comparison_status == "comparable" and len(set(backend_coverage.get("evaluable_backend_types") or [])) <= 1:
+        return "same_backend_regression"
+    if apollo == 0 and "apollo_reference_backend" in all_types:
+        return "missing_evaluable_apollo_reference_backend"
+    if planning == 0 and "planning_control_backend" in all_types:
+        return "missing_evaluable_planning_control_backend"
+    if apollo == 0:
+        return "missing_evaluable_apollo_reference_backend"
+    if planning == 0:
+        return "missing_evaluable_planning_control_backend"
+    if comparison_status == "partially_evaluable":
+        return "partially_evaluable_apollo_vs_planning_control"
+    return "not_phase1_target_comparison"
+
+
 def _summary_markdown(report: Mapping[str, Any]) -> str:
     lines = [
         "# Phase 1 Scenario Comparison",
         "",
         f"Scenario: `{report.get('scenario_id')}`",
         f"Status: `{report.get('comparison_status')}`",
+        f"Target status: `{report.get('comparison_target_status')}`",
         f"Reason: `{report.get('reason')}`",
+        "",
+        "Backend coverage:",
+        "",
+        "```json",
+        json.dumps(report.get("backend_coverage") or {}, indent=2, sort_keys=True),
+        "```",
         "",
         "| Run | Backend | Status | Reason | Backend loss? |",
         "| --- | --- | --- | --- | --- |",

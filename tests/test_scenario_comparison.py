@@ -14,6 +14,9 @@ def test_two_evaluable_runs_are_comparable(tmp_path) -> None:
 
     assert report["schema_version"] == "phase1_comparison.v1"
     assert report["comparison_status"] == "comparable"
+    assert report["comparison_target_status"] == "apollo_vs_planning_control_evaluable"
+    assert report["backend_coverage"]["evaluable_apollo_reference_backend"] == 1
+    assert report["backend_coverage"]["evaluable_planning_control_backend"] == 1
     assert all(item["counts_as_backend_loss"] is False for item in report["backend_results"])
 
 
@@ -24,6 +27,7 @@ def test_invalid_run_does_not_count_as_backend_loss(tmp_path) -> None:
     report = compare_scenario_runs([run_a, run_b])
 
     assert report["comparison_status"] == "partially_evaluable"
+    assert report["comparison_target_status"] == "missing_evaluable_apollo_reference_backend"
     apollo = [item for item in report["backend_results"] if item["backend"] == "apollo_cyberrt"][0]
     assert apollo["counts_as_backend_loss"] is False
 
@@ -48,23 +52,46 @@ def test_scenario_comparison_writer(tmp_path) -> None:
     assert outputs["manifest"].endswith("comparison_manifest.json")
     assert outputs["summary"].endswith("comparison_summary.json")
     assert outputs["v_t_gap_csv"].endswith("comparison_curves/v_t_gap.csv")
+    written = json.loads((tmp_path / "comparison" / "comparison_summary.json").read_text(encoding="utf-8"))
+    assert written["comparison_target_status"] == "apollo_vs_planning_control_evaluable"
+
+
+def test_same_backend_comparison_is_not_phase1_target_complete(tmp_path) -> None:
+    run_a = _write_run(tmp_path, "builtin_a", "carla_builtin", "planning_control_backend", "success")
+    run_b = _write_run(tmp_path, "builtin_b", "carla_builtin", "planning_control_backend", "degraded")
+
+    report = compare_scenario_runs([run_a, run_b])
+
+    assert report["comparison_status"] == "comparable"
+    assert report["comparison_target_status"] == "same_backend_regression"
+    assert report["backend_coverage"]["evaluable_apollo_reference_backend"] == 0
+
+
+def test_unknown_backend_type_keeps_comparison_target_unknown(tmp_path) -> None:
+    run_a = _write_run(tmp_path, "legacy_a", "legacy_backend", None, "success")
+    run_b = _write_run(tmp_path, "legacy_b", "legacy_backend", None, "success")
+
+    report = compare_scenario_runs([run_a, run_b])
+
+    assert report["comparison_status"] == "comparable"
+    assert report["comparison_target_status"] == "unknown_backend_coverage"
 
 
 def _write_run(tmp_path, name, backend, backend_type, status, reason=None, scenario_id="follow_stop_static"):
     run = tmp_path / name
     analysis = run / "analysis" / "phase1_status"
     analysis.mkdir(parents=True)
-    (run / "manifest.json").write_text(
-        json.dumps({"run_id": name, "scenario_id": scenario_id, "backend": backend, "backend_type": backend_type}),
-        encoding="utf-8",
-    )
+    manifest = {"run_id": name, "scenario_id": scenario_id, "backend": backend}
+    if backend_type is not None:
+        manifest["backend_type"] = backend_type
+    (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (analysis / "phase1_status.json").write_text(
         json.dumps(
             {
                 "run_id": name,
                 "scenario_id": scenario_id,
                 "backend": backend,
-                "backend_type": backend_type,
+                **({"backend_type": backend_type} if backend_type is not None else {}),
                 "status": status,
                 "failure_reason": reason,
                 "evaluable": status != "invalid",

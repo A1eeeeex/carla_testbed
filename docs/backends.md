@@ -88,6 +88,15 @@ truth-input GT replacement contract in manifests and launch plans. Missing
 fixed-scene Apollo runtime artifacts should make a run `invalid`, not an
 Apollo behavior loss.
 
+`tools/run_phase1_scenario.py` provides the current CI-safe scaffold for this
+boundary. For fixed-scene `apollo_cyberrt` runs it does not start CARLA or
+Apollo; it writes `preflight.json` and `analysis/phase1_status/phase1_status.json`
+with `backend_not_ready` when runtime migration is absent. This lets catalog and
+ScenarioComparison reports show that ApolloBackend is represented but not yet
+evaluable for that ScenarioCase. It is not a replacement for an online Apollo
+fixed-scene run with obstacle GT, routing/planning/control, and control
+attribution artifacts.
+
 ## Legacy IO
 
 `io/` is deprecated compatibility. It exists so historical scripts and contract

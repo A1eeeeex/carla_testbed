@@ -19,9 +19,13 @@ from carla_testbed.analysis.phase1_scenario_catalog import (  # noqa: E402
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Write Phase 1 scenario catalog readiness summary.")
     parser.add_argument("--repo", default=".")
+    parser.add_argument(
+        "--evidence-root",
+        help="Optional run/comparison evidence root to scan instead of <repo>/runs.",
+    )
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
-    report = analyze_phase1_scenario_catalog(args.repo)
+    report = analyze_phase1_scenario_catalog(args.repo, evidence_root=args.evidence_root)
     outputs = write_phase1_scenario_catalog(report, args.out)
     print(json.dumps({"status": "ok", "outputs": outputs, "summary": report.get("summary")}, indent=2, sort_keys=True))
     return 0
