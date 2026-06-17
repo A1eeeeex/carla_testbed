@@ -154,6 +154,9 @@ Additional run-local artifacts:
     claim-grade bumper gap.
 - `analysis/phase1_status/phase1_status.json`
   - status is one of `success`, `degraded`, `failed`, or `invalid`.
+  - key fields include `run_id`, `scenario_case`, `backend_name`,
+    `backend_type`, `status`, `failure_reason`, `evidence_files`,
+    `invalid_reasons`, `degraded_reasons`, `failed_reasons`, and `notes`.
   - invalid runs are setup/artifact/config/backend-readiness problems and must
     not count as backend losses.
 - `analysis/phase1_status/artifact_completeness.json`
@@ -864,10 +867,11 @@ fresh localization/chassis cadence recovers.
 Duplicate `stage5_*` map/reference-line debug JSONL streams are optional
 high-volume diagnostics. Online claim profiles may set
 `bridge.stage5_debug_artifact_sample_stride` to sample those duplicate streams
-while preserving the primary reference-line artifacts; the bridge records
-sampled-out counts in `artifacts/cyber_bridge_stats.json`. Sampling those
-duplicates does not relax required channel, localization, HDMap, reference-line,
-or control artifacts.
+and `bridge.reference_debug_artifact_sample_stride` to sample wide primary
+map/reference debug rows while preserving the route/reference contract and topic
+stats artifacts. The bridge records sampled-out counts in
+`artifacts/cyber_bridge_stats.json`. Sampling those diagnostics does not relax
+required channel, localization, HDMap, reference-line, or control artifacts.
 
 High-rate claim-evidence rows may also be sampled with
 `bridge.claim_evidence_artifact_sample_stride` when
@@ -876,6 +880,13 @@ artifact writer lag coinciding with localization/chassis publish-loop gaps. This
 only reduces diagnostic IO pressure. It does not change Apollo channel-health
 thresholds, and a run with localization/chassis max-gap failures remains
 diagnostic until the channel reports recover.
+
+Route-only and materialization claim probes must also keep periodic artifact
+flushes out of the GT publish loop: use `artifact_flush_interval_s: 0.0`,
+`artifact_flush_max_pending_rows: 0`, and a sampled
+`claim_evidence_artifact_sample_stride` such as `10`. These settings preserve the
+required row-level artifacts for postprocess while preventing diagnostic IO from
+becoming the primary localization/chassis cadence blocker.
 
 ## Current Implementation
 

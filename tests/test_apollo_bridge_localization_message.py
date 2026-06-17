@@ -376,6 +376,39 @@ def test_bridge_stage5_debug_artifacts_can_be_sampled_without_backpressure(tmp_p
     assert "artifact_backpressure_claim_blocking" not in buffering
 
 
+def test_bridge_reference_debug_artifacts_can_be_sampled_without_backpressure(tmp_path: Path) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+    adapter.reference_debug_artifact_sample_stride = 5
+    adapter._reference_debug_artifact_sample_counters = bridge.Counter()
+    writes = []
+    adapter._append_jsonl = lambda path, payload: writes.append((path, dict(payload)))
+
+    for index in range(1, 12):
+        adapter._append_reference_debug_jsonl(
+            "apollo_route_segment_debug",
+            tmp_path / "apollo_route_segment_debug.jsonl",
+            {"index": index},
+        )
+
+    assert [payload["index"] for _, payload in writes] == [1, 5, 10]
+    buffering = adapter.stats["artifact_buffering"]
+    assert buffering["reference_debug_artifact_sample_stride"] == 5
+    assert buffering["reference_debug_artifact_seen_counts"] == {
+        "apollo_route_segment_debug": 11
+    }
+    assert buffering["reference_debug_artifact_written_counts"] == {
+        "apollo_route_segment_debug": 3
+    }
+    assert buffering["reference_debug_artifact_sampled_out_counts"] == {
+        "apollo_route_segment_debug": 8
+    }
+    assert "artifact_backpressure_claim_blocking" not in buffering
+
+
 def test_bridge_control_debug_artifacts_can_be_sampled_without_backpressure(tmp_path: Path) -> None:
     _install_fake_protobuf()
     _install_fake_carla()

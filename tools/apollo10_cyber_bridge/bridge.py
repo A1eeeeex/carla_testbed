@@ -1703,6 +1703,10 @@ class ApolloGtBridge:
             1,
             int(bridge_cfg.get("stage5_debug_artifact_sample_stride", 1) or 1),
         )
+        self.reference_debug_artifact_sample_stride = max(
+            1,
+            int(bridge_cfg.get("reference_debug_artifact_sample_stride", 1) or 1),
+        )
         self.control_debug_artifact_sample_stride = max(
             1,
             int(bridge_cfg.get("control_debug_artifact_sample_stride", 1) or 1),
@@ -1712,6 +1716,7 @@ class ApolloGtBridge:
             int(bridge_cfg.get("claim_evidence_artifact_sample_stride", 1) or 1),
         )
         self._stage5_debug_artifact_sample_counters: Counter[str] = Counter()
+        self._reference_debug_artifact_sample_counters: Counter[str] = Counter()
         self._control_debug_artifact_sample_counters: Counter[str] = Counter()
         self._claim_evidence_artifact_sample_counters: Counter[str] = Counter()
         self._last_artifact_stats_flush_sec = time.time()
@@ -1737,6 +1742,10 @@ class ApolloGtBridge:
             "stage5_debug_artifact_seen_counts": {},
             "stage5_debug_artifact_sampled_out_counts": {},
             "stage5_debug_artifact_written_counts": {},
+            "reference_debug_artifact_sample_stride": self.reference_debug_artifact_sample_stride,
+            "reference_debug_artifact_seen_counts": {},
+            "reference_debug_artifact_sampled_out_counts": {},
+            "reference_debug_artifact_written_counts": {},
             "control_debug_artifact_sample_stride": self.control_debug_artifact_sample_stride,
             "control_debug_artifact_seen_counts": {},
             "control_debug_artifact_sampled_out_counts": {},
@@ -3634,6 +3643,35 @@ class ApolloGtBridge:
         payload: Dict[str, Any],
     ) -> None:
         if self._should_write_stage5_debug_artifact(artifact_name):
+            self._append_jsonl(path, payload)
+
+    def _should_write_reference_debug_artifact(self, artifact_name: str) -> bool:
+        stride = max(1, int(getattr(self, "reference_debug_artifact_sample_stride", 1) or 1))
+        buffering = self.stats.setdefault("artifact_buffering", {})
+        buffering["reference_debug_artifact_sample_stride"] = stride
+        seen_counts = buffering.setdefault("reference_debug_artifact_seen_counts", {})
+        sampled_out_counts = buffering.setdefault("reference_debug_artifact_sampled_out_counts", {})
+        written_counts = buffering.setdefault("reference_debug_artifact_written_counts", {})
+        counters = getattr(self, "_reference_debug_artifact_sample_counters", None)
+        if counters is None:
+            counters = Counter()
+            self._reference_debug_artifact_sample_counters = counters
+        counters[artifact_name] += 1
+        count = int(counters[artifact_name])
+        seen_counts[artifact_name] = count
+        if stride <= 1 or count == 1 or (count % stride) == 0:
+            written_counts[artifact_name] = int(written_counts.get(artifact_name, 0) or 0) + 1
+            return True
+        sampled_out_counts[artifact_name] = int(sampled_out_counts.get(artifact_name, 0) or 0) + 1
+        return False
+
+    def _append_reference_debug_jsonl(
+        self,
+        artifact_name: str,
+        path: Path,
+        payload: Dict[str, Any],
+    ) -> None:
+        if self._should_write_reference_debug_artifact(artifact_name):
             self._append_jsonl(path, payload)
 
     def _should_write_control_debug_artifact(self, artifact_name: str) -> bool:
@@ -6042,7 +6080,11 @@ class ApolloGtBridge:
             route_debug_row["create_route_segments_status"] = "parse_failed"
             route_debug_row["lane_follow_map_status"] = "parse_failed"
         self._append_jsonl(self.planning_topic_debug_path, debug_row)
-        self._append_jsonl(self.planning_route_segment_debug_path, route_debug_row)
+        self._append_reference_debug_jsonl(
+            "planning_route_segment_debug",
+            self.planning_route_segment_debug_path,
+            route_debug_row,
+        )
         enriched_route_debug = {
             **route_debug_row,
             "route_debug_source": "stage5_runtime",
@@ -6087,14 +6129,26 @@ class ApolloGtBridge:
             "map_identity_hash_or_signature": self.apollo_map_identity_signature or None,
             "host_container_map_path_mapping": dict(self.host_container_map_path_mapping or {}),
         }
-        self._append_jsonl(self.apollo_map_runtime_debug_path, map_runtime_row)
+        self._append_reference_debug_jsonl(
+            "apollo_map_runtime_debug",
+            self.apollo_map_runtime_debug_path,
+            map_runtime_row,
+        )
         self._append_stage5_debug_jsonl(
             "stage5_apollo_map_runtime_debug",
             self.stage5_apollo_map_runtime_debug_path,
             map_runtime_row,
         )
-        self._append_jsonl(self.apollo_reference_line_debug_path, enriched_route_debug)
-        self._append_jsonl(self.apollo_route_segment_debug_path, enriched_route_debug)
+        self._append_reference_debug_jsonl(
+            "apollo_reference_line_debug",
+            self.apollo_reference_line_debug_path,
+            enriched_route_debug,
+        )
+        self._append_reference_debug_jsonl(
+            "apollo_route_segment_debug",
+            self.apollo_route_segment_debug_path,
+            enriched_route_debug,
+        )
         self._append_stage5_debug_jsonl(
             "stage5_apollo_reference_line_debug",
             self.stage5_apollo_reference_line_debug_path,

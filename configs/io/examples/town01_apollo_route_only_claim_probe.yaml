@@ -16,17 +16,22 @@ algo:
   apollo:
     bridge:
       artifact_async_write_enabled: true
-      artifact_async_queue_max_rows: 8192
-      artifact_async_queue_soft_limit_rows: 4096
-      artifact_flush_interval_s: 0.5
-      artifact_flush_max_pending_rows: 200
+      artifact_async_queue_max_rows: 2048
+      artifact_async_queue_soft_limit_rows: 1024
+      # Keep diagnostic artifact flushes out of the 20 Hz GT publish hot path.
+      # Online materialization probes have shown queue lag large enough to
+      # correlate with localization/chassis header-sim gaps when this profile
+      # periodically flushed and wrote every claim-evidence row.
+      artifact_flush_interval_s: 0.0
+      artifact_flush_max_pending_rows: 0
       # High-rate control debug JSONL is diagnostic evidence. Sample it in
       # claim probes so artifact IO does not perturb GT channel cadence.
-      control_debug_artifact_sample_stride: 10
+      control_debug_artifact_sample_stride: 50
+      reference_debug_artifact_sample_stride: 10
       # Claim evidence traces feed route/reference/localization/control reports.
-      # Keep them per-event by default; sampling these can make hard-gate
-      # analyzers report insufficient_data even when Apollo produced evidence.
-      claim_evidence_artifact_sample_stride: 1
+      # Sampling keeps probe runs diagnostic when IO cannot keep up; it never
+      # relaxes channel-health or natural-driving gates.
+      claim_evidence_artifact_sample_stride: 10
       # Final stats are still written on shutdown. Avoid periodic heavy stats
       # writes in the 20 Hz GT publish loop; they previously caused 400-500 ms
       # localization/chassis gaps in claim probes.

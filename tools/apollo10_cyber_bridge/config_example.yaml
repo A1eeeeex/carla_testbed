@@ -31,6 +31,10 @@ bridge:
   # sampled in claim probes to keep diagnostic IO from starving GT channels.
   # 1 keeps legacy per-event output.
   stage5_debug_artifact_sample_stride: 1
+  # Wide primary map/reference debug rows are diagnostic evidence. Use >1 in
+  # claim probes when artifact IO backpressure is visible; contract artifacts
+  # and topic publish stats remain separate gates.
+  reference_debug_artifact_sample_stride: 1
   # High-rate control debug files are diagnostic evidence. Use >1 in claim
   # probes when artifact IO backpressure is visible; 1 keeps legacy output.
   control_debug_artifact_sample_stride: 1

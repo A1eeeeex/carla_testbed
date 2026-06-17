@@ -112,23 +112,39 @@ def _status(
     required_artifacts: Mapping[str, str],
 ) -> dict[str, Any]:
     original_reason = summary.get("fail_reason") or summary.get("failure_reason")
+    scenario_case = (
+        manifest.get("scenario_case")
+        or manifest.get("fixed_scene_case")
+        or manifest.get("scenario_id")
+        or summary.get("scenario_case")
+        or summary.get("scenario_id")
+    )
+    invalid_reasons = [reason] if status == "invalid" and reason else []
+    failed_reasons = [reason] if status == "failed" and reason else []
+    degraded_reasons = [reason] if status == "degraded" and reason else []
     return {
         "schema_version": PHASE1_STATUS_SCHEMA_VERSION,
         "run_dir": str(root),
         "run_id": manifest.get("run_id") or summary.get("run_id") or root.name,
         "scenario_id": manifest.get("scenario_id") or summary.get("scenario_id"),
+        "scenario_case": scenario_case,
         "backend": manifest.get("backend") or manifest.get("backend_name") or summary.get("backend"),
         "backend_name": manifest.get("backend_name") or manifest.get("backend") or summary.get("backend_name"),
         "backend_type": manifest.get("backend_type") or summary.get("backend_type"),
         "status": status,
         "failure_reason": reason,
+        "invalid_reasons": invalid_reasons,
+        "degraded_reasons": degraded_reasons,
+        "failed_reasons": failed_reasons,
         "original_failure_reason": original_reason,
         "evaluable": status != "invalid",
+        "evidence_files": _evidence_files(root),
         "missing_artifacts": missing_artifacts,
         "required_artifacts": dict(required_artifacts),
         "v_t_gap_status": v_t_gap.get("status") if v_t_gap else None,
         "summary_status": summary.get("status"),
         "summary_success": summary.get("success"),
+        "notes": _status_notes(status, reason),
         "claim_boundary": "phase1_status_is_scenario_evaluation_not_natural_driving_claim",
     }
 
@@ -142,6 +158,28 @@ def _required_artifacts(root: Path) -> dict[str, str]:
         if (root / "analysis" / "v_t_gap" / "v_t_gap_report.json").exists()
         else "missing",
     }
+
+
+def _evidence_files(root: Path) -> list[str]:
+    candidates = [
+        "manifest.json",
+        "summary.json",
+        "timeseries.csv",
+        "timeseries.jsonl",
+        "artifacts/fixed_scene_resolved.json",
+        "analysis/v_t_gap/v_t_gap_report.json",
+        "analysis/v_t_gap/v_t_gap.csv",
+    ]
+    return [str(root / rel) for rel in candidates if (root / rel).exists()]
+
+
+def _status_notes(status: str, reason: str | None) -> list[str]:
+    notes = ["phase1_status_is_scenario_evaluation_not_natural_driving_claim"]
+    if status == "invalid":
+        notes.append("invalid_run_is_setup_or_evidence_failure_not_backend_loss")
+    if reason:
+        notes.append(f"classified_by_{reason}")
+    return notes
 
 
 def _summary_failed_by_setup(summary: Mapping[str, Any]) -> bool:

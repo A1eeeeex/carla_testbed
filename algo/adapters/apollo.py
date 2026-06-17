@@ -826,6 +826,7 @@ PY
             "artifact_async_queue_soft_limit_rows",
             "artifact_flush_max_pending_rows",
             "stage5_debug_artifact_sample_stride",
+            "reference_debug_artifact_sample_stride",
             "control_debug_artifact_sample_stride",
             "claim_evidence_artifact_sample_stride",
         ):

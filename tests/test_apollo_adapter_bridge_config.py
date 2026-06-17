@@ -30,6 +30,7 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
                     "artifact_flush_max_pending_rows": 200,
                     "artifact_stats_flush_interval_s": 1.0,
                     "stage5_debug_artifact_sample_stride": 10,
+                    "reference_debug_artifact_sample_stride": 9,
                     "control_debug_artifact_sample_stride": 7,
                     "claim_evidence_artifact_sample_stride": 3,
                     "localization_acceleration_filter": {
@@ -78,6 +79,7 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
     assert bridge["artifact_flush_max_pending_rows"] == 200
     assert bridge["artifact_stats_flush_interval_s"] == 1.0
     assert bridge["stage5_debug_artifact_sample_stride"] == 10
+    assert bridge["reference_debug_artifact_sample_stride"] == 9
     assert bridge["control_debug_artifact_sample_stride"] == 7
     assert bridge["claim_evidence_artifact_sample_stride"] == 3
     assert bridge["localization_acceleration_filter"] == {
@@ -95,13 +97,18 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
     assert direct_bridge["stale_world_frame_policy"] == "always_republish"
 
 
-def test_route_only_claim_probe_disables_hot_loop_stats_flush() -> None:
+def test_route_only_claim_probe_keeps_artifact_io_out_of_gt_publish_hot_path() -> None:
     config_path = Path("configs/io/examples/town01_apollo_route_only_claim_probe.yaml")
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     bridge = payload["algo"]["apollo"]["bridge"]
+    assert bridge["artifact_async_queue_max_rows"] <= 2048
+    assert bridge["artifact_async_queue_soft_limit_rows"] <= 1024
+    assert bridge["artifact_flush_interval_s"] == 0.0
+    assert bridge["artifact_flush_max_pending_rows"] == 0
     assert bridge["artifact_stats_flush_interval_s"] == 0.0
-    assert bridge["control_debug_artifact_sample_stride"] == 10
-    assert bridge["claim_evidence_artifact_sample_stride"] == 1
+    assert bridge["control_debug_artifact_sample_stride"] >= 50
+    assert bridge["reference_debug_artifact_sample_stride"] >= 10
+    assert bridge["claim_evidence_artifact_sample_stride"] >= 10
 
 
 def test_nominal_lane_keep_profile_keeps_artifact_io_out_of_gt_publish_hot_path() -> None:
@@ -115,9 +122,10 @@ def test_nominal_lane_keep_profile_keeps_artifact_io_out_of_gt_publish_hot_path(
     assert bridge["artifact_flush_interval_s"] == 0.0
     assert bridge["artifact_flush_max_pending_rows"] == 0
     assert bridge["artifact_stats_flush_interval_s"] == 0.0
-    assert bridge["stage5_debug_artifact_sample_stride"] == 10
-    assert bridge["control_debug_artifact_sample_stride"] == 10
-    assert bridge["claim_evidence_artifact_sample_stride"] == 5
+    assert bridge["stage5_debug_artifact_sample_stride"] == 50
+    assert bridge["reference_debug_artifact_sample_stride"] == 10
+    assert bridge["control_debug_artifact_sample_stride"] == 50
+    assert bridge["claim_evidence_artifact_sample_stride"] == 10
     acceleration_filter = bridge["localization_acceleration_filter"]
     assert acceleration_filter["enabled"] is True
     assert acceleration_filter["alpha"] == 0.35

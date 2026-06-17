@@ -146,14 +146,15 @@ algo:
       artifact_stats_flush_interval_s: 0.0
       # Primary route/reference-line artifacts stay per-event; duplicate stage5
       # debug streams are sampled to reduce publish-loop IO pressure.
-      stage5_debug_artifact_sample_stride: 10
+      stage5_debug_artifact_sample_stride: 50
+      reference_debug_artifact_sample_stride: 10
       # High-rate control debug is diagnostic-only; keep claim evidence below
       # per-frame but avoid starving GT input channels.
-      control_debug_artifact_sample_stride: 10
+      control_debug_artifact_sample_stride: 50
       # Online 097 probes showed artifact writer lag can coincide with isolated
       # localization/chassis sim-gap failures. Keep claim evidence sampled
       # enough for p95/route-progress analysis, but do not write every 2 frames.
-      claim_evidence_artifact_sample_stride: 5
+      claim_evidence_artifact_sample_stride: 10
       claim_grade:
         enabled: true
         stale_world_frame_policy: skip

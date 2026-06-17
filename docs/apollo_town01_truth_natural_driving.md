@@ -1376,14 +1376,22 @@ p95 values is diagnostic until channel health recovers.
 
 Primary map/reference-line debug artifacts remain per-event evidence. Duplicate
 `stage5_*` debug streams may be sampled with
-`bridge.stage5_debug_artifact_sample_stride` in online claim probes to reduce IO
-pressure; high-rate claim evidence may also use
+`bridge.stage5_debug_artifact_sample_stride`, and wide map/reference debug rows
+may be sampled with `bridge.reference_debug_artifact_sample_stride`, in online
+claim probes to reduce IO pressure; high-rate claim evidence may also use
 `bridge.claim_evidence_artifact_sample_stride` when artifact writer lag starts
 to coincide with localization/chassis sim-gap failures.
 `cyber_bridge_stats.json.artifact_buffering` records seen, written, and
 sampled-out counts. This
 sampling is not a channel-health pass condition: localization/chassis max-gap
 gates still use the observed channel artifacts.
+
+Route-only/materialization probes inherit the same boundary. They should not
+periodically flush artifact files from the GT publish loop, and they should keep
+claim evidence sampled enough to avoid making diagnostic IO the primary blocker.
+If `channel_cadence_diagnosis_report.json` still reports
+`artifact_writer_backpressure`, the run remains diagnostic even if Routing,
+Planning, and Control all produced messages.
 
 ## P0/P1 Online Triage Boundary
 
