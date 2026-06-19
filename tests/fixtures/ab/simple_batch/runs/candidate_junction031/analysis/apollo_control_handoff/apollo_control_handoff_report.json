@@ -1,0 +1,10 @@
+{
+  "blocking_reasons": [],
+  "bridge_receive": {"control_rx_count": 10, "status": "pass"},
+  "control_channel": {"message_count": 10, "status": "pass"},
+  "failure_stage": "none",
+  "mapping_and_apply": {"apply_control_count": 10, "status": "pass"},
+  "run_id": "candidate_junction031",
+  "schema_version": "apollo_control_handoff.v1",
+  "verdict": "pass"
+}

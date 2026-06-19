@@ -1,0 +1,5 @@
+{
+  "control_apply_mode": "frame_flush_only",
+  "snapshot_count": 600,
+  "stale_world_frame_policy": "always_republish"
+}

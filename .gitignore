@@ -73,3 +73,9 @@ io/tools/*.so.*
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Test fixtures intentionally mirror runtime artifact names such as runs/,
+# artifacts/, logs/, and video/. Keep them trackable so clean checkouts can run
+# CI-safe tests without relying on local ignored files.
+!tests/fixtures/
+!tests/fixtures/**

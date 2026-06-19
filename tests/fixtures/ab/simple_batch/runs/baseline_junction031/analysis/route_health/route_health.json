@@ -1,0 +1,20 @@
+{
+  "schema_version": "route_health.v1",
+  "route_id": "junction031",
+  "route_source": "configured_route_file",
+  "evidence_level": "claim_grade",
+  "hard_gate_eligible": true,
+  "route_evidence_reason": "configured_route_file_with_valid_route_identity_and_geometry",
+  "route_geometry": {"curve_segments_count": 1},
+  "run_metrics": {
+    "lateral_error_mean_m": 0.24,
+    "lateral_error_p95_m": 0.34,
+    "lateral_error_max_m": 0.35,
+    "heading_error_mean_rad": 0.035,
+    "heading_error_p95_rad": 0.049,
+    "heading_error_max_rad": 0.050
+  },
+  "missing_fields": [],
+  "missing_inputs": [],
+  "verdict": {"status": "diagnostic_ready"}
+}

@@ -1,0 +1,7 @@
+{
+  "run_id": "minimal_route_run",
+  "scenario_name": "town01_route_health_fixture",
+  "backend_name": "dummy",
+  "route_health_schema_version": "route_health.v1",
+  "route_curve_fields_schema_version": "route_curve_p0.v1"
+}

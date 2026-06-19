@@ -1,0 +1,8 @@
+{
+  "chassis_count": 20,
+  "control_rx_count": 10,
+  "control_rx_hz": 10.0,
+  "control_tx_count": 10,
+  "loc_count": 20,
+  "loc_hz": 20.0
+}

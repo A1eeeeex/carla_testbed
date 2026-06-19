@@ -1,0 +1,11 @@
+{
+  "chassis_count": 540,
+  "control_rx_count": 1200,
+  "control_tx_count": 1200,
+  "direct_stale_world_frame_republish_count": 100,
+  "direct_stale_world_frame_skip_count": 20,
+  "loc_count": 540,
+  "obstacles_count": 0,
+  "routing_request_count": 1,
+  "routing_success_count": 1
+}

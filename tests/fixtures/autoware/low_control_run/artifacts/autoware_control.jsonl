@@ -1,0 +1,2 @@
+{"stamp": {"sec": 1780125000, "nanosec": 0}, "longitudinal": {"velocity": 0.25, "acceleration": 0.50}, "lateral": {"steering_tire_angle": -0.05}}
+{"stamp": {"sec": 56, "nanosec": 0}, "longitudinal": {"velocity": 0.31, "acceleration": 0.48}, "lateral": {"steering_tire_angle": -0.03}}

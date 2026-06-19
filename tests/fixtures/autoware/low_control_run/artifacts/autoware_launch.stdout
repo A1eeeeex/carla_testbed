@@ -1,0 +1,4 @@
+[component_container_mt-33] [WARN] [1.0] [control.autoware_operation_mode_transition_manager]: Subscribed kinematics is timed out.
+[component_container_mt-33] [WARN] [2.0] [control.autoware_operation_mode_transition_manager]: Subscribed control_cmd is timed out.
+[component_container_mt-33] [INFO] [3.0] [control.vehicle_cmd_gate]: The operation mode is changed, but the GearCommand is not received yet:
+[service_log_checker_node-6] [ERROR] [4.0] [system.service_log_checker]: /api/operation_mode/change_to_autonomous: status code 1 'The mode change condition is not satisfied.' (/adapi/node/operation_mode)

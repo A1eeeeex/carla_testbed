@@ -1,0 +1,5 @@
+sim_time,ego_speed,cross_track_error,heading_error,is_curve_segment,apollo_steer_raw,carla_steer_applied,planning_available,localization_timestamp,control_latency_ms,throttle_applied,brake_applied
+0.0,1.8,0.12,0.012,false,0.01,0.003,true,0.0,20,0.25,0.00
+1.0,2.2,0.18,0.018,false,0.02,0.005,true,1.0,22,0.28,0.00
+2.0,2.4,0.24,0.026,true,0.03,0.007,true,2.0,24,0.30,0.00
+3.0,2.5,0.28,0.035,true,0.04,0.009,true,3.0,26,0.32,0.00

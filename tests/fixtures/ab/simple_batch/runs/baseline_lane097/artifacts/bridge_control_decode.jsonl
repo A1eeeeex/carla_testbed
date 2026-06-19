@@ -1,0 +1,2 @@
+{"ts_sec": 1.0, "steering_normalization_mode": "single_percent_at_select", "selected_steering_field": "steering_target", "raw_steer": 0.1, "mapped_carla_steer_cmd": 0.025}
+{"ts_sec": 2.0, "steering_normalization_mode": "single_percent_at_select", "selected_steering_field": "steering_target", "raw_steer": 0.2, "mapped_carla_steer_cmd": 0.05}

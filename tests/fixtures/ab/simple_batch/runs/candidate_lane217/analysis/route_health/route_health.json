@@ -1,0 +1,20 @@
+{
+  "schema_version": "route_health.v1",
+  "route_id": "lane217",
+  "route_source": "configured_route_file",
+  "evidence_level": "claim_grade",
+  "hard_gate_eligible": true,
+  "route_evidence_reason": "configured_route_file_with_valid_route_identity_and_geometry",
+  "route_geometry": {"curve_segments_count": 1},
+  "run_metrics": {
+    "lateral_error_mean_m": null,
+    "lateral_error_p95_m": null,
+    "lateral_error_max_m": null,
+    "heading_error_mean_rad": null,
+    "heading_error_p95_rad": null,
+    "heading_error_max_rad": null
+  },
+  "missing_fields": ["lateral_error", "heading_error"],
+  "missing_inputs": [],
+  "verdict": {"status": "insufficient_data"}
+}

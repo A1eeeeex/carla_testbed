@@ -1,0 +1,31 @@
+{
+  "channels": {
+    "/apollo/canbus/chassis": {
+      "hz": 20.0,
+      "message_count": 20,
+      "sequence_monotonic": true,
+      "timestamp_monotonic": true
+    },
+    "/apollo/control": {
+      "first_timestamp": 0.1,
+      "hz": 10.0,
+      "last_timestamp": 0.3,
+      "max_gap_ms": 100.0,
+      "message_count": 10,
+      "sequence_monotonic": true,
+      "timestamp_monotonic": true
+    },
+    "/apollo/localization/pose": {
+      "hz": 20.0,
+      "message_count": 20,
+      "sequence_monotonic": true,
+      "timestamp_monotonic": true
+    },
+    "/apollo/planning": {
+      "hz": 10.0,
+      "message_count": 10,
+      "sequence_monotonic": true,
+      "timestamp_monotonic": true
+    }
+  }
+}

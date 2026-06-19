@@ -1,0 +1,9 @@
+{
+  "chassis_count": 600,
+  "control_rx_count": 1200,
+  "control_tx_count": 1200,
+  "loc_count": 600,
+  "obstacles_count": 0,
+  "routing_request_count": 1,
+  "routing_success_count": 1
+}
