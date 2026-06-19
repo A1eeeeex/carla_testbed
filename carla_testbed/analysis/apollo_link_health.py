@@ -367,6 +367,7 @@ def analyze_apollo_link_health(
 
     primary, secondary = _blocker_summary(layers)
     can_claim = _can_claim_unassisted(layers)
+    primary_detail = _primary_blocker_detail(primary, layers)
     return {
         "schema_version": APOLLO_LINK_HEALTH_SCHEMA_VERSION,
         "run_id": _first_text(summary, "run_id", manifest, "run_id", default=root.name if root else None),
@@ -378,6 +379,7 @@ def analyze_apollo_link_health(
         "suite_id": _first_text(suite_manifest, "suite_id", "batch_id"),
         "layers": {name: layers[name] for name in LAYER_ORDER},
         "primary_blocker": primary,
+        "primary_blocker_detail": primary_detail,
         "secondary_blockers": secondary,
         "can_claim_unassisted_natural_driving": can_claim,
         "why_not_claimable": _why_not_claimable(layers),
@@ -428,6 +430,7 @@ def apollo_link_health_summary_md(report: Mapping[str, Any]) -> str:
         f"- Scenario: `{report.get('scenario_id')}` / `{report.get('scenario_class')}`",
         f"- Backend: `{report.get('backend')}` transport=`{report.get('transport_mode')}`",
         f"- Primary blocker: `{report.get('primary_blocker')}`",
+        f"- Primary blocker detail: `{json.dumps(report.get('primary_blocker_detail') or {}, sort_keys=True, ensure_ascii=False)}`",
         f"- Secondary blockers: `{', '.join(report.get('secondary_blockers') or []) or 'none'}`",
         f"- Can claim unassisted natural driving: `{report.get('can_claim_unassisted_natural_driving')}`",
         f"- Next highest-value validation: `{report.get('next_highest_value_validation')}`",
@@ -3374,6 +3377,53 @@ def _layer_blocker_name(name: str, layer: Mapping[str, Any]) -> str:
     if insufficient_reasons:
         return f"{name}:{insufficient_reasons[0]}"
     return f"{name}:{layer.get('status')}"
+
+
+def _primary_blocker_detail(
+    primary: str | None,
+    layers: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    if not primary:
+        return {}
+    layer_name, _, reason = primary.partition(":")
+    layer = layers.get(layer_name, {})
+    metrics = layer.get("key_metrics") if isinstance(layer.get("key_metrics"), Mapping) else {}
+    detail: dict[str, Any] = {
+        "layer": layer_name,
+        "reason": reason or None,
+        "status": layer.get("status"),
+        "blocking_reasons": list(layer.get("blocking_reasons") or []),
+        "warnings": list(layer.get("warnings") or []),
+        "next_action": layer.get("next_action"),
+    }
+    if layer_name == "control_mapping_apply":
+        compact = metrics.get("control_oscillation_compact")
+        compact = compact if isinstance(compact, Mapping) else {}
+        diagnosis = metrics.get("control_oscillation_diagnosis")
+        diagnosis = diagnosis if isinstance(diagnosis, Mapping) else {}
+        detail.update(
+            {
+                "dominant_oscillation_layer": compact.get("dominant_oscillation_layer")
+                or diagnosis.get("dominant_oscillation_layer"),
+                "primary_suspected_layer": compact.get("primary_suspected_layer")
+                or diagnosis.get("primary_suspected_layer"),
+                "transition_window_dominant_mode": compact.get("transition_window_dominant_mode")
+                or diagnosis.get("transition_window_dominant_mode"),
+                "raw_throttle_brake_switch_count": compact.get("apollo_raw_throttle_brake_switch_count"),
+                "control_semantics_primary_factor": metrics.get("control_semantics_primary_factor"),
+                "control_semantics_suspected_factors": metrics.get("control_semantics_suspected_factors"),
+                "claim_grade_control_mapping": _nested(
+                    metrics,
+                    "control_mapping_claim_boundary.claim_grade_control_mapping",
+                ),
+                "interpretation_caveat": (
+                    "This detail refines control attribution only. It does not change the gate "
+                    "status and must not be used to smooth/clamp bridge output or claim "
+                    "natural-driving success."
+                ),
+            }
+        )
+    return detail
 
 
 def _layer_insufficient_reasons(layer: Mapping[str, Any]) -> list[str]:

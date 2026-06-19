@@ -1856,11 +1856,23 @@ def test_control_oscillation_becomes_primary_only_after_localization_and_referen
         "control_rx_wall_hz": 20.0,
         "chassis_wall_hz": 2.0,
     }
+    control["metrics"]["control_mapping_claim_boundary"] = {
+        "claim_grade_control_mapping": False,
+        "actuator_mapping_mode": "legacy",
+    }
     _write_json(control_path, control)
 
     report = analyze_apollo_link_health_run_dir(run_dir)
 
     assert report["primary_blocker"] == "control_mapping_apply:applied_actuation_oscillation"
+    detail = report["primary_blocker_detail"]
+    assert detail["layer"] == "control_mapping_apply"
+    assert detail["reason"] == "applied_actuation_oscillation"
+    assert detail["dominant_oscillation_layer"] == "apollo_raw_command"
+    assert detail["primary_suspected_layer"] == "planning_control_semantics"
+    assert detail["raw_throttle_brake_switch_count"] == 12
+    assert detail["claim_grade_control_mapping"] is False
+    assert "planning_trajectory_length_switching" in detail["control_semantics_suspected_factors"]
     assert report["can_claim_unassisted_natural_driving"] is False
     metrics = report["layers"]["control_mapping_apply"]["key_metrics"]
     assert (
@@ -1905,6 +1917,7 @@ def test_control_oscillation_becomes_primary_only_after_localization_and_referen
         or "control_trajectory_consume_debug" in next_action
     )
     summary = apollo_link_health_summary_md(report)
+    assert "Primary blocker detail" in summary
     assert "control_oscillation_compact" in summary
     assert "planning_control_semantics" in summary
     assert (
