@@ -744,6 +744,20 @@ python tools/analyze_phase1_apollo_fixed_scene_dispatch.py \
   --out <run>/analysis/phase1_apollo_fixed_scene_dispatch
 ```
 
+Generate CI-safe Apollo dispatch scaffolds for the remaining dynamic
+fixed-scene cases without starting runtime:
+
+```bash
+python tools/run_phase1_apollo_dispatch_scaffold_batch.py \
+  --out runs/<phase1_apollo_dynamic_dispatch_scaffolds>
+```
+
+The batch writes `phase1_apollo_dispatch_scaffold_batch_manifest.json` and
+`phase1_apollo_dispatch_scaffold_matrix.csv`. Rows with
+`phase1_status=invalid` and `dispatch_mode=runtime_migration_required` are
+expected until the Apollo online runner is migrated to start fixed-scene actor
+playback. They are setup evidence and must not count as Apollo backend losses.
+
 Scenario catalog artifacts:
 
 - `phase1_scenario_catalog.json`
