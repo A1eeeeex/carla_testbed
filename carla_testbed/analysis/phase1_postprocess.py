@@ -12,6 +12,10 @@ from carla_testbed.analysis.apollo_hdmap_projection import (
     write_apollo_hdmap_projection_report,
 )
 from carla_testbed.analysis.apollo_link_health import analyze_and_write_apollo_link_health
+from carla_testbed.analysis.apollo_module_consumption import (
+    analyze_apollo_module_consumption_run_dir,
+    write_apollo_module_consumption_report,
+)
 from carla_testbed.analysis.apollo_reference_line_contract import (
     analyze_apollo_reference_line_contract_run_dir,
     write_apollo_reference_line_contract_report,
@@ -56,6 +60,8 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     apollo_hdmap_projection_paths: dict[str, str] | None = None
     apollo_reference_line_contract_report: dict[str, Any] | None = None
     apollo_reference_line_contract_paths: dict[str, str] | None = None
+    apollo_module_consumption_report: dict[str, Any] | None = None
+    apollo_module_consumption_paths: dict[str, str] | None = None
     control_health_report: dict[str, Any] | None = None
     control_health_paths: dict[str, str] | None = None
     apollo_link_health_report: dict[str, Any] | None = None
@@ -68,6 +74,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         apollo_control_handoff_report, apollo_control_handoff_paths = _write_apollo_control_handoff(root)
         apollo_hdmap_projection_report, apollo_hdmap_projection_paths = _write_apollo_hdmap_projection(root)
         apollo_reference_line_contract_report, apollo_reference_line_contract_paths = _write_apollo_reference_line_contract(root)
+        apollo_module_consumption_report, apollo_module_consumption_paths = _write_apollo_module_consumption(root)
         control_health_report, control_health_paths = _write_control_health(root)
         apollo_link_health_report, apollo_link_health_paths = _write_apollo_link_health(root)
     v_t_gap_report = extract_v_t_gap(run_dir=root)
@@ -106,6 +113,9 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         ),
         "apollo_reference_line_contract_status": (
             apollo_reference_line_contract_report.get("status") if apollo_reference_line_contract_report else None
+        ),
+        "apollo_module_consumption_status": (
+            apollo_module_consumption_report.get("status") if apollo_module_consumption_report else None
         ),
         "apollo_link_health_primary_blocker": (
             apollo_link_health_report.get("primary_blocker") if apollo_link_health_report else None
@@ -146,6 +156,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
                 if apollo_reference_line_contract_paths
                 else {}
             ),
+            **({"apollo_module_consumption": apollo_module_consumption_paths} if apollo_module_consumption_paths else {}),
             **({"apollo_link_health": apollo_link_health_paths} if apollo_link_health_paths else {}),
             **(
                 {
@@ -218,6 +229,35 @@ def _write_apollo_reference_line_contract(root: Path) -> tuple[dict[str, Any] | 
     report = analyze_apollo_reference_line_contract_run_dir(root)
     paths = write_apollo_reference_line_contract_report(report, root / "analysis" / "apollo_reference_line_contract")
     return report, paths
+
+
+def _write_apollo_module_consumption(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    if not _apollo_module_consumption_raw_exists(root):
+        return None, None
+    report = analyze_apollo_module_consumption_run_dir(root)
+    paths = write_apollo_module_consumption_report(report, root / "analysis" / "apollo_module_consumption")
+    return report, paths
+
+
+def _apollo_module_consumption_raw_exists(root: Path) -> bool:
+    return any(
+        path.exists()
+        for path in (
+            root / "analysis" / "planning_materialization" / "planning_materialization_report.json",
+            root / "artifacts" / "planning_topic_debug_summary.json",
+            root / "planning_topic_debug_summary.json",
+            root / "artifacts" / "planning_topic_debug.jsonl",
+            root / "planning_topic_debug.jsonl",
+            root / "artifacts" / "routing_event_debug.jsonl",
+            root / "routing_event_debug.jsonl",
+            root / "artifacts" / "topic_publish_stats.jsonl",
+            root / "topic_publish_stats.jsonl",
+            root / "artifacts" / "control_decode_debug.jsonl",
+            root / "artifacts" / "bridge_control_decode.jsonl",
+            root / "control_decode_debug.jsonl",
+            root / "bridge_control_decode.jsonl",
+        )
+    )
 
 
 def _apollo_reference_line_contract_raw_exists(root: Path) -> bool:

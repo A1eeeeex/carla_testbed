@@ -427,8 +427,10 @@ def test_phase1_postprocess_refreshes_projection_and_reference_before_link_healt
     _make_run_apollo_fixed_scene(run)
     projection_dir = run / "analysis" / "apollo_hdmap_projection"
     reference_dir = run / "analysis" / "apollo_reference_line_contract"
+    module_dir = run / "analysis" / "apollo_module_consumption"
     projection_dir.mkdir(parents=True)
     reference_dir.mkdir(parents=True)
+    module_dir.mkdir(parents=True)
     (projection_dir / "apollo_hdmap_projection_report.json").write_text(
         json.dumps(
             {
@@ -446,6 +448,19 @@ def test_phase1_postprocess_refreshes_projection_and_reference_before_link_healt
                 "schema_version": "apollo_reference_line_contract.v1",
                 "status": "insufficient_data",
                 "warnings": ["apollo_hdmap_projection_missing"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (module_dir / "apollo_module_consumption_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_module_consumption.v1",
+                "status": "fail",
+                "blocking_reasons": [
+                    "claim_route_consumption_unverified",
+                    "route_contract_unverified_before_module_consumption_claim",
+                ],
             }
         ),
         encoding="utf-8",
@@ -477,6 +492,10 @@ def test_phase1_postprocess_refreshes_projection_and_reference_before_link_healt
         json.dumps({"timestamp": 0.0, "planning_reference_available": True}) + "\n",
         encoding="utf-8",
     )
+    (run / "artifacts" / "planning_topic_debug_summary.json").write_text(
+        json.dumps({"total_messages_received": 10, "messages_with_nonzero_trajectory_points": 9}),
+        encoding="utf-8",
+    )
 
     def fake_reference(run_dir):
         refreshed_projection = json.loads(
@@ -504,6 +523,34 @@ def test_phase1_postprocess_refreshes_projection_and_reference_before_link_healt
             "apollo_reference_line_contract_summary": str(out_dir / "apollo_reference_line_contract_summary.md"),
         }
 
+    def fake_module_consumption(run_dir):
+        refreshed_reference = json.loads(
+            (
+                run_dir
+                / "analysis"
+                / "apollo_reference_line_contract"
+                / "apollo_reference_line_contract_report.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert refreshed_reference["status"] == "warn"
+        return {
+            "schema_version": "apollo_module_consumption.v1",
+            "status": "warn",
+            "blocking_reasons": [],
+            "warnings": ["route_or_reference_line_failure_logs_transient"],
+            "apollo_route_contract_status": "warn",
+            "routing_response_consumed_by_planning": True,
+        }
+
+    def fake_write_module_consumption(report, out_dir):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report_path = out_dir / "apollo_module_consumption_report.json"
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "apollo_module_consumption_report": str(report_path),
+            "apollo_module_consumption_summary": str(out_dir / "apollo_module_consumption_summary.md"),
+        }
+
     def fake_link_health(run_dir, out_dir):
         refreshed = json.loads(
             (run_dir / "analysis" / "apollo_hdmap_projection" / "apollo_hdmap_projection_report.json").read_text(
@@ -522,6 +569,13 @@ def test_phase1_postprocess_refreshes_projection_and_reference_before_link_healt
         )
         assert reference["status"] == "warn"
         assert reference["evidence"]["apollo_hdmap_projection_claim_grade"] is True
+        module = json.loads(
+            (
+                run_dir / "analysis" / "apollo_module_consumption" / "apollo_module_consumption_report.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert module["status"] == "warn"
+        assert module["blocking_reasons"] == []
         out_dir.mkdir(parents=True, exist_ok=True)
         report_path = out_dir / "apollo_link_health_report.json"
         report_path.write_text(
@@ -537,6 +591,8 @@ def test_phase1_postprocess_refreshes_projection_and_reference_before_link_healt
 
     monkeypatch.setattr(phase1_postprocess, "analyze_apollo_reference_line_contract_run_dir", fake_reference)
     monkeypatch.setattr(phase1_postprocess, "write_apollo_reference_line_contract_report", fake_write_reference)
+    monkeypatch.setattr(phase1_postprocess, "analyze_apollo_module_consumption_run_dir", fake_module_consumption)
+    monkeypatch.setattr(phase1_postprocess, "write_apollo_module_consumption_report", fake_write_module_consumption)
     monkeypatch.setattr(phase1_postprocess, "analyze_and_write_apollo_link_health", fake_link_health)
 
     report = run_phase1_postprocess(run)
@@ -544,13 +600,16 @@ def test_phase1_postprocess_refreshes_projection_and_reference_before_link_healt
     refreshed_reference = json.loads(
         (reference_dir / "apollo_reference_line_contract_report.json").read_text(encoding="utf-8")
     )
+    refreshed_module = json.loads((module_dir / "apollo_module_consumption_report.json").read_text(encoding="utf-8"))
 
     assert report["apollo_hdmap_projection_status"] == "pass"
     assert report["apollo_reference_line_contract_status"] == "warn"
+    assert report["apollo_module_consumption_status"] == "warn"
     assert report["apollo_link_health_primary_blocker"] == "planning_reference_line:insufficient_data"
     assert refreshed["artifact_status"] == "projection_rows_present"
     assert refreshed["projection"]["official_row_count"] == 60
     assert refreshed_reference["status"] == "warn"
+    assert refreshed_module["blocking_reasons"] == []
 
 
 def _make_run_apollo_fixed_scene(run) -> None:
