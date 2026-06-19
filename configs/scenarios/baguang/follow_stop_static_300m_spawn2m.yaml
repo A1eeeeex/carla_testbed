@@ -1,0 +1,57 @@
+schema_version: scenario_spec.v1
+scenario_id: baguang_follow_stop_static_300m_spawn2m
+aliases:
+  - baguang_followstop_300m_80kph_spawn2m
+map: straight_road_for_baguang
+route_id: straight_road_for_baguang_mainline_followstop_300m_spawn2m
+scenario_class: follow_stop_static
+gate_role: diagnostic_gate
+target_actor:
+  required: true
+  role: lead_vehicle
+  activation:
+    activation_semantics: active_from_scenario_start
+    active_after_phase: null
+fixed_scene:
+  schema_version: fixed_scene_template.v1
+  template: static_lead_stop
+  roles:
+    ego:
+      control_owner: backend
+      spawn_ref: carla_spawn_index_0
+      spawn:
+        s_offset_m: 2.0
+        reason: avoid_baguang_road_start_lane_invasion_sensor_artifact
+      initial_speed_mps: 0.0
+    lead_vehicle:
+      control_owner: fixed_scene_player
+      blueprint: vehicle.lincoln.mkz_2020
+      spawn:
+        relative_to: ego
+        lane: same
+        s_offset_m: 300.0
+        feasibility:
+          enabled: true
+          s_offset_tolerance_m: 10.0
+          max_lateral_m: 4.0
+          require_waypoint: true
+  params:
+    duration_s: 90.0
+    ego_target_speed_mps: 22.22
+    ego_target_speed_kph: 80.0
+    lead_initial_state: stopped
+    hold_s: 90.0
+  success_criteria:
+    lead_vehicle_initial_state: stopped
+    lead_vehicle_stays_stopped: true
+    min_stop_gap_m: 8.0
+required_artifacts:
+  - fixed_scene_resolved.json
+  - fixed_scene_runtime_state.json
+  - scenario_actor_trace.jsonl
+  - scenario_phase_events.jsonl
+  - ego_control_trace.jsonl
+claim_boundary:
+  fixed_scene_playback_is_not_autonomy_evidence: true
+  builtin_controller_is_diagnostic_only: true
+notes: "Diagnostic Baguang stopped-front-vehicle variant that starts ego 2m past CARLA spawn 0 to avoid the observed road-start lane-invasion sensor artifact. Not an Apollo/Autoware capability claim."

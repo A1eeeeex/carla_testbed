@@ -209,3 +209,17 @@ profile.
   backend wrapper fully owns that runtime path.
 - Legacy fallback is compatibility behavior; it is not evidence that the new
   platform dispatch layer is complete.
+
+Phase 1 currently has a deliberately narrow Apollo fixed-scene compatibility
+exception for Baguang static follow-stop variants:
+`baguang/follow_stop_static_300m` and
+`baguang/follow_stop_static_300m_spawn2m` can expose guarded legacy transition
+commands through the `apollo_cyberrt` LaunchPlan. The canonical case uses
+`configs/io/examples/phase1_baguang_apollo_followstop_static_compat.yaml`; the
+2m shifted-start diagnostic mitigation uses
+`configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml`.
+Both must still be executed explicitly through the legacy-dispatch guard. This
+is a static follow-stop compatibility path only; dynamic lead accel/decel,
+cut-in/cut-out, and other fixed-scene cases remain `runtime migration required`
+until they produce fixed-scene actor trace, obstacle GT linkage, v-t-gap,
+phase1_status, and comparison artifacts from a real online run.
