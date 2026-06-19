@@ -140,6 +140,16 @@ Additional run-local artifacts:
     actor.
 - `artifacts/scenario_actor_trace.jsonl`
   - fixed-scene actor state trace; used by `v-t-gap` extraction.
+- `artifacts/safety_event_trace.jsonl`
+  - optional Phase 1 runtime safety-event trace for CARLA collision and lane
+    invasion sensors. `carla_builtin` creates this file even when no safety
+    event occurs, so `summary.json.safety_event_trace_path` is a stable path.
+  - rows use `schema_version=builtin_safety_event.v1` and record event type,
+    frame/timestamp, collision actor identity, or crossed lane-marking types
+    when CARLA provides them.
+  - this is scenario-run safety evidence only. A clean safety trace for
+    `carla_builtin` is not Apollo, Autoware, or natural-driving capability
+    evidence.
 - `analysis/v_t_gap/v_t_gap_report.json`
   - schema: `v_t_gap.v1`
 - `analysis/v_t_gap/v_t_gap.csv`
