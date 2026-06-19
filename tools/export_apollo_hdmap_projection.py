@@ -17,6 +17,7 @@ from carla_testbed.analysis.apollo_hdmap_projection import (  # noqa: E402
 from carla_testbed.analysis.apollo_hdmap_projection_export import (  # noqa: E402
     MapXyslConfig,
     export_apollo_hdmap_projection_jsonl,
+    infer_map_xysl_config_from_run_dir,
 )
 
 DEFAULT_TOWN01_FRAME_TRANSFORM = REPO_ROOT / "configs" / "town01" / "apollo_frame_transform.example.yaml"
@@ -39,9 +40,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--container", default="apollo_neo_dev_10.0.0_pkg", help="Apollo Docker container name.")
-    parser.add_argument("--map-dir", default="/apollo/modules/map/data/carla_town01", help="Apollo map directory inside container.")
-    parser.add_argument("--base-map-filename", default="base_map.txt", help="Apollo base map filename.")
-    parser.add_argument("--map-name", default="Town01", help="Map name recorded in output rows.")
+    parser.add_argument(
+        "--map-dir",
+        default=None,
+        help=(
+            "Apollo map directory inside container. Defaults to run-local "
+            "artifacts/map_contract_guard.json when --run-dir is provided; "
+            "otherwise falls back to /apollo/modules/map/data/carla_town01."
+        ),
+    )
+    parser.add_argument(
+        "--base-map-filename",
+        default=None,
+        help="Apollo base map filename. Defaults to the run-local map contract or base_map.txt.",
+    )
+    parser.add_argument(
+        "--map-name",
+        default=None,
+        help="Map name recorded in output rows. Defaults to the run-local map contract or Town01.",
+    )
     parser.add_argument("--map-xysl-bin", default="/opt/apollo/neo/bin/map_xysl", help="Apollo map_xysl binary path.")
     parser.add_argument(
         "--frame-transform",
@@ -112,10 +129,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         raise SystemExit("--out is required when --run-dir is not set")
 
+    inferred_cfg = infer_map_xysl_config_from_run_dir(run_dir)
     cfg = MapXyslConfig(
-        map_dir=args.map_dir,
-        base_map_filename=args.base_map_filename,
-        map_name=args.map_name,
+        map_dir=args.map_dir or inferred_cfg.map_dir,
+        base_map_filename=args.base_map_filename or inferred_cfg.base_map_filename,
+        map_name=args.map_name or inferred_cfg.map_name,
         docker_container=None if args.no_docker else args.container,
         map_xysl_bin=args.map_xysl_bin,
         timeout_s=args.timeout_s,

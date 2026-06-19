@@ -15,6 +15,7 @@ from carla_testbed.analysis.apollo_hdmap_projection_export import (
     MapXyslConfig,
     build_map_xysl_command,
     export_apollo_hdmap_projection_jsonl,
+    infer_map_xysl_config_from_run_dir,
     load_localization_projection_samples,
     parse_map_xysl_xy_to_sl_output,
     project_sample_with_map_xysl,
@@ -546,6 +547,97 @@ def test_projection_samples_can_fallback_to_scenario_goal_route(tmp_path: Path) 
     assert samples[0].metadata["route_heading_source"] == "scenario_goal_chord"
     assert abs(samples[0].metadata["expected_route_distance_m"] - 300.0) < 0.01
     assert all(sample.heading is not None and abs(abs(sample.heading) - 3.141) < 0.01 for sample in samples)
+
+
+def test_projection_samples_can_fallback_to_fixed_scene_scenario_metadata(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "artifacts" / "scenario_metadata.json",
+        {
+            "spawn": {"x": 297.697, "y": -5.254, "z": 0.446, "yaw_deg": 179.97},
+            "front_spawn": {"x": -2.303, "y": -5.096, "z": 0.446, "yaw_deg": 179.97},
+            "front_alignment": {
+                "aligned": True,
+                "longitudinal_m": 300.0,
+                "lateral_m": 0.01,
+            },
+            "front_waypoint_ahead_m": 300.0,
+        },
+    )
+    transform_path = tmp_path / "apollo_frame_transform.yaml"
+    _write_json(
+        transform_path,
+        {
+            "transform": {
+                "tx": 0.0,
+                "ty": 0.0,
+                "tz": 0.0,
+                "yaw_rad": 0.0,
+                "scale": 1.0,
+                "y_flip": True,
+            }
+        },
+    )
+
+    without_transform = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_route_samples=True,
+        route_sample_step_m=100.0,
+        max_samples=0,
+    )
+    samples = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_start_goal=True,
+        include_route_samples=True,
+        frame_transform_path=transform_path,
+        route_sample_step_m=100.0,
+        max_samples=0,
+    )
+
+    assert without_transform == []
+    assert len(samples) == 4
+    assert [sample.sample_type for sample in samples[:2]] == ["start", "goal"]
+    assert all("scenario_metadata.json" in sample.source_artifact for sample in samples)
+    assert [(round(sample.x, 3), round(sample.y, 3)) for sample in samples[:2]] == [
+        (297.697, 5.254),
+        (-2.303, 5.096),
+    ]
+    route_samples = [sample for sample in samples if sample.sample_type == "route"]
+    assert [sample.metadata["route_s"] for sample in route_samples] == [100.0, 200.0]
+    assert all(sample.metadata["scenario_metadata_source"] == "fixed_scene_front_alignment" for sample in samples)
+    assert all(sample.metadata["expected_route_distance_m"] == 300.0 for sample in samples)
+    assert all(sample.heading is not None and abs(abs(sample.heading) - 3.141) < 0.01 for sample in samples)
+
+
+def test_infer_map_xysl_config_from_run_dir_uses_map_contract_guard(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "artifacts" / "map_contract_guard.json",
+        {
+            "dreamview_selected_map": "straight_road_for_baguang",
+            "runtime_map_dir_container_actual": "/apollo/modules/map/data/older_guess",
+            "container_runtime_probe": {
+                "selected_runtime_map_dir": "/apollo/modules/map/data/straight_road_for_baguang",
+                "component_paths": {
+                    "base_map": "/apollo/modules/map/data/straight_road_for_baguang/base_map.txt"
+                },
+            },
+        },
+    )
+
+    cfg = infer_map_xysl_config_from_run_dir(
+        run_dir,
+        base_config=MapXyslConfig(
+            map_dir="/apollo/modules/map/data/carla_town01",
+            map_name="Town01",
+            docker_container="apollo",
+        ),
+    )
+
+    assert cfg.map_dir == "/apollo/modules/map/data/straight_road_for_baguang"
+    assert cfg.map_name == "straight_road_for_baguang"
+    assert cfg.base_map_filename == "base_map.txt"
+    assert cfg.docker_container == "apollo"
 
 
 def test_projection_samples_transform_runtime_route_json_carla_frame(tmp_path: Path) -> None:

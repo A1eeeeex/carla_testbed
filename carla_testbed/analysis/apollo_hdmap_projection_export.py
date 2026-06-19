@@ -8,7 +8,7 @@ import subprocess
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from carla_testbed.adapters.apollo.frame_transform import (
     ApolloFrameTransform,
@@ -51,6 +51,75 @@ class MapXyslConfig:
 
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def infer_map_xysl_config_from_run_dir(
+    run_dir: str | Path | None,
+    *,
+    base_config: MapXyslConfig | None = None,
+) -> MapXyslConfig:
+    """Infer Apollo map_xysl config from run-local map contract artifacts.
+
+    This keeps operator commands map-specific without hard-coding Town01 into
+    Baguang or future custom-map projection exports. Explicit CLI/config values
+    should still override this inferred config at the call site.
+    """
+
+    cfg = base_config or MapXyslConfig()
+    if run_dir is None:
+        return cfg
+    root = Path(run_dir).expanduser()
+    guard = _read_json_mapping(root / "artifacts" / "map_contract_guard.json")
+    if not guard:
+        return cfg
+
+    probe = guard.get("container_runtime_probe") if isinstance(guard.get("container_runtime_probe"), Mapping) else {}
+    component_paths = (
+        guard.get("container_component_paths")
+        if isinstance(guard.get("container_component_paths"), Mapping)
+        else {}
+    )
+    probe_component_paths = (
+        probe.get("component_paths")
+        if isinstance(probe.get("component_paths"), Mapping)
+        else {}
+    )
+
+    map_dir = _first_text(
+        [
+            probe.get("selected_runtime_map_dir"),
+            guard.get("runtime_map_dir_container_actual"),
+            Path(str(probe_component_paths.get("base_map"))).parent
+            if probe_component_paths.get("base_map")
+            else None,
+            Path(str(component_paths.get("base_map"))).parent
+            if component_paths.get("base_map")
+            else None,
+        ]
+    )
+    base_map_filename = _first_text(
+        [
+            Path(str(probe_component_paths.get("base_map"))).name
+            if probe_component_paths.get("base_map")
+            else None,
+            Path(str(component_paths.get("base_map"))).name
+            if component_paths.get("base_map")
+            else None,
+        ]
+    )
+    map_name = _first_text(
+        [
+            guard.get("dreamview_selected_map"),
+            guard.get("map_name"),
+            Path(str(map_dir)).name if map_dir else None,
+        ]
+    )
+    return replace(
+        cfg,
+        map_dir=map_dir or cfg.map_dir,
+        base_map_filename=base_map_filename or cfg.base_map_filename,
+        map_name=map_name or cfg.map_name,
+    )
 
 
 def load_localization_projection_samples(
@@ -106,6 +175,12 @@ def load_localization_projection_samples(
             route_samples = _samples_from_manifest_route_trace(
                 root / "manifest.json",
                 frame_transform=frame_transform,
+            )
+        if not route_samples:
+            route_samples = _samples_from_scenario_metadata(
+                root / "artifacts" / "scenario_metadata.json",
+                frame_transform=frame_transform,
+                step_m=route_sample_step_m,
             )
         if not route_samples:
             route_samples = _samples_from_scenario_goal(
@@ -350,6 +425,26 @@ def _decode_output(value: Any) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+def _read_json_mapping(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _first_text(values: Iterable[Any]) -> str | None:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
 
 
 def parse_map_xysl_xy_to_sl_output(output: str) -> dict[str, Any] | None:
@@ -647,6 +742,149 @@ def _samples_from_scenario_goal(
     return samples
 
 
+def _samples_from_scenario_metadata(
+    path: Path,
+    *,
+    frame_transform: ApolloFrameTransform | None,
+    step_m: float | None,
+) -> list[LocalizationProjectionSample]:
+    if frame_transform is None or not path.exists():
+        return []
+    payload = _read_json_mapping(path)
+    if not payload:
+        return []
+    route_trace = payload.get("route_trace")
+    if isinstance(route_trace, SequenceABC) and not isinstance(route_trace, (str, bytes)):
+        return _samples_from_route_trace_points(
+            route_trace,
+            source_artifact=f"{path}:route_trace",
+            frame_transform=frame_transform,
+        )
+
+    alignment = payload.get("front_alignment") if isinstance(payload.get("front_alignment"), Mapping) else {}
+    if alignment and alignment.get("aligned") is not True:
+        return []
+    spawn = payload.get("spawn") if isinstance(payload.get("spawn"), Mapping) else {}
+    front_spawn = payload.get("front_spawn") if isinstance(payload.get("front_spawn"), Mapping) else {}
+    start_x = _first_number(spawn, ["x", "carla_x"])
+    start_y = _first_number(spawn, ["y", "carla_y"])
+    start_z = _first_number(spawn, ["z", "carla_z"]) or 0.0
+    goal_x = _first_number(front_spawn, ["x", "carla_x"])
+    goal_y = _first_number(front_spawn, ["y", "carla_y"])
+    goal_z = _first_number(front_spawn, ["z", "carla_z"]) or start_z
+    if start_x is None or start_y is None or goal_x is None or goal_y is None:
+        return []
+
+    start_apollo = carla_point_to_apollo(Vector3(x=start_x, y=start_y, z=start_z), frame_transform)
+    goal_apollo = carla_point_to_apollo(Vector3(x=goal_x, y=goal_y, z=goal_z), frame_transform)
+    dx = goal_apollo.x - start_apollo.x
+    dy = goal_apollo.y - start_apollo.y
+    chord_length = math.hypot(dx, dy)
+    length = _first_number(
+        alignment,
+        ["longitudinal_m", "euclidean_m", "distance_m"],
+    )
+    if length is None:
+        length = _first_number(payload, ["front_waypoint_ahead_m", "target_ahead_m"])
+    if length is None:
+        length = chord_length
+    if chord_length <= 1e-6 or length <= 0.0:
+        return []
+    chord_heading = math.atan2(dy, dx)
+    trace_heading = _carla_heading_to_apollo(
+        _first_number(spawn, ["yaw_rad", "heading", "yaw"])
+        if _first_number(spawn, ["yaw_rad", "heading", "yaw"]) is not None
+        else _yaw_deg_to_rad(spawn.get("yaw_deg")),
+        frame_transform,
+    )
+    step = _float(step_m)
+    sample_count = max(2, int(math.ceil(length / step)) + 1) if step and step > 0.0 else 2
+    samples: list[LocalizationProjectionSample] = []
+    for index in range(sample_count):
+        fraction = index / float(sample_count - 1) if sample_count > 1 else 0.0
+        route_s = float(length) * fraction
+        carla_x = float(start_x) + (float(goal_x) - float(start_x)) * fraction
+        carla_y = float(start_y) + (float(goal_y) - float(start_y)) * fraction
+        carla_z = float(start_z) + (float(goal_z) - float(start_z)) * fraction
+        metadata = {
+            "route_index": index,
+            "route_s": route_s,
+            "route_length_m": float(length),
+            "expected_route_distance_m": float(length),
+            "carla_x": carla_x,
+            "carla_y": carla_y,
+            "carla_z": carla_z,
+            "route_trace_heading_apollo": trace_heading,
+            "route_chord_heading_apollo": chord_heading,
+            "route_heading_source": "fixed_scene_front_alignment_chord",
+            "scenario_metadata_source": "fixed_scene_front_alignment",
+            "front_alignment_longitudinal_m": alignment.get("longitudinal_m"),
+            "front_alignment_lateral_m": alignment.get("lateral_m"),
+        }
+        samples.append(
+            LocalizationProjectionSample(
+                timestamp=None,
+                x=start_apollo.x + dx * fraction,
+                y=start_apollo.y + dy * fraction,
+                heading=chord_heading,
+                source_artifact=str(path),
+                source_index=index,
+                sample_type="route",
+                metadata={key: value for key, value in metadata.items() if value is not None},
+            )
+        )
+    return samples
+
+
+def _samples_from_route_trace_points(
+    points: SequenceABC,
+    *,
+    source_artifact: str,
+    frame_transform: ApolloFrameTransform,
+) -> list[LocalizationProjectionSample]:
+    chord_headings = _route_chord_headings(
+        points,
+        frame_transform=frame_transform,
+        points_are_carla_frame=True,
+    )
+    samples: list[LocalizationProjectionSample] = []
+    for index, item in enumerate(points):
+        if not isinstance(item, Mapping):
+            continue
+        x = _first_number(item, ["x", "carla_x"])
+        y = _first_number(item, ["y", "carla_y"])
+        z = _first_number(item, ["z", "carla_z"]) or 0.0
+        if x is None or y is None:
+            continue
+        apollo_point = carla_point_to_apollo(Vector3(x=x, y=y, z=z), frame_transform)
+        trace_heading = _carla_heading_to_apollo(item.get("heading"), frame_transform)
+        chord_heading = chord_headings.get(index)
+        metadata = _route_sample_metadata(item, index=index)
+        metadata.update(
+            {
+                "carla_x": x,
+                "carla_y": y,
+                "carla_z": z,
+                "route_trace_heading_apollo": trace_heading,
+                "route_chord_heading_apollo": chord_heading,
+                "route_heading_source": "route_chord" if chord_heading is not None else "route_trace",
+            }
+        )
+        samples.append(
+            LocalizationProjectionSample(
+                timestamp=_first_number(item, ["sim_time_sec", "timestamp", "time_sec"]),
+                x=apollo_point.x,
+                y=apollo_point.y,
+                heading=chord_heading if chord_heading is not None else trace_heading,
+                source_artifact=source_artifact,
+                source_index=index,
+                sample_type="route",
+                metadata={key: value for key, value in metadata.items() if value is not None},
+            )
+        )
+    return samples
+
+
 def _carla_heading_to_apollo(value: Any, frame_transform: ApolloFrameTransform) -> float | None:
     heading = _float(value)
     if heading is None:
@@ -655,6 +893,11 @@ def _carla_heading_to_apollo(value: Any, frame_transform: ApolloFrameTransform) 
         Vector3(x=math.cos(heading), y=math.sin(heading), z=0.0),
         frame_transform,
     )
+
+
+def _yaw_deg_to_rad(value: Any) -> float | None:
+    number = _float(value)
+    return math.radians(number) if number is not None else None
 
 
 def _heading_error_from_metadata(

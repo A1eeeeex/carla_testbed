@@ -1491,6 +1491,15 @@ python tools/export_apollo_hdmap_projection.py \
   --out <run_dir>/artifacts/apollo_hdmap_projection.jsonl
 ```
 
+With `--run-dir`, the exporter first tries to infer the container map directory,
+base-map filename, and map name from `artifacts/map_contract_guard.json`; pass
+`--map-dir` / `--map-name` only when overriding that run-local contract. For
+fixed-scene runs, route samples may come from `route.json`, manifest
+`metadata.scenario_metadata.route_trace`, `artifacts/scenario_metadata.json`
+front-alignment spawn/target metadata, or finally `artifacts/scenario_goal.json`.
+The source is recorded per row so operator-generated projection evidence remains
+auditable.
+
 The exporter status records `failure_reason`, requested route-s coverage,
 observed `projection_s_coverage_m`, and non-ok projection status counts.
 

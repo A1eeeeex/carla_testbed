@@ -518,11 +518,17 @@ Latest Apollo follow-stop cadence refinement, `2026-06-19`:
   link-health primary blocker initially shifted to missing scenario route
   fields. After route-contract postprocess consumes runtime
   `artifacts/scenario_metadata.json` front alignment, the same run records a
-  `300m` fixed-scene route trace and CARLA lane signature `0:-2`; the current
-  primary blocker is
-  `route_establishment:apollo_hdmap_projection_for_lane_equivalence`. The next
-  highest-value work is therefore official Apollo HDMap projection evidence for
-  the Baguang fixed-scene route samples, not bridge smoothing or PID tuning.
+  `300m` fixed-scene route trace and CARLA lane signature `0:-2`. Exporting
+  official Apollo HDMap API projection rows for the same run produces 80/80 ok
+  rows over about `301.4m` of projection-s coverage; this moves
+  `apollo_route_contract` from `insufficient_data` to `warn` rather than pass,
+  because CARLA lane `0:-2` and Apollo lane `0_0_2` remain cross-namespace and
+  require explicit equivalence evidence. The refreshed link-health primary
+  blocker moves downstream to
+  `channel_health:localization:header_sim_gap_over_contract`. This is
+  diagnostic progress only; it is not a driving improvement and does not justify
+  bridge smoothing or PID tuning before the localization/channel timing contract
+  is explained.
 
 Implementation note added after the 2026-06-16 review:
 
