@@ -39,6 +39,11 @@ diagnostics on `straight_road_for_baguang`:
 
 - `configs/scenarios/baguang/follow_stop_static_300m.yaml`
   - ego target speed 80kph, lead vehicle stopped 300m ahead.
+- `configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml`
+  - same static 300m stopped-lead case, but the ego spawn is shifted 2m
+    downstream from CARLA spawn 0. The builtin runner records this as
+    `ego_spawn_s_offset_m`; it is a scenario/map contract mitigation for
+    diagnostic Phase 1 runs, not Apollo/Autoware capability evidence.
 - `configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml`
   - ego and lead start near 40kph with a 20m gap; after 5s the lead ramps
     toward 70kph and the scene lasts until the lead reaches the current
@@ -140,6 +145,11 @@ python tools/run_builtin_ego_fixed_scene.py \
   --town straight_road_for_baguang \
   --duration-s 30
 ```
+
+If a scenario declares `fixed_scene.roles.ego.spawn.s_offset_m`, the builtin
+runner shifts the ego spawn along the CARLA waypoint route before spawning and
+records the applied value in `manifest.json` and `summary.json`. The CLI
+`--ego-spawn-s-offset-m` can override this for local diagnostic probes.
 
 This command writes `artifacts/ego_control_trace.jsonl`, `timeseries.csv`,
 `manifest.json`, `summary.json`, and the fixed-scene contract reports. It sets

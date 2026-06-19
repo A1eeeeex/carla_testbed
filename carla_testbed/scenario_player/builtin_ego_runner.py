@@ -34,6 +34,7 @@ def run_builtin_ego_fixed_scene(
     duration_s: float | None = None,
     fixed_dt_s: float = 0.05,
     ego_spawn_index: int | None = None,
+    ego_spawn_s_offset_m: float | None = None,
     target_speed_mps: float | None = None,
     follow_spectator: bool = False,
     spectator_distance: float = 14.0,
@@ -54,6 +55,11 @@ def run_builtin_ego_fixed_scene(
     duration = float(duration_s or params.get("duration_s", 45.0) or 45.0)
     target_speed = float(target_speed_mps or params.get("ego_target_speed_mps", 19.44) or 19.44)
     spawn_index = ego_spawn_index if ego_spawn_index is not None else _spawn_index_from_ref(_ego_spawn_ref(storyboard))
+    spawn_s_offset_m = (
+        float(ego_spawn_s_offset_m)
+        if ego_spawn_s_offset_m is not None
+        else _ego_spawn_s_offset_m(storyboard)
+    )
 
     client = carla.Client(host, int(port))
     client.set_timeout(30.0)
@@ -89,7 +95,7 @@ def run_builtin_ego_fixed_scene(
     safety_tracker: SafetyEventTracker | None = None
     try:
         _append_event(events_path, {"event": "run_started", "wall_time_s": start_wall})
-        ego = _spawn_ego(world, spawn_index=spawn_index)
+        ego = _spawn_ego(world, spawn_index=spawn_index, spawn_s_offset_m=spawn_s_offset_m)
         safety_tracker = SafetyEventTracker(world=world, ego=ego, artifact_dir=artifacts)
         _tick_world_if_available(world)
         _set_initial_speed(ego, _safe_call(ego, "get_transform"), _ego_initial_speed(storyboard))
@@ -235,6 +241,9 @@ def run_builtin_ego_fixed_scene(
         ],
         "output_control_mode": "carla_vehicle_control",
         "transport_mode": "direct_python_api",
+        "ego_spawn_index": int(spawn_index),
+        "ego_spawn_s_offset_m": float(spawn_s_offset_m),
+        "ego_spawn_source": "carla_spawn_waypoint_offset" if float(spawn_s_offset_m) > 0.0 else "carla_spawn_point",
         "starts_runtime": True,
         "ego_control_source": "carla_testbed_builtin_controller",
         "scenario_actor_control_source": "fixed_scene_player",
@@ -266,6 +275,7 @@ def run_builtin_ego_fixed_scene(
         "cleanup_errors": cleanup_errors,
         "claim_boundary": "diagnostic_only_not_natural_driving_evidence",
         "ego_control_source": "carla_testbed_builtin_controller",
+        "ego_spawn_s_offset_m": float(spawn_s_offset_m),
         "collision_count": safety_summary["collision_count"],
         "lane_invasion_count": safety_summary["lane_invasion_count"],
         "collision_sensor_available": safety_summary["collision_sensor_available"],
@@ -325,18 +335,70 @@ def _ego_initial_speed(storyboard: Mapping[str, Any]) -> float | None:
     return None
 
 
-def _spawn_ego(world: Any, *, spawn_index: int) -> Any:
+def _ego_spawn_s_offset_m(storyboard: Mapping[str, Any]) -> float:
+    roles = storyboard.get("roles") if isinstance(storyboard.get("roles"), Mapping) else {}
+    ego = roles.get("ego") if isinstance(roles.get("ego"), Mapping) else {}
+    spawn = ego.get("spawn") if isinstance(ego.get("spawn"), Mapping) else {}
+    value = spawn.get("s_offset_m") if isinstance(spawn, Mapping) else None
+    return float(value) if value is not None else 0.0
+
+
+def _spawn_ego(world: Any, *, spawn_index: int, spawn_s_offset_m: float = 0.0) -> Any:
     blueprint = _find_ego_blueprint(world)
-    spawns = list(world.get_map().get_spawn_points())
-    if not spawns:
-        raise RuntimeError("CARLA map has no spawn points")
-    transform = spawns[max(0, min(int(spawn_index), len(spawns) - 1))]
+    transform = _ego_spawn_transform(world, spawn_index=spawn_index, spawn_s_offset_m=spawn_s_offset_m)
     actor = world.try_spawn_actor(blueprint, transform)
     if actor is None:
         actor = world.spawn_actor(blueprint, transform)
     if hasattr(actor, "set_autopilot"):
         actor.set_autopilot(False)
     return actor
+
+
+def _ego_spawn_transform(world: Any, *, spawn_index: int, spawn_s_offset_m: float = 0.0) -> Any:
+    spawns = list(world.get_map().get_spawn_points())
+    if not spawns:
+        raise RuntimeError("CARLA map has no spawn points")
+    transform = spawns[max(0, min(int(spawn_index), len(spawns) - 1))]
+    if float(spawn_s_offset_m) <= 0.0:
+        return transform
+    waypoint_transform = _waypoint_transform_ahead(world, transform, float(spawn_s_offset_m))
+    return waypoint_transform or transform
+
+
+def _waypoint_transform_ahead(world: Any, transform: Any, distance_m: float) -> Any | None:
+    try:
+        carla_map = world.get_map()
+        waypoint = carla_map.get_waypoint(getattr(transform, "location"), project_to_road=True)
+    except TypeError:
+        try:
+            waypoint = world.get_map().get_waypoint(getattr(transform, "location"))
+        except Exception:
+            return None
+    except Exception:
+        return None
+    if waypoint is None:
+        return None
+    try:
+        candidates = waypoint.next(float(distance_m))
+    except Exception:
+        return None
+    if not candidates:
+        return None
+    waypoint_transform = getattr(candidates[0], "transform", None)
+    if waypoint_transform is not None:
+        _preserve_spawn_height(transform, waypoint_transform)
+    return waypoint_transform
+
+
+def _preserve_spawn_height(base_transform: Any, shifted_transform: Any) -> None:
+    base_location = getattr(base_transform, "location", None)
+    shifted_location = getattr(shifted_transform, "location", None)
+    if base_location is None or shifted_location is None:
+        return
+    try:
+        shifted_location.z = _float_attr(base_location, "z", _float_attr(shifted_location, "z", 0.0))
+    except Exception:
+        return
 
 
 def _tick_world_if_available(world: Any) -> None:

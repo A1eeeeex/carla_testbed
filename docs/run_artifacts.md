@@ -49,6 +49,9 @@ The legacy harness still writes CSV-oriented frame data.
   - `available_truth_fields`
   - `output_control_mode`
   - `transport_mode`
+  - `ego_spawn_index`
+  - `ego_spawn_s_offset_m`
+  - `ego_spawn_source`
 - `algorithm_variant_id` and `algorithm_variant_manifest_path` for any
   capability claim. The variant manifest must resolve inside the package and
   identify the same variant; missing or mismatched variant metadata keeps the
@@ -57,6 +60,11 @@ The legacy harness still writes CSV-oriented frame data.
 
 Use the manifest to identify what the run claimed to execute. Do not use it as
 a replacement for per-frame evidence.
+
+For Phase 1 fixed-scene diagnostics, `ego_spawn_s_offset_m` records a configured
+or CLI-provided shift along the CARLA waypoint route before spawning ego. It is
+RunConfig/setup evidence for reproducing the scene, not a backend behavior
+metric and not an autonomy capability claim.
 
 ## `config.resolved.yaml`
 

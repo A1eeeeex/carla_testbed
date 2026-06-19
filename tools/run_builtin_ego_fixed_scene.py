@@ -23,6 +23,11 @@ def main() -> int:
     parser.add_argument("--duration-s", type=float)
     parser.add_argument("--fixed-dt-s", type=float, default=0.05)
     parser.add_argument("--ego-spawn-index", type=int)
+    parser.add_argument(
+        "--ego-spawn-s-offset-m",
+        type=float,
+        help="Move ego spawn forward along the CARLA waypoint route before spawning; diagnostic RunConfig evidence only.",
+    )
     parser.add_argument("--target-speed-mps", type=float)
     parser.add_argument("--follow-spectator", action="store_true")
     parser.add_argument("--spectator-distance", type=float, default=14.0)
@@ -40,6 +45,7 @@ def main() -> int:
         duration_s=args.duration_s,
         fixed_dt_s=args.fixed_dt_s,
         ego_spawn_index=args.ego_spawn_index,
+        ego_spawn_s_offset_m=args.ego_spawn_s_offset_m,
         target_speed_mps=args.target_speed_mps,
         follow_spectator=args.follow_spectator,
         spectator_distance=args.spectator_distance,
