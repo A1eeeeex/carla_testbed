@@ -179,6 +179,71 @@ def test_fixed_scene_phase_trigger_not_reached_is_evaluable_backend_failure(tmp_
     assert report["evaluable"] is True
 
 
+def test_early_lane_invasion_before_phase_activation_is_evaluable_failure(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    (run / "summary.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "exit_reason": "LANE_INVASION_HARD",
+                "lane_invasion_count": 1,
+                "collision_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "invalid",
+                "invalid_reason": "missing_target_activation_phase",
+                "target_actor_contract": {
+                    "status": "resolved",
+                    "target_actor_role": "cutin_vehicle",
+                    "activation": {
+                        "activation_semantics": "active_after_phase",
+                        "active_after_phase": "cut_in_lane_change",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    fixed_out = run / "analysis" / "fixed_scene_contract"
+    fixed_out.mkdir(parents=True)
+    (fixed_out / "fixed_scene_contract_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "fixed_scene_contract.v1",
+                "status": "fail",
+                "blocking_reasons": [
+                    "fixed_scene_required_phase_not_started",
+                    "fixed_scene_required_phase_not_completed",
+                    "duration_policy_route_end_not_reached",
+                ],
+                "spawn_feasibility": {"lead_vehicle": {"status": "pass", "blocking_reasons": []}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    actor_out = run / "analysis" / "scenario_actor_contract"
+    actor_out.mkdir(parents=True)
+    (actor_out / "scenario_actor_contract_report.json").write_text(
+        json.dumps({"schema_version": "scenario_actor_contract.v1", "status": "insufficient_data"}),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "lane_invasion"
+    assert report["failed_reasons"] == ["lane_invasion"]
+    assert report["invalid_reasons"] == []
+    assert report["evaluable"] is True
+
+
 def test_large_final_gap_is_degraded(tmp_path) -> None:
     run = _base_run(tmp_path)
     out = run / "analysis" / "v_t_gap"

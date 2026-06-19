@@ -229,6 +229,40 @@ def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -
     assert any("control-runtime overlay" in warning for warning in launch.warnings)
 
 
+def test_apollo_baguang_cut_out_launch_plan_uses_sidecar_runtime_command() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="baguang/cut_out_35kph_right_to_left_25m",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    backend = default_backend_registry().for_plan(plan)
+    launch = backend.build_launch_plan(plan)
+
+    assert launch.starts_runtime is True
+    assert launch.compatibility_source == "phase1_fixed_scene_runtime_sidecar_transition"
+    assert launch.commands
+    command = launch.commands[0]
+    assert (
+        "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
+        in command
+    )
+    assert "run.scenario_id=baguang_cut_out_35kph_right_to_left_25m" in command
+    assert "run.scenario_class=cut_out" in command
+    assert "runtime.fixed_scene_player.enabled=true" in command
+    assert (
+        "runtime.fixed_scene_player.scenario_path=configs/scenarios/baguang/cut_out_35kph_right_to_left_25m.yaml"
+        in command
+    )
+
+
 def test_apollo_static_follow_stop_compat_config_defers_control_until_planning_ready() -> None:
     payload = yaml.safe_load(
         Path("configs/io/examples/phase1_baguang_apollo_followstop_static_compat.yaml").read_text(encoding="utf-8")

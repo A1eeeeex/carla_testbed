@@ -1050,6 +1050,12 @@ def _fixed_scene_status(root: Path, summary: Mapping[str, Any]) -> tuple[str, st
     ) == "fail"
     if not fixed_failed and not actor_failed:
         return None
+    early_behavior_failure = _summary_behavior_failure_reason(summary)
+    if early_behavior_failure and _fixed_scene_unreached_without_setup_blocker(
+        fixed_scene_report,
+        scenario_actor_report,
+    ):
+        return ("failed", early_behavior_failure)
     if _fixed_scene_trigger_not_reached(fixed_scene_report, scenario_actor_report):
         return ("failed", "scenario_phase_trigger_not_reached")
     return ("invalid", "fixed_scene_failed")
@@ -1073,6 +1079,39 @@ def _fixed_scene_trigger_not_reached(
         if not actor_blockers or actor_blockers.issubset(actor_trigger_blockers):
             return True
     return False
+
+
+def _fixed_scene_unreached_without_setup_blocker(
+    fixed_scene_report: Mapping[str, Any], scenario_actor_report: Mapping[str, Any]
+) -> bool:
+    fixed_blockers = {str(item) for item in fixed_scene_report.get("blocking_reasons") or []}
+    actor_blockers = {str(item) for item in scenario_actor_report.get("blocking_reasons") or []}
+    spawn_feasibility = fixed_scene_report.get("spawn_feasibility")
+    if _has_spawn_or_setup_blocker(spawn_feasibility):
+        return False
+    phase_or_duration_blockers = {
+        "fixed_scene_required_phase_not_started",
+        "fixed_scene_required_phase_not_completed",
+        "stop_before_required_phase_completed",
+        "duration_policy_route_end_not_reached",
+    }
+    actor_trigger_blockers = {"lead_vehicle_never_observed_stopped", "lead_hold_stop_phase_not_observed"}
+    if fixed_blockers and fixed_blockers.issubset(phase_or_duration_blockers):
+        return not actor_blockers or actor_blockers.issubset(actor_trigger_blockers)
+    return False
+
+
+def _summary_behavior_failure_reason(summary: Mapping[str, Any]) -> str | None:
+    for key, reason in (("collision_count", "collision"), ("lane_invasion_count", "lane_invasion")):
+        try:
+            if float(summary.get(key) or 0.0) > 0.0:
+                return reason
+        except (TypeError, ValueError):
+            pass
+    reason = _normalized_reason(summary)
+    if reason in FAILED_REASONS:
+        return reason
+    return None
 
 
 def _has_spawn_or_setup_blocker(spawn_feasibility: Any) -> bool:

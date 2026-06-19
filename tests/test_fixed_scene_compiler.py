@@ -141,3 +141,26 @@ def test_baguang_cut_in_compiles_longitudinal_gap_trigger() -> None:
     assert action["lateral_shift_m"] == 3.6
     assert action["trigger_frame"] == "ego_body"
     assert storyboard["params"]["duration_policy"] == "lead_reaches_road_end"
+
+
+def test_baguang_cut_out_compiles_lane_change_phase() -> None:
+    template = load_fixed_scene_template("configs/scenarios/baguang/cut_out_35kph_right_to_left_25m.yaml")
+
+    storyboard = compile_fixed_scene_template(template)
+
+    validate_fixed_scene_storyboard(storyboard)
+    phases = storyboard["storyboard"]["phases"]
+    assert storyboard["scene_id"] == "baguang_cut_out_35kph_right_to_left_25m"
+    assert storyboard["scenario_class"] == "cut_out"
+    assert storyboard["target_actor_contract"]["status"] == "resolved"
+    assert storyboard["target_actor_contract"]["target_actor_role"] == "lead_vehicle"
+    assert phases[0]["id"] == "lead_ahead_prepare"
+    assert phases[1]["id"] == "cut_out_lane_change"
+    assert phases[1]["start"] == {"type": "simulation_time", "op": ">=", "value": 5.0}
+    action = phases[1]["actions"][0]
+    assert action["type"] == "lane_change"
+    assert action["target_lane_offset"] == -1
+    assert action["duration_s"] == 4.0
+    assert action["lateral_shift_m"] == 3.6
+    assert storyboard["params"]["duration_s"] == 35.0
+    assert "duration_policy" not in storyboard["params"]
