@@ -150,6 +150,13 @@ def _catalog_entry(
             "evidence_paths": [],
             "missing": ["scenario_case_yaml"],
             "missing_items": ["scenario_case_yaml"],
+            "next_action": _catalog_next_actions(
+                canonical_id,
+                ["scenario_case_yaml"],
+                online=online,
+                has_fixed_scene=False,
+                evidence=online["evidence"],
+            ),
             "notes": ["YAML existence is required but not sufficient for Phase 1 readiness."],
         }
 
@@ -226,6 +233,13 @@ def _catalog_entry(
 
     missing = sorted(set(missing_items))
     evidence = _sort_evidence(evidence)
+    next_action = _catalog_next_actions(
+        canonical_id,
+        missing,
+        online=online,
+        has_fixed_scene=has_fixed_scene,
+        evidence=evidence,
+    )
     return {
         "scenario": canonical_id,
         "priority": priority,
@@ -254,6 +268,7 @@ def _catalog_entry(
         "evidence_paths": evidence_paths,
         "missing": missing,
         "missing_items": missing,
+        "next_action": next_action,
         "compile_errors": compile_errors,
         "notes": _catalog_notes(canonical_id, has_fixed_scene),
     }
@@ -265,17 +280,18 @@ def _catalog_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"Schema: `{report.get('schema_version')}`",
         "",
-        "| Scenario | Case IDs | Priority | Status | Case YAML | Template | Target | Target role | CARLA online | Apollo online | Apollo readiness | Apollo runtime dispatch | v-t-gap | Comparison | Comparison target | Missing |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Scenario | Case IDs | Priority | Status | Case YAML | Template | Target | Target role | CARLA online | Apollo online | Apollo readiness | Apollo runtime dispatch | v-t-gap | Comparison | Comparison target | Missing | Next action |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in report.get("scenarios") or []:
         if not isinstance(item, Mapping):
             continue
         missing = ", ".join(str(value) for value in item.get("missing_items") or []) or "-"
+        next_action = "; ".join(str(value) for value in item.get("next_action") or []) or "-"
         case_ids = ", ".join(str(value) for value in item.get("scenario_case_ids") or []) or "-"
         target_contract = item.get("target_actor_contract") if isinstance(item.get("target_actor_contract"), Mapping) else {}
         lines.append(
-            "| {scenario} | {case_ids} | {priority} | {overall} | {case} | {template} | {target} | {target_role} | {carla} | {apollo} | {apollo_readiness} | {apollo_runtime} | {vtgap} | {comparison} | {comparison_target} | {missing} |".format(
+            "| {scenario} | {case_ids} | {priority} | {overall} | {case} | {template} | {target} | {target_role} | {carla} | {apollo} | {apollo_readiness} | {apollo_runtime} | {vtgap} | {comparison} | {comparison_target} | {missing} | {next_action} |".format(
                 scenario=item.get("scenario"),
                 case_ids=case_ids,
                 priority=item.get("priority"),
@@ -292,6 +308,7 @@ def _catalog_markdown(report: Mapping[str, Any]) -> str:
                 comparison=item.get("comparison_status"),
                 comparison_target=item.get("comparison_target_status"),
                 missing=missing,
+                next_action=next_action,
             )
         )
     lines.append("")
@@ -323,6 +340,79 @@ def _catalog_markdown(report: Mapping[str, Any]) -> str:
             )
         lines.append("")
     return "\n".join(lines) + "\n"
+
+
+def _catalog_next_actions(
+    canonical_id: str,
+    missing: list[str],
+    *,
+    online: Mapping[str, Any],
+    has_fixed_scene: bool,
+    evidence: list[Mapping[str, Any]],
+) -> list[str]:
+    actions: list[str] = []
+    missing_set = set(missing)
+    if "scenario_case_yaml" in missing_set:
+        actions.append("add a scenario_case YAML before collecting online evidence")
+    if "fixed_scene_compile" in missing_set:
+        actions.append("fix fixed_scene template compilation before runtime validation")
+    if "target_actor" in missing_set:
+        actions.append("declare the Phase 1 target actor explicitly or via fixed_scene role")
+    if "carla_online_evidence" in missing_set:
+        actions.append("run the CARLA builtin PlanningControlBackend sample and postprocess it")
+    if "v_t_gap_extractor_output" in missing_set:
+        actions.append("generate v-t-gap from timeseries and target actor trace")
+    if "apollo_fixed_scene_readiness_report" in missing_set:
+        actions.append("generate Apollo fixed-scene readiness evidence for the target role")
+    if "apollo_fixed_scene_not_ready" in missing_set:
+        actions.append("fix Apollo fixed-scene target-obstacle/readiness blockers before online dispatch")
+    if "apollo_fixed_scene_runtime_dispatch" in missing_set:
+        actions.append(
+            "produce an evaluable Apollo fixed-scene runtime dispatch; "
+            "backend_not_ready remains invalid, not a backend loss"
+        )
+    if "apollo_online_evidence" in missing_set:
+        if has_fixed_scene:
+            actions.append(
+                "collect an evaluable ApolloBackend fixed-scene run with target actor, "
+                "obstacle GT, and Phase 1 postprocess artifacts"
+            )
+        else:
+            actions.append("collect an evaluable ApolloBackend route-only run with Phase 1 postprocess artifacts")
+    if "scenario_comparison_report" in missing_set:
+        actions.append("write a ScenarioComparison report after at least two backend runs exist")
+    if "cross_backend_scenario_comparison" in missing_set:
+        actions.append("compare only evaluable ApolloBackend and PlanningControlBackend runs for the same ScenarioCase")
+    primary_blocker = _representative_apollo_blocker(evidence)
+    if primary_blocker:
+        actions.append(f"current representative Apollo blocker: {primary_blocker}")
+    if not actions:
+        actions.append("keep representative evidence current; DONE does not imply every backend behavior passed")
+    return list(dict.fromkeys(actions))
+
+
+def _representative_apollo_blocker(evidence: list[Mapping[str, Any]]) -> str | None:
+    for item in _sort_evidence([dict(value) for value in evidence]):
+        if item.get("evidence_type") != "comparison_online":
+            continue
+        for row in item.get("backend_results") or []:
+            if not isinstance(row, Mapping):
+                continue
+            if row.get("backend") != "apollo_cyberrt":
+                continue
+            blocker = row.get("apollo_link_primary_blocker")
+            if blocker:
+                return str(blocker)
+            failure = row.get("failure_reason")
+            if failure:
+                return str(failure)
+    for item in _sort_evidence([dict(value) for value in evidence]):
+        if item.get("evidence_type") != "Apollo_online":
+            continue
+        failure = item.get("failure_reason")
+        if failure:
+            return str(failure)
+    return None
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

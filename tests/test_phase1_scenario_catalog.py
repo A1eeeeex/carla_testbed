@@ -24,6 +24,11 @@ def test_phase1_catalog_lists_p0_p1_readiness_without_claiming_done(tmp_path) ->
     assert "scenario_comparison_report" in scenarios["follow_stop_static"]["missing"]
     assert scenarios["follow_stop_static"]["comparison_status"] == "NOT_YET"
     assert scenarios["follow_stop_static"]["comparison_target_status"] == "NOT_YET"
+    assert any("CARLA builtin" in action for action in scenarios["follow_stop_static"]["next_action"])
+    assert any(
+        "Apollo fixed-scene runtime dispatch" in action
+        for action in scenarios["follow_stop_static"]["next_action"]
+    )
     assert all("path" in item and "evidence_type" in item for item in scenarios["follow_stop_static"]["evidence"])
     assert scenarios["lead_hard_brake"]["case_yaml_status"] == "DONE"
     assert scenarios["lead_hard_brake"]["template_status"] == "DONE"
@@ -639,6 +644,11 @@ def test_phase1_catalog_surfaces_comparison_derived_blocker_context(tmp_path) ->
     assert "link=route_establishment:long_goal_not_compatible_with_scenario_route" in representative["note"]
     assert "control=apollo_raw_command_oscillation" in representative["note"]
     assert "lane_event=downstream_progressive_lane_departure" in representative["note"]
+    assert any(
+        "current representative Apollo blocker: route_establishment:long_goal_not_compatible_with_scenario_route"
+        == action
+        for action in follow_stop["next_action"]
+    )
     apollo_row = [
         row for row in representative["backend_results"] if row["backend"] == "apollo_cyberrt"
     ][0]

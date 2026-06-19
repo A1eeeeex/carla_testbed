@@ -583,7 +583,10 @@ Implementation note added after the 2026-06-16 review:
 - `carla_testbed/analysis/phase1_scenario_catalog.py` writes a read-only
   P0/P1 catalog that separates case YAML, template compile, CARLA online,
   Apollo online, `v-t-gap`, comparison evidence, and optional `--evidence-root`
-  ingestion. YAML or template evidence alone never marks a scenario DONE.
+  ingestion. YAML or template evidence alone never marks a scenario DONE. The
+  catalog also emits per-scenario `next_action` hints derived from missing
+  evidence and representative Apollo blockers; these are triage prompts, not
+  readiness gates.
 - `StackContract.to_dict()` now emits manifest-compatible `backend_name`,
   runtime start flags, input contract, output control mode, and available truth
   fields so Phase 1 runs can be audited without guessing backend semantics.
@@ -604,8 +607,8 @@ backend behavior quality.
 
 Latest local validation snapshot, `2026-06-19`:
 
-- Full CI-friendly pytest passed locally after the Apollo link-health stale
-  module-consumption refresh update: `1855 passed in 61.84s`.
+- Full CI-friendly pytest passed locally after the Phase 1 catalog
+  `next_action` update: `1858 passed in 64.92s`.
 - Local CARLA `carla_builtin` diagnostic samples now exist for all current
   P0/P1 catalog rows. Fixed-scene target cases produce `v_t_gap_status=pass`;
   route-only lane/curve/junction cases produce `v_t_gap_status=not_applicable`
