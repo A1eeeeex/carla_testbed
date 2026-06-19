@@ -20,6 +20,7 @@ from carla_testbed.contracts import ChassisState, EgoState, FrameStamp, Obstacle
 from carla_testbed.control import SimpleAccRouteFollowerConfig, SimpleAccRouteFollowerController, apply_control_to_vehicle
 from carla_testbed.scenario_player.carla_runtime import CarlaFixedSceneRuntime
 from carla_testbed.scenario_player.compiler import compile_fixed_scene_template
+from carla_testbed.scenario_player.safety_events import SAFETY_TRACE_FILENAME, SafetyEventTracker, empty_safety_snapshot
 from carla_testbed.scenario_player.schema import load_fixed_scene_template
 
 
@@ -85,9 +86,11 @@ def run_builtin_ego_fixed_scene(
     events_path = run_root / "events.jsonl"
     start_wall = time.time()
     ticks = 0
+    safety_tracker: SafetyEventTracker | None = None
     try:
         _append_event(events_path, {"event": "run_started", "wall_time_s": start_wall})
         ego = _spawn_ego(world, spawn_index=spawn_index)
+        safety_tracker = SafetyEventTracker(world=world, ego=ego, artifact_dir=artifacts)
         _tick_world_if_available(world)
         _set_initial_speed(ego, _safe_call(ego, "get_transform"), _ego_initial_speed(storyboard))
         state = runtime.setup(
@@ -119,6 +122,8 @@ def run_builtin_ego_fixed_scene(
                     "bbox_extent_z_m",
                     "lead_gap_m",
                     "lead_speed_mps",
+                    "collision_count",
+                    "lane_invasion_count",
                     "throttle",
                     "brake",
                     "steer",
@@ -165,6 +170,7 @@ def run_builtin_ego_fixed_scene(
                 lead = command.metadata
                 ego_pos = ego_state.pose.position
                 ego_dimensions = _actor_dimensions(ego)
+                safety_snapshot = safety_tracker.snapshot() if safety_tracker is not None else empty_safety_snapshot()
                 writer.writerow(
                     {
                         "sim_time": sim_time,
@@ -181,6 +187,8 @@ def run_builtin_ego_fixed_scene(
                         "bbox_extent_z_m": ego_dimensions.get("bbox_extent_z_m"),
                         "lead_gap_m": lead.get("lead_gap_m"),
                         "lead_speed_mps": lead.get("lead_speed_mps"),
+                        "collision_count": safety_snapshot["collision_count"],
+                        "lane_invasion_count": safety_snapshot["lane_invasion_count"],
                         "throttle": command.throttle,
                         "brake": command.brake,
                         "steer": command.steer,
@@ -192,6 +200,8 @@ def run_builtin_ego_fixed_scene(
         runtime_status = "pass" if not state.errors else "fail"
     finally:
         cleanup_errors.extend(runtime.teardown())
+        if safety_tracker is not None:
+            cleanup_errors.extend(safety_tracker.destroy())
         if ego is not None:
             try:
                 ego.destroy()
@@ -203,6 +213,7 @@ def run_builtin_ego_fixed_scene(
             cleanup_errors.append(f"restore_world_settings_failed:{type(exc).__name__}: {exc}")
 
     end_wall = time.time()
+    safety_summary = safety_tracker.snapshot() if safety_tracker is not None else empty_safety_snapshot()
     _append_event(events_path, {"event": "run_finished", "wall_time_s": end_wall, "ticks": ticks})
     manifest = {
         "schema_version": "builtin_ego_fixed_scene_manifest.v1",
@@ -255,6 +266,12 @@ def run_builtin_ego_fixed_scene(
         "cleanup_errors": cleanup_errors,
         "claim_boundary": "diagnostic_only_not_natural_driving_evidence",
         "ego_control_source": "carla_testbed_builtin_controller",
+        "collision_count": safety_summary["collision_count"],
+        "lane_invasion_count": safety_summary["lane_invasion_count"],
+        "collision_sensor_available": safety_summary["collision_sensor_available"],
+        "lane_invasion_sensor_available": safety_summary["lane_invasion_sensor_available"],
+        "safety_event_trace_path": str(artifacts / SAFETY_TRACE_FILENAME),
+        "safety_event_warnings": safety_summary["warnings"],
         "runtime_status": runtime_status,
         "fixed_scene_contract_status": fixed_report.get("status"),
         "scenario_actor_contract_status": actor_report.get("status"),
@@ -279,6 +296,7 @@ def run_builtin_ego_fixed_scene(
         "ego_control_trace": str(trace_path),
         "timeseries": str(timeseries_path),
         "events": str(events_path),
+        "safety_event_trace": str(artifacts / SAFETY_TRACE_FILENAME),
         "fixed_scene_contract": fixed_paths,
         "scenario_actor_contract": actor_paths,
         "phase1_postprocess": phase1_postprocess,
