@@ -331,6 +331,12 @@ def _derived_blocker_evidence(root: Path) -> dict[str, Any]:
     }
 
 
+def collect_derived_blocker_evidence(root: str | Path) -> dict[str, Any]:
+    """Return current blocker evidence from optional Phase 1 analysis reports."""
+
+    return _derived_blocker_evidence(Path(root))
+
+
 def _control_health_blocker_summary(report: Mapping[str, Any], path: Path) -> dict[str, Any]:
     metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
     materialization = (
