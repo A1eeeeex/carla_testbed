@@ -1149,8 +1149,14 @@ row artifacts such as `planning_topic_debug.jsonl`,
 `planning_route_segment_debug.jsonl`, `routing_event_debug.jsonl`,
 `topic_publish_stats.jsonl`, and `control_decode_debug.jsonl`. This fallback is
 only valid for explicit placeholder reports such as
-`planning_runtime_messages_missing` or `apollo_module_runtime_logs_missing`; a
-missing report remains missing, and a real semantic `fail` is not overwritten.
+`planning_runtime_messages_missing` or `apollo_module_runtime_logs_missing`.
+Link-health may also recompute an Apollo module-consumption report whose only
+failure reasons were route-contract-derived stale blockers, for example
+`route_contract_unverified_before_module_consumption_claim` or
+`claim_route_consumption_unverified`, after the route-contract artifact has
+been refreshed. A missing report remains missing, and a real semantic `fail`
+such as input timeout logs or persistent reference-line provider failure is not
+overwritten.
 When natural-driving postprocess writes
 `analysis/natural_driving_postprocess/natural_driving_report.json`,
 link-health treats it as the same acceptance artifact class as

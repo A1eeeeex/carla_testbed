@@ -148,7 +148,9 @@ def analyze_apollo_link_health(
                 inputs["planning_materialization"] = Path(
                     outputs["planning_materialization_report"]
                 )
-        if _should_regenerate_apollo_module_consumption(payloads.get("apollo_module_consumption")):
+        if _should_regenerate_apollo_module_consumption(
+            payloads.get("apollo_module_consumption")
+        ) and _apollo_module_consumption_raw_inputs_available(root):
             regenerated_consumption = analyze_apollo_module_consumption_run_dir(root)
             if _apollo_module_consumption_has_runtime_evidence(regenerated_consumption) or not payloads.get("apollo_module_consumption"):
                 payloads["apollo_module_consumption"] = regenerated_consumption
@@ -1398,9 +1400,14 @@ def _should_regenerate_apollo_module_consumption(report: Mapping[str, Any] | Non
     if not report:
         return False
     status = _normalize_status(report.get("status"))
-    if status == "fail":
-        return False
     blocking = {str(item) for item in report.get("blocking_reasons") or [] if item}
+    route_contract_derived_blockers = {
+        "claim_route_consumption_unverified",
+        "route_contract_failed_before_module_consumption_claim",
+        "route_contract_unverified_before_module_consumption_claim",
+    }
+    if status == "fail":
+        return bool(blocking & route_contract_derived_blockers) and blocking <= route_contract_derived_blockers
     if blocking and blocking != {"apollo_module_runtime_logs_missing"}:
         return False
     return (
@@ -1418,6 +1425,16 @@ def _apollo_module_consumption_has_runtime_evidence(report: Mapping[str, Any]) -
         report.get("routing_response_consumed_by_planning") is not None
         or isinstance(report.get("pattern_counts"), Mapping)
         or source.get("planning_topic_debug")
+    )
+
+
+def _apollo_module_consumption_raw_inputs_available(root: Path) -> bool:
+    return all(
+        (root / rel).is_file()
+        for rel in (
+            "analysis/planning_materialization/planning_materialization_report.json",
+            "artifacts/planning_topic_debug_summary.json",
+        )
     )
 
 

@@ -2522,6 +2522,100 @@ def test_planning_and_module_consumption_use_run_artifacts_when_reports_are_plac
     assert refreshed_consumption["blocking_reasons"] == []
 
 
+def test_module_consumption_route_contract_stale_fail_is_regenerated(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json",
+        {
+            "schema_version": "apollo_route_contract.v1",
+            "status": "warn",
+            "routing_phase": "claim",
+            "claim_route_contract": {
+                "status": "warn",
+                "materialized": True,
+                "blocking_reasons": [],
+            },
+            "blocking_reasons": [],
+            "warnings": ["apollo_routing_goal_snap_distance_high"],
+        },
+    )
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "route_establishment": {"route_established": True},
+            "first_nonempty_after_routing_latency_s": 0.2,
+            "empty_reason_histogram": {},
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_topic_debug.jsonl",
+        [
+            {
+                "timestamp": 1.0,
+                "trajectory_point_count": 10,
+                "routing_header_present": True,
+                "localization_age_ms": 10.0,
+                "chassis_age_ms": 12.0,
+                "routing_response_age_ms": 20.0,
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/topic_publish_stats.jsonl",
+        [
+            {"topic": "/apollo/localization/pose"},
+            {"topic": "/apollo/canbus/chassis"},
+            {"topic": "/apollo/planning"},
+            {"topic": "/apollo/control"},
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/control_decode_debug.jsonl",
+        [
+            {
+                "parsed_control": {
+                    "control_timestamp": 1.0,
+                    "control_header_sequence_num": 1,
+                    "input_trajectory_header_sequence_num": 7,
+                }
+            }
+        ],
+    )
+    _write_json(
+        run_dir / "analysis/apollo_module_consumption/apollo_module_consumption_report.json",
+        {
+            "schema_version": "apollo_module_consumption.v1",
+            "status": "fail",
+            "blocking_reasons": [
+                "claim_route_consumption_unverified",
+                "route_contract_unverified_before_module_consumption_claim",
+            ],
+            "warnings": [],
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    layer = report["layers"]["apollo_module_consumption"]
+
+    assert layer["artifact_paths"]["source_kind"] == "regenerated_from_run_artifacts"
+    assert "route_contract_unverified_before_module_consumption_claim" not in layer[
+        "blocking_reasons"
+    ]
+    assert "claim_route_consumption_unverified" not in layer["blocking_reasons"]
+    refreshed = json.loads(
+        (
+            run_dir / "analysis/apollo_module_consumption/apollo_module_consumption_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert refreshed["status"] in {"pass", "warn"}
+    assert refreshed["apollo_route_contract_status"] == "warn"
+    assert refreshed["consumed_route_phase"] == "claim"
+    assert refreshed["blocking_reasons"] == []
+
+
 def test_control_health_uses_run_artifacts_when_report_is_placeholder(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     _write_json(
