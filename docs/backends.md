@@ -97,6 +97,15 @@ evaluable for that ScenarioCase. It is not a replacement for an online Apollo
 fixed-scene run with obstacle GT, routing/planning/control, and control
 attribution artifacts.
 
+For Baguang dynamic fixed scenes under the non-claim `scenario_validation`
+gate, the Apollo launch plan may expose a guarded sidecar transition through
+the legacy follow-stop runner. That transition disables the legacy front actor
+and attaches `fixed_scene_player` as the non-ego target actor owner. It is a
+runtime-dispatch seam for online validation, not completed online behavior
+evidence. `claim_natural_driving` gates must not use this sidecar as a
+claim-grade path unless the run also produces the required fixed-scene runtime,
+obstacle GT, v-t-gap, phase1 status, Apollo link, and comparison artifacts.
+
 ## Legacy IO
 
 `io/` is deprecated compatibility. It exists so historical scripts and contract

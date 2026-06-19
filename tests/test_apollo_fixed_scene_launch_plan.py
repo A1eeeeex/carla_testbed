@@ -185,6 +185,39 @@ def test_apollo_static_follow_stop_spawn2m_launch_plan_uses_shifted_compat_confi
     )
 
 
+def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="baguang/lead_decel_70_to_40_20m",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    backend = default_backend_registry().for_plan(plan)
+    launch = backend.build_launch_plan(plan)
+
+    assert launch.starts_runtime is True
+    assert launch.compatibility_source == "phase1_fixed_scene_runtime_sidecar_transition"
+    assert launch.commands
+    command = launch.commands[0]
+    assert command[:3] == ["python3", "-m", "carla_testbed"]
+    assert "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml" in command
+    assert "scenario.spawn_legacy_front=false" in command
+    assert "runtime.fixed_scene_player.enabled=true" in command
+    assert (
+        "runtime.fixed_scene_player.scenario_path=configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml"
+        in command
+    )
+    assert "artifacts/fixed_scene_runtime_hook.json" in launch.expected_artifacts
+    assert any("sidecar hook" in warning for warning in launch.warnings)
+
+
 def test_apollo_static_follow_stop_compat_config_defers_control_until_planning_ready() -> None:
     payload = yaml.safe_load(
         Path("configs/io/examples/phase1_baguang_apollo_followstop_static_compat.yaml").read_text(encoding="utf-8")

@@ -18,6 +18,9 @@ class ApolloCyberRTBackend:
             "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml"
         ),
     }
+    _BAGUANG_FIXED_SCENE_SIDECAR_BASE_CONFIG = (
+        "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml"
+    )
 
     def contract(self, plan: RunPlan | None = None) -> StackContract:
         expected = list(plan.platform.expected_outputs) if plan else ["routing_response", "planning", "control"]
@@ -100,6 +103,7 @@ class ApolloCyberRTBackend:
         )
         compat_config = _static_follow_stop_compat_config(plan)
         fixed_scene_compat = compat_config is not None
+        dynamic_sidecar_config = _dynamic_fixed_scene_sidecar_config(plan)
         fixed_scene_command = [
             "python3",
             "-m",
@@ -111,9 +115,15 @@ class ApolloCyberRTBackend:
             run_dir,
             "--legacy-dispatch",
         ]
+        if dynamic_sidecar_config is not None:
+            fixed_scene_command = _dynamic_fixed_scene_sidecar_command(
+                plan,
+                run_dir=run_dir,
+                base_config=dynamic_sidecar_config,
+            )
         command = (
             fixed_scene_command
-            if fixed_scene_compat
+            if fixed_scene_compat or dynamic_sidecar_config is not None
             else []
             if fixed_scene_enabled
             else [
@@ -161,6 +171,8 @@ class ApolloCyberRTBackend:
                     "analysis/phase1_apollo_fixed_scene_readiness/phase1_apollo_fixed_scene_readiness_report.json",
                 ]
             )
+        if dynamic_sidecar_config is not None:
+            expected_artifacts.append("artifacts/fixed_scene_runtime_hook.json")
         if plan.traffic_flow.enabled:
             expected_artifacts.extend(["artifacts/traffic_flow_manifest.json", "artifacts/traffic_flow_events.jsonl"])
             if int(plan.traffic_flow.vehicles.get("count", 0) or 0) > 0:
@@ -193,10 +205,12 @@ class ApolloCyberRTBackend:
                 ["python3", "tools/analyze_apollo_link_health.py", "--run-dir", run_dir],
                 ["python3", "-m", "carla_testbed", "analyze", "--run-dir", run_dir],
             ],
-            starts_runtime=(not fixed_scene_enabled) or fixed_scene_compat,
+            starts_runtime=(not fixed_scene_enabled) or fixed_scene_compat or dynamic_sidecar_config is not None,
             compatibility_source=(
                 "phase1_static_follow_stop_legacy_transition"
                 if fixed_scene_compat
+                else "phase1_fixed_scene_runtime_sidecar_transition"
+                if dynamic_sidecar_config is not None
                 else "fixed-scene Apollo runtime migration required"
                 if fixed_scene_enabled
                 else "tools/run_town01_capability_online_chain.py"
@@ -213,10 +227,18 @@ class ApolloCyberRTBackend:
                 ),
                 *(
                     [
+                        "Apollo dynamic fixed-scene command uses a guarded sidecar hook in the legacy follow-stop runner; it is a migration path, not completed online evidence.",
+                        "The sidecar must produce fixed_scene_runtime_state, scenario_actor_trace, scenario_phase_events, obstacle GT, v-t-gap, and phase1_status before the run is evaluable.",
+                    ]
+                    if dynamic_sidecar_config is not None
+                    else []
+                ),
+                *(
+                    [
                         "Apollo fixed-scene runtime is not migrated behind this facade; do not legacy-dispatch this plan as capability evidence.",
                         "Claim-grade fixed-scene Apollo runs must produce obstacle_gt_contract records linking scenario actor ids to /apollo/perception/obstacles.",
                     ]
-                    if fixed_scene_enabled and not fixed_scene_compat
+                    if fixed_scene_enabled and not fixed_scene_compat and dynamic_sidecar_config is None
                     else []
                 ),
             ],
@@ -248,3 +270,65 @@ def _static_follow_stop_compat_config(plan: RunPlan) -> str | None:
 
 def _static_follow_stop_compat(plan: RunPlan) -> bool:
     return _static_follow_stop_compat_config(plan) is not None
+
+
+def _dynamic_fixed_scene_sidecar_config(plan: RunPlan) -> str | None:
+    fixed_scene = plan.scenario.fixed_scene or {}
+    template = str(fixed_scene.get("template") or "").strip()
+    scenario_class = str(plan.scenario.scenario_class or "").strip()
+    map_name = str(plan.scenario.map or "").strip()
+    if bool(plan.gate.can_claim_natural_driving):
+        return None
+    if map_name != "straight_road_for_baguang":
+        return None
+    if scenario_class in {"follow_stop_static", "static_lead_stop"}:
+        return None
+    if template not in {"lead_vehicle_accel_decel", "cut_in", "cut_out"}:
+        return None
+    scenario_path = str(plan.source_profiles.get("scenario") or "").strip()
+    if not scenario_path:
+        return None
+    return ApolloCyberRTBackend._BAGUANG_FIXED_SCENE_SIDECAR_BASE_CONFIG
+
+
+def _dynamic_fixed_scene_sidecar_command(
+    plan: RunPlan,
+    *,
+    run_dir: str,
+    base_config: str,
+) -> list[str]:
+    scenario_path = str(plan.source_profiles.get("scenario") or "").strip()
+    overrides = {
+        "run.id": plan.identity.run_id,
+        "run.profile_name": f"phase1_baguang_apollo_{plan.scenario.scenario_id}_sidecar",
+        "scenario.spawn_legacy_front": False,
+        "runtime.fixed_scene_player.enabled": True,
+        "runtime.fixed_scene_player.scenario_path": scenario_path,
+        "runtime.fixed_scene_player.replace_legacy_front": True,
+        "runtime.fixed_scene_player.require_setup_success": True,
+        "runtime.postprocess.phase1_scenario_path": scenario_path,
+        "recording.artifacts.phase1_scenario_path": scenario_path,
+        "backend.params.legacy_run.scenario_id": plan.scenario.scenario_id,
+        "backend.params.legacy_run.route_id": plan.scenario.route_id,
+        "backend.params.legacy_run.capability_profile": "phase1_fixed_scene_sidecar",
+    }
+    command = [
+        "python3",
+        "-m",
+        "carla_testbed",
+        "run",
+        "--config",
+        base_config,
+        "--run-dir",
+        run_dir,
+        "--legacy-dispatch",
+    ]
+    for key, value in overrides.items():
+        command.extend(["--override", f"{key}={_override_value(value)}"])
+    return command
+
+
+def _override_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)

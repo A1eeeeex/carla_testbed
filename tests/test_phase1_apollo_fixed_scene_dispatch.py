@@ -36,7 +36,7 @@ def test_static_follow_stop_dispatch_contract_exposes_guarded_transition() -> No
     assert "not online behavior evidence" in report["claim_boundary"]
 
 
-def test_dynamic_lead_dispatch_contract_blocks_runtime_overclaim() -> None:
+def test_dynamic_lead_dispatch_contract_exposes_sidecar_runtime_command_without_overclaim() -> None:
     plan = _compile_plan("baguang_lead_decel_70_to_40_20m")
     backend = default_backend_registry().for_plan(plan)
     launch = backend.build_launch_plan(plan).to_dict()
@@ -49,13 +49,23 @@ def test_dynamic_lead_dispatch_contract_blocks_runtime_overclaim() -> None:
         launch_plan=launch,
     )
 
-    assert report["status"] == "partial"
-    assert report["dispatch_mode"] == "runtime_migration_required"
-    assert report["starts_runtime"] is False
-    assert report["commands_present"] is False
-    assert "apollo_fixed_scene_runtime_migration_required" in report["blocking_reasons"]
-    assert "launch_plan_has_no_runtime_command" in report["blocking_reasons"]
-    assert "dynamic_fixed_scene_runtime_not_migrated" in report["warnings"]
+    assert report["status"] == "pass"
+    assert report["dispatch_mode"] == "runtime_command_available"
+    assert report["starts_runtime"] is True
+    assert report["commands_present"] is True
+    assert report["blocking_reasons"] == []
+    assert "dynamic_fixed_scene_sidecar_transition_requires_online_artifacts" in report["warnings"]
+    assert launch["commands"]
+    command = launch["commands"][0]
+    assert "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml" in command
+    assert "--legacy-dispatch" in command
+    assert "--override" in command
+    assert "scenario.spawn_legacy_front=false" in command
+    assert "runtime.fixed_scene_player.enabled=true" in command
+    assert (
+        "runtime.fixed_scene_player.scenario_path=configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml"
+        in command
+    )
     assert report["missing_row_level_expected_artifacts"] == []
     assert report["missing_postprocess_expected_artifacts"] == []
     assert "speed_profile_non_ego_actor_control" in report["runtime_migration_requirements"]
@@ -76,8 +86,8 @@ def test_cut_in_dispatch_contract_lists_lane_change_migration_requirements() -> 
         launch_plan=launch,
     )
 
-    assert report["status"] == "partial"
-    assert report["dispatch_mode"] == "runtime_migration_required"
+    assert report["status"] == "pass"
+    assert report["dispatch_mode"] == "runtime_command_available"
     assert "lane_change_non_ego_actor_playback" in report["runtime_migration_requirements"]
     assert "lateral_offset_and_no_teleport_trace" in report["runtime_migration_requirements"]
     assert "target_actor_active_after_phase:cut_in_lane_change" in report["runtime_migration_requirements"]
@@ -115,20 +125,19 @@ def test_scaffold_writes_dispatch_contract_report(tmp_path: Path) -> None:
     )
     dispatch = json.loads(dispatch_path.read_text(encoding="utf-8"))
 
-    assert preflight["offline_fixed_scene_artifacts"]["apollo_fixed_scene_dispatch"]["status"] == "partial"
-    assert preflight["apollo_fixed_scene_dispatch_contract"]["status"] == "partial"
-    assert preflight["apollo_fixed_scene_dispatch_contract"]["dispatch_mode"] == "runtime_migration_required"
-    assert phase1_status["apollo_fixed_scene_dispatch_contract"]["status"] == "partial"
-    assert phase1_status["apollo_fixed_scene_dispatch_contract"]["dispatch_mode"] == "runtime_migration_required"
-    assert "apollo_fixed_scene_runtime_migration_required" in phase1_status[
-        "apollo_fixed_scene_dispatch_contract"
-    ]["blocking_reasons"]
-    assert dispatch["status"] == "partial"
-    assert dispatch["dispatch_mode"] == "runtime_migration_required"
-    assert "apollo_fixed_scene_runtime_migration_required" in dispatch["blocking_reasons"]
+    assert preflight["offline_fixed_scene_artifacts"]["apollo_fixed_scene_dispatch"]["status"] == "pass"
+    assert preflight["apollo_fixed_scene_dispatch_contract"]["status"] == "pass"
+    assert preflight["apollo_fixed_scene_dispatch_contract"]["dispatch_mode"] == "runtime_command_available"
+    assert phase1_status["apollo_fixed_scene_dispatch_contract"]["status"] == "pass"
+    assert phase1_status["apollo_fixed_scene_dispatch_contract"]["dispatch_mode"] == "runtime_command_available"
+    assert phase1_status["apollo_fixed_scene_dispatch_contract"]["blocking_reasons"] == []
+    assert dispatch["status"] == "pass"
+    assert dispatch["dispatch_mode"] == "runtime_command_available"
+    assert dispatch["blocking_reasons"] == []
+    assert "dynamic_fixed_scene_sidecar_transition_requires_online_artifacts" in dispatch["warnings"]
 
 
-def test_dispatch_cli_reports_dynamic_runtime_migration_required(tmp_path: Path) -> None:
+def test_dispatch_cli_reports_dynamic_sidecar_runtime_command_without_online_claim(tmp_path: Path) -> None:
     out = tmp_path / "dispatch"
     result = subprocess.run(
         [
@@ -143,11 +152,15 @@ def test_dispatch_cli_reports_dynamic_runtime_migration_required(tmp_path: Path)
         text=True,
     )
 
-    assert result.returncode == 1
+    assert result.returncode == 0
     payload = json.loads(result.stdout)
     report = json.loads((out / "phase1_apollo_fixed_scene_dispatch_report.json").read_text(encoding="utf-8"))
-    assert payload["status"] == "partial"
-    assert report["dispatch_mode"] == "runtime_migration_required"
+    assert payload["status"] == "pass"
+    assert report["status"] == "pass"
+    assert report["dispatch_mode"] == "runtime_command_available"
+    assert report["blocking_reasons"] == []
+    assert "dynamic_fixed_scene_sidecar_transition_requires_online_artifacts" in report["warnings"]
+    assert "not online behavior evidence" in report["claim_boundary"]
 
 
 def _compile_plan(scenario: str):

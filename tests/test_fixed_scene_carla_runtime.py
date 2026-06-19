@@ -6,6 +6,7 @@ import math
 from carla_testbed.scenario_player.carla_runtime import CarlaFixedSceneRuntime
 from carla_testbed.scenario_player import carla_runtime as carla_runtime_module
 from carla_testbed.scenario_player.compiler import compile_fixed_scene_template
+from carla_testbed.scenario_player.runtime_hook import setup_fixed_scene_runtime_hook
 from carla_testbed.scenario_player.schema import load_fixed_scene_template
 
 
@@ -116,6 +117,42 @@ def test_carla_runtime_static_lead_stays_held(tmp_path) -> None:
     assert applied["throttle"] == 0.0
     assert applied["brake"] == 1.0
     assert applied["hand_brake"] is True
+
+
+def test_fixed_scene_runtime_hook_ticks_and_exposes_target_actor(tmp_path) -> None:
+    world = _FakeWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    template_path = tmp_path / "lead_accel.yaml"
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml")
+    template["roles"]["lead_vehicle"]["spawn"]["feasibility"]["require_waypoint"] = False
+    template_path.write_text(json.dumps(template), encoding="utf-8")
+
+    hook = setup_fixed_scene_runtime_hook(
+        world=world,
+        ego_actor=ego,
+        run_dir=tmp_path,
+        artifact_dir=tmp_path / "artifacts",
+        scenario_path=template_path,
+    )
+    frame_context = type(
+        "FrameContext",
+        (),
+        {"frame_id": 1, "sim_time_s": 0.0, "step": 0, "metadata": {}},
+    )()
+
+    hook.after_world_tick(frame_context)
+    target = hook.target_actor()
+    payload = hook.to_dict()
+
+    assert target is hook.runtime.actors["lead_vehicle"]
+    assert hook.tick_count == 1
+    assert frame_context.metadata["fixed_scene_runtime"]["active_roles"] == ["lead_vehicle"]
+    assert payload["status"] == "pass"
+    assert payload["target_actor_role"] == "lead_vehicle"
+    assert (tmp_path / "artifacts" / "fixed_scene_resolved.json").exists()
+    assert (tmp_path / "artifacts" / "scenario_actor_trace.jsonl").exists()
+
+    hook.close()
 
 
 def test_carla_runtime_spawn_feasibility_blocks_required_waypoint_fallback(tmp_path) -> None:

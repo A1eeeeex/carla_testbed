@@ -38,8 +38,8 @@ def test_batch_writes_invalid_dynamic_dispatch_scaffolds_without_backend_loss(tm
     assert lead["scaffold_status"] == "invalid_written"
     assert lead["phase1_status"] == "invalid"
     assert lead["failure_reason"] == "backend_not_ready"
-    assert lead["dispatch_status"] == "partial"
-    assert lead["dispatch_mode"] == "runtime_migration_required"
+    assert lead["dispatch_status"] == "pass"
+    assert lead["dispatch_mode"] == "runtime_command_available"
     assert "speed_profile_non_ego_actor_control" in lead["runtime_migration_requirements"]
     assert "lane_change_non_ego_actor_playback" in cut_in["runtime_migration_requirements"]
     assert "target_actor_active_after_phase:cut_in_lane_change" in cut_in["runtime_migration_requirements"]
@@ -59,7 +59,7 @@ def test_batch_writes_invalid_dynamic_dispatch_scaffolds_without_backend_loss(tm
 
     matrix_rows = list(csv.DictReader(matrix_path.open(encoding="utf-8")))
     assert len(matrix_rows) == 2
-    assert matrix_rows[0]["dispatch_mode"] == "runtime_migration_required"
+    assert matrix_rows[0]["dispatch_mode"] == "runtime_command_available"
 
 
 def test_batch_cli_writes_manifest_and_matrix(tmp_path: Path) -> None:

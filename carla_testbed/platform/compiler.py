@@ -267,6 +267,7 @@ def _scenario_plan(payload: Mapping[str, Any]) -> ScenarioPlan:
         scenario_id=str(payload.get("scenario_id") or payload.get("name") or "unknown"),
         scenario_class=str(payload.get("scenario_class") or payload.get("class") or "unknown"),
         map=str(payload.get("map") or payload.get("town") or "Town01"),
+        route_id=_str_or_none(payload.get("route_id") or route.get("route_id")),
         spawn_ref=_str_or_none(route.get("spawn_ref") or payload.get("spawn_ref")),
         goal_ref=_str_or_none(route.get("goal_ref") or payload.get("goal_ref")),
         route_ref=_str_or_none(route.get("route_ref") or payload.get("route_ref")),

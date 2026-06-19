@@ -99,6 +99,13 @@ def analyze_apollo_fixed_scene_dispatch(
             warnings.append("launch_plan_missing_phase1_postprocess_artifacts")
         if compatibility_source == "phase1_static_follow_stop_legacy_transition":
             warnings.append("guarded_static_follow_stop_transition_not_generic_fixed_scene_runtime")
+        if compatibility_source == "phase1_fixed_scene_runtime_sidecar_transition":
+            warnings.append("dynamic_fixed_scene_sidecar_transition_requires_online_artifacts")
+            if runtime_migration_requirements:
+                next_action.append(
+                    "execute the sidecar transition online and verify: "
+                    + ", ".join(runtime_migration_requirements[:4])
+                )
         if compatibility_source == "fixed-scene Apollo runtime migration required":
             warnings.append("dynamic_fixed_scene_runtime_not_migrated")
         if status == "pass" and missing_row_level:

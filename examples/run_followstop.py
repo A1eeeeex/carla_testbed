@@ -74,6 +74,7 @@ from carla_testbed.scenarios import (
     Town01RouteHealthScenario,
 )
 from carla_testbed.scenarios.apollo_semantic_suite import SemanticLeadProfile
+from carla_testbed.scenario_player.runtime_hook import setup_fixed_scene_runtime_hook
 from carla_testbed.sim import configure_synchronous_mode, connect_world_with_retry, restore_settings
 from carla_testbed.utils.env import resolve_carla_root, resolve_repo_root
 from carla_testbed.utils.run_naming import build_run_name, next_available_run_dir, update_latest_pointer
@@ -244,6 +245,43 @@ def _dedup(seq):
         seen.add(x)
         out.append(x)
     return out
+
+
+def _nested_mapping(payload: Dict[str, Any], *keys: str) -> Dict[str, Any]:
+    cursor: Any = payload
+    for key in keys:
+        if not isinstance(cursor, dict):
+            return {}
+        cursor = cursor.get(key)
+    return cursor if isinstance(cursor, dict) else {}
+
+
+def _nested_text(payload: Dict[str, Any], *keys: str) -> str:
+    cursor: Any = payload
+    for key in keys:
+        if not isinstance(cursor, dict):
+            return ""
+        cursor = cursor.get(key)
+    return str(cursor or "").strip()
+
+
+def _phase1_fixed_scene_runtime_settings(effective_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    runtime_cfg = _nested_mapping(effective_cfg, "runtime", "fixed_scene_player")
+    if not runtime_cfg:
+        runtime_cfg = _nested_mapping(effective_cfg, "runtime", "fixed_scene_runtime")
+    scenario_path = (
+        str(runtime_cfg.get("scenario_path") or runtime_cfg.get("phase1_scenario_path") or "").strip()
+        or _nested_text(effective_cfg, "runtime", "postprocess", "phase1_scenario_path")
+        or _nested_text(effective_cfg, "recording", "artifacts", "phase1_scenario_path")
+    )
+    enabled = bool(runtime_cfg.get("enabled", False))
+    return {
+        "enabled": enabled,
+        "scenario_path": scenario_path,
+        "require_setup_success": bool(runtime_cfg.get("require_setup_success", True)),
+        "replace_legacy_front": bool(runtime_cfg.get("replace_legacy_front", enabled)),
+        "source": "runtime.fixed_scene_player" if runtime_cfg else "phase1_scenario_path",
+    }
 
 
 def _load_json_if_exists(path: Path) -> Dict[str, Any]:
@@ -1229,6 +1267,7 @@ def main():
         "front_waypoint_ahead_m": None,
         "front_max_lateral_m": 3.0,
         "front_max_heading_diff_deg": 25.0,
+        "spawn_legacy_front": True,
         "force_green_traffic_lights": False,
         "freeze_traffic_lights": True,
         "vehicle_blueprint_id": "",
@@ -1335,6 +1374,9 @@ def main():
         )
         args.front_max_heading_diff_deg = float(
             scenario_cfg.get("front_max_heading_diff_deg", args.front_max_heading_diff_deg)
+        )
+        args.spawn_legacy_front = bool(
+            scenario_cfg.get("spawn_legacy_front", args.spawn_legacy_front)
         )
         args.vehicle_blueprint_id = str(
             scenario_cfg.get("vehicle_blueprint_id", args.vehicle_blueprint_id) or ""
@@ -1688,6 +1730,7 @@ def main():
         "original_settings": None,
         "actors": None,
         "scenario": None,
+        "fixed_scene_runtime_hook": None,
         "carla_launcher": None,
         "carla_stop_hook": None,
     }
@@ -1730,6 +1773,9 @@ def main():
             )
         scenario_obj = cleanup_state.get("scenario")
         actors_obj = cleanup_state.get("actors")
+        fixed_scene_hook = cleanup_state.get("fixed_scene_runtime_hook")
+        if fixed_scene_hook is not None:
+            _run_cleanup_with_timeout("fixed_scene_runtime_hook", fixed_scene_hook.close, timeout_s=8.0)
         if scenario_obj is not None and actors_obj is not None:
             _run_cleanup_with_timeout("scenario_destroy", scenario_obj.destroy, timeout_s=8.0)
         launcher = cleanup_state.get("carla_launcher")
@@ -1789,6 +1835,7 @@ def main():
         "z_m": float(args.front_offset_z_m),
         "yaw_deg": float(args.front_yaw_offset_deg),
     }
+    effective_cfg.setdefault("scenario", {})["spawn_legacy_front"] = bool(args.spawn_legacy_front)
     effective_cfg.setdefault("scenario", {})["semantic_suite"] = {
         "scene_type": str(args.semantic_scene_type),
         "waypoint_spacing_m": float(args.semantic_waypoint_spacing_m),
@@ -2621,6 +2668,7 @@ def main():
                 front_offset_y_m=float(args.front_offset_y_m),
                 front_offset_z_m=float(args.front_offset_z_m),
                 front_yaw_offset_deg=float(args.front_yaw_offset_deg),
+                spawn_front=bool(args.spawn_legacy_front),
                 ego_initial_brake=float(args.ego_initial_brake),
                 ego_initial_hand_brake=bool(args.ego_initial_hand_brake),
             )
@@ -2635,6 +2683,55 @@ def main():
         cleanup_state["actors"] = actors
         ego = actors.ego
         front = actors.front
+        fixed_scene_runtime_hook = None
+        fixed_scene_runtime_settings = _phase1_fixed_scene_runtime_settings(effective_cfg)
+        if fixed_scene_runtime_settings["enabled"]:
+            scenario_path = fixed_scene_runtime_settings["scenario_path"]
+            if not scenario_path:
+                raise RuntimeError("runtime.fixed_scene_player.enabled=true but no phase1 scenario_path was provided")
+            _write_startup_stage(
+                "fixed_scene_runtime_setup_start",
+                scenario_path=scenario_path,
+                replace_legacy_front=bool(fixed_scene_runtime_settings["replace_legacy_front"]),
+            )
+            fixed_scene_runtime_hook = setup_fixed_scene_runtime_hook(
+                world=world,
+                ego_actor=ego,
+                run_dir=out_run_dir,
+                artifact_dir=out_run_dir / "artifacts",
+                scenario_path=scenario_path,
+            )
+            cleanup_state["fixed_scene_runtime_hook"] = fixed_scene_runtime_hook
+            try:
+                (out_run_dir / "artifacts" / "fixed_scene_runtime_hook.json").write_text(
+                    json.dumps(fixed_scene_runtime_hook.to_dict(), indent=2, sort_keys=True, default=str),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+            setup_errors = list(fixed_scene_runtime_hook.setup_state.errors or [])
+            setup_status = "failed" if setup_errors else "ok"
+            _write_startup_stage(
+                "fixed_scene_runtime_setup_done",
+                status=setup_status,
+                scenario_path=scenario_path,
+                active_roles=fixed_scene_runtime_hook.runtime.active_roles(),
+                errors=setup_errors,
+            )
+            if setup_errors and bool(fixed_scene_runtime_settings["require_setup_success"]):
+                raise RuntimeError("fixed_scene_runtime_setup_failed:" + ",".join(setup_errors))
+            if bool(fixed_scene_runtime_settings["replace_legacy_front"]):
+                target_actor = fixed_scene_runtime_hook.target_actor()
+                if target_actor is not None:
+                    front = target_actor
+                    actors.front = front
+                elif bool(fixed_scene_runtime_settings["require_setup_success"]):
+                    raise RuntimeError("fixed_scene_runtime_target_actor_missing")
+            print(
+                "[fixed-scene] runtime hook setup "
+                f"status={setup_status} active_roles={fixed_scene_runtime_hook.runtime.active_roles()} "
+                f"scenario_path={scenario_path}"
+            )
         run_mode_cfg_for_spawn = effective_cfg.get("run", {}) if effective_cfg else {}
         post_spawn_settle_ticks = int(run_mode_cfg_for_spawn.get("post_spawn_settle_ticks", 2) or 0)
         if post_spawn_settle_ticks > 0:
@@ -2707,11 +2804,17 @@ def main():
                 {
                     "scenario_driver": scenario_driver,
                     "ego_role": args.ego_id,
-                    "front_role": "front",
+                    "front_role": (
+                        fixed_scene_runtime_hook.to_dict().get("target_actor_role")
+                        if fixed_scene_runtime_hook is not None
+                        else "front"
+                    ),
                     "ego_actor_id": int(getattr(ego, "id", 0) or 0),
                     "front_actor_id": int(getattr(front, "id", 0) or 0) if front is not None else 0,
                 }
             )
+            if fixed_scene_runtime_hook is not None:
+                scenario_meta["fixed_scene_runtime_hook"] = fixed_scene_runtime_hook.to_dict()
             scenario_meta_path.parent.mkdir(parents=True, exist_ok=True)
             scenario_meta_path.write_text(json.dumps(scenario_meta, indent=2))
         except Exception as exc:
@@ -3132,6 +3235,9 @@ def main():
             or (external_stack and adapter_started and not apollo_direct_no_ros2)
         )
         tick_callbacks = []
+        run_hooks = []
+        if fixed_scene_runtime_hook is not None:
+            run_hooks.append(fixed_scene_runtime_hook)
         scenario_tick_hook = getattr(scenario, "on_sim_tick", None)
         if callable(scenario_tick_hook):
             tick_callbacks.append(scenario_tick_hook)
@@ -3274,12 +3380,21 @@ def main():
             disable_control=disable_control,
             sensor_capture_enabled=sensor_capture_enabled,
             tick_callbacks=tick_callbacks or None,
+            hooks=run_hooks or None,
             scenario_metadata=scenario_meta,
         )
         print(
             f"Run core finished: harness_success={summary['success']} "
             f"harness_fail_reason={summary['fail_reason']} collisions={summary['collision_count']}"
         )
+        if fixed_scene_runtime_hook is not None:
+            try:
+                (out_run_dir / "artifacts" / "fixed_scene_runtime_hook.json").write_text(
+                    json.dumps(fixed_scene_runtime_hook.to_dict(), indent=2, sort_keys=True, default=str),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                print(f"[WARN] failed to write fixed-scene runtime hook summary: {exc}")
         try:
             latest_scenario_meta = scenario.metadata() if hasattr(scenario, "metadata") else {}
             if not isinstance(latest_scenario_meta, dict):
@@ -3288,11 +3403,17 @@ def main():
                 {
                     "scenario_driver": scenario_driver,
                     "ego_role": args.ego_id,
-                    "front_role": "front",
+                    "front_role": (
+                        fixed_scene_runtime_hook.to_dict().get("target_actor_role")
+                        if fixed_scene_runtime_hook is not None
+                        else "front"
+                    ),
                     "ego_actor_id": int(getattr(ego, "id", 0) or 0),
                     "front_actor_id": int(getattr(front, "id", 0) or 0) if front is not None else 0,
                 }
             )
+            if fixed_scene_runtime_hook is not None:
+                latest_scenario_meta["fixed_scene_runtime_hook"] = fixed_scene_runtime_hook.to_dict()
             scenario_meta = json.loads(json.dumps(latest_scenario_meta, default=str))
             scenario_meta_path.parent.mkdir(parents=True, exist_ok=True)
             scenario_meta_path.write_text(json.dumps(scenario_meta, indent=2))

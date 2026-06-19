@@ -32,6 +32,7 @@ class ScenarioPlan:
     scenario_id: str
     scenario_class: str
     map: str = "Town01"
+    route_id: str | None = None
     spawn_ref: str | None = None
     goal_ref: str | None = None
     route_ref: str | None = None

@@ -198,6 +198,16 @@ separate route/Frenet projection contract and `route_health.json`.
 
 For CARLA-only diagnostic runs, ego control is provided by
 `SimpleAccRouteFollowerController` through the `carla_builtin` backend facade.
+
+For Phase 1 Apollo compatibility work, the runtime can also be attached as a
+sidecar hook to the legacy follow-stop harness by setting
+`runtime.fixed_scene_player.enabled=true` and
+`scenario.spawn_legacy_front=false`. In that mode Apollo still owns ego control,
+while the fixed-scene runtime owns declared non-ego target actors and writes
+`artifacts/fixed_scene_runtime_hook.json` plus the normal runtime trace/event
+artifacts. This is only a scenario-validation migration path; it does not make
+an Apollo fixed-scene run evaluable until the online run produces the required
+obstacle GT, v-t-gap, phase1 status, and Apollo health artifacts.
 The controller is deliberately small: route-heading/cross-track feedback plus
 ACC-style lead-gap speed control. It exists to validate scene playback quickly,
 not to replace Apollo or Autoware in capability evaluation. The online runner

@@ -50,6 +50,7 @@ class FollowStopConfig:
     front_yaw_offset_deg: float = 0.0
     front_placement_mode: str = "spawn_index"
     front_waypoint_ahead_m: float | None = None
+    spawn_front: bool = True
     ego_initial_brake: float = 0.0
     ego_initial_hand_brake: bool = False
 
@@ -330,50 +331,55 @@ class FollowStopScenario(Scenario):
             pass
 
         requested_front_idx = self.cfg.front_idx
-        if front_placement_mode == "waypoint_ahead":
-            front_spawns = [
-                self._front_waypoint_ahead_transform(
-                    carla_map,
-                    ego_spawn_for_front,
-                    float(self.cfg.front_waypoint_ahead_m or self.cfg.front_target_ahead_m or 300.0),
+        front = None
+        front_idx = requested_front_idx
+        if self.cfg.spawn_front:
+            if front_placement_mode == "waypoint_ahead":
+                front_spawns = [
+                    self._front_waypoint_ahead_transform(
+                        carla_map,
+                        ego_spawn_for_front,
+                        float(self.cfg.front_waypoint_ahead_m or self.cfg.front_target_ahead_m or 300.0),
+                    )
+                ]
+                requested_front_idx = 0
+            else:
+                front_spawns = self._offset_spawn_points(
+                    spawns,
+                    offset_x_m=float(self.cfg.front_offset_x_m),
+                    offset_y_m=float(self.cfg.front_offset_y_m),
+                    offset_z_m=float(self.cfg.front_offset_z_m),
+                    yaw_offset_deg=float(self.cfg.front_yaw_offset_deg),
                 )
-            ]
-            requested_front_idx = 0
+            front, front_idx = spawn_with_retry(world, veh_bp, front_spawns, preferred_idx=requested_front_idx)
+            if front is None:
+                raise RuntimeError("Failed to spawn front vehicle")
+            if front_idx != requested_front_idx:
+                print(
+                    f"[followstop][warn] front spawn fallback: requested={requested_front_idx} used={front_idx}"
+                )
+            if front_placement_mode == "waypoint_ahead":
+                print(
+                    "[followstop] placed front by waypoint_ahead: ego_idx=%s ahead_m=%.3f"
+                    % (
+                        self.cfg.ego_idx,
+                        float(self.cfg.front_waypoint_ahead_m or self.cfg.front_target_ahead_m or 300.0),
+                    )
+                )
+            elif front_spawns is not spawns:
+                print(
+                    "[followstop] applied front pre-spawn offset: dx=%.3f dy=%.3f dz=%.3f dyaw=%.3f"
+                    % (
+                        self.cfg.front_offset_x_m,
+                        self.cfg.front_offset_y_m,
+                        self.cfg.front_offset_z_m,
+                        self.cfg.front_yaw_offset_deg,
+                    )
+                )
+            front.set_simulate_physics(True)
+            front.apply_control(carla.VehicleControl(throttle=0.0, brake=self.cfg.stop_brake, hand_brake=True))
         else:
-            front_spawns = self._offset_spawn_points(
-                spawns,
-                offset_x_m=float(self.cfg.front_offset_x_m),
-                offset_y_m=float(self.cfg.front_offset_y_m),
-                offset_z_m=float(self.cfg.front_offset_z_m),
-                yaw_offset_deg=float(self.cfg.front_yaw_offset_deg),
-            )
-        front, front_idx = spawn_with_retry(world, veh_bp, front_spawns, preferred_idx=requested_front_idx)
-        if front is None:
-            raise RuntimeError("Failed to spawn front vehicle")
-        if front_idx != requested_front_idx:
-            print(
-                f"[followstop][warn] front spawn fallback: requested={requested_front_idx} used={front_idx}"
-            )
-        if front_placement_mode == "waypoint_ahead":
-            print(
-                "[followstop] placed front by waypoint_ahead: ego_idx=%s ahead_m=%.3f"
-                % (
-                    self.cfg.ego_idx,
-                    float(self.cfg.front_waypoint_ahead_m or self.cfg.front_target_ahead_m or 300.0),
-                )
-            )
-        elif front_spawns is not spawns:
-            print(
-                "[followstop] applied front pre-spawn offset: dx=%.3f dy=%.3f dz=%.3f dyaw=%.3f"
-                % (
-                    self.cfg.front_offset_x_m,
-                    self.cfg.front_offset_y_m,
-                    self.cfg.front_offset_z_m,
-                    self.cfg.front_yaw_offset_deg,
-                )
-            )
-        front.set_simulate_physics(True)
-        front.apply_control(carla.VehicleControl(throttle=0.0, brake=self.cfg.stop_brake, hand_brake=True))
+            print("[followstop] legacy front spawn disabled; fixed-scene runtime may own target actors")
 
         try:
             veh_bp.set_attribute("role_name", self.cfg.ego_id)
@@ -392,7 +398,8 @@ class FollowStopScenario(Scenario):
             max_tries=1 if abs(float(self.cfg.ego_spawn_s_offset_m or 0.0)) > 1e-6 else 5,
         )
         if ego is None:
-            front.destroy()
+            if front is not None:
+                front.destroy()
             raise RuntimeError("Failed to spawn ego vehicle")
         if ego_idx != requested_ego_idx:
             print(
@@ -426,7 +433,7 @@ class FollowStopScenario(Scenario):
         # Re-apply once after actor spawn to reduce race with map controller updates.
         self._apply_traffic_light_policy(world)
 
-        self.cfg.front_idx = front_idx if front_placement_mode == "spawn_index" else self.cfg.front_idx
+        self.cfg.front_idx = front_idx if self.cfg.spawn_front and front_placement_mode == "spawn_index" else self.cfg.front_idx
         self.cfg.ego_idx = ego_idx
         self.actors = ActorRefs(ego=ego, front=front)
         return self.actors
