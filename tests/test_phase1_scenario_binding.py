@@ -9,6 +9,7 @@ from carla_testbed.experiments.phase1_scenario_binding import bind_phase1_scenar
 
 
 SCENARIO = "configs/scenarios/baguang/follow_stop_static_300m.yaml"
+ROUTE_ONLY_SCENARIO = "configs/scenarios/town01/junction_031.yaml"
 
 
 def test_binds_phase1_scenario_to_legacy_apollo_run(tmp_path: Path) -> None:
@@ -73,6 +74,28 @@ def test_overwrite_replaces_existing_fixed_scene(tmp_path: Path) -> None:
     assert report["fixed_scene_resolved_written"] is True
     assert report["fixed_scene_resolved_preserved"] is False
     assert _read_json(existing)["scene_id"] == "baguang_follow_stop_static_300m"
+
+
+def test_binds_route_only_scenario_without_fixed_scene_artifact(tmp_path: Path) -> None:
+    run = _write_run(tmp_path, backend="apollo_cyberrt")
+
+    report = bind_phase1_scenario_to_run(run, ROUTE_ONLY_SCENARIO)
+
+    manifest = _read_json(run / "manifest.json")
+    written = _read_json(run / "analysis" / "phase1_scenario_binding" / "phase1_scenario_binding_report.json")
+
+    assert report["status"] == "pass"
+    assert report["scenario_kind"] == "route_only"
+    assert written["scenario_case"] == "town01_junction_031"
+    assert manifest["backend_type"] == "apollo_reference_backend"
+    assert manifest["scenario_case"] == "town01_junction_031"
+    assert manifest["scenario_class"] == "junction_turn"
+    assert manifest["route_id"] == "town01_junction031"
+    assert manifest["fixed_scene_enabled"] is False
+    assert manifest["target_actor_contract"]["status"] == "not_required"
+    assert manifest["target_actor_contract"]["required"] is False
+    assert manifest["phase1_scenario_binding"]["scenario_kind"] == "route_only"
+    assert not (run / "artifacts" / "fixed_scene_resolved.json").exists()
 
 
 def test_binding_cli_parses_role_alias(tmp_path: Path) -> None:
