@@ -36,6 +36,20 @@ def test_lane_keep_target_not_required() -> None:
     assert contract["required"] is False
 
 
+def test_scenario_case_string_is_not_target_actor_role() -> None:
+    contract = resolve_target_actor_contract(
+        {
+            "scenario_case": "town01_lane_keep_097",
+            "scenario_class": "lane_keep",
+            "roles": {"ego": {}},
+        }
+    )
+
+    assert contract["status"] == "not_required"
+    assert contract["target_actor_role"] is None
+    assert contract["source"] == "scenario_class_not_required"
+
+
 def test_missing_required_target_is_invalid_contract() -> None:
     contract = resolve_target_actor_contract({"scenario_class": "follow_stop_static", "roles": {"ego": {}}})
 

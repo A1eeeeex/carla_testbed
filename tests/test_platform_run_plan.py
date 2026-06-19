@@ -126,3 +126,6 @@ def test_cli_plan_carla_builtin_baguang_scenario_shows_launch() -> None:
     assert "tools/run_builtin_ego_fixed_scene.py" in result.stdout
     assert "baguang_follow_stop_static_300m" in result.stdout
     assert "carla_testbed_builtin_controller" in result.stdout
+    assert '"backend_type": "planning_control_backend"' in result.stdout
+    assert '"phase1_manifest_contract"' in result.stdout
+    assert '"target_actor_role": "lead_vehicle"' in result.stdout

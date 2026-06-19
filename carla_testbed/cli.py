@@ -36,6 +36,7 @@ from carla_testbed.platform.registry import PlatformRegistry, PlatformRegistryEr
 from carla_testbed.record import RunArtifactStore, build_manifest, build_summary
 from carla_testbed.record.registry import default_recorder_registry
 from carla_testbed.runtime.apollo_compat import run_compat_apollo_cyber_gt_runtime
+from carla_testbed.scenario_player.manifest_contract import fixed_scene_manifest_fields_from_template_path
 from carla_testbed.utils.env import resolve_repo_root
 
 try:
@@ -717,10 +718,18 @@ def _cmd_plan(args: argparse.Namespace) -> int:
             write_run_plan(plan, args.out)
             print(f"[plan] wrote {args.out}")
         if args.show_launch:
-            launch = default_backend_registry().for_plan(plan).build_launch_plan(plan).to_dict()
+            backend = default_backend_registry().for_plan(plan)
+            launch = backend.build_launch_plan(plan).to_dict()
             print(
                 json.dumps(
-                    {"schema_version": "launch_plan_preview.v1", "launch_plan": launch},
+                    {
+                        "schema_version": "launch_plan_preview.v1",
+                        "backend_contract": backend.contract(plan).to_dict(),
+                        "phase1_manifest_contract": fixed_scene_manifest_fields_from_template_path(
+                            plan.source_profiles.get("scenario")
+                        ),
+                        "launch_plan": launch,
+                    },
                     indent=2,
                     sort_keys=True,
                 )

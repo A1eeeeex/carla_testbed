@@ -122,7 +122,7 @@ def _explicit_target_actor(scenario: Mapping[str, Any]) -> str | None:
             for key in ("role", "actor_role", "target_actor_role"):
                 if value.get(key):
                     return str(value[key])
-        elif isinstance(value, str) and value:
+        elif container_key != "scenario_case" and isinstance(value, str) and value:
             return value
     if scenario.get("target_actor_role"):
         return str(scenario["target_actor_role"])
