@@ -20,6 +20,10 @@ from carla_testbed.analysis.apollo_reference_line_contract import (
     analyze_apollo_reference_line_contract_run_dir,
     write_apollo_reference_line_contract_report,
 )
+from carla_testbed.analysis.apollo_route_contract import (
+    analyze_apollo_route_contract_run_dir,
+    write_apollo_route_contract_report,
+)
 from carla_testbed.analysis.baguang_lane_event_contract import (
     analyze_baguang_lane_event_contract,
     write_baguang_lane_event_contract_report,
@@ -40,6 +44,8 @@ from carla_testbed.experiments.phase1_scenario_binding import bind_phase1_scenar
 from carla_testbed.scenario_player.target_actor import resolve_target_actor_contract
 
 PHASE1_POSTPROCESS_SCHEMA_VERSION = "phase1_postprocess.v1"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_APOLLO_FRAME_TRANSFORM = _REPO_ROOT / "configs" / "town01" / "apollo_frame_transform.example.yaml"
 
 
 def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
@@ -58,6 +64,8 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     apollo_control_handoff_paths: dict[str, str] | None = None
     apollo_hdmap_projection_report: dict[str, Any] | None = None
     apollo_hdmap_projection_paths: dict[str, str] | None = None
+    apollo_route_contract_report: dict[str, Any] | None = None
+    apollo_route_contract_paths: dict[str, str] | None = None
     apollo_reference_line_contract_report: dict[str, Any] | None = None
     apollo_reference_line_contract_paths: dict[str, str] | None = None
     apollo_module_consumption_report: dict[str, Any] | None = None
@@ -73,6 +81,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         _write_obstacle_gt_contract(root)
         apollo_control_handoff_report, apollo_control_handoff_paths = _write_apollo_control_handoff(root)
         apollo_hdmap_projection_report, apollo_hdmap_projection_paths = _write_apollo_hdmap_projection(root)
+        apollo_route_contract_report, apollo_route_contract_paths = _write_apollo_route_contract(root)
         apollo_reference_line_contract_report, apollo_reference_line_contract_paths = _write_apollo_reference_line_contract(root)
         apollo_module_consumption_report, apollo_module_consumption_paths = _write_apollo_module_consumption(root)
         control_health_report, control_health_paths = _write_control_health(root)
@@ -110,6 +119,9 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         "control_health_status": (control_health_report.get("status") if control_health_report else None),
         "apollo_hdmap_projection_status": (
             apollo_hdmap_projection_report.get("status") if apollo_hdmap_projection_report else None
+        ),
+        "apollo_route_contract_status": (
+            apollo_route_contract_report.get("status") if apollo_route_contract_report else None
         ),
         "apollo_reference_line_contract_status": (
             apollo_reference_line_contract_report.get("status") if apollo_reference_line_contract_report else None
@@ -151,6 +163,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
             **({"apollo_control_handoff": apollo_control_handoff_paths} if apollo_control_handoff_paths else {}),
             **({"control_health": control_health_paths} if control_health_paths else {}),
             **({"apollo_hdmap_projection": apollo_hdmap_projection_paths} if apollo_hdmap_projection_paths else {}),
+            **({"apollo_route_contract": apollo_route_contract_paths} if apollo_route_contract_paths else {}),
             **(
                 {"apollo_reference_line_contract": apollo_reference_line_contract_paths}
                 if apollo_reference_line_contract_paths
@@ -221,6 +234,29 @@ def _write_apollo_hdmap_projection(root: Path) -> tuple[dict[str, Any] | None, d
     report = analyze_apollo_hdmap_projection_file(projection_path)
     paths = write_apollo_hdmap_projection_report(report, root / "analysis" / "apollo_hdmap_projection")
     return report, paths
+
+
+def _write_apollo_route_contract(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    if not _apollo_route_contract_raw_exists(root):
+        return None, None
+    frame_transform = DEFAULT_APOLLO_FRAME_TRANSFORM if DEFAULT_APOLLO_FRAME_TRANSFORM.exists() else None
+    report = analyze_apollo_route_contract_run_dir(root, frame_transform=frame_transform)
+    paths = write_apollo_route_contract_report(report, root / "analysis" / "apollo_route_contract")
+    return report, paths
+
+
+def _apollo_route_contract_raw_exists(root: Path) -> bool:
+    return any(
+        path.exists()
+        for path in (
+            root / "manifest.json",
+            root / "summary.json",
+            root / "artifacts" / "routing_response_decoded.json",
+            root / "artifacts" / "routing_response_decoded.jsonl",
+            root / "artifacts" / "scenario_goal.json",
+            root / "artifacts" / "apollo_hdmap_projection.jsonl",
+        )
+    )
 
 
 def _write_apollo_reference_line_contract(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:

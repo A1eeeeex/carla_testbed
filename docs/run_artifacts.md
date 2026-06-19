@@ -313,6 +313,12 @@ Additional run-local artifacts:
     are HDMap projection evidence only. Export success does not change driving
     behavior, does not repair lane invasion, and does not make a diagnostic
     compatibility run claim-grade.
+    `run_phase1_postprocess()` refreshes the dependent reports in evidence
+    order: Apollo HDMap projection, Apollo route contract, reference-line
+    contract, module-consumption, then link-health. This prevents stale route
+    contract output from downgrading a newer projection/reference-line analysis,
+    but any warning or blocker from the refreshed route contract still
+    propagates into later claim gates.
   - fixed-scene playback validity includes both
     `analysis/fixed_scene_contract/fixed_scene_contract_report.json` and
     `analysis/scenario_actor_contract/scenario_actor_contract_report.json`.
