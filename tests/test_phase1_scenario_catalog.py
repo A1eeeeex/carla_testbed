@@ -232,6 +232,21 @@ def test_phase1_catalog_does_not_count_invalid_apollo_scaffold_as_online_done(tm
         ),
         encoding="utf-8",
     )
+    (run / "analysis" / "phase1_apollo_fixed_scene_dispatch").mkdir(parents=True)
+    (run / "analysis" / "phase1_apollo_fixed_scene_dispatch" / "phase1_apollo_fixed_scene_dispatch_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_apollo_fixed_scene_dispatch.v1",
+                "status": "pass",
+                "dispatch_mode": "guarded_legacy_transition_available",
+                "starts_runtime": True,
+                "commands_present": True,
+                "blocking_reasons": [],
+                "warnings": ["guarded_static_follow_stop_transition_not_generic_fixed_scene_runtime"],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     report = analyze_phase1_scenario_catalog(".", evidence_root=evidence_root)
     follow_stop = {item["scenario"]: item for item in report["scenarios"]}["follow_stop_static"]
@@ -239,6 +254,9 @@ def test_phase1_catalog_does_not_count_invalid_apollo_scaffold_as_online_done(tm
     assert follow_stop["apollo_online_status"] == "PARTIAL"
     assert follow_stop["apollo_fixed_scene_readiness_status"] == "fail"
     assert follow_stop["apollo_fixed_scene_readiness"] == "PARTIAL"
+    assert follow_stop["apollo_fixed_scene_dispatch_contract_status"] == "pass"
+    assert follow_stop["apollo_fixed_scene_dispatch_contract"] == "DONE"
+    assert follow_stop["apollo_fixed_scene_dispatch_mode"] == "guarded_legacy_transition_available"
     assert follow_stop["apollo_fixed_scene_runtime_dispatch_status"] == "PARTIAL"
     assert follow_stop["apollo_fixed_scene_runtime_dispatch_reason"] == "backend_not_ready"
     assert follow_stop["overall_status"] == "PARTIAL"
@@ -263,6 +281,69 @@ def test_phase1_catalog_does_not_count_invalid_apollo_scaffold_as_online_done(tm
         and item.get("actor_probe_enabled_effective") is False
         for item in follow_stop["evidence"]
     )
+    assert any(
+        item["evidence_type"] == "apollo_fixed_scene_dispatch_contract"
+        and item["status"] == "DONE"
+        and item.get("dispatch_mode") == "guarded_legacy_transition_available"
+        for item in follow_stop["evidence"]
+    )
+
+
+def test_phase1_catalog_surfaces_dynamic_dispatch_contract_without_online_done(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    run = evidence_root / "phase1_apollo_lead_decel_scaffold"
+    (run / "analysis" / "phase1_status").mkdir(parents=True)
+    (run / "analysis" / "phase1_apollo_fixed_scene_dispatch").mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": run.name,
+                "scenario_id": "baguang_lead_decel_70_to_40_20m",
+                "scenario_class": "lead_decel",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "analysis" / "phase1_status" / "phase1_status.json").write_text(
+        json.dumps(
+            {
+                "status": "invalid",
+                "failure_reason": "backend_not_ready",
+                "preflight_reasons": ["apollo_fixed_scene_runtime_not_migrated"],
+                "evaluable": False,
+                "scenario_id": "baguang_lead_decel_70_to_40_20m",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "analysis" / "phase1_apollo_fixed_scene_dispatch" / "phase1_apollo_fixed_scene_dispatch_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_apollo_fixed_scene_dispatch.v1",
+                "status": "partial",
+                "dispatch_mode": "runtime_migration_required",
+                "starts_runtime": False,
+                "commands_present": False,
+                "blocking_reasons": ["apollo_fixed_scene_runtime_migration_required"],
+                "warnings": ["dynamic_fixed_scene_runtime_not_migrated"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_phase1_scenario_catalog(".", evidence_root=evidence_root)
+    lead = {item["scenario"]: item for item in report["scenarios"]}["lead_decel_accel"]
+
+    assert lead["apollo_online_status"] == "PARTIAL"
+    assert lead["apollo_fixed_scene_dispatch_contract_status"] == "partial"
+    assert lead["apollo_fixed_scene_dispatch_contract"] == "PARTIAL"
+    assert lead["apollo_fixed_scene_dispatch_mode"] == "runtime_migration_required"
+    assert lead["apollo_fixed_scene_runtime_dispatch_status"] == "PARTIAL"
+    assert lead["apollo_fixed_scene_runtime_dispatch_reason"] == "apollo_fixed_scene_runtime_not_migrated"
+    assert lead["overall_status"] == "PARTIAL"
+    assert "apollo_fixed_scene_runtime_dispatch" in lead["missing_items"]
 
 
 def test_phase1_catalog_uses_preflight_missing_expected_artifacts_when_status_is_legacy(tmp_path) -> None:

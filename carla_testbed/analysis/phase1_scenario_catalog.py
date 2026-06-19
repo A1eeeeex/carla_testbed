@@ -135,6 +135,9 @@ def _catalog_entry(
             "apollo_online_status": online["apollo_online_status"],
             "apollo_fixed_scene_readiness_status": online["apollo_fixed_scene_readiness_status"],
             "apollo_fixed_scene_readiness": online["apollo_fixed_scene_readiness"],
+            "apollo_fixed_scene_dispatch_contract_status": online["apollo_fixed_scene_dispatch_contract_status"],
+            "apollo_fixed_scene_dispatch_contract": online["apollo_fixed_scene_dispatch_contract"],
+            "apollo_fixed_scene_dispatch_mode": online["apollo_fixed_scene_dispatch_mode"],
             "apollo_fixed_scene_runtime_dispatch_status": STATUS_NOT_YET,
             "apollo_fixed_scene_runtime_dispatch_reason": None,
             "v_t_gap_status": online["v_t_gap_status"],
@@ -193,6 +196,13 @@ def _catalog_entry(
         missing_items.append("target_actor")
     v_t_gap_readiness = _phase1_readiness_from_status(online["v_t_gap_status"])
     apollo_readiness = online["apollo_fixed_scene_readiness"]
+    apollo_dispatch_contract = (
+        online["apollo_fixed_scene_dispatch_contract"] if has_fixed_scene else "not_applicable"
+    )
+    apollo_dispatch_contract_status = (
+        online["apollo_fixed_scene_dispatch_contract_status"] if has_fixed_scene else "not_applicable"
+    )
+    apollo_dispatch_mode = online["apollo_fixed_scene_dispatch_mode"] if has_fixed_scene else None
     apollo_runtime_dispatch = (
         online["apollo_fixed_scene_runtime_dispatch_status"] if has_fixed_scene else "not_applicable"
     )
@@ -253,6 +263,9 @@ def _catalog_entry(
         "apollo_online_status": online["apollo_online_status"],
         "apollo_fixed_scene_readiness_status": online["apollo_fixed_scene_readiness_status"],
         "apollo_fixed_scene_readiness": apollo_readiness,
+        "apollo_fixed_scene_dispatch_contract_status": apollo_dispatch_contract_status,
+        "apollo_fixed_scene_dispatch_contract": apollo_dispatch_contract,
+        "apollo_fixed_scene_dispatch_mode": apollo_dispatch_mode,
         "apollo_fixed_scene_runtime_dispatch_status": apollo_runtime_dispatch,
         "apollo_fixed_scene_runtime_dispatch_reason": apollo_runtime_dispatch_reason,
         "v_t_gap_status": online["v_t_gap_status"],
@@ -280,8 +293,8 @@ def _catalog_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"Schema: `{report.get('schema_version')}`",
         "",
-        "| Scenario | Case IDs | Priority | Status | Case YAML | Template | Target | Target role | CARLA online | Apollo online | Apollo readiness | Apollo runtime dispatch | v-t-gap | Comparison | Comparison target | Missing | Next action |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Scenario | Case IDs | Priority | Status | Case YAML | Template | Target | Target role | CARLA online | Apollo online | Apollo readiness | Apollo dispatch contract | Apollo runtime dispatch | v-t-gap | Comparison | Comparison target | Missing | Next action |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in report.get("scenarios") or []:
         if not isinstance(item, Mapping):
@@ -291,7 +304,7 @@ def _catalog_markdown(report: Mapping[str, Any]) -> str:
         case_ids = ", ".join(str(value) for value in item.get("scenario_case_ids") or []) or "-"
         target_contract = item.get("target_actor_contract") if isinstance(item.get("target_actor_contract"), Mapping) else {}
         lines.append(
-            "| {scenario} | {case_ids} | {priority} | {overall} | {case} | {template} | {target} | {target_role} | {carla} | {apollo} | {apollo_readiness} | {apollo_runtime} | {vtgap} | {comparison} | {comparison_target} | {missing} | {next_action} |".format(
+            "| {scenario} | {case_ids} | {priority} | {overall} | {case} | {template} | {target} | {target_role} | {carla} | {apollo} | {apollo_readiness} | {apollo_dispatch_contract} | {apollo_runtime} | {vtgap} | {comparison} | {comparison_target} | {missing} | {next_action} |".format(
                 scenario=item.get("scenario"),
                 case_ids=case_ids,
                 priority=item.get("priority"),
@@ -303,6 +316,7 @@ def _catalog_markdown(report: Mapping[str, Any]) -> str:
                 carla=item.get("carla_online_status"),
                 apollo=item.get("apollo_online_status"),
                 apollo_readiness=item.get("apollo_fixed_scene_readiness"),
+                apollo_dispatch_contract=_apollo_dispatch_contract_markdown(item),
                 apollo_runtime=_apollo_runtime_markdown(item),
                 vtgap=item.get("v_t_gap_status"),
                 comparison=item.get("comparison_status"),
@@ -434,6 +448,9 @@ def _discover_online_evidence(
     apollo_online_status = STATUS_NOT_YET
     apollo_fixed_scene_readiness_status: str = STATUS_NOT_YET
     apollo_fixed_scene_readiness = STATUS_NOT_YET
+    apollo_fixed_scene_dispatch_contract_status: str = STATUS_NOT_YET
+    apollo_fixed_scene_dispatch_contract = STATUS_NOT_YET
+    apollo_fixed_scene_dispatch_mode: str | None = None
     apollo_fixed_scene_runtime_dispatch_status = STATUS_NOT_YET
     apollo_fixed_scene_runtime_dispatch_reason: str | None = None
     v_t_gap_status: str = STATUS_NOT_YET
@@ -517,6 +534,42 @@ def _discover_online_evidence(
                         details=_readiness_evidence_details(readiness_report),
                     )
                 )
+            dispatch_report = _read_json(
+                run_dir
+                / "analysis"
+                / "phase1_apollo_fixed_scene_dispatch"
+                / "phase1_apollo_fixed_scene_dispatch_report.json"
+            )
+            if dispatch_report:
+                raw_dispatch_status = str(dispatch_report.get("status") or "unknown")
+                dispatch_contract = _phase1_readiness_from_status(raw_dispatch_status)
+                dispatch_better = _readiness_better(
+                    apollo_fixed_scene_dispatch_contract,
+                    dispatch_contract,
+                )
+                apollo_fixed_scene_dispatch_contract_status = _best_raw_readiness_status(
+                    apollo_fixed_scene_dispatch_contract_status,
+                    raw_dispatch_status,
+                )
+                apollo_fixed_scene_dispatch_contract = _best_readiness(
+                    apollo_fixed_scene_dispatch_contract,
+                    dispatch_contract,
+                )
+                if apollo_fixed_scene_dispatch_mode is None or dispatch_better:
+                    apollo_fixed_scene_dispatch_mode = str(dispatch_report.get("dispatch_mode") or "")
+                evidence.append(
+                    _evidence(
+                        run_dir
+                        / "analysis"
+                        / "phase1_apollo_fixed_scene_dispatch"
+                        / "phase1_apollo_fixed_scene_dispatch_report.json",
+                        root,
+                        "apollo_fixed_scene_dispatch_contract",
+                        status=dispatch_contract,
+                        note=_dispatch_contract_evidence_note(dispatch_report),
+                        details=_dispatch_contract_evidence_details(dispatch_report),
+                    )
+                )
             gap_report = _read_json(run_dir / "analysis" / "v_t_gap" / "v_t_gap_report.json")
             if gap_report:
                 raw_gap_status = str(gap_report.get("status") or "unknown")
@@ -597,6 +650,9 @@ def _discover_online_evidence(
         "apollo_online_status": apollo_online_status,
         "apollo_fixed_scene_readiness_status": apollo_fixed_scene_readiness_status,
         "apollo_fixed_scene_readiness": apollo_fixed_scene_readiness,
+        "apollo_fixed_scene_dispatch_contract_status": apollo_fixed_scene_dispatch_contract_status,
+        "apollo_fixed_scene_dispatch_contract": apollo_fixed_scene_dispatch_contract,
+        "apollo_fixed_scene_dispatch_mode": apollo_fixed_scene_dispatch_mode,
         "apollo_fixed_scene_runtime_dispatch_status": apollo_fixed_scene_runtime_dispatch_status,
         "apollo_fixed_scene_runtime_dispatch_reason": apollo_fixed_scene_runtime_dispatch_reason,
         "v_t_gap_status": v_t_gap_status,
@@ -647,8 +703,9 @@ def _evidence_sort_key(item: Mapping[str, Any]) -> tuple[int, int, int, int, str
         "CARLA_online": 2,
         "Apollo_online": 3,
         "apollo_fixed_scene_readiness": 4,
-        "v_t_gap": 5,
-        "comparison_online": 6,
+        "apollo_fixed_scene_dispatch_contract": 5,
+        "v_t_gap": 6,
+        "comparison_online": 7,
     }
     status_order = {
         STATUS_DONE: 0,
@@ -765,6 +822,47 @@ def _readiness_evidence_details(report: Mapping[str, Any]) -> dict[str, Any]:
         if value not in (None, [], {}):
             details[key] = value
     return details
+
+
+def _dispatch_contract_evidence_note(report: Mapping[str, Any]) -> str:
+    parts = [
+        f"dispatch_status={report.get('status') or 'missing'}",
+        f"dispatch_mode={report.get('dispatch_mode') or 'missing'}",
+    ]
+    blocking = _short_list(report.get("blocking_reasons"))
+    if blocking:
+        parts.append(f"blocking_reasons={','.join(blocking)}")
+    warnings = _short_list(report.get("warnings"), limit=3)
+    if warnings:
+        parts.append(f"warnings={','.join(warnings)}")
+    return "; ".join(parts)
+
+
+def _dispatch_contract_evidence_details(report: Mapping[str, Any]) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    for key in (
+        "dispatch_mode",
+        "starts_runtime",
+        "commands_present",
+        "compatibility_source",
+        "blocking_reasons",
+        "warnings",
+        "next_action",
+        "missing_row_level_expected_artifacts",
+        "missing_postprocess_expected_artifacts",
+    ):
+        value = report.get(key)
+        if value not in (None, [], {}):
+            details[key] = value
+    return details
+
+
+def _apollo_dispatch_contract_markdown(item: Mapping[str, Any]) -> str:
+    status = str(item.get("apollo_fixed_scene_dispatch_contract") or STATUS_NOT_YET)
+    mode = item.get("apollo_fixed_scene_dispatch_mode")
+    raw = item.get("apollo_fixed_scene_dispatch_contract_status")
+    suffix = mode or raw
+    return f"{status} ({suffix})" if suffix else status
 
 
 def _apollo_runtime_markdown(item: Mapping[str, Any]) -> str:
@@ -1095,7 +1193,7 @@ def _value_matches_alias(value: str, aliases: set[str]) -> bool:
 def _phase1_readiness_from_status(status: str) -> str:
     if status in {STATUS_DONE, "pass", "warn", "not_applicable"}:
         return STATUS_DONE
-    if status in {"invalid", "fail", "failed", "unknown", "insufficient_data", STATUS_UNKNOWN}:
+    if status in {"invalid", "fail", "failed", "partial", "unknown", "insufficient_data", STATUS_UNKNOWN}:
         return STATUS_PARTIAL
     return STATUS_NOT_YET
 
@@ -1138,6 +1236,7 @@ def _best_raw_readiness_status(current: str, candidate: str) -> str:
         "unknown": 1,
         "insufficient_data": 2,
         "fail": 2,
+        "partial": 2,
         "warn": 3,
         "pass": 4,
         "not_applicable": 4,
