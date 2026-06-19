@@ -303,6 +303,16 @@ Additional run-local artifacts:
     failed Phase 1 as `failed/lane_invasion`, so the overlay is diagnostic
     process-survival evidence only. Do not promote it to default runtime or
     treat it as an Apollo behavior pass without repeated no-regression evidence.
+  - Phase 1 Apollo compatibility configs may set
+    `runtime.postprocess.auto_export_apollo_hdmap_projection=true`. In that
+    mode the runtime attempts a best-effort Apollo `map_xysl` export before
+    the Phase 1 postprocess spine analyzes the run. The resulting
+    `artifacts/apollo_hdmap_projection.jsonl`,
+    `analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json`, and
+    `analysis/apollo_hdmap_projection_export/apollo_hdmap_projection_export_status.json`
+    are HDMap projection evidence only. Export success does not change driving
+    behavior, does not repair lane invasion, and does not make a diagnostic
+    compatibility run claim-grade.
   - fixed-scene playback validity includes both
     `analysis/fixed_scene_contract/fixed_scene_contract_report.json` and
     `analysis/scenario_actor_contract/scenario_actor_contract_report.json`.

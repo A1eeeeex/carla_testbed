@@ -615,6 +615,8 @@ def _resolve_transition_python(legacy_effective_path: Path) -> str:
 def _maybe_run_phase1_postprocess(root: Path) -> dict[str, str]:
     if not _run_declares_phase1_scenario(root):
         return {}
+    outputs: dict[str, str] = {}
+    outputs.update(_maybe_export_apollo_hdmap_projection(root))
     out_dir = root / "analysis" / "phase1_postprocess"
     out_dir.mkdir(parents=True, exist_ok=True)
     report_path = out_dir / "phase1_postprocess_report.json"
@@ -623,7 +625,8 @@ def _maybe_run_phase1_postprocess(root: Path) -> dict[str, str]:
 
         report = run_phase1_postprocess(root)
         report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        return {"phase1_postprocess": str(report_path)}
+        outputs["phase1_postprocess"] = str(report_path)
+        return outputs
     except Exception as exc:  # pragma: no cover - defensive online artifact path
         failure_path = out_dir / "phase1_postprocess_failure.json"
         failure = {
@@ -637,7 +640,92 @@ def _maybe_run_phase1_postprocess(root: Path) -> dict[str, str]:
             ),
         }
         failure_path.write_text(json.dumps(failure, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        return {"phase1_postprocess_failure": str(failure_path)}
+        outputs["phase1_postprocess_failure"] = str(failure_path)
+        return outputs
+
+
+def _maybe_export_apollo_hdmap_projection(root: Path) -> dict[str, str]:
+    if not _phase1_auto_export_hdmap_projection_requested(root):
+        return {}
+    out_dir = root / "analysis" / "apollo_hdmap_projection_export"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    status_path = out_dir / "apollo_hdmap_projection_export_status.json"
+    projection_path = root / "artifacts" / "apollo_hdmap_projection.jsonl"
+    if projection_path.exists() and projection_path.stat().st_size > 0:
+        status = {
+            "schema_version": "apollo_hdmap_projection_auto_export.v1",
+            "status": "skipped",
+            "reason": "existing_non_empty_projection_artifact",
+            "out_path": str(projection_path),
+            "claim_boundary": "Existing projection evidence is analyzed by Phase 1 postprocess; export does not change driving behavior.",
+        }
+        status_path.write_text(json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return {"apollo_hdmap_projection_auto_export": str(status_path)}
+    try:
+        from carla_testbed.analysis.apollo_hdmap_projection import (
+            analyze_apollo_hdmap_projection_file,
+            write_apollo_hdmap_projection_report,
+        )
+        from carla_testbed.analysis.apollo_hdmap_projection_export import (
+            export_apollo_hdmap_projection_jsonl,
+            infer_map_xysl_config_from_run_dir,
+        )
+
+        frame_transform_path = _repo_root() / "configs" / "town01" / "apollo_frame_transform.example.yaml"
+        export_status = export_apollo_hdmap_projection_jsonl(
+            run_dir=root,
+            out_path=projection_path,
+            config=infer_map_xysl_config_from_run_dir(root),
+            max_samples=80,
+            include_route_samples=True,
+            include_start_goal=True,
+            frame_transform_path=frame_transform_path if frame_transform_path.exists() else None,
+            route_sample_step_m=5.0,
+            min_route_s_coverage=20.0,
+        )
+        analysis_report = analyze_apollo_hdmap_projection_file(projection_path)
+        analysis_outputs = write_apollo_hdmap_projection_report(
+            analysis_report,
+            root / "analysis" / "apollo_hdmap_projection",
+        )
+        status = {
+            "schema_version": "apollo_hdmap_projection_auto_export.v1",
+            "status": export_status.get("status"),
+            "export": export_status,
+            "analysis": {
+                "status": analysis_report.get("status"),
+                "claim_grade": analysis_report.get("claim_grade"),
+                "blocking_reasons": analysis_report.get("blocking_reasons") or [],
+                "insufficient_reasons": analysis_report.get("insufficient_reasons") or [],
+                "warnings": analysis_report.get("warnings") or [],
+                "outputs": analysis_outputs,
+            },
+            "claim_boundary": "Projection export adds Apollo HDMap API evidence only; it does not change runtime behavior.",
+        }
+    except Exception as exc:  # pragma: no cover - depends on local Apollo/Docker runtime
+        status = {
+            "schema_version": "apollo_hdmap_projection_auto_export.v1",
+            "status": "failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "out_path": str(projection_path),
+            "claim_boundary": (
+                "HDMap projection export failed during postprocess. Treat projection evidence as "
+                "insufficient_data, not as a driving-behavior failure."
+            ),
+        }
+    status_path.write_text(json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {"apollo_hdmap_projection_auto_export": str(status_path)}
+
+
+def _phase1_auto_export_hdmap_projection_requested(root: Path) -> bool:
+    for rel in ("config.resolved.yaml", "typed_runtime.effective_legacy.yaml", "effective.yaml"):
+        payload = _read_yaml(root / rel)
+        if _find_recursive(payload, ("auto_export_apollo_hdmap_projection",)) is not None:
+            return bool(_find_recursive(payload, ("auto_export_apollo_hdmap_projection",)))
+    manifest = _read_json(root / "manifest.json")
+    value = _find_recursive(manifest, ("auto_export_apollo_hdmap_projection",))
+    return bool(value)
 
 
 def _run_declares_phase1_scenario(root: Path) -> bool:
@@ -677,6 +765,10 @@ def _expand_runtime_python_candidate(raw: Any) -> str:
 def _is_executable_file(path_text: str) -> bool:
     path = Path(path_text)
     return path.is_file() and os.access(path, os.X_OK)
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:

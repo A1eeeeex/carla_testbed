@@ -448,6 +448,107 @@ def test_transition_backend_runs_phase1_postprocess_when_scenario_path_declared(
     assert postprocess["apollo_fixed_scene_compat_status"] == "pass"
 
 
+def test_phase1_auto_hdmap_projection_export_writes_status_and_report(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (run_dir / "config.resolved.yaml").write_text(
+        "\n".join(
+            [
+                "runtime:",
+                "  postprocess:",
+                "    phase1_scenario_path: configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml",
+                "    auto_export_apollo_hdmap_projection: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_export(**kwargs):
+        out_path = Path(kwargs["out_path"])
+        rows = []
+        for index in range(60):
+            rows.append(
+                {
+                    "timestamp": float(index),
+                    "localization_x": float(index),
+                    "localization_y": 0.0,
+                    "localization_heading": 0.0,
+                    "nearest_lane_id": "lane_1",
+                    "projection_s": float(index) * 10.0,
+                    "projection_l": 0.01,
+                    "lane_heading_at_s": 0.0,
+                    "heading_error_rad": 0.001,
+                    "lateral_error_m": 0.01,
+                    "road_id": None,
+                    "junction_id": None,
+                    "source": "apollo_hdmap_api",
+                    "map_name": "straight_road_for_baguang",
+                    "map_dir": "/apollo/modules/map/data/straight_road_for_baguang",
+                    "status": "ok",
+                    "sample_type": "route",
+                    "route_s": float(index) * 10.0,
+                }
+            )
+        out_path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        return {
+            "schema_version": "apollo_hdmap_projection_export.v1",
+            "status": "pass",
+            "row_count": len(rows),
+            "ok_row_count": len(rows),
+            "out_path": str(out_path),
+        }
+
+    import carla_testbed.analysis.apollo_hdmap_projection_export as projection_export
+
+    monkeypatch.setattr(projection_export, "export_apollo_hdmap_projection_jsonl", fake_export)
+
+    outputs = apollo_compat._maybe_export_apollo_hdmap_projection(run_dir)
+
+    status_path = Path(outputs["apollo_hdmap_projection_auto_export"])
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    projection = json.loads(
+        (
+            run_dir
+            / "analysis"
+            / "apollo_hdmap_projection"
+            / "apollo_hdmap_projection_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert status["status"] == "pass"
+    assert status["analysis"]["status"] == "pass"
+    assert projection["status"] == "pass"
+    assert projection["claim_grade"] is True
+
+
+def test_phase1_auto_hdmap_projection_export_skips_existing_non_empty_artifact(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "apollo_hdmap_projection.jsonl").write_text('{"status":"ok"}\n', encoding="utf-8")
+    (run_dir / "config.resolved.yaml").write_text(
+        "\n".join(
+            [
+                "runtime:",
+                "  postprocess:",
+                "    auto_export_apollo_hdmap_projection: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    outputs = apollo_compat._maybe_export_apollo_hdmap_projection(run_dir)
+
+    status = json.loads(Path(outputs["apollo_hdmap_projection_auto_export"]).read_text(encoding="utf-8"))
+    assert status["status"] == "skipped"
+    assert status["reason"] == "existing_non_empty_projection_artifact"
+
+
 def test_transition_python_resolver_does_not_use_unexpanded_placeholder(
     tmp_path: Path,
     monkeypatch,
