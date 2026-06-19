@@ -133,6 +133,47 @@ def test_phase1_postprocess_restores_dynamic_identity_from_typed_runtime_config(
     assert summary["scenario_class"] == "lead_vehicle_decel"
 
 
+def test_phase1_postprocess_rebuilds_dynamic_apollo_dispatch_when_launch_plan_missing(tmp_path) -> None:
+    run = _write_complete_run(tmp_path)
+    _make_run_apollo_fixed_scene(run)
+    storyboard = compile_fixed_scene_template(
+        load_fixed_scene_template("configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml")
+    )
+    (run / "artifacts" / "fixed_scene_resolved.json").write_text(json.dumps(storyboard), encoding="utf-8")
+    manifest_path = run / "manifest.json"
+    summary_path = run / "summary.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    for payload in (manifest, summary):
+        payload.update(
+            {
+                "scenario_id": "baguang_lead_decel_70_to_40_20m",
+                "scenario_class": "lead_vehicle_decel",
+                "route_id": "straight_road_for_baguang_mainline_lead_decel_20m",
+            }
+        )
+        payload.pop("launch_plan", None)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    report = run_phase1_postprocess(run)
+    dispatch = json.loads(
+        (
+            run
+            / "analysis"
+            / "phase1_apollo_fixed_scene_dispatch"
+            / "phase1_apollo_fixed_scene_dispatch_report.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert report["apollo_fixed_scene_dispatch_status"] == "pass"
+    assert dispatch["status"] == "pass"
+    assert dispatch["dispatch_mode"] == "runtime_command_available"
+    assert dispatch["compatibility_source"] == "phase1_fixed_scene_runtime_sidecar_transition"
+    assert dispatch["commands_present"] is True
+    assert dispatch["starts_runtime"] is True
+
+
 def _write_complete_run(tmp_path):
     run = tmp_path / "run"
     artifacts = run / "artifacts"

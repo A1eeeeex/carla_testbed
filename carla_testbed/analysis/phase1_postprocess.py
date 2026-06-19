@@ -565,6 +565,8 @@ def _write_apollo_dispatch(root: Path) -> tuple[dict[str, Any], dict[str, str]]:
         preflight = _read_json(root / "preflight.json")
         raw_launch = preflight.get("launch_plan")
         launch_plan = raw_launch if isinstance(raw_launch, Mapping) else None
+    if launch_plan is None:
+        launch_plan = _compile_apollo_launch_plan_for_run(root, manifest, summary)
     report = analyze_apollo_fixed_scene_dispatch(
         backend=str(manifest.get("backend") or manifest.get("backend_name") or summary.get("backend") or ""),
         backend_type=str(manifest.get("backend_type") or summary.get("backend_type") or ""),
@@ -578,6 +580,42 @@ def _write_apollo_dispatch(root: Path) -> tuple[dict[str, Any], dict[str, str]]:
         root / "analysis" / "phase1_apollo_fixed_scene_dispatch",
     )
     return report, paths
+
+
+def _compile_apollo_launch_plan_for_run(
+    root: Path,
+    manifest: Mapping[str, Any],
+    summary: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    scenario = _first_text(
+        manifest.get("scenario_id"),
+        summary.get("scenario_id"),
+        _nested_value(manifest, ("metadata", "scenario_metadata", "fixed_scene_runtime_hook", "scene_id")),
+        _read_json(root / "artifacts" / "fixed_scene_resolved.json").get("scene_id"),
+    )
+    if not scenario:
+        return None
+    try:
+        from carla_testbed.backends.registry import default_backend_registry
+        from carla_testbed.platform.compiler import compile_run_plan
+        from carla_testbed.platform.registry import PlatformRegistry
+
+        plan = compile_run_plan(
+            {
+                "include": {
+                    "platform": "apollo_cyberrt",
+                    "algorithm": "apollo/apollo10_carla_gt",
+                    "scenario": scenario,
+                    "recording": "none",
+                    "traffic": "none",
+                    "gate": "scenario_validation",
+                }
+            },
+            registry=PlatformRegistry(repo_root=_repo_root()),
+        )
+        return default_backend_registry().for_plan(plan).build_launch_plan(plan).to_dict()
+    except Exception:
+        return None
 
 
 def _ensure_phase1_scenario_binding(root: Path) -> dict[str, Any] | None:
