@@ -54,6 +54,47 @@ def _write_transition_config(tmp_path: Path, *, phase1_scenario_path: str | None
     return config_path
 
 
+def test_metadata_from_config_preserves_explicit_legacy_run_scenario_class(tmp_path: Path) -> None:
+    config_path = tmp_path / "baguang_dynamic_sidecar.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "run:",
+                "  id: dynamic_sidecar",
+                "  max_ticks: 3",
+                "  fixed_dt_s: 0.05",
+                f"  output_root: {tmp_path.as_posix()}",
+                "sim:",
+                "  town: straight_road_for_baguang",
+                "scenario:",
+                "  name: carla_followstop",
+                "backend:",
+                "  name: apollo_cyberrt",
+                "  params:",
+                "    legacy_run:",
+                "      profile_name: phase1_dynamic_sidecar",
+                "      scenario_id: baguang_lead_decel_70_to_40_20m",
+                "      scenario_class: lead_vehicle_decel",
+                "      route_id: straight_road_for_baguang_mainline_lead_decel_20m",
+                "      capability_profile: phase1_fixed_scene_sidecar",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_config(config_path)
+
+    metadata = apollo_compat._metadata_from_config(
+        cfg,
+        config_path=config_path,
+        run_dir=tmp_path / "dynamic_sidecar_run",
+    )
+
+    assert metadata["scenario_id"] == "baguang_lead_decel_70_to_40_20m"
+    assert metadata["scenario_class"] == "lead_vehicle_decel"
+    assert metadata["route_id"] == "straight_road_for_baguang_mainline_lead_decel_20m"
+
+
 def test_typed_transition_backend_uses_resolved_config_and_preserves_reports(
     tmp_path: Path,
     monkeypatch,

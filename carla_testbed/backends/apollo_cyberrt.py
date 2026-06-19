@@ -19,7 +19,7 @@ class ApolloCyberRTBackend:
         ),
     }
     _BAGUANG_FIXED_SCENE_SIDECAR_BASE_CONFIG = (
-        "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml"
+        "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
     )
 
     def contract(self, plan: RunPlan | None = None) -> StackContract:
@@ -172,7 +172,16 @@ class ApolloCyberRTBackend:
                 ]
             )
         if dynamic_sidecar_config is not None:
-            expected_artifacts.append("artifacts/fixed_scene_runtime_hook.json")
+            expected_artifacts.extend(
+                [
+                    "artifacts/fixed_scene_runtime_hook.json",
+                    "artifacts/apollo_control_deferred_start.log",
+                    "artifacts/apollo_control_deferred_survival.json",
+                    "artifacts/apollo_control_runtime_overlay_manifest.json",
+                    "artifacts/apollo_control_runtime_overlay_restore.json",
+                    "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
+                ]
+            )
         if plan.traffic_flow.enabled:
             expected_artifacts.extend(["artifacts/traffic_flow_manifest.json", "artifacts/traffic_flow_events.jsonl"])
             if int(plan.traffic_flow.vehicles.get("count", 0) or 0) > 0:
@@ -229,6 +238,7 @@ class ApolloCyberRTBackend:
                     [
                         "Apollo dynamic fixed-scene command uses a guarded sidecar hook in the legacy follow-stop runner; it is a migration path, not completed online evidence.",
                         "The sidecar must produce fixed_scene_runtime_state, scenario_actor_trace, scenario_phase_events, obstacle GT, v-t-gap, and phase1_status before the run is evaluable.",
+                        "The sidecar uses the diagnostic control-runtime overlay and wall-time pacing path because the non-overlay Apollo control process crashes before producing /apollo/control on current Baguang compatibility runs.",
                     ]
                     if dynamic_sidecar_config is not None
                     else []
@@ -300,6 +310,10 @@ def _dynamic_fixed_scene_sidecar_command(
     scenario_path = str(plan.source_profiles.get("scenario") or "").strip()
     overrides = {
         "run.id": plan.identity.run_id,
+        "run.scenario_id": plan.scenario.scenario_id,
+        "run.scenario_class": plan.scenario.scenario_class,
+        "run.route_id": plan.scenario.route_id,
+        "run.capability_profile": "phase1_fixed_scene_sidecar",
         "run.profile_name": f"phase1_baguang_apollo_{plan.scenario.scenario_id}_sidecar",
         "scenario.spawn_legacy_front": False,
         "runtime.fixed_scene_player.enabled": True,
@@ -309,6 +323,7 @@ def _dynamic_fixed_scene_sidecar_command(
         "runtime.postprocess.phase1_scenario_path": scenario_path,
         "recording.artifacts.phase1_scenario_path": scenario_path,
         "backend.params.legacy_run.scenario_id": plan.scenario.scenario_id,
+        "backend.params.legacy_run.scenario_class": plan.scenario.scenario_class,
         "backend.params.legacy_run.route_id": plan.scenario.route_id,
         "backend.params.legacy_run.capability_profile": "phase1_fixed_scene_sidecar",
     }

@@ -207,7 +207,14 @@ def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -
     assert launch.commands
     command = launch.commands[0]
     assert command[:3] == ["python3", "-m", "carla_testbed"]
-    assert "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml" in command
+    assert (
+        "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
+        in command
+    )
+    assert "run.scenario_id=baguang_lead_decel_70_to_40_20m" in command
+    assert "run.scenario_class=lead_vehicle_decel" in command
+    assert "run.route_id=straight_road_for_baguang_mainline_lead_decel_20m" in command
+    assert "run.capability_profile=phase1_fixed_scene_sidecar" in command
     assert "scenario.spawn_legacy_front=false" in command
     assert "runtime.fixed_scene_player.enabled=true" in command
     assert (
@@ -215,7 +222,11 @@ def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -
         in command
     )
     assert "artifacts/fixed_scene_runtime_hook.json" in launch.expected_artifacts
+    assert "artifacts/apollo_control_deferred_survival.json" in launch.expected_artifacts
+    assert "artifacts/apollo_control_runtime_overlay_manifest.json" in launch.expected_artifacts
+    assert "analysis/apollo_control_handoff/apollo_control_handoff_report.json" in launch.expected_artifacts
     assert any("sidecar hook" in warning for warning in launch.warnings)
+    assert any("control-runtime overlay" in warning for warning in launch.warnings)
 
 
 def test_apollo_static_follow_stop_compat_config_defers_control_until_planning_ready() -> None:

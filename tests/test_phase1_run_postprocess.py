@@ -16,8 +16,12 @@ def test_phase1_postprocess_writes_v_t_gap_status_and_completeness(tmp_path) -> 
 
     assert report["v_t_gap_status"] == "pass"
     assert report["phase1_status"] == "success"
+    assert report["fixed_scene_contract_status"] == "pass"
+    assert report["scenario_actor_contract_status"] == "pass"
     assert (run / "analysis" / "v_t_gap" / "v_t_gap_report.json").exists()
     assert (run / "analysis" / "phase1_status" / "phase1_status.json").exists()
+    assert (run / "analysis" / "fixed_scene_contract" / "fixed_scene_contract_report.json").exists()
+    assert (run / "analysis" / "scenario_actor_contract" / "scenario_actor_contract_report.json").exists()
     completeness = json.loads(
         (run / "analysis" / "phase1_status" / "artifact_completeness.json").read_text(encoding="utf-8")
     )
@@ -86,6 +90,49 @@ def test_phase1_postprocess_route_only_completeness_does_not_require_fixed_scene
     assert "scenario_actor_trace" not in completeness["artifacts"]
 
 
+def test_phase1_postprocess_restores_dynamic_identity_from_typed_runtime_config(tmp_path) -> None:
+    run = _write_complete_run(tmp_path)
+    _make_run_apollo_fixed_scene(run)
+    manifest_path = run / "manifest.json"
+    summary_path = run / "summary.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    manifest.update(
+        {
+            "scenario_id": "legacy_followstop",
+            "scenario_class": "lane_keep",
+            "route_id": "legacy_route",
+        }
+    )
+    summary.update(
+        {
+            "scenario_id": "legacy_followstop",
+            "scenario_class": "lane_keep",
+            "route_id": "legacy_route",
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    (run / "typed_runtime.effective_legacy.yaml").write_text(
+        "run:\n"
+        "  scenario_id: baguang_lead_decel_70_to_40_20m\n"
+        "  scenario_class: lead_vehicle_decel\n"
+        "  route_id: straight_road_for_baguang_mainline_lead_decel_20m\n"
+        "  capability_profile: phase1_fixed_scene_sidecar\n",
+        encoding="utf-8",
+    )
+
+    report = run_phase1_postprocess(run)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    assert report["phase1_identity_updates"]["scenario_class"] == "lead_vehicle_decel"
+    assert manifest["scenario_id"] == "baguang_lead_decel_70_to_40_20m"
+    assert manifest["scenario_class"] == "lead_vehicle_decel"
+    assert manifest["route_id"] == "straight_road_for_baguang_mainline_lead_decel_20m"
+    assert summary["scenario_class"] == "lead_vehicle_decel"
+
+
 def _write_complete_run(tmp_path):
     run = tmp_path / "run"
     artifacts = run / "artifacts"
@@ -108,7 +155,10 @@ def _write_complete_run(tmp_path):
     (run / "events.jsonl").write_text(json.dumps({"event": "run_finished"}) + "\n", encoding="utf-8")
     (artifacts / "fixed_scene_resolved.json").write_text(json.dumps(storyboard), encoding="utf-8")
     (artifacts / "fixed_scene_runtime_state.json").write_text(json.dumps({"status": "pass"}), encoding="utf-8")
-    (artifacts / "scenario_phase_events.jsonl").write_text(json.dumps({"event": "phase_started"}) + "\n", encoding="utf-8")
+    (artifacts / "scenario_phase_events.jsonl").write_text(
+        json.dumps({"event": "phase_started", "phase": "lead_hold_stop"}) + "\n",
+        encoding="utf-8",
+    )
     (artifacts / "ego_control_trace.jsonl").write_text(json.dumps({"command": {}}) + "\n", encoding="utf-8")
     with (run / "timeseries.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
@@ -133,6 +183,7 @@ def _write_complete_run(tmp_path):
                 "sim_time_sec": 0.0,
                 "actor_role": "lead_vehicle",
                 "actor_id": "lead-1",
+                "phase": "lead_hold_stop",
                 "actual_speed_mps": 0.0,
                 "x": 20.0,
                 "y": 0.0,

@@ -29,11 +29,19 @@ from carla_testbed.analysis.baguang_lane_event_contract import (
     write_baguang_lane_event_contract_report,
 )
 from carla_testbed.analysis.control_health import analyze_control_health_run_dir, write_control_health_report
+from carla_testbed.analysis.fixed_scene_contract import (
+    analyze_fixed_scene_contract_run_dir,
+    write_fixed_scene_contract_report,
+)
 from carla_testbed.analysis.obstacle_gt_contract import (
     analyze_obstacle_gt_contract_run_dir,
     write_obstacle_gt_contract_report,
 )
 from carla_testbed.analysis.phase1_status import classify_phase1_run, write_phase1_status
+from carla_testbed.analysis.scenario_actor_contract import (
+    analyze_scenario_actor_contract_run_dir,
+    write_scenario_actor_contract_report,
+)
 from carla_testbed.analysis.v_t_gap import extract_v_t_gap, write_v_t_gap_report
 from carla_testbed.experiments.phase1_apollo_fixed_scene_compat import derive_apollo_fixed_scene_artifacts
 from carla_testbed.experiments.phase1_apollo_fixed_scene_dispatch import (
@@ -61,6 +69,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
 
     root = Path(run_dir).expanduser()
     analysis = root / "analysis"
+    phase1_identity_updates = _ensure_phase1_identity_metadata(root)
     apollo_fixed_scene_compat_report: dict[str, Any] | None = None
     apollo_fixed_scene_dispatch_report: dict[str, Any] | None = None
     apollo_fixed_scene_dispatch_paths: dict[str, str] | None = None
@@ -80,7 +89,13 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     control_health_paths: dict[str, str] | None = None
     apollo_link_health_report: dict[str, Any] | None = None
     apollo_link_health_paths: dict[str, str] | None = None
+    fixed_scene_contract_report: dict[str, Any] | None = None
+    fixed_scene_contract_paths: dict[str, str] | None = None
+    scenario_actor_contract_report: dict[str, Any] | None = None
+    scenario_actor_contract_paths: dict[str, str] | None = None
     phase1_scenario_binding_report = _ensure_phase1_scenario_binding(root)
+    fixed_scene_contract_report, fixed_scene_contract_paths = _write_fixed_scene_contract(root)
+    scenario_actor_contract_report, scenario_actor_contract_paths = _write_scenario_actor_contract(root)
     if _is_apollo_fixed_scene_target_run(root):
         apollo_fixed_scene_dispatch_report, apollo_fixed_scene_dispatch_paths = _write_apollo_dispatch(root)
         apollo_fixed_scene_readiness_report, apollo_fixed_scene_readiness_paths = _write_apollo_readiness(root)
@@ -105,6 +120,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     return {
         "schema_version": PHASE1_POSTPROCESS_SCHEMA_VERSION,
         "run_dir": str(root),
+        "phase1_identity_updates": phase1_identity_updates,
         "v_t_gap_status": v_t_gap_report.get("status"),
         "phase1_status": phase1_report.get("status"),
         "phase1_failure_reason": phase1_report.get("failure_reason"),
@@ -119,6 +135,12 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         ),
         "phase1_scenario_binding_status": (
             phase1_scenario_binding_report.get("status") if phase1_scenario_binding_report else None
+        ),
+        "fixed_scene_contract_status": (
+            fixed_scene_contract_report.get("status") if fixed_scene_contract_report else None
+        ),
+        "scenario_actor_contract_status": (
+            scenario_actor_contract_report.get("status") if scenario_actor_contract_report else None
         ),
         "baguang_lane_event_contract_status": (
             baguang_lane_event_report.get("status") if baguang_lane_event_report else None
@@ -182,6 +204,12 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
             ),
             **({"apollo_module_consumption": apollo_module_consumption_paths} if apollo_module_consumption_paths else {}),
             **({"apollo_link_health": apollo_link_health_paths} if apollo_link_health_paths else {}),
+            **({"fixed_scene_contract": fixed_scene_contract_paths} if fixed_scene_contract_paths else {}),
+            **(
+                {"scenario_actor_contract": scenario_actor_contract_paths}
+                if scenario_actor_contract_paths
+                else {}
+            ),
             **(
                 {
                     "phase1_scenario_binding": str(
@@ -196,6 +224,105 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _write_fixed_scene_contract(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    if not _fixed_scene_contract_raw_exists(root):
+        return None, None
+    report = analyze_fixed_scene_contract_run_dir(root)
+    paths = write_fixed_scene_contract_report(report, root / "analysis" / "fixed_scene_contract")
+    return report, paths
+
+
+def _write_scenario_actor_contract(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    if not _fixed_scene_contract_raw_exists(root):
+        return None, None
+    report = analyze_scenario_actor_contract_run_dir(root)
+    paths = write_scenario_actor_contract_report(report, root / "analysis" / "scenario_actor_contract")
+    return report, paths
+
+
+def _ensure_phase1_identity_metadata(root: Path) -> dict[str, Any]:
+    """Restore Phase 1 scenario identity before analyzers consume artifacts.
+
+    Legacy online harnesses may write final ``manifest.json`` / ``summary.json``
+    fields from older route-health scenario metadata after the typed runtime has
+    already compiled a dynamic fixed-scene identity. Postprocess is allowed to
+    correct run-local evidence metadata, but it must not infer a backend result.
+    """
+
+    updates = _phase1_identity_updates(root)
+    if not updates:
+        return {}
+    for rel in ("manifest.json", "summary.json"):
+        path = root / rel
+        payload = _read_json(path)
+        if not payload:
+            continue
+        changed = False
+        for key, value in updates.items():
+            if value in {None, ""}:
+                continue
+            if payload.get(key) != value:
+                payload[key] = value
+                changed = True
+        if changed:
+            _write_json(path, payload)
+    return updates
+
+
+def _phase1_identity_updates(root: Path) -> dict[str, Any]:
+    sources: list[Mapping[str, Any]] = []
+    for rel in ("typed_runtime.effective_legacy.yaml", "effective.yaml", "config.resolved.yaml"):
+        payload = _read_yaml(root / rel)
+        run_cfg = _mapping(payload.get("run"))
+        if run_cfg:
+            sources.append(run_cfg)
+        legacy_run_cfg = _mapping(_nested_value(payload, ("backend", "params", "legacy_run")))
+        if legacy_run_cfg:
+            sources.append(legacy_run_cfg)
+        typed_snapshot = _mapping(_nested_value(payload, ("typed_runtime", "resolved_config_snapshot")))
+        snapshot_run = _mapping(typed_snapshot.get("run"))
+        if snapshot_run:
+            sources.append(snapshot_run)
+    fixed_scene = _read_json(root / "artifacts" / "fixed_scene_resolved.json")
+    if fixed_scene:
+        sources.append(
+            {
+                "scenario_id": fixed_scene.get("scene_id"),
+                "scenario_class": fixed_scene.get("scenario_class"),
+                "route_id": fixed_scene.get("route_id"),
+                "map": fixed_scene.get("map"),
+            }
+        )
+    scenario_id = _first_text(*(source.get("scenario_id") for source in sources))
+    scenario_class = _first_text(*(source.get("scenario_class") for source in sources))
+    route_id = _first_text(*(source.get("route_id") for source in sources))
+    capability_profile = _first_text(*(source.get("capability_profile") for source in sources))
+    updates: dict[str, Any] = {}
+    if scenario_id:
+        updates["scenario_id"] = scenario_id
+    if scenario_class:
+        updates["scenario_class"] = scenario_class
+    if route_id:
+        updates["route_id"] = route_id
+    if capability_profile:
+        updates["capability_profile"] = capability_profile
+    return updates
+
+
+def _fixed_scene_contract_raw_exists(root: Path) -> bool:
+    return any(
+        path.exists()
+        for path in (
+            root / "artifacts" / "fixed_scene_resolved.json",
+            root / "artifacts" / "scenario_actor_trace.jsonl",
+            root / "artifacts" / "scenario_phase_events.jsonl",
+            root / "fixed_scene_resolved.json",
+            root / "scenario_actor_trace.jsonl",
+            root / "scenario_phase_events.jsonl",
+        )
+    )
 
 
 def _write_apollo_control_handoff(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
@@ -578,6 +705,25 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _first_text(*values: Any) -> str | None:
+    for value in values:
+        if value in {None, ""}:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
 
 
 def _nested_value(payload: Mapping[str, Any], path: tuple[str, ...]) -> Any:

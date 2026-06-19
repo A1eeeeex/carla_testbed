@@ -32,24 +32,34 @@ def online_claim_manifest_updates(
     run_cfg = _mapping(cfg.get("run"))
     scenario_cfg = _mapping(cfg.get("scenario"))
     algo_cfg = _mapping(cfg.get("algo"))
+    backend_cfg = _mapping(cfg.get("backend"))
+    backend_params = _mapping(backend_cfg.get("params"))
+    legacy_run_cfg = _mapping(backend_params.get("legacy_run"))
     apollo_cfg = _mapping(algo_cfg.get("apollo"))
     mode_cfg = _mapping(cfg.get("mode"))
     recording_artifacts = _mapping(_mapping(cfg.get("recording")).get("artifacts"))
 
-    route_id = _first_text(scenario_meta.get("route_id"), run_cfg.get("route_id"))
+    route_id = _first_text(
+        run_cfg.get("route_id"),
+        legacy_run_cfg.get("route_id"),
+        scenario_meta.get("route_id"),
+    )
     capability_profile = _first_text(
         run_cfg.get("capability_profile"),
+        legacy_run_cfg.get("capability_profile"),
         scenario_meta.get("capability_profile"),
         cfg.get("capability_profile"),
     )
     scenario_class = _first_text(
-        scenario_meta.get("scenario_class"),
         run_cfg.get("scenario_class"),
+        legacy_run_cfg.get("scenario_class"),
+        scenario_meta.get("scenario_class"),
         CAPABILITY_TO_SCENARIO_CLASS.get(str(capability_profile or "")),
     )
     scenario_id = _first_text(
-        scenario_meta.get("scenario_id"),
         run_cfg.get("scenario_id"),
+        legacy_run_cfg.get("scenario_id"),
+        scenario_meta.get("scenario_id"),
         _scenario_id_from_profile(capability_profile, route_id),
     )
 
@@ -101,8 +111,12 @@ def online_claim_manifest_updates(
     ))
     if config_path not in {None, ""}:
         updates["online_config_path"] = str(config_path)
-    _set_if_present(updates, "online_config_profile_name", profile_name or run_cfg.get("profile_name"))
-    _set_if_present(updates, "map", _first_text(run_cfg.get("map"), scenario_meta.get("map")))
+    _set_if_present(
+        updates,
+        "online_config_profile_name",
+        profile_name or run_cfg.get("profile_name") or legacy_run_cfg.get("profile_name"),
+    )
+    _set_if_present(updates, "map", _first_text(run_cfg.get("map"), legacy_run_cfg.get("map"), scenario_meta.get("map")))
     _set_if_present(updates, "transport_mode", transport_mode)
     _set_if_present(updates, "transport_mode_source", transport_mode_source)
     _set_if_present(updates, "canonical_transport_mode", transport_mode)

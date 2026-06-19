@@ -114,3 +114,60 @@ def test_manifest_metadata_does_not_invent_algorithm_variant() -> None:
     assert updates["truth_input"] is True
     assert "algorithm_variant_id" not in updates
     assert "algorithm_variant_manifest_path" not in updates
+
+
+def test_explicit_run_identity_overrides_legacy_scenario_metadata() -> None:
+    updates = online_claim_manifest_updates(
+        effective_config={
+            "run": {
+                "scenario_id": "baguang_lead_decel_70_to_40_20m",
+                "scenario_class": "lead_vehicle_decel",
+                "route_id": "straight_road_for_baguang_mainline_lead_decel_20m",
+                "capability_profile": "phase1_fixed_scene_sidecar",
+            },
+            "scenario": {"publish_ros2_gt": True},
+            "algo": {"stack": "apollo"},
+        },
+        scenario_metadata={
+            "scenario_id": "legacy_followstop",
+            "scenario_class": "lane_keep",
+            "route_id": "legacy_route",
+            "map": "straight_road_for_baguang",
+        },
+    )
+
+    assert updates["scenario_id"] == "baguang_lead_decel_70_to_40_20m"
+    assert updates["scenario_class"] == "lead_vehicle_decel"
+    assert updates["route_id"] == "straight_road_for_baguang_mainline_lead_decel_20m"
+
+
+def test_normalized_legacy_run_identity_overrides_legacy_scenario_metadata() -> None:
+    updates = online_claim_manifest_updates(
+        effective_config={
+            "backend": {
+                "params": {
+                    "legacy_run": {
+                        "scenario_id": "baguang_lead_decel_70_to_40_20m",
+                        "scenario_class": "lead_vehicle_decel",
+                        "route_id": "straight_road_for_baguang_mainline_lead_decel_20m",
+                        "capability_profile": "phase1_fixed_scene_sidecar",
+                        "profile_name": "phase1_dynamic_sidecar",
+                    }
+                }
+            },
+            "scenario": {"publish_ros2_gt": True},
+            "algo": {"stack": "apollo"},
+        },
+        scenario_metadata={
+            "scenario_id": "legacy_followstop",
+            "scenario_class": "lane_keep",
+            "route_id": "legacy_route",
+            "map": "straight_road_for_baguang",
+        },
+    )
+
+    assert updates["scenario_id"] == "baguang_lead_decel_70_to_40_20m"
+    assert updates["scenario_class"] == "lead_vehicle_decel"
+    assert updates["route_id"] == "straight_road_for_baguang_mainline_lead_decel_20m"
+    assert updates["capability_profile"] == "phase1_fixed_scene_sidecar"
+    assert updates["online_config_profile_name"] == "phase1_dynamic_sidecar"

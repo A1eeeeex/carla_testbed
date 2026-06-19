@@ -440,11 +440,16 @@ def _metadata_from_config(
         _find_recursive(params, ("capability_profile",)),
         "",
     )
-    scenario_class = _scenario_class(
-        capability_profile=capability_profile,
-        scenario_id=scenario_id,
-        route_id=route_id,
-        profile_name=profile_name,
+    scenario_class = _first_text(
+        legacy_run.get("scenario_class"),
+        legacy_scenario.get("scenario_class"),
+        _find_recursive(params, ("scenario_class",)),
+        _scenario_class(
+            capability_profile=capability_profile,
+            scenario_id=scenario_id,
+            route_id=route_id,
+            profile_name=profile_name,
+        ),
     )
     map_name = _first_text(
         cfg.sim.town,

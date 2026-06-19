@@ -57,9 +57,16 @@ def test_dynamic_lead_dispatch_contract_exposes_sidecar_runtime_command_without_
     assert "dynamic_fixed_scene_sidecar_transition_requires_online_artifacts" in report["warnings"]
     assert launch["commands"]
     command = launch["commands"][0]
-    assert "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml" in command
+    assert (
+        "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
+        in command
+    )
     assert "--legacy-dispatch" in command
     assert "--override" in command
+    assert "run.scenario_id=baguang_lead_decel_70_to_40_20m" in command
+    assert "run.scenario_class=lead_vehicle_decel" in command
+    assert "run.route_id=straight_road_for_baguang_mainline_lead_decel_20m" in command
+    assert "run.capability_profile=phase1_fixed_scene_sidecar" in command
     assert "scenario.spawn_legacy_front=false" in command
     assert "runtime.fixed_scene_player.enabled=true" in command
     assert (
