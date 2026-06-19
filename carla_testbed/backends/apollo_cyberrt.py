@@ -148,6 +148,8 @@ class ApolloCyberRTBackend:
                     "analysis/fixed_scene_contract/fixed_scene_contract_report.json",
                     "analysis/scenario_actor_contract/scenario_actor_contract_report.json",
                     "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json",
+                    "analysis/v_t_gap/v_t_gap_report.json",
+                    "analysis/phase1_status/phase1_status.json",
                 ]
             )
         if fixed_scene_compat:

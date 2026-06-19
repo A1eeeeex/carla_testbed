@@ -56,6 +56,8 @@ def test_dynamic_lead_dispatch_contract_blocks_runtime_overclaim() -> None:
     assert "apollo_fixed_scene_runtime_migration_required" in report["blocking_reasons"]
     assert "launch_plan_has_no_runtime_command" in report["blocking_reasons"]
     assert "dynamic_fixed_scene_runtime_not_migrated" in report["warnings"]
+    assert report["missing_row_level_expected_artifacts"] == []
+    assert report["missing_postprocess_expected_artifacts"] == []
     assert "speed_profile_non_ego_actor_control" in report["runtime_migration_requirements"]
     assert "target_speed_phase_transition_events" in report["runtime_migration_requirements"]
     assert "v_t_gap_from_target_actor_trace_and_timeseries" in report["runtime_migration_requirements"]
