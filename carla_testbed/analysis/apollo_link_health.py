@@ -3401,6 +3401,19 @@ def _primary_blocker_detail(
         compact = compact if isinstance(compact, Mapping) else {}
         diagnosis = metrics.get("control_oscillation_diagnosis")
         diagnosis = diagnosis if isinstance(diagnosis, Mapping) else {}
+        gt_cadence = metrics.get("gt_state_sampling_cadence")
+        gt_cadence = gt_cadence if isinstance(gt_cadence, Mapping) else {}
+        environment = layers.get("environment_world", {})
+        environment_metrics = (
+            environment.get("key_metrics")
+            if isinstance(environment.get("key_metrics"), Mapping)
+            else {}
+        )
+        environment_artifacts = (
+            environment.get("artifact_paths")
+            if isinstance(environment.get("artifact_paths"), Mapping)
+            else {}
+        )
         detail.update(
             {
                 "dominant_oscillation_layer": compact.get("dominant_oscillation_layer")
@@ -3416,6 +3429,11 @@ def _primary_blocker_detail(
                     metrics,
                     "control_mapping_claim_boundary.claim_grade_control_mapping",
                 ),
+                "gt_state_sampling_cadence": _primary_blocker_gt_cadence_detail(
+                    gt_cadence,
+                    environment_metrics,
+                    environment_artifacts,
+                ),
                 "interpretation_caveat": (
                     "This detail refines control attribution only. It does not change the gate "
                     "status and must not be used to smooth/clamp bridge output or claim "
@@ -3424,6 +3442,69 @@ def _primary_blocker_detail(
             }
         )
     return detail
+
+
+def _primary_blocker_gt_cadence_detail(
+    gt_cadence: Mapping[str, Any],
+    environment_metrics: Mapping[str, Any],
+    environment_artifacts: Mapping[str, Any],
+) -> dict[str, Any]:
+    tick_summary_path = environment_artifacts.get("carla_tick_health_summary")
+    tick_log_path = environment_artifacts.get("carla_tick_health_log")
+    tick_artifact_available = bool(tick_summary_path or tick_log_path)
+    control_to_chassis_ratio = _num(gt_cadence.get("control_to_chassis_count_ratio"))
+    control_to_localization_ratio = _num(gt_cadence.get("control_to_localization_count_ratio"))
+    oversampling_present = bool(
+        (control_to_chassis_ratio is not None and control_to_chassis_ratio > 5.0)
+        or (
+            control_to_localization_ratio is not None
+            and control_to_localization_ratio > 5.0
+        )
+    )
+    slowest_stage = environment_metrics.get("carla_tick_max_stage_name")
+    slowest_stage_duration = _num(environment_metrics.get("carla_tick_max_stage_duration_s"))
+    next_validation = (
+        "Repeat the same diagnostic scenario with recording/sensor capture reduced or disabled, "
+        "while preserving GT localization/chassis publish semantics; compare carla_tick_wall_hz, "
+        "localization/chassis wall hz, control_to_gt ratios, and Apollo raw throttle/brake switch count."
+        if oversampling_present
+        else (
+            "Keep collecting carla_tick_health and GT publish cadence with control_health before "
+            "changing control mapping or actuation parameters."
+        )
+    )
+    return {
+        "available": bool(gt_cadence.get("available") or tick_artifact_available),
+        "source": "control_health_metrics_plus_environment_tick_health",
+        "tick_health_artifact_available": tick_artifact_available,
+        "tick_health_summary_path": tick_summary_path,
+        "tick_health_log_path": tick_log_path,
+        "carla_tick_cadence_source": environment_metrics.get("carla_tick_cadence_source"),
+        "carla_tick_wall_hz": _num(gt_cadence.get("carla_tick_wall_hz")),
+        "carla_tick_count": _num(gt_cadence.get("carla_tick_count"))
+        or _num(environment_metrics.get("carla_tick_count")),
+        "carla_inter_tick_wall_interval_p95_s": _num(
+            gt_cadence.get("carla_inter_tick_wall_interval_p95_s")
+        )
+        or _num(environment_metrics.get("carla_tick_inter_tick_wall_interval_p95_s")),
+        "carla_tick_max_inter_tick_wall_interval_s": _num(
+            environment_metrics.get("carla_tick_max_inter_tick_wall_interval_s")
+        ),
+        "localization_wall_hz": _num(gt_cadence.get("localization_wall_hz")),
+        "chassis_wall_hz": _num(gt_cadence.get("chassis_wall_hz")),
+        "control_rx_wall_hz": _num(gt_cadence.get("control_rx_wall_hz")),
+        "control_to_chassis_count_ratio": control_to_chassis_ratio,
+        "control_to_localization_count_ratio": control_to_localization_ratio,
+        "gt_state_oversampling_present": oversampling_present,
+        "slowest_frame_stage_name": slowest_stage,
+        "slowest_frame_stage_duration_s": slowest_stage_duration,
+        "slowest_hook_stage_name": environment_metrics.get("carla_tick_max_hook_stage_name"),
+        "slowest_hook_stage_duration_s": _num(
+            environment_metrics.get("carla_tick_max_hook_stage_duration_s")
+        ),
+        "interpretation": gt_cadence.get("interpretation"),
+        "next_online_validation": next_validation,
+    }
 
 
 def _layer_insufficient_reasons(layer: Mapping[str, Any]) -> list[str]:

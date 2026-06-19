@@ -1852,15 +1852,40 @@ def test_control_oscillation_becomes_primary_only_after_localization_and_referen
         "dominant_suspected_factor": "trajectory_stitcher_matched_point_lon_diff_replans",
     }
     control["metrics"]["gt_state_sampling_cadence"] = {
+        "available": True,
+        "carla_tick_wall_hz": 2.0,
+        "carla_tick_count": 100,
+        "carla_inter_tick_wall_interval_p95_s": 0.5,
         "control_to_chassis_count_ratio": 10.0,
+        "control_to_localization_count_ratio": 10.0,
         "control_rx_wall_hz": 20.0,
+        "localization_wall_hz": 2.0,
         "chassis_wall_hz": 2.0,
+        "interpretation": "control oversamples GT state in wall time",
     }
     control["metrics"]["control_mapping_claim_boundary"] = {
         "claim_grade_control_mapping": False,
         "actuator_mapping_mode": "legacy",
     }
     _write_json(control_path, control)
+    tick_summary_path = run_dir / "artifacts/carla_tick_health_summary.json"
+    _write_json(
+        tick_summary_path,
+        {
+            "schema_version": "carla_tick_health.v1",
+            "tick_count": 100,
+            "tick_fail_count": 0,
+            "inter_tick_wall_interval_p95_s": 0.5,
+            "max_inter_tick_wall_interval_s": 0.75,
+            "inter_tick_wall_interval_count": 99,
+            "max_stage_name": "sensor_capture",
+            "max_stage_duration_s": 0.42,
+            "stage_duration_max_s": {
+                "sensor_capture": 0.42,
+                "hook.after_world_tick.tick_callback_0": 0.05,
+            },
+        },
+    )
 
     report = analyze_apollo_link_health_run_dir(run_dir)
 
@@ -1872,6 +1897,19 @@ def test_control_oscillation_becomes_primary_only_after_localization_and_referen
     assert detail["primary_suspected_layer"] == "planning_control_semantics"
     assert detail["raw_throttle_brake_switch_count"] == 12
     assert detail["claim_grade_control_mapping"] is False
+    cadence = detail["gt_state_sampling_cadence"]
+    assert cadence["available"] is True
+    assert cadence["tick_health_artifact_available"] is True
+    assert cadence["tick_health_summary_path"] == str(tick_summary_path)
+    assert cadence["carla_tick_cadence_source"] == "carla_tick_health_summary"
+    assert cadence["carla_tick_wall_hz"] == 2.0
+    assert cadence["control_rx_wall_hz"] == 20.0
+    assert cadence["control_to_chassis_count_ratio"] == 10.0
+    assert cadence["control_to_localization_count_ratio"] == 10.0
+    assert cadence["gt_state_oversampling_present"] is True
+    assert cadence["slowest_frame_stage_name"] == "sensor_capture"
+    assert cadence["slowest_hook_stage_name"] == "hook.after_world_tick.tick_callback_0"
+    assert "recording/sensor capture" in cadence["next_online_validation"]
     assert "planning_trajectory_length_switching" in detail["control_semantics_suspected_factors"]
     assert report["can_claim_unassisted_natural_driving"] is False
     metrics = report["layers"]["control_mapping_apply"]["key_metrics"]
