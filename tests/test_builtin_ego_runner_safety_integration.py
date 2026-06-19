@@ -23,7 +23,7 @@ def test_builtin_runner_writes_safety_event_summary_timeseries_and_trace(monkeyp
         },
     )
     monkeypatch.setattr(runner, "CarlaFixedSceneRuntime", lambda: _FakeRuntime())
-    monkeypatch.setattr(runner, "_spawn_ego", lambda world, spawn_index: world.ego)
+    monkeypatch.setattr(runner, "_spawn_ego", lambda world, spawn_index, **kwargs: world.ego)
     monkeypatch.setattr(runner, "apply_control_to_vehicle", lambda ego, command, stamp: _FakeApplyResult())
     monkeypatch.setattr(runner, "analyze_fixed_scene_contract_run_dir", lambda run_dir: {"status": "pass"})
     monkeypatch.setattr(runner, "analyze_scenario_actor_contract_run_dir", lambda run_dir: {"status": "pass"})
