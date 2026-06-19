@@ -56,6 +56,29 @@ def test_dynamic_lead_dispatch_contract_blocks_runtime_overclaim() -> None:
     assert "apollo_fixed_scene_runtime_migration_required" in report["blocking_reasons"]
     assert "launch_plan_has_no_runtime_command" in report["blocking_reasons"]
     assert "dynamic_fixed_scene_runtime_not_migrated" in report["warnings"]
+    assert "speed_profile_non_ego_actor_control" in report["runtime_migration_requirements"]
+    assert "target_speed_phase_transition_events" in report["runtime_migration_requirements"]
+    assert "v_t_gap_from_target_actor_trace_and_timeseries" in report["runtime_migration_requirements"]
+
+
+def test_cut_in_dispatch_contract_lists_lane_change_migration_requirements() -> None:
+    plan = _compile_plan("baguang_cut_in_35kph_left_to_right_10m")
+    backend = default_backend_registry().for_plan(plan)
+    launch = backend.build_launch_plan(plan).to_dict()
+    report = analyze_apollo_fixed_scene_dispatch(
+        backend="apollo_cyberrt",
+        backend_type="apollo_reference_backend",
+        scenario_id=plan.scenario.scenario_id,
+        scenario_class=plan.scenario.scenario_class,
+        target_actor_contract=_target_contract(plan),
+        launch_plan=launch,
+    )
+
+    assert report["status"] == "partial"
+    assert report["dispatch_mode"] == "runtime_migration_required"
+    assert "lane_change_non_ego_actor_playback" in report["runtime_migration_requirements"]
+    assert "lateral_offset_and_no_teleport_trace" in report["runtime_migration_requirements"]
+    assert "target_actor_active_after_phase:cut_in_lane_change" in report["runtime_migration_requirements"]
 
 
 def test_scaffold_writes_dispatch_contract_report(tmp_path: Path) -> None:

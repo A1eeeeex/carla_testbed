@@ -49,6 +49,10 @@ def analyze_apollo_fixed_scene_dispatch(
     effective_backend_type = backend_type or ("apollo_reference_backend" if backend == "apollo_cyberrt" else None)
     missing_row_level = sorted(_ROW_LEVEL_EXPECTED_ARTIFACTS.difference(expected_artifacts))
     missing_postprocess = sorted(_POSTPROCESS_EXPECTED_ARTIFACTS.difference(expected_artifacts))
+    runtime_migration_requirements = _runtime_migration_requirements(
+        scenario_class=scenario_class,
+        target_actor_contract=target_contract,
+    )
     blocking_reasons: list[str] = []
     warnings: list[str] = []
     next_action: list[str] = []
@@ -83,6 +87,11 @@ def analyze_apollo_fixed_scene_dispatch(
             next_action.append(
                 "migrate this fixed-scene ScenarioCase to an Apollo runtime path that spawns/records target actors"
             )
+            if runtime_migration_requirements:
+                next_action.append(
+                    "implement runtime migration requirements: "
+                    + ", ".join(runtime_migration_requirements[:4])
+                )
         if missing_row_level:
             blocking_reasons.append("launch_plan_missing_row_level_fixed_scene_artifacts")
             next_action.append("declare row-level fixed-scene, obstacle GT, and actor-trace artifacts in LaunchPlan")
@@ -112,6 +121,7 @@ def analyze_apollo_fixed_scene_dispatch(
         "required_postprocess_artifacts": sorted(_POSTPROCESS_EXPECTED_ARTIFACTS),
         "missing_row_level_expected_artifacts": missing_row_level,
         "missing_postprocess_expected_artifacts": missing_postprocess,
+        "runtime_migration_requirements": runtime_migration_requirements,
         "blocking_reasons": sorted(set(blocking_reasons)),
         "warnings": sorted(set(warnings)),
         "next_action": _unique(next_action),
@@ -170,6 +180,56 @@ def _list_strings(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
     return [str(item) for item in raw if str(item)]
+
+
+def _runtime_migration_requirements(
+    *,
+    scenario_class: str | None,
+    target_actor_contract: Mapping[str, Any],
+) -> list[str]:
+    """Return concrete runtime requirements for dynamic Apollo fixed scenes."""
+
+    scenario = str(scenario_class or "").strip()
+    if scenario in {"", "follow_stop_static", "static_lead_stop", "follow_stop_097"}:
+        return []
+    requirements = [
+        "apollo_online_runner_starts_carla_fixed_scene_runtime",
+        "fixed_scene_runtime_state_from_online_actor_spawn",
+        "scenario_actor_trace_from_online_runtime",
+        "scenario_phase_events_from_online_runtime",
+        "obstacle_gt_contract_links_target_actor_to_apollo_perception",
+        "v_t_gap_from_target_actor_trace_and_timeseries",
+    ]
+    if scenario in {
+        "lead_accel",
+        "lead_decel",
+        "lead_vehicle_accel",
+        "lead_vehicle_decel",
+        "lead_vehicle_accel_decel",
+        "lead_decel_accel",
+        "lead_hard_brake",
+    }:
+        requirements.extend(
+            [
+                "speed_profile_non_ego_actor_control",
+                "target_speed_phase_transition_events",
+                "lead_vehicle_motion_not_derived_from_nearest_front_fallback",
+            ]
+        )
+    if scenario in {"cut_in", "cut_in_simple", "cut_out", "cut_out_simple"}:
+        requirements.extend(
+            [
+                "lane_change_non_ego_actor_playback",
+                "lateral_offset_and_no_teleport_trace",
+                "target_actor_activation_after_lane_change_phase",
+            ]
+        )
+    activation = target_actor_contract.get("activation")
+    if isinstance(activation, Mapping):
+        phase = activation.get("active_after_phase")
+        if phase:
+            requirements.append(f"target_actor_active_after_phase:{phase}")
+    return _unique(requirements)
 
 
 def _unique(items: list[str]) -> list[str]:

@@ -728,6 +728,14 @@ This is a LaunchPlan contract check, not online evidence. It separates:
   cut-in/cut-out, and hard-brake cases still need Apollo runtime migration
   before they can be evaluable.
 
+For `runtime_migration_required`, the report also writes
+`runtime_migration_requirements`. These requirements are a concrete handoff
+list for the next runtime PR, for example online `CarlaFixedSceneRuntime`
+startup, speed-profile or lane-change playback for non-ego actors,
+`scenario_actor_trace.jsonl`, `scenario_phase_events.jsonl`, obstacle GT role
+linkage, and `v-t-gap` extraction. They are not pass evidence; they explain
+why the ScenarioCase remains invalid/partial for ApolloBackend.
+
 Inspect dispatch readiness without starting CARLA/Apollo:
 
 ```bash
