@@ -298,6 +298,7 @@ def _run_typed_transition_backend(
         overwrite=False,
     )
     outputs = _write_secondary_reports(root, metadata=runtime_metadata, overwrite=False)
+    outputs.update(_maybe_run_phase1_postprocess(root))
     outputs.update(_write_boundary_and_completeness(root, metadata=runtime_metadata))
     outputs["manifest"] = str(root / "manifest.json")
     outputs["summary"] = str(root / "summary.json")
@@ -396,6 +397,7 @@ def _write_transition_preflight_failure(
     )
     _write_core_insufficient_reports(root, metadata=metadata, route_path=route_path, stats_path=stats_path)
     outputs = _write_secondary_reports(root, metadata=metadata)
+    outputs.update(_maybe_run_phase1_postprocess(root))
     outputs.update(_write_boundary_and_completeness(root, metadata=metadata))
     outputs["manifest"] = str(root / "manifest.json")
     outputs["summary"] = str(root / "summary.json")
@@ -608,6 +610,55 @@ def _resolve_transition_python(legacy_effective_path: Path) -> str:
         if candidate and _is_executable_file(candidate):
             return candidate
     return sys.executable
+
+
+def _maybe_run_phase1_postprocess(root: Path) -> dict[str, str]:
+    if not _run_declares_phase1_scenario(root):
+        return {}
+    out_dir = root / "analysis" / "phase1_postprocess"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report_path = out_dir / "phase1_postprocess_report.json"
+    try:
+        from carla_testbed.analysis.phase1_postprocess import run_phase1_postprocess
+
+        report = run_phase1_postprocess(root)
+        report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return {"phase1_postprocess": str(report_path)}
+    except Exception as exc:  # pragma: no cover - defensive online artifact path
+        failure_path = out_dir / "phase1_postprocess_failure.json"
+        failure = {
+            "schema_version": "phase1_postprocess_failure.v1",
+            "status": "fail",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "claim_boundary": (
+                "Phase 1 postprocess failed after runtime completion; do not treat "
+                "missing Phase 1 artifacts as backend behavior evidence."
+            ),
+        }
+        failure_path.write_text(json.dumps(failure, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return {"phase1_postprocess_failure": str(failure_path)}
+
+
+def _run_declares_phase1_scenario(root: Path) -> bool:
+    for rel in ("config.resolved.yaml", "typed_runtime.effective_legacy.yaml", "effective.yaml"):
+        payload = _read_yaml(root / rel)
+        if _contains_key(payload, "phase1_scenario_path"):
+            return True
+    manifest = _read_json(root / "manifest.json")
+    return _contains_key(manifest, "phase1_scenario_path")
+
+
+def _contains_key(payload: Any, key: str) -> bool:
+    if isinstance(payload, Mapping):
+        for name, value in payload.items():
+            if name == key and value:
+                return True
+            if _contains_key(value, key):
+                return True
+    elif isinstance(payload, list):
+        return any(_contains_key(item, key) for item in payload)
+    return False
 
 
 def _expand_runtime_python_candidate(raw: Any) -> str:

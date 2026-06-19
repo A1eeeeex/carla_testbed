@@ -10,7 +10,7 @@ from carla_testbed.config import load_config
 from carla_testbed.runtime import apollo_compat
 
 
-def _write_transition_config(tmp_path: Path) -> Path:
+def _write_transition_config(tmp_path: Path, *, phase1_scenario_path: str | None = None) -> Path:
     config_path = tmp_path / "town01_apollo_route_only_claim_probe.yaml"
     config_path.write_text(
         "\n".join(
@@ -37,6 +37,15 @@ def _write_transition_config(tmp_path: Path) -> Path:
                 "    transport_mode: ros2_gt",
                 "io:",
                 "  mode: ros2_native",
+                *(
+                    [
+                        "recording:",
+                        "  artifacts:",
+                        f"    phase1_scenario_path: {phase1_scenario_path}",
+                    ]
+                    if phase1_scenario_path
+                    else []
+                ),
                 "",
             ]
         ),
@@ -291,6 +300,152 @@ def test_transition_backend_materializes_route_json_from_scenario_route_trace(
     assert route["points"][0]["lane_id"] == "15:0:1"
     assert route["metadata"]["claim_route_length_m"] == 10.0
     assert "Apollo natural-driving claims still require" in route["claim_boundary"]
+
+
+def test_transition_backend_runs_phase1_postprocess_when_scenario_path_declared(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario_path = "configs/scenarios/baguang/follow_stop_static_300m.yaml"
+    config_path = _write_transition_config(tmp_path, phase1_scenario_path=scenario_path)
+    cfg = load_config(config_path)
+    run_dir = tmp_path / "phase1_claim_transition"
+
+    def fake_invoke(_effective_path: Path, root: Path) -> int:
+        artifacts = root / "artifacts"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        (root / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "run_id": "phase1_claim_transition",
+                    "backend": "apollo_cyberrt",
+                    "metadata": {"scenario_metadata": {"front_role": "front"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (root / "summary.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "exit_reason": "fake_transition_ok",
+                    "frames": 2,
+                    "metadata": {"scenario_metadata": {"front_role": "front"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (root / "events.jsonl").write_text(json.dumps({"event": "run_finished"}) + "\n", encoding="utf-8")
+        (root / "timeseries.csv").write_text(
+            "sim_time,ego_speed_mps,ego_x,ego_y,ego_yaw_rad,ego_length_m,ego_width_m\n"
+            "0.0,1.0,0.0,0.0,0.0,4.0,2.0\n"
+            "10.0,20.0,250.0,0.0,0.0,4.0,2.0\n",
+            encoding="utf-8",
+        )
+        (artifacts / "control_apply_trace.jsonl").write_text(json.dumps({"control": {}}) + "\n", encoding="utf-8")
+        (artifacts / "cyber_bridge_stats.json").write_text(
+            json.dumps(
+                {
+                    "front_obstacle_behavior": {
+                        "mode": "static_hold",
+                        "actor_probe_enabled": True,
+                        "role_names": ["front"],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        base_obstacle = {
+            "carla_actor_id": "212",
+            "apollo_perception_id": "212",
+            "front_obstacle_actor_role": "front",
+            "front_obstacle_actor_id": "212",
+            "is_ego": False,
+            "front_obstacle_actor_y": 0.0,
+            "front_obstacle_actor_yaw_deg": 0.0,
+            "front_obstacle_actor_speed_mps": 0.0,
+            "front_obstacle_gap_lat_m": 0.0,
+            "length": 4.0,
+            "width": 2.0,
+            "height": 1.5,
+            "type": "VEHICLE",
+            "frame_transform_checked": True,
+            "position_frame_apollo_map": True,
+            "theta_frame_checked": True,
+            "velocity_source": "carla_actor_state",
+            "vx": 0.0,
+            "vy": 0.0,
+            "vz": 0.0,
+            "dynamic": False,
+            "actually_stationary": True,
+        }
+        rows = [
+            {
+                **base_obstacle,
+                "timestamp": 0.0,
+                "front_obstacle_actor_x": 300.0,
+                "front_obstacle_gap_lon_m": 300.0,
+                "front_obstacle_gap_distance_m": 300.0,
+                "tracking_time": 0.0,
+            },
+            {
+                **base_obstacle,
+                "timestamp": 10.0,
+                "front_obstacle_actor_x": 300.0,
+                "front_obstacle_gap_lon_m": 50.0,
+                "front_obstacle_gap_distance_m": 50.0,
+                "tracking_time": 10.0,
+            },
+        ]
+        (artifacts / "obstacle_gt_contract.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(apollo_compat, "_invoke_tbio_transition_backend", fake_invoke)
+
+    result = apollo_compat.run_compat_apollo_cyber_gt_runtime(
+        cfg,
+        config_path=config_path,
+        run_dir=run_dir,
+        resolved_config=dataclasses.asdict(cfg),
+    )
+
+    assert result.exit_code == 0
+    assert "phase1_postprocess" in result.outputs
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    binding = json.loads(
+        (
+            run_dir
+            / "analysis"
+            / "phase1_scenario_binding"
+            / "phase1_scenario_binding_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    compat = json.loads(
+        (
+            run_dir
+            / "analysis"
+            / "phase1_apollo_fixed_scene_compat"
+            / "phase1_apollo_fixed_scene_compat_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    postprocess = json.loads(
+        (
+            run_dir
+            / "analysis"
+            / "phase1_postprocess"
+            / "phase1_postprocess_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert manifest["scenario_case"] == "baguang_follow_stop_static_300m"
+    assert manifest["target_actor_contract"]["role_aliases"] == {"lead_vehicle": "front"}
+    assert binding["status"] == "pass"
+    assert compat["status"] == "pass"
+    assert compat["actor_roles"] == {"lead_vehicle": "212"}
+    assert postprocess["phase1_scenario_binding_status"] == "pass"
+    assert postprocess["apollo_fixed_scene_compat_status"] == "pass"
 
 
 def test_transition_python_resolver_does_not_use_unexpanded_placeholder(
