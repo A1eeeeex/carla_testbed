@@ -660,6 +660,58 @@ def test_unclassified_summary_failure_is_invalid_not_success(tmp_path) -> None:
     assert "invalid_run_is_setup_or_evidence_failure_not_backend_loss" in report["notes"]
 
 
+def test_route_establishment_latency_is_evaluable_route_only_failure(tmp_path) -> None:
+    run = tmp_path / "apollo_curve"
+    run.mkdir()
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "apollo_curve",
+                "scenario_id": "town01_curve217_diagnostic",
+                "scenario_class": "curve_diagnostic",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "target_actor_contract": {
+                    "status": "not_required",
+                    "source": "scenario_class_not_required",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "fail_reason": "ROUTE_ESTABLISHMENT_LATENCY_SEC"}),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text("sim_time,ego_speed_mps\n0.0,1.0\n", encoding="utf-8")
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "not_applicable",
+                "target_actor_contract": {
+                    "status": "not_required",
+                    "scenario_class": "curve_diagnostic",
+                    "source": "scenario_class_not_required",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "route_establishment_latency"
+    assert report["failed_reasons"] == ["route_establishment_latency"]
+    assert report["invalid_reasons"] == []
+    assert report["evaluable"] is True
+    assert report["original_failure_reason"] == "ROUTE_ESTABLISHMENT_LATENCY_SEC"
+    assert report["scenario_case"] == "town01_curve217_diagnostic"
+    assert report["target_actor_contract"]["status"] == "not_required"
+
+
 def test_legacy_apollo_lane_invasion_exit_reason_is_evaluable_failure(tmp_path) -> None:
     run = tmp_path / "apollo_lane"
     run.mkdir()

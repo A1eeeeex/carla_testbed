@@ -591,14 +591,19 @@ def build_phase1_artifact_completeness(run_dir: str | Path) -> dict[str, Any]:
         "summary": root / "summary.json",
         "events": root / "events.jsonl",
         "timeseries": _first_existing(root / "timeseries.csv", root / "timeseries.jsonl"),
-        "fixed_scene_resolved": root / "artifacts" / "fixed_scene_resolved.json",
-        "fixed_scene_runtime_state": root / "artifacts" / "fixed_scene_runtime_state.json",
-        "scenario_actor_trace": root / "artifacts" / "scenario_actor_trace.jsonl",
-        "scenario_phase_events": root / "artifacts" / "scenario_phase_events.jsonl",
         "ego_control_trace": ego_control_artifact,
         "v_t_gap_report": root / "analysis" / "v_t_gap" / "v_t_gap_report.json",
         "phase1_status": root / "analysis" / "phase1_status" / "phase1_status.json",
     }
+    if _requires_fixed_scene_artifacts(root, manifest):
+        required.update(
+            {
+                "fixed_scene_resolved": root / "artifacts" / "fixed_scene_resolved.json",
+                "fixed_scene_runtime_state": root / "artifacts" / "fixed_scene_runtime_state.json",
+                "scenario_actor_trace": root / "artifacts" / "scenario_actor_trace.jsonl",
+                "scenario_phase_events": root / "artifacts" / "scenario_phase_events.jsonl",
+            }
+        )
     artifacts: dict[str, dict[str, Any]] = {}
     missing: list[str] = []
     for name, path in required.items():
@@ -616,6 +621,15 @@ def build_phase1_artifact_completeness(run_dir: str | Path) -> dict[str, Any]:
         "artifacts": artifacts,
         "claim_boundary": "artifact completeness supports Phase 1 run evaluability only, not natural-driving capability.",
     }
+
+
+def _requires_fixed_scene_artifacts(root: Path, manifest: Mapping[str, Any]) -> bool:
+    if manifest.get("fixed_scene_enabled") or manifest.get("fixed_scene_case"):
+        return True
+    if (root / "artifacts" / "fixed_scene_resolved.json").exists():
+        return True
+    target_contract = _target_actor_contract(root, manifest)
+    return bool(target_contract.get("status") == "resolved" and target_contract.get("target_actor_role"))
 
 
 def _first_existing(*paths: Path) -> Path | None:

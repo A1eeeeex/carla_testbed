@@ -49,6 +49,43 @@ def test_phase1_postprocess_missing_target_actor_is_invalid(tmp_path) -> None:
     assert status["failure_reason"] == "missing_target_actor"
 
 
+def test_phase1_postprocess_route_only_completeness_does_not_require_fixed_scene_artifacts(tmp_path) -> None:
+    run = tmp_path / "route_only"
+    artifacts = run / "artifacts"
+    artifacts.mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "route_only",
+                "scenario_id": "town01_curve217_diagnostic",
+                "scenario_class": "curve_diagnostic",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "target_actor_contract": {
+                    "status": "not_required",
+                    "source": "scenario_class_not_required",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(json.dumps({"run_id": "route_only", "success": True}), encoding="utf-8")
+    (run / "events.jsonl").write_text(json.dumps({"event": "run_finished"}) + "\n", encoding="utf-8")
+    (artifacts / "control_apply_trace.jsonl").write_text(json.dumps({"control": {}}) + "\n", encoding="utf-8")
+    (run / "timeseries.csv").write_text("sim_time,ego_speed_mps\n0.0,1.0\n", encoding="utf-8")
+
+    report = run_phase1_postprocess(run)
+    completeness = json.loads(
+        (run / "analysis" / "phase1_status" / "artifact_completeness.json").read_text(encoding="utf-8")
+    )
+
+    assert report["phase1_status"] == "success"
+    assert report["artifact_completeness_status"] == "pass"
+    assert completeness["status"] == "pass"
+    assert "fixed_scene_resolved" not in completeness["artifacts"]
+    assert "scenario_actor_trace" not in completeness["artifacts"]
+
+
 def _write_complete_run(tmp_path):
     run = tmp_path / "run"
     artifacts = run / "artifacts"

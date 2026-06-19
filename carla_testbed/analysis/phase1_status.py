@@ -33,6 +33,7 @@ FAILED_REASONS = {
     "timeout",
     "off_route",
     "lane_invasion",
+    "route_establishment_latency",
     "scenario_phase_trigger_not_reached",
 }
 DEGRADED_REASONS = {
@@ -1213,6 +1214,12 @@ def _phase1_scenario_case(manifest: Mapping[str, Any], summary: Mapping[str, Any
     route_id = str(manifest.get("route_id") or summary.get("route_id") or "")
     scenario_class = str(manifest.get("scenario_class") or summary.get("scenario_class") or "")
     scenario_id = str(manifest.get("scenario_id") or summary.get("scenario_id") or "")
+    if route_id == "town01_rh_spawn068_goal079" and scenario_class in {"curve_diagnostic", "lane_keep", ""}:
+        return "town01_curve217_diagnostic"
+    if "town01_rh_spawn068_goal079" in scenario_id and (
+        "curve" in scenario_id or scenario_class == "curve_diagnostic"
+    ):
+        return "town01_curve217_diagnostic"
     if route_id == "town01_rh_spawn097_goal046" and scenario_class in {"lane_keep", ""}:
         return "town01_lane_keep_097"
     if "town01_rh_spawn097_goal046" in scenario_id and "lane_keep" in scenario_id:
@@ -1315,7 +1322,11 @@ def _summary_has_failure_code(summary: Mapping[str, Any], code: str) -> bool:
 
 
 def _normalize_reason_value(value: Any) -> str:
-    return str(value or "").strip().lower()
+    normalized = str(value or "").strip().lower()
+    aliases = {
+        "route_establishment_latency_sec": "route_establishment_latency",
+    }
+    return aliases.get(normalized, normalized)
 
 
 def _truthy(value: Any) -> bool:
