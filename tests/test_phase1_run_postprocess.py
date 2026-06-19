@@ -422,11 +422,13 @@ def test_phase1_postprocess_refreshes_apollo_control_reports_before_status(tmp_p
     assert control_health["status"] == "warn"
 
 
-def test_phase1_postprocess_refreshes_hdmap_projection_before_link_health(tmp_path, monkeypatch) -> None:
+def test_phase1_postprocess_refreshes_projection_and_reference_before_link_health(tmp_path, monkeypatch) -> None:
     run = _write_complete_run(tmp_path)
     _make_run_apollo_fixed_scene(run)
     projection_dir = run / "analysis" / "apollo_hdmap_projection"
+    reference_dir = run / "analysis" / "apollo_reference_line_contract"
     projection_dir.mkdir(parents=True)
+    reference_dir.mkdir(parents=True)
     (projection_dir / "apollo_hdmap_projection_report.json").write_text(
         json.dumps(
             {
@@ -434,6 +436,16 @@ def test_phase1_postprocess_refreshes_hdmap_projection_before_link_health(tmp_pa
                 "status": "insufficient_data",
                 "claim_grade": False,
                 "artifact_status": "artifact_empty",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (reference_dir / "apollo_reference_line_contract_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_reference_line_contract.v1",
+                "status": "insufficient_data",
+                "warnings": ["apollo_hdmap_projection_missing"],
             }
         ),
         encoding="utf-8",
@@ -461,6 +473,36 @@ def test_phase1_postprocess_refreshes_hdmap_projection_before_link_health(tmp_pa
         "".join(json.dumps(row) + "\n" for row in projection_rows),
         encoding="utf-8",
     )
+    (run / "artifacts" / "apollo_reference_line_contract.jsonl").write_text(
+        json.dumps({"timestamp": 0.0, "planning_reference_available": True}) + "\n",
+        encoding="utf-8",
+    )
+
+    def fake_reference(run_dir):
+        refreshed_projection = json.loads(
+            (run_dir / "analysis" / "apollo_hdmap_projection" / "apollo_hdmap_projection_report.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert refreshed_projection["status"] == "pass"
+        return {
+            "schema_version": "apollo_reference_line_contract.v1",
+            "status": "warn",
+            "warnings": ["apollo_route_contract_warn_reference_line_claim_warning_propagated"],
+            "evidence": {
+                "apollo_hdmap_projection_available": True,
+                "apollo_hdmap_projection_claim_grade": True,
+            },
+        }
+
+    def fake_write_reference(report, out_dir):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report_path = out_dir / "apollo_reference_line_contract_report.json"
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "apollo_reference_line_contract_report": str(report_path),
+            "apollo_reference_line_contract_summary": str(out_dir / "apollo_reference_line_contract_summary.md"),
+        }
 
     def fake_link_health(run_dir, out_dir):
         refreshed = json.loads(
@@ -470,6 +512,16 @@ def test_phase1_postprocess_refreshes_hdmap_projection_before_link_health(tmp_pa
         )
         assert refreshed["status"] == "pass"
         assert refreshed["claim_grade"] is True
+        reference = json.loads(
+            (
+                run_dir
+                / "analysis"
+                / "apollo_reference_line_contract"
+                / "apollo_reference_line_contract_report.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert reference["status"] == "warn"
+        assert reference["evidence"]["apollo_hdmap_projection_claim_grade"] is True
         out_dir.mkdir(parents=True, exist_ok=True)
         report_path = out_dir / "apollo_link_health_report.json"
         report_path.write_text(
@@ -483,15 +535,22 @@ def test_phase1_postprocess_refreshes_hdmap_projection_before_link_health(tmp_pa
         )
         return {"apollo_link_health_report": str(report_path), "apollo_link_health_summary": str(out_dir / "summary.md")}
 
+    monkeypatch.setattr(phase1_postprocess, "analyze_apollo_reference_line_contract_run_dir", fake_reference)
+    monkeypatch.setattr(phase1_postprocess, "write_apollo_reference_line_contract_report", fake_write_reference)
     monkeypatch.setattr(phase1_postprocess, "analyze_and_write_apollo_link_health", fake_link_health)
 
     report = run_phase1_postprocess(run)
     refreshed = json.loads((projection_dir / "apollo_hdmap_projection_report.json").read_text(encoding="utf-8"))
+    refreshed_reference = json.loads(
+        (reference_dir / "apollo_reference_line_contract_report.json").read_text(encoding="utf-8")
+    )
 
     assert report["apollo_hdmap_projection_status"] == "pass"
+    assert report["apollo_reference_line_contract_status"] == "warn"
     assert report["apollo_link_health_primary_blocker"] == "planning_reference_line:insufficient_data"
     assert refreshed["artifact_status"] == "projection_rows_present"
     assert refreshed["projection"]["official_row_count"] == 60
+    assert refreshed_reference["status"] == "warn"
 
 
 def _make_run_apollo_fixed_scene(run) -> None:

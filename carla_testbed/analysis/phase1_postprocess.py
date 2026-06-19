@@ -12,6 +12,10 @@ from carla_testbed.analysis.apollo_hdmap_projection import (
     write_apollo_hdmap_projection_report,
 )
 from carla_testbed.analysis.apollo_link_health import analyze_and_write_apollo_link_health
+from carla_testbed.analysis.apollo_reference_line_contract import (
+    analyze_apollo_reference_line_contract_run_dir,
+    write_apollo_reference_line_contract_report,
+)
 from carla_testbed.analysis.baguang_lane_event_contract import (
     analyze_baguang_lane_event_contract,
     write_baguang_lane_event_contract_report,
@@ -50,6 +54,8 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     apollo_control_handoff_paths: dict[str, str] | None = None
     apollo_hdmap_projection_report: dict[str, Any] | None = None
     apollo_hdmap_projection_paths: dict[str, str] | None = None
+    apollo_reference_line_contract_report: dict[str, Any] | None = None
+    apollo_reference_line_contract_paths: dict[str, str] | None = None
     control_health_report: dict[str, Any] | None = None
     control_health_paths: dict[str, str] | None = None
     apollo_link_health_report: dict[str, Any] | None = None
@@ -60,8 +66,9 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         apollo_fixed_scene_compat_report = derive_apollo_fixed_scene_artifacts(root)
         _write_obstacle_gt_contract(root)
         apollo_control_handoff_report, apollo_control_handoff_paths = _write_apollo_control_handoff(root)
-        control_health_report, control_health_paths = _write_control_health(root)
         apollo_hdmap_projection_report, apollo_hdmap_projection_paths = _write_apollo_hdmap_projection(root)
+        apollo_reference_line_contract_report, apollo_reference_line_contract_paths = _write_apollo_reference_line_contract(root)
+        control_health_report, control_health_paths = _write_control_health(root)
         apollo_link_health_report, apollo_link_health_paths = _write_apollo_link_health(root)
     v_t_gap_report = extract_v_t_gap(run_dir=root)
     v_t_gap_paths = write_v_t_gap_report(v_t_gap_report, analysis / "v_t_gap")
@@ -97,6 +104,9 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         "apollo_hdmap_projection_status": (
             apollo_hdmap_projection_report.get("status") if apollo_hdmap_projection_report else None
         ),
+        "apollo_reference_line_contract_status": (
+            apollo_reference_line_contract_report.get("status") if apollo_reference_line_contract_report else None
+        ),
         "apollo_link_health_primary_blocker": (
             apollo_link_health_report.get("primary_blocker") if apollo_link_health_report else None
         ),
@@ -131,6 +141,11 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
             **({"apollo_control_handoff": apollo_control_handoff_paths} if apollo_control_handoff_paths else {}),
             **({"control_health": control_health_paths} if control_health_paths else {}),
             **({"apollo_hdmap_projection": apollo_hdmap_projection_paths} if apollo_hdmap_projection_paths else {}),
+            **(
+                {"apollo_reference_line_contract": apollo_reference_line_contract_paths}
+                if apollo_reference_line_contract_paths
+                else {}
+            ),
             **({"apollo_link_health": apollo_link_health_paths} if apollo_link_health_paths else {}),
             **(
                 {
@@ -195,6 +210,62 @@ def _write_apollo_hdmap_projection(root: Path) -> tuple[dict[str, Any] | None, d
     report = analyze_apollo_hdmap_projection_file(projection_path)
     paths = write_apollo_hdmap_projection_report(report, root / "analysis" / "apollo_hdmap_projection")
     return report, paths
+
+
+def _write_apollo_reference_line_contract(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    if not _apollo_reference_line_contract_raw_exists(root):
+        return None, None
+    report = analyze_apollo_reference_line_contract_run_dir(root)
+    paths = write_apollo_reference_line_contract_report(report, root / "analysis" / "apollo_reference_line_contract")
+    return report, paths
+
+
+def _apollo_reference_line_contract_raw_exists(root: Path) -> bool:
+    if any(
+        path.exists()
+        for path in (
+            root / "artifacts" / "apollo_reference_line_contract.jsonl",
+            root / "apollo_reference_line_contract.jsonl",
+            root / "artifacts" / "planning_topic_debug.jsonl",
+            root / "planning_topic_debug.jsonl",
+            root / "artifacts" / "planning_route_segment_debug.jsonl",
+            root / "planning_route_segment_debug.jsonl",
+            root / "artifacts" / "control_decode_debug.jsonl",
+            root / "artifacts" / "bridge_control_decode.jsonl",
+            root / "control_decode_debug.jsonl",
+            root / "bridge_control_decode.jsonl",
+        )
+    ):
+        return True
+    return any(
+        _csv_has_reference_line_fields(path)
+        for path in (
+            root / "artifacts" / "debug_timeseries.csv",
+            root / "debug_timeseries.csv",
+            root / "timeseries.csv",
+        )
+    )
+
+
+def _csv_has_reference_line_fields(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        header = path.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+    except Exception:
+        return False
+    fields = {field.strip() for field in header.split(",") if field.strip()}
+    return any(
+        field in fields
+        for field in (
+            "planning_ref_heading_error_rad",
+            "control_ref_heading_error_rad",
+            "reference_line_heading",
+            "reference_line_count",
+            "route_segment_count",
+            "apollo_reference_heading",
+        )
+    )
 
 
 def _control_health_raw_exists(root: Path) -> bool:
