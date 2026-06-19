@@ -394,6 +394,9 @@ def _catalog_next_actions(
             "produce an evaluable Apollo fixed-scene runtime dispatch; "
             "backend_not_ready remains invalid, not a backend loss"
         )
+    dispatch_requirements = _representative_dispatch_requirements(evidence)
+    if dispatch_requirements:
+        actions.append("Apollo runtime migration requirements: " + ", ".join(dispatch_requirements[:4]))
     if "apollo_online_evidence" in missing_set:
         if has_fixed_scene:
             actions.append(
@@ -436,6 +439,16 @@ def _representative_apollo_blocker(evidence: list[Mapping[str, Any]]) -> str | N
         if failure:
             return str(failure)
     return None
+
+
+def _representative_dispatch_requirements(evidence: list[Mapping[str, Any]]) -> list[str]:
+    for item in _sort_evidence([dict(value) for value in evidence]):
+        if item.get("evidence_type") != "apollo_fixed_scene_dispatch_contract":
+            continue
+        requirements = item.get("runtime_migration_requirements")
+        if isinstance(requirements, list) and requirements:
+            return [str(value) for value in requirements if value]
+    return []
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -844,6 +857,9 @@ def _dispatch_contract_evidence_note(report: Mapping[str, Any]) -> str:
     warnings = _short_list(report.get("warnings"), limit=3)
     if warnings:
         parts.append(f"warnings={','.join(warnings)}")
+    requirements = _short_list(report.get("runtime_migration_requirements"), limit=3)
+    if requirements:
+        parts.append(f"runtime_requirements={','.join(requirements)}")
     return "; ".join(parts)
 
 
@@ -857,6 +873,7 @@ def _dispatch_contract_evidence_details(report: Mapping[str, Any]) -> dict[str, 
         "blocking_reasons",
         "warnings",
         "next_action",
+        "runtime_migration_requirements",
         "missing_row_level_expected_artifacts",
         "missing_postprocess_expected_artifacts",
     ):

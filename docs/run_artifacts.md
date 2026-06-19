@@ -793,6 +793,10 @@ When the selected representative comparison carries
 link-health, control-health, and lane-event blocker summaries. These summaries
 are review navigation hints only; `phase1_status.json` and
 `comparison_summary.json` remain the authoritative run/comparison outcomes.
+When a representative Apollo fixed-scene dispatch report carries
+`runtime_migration_requirements`, the catalog echoes the first requirements in
+`next_action` and the dispatch evidence details. This is a migration checklist,
+not proof that dynamic fixed-scene runtime dispatch has executed.
 
 ## `logs/`
 

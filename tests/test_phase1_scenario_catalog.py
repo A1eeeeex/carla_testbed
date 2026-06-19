@@ -328,6 +328,11 @@ def test_phase1_catalog_surfaces_dynamic_dispatch_contract_without_online_done(t
                 "commands_present": False,
                 "blocking_reasons": ["apollo_fixed_scene_runtime_migration_required"],
                 "warnings": ["dynamic_fixed_scene_runtime_not_migrated"],
+                "runtime_migration_requirements": [
+                    "apollo_online_runner_starts_carla_fixed_scene_runtime",
+                    "speed_profile_non_ego_actor_control",
+                    "v_t_gap_from_target_actor_trace_and_timeseries",
+                ],
             }
         ),
         encoding="utf-8",
@@ -344,6 +349,16 @@ def test_phase1_catalog_surfaces_dynamic_dispatch_contract_without_online_done(t
     assert lead["apollo_fixed_scene_runtime_dispatch_reason"] == "apollo_fixed_scene_runtime_not_migrated"
     assert lead["overall_status"] == "PARTIAL"
     assert "apollo_fixed_scene_runtime_dispatch" in lead["missing_items"]
+    assert any(
+        "Apollo runtime migration requirements: apollo_online_runner_starts_carla_fixed_scene_runtime"
+        in action
+        for action in lead["next_action"]
+    )
+    dispatch_evidence = [
+        item for item in lead["evidence"] if item["evidence_type"] == "apollo_fixed_scene_dispatch_contract"
+    ][0]
+    assert "speed_profile_non_ego_actor_control" in dispatch_evidence["runtime_migration_requirements"]
+    assert "runtime_requirements=apollo_online_runner_starts_carla_fixed_scene_runtime" in dispatch_evidence["note"]
 
 
 def test_phase1_catalog_requires_dispatch_contract_for_fixed_scene_done(tmp_path) -> None:
