@@ -135,8 +135,8 @@ class AutowareRos2Backend:
             expected_artifacts=expected_artifacts,
             shutdown_hooks=["stop_autoware_launch", "stop_recorders", "leave_carla_running_policy_dependent"],
             postprocess_commands=[
-                ["python", "tools/analyze_autoware_evidence.py", "--run-dir", run_dir],
-                ["python", "-m", "carla_testbed", "analyze", "--run-dir", run_dir],
+                ["python3", "tools/analyze_autoware_evidence.py", "--run-dir", run_dir],
+                ["python3", "-m", "carla_testbed", "analyze", "--run-dir", run_dir],
             ],
             starts_runtime=not fixed_scene_enabled,
             compatibility_source=(

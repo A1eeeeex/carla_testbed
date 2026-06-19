@@ -187,8 +187,8 @@ class ApolloCyberRTBackend:
             expected_artifacts=expected_artifacts,
             shutdown_hooks=["stop_apollo_bridge", "stop_recorders", "leave_carla_running_policy_dependent"],
             postprocess_commands=[
-                ["python", "tools/analyze_apollo_link_health.py", "--run-dir", run_dir],
-                ["python", "-m", "carla_testbed", "analyze", "--run-dir", run_dir],
+                ["python3", "tools/analyze_apollo_link_health.py", "--run-dir", run_dir],
+                ["python3", "-m", "carla_testbed", "analyze", "--run-dir", run_dir],
             ],
             starts_runtime=(not fixed_scene_enabled) or fixed_scene_compat,
             compatibility_source=(

@@ -61,7 +61,7 @@ class DummyBackend:
             starts_runtime=False,
             expected_artifacts=expected,
             postprocess_commands=[
-                ["python", "-m", "carla_testbed", "analyze", "--run-dir", f"runs/{plan.identity.run_id}"]
+                ["python3", "-m", "carla_testbed", "analyze", "--run-dir", f"runs/{plan.identity.run_id}"]
             ],
             compatibility_source="dummy_backend",
         )
