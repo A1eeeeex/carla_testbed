@@ -422,6 +422,78 @@ def test_phase1_postprocess_refreshes_apollo_control_reports_before_status(tmp_p
     assert control_health["status"] == "warn"
 
 
+def test_phase1_postprocess_refreshes_hdmap_projection_before_link_health(tmp_path, monkeypatch) -> None:
+    run = _write_complete_run(tmp_path)
+    _make_run_apollo_fixed_scene(run)
+    projection_dir = run / "analysis" / "apollo_hdmap_projection"
+    projection_dir.mkdir(parents=True)
+    (projection_dir / "apollo_hdmap_projection_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_hdmap_projection_report.v1",
+                "status": "insufficient_data",
+                "claim_grade": False,
+                "artifact_status": "artifact_empty",
+            }
+        ),
+        encoding="utf-8",
+    )
+    projection_rows = []
+    for idx in range(60):
+        projection_rows.append(
+            {
+                "timestamp": float(idx),
+                "sample_type": "ego",
+                "source": "apollo_hdmap_api",
+                "status": "ok",
+                "map_name": "straight_road_for_baguang",
+                "map_dir": "/apollo/modules/map/data/straight_road_for_baguang",
+                "nearest_lane_id": "lane_1",
+                "projection_s": float(idx),
+                "projection_l": 0.01,
+                "heading_error_rad": 0.001,
+                "lateral_error_m": 0.01,
+                "expected_duration_s": 60.0,
+                "expected_route_distance_m": 60.0,
+            }
+        )
+    (run / "artifacts" / "apollo_hdmap_projection.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in projection_rows),
+        encoding="utf-8",
+    )
+
+    def fake_link_health(run_dir, out_dir):
+        refreshed = json.loads(
+            (run_dir / "analysis" / "apollo_hdmap_projection" / "apollo_hdmap_projection_report.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert refreshed["status"] == "pass"
+        assert refreshed["claim_grade"] is True
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report_path = out_dir / "apollo_link_health_report.json"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "apollo_link_health.v1",
+                    "primary_blocker": "planning_reference_line:insufficient_data",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {"apollo_link_health_report": str(report_path), "apollo_link_health_summary": str(out_dir / "summary.md")}
+
+    monkeypatch.setattr(phase1_postprocess, "analyze_and_write_apollo_link_health", fake_link_health)
+
+    report = run_phase1_postprocess(run)
+    refreshed = json.loads((projection_dir / "apollo_hdmap_projection_report.json").read_text(encoding="utf-8"))
+
+    assert report["apollo_hdmap_projection_status"] == "pass"
+    assert report["apollo_link_health_primary_blocker"] == "planning_reference_line:insufficient_data"
+    assert refreshed["artifact_status"] == "projection_rows_present"
+    assert refreshed["projection"]["official_row_count"] == 60
+
+
 def _make_run_apollo_fixed_scene(run) -> None:
     manifest_path = run / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
