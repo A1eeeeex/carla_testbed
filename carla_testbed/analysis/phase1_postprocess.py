@@ -6,10 +6,13 @@ from typing import Any, Mapping
 
 import yaml
 
+from carla_testbed.analysis.apollo_control_handoff import analyze_and_write_apollo_control_handoff
+from carla_testbed.analysis.apollo_link_health import analyze_and_write_apollo_link_health
 from carla_testbed.analysis.baguang_lane_event_contract import (
     analyze_baguang_lane_event_contract,
     write_baguang_lane_event_contract_report,
 )
+from carla_testbed.analysis.control_health import analyze_control_health_run_dir, write_control_health_report
 from carla_testbed.analysis.obstacle_gt_contract import (
     analyze_obstacle_gt_contract_run_dir,
     write_obstacle_gt_contract_report,
@@ -39,11 +42,20 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     apollo_fixed_scene_compat_report: dict[str, Any] | None = None
     apollo_fixed_scene_readiness_report: dict[str, Any] | None = None
     apollo_fixed_scene_readiness_paths: dict[str, str] | None = None
+    apollo_control_handoff_report: dict[str, Any] | None = None
+    apollo_control_handoff_paths: dict[str, str] | None = None
+    control_health_report: dict[str, Any] | None = None
+    control_health_paths: dict[str, str] | None = None
+    apollo_link_health_report: dict[str, Any] | None = None
+    apollo_link_health_paths: dict[str, str] | None = None
     phase1_scenario_binding_report = _ensure_phase1_scenario_binding(root)
     if _is_apollo_fixed_scene_target_run(root):
         apollo_fixed_scene_readiness_report, apollo_fixed_scene_readiness_paths = _write_apollo_readiness(root)
         apollo_fixed_scene_compat_report = derive_apollo_fixed_scene_artifacts(root)
         _write_obstacle_gt_contract(root)
+        apollo_control_handoff_report, apollo_control_handoff_paths = _write_apollo_control_handoff(root)
+        control_health_report, control_health_paths = _write_control_health(root)
+        apollo_link_health_report, apollo_link_health_paths = _write_apollo_link_health(root)
     v_t_gap_report = extract_v_t_gap(run_dir=root)
     v_t_gap_paths = write_v_t_gap_report(v_t_gap_report, analysis / "v_t_gap")
     baguang_lane_event_report, baguang_lane_event_paths = _write_baguang_lane_event_contract(root)
@@ -70,6 +82,13 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         ),
         "baguang_lane_event_contract_status": (
             baguang_lane_event_report.get("status") if baguang_lane_event_report else None
+        ),
+        "apollo_control_handoff_status": (
+            apollo_control_handoff_report.get("status") if apollo_control_handoff_report else None
+        ),
+        "control_health_status": (control_health_report.get("status") if control_health_report else None),
+        "apollo_link_health_primary_blocker": (
+            apollo_link_health_report.get("primary_blocker") if apollo_link_health_report else None
         ),
         "artifact_completeness_status": completeness.get("status"),
         "outputs": {
@@ -99,6 +118,9 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
                 else {}
             ),
             **({"apollo_fixed_scene_readiness": apollo_fixed_scene_readiness_paths} if apollo_fixed_scene_readiness_paths else {}),
+            **({"apollo_control_handoff": apollo_control_handoff_paths} if apollo_control_handoff_paths else {}),
+            **({"control_health": control_health_paths} if control_health_paths else {}),
+            **({"apollo_link_health": apollo_link_health_paths} if apollo_link_health_paths else {}),
             **(
                 {
                     "phase1_scenario_binding": str(
@@ -113,6 +135,59 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _write_apollo_control_handoff(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    if not _apollo_control_handoff_raw_exists(root):
+        return None, None
+    paths = analyze_and_write_apollo_control_handoff(
+        run_dir=root,
+        out_dir=root / "analysis" / "apollo_control_handoff",
+    )
+    report = _read_json(Path(paths["apollo_control_handoff_report"]))
+    return report, paths
+
+
+def _apollo_control_handoff_raw_exists(root: Path) -> bool:
+    return any(
+        path.exists()
+        for path in (
+            root / "artifacts" / "cyber_bridge_stats.json",
+            root / "artifacts" / "apollo_control_raw.jsonl",
+            root / "artifacts" / "bridge_control_decode.jsonl",
+            root / "artifacts" / "control_decode_debug.jsonl",
+            root / "artifacts" / "control_apply_trace.jsonl",
+        )
+    )
+
+
+def _write_control_health(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    if not _control_health_raw_exists(root):
+        return None, None
+    report = analyze_control_health_run_dir(root)
+    paths = write_control_health_report(report, root / "analysis" / "control_health")
+    return report, paths
+
+
+def _write_apollo_link_health(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    if not (root / "manifest.json").exists() and not (root / "summary.json").exists():
+        return None, None
+    paths = analyze_and_write_apollo_link_health(root, out_dir=root / "analysis" / "apollo_link_health")
+    report = _read_json(Path(paths["apollo_link_health_report"]))
+    return report, paths
+
+
+def _control_health_raw_exists(root: Path) -> bool:
+    return any(
+        path.exists()
+        for path in (
+            root / "artifacts" / "control_apply_trace.jsonl",
+            root / "artifacts" / "bridge_control_decode.jsonl",
+            root / "artifacts" / "control_decode_debug.jsonl",
+            root / "timeseries.csv",
+            root / "timeseries.jsonl",
+        )
+    )
 
 
 def _write_obstacle_gt_contract(root: Path) -> dict[str, Any] | None:

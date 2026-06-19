@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 
+import carla_testbed.analysis.phase1_postprocess as phase1_postprocess
 from carla_testbed.analysis.phase1_postprocess import run_phase1_postprocess
 from carla_testbed.scenario_player.compiler import compile_fixed_scene_template
 from carla_testbed.scenario_player.schema import load_fixed_scene_template
@@ -358,6 +359,67 @@ def test_phase1_postprocess_auto_binds_legacy_apollo_scenario_path_from_config(t
     assert compat["actor_roles"] == {"lead_vehicle": "212"}
     assert status["status"] == "success"
     assert status["scenario_case"] == "baguang_follow_stop_static_300m"
+
+
+def test_phase1_postprocess_refreshes_apollo_control_reports_before_status(tmp_path, monkeypatch) -> None:
+    run = _write_complete_run(tmp_path)
+    _make_run_apollo_fixed_scene(run)
+    handoff_dir = run / "analysis" / "apollo_control_handoff"
+    health_dir = run / "analysis" / "control_health"
+    handoff_dir.mkdir(parents=True)
+    health_dir.mkdir(parents=True)
+    (handoff_dir / "apollo_control_handoff_report.json").write_text(
+        json.dumps({"schema_version": "apollo_control_handoff.v1", "status": "insufficient_data"}),
+        encoding="utf-8",
+    )
+    (health_dir / "control_health_report.json").write_text(
+        json.dumps({"schema_version": "control_health_report.v1", "status": "insufficient_data"}),
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    def fake_handoff(*, run_dir, out_dir):
+        calls.append("handoff")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report_path = out_dir / "apollo_control_handoff_report.json"
+        report_path.write_text(
+            json.dumps({"schema_version": "apollo_control_handoff.v1", "status": "warn", "verdict": "warn"}),
+            encoding="utf-8",
+        )
+        return {
+            "apollo_control_handoff_report": str(report_path),
+            "apollo_control_handoff_summary": str(out_dir / "apollo_control_handoff_summary.md"),
+        }
+
+    def fake_analyze_control_health(run_dir):
+        calls.append("control_health")
+        handoff = json.loads(
+            (run_dir / "analysis" / "apollo_control_handoff" / "apollo_control_handoff_report.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert handoff["status"] == "warn"
+        return {"schema_version": "control_health_report.v1", "status": "warn", "failure_reason": None}
+
+    def fake_write_control_health(report, out_dir):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report_path = out_dir / "control_health_report.json"
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {"control_health_report": str(report_path), "control_health_summary": str(out_dir / "summary.md")}
+
+    monkeypatch.setattr(phase1_postprocess, "analyze_and_write_apollo_control_handoff", fake_handoff)
+    monkeypatch.setattr(phase1_postprocess, "analyze_control_health_run_dir", fake_analyze_control_health)
+    monkeypatch.setattr(phase1_postprocess, "write_control_health_report", fake_write_control_health)
+
+    report = run_phase1_postprocess(run)
+    handoff = json.loads((handoff_dir / "apollo_control_handoff_report.json").read_text(encoding="utf-8"))
+    control_health = json.loads((health_dir / "control_health_report.json").read_text(encoding="utf-8"))
+
+    assert calls == ["handoff", "control_health"]
+    assert report["apollo_control_handoff_status"] == "warn"
+    assert report["control_health_status"] == "warn"
+    assert handoff["status"] == "warn"
+    assert control_health["status"] == "warn"
 
 
 def _make_run_apollo_fixed_scene(run) -> None:
