@@ -308,6 +308,49 @@ def _base_run(tmp_path: Path) -> Path:
     return run_dir
 
 
+def test_link_health_prefers_phase1_manifest_identity_over_legacy_summary(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "summary.json",
+        {
+            "run_id": "run",
+            "scenario_id": "legacy_lane_keep",
+            "scenario_class": "lane_keep",
+            "route_id": "legacy_route",
+        },
+    )
+    _write_json(
+        run_dir / "manifest.json",
+        {
+            "run_id": "run",
+            "scenario_id": "baguang_follow_stop_static_300m_spawn2m",
+            "scenario_class": "follow_stop_static",
+            "route_id": "straight_road_for_baguang_mainline_followstop_300m_spawn2m",
+            "backend": "apollo_cyberrt",
+        },
+    )
+    _write_json(
+        run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json",
+        {
+            "schema_version": "apollo_route_contract.v1",
+            "status": "insufficient_data",
+            "scenario_id": "baguang_follow_stop_static_300m_spawn2m",
+            "scenario_class": "follow_stop_static",
+            "route_id": "straight_road_for_baguang_mainline_followstop_300m_spawn2m",
+            "missing_fields": ["apollo_hdmap_projection_for_lane_equivalence"],
+            "warnings": ["apollo_hdmap_projection_required_for_cross_namespace_lane_equivalence"],
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert report["scenario_id"] == "baguang_follow_stop_static_300m_spawn2m"
+    assert report["scenario_class"] == "follow_stop_static"
+    assert report["route_id"] == "straight_road_for_baguang_mainline_followstop_300m_spawn2m"
+
+
 def test_reference_line_fail_report_without_path_fallback_metrics_is_regenerated() -> None:
     stale_report = {
         "schema_version": "apollo_reference_line_contract.v1",

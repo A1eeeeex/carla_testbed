@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import math
 import re
@@ -43,6 +44,16 @@ def analyze_apollo_route_contract_run_dir(
 ) -> dict[str, Any]:
     root = Path(run_dir).expanduser()
     frame_transform_obj, frame_transform_source = _resolve_frame_transform(frame_transform)
+    manifest_path = _find_first(root, ("manifest.json",))
+    summary_path = _find_first(root, ("summary.json",))
+    scenario_metadata_path = _find_first(root, ("artifacts/scenario_metadata.json", "scenario_metadata.json"))
+    route_lane_hint_path = _find_first(root, ("timeseries.csv", "artifacts/debug_timeseries.csv"))
+    manifest = _read_json(manifest_path)
+    manifest, scenario_metadata_source = _manifest_with_runtime_scenario_metadata(
+        manifest,
+        _read_json(scenario_metadata_path),
+        route_lane_hint=_read_route_lane_hint(route_lane_hint_path),
+    )
     routing_response_decoded_path = _find_first(
         root,
         (
@@ -53,8 +64,8 @@ def analyze_apollo_route_contract_run_dir(
         ),
     )
     return analyze_apollo_route_contract(
-        manifest=_read_json(_find_first(root, ("manifest.json",))),
-        summary=_read_json(_find_first(root, ("summary.json",))),
+        manifest=manifest,
+        summary=_read_json(summary_path),
         cyber_bridge_stats=_read_json(
             _find_first(root, ("artifacts/cyber_bridge_stats.json", "cyber_bridge_stats.json"))
         ),
@@ -89,8 +100,11 @@ def analyze_apollo_route_contract_run_dir(
         frame_transform_source=frame_transform_source,
         source={
             "run_dir": str(root),
-            "manifest": _path_str(_find_first(root, ("manifest.json",))),
-            "summary": _path_str(_find_first(root, ("summary.json",))),
+            "manifest": _path_str(manifest_path),
+            "summary": _path_str(summary_path),
+            "scenario_metadata": _path_str(scenario_metadata_path),
+            "scenario_metadata_source": scenario_metadata_source,
+            "scenario_route_lane_hint": _path_str(route_lane_hint_path),
             "cyber_bridge_stats": _path_str(
                 _find_first(root, ("artifacts/cyber_bridge_stats.json", "cyber_bridge_stats.json"))
             ),
@@ -404,9 +418,9 @@ def analyze_apollo_route_contract(
     return {
         "schema_version": APOLLO_ROUTE_CONTRACT_SCHEMA_VERSION,
         "run_id": _first_text(summary, "run_id", manifest, "run_id"),
-        "route_id": _first_text(summary, "route_id", manifest, "route_id", default=scenario.get("route_id")),
-        "scenario_id": _first_text(summary, "scenario_id", manifest, "scenario_id"),
-        "scenario_class": _first_text(summary, "scenario_class", manifest, "scenario_class"),
+        "route_id": _first_text(manifest, "route_id", summary, "route_id", default=scenario.get("route_id")),
+        "scenario_id": _first_text(manifest, "scenario_id", summary, "scenario_id"),
+        "scenario_class": _first_text(manifest, "scenario_class", summary, "scenario_class"),
         "scenario_route_length_m": scenario_length,
         "scenario_route_length_source": scenario.get("route_length_source"),
         "scenario_route_declared_length_m": scenario.get("route_length_declared_m"),
@@ -1848,6 +1862,133 @@ def _routing_request_projection_compatible(projection: Mapping[str, Any]) -> boo
     )
 
 
+def _manifest_with_runtime_scenario_metadata(
+    manifest: Mapping[str, Any],
+    scenario_metadata: Mapping[str, Any],
+    *,
+    route_lane_hint: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    if not isinstance(manifest, Mapping):
+        manifest = {}
+    merged_manifest = dict(manifest)
+    metadata = dict(merged_manifest.get("metadata") or {}) if isinstance(merged_manifest.get("metadata"), Mapping) else {}
+    manifest_scenario = (
+        dict(metadata.get("scenario_metadata"))
+        if isinstance(metadata.get("scenario_metadata"), Mapping)
+        else {}
+    )
+    runtime_scenario = dict(scenario_metadata) if isinstance(scenario_metadata, Mapping) else {}
+    if not runtime_scenario and not manifest_scenario:
+        return merged_manifest, None
+
+    merged_scenario = dict(runtime_scenario)
+    merged_scenario.update(manifest_scenario)
+    source = "manifest.metadata.scenario_metadata"
+    if runtime_scenario:
+        source = "manifest.metadata.scenario_metadata+artifacts/scenario_metadata.json"
+
+    if not isinstance(merged_scenario.get("route_trace"), list):
+        derived = _fixed_scene_route_trace_from_metadata(merged_scenario, route_lane_hint=route_lane_hint)
+        if derived:
+            for key, value in derived.items():
+                if key not in merged_scenario or _is_missing_value(merged_scenario.get(key)):
+                    merged_scenario[key] = value
+            source = f"{source}+fixed_scene_front_alignment_route_trace"
+
+    metadata["scenario_metadata"] = merged_scenario
+    merged_manifest["metadata"] = metadata
+    return merged_manifest, source
+
+
+def _is_missing_value(value: Any) -> bool:
+    return value is None or value == "" or value == []
+
+
+def _fixed_scene_route_trace_from_metadata(
+    scenario: Mapping[str, Any],
+    *,
+    route_lane_hint: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    spawn = scenario.get("spawn")
+    front_spawn = scenario.get("front_spawn")
+    alignment = scenario.get("front_alignment")
+    if not isinstance(spawn, Mapping) or not isinstance(front_spawn, Mapping):
+        return None
+    if not isinstance(alignment, Mapping) or _parse_bool(alignment.get("aligned")) is not True:
+        return None
+    length_m = _first_num(
+        alignment.get("longitudinal_m"),
+        alignment.get("euclidean_m"),
+        scenario.get("front_waypoint_ahead_m"),
+    )
+    if length_m is None or length_m <= 0.0:
+        return None
+    start_xy = _xy(spawn)
+    goal_xy = _xy(front_spawn)
+    if start_xy is None or goal_xy is None:
+        return None
+    lane_payload = _route_lane_payload(route_lane_hint)
+    start = {
+        "index": 0,
+        "x": start_xy["x"],
+        "y": start_xy["y"],
+        "z": _num(spawn.get("z")) or 0.0,
+        "s": 0.0,
+        "heading": _yaw_rad(spawn),
+        "tags": ["fixed_scene_ego_spawn"],
+        **lane_payload,
+    }
+    goal = {
+        "index": 1,
+        "x": goal_xy["x"],
+        "y": goal_xy["y"],
+        "z": _num(front_spawn.get("z")) or 0.0,
+        "s": float(length_m),
+        "heading": _yaw_rad(front_spawn),
+        "tags": ["fixed_scene_lead_spawn"],
+        **lane_payload,
+    }
+    return {
+        "claim_route_length_m": float(length_m),
+        "claim_route_length_source": "fixed_scene_front_alignment.longitudinal_m",
+        "route_trace": [start, goal],
+        "route_trace_source": "fixed_scene_front_alignment_trace",
+        "route_trace_frame": "carla_world",
+        "route_trace_length_m": float(length_m),
+        "route_trace_length_source": "fixed_scene_front_alignment.longitudinal_m",
+        "route_trace_point_count": 2,
+        "goal": dict(front_spawn),
+        "route_lane_source": route_lane_hint.get("source") if isinstance(route_lane_hint, Mapping) else None,
+        "route_trace_claim_boundary": (
+            "Derived from fixed-scene runtime spawn/front alignment. It is scenario-route "
+            "intent evidence only; Apollo lane equivalence still requires HDMap projection rows."
+        ),
+    }
+
+
+def _route_lane_payload(route_lane_hint: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(route_lane_hint, Mapping):
+        return {}
+    road = route_lane_hint.get("road_id")
+    section = route_lane_hint.get("section_id")
+    lane = route_lane_hint.get("lane_id")
+    if road is None or lane is None:
+        return {}
+    payload = {
+        "road_id": _format_lane_part(road),
+        "section_id": _format_lane_part(section if section is not None else 0),
+        "lane_id": f"{_format_lane_part(road)}:{_format_lane_part(section if section is not None else 0)}:{_format_lane_part(lane)}",
+    }
+    return payload
+
+
+def _yaw_rad(payload: Mapping[str, Any]) -> float | None:
+    if _num(payload.get("yaw_rad")) is not None:
+        return _num(payload.get("yaw_rad"))
+    yaw_deg = _num(payload.get("yaw_deg"))
+    return math.radians(yaw_deg) if yaw_deg is not None else None
+
+
 def _scenario_route(
     manifest: Mapping[str, Any],
     summary: Mapping[str, Any],
@@ -2446,6 +2587,45 @@ def _read_jsonl(path: Path | None) -> list[Mapping[str, Any]]:
     return rows
 
 
+def _read_route_lane_hint(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        with path.open(newline="", encoding="utf-8", errors="replace") as handle:
+            reader = csv.DictReader(handle)
+            for index, row in enumerate(reader):
+                if index >= 500:
+                    break
+                hint = _route_lane_hint_from_row(row)
+                if hint:
+                    hint["source"] = str(path)
+                    return hint
+    except OSError:
+        return None
+    return None
+
+
+def _route_lane_hint_from_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    for keys in (
+        ("dbg_ref_road_id", "dbg_ref_section_id", "dbg_ref_lane_id"),
+        ("ego_road_id", "ego_section_id", "ego_lane_id"),
+        ("route_road_id", "route_section_id", "route_lane_id"),
+        ("road_id", "section_id", "lane_id"),
+    ):
+        road = _num(row.get(keys[0]))
+        section = _num(row.get(keys[1]))
+        lane = _num(row.get(keys[2]))
+        if road is None or lane is None:
+            continue
+        return {
+            "road_id": road,
+            "section_id": section if section is not None else 0.0,
+            "lane_id": lane,
+            "column_keys": list(keys),
+        }
+    return None
+
+
 def _path_str(path: Path | None) -> str | None:
     return str(path) if path else None
 
@@ -2513,6 +2693,13 @@ def _text_or_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _format_lane_part(value: Any) -> str:
+    number = _num(value)
+    if number is not None and float(number).is_integer():
+        return str(int(number))
+    return str(value)
 
 
 def _json_compact(value: Any) -> str:

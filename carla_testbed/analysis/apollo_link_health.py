@@ -115,7 +115,7 @@ def analyze_apollo_link_health(
     summary = payloads.get("summary", {})
     manifest = payloads.get("manifest", {})
     cyber_bridge_stats = payloads.get("cyber_bridge_stats", {})
-    scenario_class = _first_text(summary, "scenario_class", manifest, "scenario_class")
+    scenario_class = _first_text(manifest, "scenario_class", summary, "scenario_class")
     source_kinds: dict[str, str] = {}
     if root is not None:
         if _should_regenerate_apollo_route_contract(
@@ -246,6 +246,15 @@ def analyze_apollo_link_health(
                     outputs["channel_cadence_diagnosis_report"]
                 )
 
+    scenario_class = _first_text(
+        manifest,
+        "scenario_class",
+        payloads.get("apollo_route_contract"),
+        "scenario_class",
+        summary,
+        "scenario_class",
+    )
+
     layers = {
         "environment_world": _environment_world_layer(
             summary,
@@ -371,8 +380,15 @@ def analyze_apollo_link_health(
     return {
         "schema_version": APOLLO_LINK_HEALTH_SCHEMA_VERSION,
         "run_id": _first_text(summary, "run_id", manifest, "run_id", default=root.name if root else None),
-        "route_id": _first_text(summary, "route_id", manifest, "route_id"),
-        "scenario_id": _first_text(summary, "scenario_id", manifest, "scenario_id"),
+        "route_id": _first_text(manifest, "route_id", payloads.get("apollo_route_contract"), "route_id", summary, "route_id"),
+        "scenario_id": _first_text(
+            manifest,
+            "scenario_id",
+            payloads.get("apollo_route_contract"),
+            "scenario_id",
+            summary,
+            "scenario_id",
+        ),
         "scenario_class": scenario_class,
         "backend": _first_text(summary, "backend", manifest, "backend"),
         "transport_mode": _first_text(summary, "transport_mode", manifest, "transport_mode"),

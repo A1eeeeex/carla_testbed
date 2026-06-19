@@ -99,6 +99,122 @@ def test_route_contract_detects_apollo_routing_length_mismatch(tmp_path: Path) -
     assert "route_identity_inconsistent" in report["blocking_reasons"]
 
 
+def test_route_contract_derives_fixed_scene_route_trace_from_runtime_metadata(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "baguang_run"
+    _write_json(
+        run_dir / "manifest.json",
+        {
+            "run_id": "baguang_run",
+            "scenario_id": "baguang_follow_stop_static_300m_spawn2m",
+            "scenario_class": "follow_stop_static",
+            "route_id": "straight_road_for_baguang_mainline_followstop_300m_spawn2m",
+            "metadata": {
+                "scenario_metadata": {
+                    "scenario_driver": "carla_followstop",
+                    "route_id": "straight_road_for_baguang_mainline_followstop_300m_spawn2m",
+                }
+            },
+        },
+    )
+    # Legacy summary can carry a broader class; the explicit Phase 1 binding in
+    # the manifest must remain authoritative for fixed-scene route evidence.
+    _write_json(run_dir / "summary.json", {"scenario_class": "lane_keep"})
+    _write_json(
+        run_dir / "artifacts/scenario_metadata.json",
+        {
+            "scenario_driver": "carla_followstop",
+            "spawn": {
+                "x": 297.697021484375,
+                "y": -5.25394868850708,
+                "z": 0.4461000859737396,
+                "yaw_deg": 179.9698944091797,
+            },
+            "front_spawn": {
+                "x": -2.302942991256714,
+                "y": -5.096322536468506,
+                "z": 0.4461000859737396,
+                "yaw_deg": 179.9698944091797,
+            },
+            "front_alignment": {
+                "aligned": True,
+                "longitudinal_m": 300.00000588564006,
+                "lateral_m": 0.000006,
+                "heading_diff_deg": 0.0,
+            },
+            "front_waypoint_ahead_m": 300.0,
+        },
+    )
+    (run_dir / "timeseries.csv").write_text(
+        "frame,dbg_ref_road_id,dbg_ref_section_id,dbg_ref_lane_id\n"
+        "1,0,0,-2\n",
+        encoding="utf-8",
+    )
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "source": "/apollo/raw_routing_response",
+            "status": "pass",
+            "lane_segments": [
+                {"lane_id": "0_0_2", "start_s": 5.4544, "end_s": 312.1215}
+            ],
+            "total_length_m": 306.66712884376267,
+        },
+    )
+    trusted_projection = {
+        "available": True,
+        "applied": True,
+        "accepted": True,
+        "trusted_lane_centerline": True,
+        "distance_m": 0.128,
+        "signed_lateral_error_m": 0.0,
+    }
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "long",
+                "routing_request_kind": "long_phase_route",
+                "start_raw_x": 299.1205,
+                "start_raw_y": 5.2547,
+                "goal_raw_x": -7.4185,
+                "goal_raw_y": 5.0936,
+                "start_projection": trusted_projection,
+                "goal_projection": {
+                    **trusted_projection,
+                    "distance_m": 6.667,
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "route_segment_total_length": 306.66712884376267,
+                "routing_lane_window_count": 1,
+                "routing_lane_window_signature": "0_0_2@5.4544->312.1215",
+                "routing_unique_lane_signature": "0_0_2",
+            }
+        ],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["scenario_class"] == "follow_stop_static"
+    assert report["scenario_route_length_m"] == 300.00000588564006
+    assert report["scenario_route_length_source"] == "fixed_scene_front_alignment.longitudinal_m"
+    assert report["scenario_route_trace_point_count"] == 2
+    assert report["scenario_route_lane_sequence"] == ["0:-2"]
+    assert report["lane_equivalence_status"] == "cross_namespace_unverified"
+    assert report["status"] == "insufficient_data"
+    assert "scenario_route_length_m" not in report["missing_fields"]
+    assert "scenario_route_lane_ids" not in report["missing_fields"]
+    assert "apollo_hdmap_projection_for_lane_equivalence" in report["missing_fields"]
+    assert "artifacts/scenario_metadata.json" in report["source"]["scenario_metadata"]
+
+
 def test_cross_namespace_carla_waypoint_lane_mismatch_requires_equivalence_not_fail(
     tmp_path: Path,
 ) -> None:
