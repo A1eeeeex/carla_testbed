@@ -1,0 +1,84 @@
+{
+  "schema_version": "channel_stats.v1",
+  "source": "synthetic",
+  "channels": {
+    "/apollo/localization/pose": {
+      "message_count": 220,
+      "hz": 2.5,
+      "header_sim_hz": 2.5,
+      "fresh_world_frame_hz": 2.5,
+      "delivery_wall_hz": 19.8,
+      "max_gap_ms": 800.0,
+      "gap_p95_ms": 650.0,
+      "gap_count_over_250ms": 190,
+      "gap_count_over_1000ms": 0,
+      "timestamp_monotonic": true,
+      "sequence_monotonic": true,
+      "stale_count": 0,
+      "duplicate_timestamp_count": 0,
+      "promotion_grade_evidence": true,
+      "evidence_source": "topic_publish_stats",
+      "source": "topic_publish_stats.jsonl"
+    },
+    "/apollo/canbus/chassis": {
+      "message_count": 220,
+      "hz": 2.5,
+      "header_sim_hz": 2.5,
+      "fresh_world_frame_hz": 2.5,
+      "delivery_wall_hz": 19.8,
+      "max_gap_ms": 800.0,
+      "gap_p95_ms": 650.0,
+      "gap_count_over_250ms": 190,
+      "gap_count_over_1000ms": 0,
+      "timestamp_monotonic": true,
+      "sequence_monotonic": true,
+      "stale_count": 0,
+      "duplicate_timestamp_count": 0,
+      "promotion_grade_evidence": true,
+      "evidence_source": "topic_publish_stats",
+      "source": "topic_publish_stats.jsonl"
+    },
+    "/apollo/perception/obstacles": {
+      "message_count": 220,
+      "hz": 2.5,
+      "header_sim_hz": 2.5,
+      "delivery_wall_hz": 19.8,
+      "max_gap_ms": 800.0,
+      "gap_p95_ms": 650.0,
+      "timestamp_monotonic": true,
+      "sequence_monotonic": true,
+      "stale_count": 0
+    },
+    "/apollo/perception/traffic_light": {
+      "message_count": 0,
+      "hz": 0.0,
+      "max_gap_ms_estimated": true,
+      "derived_from_bridge_counters": true,
+      "timestamp_monotonic": false,
+      "sequence_monotonic": false
+    },
+    "/apollo/planning": {
+      "message_count": 190,
+      "hz": 16.9,
+      "sim_time_hz": 2.16,
+      "sim_time_max_gap_ms": 2550.0,
+      "sim_time_gap_p95_ms": 750.0,
+      "sim_time_gap_count_over_250ms": 170,
+      "sim_time_gap_count_over_1000ms": 2,
+      "max_gap_ms": 211.0,
+      "gap_p95_ms": 109.0,
+      "timestamp_monotonic": true,
+      "sequence_monotonic": true,
+      "stale_count": 0
+    },
+    "/apollo/control": {
+      "message_count": 760,
+      "hz": 94.0,
+      "max_gap_ms": 45.0,
+      "gap_p95_ms": 23.0,
+      "timestamp_monotonic": true,
+      "sequence_monotonic": true,
+      "stale_count": 0
+    }
+  }
+}

@@ -529,6 +529,27 @@ Latest Apollo follow-stop cadence refinement, `2026-06-19`:
   diagnostic progress only; it is not a driving improvement and does not justify
   bridge smoothing or PID tuning before the localization/channel timing contract
   is explained.
+- The refreshed channel-cadence diagnosis now records `sim_wall_cadence`. In the
+  same low-capture run, CARLA advanced about `87.3s` of sim-time in about
+  `11.1s` of wall-time while `wall_time_pacing_enabled=false`. This explains
+  why localization/chassis wall delivery can be near `20Hz` while Apollo header
+  sim-time cadence is only about `2.5Hz`. The diagnostic follow-up config is
+  `configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml`.
+  It enables `run.wall_time_pacing.enabled=true` at `0.05s` and exists only to
+  test whether pacing restores the sim-time channel contract. A paced-positive
+  run would still be diagnostic; it would not prove Apollo natural driving or
+  make the overlay/low-capture profile default.
+- The paced online sample
+  `runs/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat`
+  confirms the channel-timing hypothesis: `sim_wall_speedup_factor≈0.98`,
+  localization/chassis header sim cadence about `19.1Hz`, max gap about
+  `100ms`, and `channel_cadence_diagnosis.status=warn` with no blocking
+  reasons. The same run still fails as `phase1_status=failed` /
+  `failure_reason=lane_invasion`. After official HDMap projection export,
+  `apollo_hdmap_projection.status=pass` / `claim_grade=true`,
+  `apollo_reference_line_contract.status=warn`, and link-health primary blocker
+  moves to `apollo_module_consumption:claim_route_consumption_unverified`.
+  This is a blocker shift, not a behavior improvement claim.
 
 Implementation note added after the 2026-06-16 review:
 

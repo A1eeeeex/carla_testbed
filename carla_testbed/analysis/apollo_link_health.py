@@ -1737,6 +1737,8 @@ def _should_regenerate_channel_cadence(report: Mapping[str, Any] | None) -> bool
         return True
     if report.get("schema_version") != "channel_cadence_diagnosis.v1":
         return True
+    if "sim_wall_cadence" not in report:
+        return True
     return _normalize_status(report.get("status")) == "insufficient_data"
 
 

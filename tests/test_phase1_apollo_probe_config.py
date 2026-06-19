@@ -51,3 +51,19 @@ def test_phase1_baguang_apollo_low_capture_probe_disables_legacy_sensor_capture(
         "/tb/ego/control_cmd",
         "/carla/hero/odom",
     ]
+
+
+def test_phase1_baguang_apollo_low_capture_paced_probe_declares_wall_time_pacing() -> None:
+    config_path = Path(
+        "configs/io/examples/"
+        "phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    pacing = ((payload.get("run") or {}).get("wall_time_pacing") or {})
+
+    cfg = load_config(config_path)
+    legacy_run = cfg.backend.params["legacy_run"]
+
+    assert cfg.run.id == "phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat"
+    assert pacing == {"enabled": True, "target_interval_s": 0.05, "max_sleep_s": 0.05}
+    assert legacy_run["wall_time_pacing"] == pacing

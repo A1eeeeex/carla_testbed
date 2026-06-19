@@ -1,0 +1,17 @@
+{
+  "schema_version": "carla_tick_health.v1",
+  "tick_count": 1747,
+  "first_sim_time_s": 100.0,
+  "last_sim_time_s": 187.3,
+  "first_tick_wall_time_s": 1000.0,
+  "last_tick_wall_time_s": 1011.1,
+  "inter_tick_wall_interval_p95_s": 0.0082,
+  "max_inter_tick_wall_interval_s": 0.03,
+  "max_stage_name": "gt_publish_and_hooks",
+  "max_stage_duration_s": 0.003,
+  "max_tick_wall_duration_s": 0.009,
+  "slow_frame_count": 0,
+  "wall_time_pacing_enabled": false,
+  "wall_time_pacing_target_interval_s": null,
+  "wall_time_pacing_total_sleep_s": 0.0
+}

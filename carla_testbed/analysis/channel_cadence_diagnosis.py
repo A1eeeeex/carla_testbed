@@ -129,6 +129,7 @@ def analyze_channel_cadence_diagnosis(
     manifest = manifest or {}
     source_paths = source_paths or {}
     stats_channels = stats.get("channels") if isinstance(stats.get("channels"), Mapping) else {}
+    sim_wall_cadence = _sim_wall_cadence_summary(carla_tick_health_summary)
 
     channel_reports: dict[str, dict[str, Any]] = {}
     blocking_reasons: list[str] = []
@@ -153,6 +154,7 @@ def analyze_channel_cadence_diagnosis(
             topic_publish_rows=topic_publish_rows,
             publish_gap_rows=publish_gap_rows,
             publish_gap_summary=publish_gap_summary,
+            sim_wall_cadence=sim_wall_cadence,
         )
         channel_reports[diagnosis["name"]] = diagnosis
         if diagnosis["status"] == "fail":
@@ -171,6 +173,8 @@ def analyze_channel_cadence_diagnosis(
     top_gap_windows = _top_gap_windows(channel_reports)
     top_gap_window = top_gap_windows[0] if top_gap_windows else None
     gap_attribution = _gap_attribution(top_gap_window)
+    if primary and _has_sim_time_speedup_without_wall_pacing(sim_wall_cadence):
+        gap_attribution["primary_gap_source"] = "sim_time_speedup_without_wall_pacing"
 
     return {
         "schema_version": CHANNEL_CADENCE_DIAGNOSIS_SCHEMA_VERSION,
@@ -193,6 +197,7 @@ def analyze_channel_cadence_diagnosis(
         "warnings": sorted(set(warnings)),
         "missing_artifacts": sorted(set(missing_artifacts)),
         "carla_tick_cadence": _tick_cadence_summary(carla_tick_health_summary),
+        "sim_wall_cadence": sim_wall_cadence,
         "publish_gap_summary": dict(publish_gap_summary),
         "next_action": _next_action(primary, channel_reports, carla_tick_health_summary),
         "source": dict(source_paths),
@@ -232,6 +237,7 @@ def channel_cadence_diagnosis_summary_md(report: Mapping[str, Any]) -> str:
         f"- CARLA tick stage: `{report.get('carla_tick_stage')}`",
         f"- Publish skip reason: `{report.get('publish_skip_reason')}`",
         f"- Artifact writer lag ms: `{report.get('artifact_writer_lag_ms')}`",
+        f"- Sim/wall cadence: `{json.dumps(report.get('sim_wall_cadence') or {}, sort_keys=True)}`",
         f"- Blocking reasons: `{', '.join(report.get('blocking_reasons') or []) or 'none'}`",
         f"- Warnings: `{', '.join(report.get('warnings') or []) or 'none'}`",
         f"- Next action: `{report.get('next_action')}`",
@@ -274,6 +280,7 @@ def _diagnose_channel(
     topic_publish_rows: Sequence[Mapping[str, Any]],
     publish_gap_rows: Sequence[Mapping[str, Any]],
     publish_gap_summary: Mapping[str, Any],
+    sim_wall_cadence: Mapping[str, Any],
 ) -> dict[str, Any]:
     name = str(channel_cfg.get("name") or "")
     channel = str(channel_cfg.get("channel") or "")
@@ -282,6 +289,8 @@ def _diagnose_channel(
     min_hz = _num(channel_cfg.get("min_hz"))
     max_gap_ms_allowed = _num(channel_cfg.get("max_gap_ms"))
     required = bool(channel_cfg.get("required"))
+    speedup_factor = _num(sim_wall_cadence.get("sim_wall_speedup_factor"))
+    wall_hz_for_contract: float | None = None
 
     if stats_entry is None:
         return {
@@ -300,6 +309,7 @@ def _diagnose_channel(
     header_sim_hz = _first_num(stats_entry, "header_sim_hz", "fresh_world_frame_hz", "sim_time_hz", "hz")
     hz = _num(stats_entry.get("hz"))
     delivery_wall_hz = _num(stats_entry.get("delivery_wall_hz"))
+    wall_hz_for_contract = delivery_wall_hz if delivery_wall_hz is not None else hz
     max_gap_ms = _num(stats_entry.get("sim_time_max_gap_ms")) or _num(stats_entry.get("max_gap_ms"))
     raw_max_gap_ms = _num(stats_entry.get("max_gap_ms"))
     gap_p95_ms = _first_num(stats_entry, "sim_time_gap_p95_ms", "gap_p95_ms")
@@ -345,6 +355,25 @@ def _diagnose_channel(
         and header_sim_hz >= min_hz
     ):
         warnings.append("delivery_wall_hz_below_contract_but_header_sim_hz_ok")
+    effective_required_wall_hz = (
+        min_hz * speedup_factor
+        if min_hz is not None and speedup_factor is not None
+        else None
+    )
+    if (
+        blocking
+        and _has_sim_time_speedup_without_wall_pacing(sim_wall_cadence)
+        and wall_hz_for_contract is not None
+        and min_hz is not None
+        and wall_hz_for_contract >= min_hz * 0.8
+    ):
+        suspected_layer = "sim_time_speedup_without_wall_pacing"
+        warnings.append("sim_time_speedup_without_wall_pacing")
+        if (
+            effective_required_wall_hz is not None
+            and wall_hz_for_contract < effective_required_wall_hz * 0.8
+        ):
+            warnings.append("delivery_wall_hz_below_effective_required_wall_hz_for_sim_contract")
     if stale_count > 0 or duplicate_count > 0:
         cadence_class = "stale_or_duplicate_timestamps"
         blocking.append("stale_or_duplicate_timestamps")
@@ -403,6 +432,8 @@ def _diagnose_channel(
         "source": stats_entry.get("source"),
         "min_hz": min_hz,
         "max_gap_ms_allowed": max_gap_ms_allowed,
+        "effective_required_wall_hz_for_sim_contract": effective_required_wall_hz,
+        "wall_hz_for_sim_contract": wall_hz_for_contract,
         "channel_health_issues": issues,
         "gap_windows": gap_windows,
         "publish_gap_counts": dict(channel_gap_counts) if isinstance(channel_gap_counts, Mapping) else {},
@@ -417,6 +448,8 @@ def _primary_issue(channel_reports: Mapping[str, Mapping[str, Any]], blocking_re
         if not isinstance(report, Mapping):
             continue
         reasons = list(report.get("blocking_reasons") or [])
+        if reasons and report.get("suspected_layer") == "sim_time_speedup_without_wall_pacing":
+            return f"{name}:sim_time_speedup_without_wall_pacing"
         if reasons:
             return f"{name}:{reasons[0]}"
     return blocking_reasons[0] if blocking_reasons else None
@@ -745,8 +778,22 @@ def _next_action(
             f"latest max tick stage is {slow_stage or 'unknown'}. Do not tune control before cadence is explained."
         )
     if cadence == "sustained_header_sim_gap":
+        if report.get("suspected_layer") == "sim_time_speedup_without_wall_pacing":
+            speedup = _num((report.get("carla_tick_cadence") or {}).get("sim_wall_speedup_factor"))
+            return (
+                "Enable a wall-time-paced diagnostic profile or slow the CARLA tick loop before "
+                "tuning control. The bridge is publishing near wall-time contract, but sim-time "
+                f"is advancing faster than wall-time{f' (factor {speedup:.2f}x)' if speedup else ''}."
+            )
         return "Inspect GT publisher cadence and bridge publish loop; required Apollo input channel has sustained sim-time gaps."
     if cadence == "low_header_sim_rate":
+        if report.get("suspected_layer") == "sim_time_speedup_without_wall_pacing":
+            speedup = _num((report.get("carla_tick_cadence") or {}).get("sim_wall_speedup_factor"))
+            return (
+                "Enable a wall-time-paced diagnostic profile or slow the CARLA tick loop before "
+                "tuning control. The bridge is publishing near wall-time contract, but sim-time "
+                f"is advancing faster than wall-time{f' (factor {speedup:.2f}x)' if speedup else ''}."
+            )
         return "Inspect GT publisher target Hz and source sample freshness for the low-rate required channel."
     if cadence == "stale_or_duplicate_timestamps":
         return "Inspect stale republish or duplicate timestamp handling; duplicate/stale GT inputs cannot support claim-grade evidence."
@@ -861,7 +908,46 @@ def _tick_cadence_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "max_stage_duration_s": payload.get("max_stage_duration_s"),
         "max_tick_wall_duration_s": payload.get("max_tick_wall_duration_s"),
         "slow_frame_count": payload.get("slow_frame_count"),
+        **_sim_wall_cadence_summary(payload),
     }
+
+
+def _sim_wall_cadence_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+    if not payload:
+        return {}
+    first_sim = _first_num(payload, "first_sim_time_s", "sim_time_first_s")
+    last_sim = _first_num(payload, "last_sim_time_s", "sim_time_last_s")
+    first_wall = _first_num(payload, "first_tick_wall_time_s", "first_wall_time_s")
+    last_wall = _first_num(payload, "last_tick_wall_time_s", "last_wall_time_s")
+    sim_elapsed = (last_sim - first_sim) if first_sim is not None and last_sim is not None else None
+    wall_elapsed = (last_wall - first_wall) if first_wall is not None and last_wall is not None else None
+    speedup = (
+        sim_elapsed / wall_elapsed
+        if sim_elapsed is not None and wall_elapsed is not None and sim_elapsed > 0.0 and wall_elapsed > 0.0
+        else None
+    )
+    tick_count = _int(payload.get("tick_count"))
+    actual_tick_wall_hz = (
+        (tick_count - 1) / wall_elapsed
+        if tick_count is not None and tick_count > 1 and wall_elapsed is not None and wall_elapsed > 0.0
+        else None
+    )
+    return {
+        "sim_elapsed_s": sim_elapsed,
+        "wall_elapsed_s": wall_elapsed,
+        "sim_wall_speedup_factor": speedup,
+        "actual_tick_wall_hz": actual_tick_wall_hz,
+        "wall_time_pacing_enabled": payload.get("wall_time_pacing_enabled"),
+        "wall_time_pacing_target_interval_s": payload.get("wall_time_pacing_target_interval_s"),
+        "wall_time_pacing_total_sleep_s": payload.get("wall_time_pacing_total_sleep_s"),
+    }
+
+
+def _has_sim_time_speedup_without_wall_pacing(cadence: Mapping[str, Any]) -> bool:
+    speedup = _num(cadence.get("sim_wall_speedup_factor"))
+    if speedup is None or speedup < 1.2:
+        return False
+    return cadence.get("wall_time_pacing_enabled") is False
 
 
 def _default_suspected_layer(name: str) -> str:

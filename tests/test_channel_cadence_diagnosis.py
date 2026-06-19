@@ -65,6 +65,29 @@ def test_slow_wall_delivery_does_not_mask_healthy_header_sim_cadence() -> None:
     assert report["blocking_reasons"] == []
 
 
+def test_fast_sim_time_without_wall_pacing_is_diagnosed_as_time_axis_speedup() -> None:
+    report = analyze_channel_cadence_diagnosis_files(
+        channel_stats_path=FIXTURES / "sim_speedup_channel_stats.json",
+        carla_tick_health_summary_path=FIXTURES / "carla_tick_health_summary_fast_sim.json",
+        config_path=CONFIG,
+    )
+
+    assert report["status"] == "fail"
+    assert report["primary_cadence_issue"] == "localization:sim_time_speedup_without_wall_pacing"
+    assert report["primary_gap_source"] == "sim_time_speedup_without_wall_pacing"
+    assert report["sim_wall_cadence"]["sim_wall_speedup_factor"] == pytest.approx(7.8648648649)
+    assert report["sim_wall_cadence"]["wall_time_pacing_enabled"] is False
+    assert "Enable a wall-time-paced diagnostic profile" in report["next_action"]
+
+    loc = report["channels"]["localization"]
+    assert loc["status"] == "fail"
+    assert loc["suspected_layer"] == "sim_time_speedup_without_wall_pacing"
+    assert loc["wall_hz_for_sim_contract"] == pytest.approx(19.8)
+    assert loc["effective_required_wall_hz_for_sim_contract"] == pytest.approx(78.648648649)
+    assert "sim_time_speedup_without_wall_pacing" in loc["warnings"]
+    assert "delivery_wall_hz_below_effective_required_wall_hz_for_sim_contract" in loc["warnings"]
+
+
 def test_missing_channel_stats_is_insufficient_data() -> None:
     report = analyze_channel_cadence_diagnosis_files(
         channel_stats_path=None,

@@ -1,0 +1,17 @@
+extends: phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_compat.yaml
+
+run:
+  id: phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat
+  profile_name: phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat
+  wall_time_pacing:
+    enabled: true
+    target_interval_s: 0.05
+    max_sleep_s: 0.05
+
+assist_ledger:
+  notes:
+    - Phase 1 Apollo fixed-scene compatibility path uses legacy follow-stop transition; diagnostic only.
+    - Ego spawn is shifted 2m downstream to test the Baguang road-start lane-invasion mitigation under Apollo compatibility.
+    - Control runtime overlay currently uses the full selected runtime refresh set; smaller smoke-positive subsets did not preserve control output in full online runs, so this remains diagnostic only and must not be promoted to default without separate no-regression evidence.
+    - Low-capture variant disables legacy rig sensor capture to test whether CARLA tick wall cadence / GT publish cadence is driving Apollo raw throttle-brake oscillation; it is not a capability or no-interference claim profile.
+    - Paced diagnostic variant enables wall-time pacing at 20Hz to test whether sim-time channel contract failures are caused by CARLA sim-time advancing faster than the bridge publish loop; this must not be treated as a behavior fix without fresh online artifacts.

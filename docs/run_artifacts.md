@@ -354,6 +354,16 @@ fails, the run can still complete as diagnostic playback, but
 surface unavailable so ScenarioComparison cannot use that safety event as a
 cross-backend behavior loss.
 
+Apollo compatibility runs may also include
+`analysis/channel_cadence_diagnosis/channel_cadence_diagnosis_report.json`.
+This report distinguishes wall-clock delivery cadence from Apollo header
+sim-time cadence. Its `sim_wall_cadence` block records CARLA sim elapsed time,
+wall elapsed time, the sim/wall speedup factor, and whether wall-time pacing was
+enabled. If sim-time advances much faster than wall-time while pacing is
+disabled, the report should keep the channel gate failing but set
+`primary_gap_source=sim_time_speedup_without_wall_pacing`; the next validation is
+a paced diagnostic run, not control smoothing or PID tuning.
+
 Legacy Apollo online runs can be explicitly bound to a Phase 1 fixed-scene
 scenario after the fact when the operator knows which `ScenarioCase` was
 intended:
