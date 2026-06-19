@@ -13,6 +13,7 @@ FAILURE_STAGE_PRIORITY = (
     "process_health",
     "input_readiness",
     "control_channel",
+    "planning_control_handoff",
     "bridge_receive",
     "raw_decode",
     "mapping_and_apply",
@@ -20,7 +21,7 @@ FAILURE_STAGE_PRIORITY = (
 )
 
 CRASH_SIGNATURES: tuple[tuple[str, str], ...] = (
-    ("tcmalloc_invalid_free", r"tcmalloc.*invalid free|invalid free"),
+    ("tcmalloc_invalid_free", r"tcmalloc.*invalid (?:free|pointer)|attempt to free invalid pointer|invalid free"),
     ("segfault", r"SIGSEGV|segmentation fault"),
     ("abort", r"SIGABRT|\babort(?:ed)?\b|core dumped"),
     ("protobuf_error", r"protobuf.*descriptor|descriptor.*protobuf"),
@@ -89,6 +90,10 @@ def analyze_apollo_control_handoff(
     control_survival = _read_json(paths["control_survival"])
     rows = _read_rows(paths["timeseries"])
     decode_rows = _read_jsonl(paths["control_decode_debug"])
+    control_raw_rows = _read_jsonl(paths["apollo_control_raw"])
+    control_consume_rows = _read_jsonl(paths["control_trajectory_consume_debug"])
+    planning_debug_rows = _read_jsonl(paths["planning_topic_debug"])
+    route_segment_rows = _read_jsonl(paths["planning_route_segment_debug"])
     apply_rows = _read_jsonl(paths["direct_control_apply"])
     logs = _read_logs(paths["control_logs"])
 
@@ -120,6 +125,13 @@ def analyze_apollo_control_handoff(
         upstream_ok=process_health["status"] in {"pass", "warn"}
         and input_readiness["status"] in {"pass", "warn"},
     )
+    planning_control_handoff = _planning_control_handoff(
+        planning_debug_rows=planning_debug_rows,
+        control_raw_rows=control_raw_rows,
+        control_consume_rows=control_consume_rows,
+        route_segment_rows=route_segment_rows,
+        control_channel=control_channel,
+    )
     bridge_receive = _bridge_receive(
         cyber_bridge_stats=cyber_stats,
         decode_rows=decode_rows,
@@ -141,6 +153,7 @@ def analyze_apollo_control_handoff(
         "process_health": process_health,
         "input_readiness": input_readiness,
         "control_channel": control_channel,
+        "planning_control_handoff": planning_control_handoff,
         "bridge_receive": bridge_receive,
         "raw_decode": raw_decode,
         "mapping_and_apply": mapping_and_apply,
@@ -174,6 +187,7 @@ def analyze_apollo_control_handoff(
         "process_health": process_health,
         "input_readiness": input_readiness,
         "control_channel": control_channel,
+        "planning_control_handoff": planning_control_handoff,
         "bridge_receive": bridge_receive,
         "raw_decode": raw_decode,
         "mapping_and_apply": mapping_and_apply,
@@ -253,7 +267,7 @@ def ensure_apollo_control_handoff_report(
         report = _read_json(existing)
         if not (
             _has_control_handoff_regeneration_inputs(root)
-            and _control_handoff_report_needs_regeneration(report)
+            and _control_handoff_report_needs_regeneration(root, report)
         ):
             return {
                 "status": "existing",
@@ -326,8 +340,18 @@ def _has_control_handoff_regeneration_inputs(root: Path) -> bool:
         "apollo_control_deferred_survival.json",
         "artifacts/planning_topic_debug_summary.json",
         "planning_topic_debug_summary.json",
+        "artifacts/planning_topic_debug.jsonl",
+        "planning_topic_debug.jsonl",
+        "artifacts/planning_route_segment_debug.jsonl",
+        "planning_route_segment_debug.jsonl",
         "artifacts/control_decode_debug.jsonl",
         "artifacts/bridge_control_decode.jsonl",
+        "artifacts/apollo_control_raw.jsonl",
+        "apollo_control_raw.jsonl",
+        "artifacts/control_trajectory_consume_debug.jsonl",
+        "artifacts/control_trajectory_consume_debug_live.jsonl",
+        "control_trajectory_consume_debug.jsonl",
+        "control_trajectory_consume_debug_live.jsonl",
         "artifacts/direct_bridge_control_apply.jsonl",
     )
     if any((root / pattern).exists() for pattern in raw_evidence_patterns):
@@ -335,8 +359,19 @@ def _has_control_handoff_regeneration_inputs(root: Path) -> bool:
     return any(_control_log_paths(root))
 
 
-def _control_handoff_report_needs_regeneration(report: Mapping[str, Any]) -> bool:
+def _control_handoff_report_needs_regeneration(root: Path, report: Mapping[str, Any]) -> bool:
     if report.get("schema_version") != APOLLO_CONTROL_HANDOFF_SCHEMA_VERSION:
+        return True
+    handoff = report.get("planning_control_handoff")
+    handoff_needs_temporal_refresh = (
+        isinstance(handoff, Mapping)
+        and "control_stream_ended_before_first_nonzero_planning" not in handoff
+        and _has_planning_control_handoff_row_inputs(root)
+    )
+    if (
+        ("planning_control_handoff" not in report and _has_planning_control_handoff_row_inputs(root))
+        or handoff_needs_temporal_refresh
+    ):
         return True
     status = str(report.get("verdict") or report.get("status") or "").strip().lower()
     if status == "fail":
@@ -355,6 +390,22 @@ def _control_handoff_report_needs_regeneration(report: Mapping[str, Any]) -> boo
     return status == "insufficient_data" and (
         runtime_missing or no_control_channel or no_bridge_receive or no_apply
     )
+
+
+def _has_planning_control_handoff_row_inputs(root: Path) -> bool:
+    row_patterns = (
+        "artifacts/planning_topic_debug.jsonl",
+        "planning_topic_debug.jsonl",
+        "artifacts/planning_route_segment_debug.jsonl",
+        "planning_route_segment_debug.jsonl",
+        "artifacts/apollo_control_raw.jsonl",
+        "apollo_control_raw.jsonl",
+        "artifacts/control_trajectory_consume_debug.jsonl",
+        "artifacts/control_trajectory_consume_debug_live.jsonl",
+        "control_trajectory_consume_debug.jsonl",
+        "control_trajectory_consume_debug_live.jsonl",
+    )
+    return any((root / pattern).exists() for pattern in row_patterns)
 
 
 def _resolve_inputs(
@@ -417,6 +468,31 @@ def _resolve_inputs(
                 "control_decode_debug.jsonl",
                 "bridge_control_decode.jsonl",
             ],
+        ),
+        "apollo_control_raw": _given_or_find(
+            root,
+            None,
+            ["artifacts/apollo_control_raw.jsonl", "apollo_control_raw.jsonl"],
+        ),
+        "control_trajectory_consume_debug": _given_or_find(
+            root,
+            None,
+            [
+                "artifacts/control_trajectory_consume_debug.jsonl",
+                "artifacts/control_trajectory_consume_debug_live.jsonl",
+                "control_trajectory_consume_debug.jsonl",
+                "control_trajectory_consume_debug_live.jsonl",
+            ],
+        ),
+        "planning_topic_debug": _given_or_find(
+            root,
+            None,
+            ["artifacts/planning_topic_debug.jsonl", "planning_topic_debug.jsonl"],
+        ),
+        "planning_route_segment_debug": _given_or_find(
+            root,
+            None,
+            ["artifacts/planning_route_segment_debug.jsonl", "planning_route_segment_debug.jsonl"],
         ),
         "direct_control_apply": _given_or_find(
             root,
@@ -655,6 +731,207 @@ def _control_channel(
         "sequence_monotonic": channel.get("sequence_monotonic") if channel else None,
         "raw_sample": sample,
         "source": source,
+        "missing_fields": missing_fields,
+        "status": status,
+    }
+
+
+def _planning_control_handoff(
+    *,
+    planning_debug_rows: Sequence[Mapping[str, Any]],
+    control_raw_rows: Sequence[Mapping[str, Any]],
+    control_consume_rows: Sequence[Mapping[str, Any]],
+    route_segment_rows: Sequence[Mapping[str, Any]],
+    control_channel: Mapping[str, Any],
+) -> dict[str, Any]:
+    planning_points = _nested_series(planning_debug_rows, ("trajectory_point_count",))
+    control_input_sequence = _nested_series(
+        control_raw_rows,
+        ("apollo_control_raw", "debug_input_trajectory_header_sequence_num"),
+    )
+    latest_replan_sequence = _nested_series(
+        control_raw_rows,
+        ("apollo_control_raw", "debug_input_latest_replan_trajectory_header_sequence_num"),
+    )
+    control_input_timestamp = _nested_series(
+        control_raw_rows,
+        ("apollo_control_raw", "debug_input_trajectory_header_timestamp_sec"),
+    )
+    latest_replan_timestamp = _nested_series(
+        control_raw_rows,
+        ("apollo_control_raw", "debug_input_latest_replan_trajectory_header_timestamp_sec"),
+    )
+    reference_line_counts = _nested_series(planning_debug_rows, ("reference_line_count",))
+    route_segment_counts = _nested_series(route_segment_rows, ("route_segment_count",))
+    route_reference_line_counts = _nested_series(route_segment_rows, ("reference_line_count",))
+    route_status_counts = _nested_counts(route_segment_rows, ("lane_follow_map_status",))
+    first_nonzero_planning_timestamp = _first_timestamp_where_nonzero(
+        planning_debug_rows,
+        value_path=("trajectory_point_count",),
+        timestamp_paths=(("timestamp",), ("planning_header_timestamp_sec",)),
+    )
+    last_nonzero_planning_timestamp = _last_timestamp_where_nonzero(
+        planning_debug_rows,
+        value_path=("trajectory_point_count",),
+        timestamp_paths=(("timestamp",), ("planning_header_timestamp_sec",)),
+    )
+    first_planning_timestamp = _first_timestamp(
+        planning_debug_rows,
+        (("timestamp",), ("planning_header_timestamp_sec",)),
+    )
+    last_planning_timestamp = _last_timestamp(
+        planning_debug_rows,
+        (("timestamp",), ("planning_header_timestamp_sec",)),
+    )
+    first_control_raw_timestamp = _first_timestamp(
+        control_raw_rows,
+        (("ts_sec",), ("apollo_control_raw", "control_header_timestamp_sec")),
+    )
+    last_control_raw_timestamp = _last_timestamp(
+        control_raw_rows,
+        (("ts_sec",), ("apollo_control_raw", "control_header_timestamp_sec")),
+    )
+    first_control_consume_timestamp = _first_timestamp(
+        control_consume_rows,
+        (("timestamp",), ("control_rx_timestamp",)),
+    )
+    last_control_consume_timestamp = _last_timestamp(
+        control_consume_rows,
+        (("timestamp",), ("control_rx_timestamp",)),
+    )
+    first_control_timestamp = _min_optional(first_control_raw_timestamp, first_control_consume_timestamp)
+    last_control_timestamp = _max_optional(last_control_raw_timestamp, last_control_consume_timestamp)
+    control_rows_after_first_nonzero = _count_rows_at_or_after(
+        [*control_raw_rows, *control_consume_rows],
+        first_nonzero_planning_timestamp,
+        timestamp_paths=(
+            ("ts_sec",),
+            ("timestamp",),
+            ("control_rx_timestamp",),
+            ("apollo_control_raw", "control_header_timestamp_sec"),
+        ),
+    )
+    planning_rows_after_control_stream_end = _count_rows_after(
+        planning_debug_rows,
+        last_control_timestamp,
+        timestamp_paths=(("timestamp",), ("planning_header_timestamp_sec")),
+    )
+    planning_nonzero_rows_after_control_stream_end = _count_rows_after_where_nonzero(
+        planning_debug_rows,
+        last_control_timestamp,
+        value_path=("trajectory_point_count",),
+        timestamp_paths=(("timestamp",), ("planning_header_timestamp_sec")),
+    )
+    control_stream_ended_before_first_nonzero = (
+        first_nonzero_planning_timestamp is not None
+        and last_control_timestamp is not None
+        and last_control_timestamp < first_nonzero_planning_timestamp
+        and control_rows_after_first_nonzero == 0
+    )
+    control_stream_end_before_first_nonzero_delta_ms = (
+        (first_nonzero_planning_timestamp - last_control_timestamp) * 1000.0
+        if control_stream_ended_before_first_nonzero and last_control_timestamp is not None
+        else None
+    )
+    consume_latest_planning_points = _nested_series(
+        control_consume_rows,
+        ("latest_planning_trajectory_point_count",),
+    )
+    consume_latest_planning_sequence = _nested_series(
+        control_consume_rows,
+        ("latest_planning_msg_sequence_num",),
+    )
+    consume_candidate_sequence = _nested_series(
+        control_consume_rows,
+        ("control_input_candidate_trajectory_header_sequence_num",),
+    )
+    planning_nonzero = _nonzero_count(planning_points)
+    control_input_nonzero = _nonzero_count(control_input_sequence)
+    latest_replan_nonzero = _nonzero_count(latest_replan_sequence)
+    consume_candidate_nonzero = _nonzero_count(consume_candidate_sequence)
+    evidence_available = bool(planning_debug_rows or control_raw_rows or control_consume_rows or route_segment_rows)
+    control_messages = _num(control_channel.get("message_count"))
+    missing_fields: list[str] = []
+    warnings: list[str] = []
+    failure_reasons: list[str] = []
+    if not evidence_available:
+        status = "not_applicable"
+    elif planning_nonzero > 0 and not control_raw_rows and control_messages and control_messages > 0:
+        status = "insufficient_data"
+        missing_fields.append("planning_control_handoff.apollo_control_raw")
+    elif planning_nonzero > 0 and control_stream_ended_before_first_nonzero:
+        status = "fail"
+        failure_reasons.append("control_stream_ended_before_first_nonzero_planning")
+    elif planning_nonzero > 0 and control_input_nonzero == 0 and latest_replan_nonzero == 0:
+        status = "fail"
+        failure_reasons.append("planning_topic_nonzero_but_control_input_trajectory_zero")
+    elif planning_nonzero == 0 and planning_debug_rows:
+        status = "insufficient_data"
+        failure_reasons.append("planning_trajectory_nonempty_missing")
+    else:
+        status = "pass"
+    return {
+        "planning_topic_debug_row_count": len(planning_debug_rows),
+        "apollo_control_raw_row_count": len(control_raw_rows),
+        "control_trajectory_consume_debug_row_count": len(control_consume_rows),
+        "planning_route_segment_debug_row_count": len(route_segment_rows),
+        "planning_trajectory_point_count": _stats(planning_points),
+        "planning_reference_line_count": _stats(reference_line_counts),
+        "route_segment_count": _stats(route_segment_counts),
+        "route_segment_reference_line_count": _stats(route_reference_line_counts),
+        "lane_follow_map_status_counts": route_status_counts,
+        "control_input_trajectory_sequence": _stats(control_input_sequence),
+        "latest_replan_trajectory_sequence": _stats(latest_replan_sequence),
+        "control_input_trajectory_timestamp": _stats(control_input_timestamp),
+        "latest_replan_trajectory_timestamp": _stats(latest_replan_timestamp),
+        "control_consume_latest_planning_trajectory_point_count": _stats(consume_latest_planning_points),
+        "control_consume_latest_planning_sequence": _stats(consume_latest_planning_sequence),
+        "control_consume_candidate_trajectory_sequence": _stats(consume_candidate_sequence),
+        "control_consume_candidate_source_counts": _nested_counts(
+            control_consume_rows,
+            ("control_input_candidate_source",),
+        ),
+        "control_consume_effective_planning_source_counts": _nested_counts(
+            control_consume_rows,
+            ("effective_planning_source",),
+        ),
+        "planning_nonzero_trajectory_rows": planning_nonzero,
+        "control_input_trajectory_nonzero_rows": control_input_nonzero,
+        "latest_replan_trajectory_nonzero_rows": latest_replan_nonzero,
+        "control_consume_candidate_trajectory_nonzero_rows": consume_candidate_nonzero,
+        "control_consume_used_planning_trajectory_rows": _true_count(
+            control_consume_rows,
+            ("control_used_planning_trajectory",),
+        ),
+        "first_planning_timestamp_sec": first_planning_timestamp,
+        "last_planning_timestamp_sec": last_planning_timestamp,
+        "first_nonzero_planning_timestamp_sec": first_nonzero_planning_timestamp,
+        "last_nonzero_planning_timestamp_sec": last_nonzero_planning_timestamp,
+        "first_control_raw_timestamp_sec": first_control_raw_timestamp,
+        "last_control_raw_timestamp_sec": last_control_raw_timestamp,
+        "first_control_consume_timestamp_sec": first_control_consume_timestamp,
+        "last_control_consume_timestamp_sec": last_control_consume_timestamp,
+        "first_control_timestamp_sec": first_control_timestamp,
+        "last_control_timestamp_sec": last_control_timestamp,
+        "planning_stream_span_sec": _span(first_planning_timestamp, last_planning_timestamp),
+        "planning_nonzero_stream_span_sec": _span(
+            first_nonzero_planning_timestamp,
+            last_nonzero_planning_timestamp,
+        ),
+        "control_stream_span_sec": _span(first_control_timestamp, last_control_timestamp),
+        "control_rows_after_first_nonzero_planning": control_rows_after_first_nonzero,
+        "planning_rows_after_control_stream_end": planning_rows_after_control_stream_end,
+        "planning_nonzero_rows_after_control_stream_end": planning_nonzero_rows_after_control_stream_end,
+        "planning_continued_after_control_stream_end": (
+            planning_nonzero_rows_after_control_stream_end is not None
+            and planning_nonzero_rows_after_control_stream_end > 0
+        ),
+        "control_stream_ended_before_first_nonzero_planning": control_stream_ended_before_first_nonzero,
+        "control_stream_end_before_first_nonzero_planning_delta_ms": (
+            control_stream_end_before_first_nonzero_delta_ms
+        ),
+        "failure_reasons": failure_reasons,
+        "warnings": warnings,
         "missing_fields": missing_fields,
         "status": status,
     }
@@ -923,7 +1200,11 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
         section = report.get(key) if isinstance(report.get(key), Mapping) else {}
         evidence = ""
         if key == "process_health":
-            evidence = f"started={section.get('started')} crash={section.get('crash_detected')}"
+            evidence = (
+                f"started={section.get('started')} "
+                f"crash={section.get('crash_detected')} "
+                f"reason={section.get('crash_reason') or 'none'}"
+            )
         elif key == "input_readiness":
             evidence = (
                 f"planning={section.get('planning_message_count')} "
@@ -931,6 +1212,15 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
             )
         elif key == "control_channel":
             evidence = f"count={section.get('message_count')} hz={section.get('hz')}"
+        elif key == "planning_control_handoff":
+            evidence = (
+                f"planning_nonzero={section.get('planning_nonzero_trajectory_rows')} "
+                f"control_input_nonzero={section.get('control_input_trajectory_nonzero_rows')} "
+                f"control_after_first_nonzero={section.get('control_rows_after_first_nonzero_planning')} "
+                f"last_control={section.get('last_control_timestamp_sec')} "
+                f"first_nonzero_planning={section.get('first_nonzero_planning_timestamp_sec')} "
+                f"reasons={','.join(section.get('failure_reasons') or []) or 'none'}"
+            )
         elif key == "bridge_receive":
             evidence = f"rx={section.get('control_rx_count')}"
         elif key == "mapping_and_apply":
@@ -1172,6 +1462,191 @@ def _series(rows: Sequence[Mapping[str, Any]], *fields: str) -> list[float]:
     return values
 
 
+def _nested_series(rows: Sequence[Mapping[str, Any]], path: tuple[str, ...]) -> list[float]:
+    values: list[float] = []
+    for row in rows:
+        value = _nested_number(row, *path)
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _nested_counts(rows: Sequence[Mapping[str, Any]], path: tuple[str, ...], *, limit: int = 10) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        current: Any = row
+        for key in path:
+            if not isinstance(current, Mapping):
+                current = None
+                break
+            current = current.get(key)
+        if current in (None, ""):
+            continue
+        text = str(current)
+        counts[text] = counts.get(text, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit])
+
+
+def _first_timestamp_where_nonzero(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    value_path: tuple[str, ...],
+    timestamp_paths: Sequence[tuple[str, ...]],
+) -> float | None:
+    candidates: list[float] = []
+    for row in rows:
+        value = _nested_number(row, *value_path)
+        if value is None or abs(value) <= 1e-6:
+            continue
+        timestamp = _first_nested_number(row, timestamp_paths)
+        if timestamp is not None:
+            candidates.append(timestamp)
+    return min(candidates) if candidates else None
+
+
+def _last_timestamp_where_nonzero(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    value_path: tuple[str, ...],
+    timestamp_paths: Sequence[tuple[str, ...]],
+) -> float | None:
+    candidates: list[float] = []
+    for row in rows:
+        value = _nested_number(row, *value_path)
+        if value is None or abs(value) <= 1e-6:
+            continue
+        timestamp = _first_nested_number(row, timestamp_paths)
+        if timestamp is not None:
+            candidates.append(timestamp)
+    return max(candidates) if candidates else None
+
+
+def _first_timestamp(
+    rows: Sequence[Mapping[str, Any]],
+    timestamp_paths: Sequence[tuple[str, ...]],
+) -> float | None:
+    values = [
+        timestamp
+        for row in rows
+        if (timestamp := _first_nested_number(row, timestamp_paths)) is not None
+    ]
+    return min(values) if values else None
+
+
+def _last_timestamp(
+    rows: Sequence[Mapping[str, Any]],
+    timestamp_paths: Sequence[tuple[str, ...]],
+) -> float | None:
+    values = [
+        timestamp
+        for row in rows
+        if (timestamp := _first_nested_number(row, timestamp_paths)) is not None
+    ]
+    return max(values) if values else None
+
+
+def _count_rows_after(
+    rows: Sequence[Mapping[str, Any]],
+    timestamp: float | None,
+    *,
+    timestamp_paths: Sequence[tuple[str, ...]],
+) -> int | None:
+    if timestamp is None:
+        return None
+    return sum(
+        1
+        for row in rows
+        if (row_timestamp := _first_nested_number(row, timestamp_paths)) is not None
+        and row_timestamp > timestamp
+    )
+
+
+def _count_rows_after_where_nonzero(
+    rows: Sequence[Mapping[str, Any]],
+    timestamp: float | None,
+    *,
+    value_path: tuple[str, ...],
+    timestamp_paths: Sequence[tuple[str, ...]],
+) -> int | None:
+    if timestamp is None:
+        return None
+    total = 0
+    for row in rows:
+        row_timestamp = _first_nested_number(row, timestamp_paths)
+        if row_timestamp is None or row_timestamp <= timestamp:
+            continue
+        value = _nested_number(row, *value_path)
+        if value is not None and abs(value) > 1e-6:
+            total += 1
+    return total
+
+
+def _count_rows_at_or_after(
+    rows: Sequence[Mapping[str, Any]],
+    timestamp: float | None,
+    *,
+    timestamp_paths: Sequence[tuple[str, ...]],
+) -> int | None:
+    if timestamp is None:
+        return None
+    return sum(
+        1
+        for row in rows
+        if (row_timestamp := _first_nested_number(row, timestamp_paths)) is not None
+        and row_timestamp >= timestamp
+    )
+
+
+def _first_nested_number(
+    row: Mapping[str, Any],
+    paths: Sequence[tuple[str, ...]],
+) -> float | None:
+    for path in paths:
+        value = _nested_number(row, *path)
+        if value is not None:
+            return value
+    return None
+
+
+def _max_optional(*values: float | None) -> float | None:
+    present = [value for value in values if value is not None]
+    return max(present) if present else None
+
+
+def _min_optional(*values: float | None) -> float | None:
+    present = [value for value in values if value is not None]
+    return min(present) if present else None
+
+
+def _span(first: float | None, last: float | None) -> float | None:
+    if first is None or last is None:
+        return None
+    return max(0.0, last - first)
+
+
+def _true_count(rows: Sequence[Mapping[str, Any]], path: tuple[str, ...]) -> int:
+    return sum(1 for row in rows if _nested_bool(row, *path) is True)
+
+
+def _stats(values: Sequence[float]) -> dict[str, Any]:
+    cleaned = [float(value) for value in values if math.isfinite(float(value))]
+    nonzero_count = _nonzero_count(cleaned)
+    return {
+        "sample_count": len(cleaned),
+        "min": min(cleaned) if cleaned else None,
+        "max": max(cleaned) if cleaned else None,
+        "mean": (sum(cleaned) / len(cleaned)) if cleaned else None,
+        "first": cleaned[0] if cleaned else None,
+        "final": cleaned[-1] if cleaned else None,
+        "nonzero_count": nonzero_count,
+        "nonzero_ratio": (nonzero_count / len(cleaned)) if cleaned else None,
+    }
+
+
+def _nonzero_count(values: Sequence[float]) -> int:
+    return sum(1 for value in values if abs(value) > 1e-6)
+
+
 def _percentile(values: Sequence[float], q: float) -> float | None:
     cleaned = sorted(float(value) for value in values if math.isfinite(float(value)))
     if not cleaned:
@@ -1193,6 +1668,15 @@ def _nested_number(payload: Mapping[str, Any], *path: str) -> float | None:
             return None
         current = current.get(key)
     return _num(current)
+
+
+def _nested_bool(payload: Mapping[str, Any], *path: str) -> bool | None:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    return _bool(current)
 
 
 def _first_text(*items: Any, default: str | None = None) -> str | None:

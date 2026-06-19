@@ -183,6 +183,17 @@ def test_phase1_postprocess_derives_apollo_fixed_scene_trace_from_obstacle_rows(
                 "length": 4.0,
                 "width": 2.0,
                 "height": 1.5,
+                "type": "VEHICLE",
+                "frame_transform_checked": True,
+                "position_frame_apollo_map": True,
+                "theta_frame_checked": True,
+                "tracking_time": 0.0,
+                "velocity_source": "carla_actor_state",
+                "vx": 0.0,
+                "vy": 0.0,
+                "vz": 0.0,
+                "dynamic": False,
+                "actually_stationary": True,
             }
         )
         + "\n",
@@ -282,6 +293,16 @@ def test_phase1_postprocess_auto_binds_legacy_apollo_scenario_path_from_config(t
         "length": 4.0,
         "width": 2.0,
         "height": 1.5,
+        "type": "VEHICLE",
+        "frame_transform_checked": True,
+        "position_frame_apollo_map": True,
+        "theta_frame_checked": True,
+        "velocity_source": "carla_actor_state",
+        "vx": 0.0,
+        "vy": 0.0,
+        "vz": 0.0,
+        "dynamic": False,
+        "actually_stationary": True,
     }
     obstacle_rows = [
         {
@@ -290,6 +311,7 @@ def test_phase1_postprocess_auto_binds_legacy_apollo_scenario_path_from_config(t
             "front_obstacle_actor_x": 300.0,
             "front_obstacle_gap_lon_m": 300.0,
             "front_obstacle_gap_distance_m": 300.0,
+            "tracking_time": 0.0,
         },
         {
             **base_obstacle,
@@ -297,6 +319,7 @@ def test_phase1_postprocess_auto_binds_legacy_apollo_scenario_path_from_config(t
             "front_obstacle_actor_x": 300.0,
             "front_obstacle_gap_lon_m": 50.0,
             "front_obstacle_gap_distance_m": 50.0,
+            "tracking_time": 10.0,
         },
     ]
     (artifacts / "obstacle_gt_contract.jsonl").write_text(

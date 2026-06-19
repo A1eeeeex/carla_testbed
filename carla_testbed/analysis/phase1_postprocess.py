@@ -6,6 +6,14 @@ from typing import Any, Mapping
 
 import yaml
 
+from carla_testbed.analysis.baguang_lane_event_contract import (
+    analyze_baguang_lane_event_contract,
+    write_baguang_lane_event_contract_report,
+)
+from carla_testbed.analysis.obstacle_gt_contract import (
+    analyze_obstacle_gt_contract_run_dir,
+    write_obstacle_gt_contract_report,
+)
 from carla_testbed.analysis.phase1_status import classify_phase1_run, write_phase1_status
 from carla_testbed.analysis.v_t_gap import extract_v_t_gap, write_v_t_gap_report
 from carla_testbed.experiments.phase1_apollo_fixed_scene_compat import derive_apollo_fixed_scene_artifacts
@@ -35,8 +43,10 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     if _is_apollo_fixed_scene_target_run(root):
         apollo_fixed_scene_readiness_report, apollo_fixed_scene_readiness_paths = _write_apollo_readiness(root)
         apollo_fixed_scene_compat_report = derive_apollo_fixed_scene_artifacts(root)
+        _write_obstacle_gt_contract(root)
     v_t_gap_report = extract_v_t_gap(run_dir=root)
     v_t_gap_paths = write_v_t_gap_report(v_t_gap_report, analysis / "v_t_gap")
+    baguang_lane_event_report, baguang_lane_event_paths = _write_baguang_lane_event_contract(root)
     phase1_report = classify_phase1_run(root)
     phase1_paths = write_phase1_status(phase1_report, analysis / "phase1_status")
     completeness = build_phase1_artifact_completeness(root)
@@ -58,11 +68,24 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         "phase1_scenario_binding_status": (
             phase1_scenario_binding_report.get("status") if phase1_scenario_binding_report else None
         ),
+        "baguang_lane_event_contract_status": (
+            baguang_lane_event_report.get("status") if baguang_lane_event_report else None
+        ),
         "artifact_completeness_status": completeness.get("status"),
         "outputs": {
             "v_t_gap": v_t_gap_paths,
             "phase1_status": phase1_paths,
             "artifact_completeness": str(completeness_path),
+            **({"baguang_lane_event_contract": baguang_lane_event_paths} if baguang_lane_event_paths else {}),
+            **(
+                {
+                    "obstacle_gt_contract": str(
+                        root / "analysis" / "obstacle_gt_contract" / "obstacle_gt_contract_report.json"
+                    )
+                }
+                if _obstacle_gt_contract_raw_exists(root)
+                else {}
+            ),
             **(
                 {
                     "apollo_fixed_scene_compat": str(
@@ -90,6 +113,47 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _write_obstacle_gt_contract(root: Path) -> dict[str, Any] | None:
+    if not _obstacle_gt_contract_raw_exists(root):
+        return None
+    manifest = _read_json(root / "manifest.json")
+    summary = _read_json(root / "summary.json")
+    scenario_class = str(
+        manifest.get("scenario_class")
+        or summary.get("scenario_class")
+        or manifest.get("fixed_scene_case")
+        or ""
+    )
+    report = analyze_obstacle_gt_contract_run_dir(root, scenario_class=scenario_class)
+    write_obstacle_gt_contract_report(report, root / "analysis" / "obstacle_gt_contract")
+    return report
+
+
+def _obstacle_gt_contract_raw_exists(root: Path) -> bool:
+    return any(
+        path.exists()
+        for path in (
+            root / "artifacts" / "obstacle_gt_contract.jsonl",
+            root / "artifacts" / "obstacle_gt_contract.json",
+            root / "obstacle_gt_contract.jsonl",
+            root / "obstacle_gt_contract.json",
+        )
+    )
+
+
+def _write_baguang_lane_event_contract(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    manifest = _read_json(root / "manifest.json")
+    summary = _read_json(root / "summary.json")
+    map_name = str(manifest.get("map") or _nested_value(summary, ("carla", "town")) or "")
+    if map_name != "straight_road_for_baguang":
+        return None, None
+    if not (root / "timeseries.csv").exists():
+        return None, None
+    report = analyze_baguang_lane_event_contract(run_dirs=[root])
+    paths = write_baguang_lane_event_contract_report(report, root / "analysis" / "baguang_lane_event_contract")
+    return report, paths
 
 
 def _write_apollo_readiness(root: Path) -> tuple[dict[str, Any], dict[str, str]]:
@@ -275,6 +339,11 @@ def _is_apollo_fixed_scene_target_run(root: Path) -> bool:
 
 def build_phase1_artifact_completeness(run_dir: str | Path) -> dict[str, Any]:
     root = Path(run_dir).expanduser()
+    manifest = _read_json(root / "manifest.json")
+    summary = _read_json(root / "summary.json")
+    backend = str(manifest.get("backend") or manifest.get("backend_name") or summary.get("backend") or "")
+    backend_type = str(manifest.get("backend_type") or summary.get("backend_type") or "")
+    ego_control_artifact = _phase1_control_trace_path(root, backend=backend, backend_type=backend_type)
     required = {
         "manifest": root / "manifest.json",
         "summary": root / "summary.json",
@@ -284,7 +353,7 @@ def build_phase1_artifact_completeness(run_dir: str | Path) -> dict[str, Any]:
         "fixed_scene_runtime_state": root / "artifacts" / "fixed_scene_runtime_state.json",
         "scenario_actor_trace": root / "artifacts" / "scenario_actor_trace.jsonl",
         "scenario_phase_events": root / "artifacts" / "scenario_phase_events.jsonl",
-        "ego_control_trace": root / "artifacts" / "ego_control_trace.jsonl",
+        "ego_control_trace": ego_control_artifact,
         "v_t_gap_report": root / "analysis" / "v_t_gap" / "v_t_gap_report.json",
         "phase1_status": root / "analysis" / "phase1_status" / "phase1_status.json",
     }
@@ -298,6 +367,8 @@ def build_phase1_artifact_completeness(run_dir: str | Path) -> dict[str, Any]:
     return {
         "schema_version": "phase1_artifact_completeness.v1",
         "run_dir": str(root),
+        "backend": backend or None,
+        "backend_type": backend_type or None,
         "status": "pass" if not missing else "invalid",
         "missing_artifacts": missing,
         "artifacts": artifacts,
@@ -310,3 +381,13 @@ def _first_existing(*paths: Path) -> Path | None:
         if path.exists():
             return path
     return None
+
+
+def _phase1_control_trace_path(root: Path, *, backend: str, backend_type: str) -> Path:
+    if backend == "apollo_cyberrt" or backend_type == "apollo_reference_backend":
+        return _first_existing(
+            root / "artifacts" / "control_apply_trace.jsonl",
+            root / "artifacts" / "bridge_control_decode.jsonl",
+            root / "artifacts" / "apollo_control_raw.jsonl",
+        ) or root / "artifacts" / "control_apply_trace.jsonl"
+    return root / "artifacts" / "ego_control_trace.jsonl"

@@ -338,6 +338,47 @@ def test_fixed_scene_runtime_state_missing_blocks_obstacle_linkage(tmp_path: Pat
     assert report["fixed_scene_actor_linkage"]["status"] == "insufficient_data"
 
 
+def test_manifest_target_actor_can_link_from_obstacle_role_when_runtime_state_missing(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "target_actor_contract": {
+                    "schema_version": "target_actor_contract.v1",
+                    "status": "resolved",
+                    "required": True,
+                    "target_actor_role": "lead_vehicle",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "obstacle_gt_contract.jsonl").write_text(
+        json.dumps(
+            _obstacle(
+                carla_actor_id="101",
+                apollo_perception_id="lead_vehicle_101",
+                front_obstacle_actor_role="lead_vehicle",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="follow_stop")
+
+    assert report["status"] == "warn"
+    assert "fixed_scene_runtime_state_missing_but_obstacle_role_linkage_used" in report["warnings"]
+    assert "fixed_scene_runtime_state_missing_for_obstacle_linkage" not in report["missing_fields"]
+    linkage = report["fixed_scene_actor_linkage"]
+    assert linkage["status"] == "pass"
+    assert linkage["expected_actor_roles"] == {"lead_vehicle": "101"}
+    assert linkage["actor_role_source"] == "obstacle_gt_contract_record_roles"
+    assert linkage["scenario_actor_obstacle_count"] == 1
+
+
 def test_fixed_scene_actor_linkage_passes_when_obstacle_present(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     artifacts = run_dir / "artifacts"
@@ -356,6 +397,35 @@ def test_fixed_scene_actor_linkage_passes_when_obstacle_present(tmp_path: Path) 
     assert report["status"] == "pass"
     assert report["fixed_scene_actor_linkage"]["status"] == "pass"
     assert report["fixed_scene_actor_linkage"]["scenario_actor_obstacle_count"] == 1
+
+
+def test_fixed_scene_probe_row_must_be_published_to_apollo_obstacles(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "fixed_scene_runtime_state.json").write_text(
+        json.dumps({"schema_version": "fixed_scene_runtime_state.v1", "actor_roles": {"lead_vehicle": 101}}),
+        encoding="utf-8",
+    )
+    (artifacts / "obstacle_gt_contract.jsonl").write_text(
+        json.dumps(
+            _obstacle(
+                carla_actor_id="101",
+                apollo_perception_id="lead_vehicle_101",
+                front_obstacle_actor_found=True,
+                front_obstacle_visible=False,
+                published_obstacle_count=0,
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="follow_stop")
+
+    assert report["status"] == "fail"
+    assert "fixed_scene_actor_probe_not_published_to_apollo_obstacles" in report["errors"]
+    assert report["fixed_scene_actor_linkage"]["status"] == "pass"
 
 
 def test_background_vehicle_from_traffic_flow_must_appear_in_obstacle_gt(tmp_path: Path) -> None:
@@ -537,4 +607,15 @@ def test_bridge_obstacle_contract_does_not_reference_undefined_front_speed_symbo
     )
 
     assert "_finite_or_none(front_obstacle_actor_speed_mps)" not in bridge_source
+
+
+def test_bridge_obstacle_contract_records_front_actor_type_metadata() -> None:
+    bridge_source = (Path.cwd() / "tools" / "apollo10_cyber_bridge" / "bridge.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "front_actor_type_id" in bridge_source
+    assert '"blueprint_id": front_actor_type_id' in bridge_source
+    assert '"type": _actor_type_label_from_type_id(front_actor_type_id)' in bridge_source
+    assert '"obstacle_type_source": "carla_actor_type_id" if front_actor_type_id else "missing"' in bridge_source
     assert "bool(front_obstacle_actor_speed_mps" not in bridge_source

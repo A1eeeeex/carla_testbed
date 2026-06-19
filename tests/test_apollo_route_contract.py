@@ -869,6 +869,48 @@ def test_route_contract_missing_apollo_route_is_insufficient(tmp_path: Path) -> 
     assert "apollo_routing_total_length_m" in report["missing_fields"]
 
 
+def test_route_contract_surfaces_reference_line_missing_after_routing_request(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "long",
+                "routing_request_kind": "long_phase_route",
+                "routing_request_index": 1,
+                "start_raw_x": 297.7,
+                "start_raw_y": 5.25,
+                "goal_raw_x": -2.3,
+                "goal_raw_y": 5.09,
+                "goal_distance_m": 300.0,
+                "goal_validity_snapshot": {
+                    "reference_line_provider_status": "failed",
+                    "create_route_segments_status": "failed",
+                    "lane_follow_map_status": "reference_line_missing",
+                    "route_segment_count": 0,
+                    "routing_lane_window_count": 0,
+                },
+                "recent_route_debug_snapshot": {
+                    "reference_line_provider_status": "failed",
+                    "create_route_segments_status": "failed",
+                    "lane_follow_map_status": "reference_line_missing",
+                    "planning_empty_reason_guess": "reference_line_missing",
+                    "route_segment_count": 0,
+                },
+            }
+        ],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "fail"
+    assert "routing_response_runtime_evidence_missing" in report["blocking_reasons"]
+    assert "reference_line_missing_after_routing_request" in report["blocking_reasons"]
+    assert "route_segments_failed_after_routing_request" in report["blocking_reasons"]
+    assert report["last_routing_request"]["goal_validity_snapshot"]["lane_follow_map_status"] == "reference_line_missing"
+    assert report["last_routing_request"]["recent_route_debug_snapshot"]["planning_empty_reason_guess"] == "reference_line_missing"
+
+
 def test_route_contract_missing_frame_transform_does_not_hard_fail_xy(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     _write_json(
@@ -985,6 +1027,122 @@ def test_long_goal_route_mismatch_is_not_clean_claim_route(tmp_path: Path) -> No
     assert report["claim_route_contract"]["materialized"] is False
 
 
+def test_baguang_goal_projection_rows_can_support_fixed_scene_route_contract(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "summary.json",
+        {
+            "run_id": "run",
+            "scenario_id": "baguang_follow_stop_static_300m_spawn2m",
+            "scenario_class": "lane_keep",
+            "route_id": "straight_road_for_baguang_mainline_followstop_300m_spawn2m",
+        },
+    )
+    _write_json(
+        run_dir / "manifest.json",
+        {
+            "run_id": "run",
+            "route_id": "straight_road_for_baguang_mainline_followstop_300m_spawn2m",
+            "metadata": {
+                "scenario_metadata": {
+                    "route_id": "straight_road_for_baguang_mainline_followstop_300m_spawn2m"
+                }
+            },
+        },
+    )
+    _write_json(
+        run_dir / "artifacts/routing_response_decoded.json",
+        {
+            "source": "/apollo/raw_routing_response",
+            "status": "pass",
+            "lane_segments": [{"lane_id": "0_0_2", "start_s": 7.0059, "end_s": 312.1215}],
+            "lane_sequence_signature": ["0_0_2"],
+            "total_length_m": 305.1156,
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "long",
+                "routing_request_kind": "long_phase_route",
+                "reroute_reason": "long_phase_transition",
+                "goal_mode": "scenario_xy",
+                "goal_source": "scenario_goal_relative",
+                "goal_distance_m": 305.1156,
+                "start_raw_x": 297.697,
+                "start_raw_y": 5.254,
+                "goal_raw_x": -7.419,
+                "goal_raw_y": 5.094,
+                "goal_projection": {
+                    "available": True,
+                    "accepted": True,
+                    "applied": True,
+                    "trusted_lane_centerline": True,
+                    "distance_m": 5.1156,
+                    "signed_lateral_error_m": 0.00001,
+                    "source_type": "routing_map_lane_centerline",
+                },
+                "start_projection": {
+                    "available": True,
+                    "accepted": True,
+                    "applied": False,
+                    "trusted_lane_centerline": True,
+                    "distance_m": 1.55,
+                    "signed_lateral_error_m": 0.00001,
+                    "source_type": "routing_map_lane_centerline",
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/planning_route_segment_debug.jsonl",
+        [
+            {
+                "planning_header_sequence_num": 379,
+                "route_segment_total_length": 305.1156,
+                "routing_lane_window_count": 1,
+                "routing_lane_window_signature": "0_0_2@7.0059->312.1215",
+                "routing_unique_lane_signature": "0_0_2",
+                "current_lane_id": "0_0_2",
+                "lane_id_first": "0_0_2",
+                "target_lane_id_first": "0_0_2",
+                "create_route_segments_status": "ready",
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "artifacts/apollo_hdmap_projection.jsonl",
+        [
+            {
+                "source": "apollo_hdmap_api",
+                "status": "ok",
+                "sample_type": "route",
+                "route_s": float(index * 5),
+                "expected_route_distance_m": 300.0,
+                "nearest_lane_id": "0_0_2",
+                "projection_l": 0.0,
+                "lateral_error_m": 0.0,
+                "heading_error_rad": 0.0,
+            }
+            for index in range(61)
+        ],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "warn"
+    assert report["scenario_route_length_m"] == 300.0
+    assert report["scenario_route_length_source"] == "apollo_hdmap_projection_expected_route_distance"
+    assert report["scenario_lane_namespace"] == "apollo_hdmap"
+    assert report["scenario_route_lane_sequence"] == ["0:2"]
+    assert report["lane_equivalence_status"] == "direct_match"
+    assert report["claim_route_contract"]["materialized"] is True
+    assert report["route_identity_status"] == "consistent"
+    assert "apollo_routing_goal_snap_distance_high" in report["warnings"]
+    assert report["blocking_reasons"] == []
+
+
 def test_unaccepted_untrusted_goal_projection_applied_blocks_claim_route(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     _write_json(
@@ -1026,6 +1184,52 @@ def test_unaccepted_untrusted_goal_projection_applied_blocks_claim_route(tmp_pat
     assert "untrusted_goal_projection_applied" in report["blocking_reasons"]
     assert "apollo_routing_goal_projection_not_accepted" in report["blocking_reasons"]
     assert "apollo_routing_goal_projection_untrusted" in report["blocking_reasons"]
+
+
+def test_goal_projection_disabled_by_config_blocks_claim_route(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "last_routing_total_length": 300.0,
+            "last_routing_lane_window_count": 1,
+            "last_routing_lane_window_signature": "0_0_2@0->300",
+            "last_routing_unique_lane_signature": "0_0_2",
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/routing_event_debug.jsonl",
+        [
+            {
+                "routing_phase": "long",
+                "routing_request_kind": "long_phase_route",
+                "goal_mode": "scenario_xy",
+                "start_raw_x": 297.7,
+                "start_raw_y": 5.25,
+                "goal_raw_x": -2.3,
+                "goal_raw_y": 5.09,
+                "goal_distance_m": 300.0,
+                "goal_projection": {
+                    "available": True,
+                    "accepted": False,
+                    "applied": False,
+                    "trusted_lane_centerline": True,
+                    "distance_m": 5.1,
+                    "signed_e_y_m": 0.0,
+                    "reason": "disabled_by_config",
+                    "source_type": "routing_map_lane_centerline",
+                },
+            }
+        ],
+    )
+
+    report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+
+    assert report["status"] == "fail"
+    assert "apollo_routing_goal_projection_disabled_by_config" in report["blocking_reasons"]
+    assert "apollo_routing_goal_projection_not_accepted" in report["blocking_reasons"]
+    assert "apollo_routing_goal_snap_distance_high" in report["blocking_reasons"]
+    assert report["last_routing_request"]["goal_projection"]["reason"] == "disabled_by_config"
 
 
 def test_goal_projection_lateral_error_blocks_claim_route(tmp_path: Path) -> None:

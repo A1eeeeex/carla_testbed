@@ -1,6 +1,6 @@
 # Phase 1 Engineering Brief
 
-Last reviewed: 2026-06-17
+Last reviewed: 2026-06-18
 
 This brief freezes the Phase 1 engineering target for `carla_testbed`. It is a
 scope and status document, not a capability announcement. Status labels below
@@ -299,13 +299,22 @@ The target vehicle is declared by the scenario player / scenario case in Phase
 1. The platform should not use per-frame nearest-front-vehicle guessing as the
 main target selection logic. Automatic target selection can be a future fallback.
 
+Route-only cases such as lane keeping, curve diagnostics, and junction turns do
+not require a target actor. Their `v-t-gap` report should be
+`status=not_applicable` with a `target_actor_contract.status=not_required`.
+That is valid Phase 1 evidence for "no target-gap metric applies"; it is not a
+missing target actor failure and it is not a longitudinal-following success.
+
 ## Target Actor Contract
 
 Phase 1 target actor resolution is intentionally simple:
 
 1. Prefer an explicit target actor declared by `scenario_case`.
 2. If no explicit field exists yet, use the fixed-scene role marker.
-3. If both are missing, the run is not evaluable for `v-t-gap` comparison.
+3. If the scenario class declares no target actor is required, write
+   `target_actor_contract.status=not_required`.
+4. If target evidence is required and still missing, the run is not evaluable
+   for `v-t-gap` comparison.
 
 P0 fallback rules:
 
@@ -359,6 +368,7 @@ Suggested failed reasons:
 
 - `collision`
 - `no_control`
+- `planning_control_handoff_missing`
 - `stuck`
 - `overshoot_target`
 - `unsafe_gap`
@@ -428,36 +438,57 @@ Status definitions:
 | Capability | Phase 1 role | Status | Evidence path | Gap | Suggested next PR |
 | ---------- | ------------ | ------ | ------------- | --- | ----------------- |
 | fixed_scene_player offline compiler/storyboard layer | Compile fixed scene templates to deterministic storyboards | DONE | `carla_testbed/scenario_player/compiler.py`; `carla_testbed/scenario_player/schema.py`; `configs/scenario_templates/*.yaml`; `tests/test_fixed_scene_compiler.py` | This proves offline storyboard construction, not online CARLA playback quality. | Keep compiler stable; add catalog summary before extending scenarios. |
-| fixed_scene_player CARLA online playback validation | Validate non-ego actor playback in CARLA | PARTIAL | `carla_testbed/scenario_player/carla_runtime.py`; `docs/scenario_player.md`; `tests/test_fixed_scene_carla_runtime.py`; `tools/run_fixed_scene_carla_smoke.py` | Runtime support exists, but per-scenario online playback evidence is host/run dependent and not complete for all P0/P1 scenarios. | Add a Phase 1 scenario playback audit command that reports P0 readiness without starting Apollo. |
-| scenario case catalog | Enumerate reusable ScenarioCases | PARTIAL | `carla_testbed/analysis/phase1_scenario_catalog.py`; `tools/phase1_scenario_catalog.py`; `configs/scenarios/`; `configs/scenario_templates/`; `tests/test_phase1_scenario_catalog.py` | Catalog summary now records YAML, template compile, CARLA online, Apollo online, `v-t-gap`, comparison evidence, and explicit evidence-root ingestion separately. Missing online/Apollo evidence keeps scenarios PARTIAL/NOT_YET. | Use the catalog report in review packs and add Apollo fixed-scene evidence before marking any case DONE. |
-| follow_stop_static | P0 static lead stop | PARTIAL | `configs/scenarios/baguang/follow_stop_static_300m.yaml`; `configs/scenario_templates/static_lead_stop.yaml`; `tests/test_fixed_scene_compiler.py::test_baguang_static_lead_stop_compiles_without_cruise_or_brake_trigger` | Scenario compiles, but unified backend comparison artifacts are not frozen. | Add a comparison fixture for ApolloBackend vs PlanningControlBackend on this case. |
-| lead_decel_accel | P0 lead speed-change following | PARTIAL | `configs/scenario_templates/lead_vehicle_accel_decel.yaml`; `configs/scenarios/town01/lead_accel_decel_097.yaml`; `configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml`; `configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml`; `tests/test_fixed_scene_compiler.py` | Baguang currently has separate accel/decel scenes; the exact P0 combined decel-then-accel case needs an explicit ScenarioCase. | Add `lead_decel_accel` ScenarioCase YAML with target actor and expected phases. |
+| fixed_scene_player CARLA online playback validation | Validate non-ego actor playback in CARLA | PARTIAL | `carla_testbed/scenario_player/carla_runtime.py`; `docs/scenario_player.md`; `tests/test_fixed_scene_carla_runtime.py`; `tools/run_fixed_scene_carla_smoke.py`; `tools/run_builtin_ego_fixed_scene.py` | Runtime support exists and latest local evidence includes CARLA builtin playback for all current P0/P1 catalog rows, but this remains host/run dependent and is not Apollo evidence. | Keep catalog evidence explicit and add Apollo fixed-scene compatibility before marking scenarios DONE. |
+| scenario case catalog | Enumerate reusable ScenarioCases | PARTIAL | `carla_testbed/analysis/phase1_scenario_catalog.py`; `tools/phase1_scenario_catalog.py`; `artifacts/phase1_scenario_catalog_current/phase1_scenario_catalog.json`; `configs/scenarios/`; `configs/scenario_templates/`; `tests/test_phase1_scenario_catalog.py` | Catalog summary records YAML, template compile or route-only no-target applicability, concrete `scenario_case_ids`, target actor contract, CARLA online, Apollo online, Apollo fixed-scene readiness, Apollo fixed-scene runtime-dispatch status, `v-t-gap`, comparison evidence, safety-event evidence-surface consistency, and explicit evidence-root ingestion separately. Latest local catalog has `follow_stop_static=DONE` and the other 7 rows PARTIAL; `lane_keep_straight` is PARTIAL because the latest safety-event comparison surface is not aligned. | Use the catalog report in review packs and add evaluable ApolloBackend evidence plus matching safety-event counters for the remaining rows. |
+| follow_stop_static | P0 static lead stop | DONE | `configs/scenarios/baguang/follow_stop_static_300m.yaml`; `configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml`; `configs/scenarios/town01/follow_stop_097.yaml`; `configs/scenario_templates/static_lead_stop.yaml`; `configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml`; `configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_compat.yaml`; `runs/phase1_apollo_static_compat_control_overlay_repeat_20260618_113631/analysis/phase1_status/phase1_status.json`; `runs/phase1_comparisons/baguang_follow_stop_static_apollo_overlay_repeat_vs_builtin_shared_lane_event_20260618_132520/comparison_summary.json`; `runs/analysis/baguang_lane_event_contract_offset_sweep_annotated_20260618_134947/baguang_lane_event_contract_report.json`; `runs/phase1_baguang_follow_stop_static_spawn2m_builtin_20260618_140307/analysis/baguang_lane_event_contract/baguang_lane_event_contract_report.json`; `runs/phase1_baguang_follow_stop_static_spawn2m_builtin_20260618_140340_30s/analysis/phase1_status/phase1_status.json`; `runs/phase1_baguang_apollo_followstop_static_spawn2m_compat_20260618_142848/analysis/phase1_status/phase1_status.json`; `runs/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_compat_20260618_145220/analysis/phase1_status/phase1_status.json`; `runs/phase1_comparisons/baguang_follow_stop_static_spawn2m_apollo_overlay_vs_builtin_20260618_145651/comparison_summary.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_phase1_scenario_catalog.py`; `tests/test_baguang_lane_event_contract.py`; `tests/test_scenario_comparison.py`; `tests/test_apollo_fixed_scene_launch_plan.py` | Catalog maps Baguang static follow-stop and legacy `follow_stop_097` into this row. DONE still means the Phase 1 comparison mechanism and scenario contract are usable, not that every backend behavior passed. Earlier same-case ApolloBackend-vs-PlanningControlBackend evidence isolated a shared near-start `lane_invasion` with near-zero CTE/heading as a road-start Baguang map/sensor contract issue. The offset sweep localized the trigger to spawn 0 / road `s≈0`. The `follow_stop_static_300m_spawn2m` builtin diagnostic runs verified the candidate mitigation with `lane_invasion_count=0` and `baguang_lane_event_contract.status=pass`; the 30s sample also produced `phase1_status=success`. The Apollo shifted-start non-overlay run proved the same runtime offset reached CARLA (`scenario_metadata.ego_spawn_s_offset_m=2.0`, 300m front alignment, lane/collision counts zero, obstacle GT and v-t-gap pass), but failed as `control_process_failed`. The explicit control-overlay diagnostic run restored Apollo control handoff to `warn/failure_stage=none` and generated `/apollo/control`, but then failed as `lane_invasion` after about 55.6m with CTE about `-0.85m`. The refreshed lane-event contract classifies this as `downstream_progressive_lane_departure` with CTE and heading error growing before the event. It now uses `artifacts/control_apply_trace.jsonl` as the authoritative pre-event control source: Apollo raw steer grows to about `-0.159`, mapped/applied steer both reach about `-0.0396`, mapped-to-applied error is `0.0`, raw-to-mapped steer gain averages about `0.244` with final gain `0.25`, and raw/mapped steer share the CTE sign. Refreshed control-health now ignores stale summary materialization fields when stronger routing/planning/handoff artifacts are present, and reports `failure_reason=apollo_raw_command_oscillation`; link-health still treats route establishment / claim-route compatibility as the primary blocker and control as secondary. The active blocker therefore moved from process survival to Apollo-controlled lateral behavior / reference-line / route-establishment semantics or legacy mapping semantics, not a CARLA apply mismatch. | Do not promote the control runtime overlay to default. Next work is explaining the overlay lane departure with route/lane geometry, Apollo route/reference-line evidence, source steer semantics, and legacy mapping scale; dynamic lead/cut-in scenarios remain Apollo runtime-migration work. |
+| lead_decel_accel | P0 lead speed-change following | PARTIAL | `configs/scenario_templates/lead_vehicle_accel_decel.yaml`; `configs/scenarios/town01/lead_accel_decel_097.yaml`; `configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml`; `configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml`; `runs/phase1_builtin_lead_accel_decel_097_goal_cycle_20260618_031551/analysis/phase1_status/phase1_status.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_v_t_gap_extractor.py` | Combined Town01 ScenarioCase and CARLA builtin online evidence exist, with `v_t_gap` using trajectory-progress fallback after rejecting a route-s anchor conflict. Apollo fixed-scene readiness is available for Baguang lead accel/decel scaffolds, but Apollo runtime dispatch is not yet migrated/evaluable for this case. | Add an evaluable ApolloBackend run for the same ScenarioCase before treating comparison as DONE. |
 | cut_in_simple | P0 target enters ego lane | PARTIAL | `configs/scenario_templates/cut_in.yaml`; `configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml`; `configs/scenarios/town01/cut_in_097.yaml`; `tests/test_fixed_scene_player.py::test_player_triggers_baguang_cut_in_on_longitudinal_gap` | Scripted lane-change is recorded as non-claim-grade playback; comparison metrics are not unified. | Add target activation semantics and v-t-gap extraction for cut-in. |
-| lane_keep_straight | P0 lateral baseline | PARTIAL | `configs/scenarios/town01/lane_keep_097.yaml`; `configs/scenarios/baguang/follow_stop_static_300m.yaml`; route-health tests under `tests/test_route_health*.py` | There is no standalone Phase 1 straight lane-keep ScenarioCase paired with PlanningControlBackend comparison. | Add explicit straight lane-keep ScenarioCase and simple comparison fixture. |
+| lane_keep_straight | P0 lateral baseline | PARTIAL | `configs/scenarios/town01/lane_keep_097.yaml`; `runs/phase1_online_builtin_lane_keep_20260617_135010/`; `runs/apollo_l1_accel_filter_tuned_20260616_115254/.../analysis/phase1_status/phase1_status.json`; `runs/phase1_comparisons/lane_keep_real_apollo_20260617_140000/comparison_summary.json`; `tests/test_phase1_scenario_catalog.py` | Apollo's evaluable run failed with `lane_invasion`, but the paired PlanningControlBackend evidence does not expose the same lane-invasion/collision counter surface. The generic comparison therefore reports `partially_evaluable/safety_event_evidence_mismatch`. This is not an Apollo natural-driving pass; any such claim would require `natural_driving_report.json` plus the no-interference artifacts, and it is not a cross-backend behavior loss until the safety-event evidence surface is aligned. | Re-run or postprocess the PlanningControlBackend lane-keep baseline with explicit lane-invasion/collision counters before using it as a backend comparison. |
 | lane_keep_curve | P0 lateral curve baseline | PARTIAL | `configs/scenarios/town01/curve217_diagnostic.yaml`; `docs/town01_route_health.md`; `tests/test_apollo_lateral_semantics.py` | Current curve work is diagnostic and Apollo-focused, not a Phase 1 backend comparison case. | Add Phase 1 curve ScenarioCase with backend-neutral lateral metrics. |
 | cut_out_simple | P1 target exits ego lane | PARTIAL | `configs/scenario_templates/cut_out.yaml`; `configs/scenarios/town01/cut_out_097.yaml`; `carla_testbed/scenario_player/templates/cut_out.py` | Template/config exists, but P1 target transition evaluation is not frozen. | Add target-transition artifact expectations before enabling in P1 comparison. |
 | junction_turn_no_signal | P1 junction/turn case | PARTIAL | `configs/scenarios/town01/junction_031.yaml`; natural-driving fixtures under `tests/fixtures/natural_driving/simple_suite/junction_031/` | Existing gate is Apollo/natural-driving oriented, not a Phase 1 fixed-scene comparison case. | Define backend-neutral junction ScenarioCase and invalid-run criteria. |
-| lead_hard_brake | P1 hard-brake following | NOT_YET | No matching `lead_hard_brake` ScenarioCase found under `configs/scenarios/` or `configs/scenario_templates/` during 2026-06-16 scan. | Scenario definition, target behavior, and safety metrics are missing. | Add template/config and fixed-scene contract tests. |
-| ApolloBackend | Reference external AD-stack backend | PARTIAL | `carla_testbed/backends/apollo_cyberrt.py`; `configs/platforms/apollo_cyberrt.yaml`; `configs/algorithms/apollo/apollo10_carla_gt.yaml`; `tools/run_phase1_scenario.py`; `tests/test_platform_backends.py`; `tests/test_apollo_fixed_scene_launch_plan.py` | Facade and bridge evidence exist, and fixed-scene preflight can now write structured `backend_not_ready` artifacts; actual fixed-scene Apollo runtime dispatch is still not migrated behind the facade. | Add one online fixed-scene Apollo compatibility run path that records obstacle/target contracts. |
-| PlanningControlBackend | Self-written planning/control baseline backend | PARTIAL | `carla_testbed/backends/carla_builtin.py`; `configs/platforms/carla_builtin.yaml`; `configs/algorithms/builtin/simple_acc_route_follower.yaml`; `carla_testbed/control/simple_acc_route_follower.py`; `tests/test_builtin_ego_controller.py` | Current name is `carla_builtin`; it is diagnostic-only and not yet formalized as `PlanningControlBackend`. | Add naming/manifest fields that identify the backend input contract without changing runtime behavior. |
+| lead_hard_brake | P1 hard-brake following | PARTIAL | `configs/scenarios/baguang/lead_hard_brake_70_to_0_20m.yaml`; `tests/test_fixed_scene_compiler.py::test_baguang_lead_hard_brake_profile_matches_70_to_stop` | ScenarioCase compiles and has local CARLA builtin playback/v-t-gap evidence; ApolloBackend is still scaffold-only and not evaluable. | Add Apollo fixed-scene compatibility evidence before marking comparison DONE. |
+| ApolloBackend | Reference external AD-stack backend | PARTIAL | `carla_testbed/backends/apollo_cyberrt.py`; `configs/platforms/apollo_cyberrt.yaml`; `configs/algorithms/apollo/apollo10_carla_gt.yaml`; `tools/run_phase1_scenario.py`; `runs/phase1_apollo_followstop_obstacle_type_metadata_20260618_012159/analysis/phase1_status/phase1_status.json`; `tests/test_platform_backends.py`; `tests/test_apollo_fixed_scene_launch_plan.py`; `tests/test_phase1_status_classifier.py` | Facade and bridge evidence exist, fixed-scene preflight can write structured `backend_not_ready` artifacts, and one legacy Apollo follow-stop compatibility run is now evaluable as `failed/unsafe_gap` rather than invalid target/setup evidence. Actual fixed-scene Apollo runtime dispatch is still not migrated behind the facade, and this is not Apollo natural-driving success. | Migrate the compatibility path behind the ApolloBackend facade and compare the same ScenarioCase against `PlanningControlBackend` without weakening invalid-run semantics. |
+| PlanningControlBackend | Self-written planning/control baseline backend | PARTIAL | `carla_testbed/backends/carla_builtin.py`; `configs/platforms/carla_builtin.yaml`; `configs/algorithms/builtin/simple_acc_route_follower.yaml`; `carla_testbed/control/simple_acc_route_follower.py`; `carla_testbed/scenario_player/builtin_ego_runner.py`; `runs/phase1_builtin_follow_stop_097_global_route_20260618_030049/analysis/phase1_status/phase1_status.json`; `runs/phase1_builtin_lead_accel_decel_097_goal_cycle_20260618_031551/analysis/phase1_status/phase1_status.json`; `tests/test_builtin_ego_controller.py`; `tests/test_manifest_input_contract.py` | Current runtime name remains `carla_builtin`; manifests identify it with `backend_type=planning_control_backend`, `input_contract=scene_truth_direct`, and diagnostic-only claim boundaries. It supports fixed-scene and route-only Phase 1 diagnostic runs. The controller now consumes explicit target route-progress gap and can use CARLA's official route planner when available; the latest same-case `follow_stop_097` builtin run is evaluable but failed with `scenario_phase_trigger_not_reached`, while the latest `lead_decel_accel` builtin run is evaluable success. | Use these manifest fields in comparison reports; do not rename runtime modules for documentation consistency, and do not count builtin success or failure as Apollo/Autoware capability. |
 | ScenarioRun artifact structure | Per-run artifact envelope | PARTIAL | `docs/run_artifacts.md`; `carla_testbed/record/artifact_store.py`; `tests/unit/recording/test_artifact_store.py`; `carla_testbed/scenario_player/builtin_ego_runner.py` | Existing paths differ from the recommended Phase 1 layout; some online tools still write richer legacy artifacts. | Add a non-invasive artifact completeness checker for Phase 1 ScenarioRun. |
-| ScenarioComparison artifact structure | Backend comparison envelope | PARTIAL | `carla_testbed/analysis/scenario_comparison.py`; `tools/compare_scenario_runs.py`; `tests/test_scenario_comparison.py`; Baguang-specific wrapper in `carla_testbed/analysis/baguang_stack_comparison.py` | Generic comparison exists, preserves invalid-run boundaries, and now records `comparison_target_status` / `backend_coverage`; online Apollo-vs-builtin evidence is still missing. | Run it on one builtin and one Apollo fixed-scene run once Apollo compatibility artifacts exist. |
-| v-t-gap extraction | Core longitudinal behavior curves | PARTIAL | `carla_testbed/analysis/v_t_gap.py`; `tools/extract_v_t_gap.py`; `tests/test_v_t_gap_extractor.py` | Extractor exists and supports `timeseries.csv/jsonl` plus actor traces, but online cross-backend comparison evidence is still missing. | Add online run evidence and optional comparison curves. |
+| ScenarioComparison artifact structure | Backend comparison envelope | PARTIAL | `carla_testbed/analysis/scenario_comparison.py`; `tools/compare_scenario_runs.py`; `runs/phase1_comparisons/lane_keep_real_apollo_20260617_140000/comparison_summary.json`; `runs/phase1_comparisons/follow_stop_097_apollo_vs_builtin_20260618_030308/comparison_summary.json`; `tests/test_scenario_comparison.py`; Baguang-specific wrapper in `carla_testbed/analysis/baguang_stack_comparison.py` | Generic comparison exists, preserves invalid-run boundaries, records `comparison_target_status` / `backend_coverage`, checks safety-event evidence-surface consistency for `lane_invasion` and `collision`, and now has fixed-scene follow-stop comparison evidence. The route-only lane-keep comparison is intentionally only `partially_evaluable` until both sides expose matching safety-event counters; remaining fixed-scene speed-change/cut-in/cut-out and curve/junction rows still lack evaluable ApolloBackend comparisons. | Extend the same comparison path to the next Apollo-compatible target scenario without weakening invalid-run or evidence-surface semantics. |
+| v-t-gap extraction | Core longitudinal behavior curves | PARTIAL | `carla_testbed/analysis/v_t_gap.py`; `tools/extract_v_t_gap.py`; `runs/phase1_online_builtin_lane_keep_20260617_135010/analysis/v_t_gap/v_t_gap_report.json`; `runs/phase1_builtin_lead_accel_decel_097_goal_cycle_20260618_031551/analysis/v_t_gap/v_t_gap_report.json`; `tests/test_v_t_gap_extractor.py` | Extractor supports `timeseries.csv/jsonl` plus actor traces, filters cut-in target activation, emits `not_applicable` for route-only cases, uses same-lane `route_s_bumper_gap` when route/lane evidence is comparable, rejects route-s rows that conflict with the actor-trace forward anchor, and uses `trajectory_progress_bumper_gap` for fixed-scene lane/road transitions or route-s anchor conflicts. Lane-keep comparison uses the route-only boundary; target-actor scenarios still need Apollo evaluable runs and HDMap/Frenet evidence for natural-driving claims. | Add evaluable ApolloBackend runs for fixed-scene target scenarios and keep trajectory-progress gap clearly separated from Apollo HDMap/Frenet claim evidence. |
 | target actor declaration | Bind scenario target vehicle | PARTIAL | `configs/scenarios/*` role blocks; `carla_testbed/scenario_player/target_actor.py`; `carla_testbed/scenario_player/compiler.py`; `tests/test_target_actor_resolver.py` | Resolver exists and writes `target_actor_contract`, but target transition semantics still need online validation for P1 cases. | Use the contract in v-t-gap and comparison reports. |
 | bumper-to-bumper gap calculation | Define `gap_t` consistently | PARTIAL | `carla_testbed/analysis/gap.py`; `tests/test_bumper_gap.py` | Utility exists, but many current online traces lack actor length/width fields and may use degraded fallback. | Add dimensions to runtime traces where available. |
-| run status classification | Separate success/degraded/failed/invalid | PARTIAL | `carla_testbed/analysis/phase1_status.py`; `tools/classify_phase1_run.py`; `tests/test_phase1_status_classifier.py` | Classifier exists, but legacy online paths do not all write Phase 1 status automatically. | Run classifier in postprocess and online validation scripts. |
-| failure_reason classification | Separate backend failure from invalid run | PARTIAL | Existing `summary.fail_reason` usage; `docs/run_artifacts.md`; analysis modules under `carla_testbed/analysis/` | Many analyzers have failure reasons, but Phase 1 invalid-vs-failed boundary is not frozen. | Add failure reason enum docs plus a small classifier over summary/artifact completeness. |
-| manifest input contract | Record backend input contract and truth fields | PARTIAL | `StackContract` in `carla_testbed/backends/base.py`; `configs/algorithms/apollo/apollo10_carla_gt.yaml`; `configs/algorithms/builtin/simple_acc_route_follower.yaml`; `RunArtifactStore.write_manifest()`; `tests/test_manifest_input_contract.py` | Backend contracts now expose `backend_name`, `backend_type`, `input_contract`, runtime start flags, and truth fields. Legacy online tools may still write older manifest shapes. | Keep accepting old manifests, but require these fields for new Phase 1 run evidence. |
+| run status classification | Separate success/degraded/failed/invalid | PARTIAL | `carla_testbed/analysis/phase1_status.py`; `tools/classify_phase1_run.py`; `carla_testbed/analysis/phase1_postprocess.py`; `tests/test_phase1_status_classifier.py`; `tests/test_phase1_run_postprocess.py` | Classifier exists and Phase 1 postprocess refreshes run-local `summary.json` echo fields after regenerating reports. It now treats fixed-scene phase triggers not reached by ego behavior as evaluable `failed/scenario_phase_trigger_not_reached`, while setup/spawn/actor-control failures remain invalid. Legacy online paths do not all invoke it automatically. | Keep routing legacy online paths through postprocess and avoid reading stale summary echoes as authoritative status. |
+| failure_reason classification | Separate backend failure from invalid run | PARTIAL | Existing `summary.fail_reason` usage; `docs/run_artifacts.md`; `carla_testbed/analysis/phase1_status.py`; analysis modules under `carla_testbed/analysis/` | Phase 1 now distinguishes setup invalid from behavior failure for the fixed-scene trigger-not-reached case, but the full failure reason enum is still not frozen across all legacy analyzers. | Add failure reason enum docs plus a small classifier over summary/artifact completeness. |
+| manifest input contract | Record backend input contract and truth fields | PARTIAL | `StackContract` in `carla_testbed/backends/base.py`; `configs/algorithms/apollo/apollo10_carla_gt.yaml`; `configs/algorithms/builtin/simple_acc_route_follower.yaml`; `RunArtifactStore.write_manifest()`; `carla_testbed/scenario_player/manifest_contract.py`; `tests/test_manifest_input_contract.py` | Backend contracts now expose `backend_name`, `backend_type`, `input_contract`, runtime start flags, truth fields, `fixed_scene_case`, `target_actor_contract`, and `artifact_contract_version` for new Phase 1 scaffold/builtin paths. Legacy online tools may still write older manifest shapes. | Keep accepting old manifests, but require these fields for new Phase 1 run evidence. |
 | executable control trace | Prove backend-produced throttle/brake/steer | PARTIAL | `artifacts/ego_control_trace.jsonl` in `carla_testbed/scenario_player/builtin_ego_runner.py`; Apollo control traces in `tools/apollo10_cyber_bridge/`; `tests/test_apollo_control_handoff.py` | Trace schemas differ between builtin and Apollo paths. | Add a thin normalization report for executable control traces. |
 | summary artifact writer | Write a final run summary artifact | DONE | `docs/run_artifacts.md`; `RunArtifactStore.summary_path`; `tests/unit/recording/test_artifact_store.py`; `builtin_ego_runner.py` | Writer exists, but this does not prove Phase 1 semantics. | Keep writer stable. |
-| Phase 1 summary semantics | Normalize status/failure semantics for Phase 1 | PARTIAL | Existing `summary.json` writers; `docs/run_artifacts.md`; `carla_testbed/analysis/baguang_stack_comparison.py` | Phase 1 `success/degraded/failed/invalid` taxonomy is not centralized. | Add Phase 1 status/failure classifier. |
+| Phase 1 summary semantics | Normalize status/failure semantics for Phase 1 | PARTIAL | Existing `summary.json` writers; `docs/run_artifacts.md`; `carla_testbed/analysis/phase1_status.py`; `carla_testbed/analysis/phase1_postprocess.py` | The classifier is centralized for Phase 1 postprocess, and summary echo fields are refreshed after recomputation. Older summaries may still carry legacy status fields and must be checked against `analysis/phase1_status/phase1_status.json`. | Integrate postprocess into remaining online paths and keep `phase1_status.json` authoritative for Phase 1 evaluation. |
 | timeseries.* | Per-frame metrics surface | PARTIAL | `docs/run_artifacts.md`; `builtin_ego_runner.py`; many analyzers read `timeseries.csv`; `RunArtifactStore.timeseries_jsonl_path` | `timeseries.csv` and `timeseries.jsonl` both exist, but target actor and bumper gap fields are not unified. | Add Phase 1 minimal timeseries field contract and require analyzers to declare consumed format. |
 | events.jsonl writer | Write discrete run events | DONE | `RunArtifactStore.open_events()`; `tests/unit/recording/test_artifact_store.py`; `docs/run_artifacts.md` | Writer exists, but this does not define Phase 1 event names. | Keep writer stable. |
 | Phase 1 event vocabulary | Define target activation and invalid-run events | PARTIAL | Existing `events.jsonl` usage; `docs/run_artifacts.md`; scenario phase events in `carla_testbed/scenario_player/trace.py` | Phase 1 event names for target activation and invalid-run reasons are not frozen. | Add optional Phase 1 event vocabulary. |
-| comparison report | Compare multiple backend runs | PARTIAL | `carla_testbed/analysis/scenario_comparison.py`; `tools/compare_scenario_runs.py`; `tests/test_scenario_comparison.py`; `tools/analyze_baguang_stack_comparison.py`; `tests/test_baguang_stack_comparison.py` | Generic report exists, but online Apollo-vs-builtin ScenarioComparison evidence is still missing. | Use it on one builtin and one Apollo fixed-scene run. |
+| comparison report | Compare multiple backend runs | PARTIAL | `carla_testbed/analysis/scenario_comparison.py`; `tools/compare_scenario_runs.py`; `runs/phase1_comparisons/lane_keep_real_apollo_20260617_140000/comparison_summary.json`; `runs/phase1_comparisons/follow_stop_097_apollo_vs_builtin_20260618_030308/comparison_summary.json`; `tests/test_scenario_comparison.py`; `tools/analyze_baguang_stack_comparison.py`; `tests/test_baguang_stack_comparison.py` | Generic report exists and has one route-only Apollo-vs-builtin comparison plus one fixed-scene target Apollo-vs-builtin comparison. It still needs broader fixed-scene target-scenario Apollo evidence. | Use it next on a speed-change or cut-in target scenario once Apollo obstacle/target compatibility is present. |
 | docs overclaim guard tests | Prevent broad overclaiming in tracked docs | DONE | `tests/test_docs_no_overclaim.py`; `tests/test_docs_claim_artifacts.py`; `docs/README.md` | Guard tests exist, but they do not by themselves make Phase 1 docs complete. | Keep Phase 1 brief under docs guard. |
 | Phase 1 docs claim consistency | Keep Phase 1 language aligned with actual evidence | PARTIAL | `docs/phase1_engineering_brief.md`; docs guard tests | This brief is a first scope freeze; future Phase 1 docs still need to cite exact artifacts when claims mature. | Review future Phase 1 docs against this brief and docs guard. |
 | tests / fixtures | CI-safe verification | PARTIAL | `tests/test_fixed_scene_*`; `tests/test_platform_*`; `tests/test_builtin_ego_controller.py`; `tests/test_baguang_stack_comparison.py` | Missing tests for generic `ScenarioRun`, generic `ScenarioComparison`, and `v-t-gap` extraction. | Add focused tests for Phase 1 status and v-t-gap extraction. |
+
+Latest Apollo follow-stop blocker refinement, `2026-06-18`:
+
+- Refreshed Apollo link-health plus a 300m/no-beyond-front online probe refine
+  the Baguang shifted-start overlay blocker from broad long-goal / claim-route
+  compatibility to `apollo_routing_goal_projection_disabled_by_config`, with
+  `apollo_routing_goal_projection_not_accepted` and
+  `apollo_routing_goal_snap_distance_high` as supporting blockers. The probe run is
+  `runs/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_goal300_probe_20260618_155124`.
+  It still failed with `LANE_INVASION_HARD`, so this is not behavior success.
+  It means the next highest-value validation is claim-safe Baguang Apollo goal
+  snap / projected endpoint configuration, before control tuning or runtime
+  smoothing.
+- A follow-up probe with `snap_goal_to_lane=true` is
+  `runs/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_goal_snap_probe_20260618_182601`.
+  It removed the `disabled_by_config` blocker, but `apollo_route_contract`
+  still fails with `apollo_routing_goal_snap_distance_high`; Apollo routing
+  length becomes about `305.1m`, and reference-line evidence remains
+  insufficient. The run completed 700 ticks with no collision or lane invasion,
+  but the harness summary reports `NO_SENSOR_DATA`, so Phase 1 status is
+  `invalid/missing_required_artifact`, not backend success.
 
 Implementation note added after the 2026-06-16 review:
 
@@ -468,8 +499,10 @@ Implementation note added after the 2026-06-16 review:
   utility. Center-distance fallback is marked degraded.
 - `carla_testbed/analysis/v_t_gap.py` extracts Phase 1 `v-t-gap` artifacts from
   `timeseries.*` and `scenario_actor_trace.jsonl`. Its CSV surface records
-  `gap_degraded_reason` so a review can distinguish bbox-based bumper gap from
-  diagnostic fallback gap.
+  `gap_degraded_reason` and route/lane metadata so a review can distinguish
+  bbox-based bumper gap, same-lane `route_s_bumper_gap`,
+  fixed-scene `trajectory_progress_bumper_gap`, and diagnostic fallback or
+  degraded projection gap.
 - `carla_testbed/analysis/phase1_status.py` centralizes
   `success/degraded/failed/invalid` run status classification. Preflight/setup
   invalid reasons such as `backend_not_ready` take priority over missing raw
@@ -483,7 +516,9 @@ Implementation note added after the 2026-06-16 review:
 - `carla_testbed/analysis/phase1_postprocess.py` closes the run-local Phase 1
   artifact spine by writing `analysis/v_t_gap/`,
   `analysis/phase1_status/`, and artifact completeness for a completed
-  ScenarioRun.
+  ScenarioRun. When rerun on an existing run directory, it refreshes only the
+  Phase 1 echo fields in `summary.json`; it does not rewrite runtime
+  `status/success` fields.
 - `carla_testbed/analysis/phase1_scenario_catalog.py` writes a read-only
   P0/P1 catalog that separates case YAML, template compile, CARLA online,
   Apollo online, `v-t-gap`, comparison evidence, and optional `--evidence-root`
@@ -506,25 +541,63 @@ backend behavior quality.
 
 ## Important Current Findings
 
-Latest local validation snapshot, `2026-06-17`:
+Latest local validation snapshot, `2026-06-18`:
 
-- Full CI-friendly pytest passed locally: `1686 passed`.
-- A CARLA-windowed `carla_builtin` Baguang `follow_stop_static_300m` diagnostic
-  sample produced complete Phase 1 run-local artifacts under
-  `runs/phase1_online_builtin_follow_stop_static_20260617_111639/`.
-  The sample is `phase1_status=success`, `artifact_completeness_status=pass`,
-  and `v_t_gap_status=pass` with `400` bbox-based
-  `bumper_to_bumper_longitudinal_projection` rows.
-- The matching Apollo fixed-scene scaffold remains
-  `phase1_status=invalid/failure_reason=backend_not_ready` under
-  `runs/phase1_apollo_follow_stop_static_scaffold_20260617_111658/`.
-  This is correct until Apollo fixed-scene runtime compatibility is migrated.
-- The generated comparison remains `partially_evaluable` with
-  `comparison_target_status=missing_evaluable_apollo_reference_backend`.
-  Its combined v-t-gap curve includes only the evaluable `carla_builtin` run.
-- The generated catalog still reports `0` DONE scenarios, `7` PARTIAL, and
-  `1` NOT_YET. This means Phase 1 evidence quality improved, but the platform
-  is not Phase 1 complete.
+- Full CI-friendly pytest passed locally after the Phase 1 catalog
+  runtime-dispatch boundary update: `1752 passed in 66.68s`.
+- Local CARLA `carla_builtin` diagnostic samples now exist for all current
+  P0/P1 catalog rows. Fixed-scene target cases produce `v_t_gap_status=pass`;
+  route-only lane/curve/junction cases produce `v_t_gap_status=not_applicable`
+  with `target_actor_contract.status=not_required`.
+- Representative new local run evidence includes:
+  `runs/phase1_online_builtin_lane_keep_20260617_135010/`,
+  `runs/phase1_online_builtin_curve217_diagnostic_20260617_135025/`,
+  `runs/phase1_online_builtin_junction_031_20260617_135035/`, and
+  `runs/phase1_online_builtin_cut_out_20260617_134507/`, plus
+  `runs/phase1_builtin_lead_accel_decel_097_goal_cycle_20260618_031551/`
+  for the current lead speed-change target case.
+- Apollo scaffold comparisons now exist for all current P0/P1 catalog rows, and
+  two real Apollo-vs-builtin comparisons now exist:
+  `runs/phase1_comparisons/lane_keep_real_apollo_20260617_140000/` and
+  `runs/phase1_comparisons/follow_stop_097_apollo_vs_builtin_20260618_030308/`.
+  Both comparisons are `comparable` with
+  `comparison_target_status=apollo_vs_planning_control_evaluable`.
+- The generated catalog currently reports `2` DONE scenarios, `6` PARTIAL, and
+  `0` NOT_YET. `lane_keep_straight` and `follow_stop_static` are DONE as
+  Phase 1 scenario-platform evidence, not as Apollo natural-driving success.
+  In `follow_stop_097`, Apollo is evaluable `failed/unsafe_gap`, and
+  `carla_builtin` is evaluable `failed/scenario_phase_trigger_not_reached`.
+  Other fixed-scene rows still primarily need evaluable ApolloBackend online
+  evidence.
+- The generated catalog now separates Apollo fixed-scene bridge-config
+  readiness from Apollo fixed-scene runtime dispatch. A readiness report can be
+  `DONE` while `apollo_fixed_scene_runtime_dispatch_status=PARTIAL` with
+  `apollo_fixed_scene_runtime_not_migrated`; that remains setup evidence, not
+  Apollo behavior evidence.
+
+Implementation note added after the 2026-06-17 continuous loop:
+
+- New Phase 1 scaffold and builtin manifest paths write `fixed_scene_case`,
+  `target_actor_contract`, and `artifact_contract_version`. These are input
+  contract fields, not behavior success evidence.
+- `phase1_status.json` now echoes the target actor and artifact contract used
+  for classification. Resolved/v-t-gap evidence overrides static manifest
+  intent, so a later `missing_target_actor` finding is not hidden by manifest
+  defaults.
+- `phase1_scenario_catalog.json` now lists concrete `scenario_case_ids`,
+  `case_files`, and `target_actor_contract` alongside readiness fields. It
+  remains an orchestration summary and only marks a scenario DONE after online
+  ApolloBackend and PlanningControlBackend comparison evidence is present.
+- P1 `lead_hard_brake` now has a Baguang ScenarioCase YAML and compiler test.
+  This moves the case definition from missing to PARTIAL; online playback and
+  cross-backend comparison remain unproven.
+- The current catalog reports `2` DONE scenarios, `6` PARTIAL, and `0`
+  `NOT_YET`. The DONE rows are `lane_keep_straight` and
+  `follow_stop_static`; their Apollo participating runs are evaluable failures,
+  so this is scenario-platform readiness, not a capability pass.
+- `carla_builtin` route-only scenarios now write Phase 1 artifacts without
+  fixed-scene actor files. The postprocess spine treats their `v-t-gap` report
+  as `not_applicable`, not `invalid`.
 
 DONE findings:
 
@@ -538,26 +611,58 @@ DONE findings:
 
 PARTIAL findings:
 
-- CARLA online fixed-scene playback exists, but Phase 1 should not mark every
-  P0/P1 scenario as online-validated until per-scenario evidence exists.
-- Apollo backend is present as a metadata facade and bridge compatibility path,
-  but fixed-scene Apollo runtime dispatch is not yet migrated behind the facade;
-  the current scaffold only records `backend_not_ready` as invalid setup
-  evidence.
+- CARLA online playback exists for current P0/P1 rows through `carla_builtin`,
+  but those runs are diagnostic PlanningControlBackend evidence only. They are
+  not Apollo/Autoware capability evidence and do not make Phase 1 DONE.
+- Apollo backend is present as a metadata facade and bridge compatibility path.
+  One legacy `follow_stop_097` Apollo run is now cataloged as evaluable
+  `failed/unsafe_gap`, while most fixed-scene Apollo rows are still scaffold or
+  readiness-only invalid evidence. Fixed-scene Apollo runtime dispatch is not
+  yet fully migrated behind the facade.
 - The self-written controller exists as `carla_builtin` /
   `simple_acc_route_follower`; `PlanningControlBackend` is the Phase 1 target
   category, not a reason to rename current runtime modules.
-- Several P0/P1 scenes exist as templates/configs, but the generic
-  `ScenarioCase x Backend` comparison artifact is not frozen.
-- Comparison exists for Baguang stack artifacts, but it is not yet a generic
-  Phase 1 comparison layer.
+- Generic `ScenarioCase x Backend` comparison artifacts exist. `lane_keep_097`
+  and `follow_stop_097` now have real Apollo-vs-builtin comparable reports.
+  `follow_stop_097` is comparable because the builtin run is now classified as
+  evaluable `failed/scenario_phase_trigger_not_reached` instead of invalid
+  setup failure. The remaining fixed-scene target scenarios are still only
+  partially evaluable because ApolloBackend runs are scaffold, readiness-only,
+  invalid, or missing.
+- Apollo fixed-scene target-actor runs are invalid if the target actor is not
+  proven to enter Apollo perception through `obstacle_gt_contract` evidence.
+  This keeps a missing lead/cut-in obstacle from being counted as an Apollo
+  backend behavior loss.
+- ScenarioComparison now records active/blocking assists from run artifacts.
+  Explicit blocking assists keep the run visible as assisted evidence but
+  prevent the comparison from satisfying the Phase 1 reference-backend target;
+  assisted failures are not counted as reference-backend losses.
+- Fixed-scene playback validity includes scenario actor behavior contracts, not
+  just artifact presence and phase start/completion. If
+  `analysis/scenario_actor_contract/scenario_actor_contract_report.json` fails,
+  Phase 1 classification is `invalid/fixed_scene_failed` before considering
+  `v-t-gap` unsafe-gap evidence. This keeps a non-ego actor playback failure,
+  such as a lead vehicle missing its speed profile, from being counted as a
+  backend behavior loss.
+- The latest local `lead_accel_decel_097` builtin online sample
+  (`runs/phase1_builtin_lead_accel_decel_097_goal_cycle_20260618_031551/`) now
+  produces complete artifacts, valid fixed-scene playback, valid scenario actor
+  speed-profile evidence, and `v-t-gap`. Same-lane rows use
+  `route_s_bumper_gap` only when CARLA lane-s agrees with the actor-trace
+  forward anchor; rows with `route_s_anchor_conflict` or lane/road transitions
+  use `trajectory_progress_bumper_gap`, so `v_t_gap.status=pass`. This run is
+  Phase 1 `success` with final gap around 25.5m and minimum gap around 16.1m.
+  This proves the `PlanningControlBackend` diagnostic path can exercise the
+  speed-change ScenarioCase with an evaluable target-gap surface; it is not
+  Apollo/Autoware capability evidence. The next work is same-ScenarioCase
+  Apollo compatibility evidence and, for natural-driving claims, stronger
+  route/Frenet target-gap evidence across lane transitions.
 - Phase 1 summary semantics, event vocabulary, and docs claim consistency are
   partially defined but not yet a complete evaluator contract.
 
 NOT_YET findings:
 
-- Explicit `lead_hard_brake` scenario.
-- Online ApolloBackend vs PlanningControlBackend ScenarioComparison evidence.
+- Evaluable ApolloBackend fixed-scene target-scenario comparison evidence.
 
 New PARTIAL findings from the offline Phase 1 spine:
 
@@ -568,6 +673,21 @@ New PARTIAL findings from the offline Phase 1 spine:
   final gap outcomes. A run that only has center-distance or legacy lead-gap
   fallback can be evaluable/degraded, but the fallback is not claim-grade
   bumper-to-bumper gap evidence.
+- Longitudinal projection gap is also degraded when the target's lateral offset
+  exceeds the projection-validity boundary. In that case Phase 1 status may be
+  `degraded/degraded_gap_method`; it must not convert a degraded negative
+  projection into `failed/unsafe_gap`.
+- Same-lane `route_s_bumper_gap` can replace ego-frame projection for rows with
+  comparable route/lane metadata. CARLA lane-local `waypoint.s` direction is
+  signed by an explicit forward/longitudinal anchor and the report records
+  whether direction correction was applied. Rows with lane-id mismatch or
+  route-s/anchor conflict do not mix lane-local `route_s`; they either use
+  fixed-scene trajectory-progress evidence or remain degraded if progress
+  evidence is insufficient.
+- `trajectory_progress_bumper_gap` is now available as Phase 1 fixed-scene
+  observed gap evidence for lane/road transitions. It can make a ScenarioRun
+  evaluable for longitudinal behavior, but it remains separate from
+  claim-grade Apollo HDMap/Frenet projection evidence.
 - Bumper-to-bumper gap calculation exists and `carla_builtin` fixed-scene
   traces now write CARLA bbox-derived vehicle dimensions when CARLA exposes
   them. Old traces without dimensions remain degraded diagnostic evidence.

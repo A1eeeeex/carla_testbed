@@ -177,6 +177,39 @@ def test_process_crash_tcmalloc_is_process_health_failure(tmp_path: Path) -> Non
     assert report["process_health"]["crash_reason"] == "tcmalloc_invalid_free"
 
 
+def test_deferred_mainboard_invalid_pointer_is_process_health_failure(tmp_path: Path) -> None:
+    run_dir = _copy_case(tmp_path)
+    (run_dir / "artifacts" / "control.out.log").unlink()
+    (run_dir / "artifacts" / "apollo_control_deferred_mainboard.log").write_text(
+        "src/tcmalloc.cc:333] Attempt to free invalid pointer 0x4020f38fcaf2932d\n",
+        encoding="utf-8",
+    )
+    (run_dir / "artifacts" / "apollo_control_deferred_survival.json").write_text(
+        json.dumps(
+            {
+                "probe_window_sec": 10.0,
+                "control_started_pid_seen": True,
+                "control_survived_5s": False,
+                "control_survived_10s": False,
+                "control_present_at_end": False,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_control_handoff(run_dir=run_dir)
+
+    assert report["verdict"] == "fail"
+    assert report["failure_stage"] == "process_health"
+    assert report["process_health"]["status"] == "fail"
+    assert report["process_health"]["crash_detected"] is True
+    assert report["process_health"]["crash_reason"] == "tcmalloc_invalid_free"
+    assert "invalid pointer" in report["process_health"]["crash_signature"].lower()
+
+
 def test_deferred_survival_artifact_satisfies_process_health(tmp_path: Path) -> None:
     run_dir = _copy_case(tmp_path)
     summary = _json(run_dir / "summary.json")
@@ -250,6 +283,162 @@ def test_input_readiness_accepts_online_planning_topic_debug_field_names(
     assert report["input_readiness"]["planning_nonempty_count"] == 73
     assert "planning_empty" not in report["input_readiness"]["failure_reasons"]
     assert report["failure_stage"] == "none"
+
+
+def test_planning_topic_nonzero_but_control_input_trajectory_zero_fails_handoff(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_case(tmp_path)
+    (run_dir / "artifacts" / "planning_topic_debug.jsonl").write_text(
+        json.dumps({"trajectory_point_count": 0, "reference_line_count": 0}) + "\n"
+        + json.dumps({"trajectory_point_count": 120, "reference_line_count": 0}) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "artifacts" / "planning_route_segment_debug.jsonl").write_text(
+        json.dumps(
+            {
+                "route_segment_count": 1,
+                "reference_line_count": 0,
+                "lane_follow_map_status": "trajectory_nonzero_reference_line_debug_missing",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "artifacts" / "apollo_control_raw.jsonl").write_text(
+        json.dumps(
+            {
+                "apollo_control_raw": {
+                    "throttle": 0.0,
+                    "brake": 15.0,
+                    "debug_input_trajectory_header_sequence_num": 0,
+                    "debug_input_latest_replan_trajectory_header_sequence_num": 0,
+                    "debug_input_trajectory_header_timestamp_sec": 0.0,
+                    "debug_input_latest_replan_trajectory_header_timestamp_sec": 0.0,
+                }
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "apollo_control_raw": {
+                    "throttle": 0.0,
+                    "brake": 15.0,
+                    "debug_input_trajectory_header_sequence_num": 0,
+                    "debug_input_latest_replan_trajectory_header_sequence_num": 0,
+                    "debug_input_trajectory_header_timestamp_sec": 0.0,
+                    "debug_input_latest_replan_trajectory_header_timestamp_sec": 0.0,
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_control_handoff(run_dir=run_dir)
+
+    assert report["verdict"] == "fail"
+    assert report["failure_stage"] == "planning_control_handoff"
+    handoff = report["planning_control_handoff"]
+    assert handoff["status"] == "fail"
+    assert handoff["planning_nonzero_trajectory_rows"] == 1
+    assert handoff["control_input_trajectory_nonzero_rows"] == 0
+    assert handoff["latest_replan_trajectory_nonzero_rows"] == 0
+    assert handoff["failure_reasons"] == ["planning_topic_nonzero_but_control_input_trajectory_zero"]
+    assert handoff["lane_follow_map_status_counts"] == {
+        "trajectory_nonzero_reference_line_debug_missing": 1
+    }
+
+
+def test_control_stream_ended_before_first_nonzero_planning_gets_specific_handoff_reason(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_case(tmp_path)
+    (run_dir / "artifacts" / "planning_topic_debug.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": 10.0,
+                "planning_header_timestamp_sec": 10.0,
+                "trajectory_point_count": 0,
+                "reference_line_count": 0,
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "timestamp": 20.0,
+                "planning_header_timestamp_sec": 20.0,
+                "trajectory_point_count": 120,
+                "reference_line_count": 0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "artifacts" / "apollo_control_raw.jsonl").write_text(
+        json.dumps(
+            {
+                "ts_sec": 19.0,
+                "apollo_control_raw": {
+                    "throttle": 0.0,
+                    "brake": 15.0,
+                    "control_header_timestamp_sec": 19.0,
+                    "debug_input_trajectory_header_sequence_num": 0,
+                    "debug_input_latest_replan_trajectory_header_sequence_num": 0,
+                    "debug_input_trajectory_header_timestamp_sec": 0.0,
+                    "debug_input_latest_replan_trajectory_header_timestamp_sec": 0.0,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "artifacts" / "control_trajectory_consume_debug_live.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": 19.0,
+                "control_rx_timestamp": 19.0,
+                "latest_planning_msg_sequence_num": 5,
+                "latest_planning_trajectory_point_count": 0,
+                "control_input_candidate_source": "missing",
+                "control_input_candidate_trajectory_header_sequence_num": None,
+                "effective_planning_source": "latest_known_fallback",
+                "control_used_planning_trajectory": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_control_handoff(run_dir=run_dir)
+    handoff = report["planning_control_handoff"]
+
+    assert report["verdict"] == "fail"
+    assert report["failure_stage"] == "planning_control_handoff"
+    assert handoff["failure_reasons"] == ["control_stream_ended_before_first_nonzero_planning"]
+    assert handoff["first_planning_timestamp_sec"] == 10.0
+    assert handoff["last_planning_timestamp_sec"] == 20.0
+    assert handoff["first_nonzero_planning_timestamp_sec"] == 20.0
+    assert handoff["last_nonzero_planning_timestamp_sec"] == 20.0
+    assert handoff["first_control_raw_timestamp_sec"] == 19.0
+    assert handoff["last_control_raw_timestamp_sec"] == 19.0
+    assert handoff["first_control_consume_timestamp_sec"] == 19.0
+    assert handoff["last_control_consume_timestamp_sec"] == 19.0
+    assert handoff["first_control_timestamp_sec"] == 19.0
+    assert handoff["last_control_timestamp_sec"] == 19.0
+    assert handoff["planning_stream_span_sec"] == 10.0
+    assert handoff["planning_nonzero_stream_span_sec"] == 0.0
+    assert handoff["control_stream_span_sec"] == 0.0
+    assert handoff["control_rows_after_first_nonzero_planning"] == 0
+    assert handoff["planning_rows_after_control_stream_end"] == 1
+    assert handoff["planning_nonzero_rows_after_control_stream_end"] == 1
+    assert handoff["planning_continued_after_control_stream_end"] is True
+    assert handoff["control_stream_ended_before_first_nonzero_planning"] is True
+    assert handoff["control_stream_end_before_first_nonzero_planning_delta_ms"] == 1000.0
+    assert handoff["control_consume_candidate_source_counts"] == {"missing": 1}
+    assert handoff["control_consume_effective_planning_source_counts"] == {
+        "latest_known_fallback": 1
+    }
 
 
 def test_control_channel_present_but_bridge_missing_fails_bridge_receive(tmp_path: Path) -> None:

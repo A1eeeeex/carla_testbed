@@ -826,6 +826,12 @@ def _gate_on_route_contract(
     route_status = _report_status(route_contract)
     if route_status == "pass":
         return status, warnings, blocking_reasons
+    route_blocking = list(route_contract.get("blocking_reasons") or [])
+    if route_status == "warn" and not route_blocking:
+        warnings.append("apollo_route_contract_warn_reference_line_claim_warning_propagated")
+        if status == "pass":
+            return "warn", warnings, blocking_reasons
+        return status, warnings, blocking_reasons
     reason = f"apollo_route_contract_{route_status or 'unknown'}"
     if route_status == "fail":
         blocking_reasons.append("apollo_route_contract_not_pass")

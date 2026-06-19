@@ -35,7 +35,6 @@ class SafetyEventTracker:
         self._trace_path.parent.mkdir(parents=True, exist_ok=True)
         if self._trace_path.exists():
             self._trace_path.unlink()
-        self._trace_path.touch()
 
         self.collision_sensor_available = self._attach_sensor(
             world=world,

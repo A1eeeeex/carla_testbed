@@ -97,6 +97,38 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
     assert direct_bridge["stale_world_frame_policy"] == "always_republish"
 
 
+def test_apollo_adapter_preserves_auto_localization_back_offset_for_bridge_resolution(tmp_path: Path) -> None:
+    profile = {
+        "run": {
+            "ego_id": "hero",
+            "profile_name": "phase1_vrp_auto_probe",
+            "claim_profile": True,
+        },
+        "runtime": {"carla": {"host": "127.0.0.1", "port": 2000}},
+        "sim": {"map": "straight_road_for_baguang"},
+        "algo": {
+            "apollo": {
+                "apollo_root": "",
+                "docker": {"enabled": False},
+                "bridge": {
+                    "localization_back_offset_m": "auto",
+                    "vehicle_reference_path": "configs/vehicles/ego_vehicle_reference.verified.yaml",
+                    "map_file": "${APOLLO_MAP_ROOT}/straight_road_for_baguang/base_map.txt",
+                },
+            }
+        },
+    }
+
+    ApolloAdapter().prepare(profile, tmp_path)
+
+    bridge_cfg = yaml.safe_load(
+        (tmp_path / "artifacts" / "apollo_bridge_effective.yaml").read_text(encoding="utf-8")
+    )
+    bridge = bridge_cfg["bridge"]
+    assert bridge["localization_back_offset_m"] == "auto"
+    assert bridge["vehicle_reference_path"] == "configs/vehicles/ego_vehicle_reference.verified.yaml"
+
+
 def test_route_only_claim_probe_keeps_artifact_io_out_of_gt_publish_hot_path() -> None:
     config_path = Path("configs/io/examples/town01_apollo_route_only_claim_probe.yaml")
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))

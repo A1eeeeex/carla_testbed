@@ -160,6 +160,60 @@ def test_bridge_fill_header_writes_frame_id_when_supported() -> None:
     assert header.frame_id == "map"
 
 
+def test_bridge_resolves_auto_localization_offset_from_vehicle_reference() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    vehicle_reference = bridge.load_vehicle_reference(
+        "configs/vehicles/ego_vehicle_reference.verified.yaml"
+    )
+
+    offset_m, source, error = bridge._resolve_localization_back_offset_m(
+        "auto",
+        vehicle_reference=vehicle_reference,
+    )
+
+    assert offset_m == pytest.approx(1.4235)
+    assert source == "vehicle_reference"
+    assert error == ""
+    assert bridge._localization_reference_mode(offset_m) == "rear_axle"
+
+
+def test_bridge_explicit_zero_localization_offset_remains_config_override() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    vehicle_reference = bridge.load_vehicle_reference(
+        "configs/vehicles/ego_vehicle_reference.verified.yaml"
+    )
+
+    offset_m, source, error = bridge._resolve_localization_back_offset_m(
+        0.0,
+        vehicle_reference=vehicle_reference,
+    )
+
+    assert offset_m == pytest.approx(0.0)
+    assert source == "config"
+    assert error == ""
+    assert bridge._localization_reference_mode(offset_m) == "vehicle_origin"
+
+
+def test_bridge_auto_localization_offset_without_vehicle_reference_is_not_claim_grade() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+
+    offset_m, source, error = bridge._resolve_localization_back_offset_m(
+        "auto",
+        vehicle_reference=None,
+    )
+
+    assert offset_m == pytest.approx(0.0)
+    assert source == "vehicle_reference_unavailable"
+    assert "requires a valid vehicle_reference" in error
+    assert bridge._localization_reference_mode(offset_m) == "vehicle_origin"
+
+
 def test_bridge_claim_grade_skips_duplicate_gt_sample() -> None:
     _install_fake_protobuf()
     _install_fake_carla()

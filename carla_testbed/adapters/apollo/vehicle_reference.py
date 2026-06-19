@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -11,6 +12,7 @@ from .frame_transform import ApolloFrameTransform, Vector3, carla_point_to_apoll
 VEHICLE_REFERENCE_SCHEMA_VERSION = "vehicle_reference.v1"
 CLAIM_GRADE_CONFIDENCE = {"verified"}
 CONFIDENCE_VALUES = {"assumed", "measured", "verified"}
+LOCALIZATION_BACK_OFFSET_AUTO_VALUES = {"auto", "vehicle_reference", "from_vehicle_reference"}
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,63 @@ def load_vehicle_reference(path: str | Path) -> VehicleReferenceConfig:
     if not isinstance(payload, Mapping):
         raise ValueError(f"{path} must contain a YAML mapping")
     return VehicleReferenceConfig.from_mapping(payload)
+
+
+def localization_back_offset_m_from_vehicle_reference(
+    vehicle_reference: VehicleReferenceConfig,
+) -> float:
+    if vehicle_reference.apollo_reference_point != "rear_axle_center":
+        raise ValueError(
+            "vehicle_reference.apollo_reference_point must be rear_axle_center "
+            "to resolve localization_back_offset_m=auto"
+        )
+    offset_x = float(vehicle_reference.origin_to_vrp_carla.x)
+    if not math.isfinite(offset_x):
+        raise ValueError("vehicle_reference.origin_to_vrp_carla.x must be finite")
+    # Bridge convention: positive back offset subtracts distance along the
+    # Apollo map heading. Vehicle reference convention: x is CARLA local
+    # forward, so a rear axle behind actor origin is negative x.
+    return -offset_x
+
+
+def resolve_localization_back_offset_m(
+    raw_value: Any,
+    *,
+    vehicle_reference: VehicleReferenceConfig | None,
+) -> tuple[float, str, str]:
+    text = str(raw_value).strip().lower() if raw_value is not None else ""
+    if text in LOCALIZATION_BACK_OFFSET_AUTO_VALUES:
+        if vehicle_reference is None:
+            return (
+                0.0,
+                "vehicle_reference_unavailable",
+                "localization_back_offset_m=auto requires a valid vehicle_reference",
+            )
+        try:
+            return (
+                localization_back_offset_m_from_vehicle_reference(vehicle_reference),
+                "vehicle_reference",
+                "",
+            )
+        except Exception as exc:
+            return 0.0, "vehicle_reference_invalid", str(exc)
+    if raw_value in {None, ""}:
+        return 0.0, "default_zero", ""
+    try:
+        value = float(raw_value)
+    except Exception:
+        return (
+            0.0,
+            "invalid_config_default_zero",
+            f"localization_back_offset_m must be numeric or auto, got {raw_value!r}",
+        )
+    if not math.isfinite(value):
+        return (
+            0.0,
+            "invalid_config_default_zero",
+            f"localization_back_offset_m must be finite, got {raw_value!r}",
+        )
+    return value, "config", ""
 
 
 def carla_actor_origin_to_vrp_carla(

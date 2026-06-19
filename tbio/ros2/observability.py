@@ -237,6 +237,8 @@ def assess_probe_results(
     probe_topics: List[str],
     ego_id: str,
     namespace: str = "/carla",
+    *,
+    require_clock: bool = True,
 ) -> ProbeAssessment:
     sensor_probe_ok = False
     clock_count = 0
@@ -250,7 +252,8 @@ def assess_probe_results(
         clock_count = int((probe_data.get("/clock") or {}).get("count", 0))
         tf_entry = probe_data.get("/tf")
         tf_count = None if tf_entry is None else int(tf_entry.get("count", 0))
-        sensor_probe_ok = clock_count >= 2 and (tf_count is None or tf_count >= 1)
+        clock_ok = clock_count >= 2 if require_clock else True
+        sensor_probe_ok = clock_ok and (tf_count is None or tf_count >= 1)
         ns = (namespace or "/carla").strip()
         if not ns.startswith("/"):
             ns = "/" + ns

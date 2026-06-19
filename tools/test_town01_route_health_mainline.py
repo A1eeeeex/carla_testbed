@@ -1207,6 +1207,8 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
             self.assertFalse(trace_rows[-1]["control_present_after_first_nonzero_planning"])
             log_text = (artifacts / "apollo_control_deferred_start.log").read_text(encoding="utf-8")
             self.assertIn("APOLLO_DISABLE_BVAR_DUMP=1", log_text)
+            self.assertIn("pgrep -f 'modules/control/control_component/dag/control[.]dag'", log_text)
+            self.assertNotIn("pgrep -f 'modules/control/control_component/dag/control.dag'", log_text)
 
     def test_on_sim_tick_schedules_deferred_control_start_without_blocking_tick(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -26,6 +26,7 @@ fixed_scene:
         s_offset_m: 300.0
   params:
     duration_s: 45.0
+    ego_target_speed_mps: 22.22
     lead_cruise_speed_mps: 16.0
     brake_trigger_gap_m: 80.0
     target_stop_gap_m: 12.0

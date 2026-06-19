@@ -94,6 +94,12 @@ def _write_run(
                 "heading_error",
                 "lane_invasion_count",
                 "collision_count",
+                "apollo_steer_raw",
+                "bridge_steer_mapped",
+                "carla_steer_applied",
+                "applied_steer",
+                "applied_throttle",
+                "applied_brake",
             ],
         )
         writer.writeheader()
@@ -108,6 +114,12 @@ def _write_run(
                 "heading_error": 0.0,
                 "lane_invasion_count": 0,
                 "collision_count": 0,
+                "apollo_steer_raw": 0.0,
+                "bridge_steer_mapped": 0.0,
+                "carla_steer_applied": 0.0,
+                "applied_steer": 0.0,
+                "applied_throttle": 0.2,
+                "applied_brake": 0.0,
             }
         )
         writer.writerow(
@@ -121,6 +133,12 @@ def _write_run(
                 "heading_error": heading_error,
                 "lane_invasion_count": 1,
                 "collision_count": 0,
+                "apollo_steer_raw": cross_track_error / 10.0,
+                "bridge_steer_mapped": cross_track_error / 10.0,
+                "carla_steer_applied": cross_track_error / 10.0,
+                "applied_steer": cross_track_error / 10.0,
+                "applied_throttle": 0.0,
+                "applied_brake": 0.3,
             }
         )
 
@@ -166,6 +184,319 @@ def test_high_cte_lane_invasion_is_not_quarantined(tmp_path: Path) -> None:
     assert report["status"] == "fail"
     assert report["quarantine_recommended"] is False
     assert report["claim_boundary"]["lane_invasion_event_can_be_used_as_hard_gate"] is True
+    diagnostics = report["run_reports"][0]["departure_diagnostics"]
+    assert diagnostics["classification"] == "downstream_progressive_lane_departure"
+    assert "lane_event_after_road_start_window" in diagnostics["interpretation"]
+    assert "cross_track_error_grew_before_event" in diagnostics["interpretation"]
+    assert diagnostics["control"]["raw_mapped_applied_steer_available"] is True
+    assert diagnostics["control"]["carla_steer_applied_end"] == 0.12
+    assert diagnostics["control"]["mapped_to_applied_steer_abs_error"]["max_abs_error"] == 0.0
+
+
+def test_departure_diagnostics_reports_mapped_applied_steer_mismatch(tmp_path: Path) -> None:
+    xodr = tmp_path / "straight_road_for_baguang.xodr"
+    run = tmp_path / "run"
+    _write_xodr(xodr)
+    _write_run(run, cross_track_error=1.2, distance_x=40.0)
+    rows = list(csv.DictReader((run / "timeseries.csv").open()))
+    fieldnames = list(rows[0].keys())
+    with (run / "timeseries.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            row["apollo_steer_raw"] = "0.0"
+            row["bridge_steer_mapped"] = "0.0"
+            row["carla_steer_applied"] = "-0.04" if row["lane_invasion_count"] == "1" else "-0.02"
+            row["applied_steer"] = row["carla_steer_applied"]
+            writer.writerow(row)
+
+    report = analyze_baguang_lane_event_contract(xodr_path=xodr, run_dirs=[run])
+    diagnostics = report["run_reports"][0]["departure_diagnostics"]
+    control = diagnostics["control"]
+
+    assert diagnostics["classification"] == "downstream_progressive_lane_departure"
+    assert "mapped_to_applied_steer_mismatch_before_event" in diagnostics["interpretation"]
+    assert "applied_steer_nonzero_while_mapped_zero_before_event" in diagnostics["interpretation"]
+    assert control["raw_to_mapped_steer_abs_error"]["max_abs_error"] == 0.0
+    assert control["mapped_to_applied_steer_abs_error"]["max_abs_error"] == 0.04
+    assert control["applied_nonzero_while_mapped_zero"]["count"] == 2
+    assert control["carla_steer_applied_summary"]["max_abs"] == 0.04
+
+
+def test_departure_diagnostics_prefers_control_apply_trace_over_timeseries(tmp_path: Path) -> None:
+    xodr = tmp_path / "straight_road_for_baguang.xodr"
+    run = tmp_path / "run"
+    _write_xodr(xodr)
+    _write_run(run, cross_track_error=1.2, distance_x=40.0)
+    rows = list(csv.DictReader((run / "timeseries.csv").open()))
+    fieldnames = list(rows[0].keys())
+    with (run / "timeseries.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            row["apollo_steer_raw"] = "0.0"
+            row["bridge_steer_mapped"] = "0.0"
+            row["carla_steer_applied"] = "-0.04" if row["lane_invasion_count"] == "1" else "-0.02"
+            row["applied_steer"] = row["carla_steer_applied"]
+            writer.writerow(row)
+    artifacts = run / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "control_apply_trace.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "sim_time": 0.0,
+                        "apollo_raw": {"steer": -0.08, "throttle": 0.2, "brake": 0.0},
+                        "bridge_mapped": {"mapped_carla_steer_cmd": -0.02},
+                        "carla_applied": {"steer": -0.02, "throttle": 0.2, "brake": 0.0},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "sim_time": 0.1,
+                        "apollo_raw": {"steer": -0.16, "throttle": 0.0, "brake": 0.3},
+                        "bridge_mapped": {"mapped_carla_steer_cmd": -0.04},
+                        "carla_applied": {"steer": -0.04, "throttle": 0.0, "brake": 0.3},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_baguang_lane_event_contract(xodr_path=xodr, run_dirs=[run])
+    diagnostics = report["run_reports"][0]["departure_diagnostics"]
+    control = diagnostics["control"]
+
+    assert control["source"] == "artifacts/control_apply_trace.jsonl"
+    assert control["control_apply_trace_rows_used"] == 2
+    assert "control_apply_trace_used_for_control_diagnostics" in diagnostics["interpretation"]
+    assert "mapped_to_applied_steer_mismatch_before_event" not in diagnostics["interpretation"]
+    assert "mapped_to_applied_steer_consistent_before_event" in diagnostics["interpretation"]
+    assert control["mapped_to_applied_steer_abs_error"]["max_abs_error"] == 0.0
+    assert control["applied_nonzero_while_mapped_zero"]["count"] == 0
+    assert control["apollo_steer_raw_end"] == -0.16
+    assert abs(control["raw_to_mapped_steer_gain"]["mean"] - 0.25) < 1e-12
+    assert control["raw_to_mapped_steer_gain"]["sample_count"] == 2
+    assert control["apollo_steer_raw_same_sign_as_cross_track_error"] is False
+    assert control["bridge_steer_mapped_same_sign_as_cross_track_error"] is False
+    assert "raw_to_mapped_steer_gain_legacy_scale_like" in diagnostics["interpretation"]
+
+
+def test_contract_reads_safety_event_trace_artifact(tmp_path: Path) -> None:
+    xodr = tmp_path / "straight_road_for_baguang.xodr"
+    run = tmp_path / "run"
+    _write_xodr(xodr)
+    _write_run(run, cross_track_error=0.001)
+    (run / "events.jsonl").unlink()
+    safety_dir = run / "artifacts"
+    safety_dir.mkdir()
+    (safety_dir / "safety_event_trace.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "lane_invasion",
+                "frame": 100,
+                "timestamp": 0.1,
+                "crossed_lane_marking_types": ["Solid"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_baguang_lane_event_contract(xodr_path=xodr, run_dirs=[run])
+    run_report = report["run_reports"][0]
+
+    assert report["quarantine_recommended"] is True
+    assert run_report["event_sources"] == ["artifacts/safety_event_trace.jsonl"]
+    assert run_report["first_lane_invasion"]["event_source"] == "artifacts/safety_event_trace.jsonl"
+    assert run_report["first_lane_invasion"]["crossed_lane_marking_types"] == ["solid"]
+    assert run_report["crossed_marking_check"]["types_match_target_lane"] is True
+    assert "events.jsonl_or_artifacts/safety_event_trace.jsonl" not in run_report["missing_inputs"]
+
+
+def test_contract_reports_crossed_marking_type_mismatch(tmp_path: Path) -> None:
+    xodr = tmp_path / "straight_road_for_baguang.xodr"
+    run = tmp_path / "run"
+    _write_xodr(xodr)
+    _write_run(run, cross_track_error=0.001)
+    (run / "events.jsonl").unlink()
+    (run / "artifacts").mkdir()
+    (run / "artifacts" / "safety_event_trace.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "lane_invasion",
+                "frame": 100,
+                "timestamp": 0.1,
+                "crossed_lane_marking_types": ["Broken", "Broken"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_baguang_lane_event_contract(xodr_path=xodr, run_dirs=[run])
+    run_report = report["run_reports"][0]
+
+    assert run_report["first_lane_invasion"]["crossed_lane_marking_types"] == ["broken"]
+    assert run_report["crossed_marking_check"]["available"] is True
+    assert run_report["crossed_marking_check"]["target_lane_roadmark_types"] == ["solid"]
+    assert run_report["crossed_marking_check"]["types_match_target_lane"] is False
+    assert run_report["static_crossing_check"]["trigger_marking_type_reason"] == (
+        "crossed_marking_types_do_not_match_target_lane"
+    )
+
+
+def test_contract_reports_road_start_only_offset_sweep(tmp_path: Path) -> None:
+    xodr = tmp_path / "straight_road_for_baguang.xodr"
+    run = tmp_path / "run"
+    _write_xodr(xodr)
+    _write_run(run, cross_track_error=0.001)
+    with (run / "offset_summary.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "offset_m",
+                "spawned",
+                "lane_invasion_count",
+                "static_lane_invasion_count",
+                "first_event_displacement_m",
+                "first_event_cte_m",
+                "first_event_heading_error_rad",
+                "first_event_marking_types",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "offset_m": 0.0,
+                "spawned": True,
+                "lane_invasion_count": 1,
+                "static_lane_invasion_count": 0,
+                "first_event_displacement_m": 0.8,
+                "first_event_cte_m": 0.001,
+                "first_event_heading_error_rad": 0.001,
+                "first_event_marking_types": "['Broken', 'Broken']",
+            }
+        )
+        writer.writerow(
+            {
+                "offset_m": 2.0,
+                "spawned": True,
+                "lane_invasion_count": 0,
+                "static_lane_invasion_count": 0,
+                "first_event_displacement_m": "",
+                "first_event_cte_m": "",
+                "first_event_heading_error_rad": "",
+                "first_event_marking_types": "[]",
+            }
+        )
+
+    report = analyze_baguang_lane_event_contract(xodr_path=xodr, run_dirs=[run])
+    offset_sweep = report["run_reports"][0]["offset_sweep"]
+
+    assert offset_sweep["available"] is True
+    assert offset_sweep["reason"] == "road_start_only_lane_event"
+    assert offset_sweep["road_start_only_trigger"] is True
+    assert offset_sweep["event_offsets_m"] == [0.0]
+    assert offset_sweep["min_clear_offset_without_event_m"] == 2.0
+
+
+def test_contract_accepts_builtin_cte_heading_aliases(tmp_path: Path) -> None:
+    xodr = tmp_path / "straight_road_for_baguang.xodr"
+    run = tmp_path / "run"
+    _write_xodr(xodr)
+    _write_run(run, cross_track_error=0.001)
+    (run / "events.jsonl").unlink()
+    (run / "artifacts").mkdir()
+    (run / "artifacts" / "safety_event_trace.jsonl").write_text(
+        json.dumps({"event_type": "lane_invasion", "frame": 100, "timestamp": 0.1}) + "\n",
+        encoding="utf-8",
+    )
+    with (run / "timeseries.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "frame_id",
+                "sim_time",
+                "ego_x",
+                "ego_y",
+                "ego_speed_mps",
+                "cross_track_error_m",
+                "heading_error_rad",
+                "bbox_extent_y_m",
+                "lane_invasion_count",
+                "collision_count",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "frame_id": 99,
+                "sim_time": 0.0,
+                "ego_x": 299.7,
+                "ego_y": -5.25,
+                "ego_speed_mps": 0.0,
+                "cross_track_error_m": 0.0,
+                "heading_error_rad": 0.0,
+                "bbox_extent_y_m": 0.9,
+                "lane_invasion_count": 0,
+                "collision_count": 0,
+            }
+        )
+        writer.writerow(
+            {
+                "frame_id": 100,
+                "sim_time": 0.1,
+                "ego_x": 298.8,
+                "ego_y": -5.25,
+                "ego_speed_mps": 1.0,
+                "cross_track_error_m": 0.001,
+                "heading_error_rad": 0.001,
+                "bbox_extent_y_m": 0.9,
+                "lane_invasion_count": 1,
+                "collision_count": 0,
+            }
+        )
+
+    report = analyze_baguang_lane_event_contract(xodr_path=xodr, run_dirs=[run])
+    run_report = report["run_reports"][0]
+
+    assert run_report["reason"] == "lane_invasion_trigger_inconsistent_with_centerline_evidence"
+    assert run_report["first_lane_invasion"]["cross_track_error"] == 0.001
+    assert run_report["first_lane_invasion"]["heading_error"] == 0.001
+    assert run_report["vehicle_footprint"]["source"] == "timeseries.bbox_extent_y_m"
+    assert run_report["static_crossing_check"]["ego_half_width_m"] == 0.9
+    assert run_report["static_crossing_check"]["trigger_footprint_intersects_marking"] is False
+
+
+def test_contract_uses_vehicle_characteristics_for_apollo_width(tmp_path: Path) -> None:
+    xodr = tmp_path / "straight_road_for_baguang.xodr"
+    run = tmp_path / "run"
+    _write_xodr(xodr)
+    _write_run(run, cross_track_error=0.001)
+    artifacts = run / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "carla_vehicle_characteristics.json").write_text(
+        json.dumps(
+            {
+                "width": 1.84,
+                "left_edge_to_center": 0.91,
+                "right_edge_to_center": 0.93,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_baguang_lane_event_contract(xodr_path=xodr, run_dirs=[run])
+    run_report = report["run_reports"][0]
+
+    assert run_report["vehicle_footprint"]["source"] == "artifacts/carla_vehicle_characteristics.json"
+    assert run_report["vehicle_footprint"]["ego_half_width_m"] == 0.93
+    assert run_report["static_crossing_check"]["ego_half_width_m"] == 0.93
+    assert run_report["static_crossing_check"]["trigger_clearance_to_marking_m"] > 0.8
 
 
 def test_writer_and_cli_create_report_files(tmp_path: Path) -> None:
@@ -181,7 +512,9 @@ def test_writer_and_cli_create_report_files(tmp_path: Path) -> None:
 
     assert Path(outputs["report"]).exists()
     assert Path(outputs["summary"]).exists()
-    assert "Claim Boundary" in Path(outputs["summary"]).read_text(encoding="utf-8")
+    summary = Path(outputs["summary"]).read_text(encoding="utf-8")
+    assert "Claim Boundary" in summary
+    assert "raw_to_mapped_steer_gain_mean" in summary
 
     result = subprocess.run(
         [

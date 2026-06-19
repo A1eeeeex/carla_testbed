@@ -131,6 +131,17 @@ def analyze_obstacle_gt_contract_records(
         for role in (fixed_scene.get("expected_roles") or fixed_scene_actor_roles.keys())
         if str(role) != "ego"
     ]
+    role_linkage_source = str(fixed_scene.get("actor_role_source") or "fixed_scene_runtime_state")
+    if fixed_scene_enabled and not fixed_scene_actor_roles:
+        record_actor_roles = _fixed_scene_actor_roles_from_records(valid_records, fixed_scene_expected_roles)
+        if record_actor_roles:
+            fixed_scene_actor_roles = record_actor_roles
+            role_linkage_source = "obstacle_gt_contract_record_roles"
+            warnings.append(
+                "fixed_scene_runtime_state_missing_but_obstacle_role_linkage_used"
+                if fixed_scene.get("runtime_state_missing")
+                else "fixed_scene_actor_roles_missing_but_obstacle_role_linkage_used"
+            )
     expected_fixed_scene_actor_ids = {
         str(actor_id)
         for actor_id in fixed_scene_actor_roles.values()
@@ -155,7 +166,7 @@ def analyze_obstacle_gt_contract_records(
         if not valid_records:
             missing_fields.append("obstacle_gt_contract.valid_jsonl_rows")
 
-    if fixed_scene_enabled and fixed_scene.get("runtime_state_missing"):
+    if fixed_scene_enabled and fixed_scene.get("runtime_state_missing") and not fixed_scene_actor_roles:
         missing_fields.append("fixed_scene_runtime_state_missing_for_obstacle_linkage")
     if fixed_scene_enabled and fixed_scene_expected_roles and not fixed_scene_actor_roles:
         missing_fields.append("fixed_scene_actor_roles")
@@ -274,6 +285,7 @@ def analyze_obstacle_gt_contract_records(
             "required": bool(fixed_scene_enabled),
             "expected_actor_roles": dict(fixed_scene_actor_roles or {}),
             "expected_roles": sorted(fixed_scene_expected_roles),
+            "actor_role_source": role_linkage_source if fixed_scene_actor_roles else None,
             "scenario_actor_count": len(expected_fixed_scene_actor_ids),
             "scenario_actor_obstacle_count": scenario_actor_obstacle_count,
             "observed_carla_actor_ids": sorted(observed_carla_actor_ids),
@@ -285,7 +297,7 @@ def analyze_obstacle_gt_contract_records(
                 else (
                     "insufficient_data"
                     if fixed_scene_enabled and (
-                        fixed_scene.get("runtime_state_missing")
+                        (fixed_scene.get("runtime_state_missing") and not fixed_scene_actor_roles)
                         or not fixed_scene_actor_roles
                         or not expected_fixed_scene_actor_ids
                     )
@@ -406,6 +418,8 @@ def _check_obstacle(
     if _boolish(obstacle.get("is_ego")):
         errors.append("ego_actor_included_as_obstacle")
     if carla_actor_id and expected_vehicle_actor_ids and carla_actor_id in expected_vehicle_actor_ids:
+        if _front_obstacle_probe_not_published(obstacle):
+            errors.append("fixed_scene_actor_probe_not_published_to_apollo_obstacles")
         if not _obstacle_type_declared(obstacle):
             missing_fields.append("vehicle_type")
         elif not is_vehicle:
@@ -620,7 +634,10 @@ def _fixed_scene_context(root: Path) -> dict[str, Any]:
     storyboard_path = _find_first(root, ["artifacts/fixed_scene_resolved.json", "fixed_scene_resolved.json"])
     runtime_path = _find_first(root, ["artifacts/fixed_scene_runtime_state.json", "fixed_scene_runtime_state.json"])
     expected_roles = _fixed_scene_expected_roles(storyboard_path)
-    enabled = storyboard_path is not None or runtime_path is not None
+    manifest_expected_roles = _manifest_target_actor_roles(root)
+    if not expected_roles:
+        expected_roles = manifest_expected_roles
+    enabled = storyboard_path is not None or runtime_path is not None or bool(manifest_expected_roles)
     if runtime_path is None:
         return {
             "enabled": enabled,
@@ -683,6 +700,25 @@ def _fixed_scene_expected_roles(storyboard_path: Path | None) -> list[str]:
     return sorted(str(role) for role in roles if str(role) != "ego")
 
 
+def _manifest_target_actor_roles(root: Path) -> list[str]:
+    manifest_path = _find_first(root, ["manifest.json"])
+    if manifest_path is None:
+        return []
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, Mapping):
+        return []
+    contract = payload.get("target_actor_contract")
+    if not isinstance(contract, Mapping):
+        return []
+    if contract.get("status") != "resolved" or contract.get("required") is False:
+        return []
+    role = contract.get("target_actor_role")
+    return [str(role)] if role not in {None, "", "ego"} else []
+
+
 def _record_objects(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     for key in ("objects", "obstacles", "perception_obstacles"):
         value = record.get(key)
@@ -708,6 +744,54 @@ def _record_declares_empty_obstacle_message(record: Mapping[str, Any]) -> bool:
     if _boolish(record.get("empty_message")):
         return True
     return False
+
+
+def _front_obstacle_probe_not_published(obstacle: Mapping[str, Any]) -> bool:
+    if _boolish(obstacle.get("front_obstacle_actor_found")) is not True:
+        return False
+    visible_value = obstacle.get("front_obstacle_visible")
+    visible_false = visible_value not in {None, ""} and _boolish(visible_value) is False
+    published_count = _num(obstacle.get("published_obstacle_count"))
+    published_empty = published_count is not None and published_count <= 0
+    return visible_false or published_empty
+
+
+def _fixed_scene_actor_roles_from_records(
+    records: Sequence[Mapping[str, Any]],
+    expected_roles: Sequence[str],
+) -> dict[str, str]:
+    expected = {str(role) for role in expected_roles if str(role) != "ego"}
+    if not expected:
+        return {}
+    actor_roles: dict[str, str] = {}
+    for record in records:
+        objects = _record_objects(record)
+        if not objects and _looks_like_object(record):
+            objects = [record]
+        for obstacle in objects:
+            role = _first_text(
+                obstacle,
+                "front_obstacle_actor_role",
+                obstacle,
+                "target_actor_role",
+                obstacle,
+                "role_name",
+                obstacle,
+                "role",
+            )
+            if role not in expected:
+                continue
+            actor_id = _first_text(
+                obstacle,
+                "carla_actor_id",
+                obstacle,
+                "front_obstacle_actor_id",
+                obstacle,
+                "actor_id",
+            )
+            if actor_id:
+                actor_roles[str(role)] = actor_id
+    return actor_roles
 
 
 def _scenario_requires_dynamic_obstacle(scenario_class: str | None) -> bool:

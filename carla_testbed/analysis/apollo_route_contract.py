@@ -149,9 +149,9 @@ def analyze_apollo_route_contract(
     hdmap_rows = list(hdmap_projection or [])
     routing_response_decoded = routing_response_decoded or {}
 
-    scenario = _scenario_route(manifest, summary)
-    apollo = _apollo_route(planning_topic_debug_summary, routing_rows, route_rows, routing_response_decoded)
     projection = _projection_route(hdmap_rows)
+    scenario = _scenario_route(manifest, summary, projection)
+    apollo = _apollo_route(planning_topic_debug_summary, routing_rows, route_rows, routing_response_decoded)
     raw_route_phase = _route_phase(apollo, cyber_bridge_stats, scenario.get("route_length_m"))
     last_routing_request = _routing_request_summary(routing_rows, scenario)
     last_routing_response = _routing_response_summary(
@@ -215,6 +215,9 @@ def analyze_apollo_route_contract(
         and apollo_lane_window_count > expected_lane_window_count
         and apollo_extra_lane_keys
     )
+    runtime_blockers = _routing_request_runtime_blockers(last_routing_request)
+    if runtime_blockers and (not apollo_lane_keys or apollo_lane_window_count in (None, 0)):
+        blocking.extend(runtime_blockers)
 
     scenario_goal = scenario_goal_xy_apollo
     apollo_goal = apollo.get("goal_xy")
@@ -239,6 +242,7 @@ def analyze_apollo_route_contract(
         )
         snap_distance = _num(goal_projection.get("distance_m"))
         lateral_error = _num(goal_projection.get("signed_lateral_error_m"))
+        projection_reason = _text_or_none(goal_projection.get("reason"))
         s_error = _num(
             goal_projection.get("s_error_m")
             or goal_projection.get("goal_s_error_m")
@@ -248,12 +252,25 @@ def analyze_apollo_route_contract(
             blocking.append("unaccepted_goal_projection_applied")
         if goal_projection_applied is True and goal_projection_trusted is not True:
             blocking.append("untrusted_goal_projection_applied")
+        if projection_reason == "disabled_by_config":
+            blocking.append("apollo_routing_goal_projection_disabled_by_config")
         if goal_projection_accepted is False:
             blocking.append("apollo_routing_goal_projection_not_accepted")
         if goal_projection_trusted is False:
             blocking.append("apollo_routing_goal_projection_untrusted")
         if snap_distance is not None and snap_distance > MAX_GOAL_SNAP_DISTANCE_M:
-            blocking.append("apollo_routing_goal_snap_distance_high")
+            projection_is_trusted_route_endpoint = bool(
+                goal_projection_accepted is True
+                and goal_projection_trusted is True
+                and (
+                    lateral_error is None
+                    or abs(lateral_error) <= MAX_GOAL_LATERAL_ERROR_M
+                )
+            )
+            if projection_is_trusted_route_endpoint:
+                warnings.append("apollo_routing_goal_snap_distance_high")
+            else:
+                blocking.append("apollo_routing_goal_snap_distance_high")
         if lateral_error is not None and abs(lateral_error) > MAX_GOAL_LATERAL_ERROR_M:
             blocking.append("apollo_routing_goal_lateral_error_high")
         if s_error is not None and abs(s_error) > 5.0:
@@ -1609,9 +1626,56 @@ def _routing_request_summary(
         "goal_projection": goal_projection,
         "goal_projection_distance_m": _num(goal_projection.get("distance_m")),
         "goal_projection_trusted_lane_centerline": goal_projection.get("trusted_lane_centerline"),
+        "goal_validity_snapshot": _routing_runtime_snapshot_summary(row.get("goal_validity_snapshot")),
+        "recent_route_debug_snapshot": _routing_runtime_snapshot_summary(row.get("recent_route_debug_snapshot")),
         "expected_route_id": scenario.get("route_id"),
         "expected_route_length_m": scenario.get("route_length_m"),
     }
+
+
+def _routing_runtime_snapshot_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {"available": False}
+    return {
+        "available": True,
+        "reference_line_provider_status": _text_or_none(value.get("reference_line_provider_status")),
+        "create_route_segments_status": _text_or_none(value.get("create_route_segments_status")),
+        "lane_follow_map_status": _text_or_none(value.get("lane_follow_map_status")),
+        "planning_empty_reason_guess": _text_or_none(value.get("planning_empty_reason_guess")),
+        "reference_line_count": _first_int(value.get("reference_line_count")),
+        "route_segment_count": _first_int(value.get("route_segment_count")),
+        "routing_lane_window_count": _first_int(value.get("routing_lane_window_count")),
+        "current_lane_id": _text_or_none(value.get("current_lane_id")),
+        "lane_id_first": _text_or_none(value.get("lane_id_first")),
+        "target_lane_id_first": _text_or_none(value.get("target_lane_id_first")),
+    }
+
+
+def _routing_request_runtime_blockers(request: Mapping[str, Any]) -> list[str]:
+    if request.get("available") is not True:
+        return []
+    blockers = ["routing_response_runtime_evidence_missing"]
+    snapshots = [
+        request.get("goal_validity_snapshot"),
+        request.get("recent_route_debug_snapshot"),
+    ]
+    for snapshot in snapshots:
+        if not isinstance(snapshot, Mapping) or snapshot.get("available") is not True:
+            continue
+        reference_status = str(snapshot.get("reference_line_provider_status") or "")
+        map_status = str(snapshot.get("lane_follow_map_status") or "")
+        empty_reason = str(snapshot.get("planning_empty_reason_guess") or "")
+        route_segment_status = str(snapshot.get("create_route_segments_status") or "")
+        route_segment_count = _first_int(snapshot.get("route_segment_count"))
+        if (
+            reference_status == "failed"
+            or map_status == "reference_line_missing"
+            or empty_reason == "reference_line_missing"
+        ):
+            blockers.append("reference_line_missing_after_routing_request")
+        if route_segment_status == "failed" or route_segment_count == 0:
+            blockers.append("route_segments_failed_after_routing_request")
+    return sorted(set(blockers))
 
 
 def _routing_response_summary(
@@ -1784,9 +1848,14 @@ def _routing_request_projection_compatible(projection: Mapping[str, Any]) -> boo
     )
 
 
-def _scenario_route(manifest: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[str, Any]:
+def _scenario_route(
+    manifest: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    projection: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), Mapping) else {}
     scenario = metadata.get("scenario_metadata") if isinstance(metadata.get("scenario_metadata"), Mapping) else {}
+    projection = projection or {}
     route_trace = scenario.get("route_trace") if isinstance(scenario.get("route_trace"), list) else []
     route_lanes = [_lane_id_from_trace(row) for row in route_trace if isinstance(row, Mapping)]
     route_lanes = [lane for lane in route_lanes if lane]
@@ -1804,6 +1873,7 @@ def _scenario_route(manifest: Mapping[str, Any], summary: Mapping[str, Any]) -> 
         scenario.get("route_trace_length_m"),
         scenario.get("route_claim_length_m"),
     )
+    projection_claim_length = _num(projection.get("route_length_m"))
     trace_length, trace_length_source = _route_trace_length(route_trace)
     if explicit_claim_length is not None:
         route_length = explicit_claim_length
@@ -1818,6 +1888,10 @@ def _scenario_route(manifest: Mapping[str, Any], summary: Mapping[str, Any]) -> 
         consistency["route_length_consistency_reason"] = _claim_route_length_reason(
             consistency.get("route_length_consistency_reason")
         )
+    elif legacy_declared_length is None and trace_length is None and projection_claim_length is not None:
+        route_length = projection_claim_length
+        route_length_source = "apollo_hdmap_projection_expected_route_distance"
+        consistency = _route_length_consistency(projection_claim_length, trace_length)
     else:
         route_length = legacy_declared_length if legacy_declared_length is not None else trace_length
         route_length_source = "declared_metadata" if legacy_declared_length is not None else (
@@ -1827,6 +1901,11 @@ def _scenario_route(manifest: Mapping[str, Any], summary: Mapping[str, Any]) -> 
     lane_sequence = _unique_keep_order(
         [key for key in (_lane_key(lane) for lane in [start_lane, *route_lanes, goal_lane] if lane) if key]
     )
+    projection_lane_sequence = list(projection.get("route_lane_sequence") or [])
+    if not lane_sequence and projection_lane_sequence:
+        lane_sequence = _unique_keep_order(projection_lane_sequence)
+        start_lane = lane_sequence[0]
+        goal_lane = lane_sequence[-1]
     lane_keys = set(lane_sequence)
     return {
         "route_id": scenario.get("route_id") or summary.get("route_id") or manifest.get("route_id"),
@@ -1839,9 +1918,11 @@ def _scenario_route(manifest: Mapping[str, Any], summary: Mapping[str, Any]) -> 
         "route_length_legacy_role": _text_or_none(scenario.get("route_length_m_role")),
         "route_trace_length_m": trace_length,
         "route_trace_length_source": trace_length_source,
-        "route_trace_point_count": len(route_trace),
-        "route_trace_source": _text_or_none(scenario.get("route_trace_source")),
+        "route_trace_point_count": len(route_trace) or projection.get("route_sample_count"),
+        "route_trace_source": _text_or_none(scenario.get("route_trace_source")) or projection.get("route_source"),
         "route_trace_samples": _route_trace_samples(route_trace),
+        "route_projection_sample_count": projection.get("route_sample_count"),
+        "route_projection_source": projection.get("source"),
         **consistency,
         "start_lane": start_lane,
         "goal_lane": goal_lane,
@@ -2051,10 +2132,49 @@ def _routing_response_decoded_summary(value: Mapping[str, Any]) -> dict[str, Any
 
 
 def _projection_route(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    official = [row for row in rows if str(row.get("source") or "") == "apollo_hdmap_api"]
+    official = [
+        row
+        for row in rows
+        if str(row.get("source") or "") == "apollo_hdmap_api"
+        and str(row.get("status") or row.get("projection_status") or "ok") == "ok"
+    ]
+    route_rows = [
+        row
+        for row in official
+        if str(row.get("sample_type") or "") in {"route", "start", "goal"}
+        or _num(row.get("expected_route_distance_m")) is not None
+    ]
     lanes = sorted({_lane_key(str(row.get("nearest_lane_id") or "")) for row in official if row.get("nearest_lane_id")})
     lanes = [lane for lane in lanes if lane]
-    return {"available": bool(official), "lane_keys": lanes, "source": "apollo_hdmap_api" if official else None}
+    ordered_route_rows = sorted(
+        route_rows,
+        key=lambda row: (
+            _num(row.get("route_s")) is None,
+            _num(row.get("route_s")) if _num(row.get("route_s")) is not None else _first_int(row.get("source_index")) or 0,
+        ),
+    )
+    route_lane_sequence = _unique_keep_order(
+        [
+            lane
+            for lane in (_lane_key(str(row.get("nearest_lane_id") or "")) for row in ordered_route_rows)
+            if lane
+        ]
+    )
+    expected_lengths = [
+        float(length)
+        for length in (_num(row.get("expected_route_distance_m")) for row in route_rows)
+        if length is not None and length > 0.0
+    ]
+    route_length = max(expected_lengths) if expected_lengths else None
+    return {
+        "available": bool(official),
+        "lane_keys": lanes,
+        "route_lane_sequence": route_lane_sequence,
+        "route_length_m": route_length,
+        "route_sample_count": len(route_rows) or None,
+        "route_source": "apollo_hdmap_projection_route_samples" if route_rows else None,
+        "source": "apollo_hdmap_api" if official else None,
+    }
 
 
 def _lane_equivalence_report(

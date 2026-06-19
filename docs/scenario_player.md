@@ -41,9 +41,9 @@ diagnostics on `straight_road_for_baguang`:
   - ego target speed 80kph, lead vehicle stopped 300m ahead.
 - `configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml`
   - same static 300m stopped-lead case, but the ego spawn is shifted 2m
-    downstream from CARLA spawn 0. The builtin runner records this as
-    `ego_spawn_s_offset_m`; it is a scenario/map contract mitigation for
-    diagnostic Phase 1 runs, not Apollo/Autoware capability evidence.
+    downstream from CARLA spawn 0 to avoid the observed Baguang road-start
+    LaneInvasionSensor artifact. This is a scenario/map contract mitigation
+    for diagnostic Phase 1 runs, not an Apollo/Autoware capability claim.
 - `configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml`
   - ego and lead start near 40kph with a 20m gap; after 5s the lead ramps
     toward 70kph and the scene lasts until the lead reaches the current
@@ -82,6 +82,14 @@ The player and analyzers expect these artifacts:
 The trace rows record role, controller intent, target speed, observed speed,
 position, route/lane fields when available, distance to ego, and applied
 control if the runtime adapter supplies it.
+
+For curved route-ahead fixed-scene placements, the CARLA runtime also records
+`trajectory_progress_m`, `route_progress_gap_m`, and
+`route_progress_gap_source`. Phase triggers may use this explicit target
+route-progress gap when the scenario declares a target actor and the straight
+ego-frame distance is not meaningful. This is fixed-scene playback evidence and
+does not replace Apollo HDMap/Frenet projection evidence for natural-driving
+claims.
 
 `fixed_scene_contract_report.json` treats storyboard phases as required by
 default. A required phase that never starts or never completes is a contract
@@ -146,17 +154,18 @@ python tools/run_builtin_ego_fixed_scene.py \
   --duration-s 30
 ```
 
-If a scenario declares `fixed_scene.roles.ego.spawn.s_offset_m`, the builtin
-runner shifts the ego spawn along the CARLA waypoint route before spawning and
-records the applied value in `manifest.json` and `summary.json`. The CLI
-`--ego-spawn-s-offset-m` can override this for local diagnostic probes.
-
 This command writes `artifacts/ego_control_trace.jsonl`, `timeseries.csv`,
 `manifest.json`, `summary.json`, and the fixed-scene contract reports. It sets
 `ego_control_source=carla_testbed_builtin_controller`. This is useful for
 checking whether the scenario itself behaves as intended before connecting
 Apollo or Autoware, but it is diagnostic-only and must not be used as a
 natural-driving capability claim.
+
+The same CLI also accepts route-only scenario specs such as
+`configs/scenarios/town01/lane_keep_097.yaml`. In that mode it spawns only ego,
+writes the Phase 1 artifact spine, and marks `v_t_gap.status=not_applicable`
+when `target_actor_contract.status=not_required`. It does not create
+fixed-scene actor artifacts and still remains diagnostic-only.
 
 ## CARLA Runtime Adapter
 
@@ -170,6 +179,8 @@ objects. The adapter currently supports the follow-stop essentials:
 - call `FixedScenePlayer.tick()`
 - apply simple longitudinal controls for `follow_route`, `brake_to_stop`, and
   `hold_stop`
+- apply waypoint-follow steering and route-heading target velocity for moving
+  non-ego fixed-scene vehicles when CARLA map waypoints are available
 - apply diagnostic scripted lane-change motion for non-ego cut-in/cut-out
   actors, using smooth lateral interpolation rather than instant teleport
 - record scenario actor trace and phase events
@@ -189,7 +200,20 @@ For CARLA-only diagnostic runs, ego control is provided by
 `SimpleAccRouteFollowerController` through the `carla_builtin` backend facade.
 The controller is deliberately small: route-heading/cross-track feedback plus
 ACC-style lead-gap speed control. It exists to validate scene playback quickly,
-not to replace Apollo or Autoware in capability evaluation.
+not to replace Apollo or Autoware in capability evaluation. The online runner
+records route diagnostics such as `heading_error_rad`,
+`route_lookahead_heading_error_rad`, `cross_track_error_m`, `ego_route_s`, and
+`ego_lane_id` in `timeseries.csv` when CARLA map waypoints are available. The
+controller prefers the lookahead heading error for steering so fixed-scene
+diagnostic runs can follow Town01 turns without treating current-waypoint
+heading noise as the route. This is still diagnostic playback behavior, not an
+Apollo/Autoware capability claim.
+
+When CARLA's official `GlobalRoutePlanner` is importable in the local package
+environment, the builtin runner can use it to build a diagnostic route plan to
+the scenario goal spawn; otherwise it falls back to local waypoint lookahead.
+The route plan is only for the `carla_builtin` diagnostic controller and must
+not be interpreted as Apollo routing or reference-line evidence.
 
 Expected integration order inside an online runner is:
 

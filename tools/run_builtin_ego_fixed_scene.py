@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from carla_testbed.scenario_player.builtin_ego_runner import run_builtin_ego_fixed_scene
+from carla_testbed.scenario_player.builtin_ego_runner import run_builtin_ego_scenario
 
 
 def main() -> int:
@@ -36,7 +36,7 @@ def main() -> int:
     parser.add_argument("--realtime", action="store_true", help="Sleep between sync ticks so wall-clock video matches sim time")
     args = parser.parse_args()
 
-    result = run_builtin_ego_fixed_scene(
+    result = run_builtin_ego_scenario(
         template_path=args.template,
         run_dir=args.run_dir,
         host=args.host,

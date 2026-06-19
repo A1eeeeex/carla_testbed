@@ -38,7 +38,10 @@ import yaml
 from algo.registry import get_adapter
 from carla_testbed.config import HarnessConfig
 from carla_testbed.config.rig_loader import apply_overrides, load_rig_file, load_rig_preset, rig_to_specs
-from carla_testbed.config.sensor_capture import sensor_capture_enabled_from_config
+from carla_testbed.config.sensor_capture import (
+    legacy_record_from_config,
+    sensor_capture_enabled_from_config,
+)
 from carla_testbed.control import LegacyControllerConfig
 from carla_testbed.evaluation import (
     applied_control_health_from_timeseries,
@@ -1239,6 +1242,7 @@ def main():
         "ego_offset_y_m": 0.0,
         "ego_offset_z_m": 0.0,
         "ego_yaw_offset_deg": 0.0,
+        "ego_spawn_s_offset_m": 0.0,
         "front_offset_x_m": 0.0,
         "front_offset_y_m": 0.0,
         "front_offset_z_m": 0.0,
@@ -1352,6 +1356,12 @@ def main():
         args.ego_yaw_offset_deg = float(
             ego_pose_offset.get(
                 "yaw_deg", scenario_cfg.get("ego_yaw_offset_deg", args.ego_yaw_offset_deg)
+            )
+        )
+        args.ego_spawn_s_offset_m = float(
+            ego_pose_offset.get(
+                "s_offset_m",
+                scenario_cfg.get("ego_spawn_s_offset_m", args.ego_spawn_s_offset_m),
             )
         )
         args.front_offset_x_m = float(
@@ -1494,7 +1504,7 @@ def main():
             else:
                 args.rig = str(rig_path)
         # control/record 映射
-        record_cfg = cfg.get("record", {})
+        record_cfg = legacy_record_from_config(cfg)
         rb = record_cfg.get("rosbag", {}) if record_cfg else {}
         if rb.get("enable"):
             args.enable_ros2_bag = True
@@ -1771,6 +1781,7 @@ def main():
         "y_m": float(args.ego_offset_y_m),
         "z_m": float(args.ego_offset_z_m),
         "yaw_deg": float(args.ego_yaw_offset_deg),
+        "s_offset_m": float(args.ego_spawn_s_offset_m),
     }
     effective_cfg.setdefault("scenario", {})["front_pose_offset"] = {
         "x_m": float(args.front_offset_x_m),
@@ -2434,6 +2445,7 @@ def main():
                 ego_offset_y_m=float(args.ego_offset_y_m),
                 ego_offset_z_m=float(args.ego_offset_z_m),
                 ego_yaw_offset_deg=float(args.ego_yaw_offset_deg),
+                ego_spawn_s_offset_m=float(args.ego_spawn_s_offset_m),
                 front_offset_x_m=float(args.front_offset_x_m),
                 front_offset_y_m=float(args.front_offset_y_m),
                 front_offset_z_m=float(args.front_offset_z_m),
@@ -2604,6 +2616,7 @@ def main():
                 ego_offset_y_m=float(args.ego_offset_y_m),
                 ego_offset_z_m=float(args.ego_offset_z_m),
                 ego_yaw_offset_deg=float(args.ego_yaw_offset_deg),
+                ego_spawn_s_offset_m=float(args.ego_spawn_s_offset_m),
                 front_offset_x_m=float(args.front_offset_x_m),
                 front_offset_y_m=float(args.front_offset_y_m),
                 front_offset_z_m=float(args.front_offset_z_m),
@@ -3023,7 +3036,8 @@ def main():
         rig_final = apply_overrides(rig_raw, args.rig_override)
         rig_label = args.rig if not args.rig_file else Path(args.rig_file).stem
         sensor_specs, events_cfg = rig_to_specs(rig_final)
-        if effective_cfg.get("record", {}).get("sensors", {}).get("enable") is False:
+        sensor_capture_enabled, _sensor_capture_source = sensor_capture_enabled_from_config(effective_cfg or {})
+        if not sensor_capture_enabled:
             sensor_specs = None
             rig_final = {**(rig_final or {}), "sensors": []}
         rviz_launcher = None
@@ -3130,7 +3144,8 @@ def main():
                 print("[apollo] dreamview capture hooked to simulation ticks")
 
         # optional: start control logger via shared ROS2 runner
-        control_log_cfg = effective_cfg.get("record", {}).get("control_log", {}) if effective_cfg else {}
+        effective_record_cfg = legacy_record_from_config(effective_cfg or {})
+        control_log_cfg = effective_record_cfg.get("control_log", {}) if effective_record_cfg else {}
         control_logger_proc = None
         default_control_topic = "/control/command/control_cmd" if stack == "autoware" else "/tb/ego/control_cmd"
         control_log_enable_default = bool(stack in {"autoware", "apollo"})
@@ -3200,12 +3215,13 @@ def main():
         # optional: topic probe via shared ROS2 runner
         probe_cfg = None
         if effective_cfg:
-            rec = effective_cfg.get("record", {}) or {}
+            rec = legacy_record_from_config(effective_cfg or {})
             probe_cfg = rec.get("probe") or rec.get("sensor_probe") or {}
         else:
             probe_cfg = {}
         sensor_probe_proc = None
         probe_topics_effective: List[str] = []
+        probe_require_clock = bool(probe_cfg.get("require_clock", True)) if isinstance(probe_cfg, dict) else True
         if probe_cfg.get("enable", True) and ros2_mode_active:
             control_topic_default = control_log_cfg.get("topic", default_control_topic)
             probe_topics = [t for t in (probe_cfg.get("topics") or []) if t] or default_probe_topics(
@@ -3341,6 +3357,7 @@ def main():
                     probe_topics_effective,
                     args.ego_id,
                     namespace=args.ros2_namespace,
+                    require_clock=probe_require_clock,
                 )
                 sensor_probe_ok = probe_assess.sensor_probe_ok
                 clock_count = probe_assess.clock_count
@@ -3760,6 +3777,7 @@ def main():
                     "ok": sensor_probe_ok,
                     "required": require_sensor_probe,
                     "path": str(sensor_probe_path),
+                    "clock_required": probe_require_clock,
                     "clock_count": clock_count,
                     "tf_count": tf_count,
                 },

@@ -71,6 +71,78 @@ def test_control_health_bad_handoff_fails(tmp_path: Path) -> None:
     assert report["failure_reason"] == "control_handoff_not_consuming"
 
 
+def test_control_health_uses_artifact_materialization_when_summary_is_stale(tmp_path: Path) -> None:
+    run_dir = _copy_run(tmp_path)
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["routing_materialized"] = False
+    summary["planning_materialized"] = False
+    summary["control_handoff_status"] = "planning_not_materialized"
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+
+    routing_report = run_dir / "analysis/routing_response_decoded/routing_response_decoded_report.json"
+    routing_report.parent.mkdir(parents=True, exist_ok=True)
+    routing_report.write_text(
+        json.dumps(
+            {
+                "schema_version": "routing_response_decoded.v1",
+                "status": "pass",
+                "lane_segment_count": 1,
+                "blocking_reasons": [],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    (artifact_dir / "planning_topic_debug_summary.json").write_text(
+        json.dumps(
+            {
+                "total_messages_received": 5,
+                "messages_with_nonzero_trajectory_points": 4,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    handoff_report = run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json"
+    handoff_report.parent.mkdir(parents=True, exist_ok=True)
+    handoff_report.write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_control_handoff.v1",
+                "verdict": "warn",
+                "failure_stage": "none",
+                "blocking_reasons": [],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+
+    assert report["status"] == "warn"
+    assert report["failure_reason"] == "control_health_warn"
+    assert report["routing_materialized"] is True
+    assert report["planning_materialized"] is True
+    assert report["control_handoff_status"] == "control_consuming_with_nonzero_planning"
+    materialization = report["metrics"]["materialization_evidence"]
+    assert materialization["routing_materialized_summary_value"] is False
+    assert materialization["routing_materialized_artifact_value"] is True
+    assert materialization["planning_materialized_summary_value"] is False
+    assert materialization["planning_materialized_artifact_value"] is True
+    assert materialization["control_handoff_summary_value"] == "planning_not_materialized"
+    assert materialization["control_handoff_artifact_value"] == "control_consuming_with_nonzero_planning"
+    assert "summary_routing_materialized_false_overridden_by_artifact" in report["warnings"]
+    assert "summary_planning_materialized_false_overridden_by_artifact" in report["warnings"]
+    assert "summary_control_handoff_status_overridden_by_apollo_handoff_report" in report["warnings"]
+
+
 def test_control_health_reports_control_process_crash_before_actuation(tmp_path: Path) -> None:
     run_dir = _copy_run(tmp_path)
     handoff_path = run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json"

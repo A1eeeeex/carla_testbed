@@ -107,6 +107,12 @@ def load_localization_projection_samples(
                 root / "manifest.json",
                 frame_transform=frame_transform,
             )
+        if not route_samples:
+            route_samples = _samples_from_scenario_goal(
+                root / "artifacts" / "scenario_goal.json",
+                frame_transform=frame_transform,
+                step_m=route_sample_step_m,
+            )
         if include_route_samples:
             route_samples = _densify_route_samples(
                 route_samples,
@@ -555,6 +561,90 @@ def _load_optional_frame_transform(path: str | Path | None) -> ApolloFrameTransf
     if not path:
         return None
     return load_frame_transform(Path(path).expanduser())
+
+
+def _samples_from_scenario_goal(
+    path: Path,
+    *,
+    frame_transform: ApolloFrameTransform | None,
+    step_m: float | None,
+) -> list[LocalizationProjectionSample]:
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, Mapping):
+        return []
+    start = payload.get("start_at_write_time")
+    if not isinstance(start, Mapping):
+        return []
+    start_x = _first_number(start, ["x", "localization_x", "map_x"])
+    start_y = _first_number(start, ["y", "localization_y", "map_y"])
+    start_z = _first_number(start, ["z", "localization_z", "map_z"]) or 0.0
+    if start_x is None or start_y is None:
+        return []
+
+    goal_payload = payload.get("goal")
+    goal_source = "goal"
+    frame = str(payload.get("frame") or "").strip().lower()
+    if isinstance(payload.get("goal_raw_carla"), Mapping):
+        goal_payload = payload.get("goal_raw_carla")
+        goal_source = "goal_raw_carla"
+    if not isinstance(goal_payload, Mapping):
+        return []
+    goal_x = _first_number(goal_payload, ["x", "localization_x", "map_x"])
+    goal_y = _first_number(goal_payload, ["y", "localization_y", "map_y"])
+    goal_z = _first_number(goal_payload, ["z", "localization_z", "map_z"]) or start_z
+    if goal_x is None or goal_y is None:
+        return []
+    if goal_source == "goal_raw_carla" or frame in {"relative", "carla_raw", "carla_world"}:
+        if frame_transform is None:
+            return []
+        apollo_goal = carla_point_to_apollo(
+            Vector3(x=float(goal_x), y=float(goal_y), z=float(goal_z)),
+            frame_transform,
+        )
+        goal_x, goal_y, goal_z = apollo_goal.x, apollo_goal.y, apollo_goal.z
+    dx = float(goal_x) - float(start_x)
+    dy = float(goal_y) - float(start_y)
+    length = math.hypot(dx, dy)
+    if length <= 1e-6:
+        return []
+    heading = math.atan2(dy, dx)
+    step = _float(step_m)
+    if step is None or step <= 0.0:
+        sample_count = 2
+    else:
+        sample_count = max(2, int(math.ceil(length / step)) + 1)
+    samples: list[LocalizationProjectionSample] = []
+    for index in range(sample_count):
+        fraction = index / float(sample_count - 1) if sample_count > 1 else 0.0
+        route_s = length * fraction
+        metadata = {
+            "route_index": index,
+            "route_s": route_s,
+            "route_length_m": length,
+            "expected_route_distance_m": length,
+            "scenario_goal_source": str(payload.get("source") or ""),
+            "scenario_goal_frame": str(payload.get("frame") or ""),
+            "scenario_goal_sample_source": goal_source,
+            "route_heading_source": "scenario_goal_chord",
+        }
+        samples.append(
+            LocalizationProjectionSample(
+                timestamp=None,
+                x=float(start_x) + dx * fraction,
+                y=float(start_y) + dy * fraction,
+                heading=heading,
+                source_artifact=str(path),
+                source_index=index,
+                sample_type="route",
+                metadata=metadata,
+            )
+        )
+    return samples
 
 
 def _carla_heading_to_apollo(value: Any, frame_transform: ApolloFrameTransform) -> float | None:

@@ -12,6 +12,7 @@ from typing import Any, Dict
 import yaml
 
 from algo.adapters.base import Adapter
+from carla_testbed.adapters.apollo.vehicle_reference import LOCALIZATION_BACK_OFFSET_AUTO_VALUES
 from tbio.backends.cyberrt import CyberRTBackend
 
 
@@ -812,7 +813,13 @@ PY
         if "radius_m" in apollo_bridge_cfg:
             bridge["radius_m"] = float(apollo_bridge_cfg["radius_m"])
         if "localization_back_offset_m" in apollo_bridge_cfg:
-            bridge["localization_back_offset_m"] = float(apollo_bridge_cfg["localization_back_offset_m"])
+            raw_back_offset = apollo_bridge_cfg["localization_back_offset_m"]
+            if str(raw_back_offset).strip().lower() in LOCALIZATION_BACK_OFFSET_AUTO_VALUES:
+                bridge["localization_back_offset_m"] = str(raw_back_offset).strip().lower()
+            else:
+                bridge["localization_back_offset_m"] = float(raw_back_offset)
+        if "vehicle_reference_path" in apollo_bridge_cfg:
+            bridge["vehicle_reference_path"] = str(apollo_bridge_cfg["vehicle_reference_path"])
         if "debug_pose_print" in apollo_bridge_cfg:
             bridge["debug_pose_print"] = bool(apollo_bridge_cfg["debug_pose_print"])
         if "debug_dump_control_raw" in apollo_bridge_cfg:

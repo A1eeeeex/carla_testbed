@@ -5,6 +5,8 @@ from typing import Any, Mapping
 FAILURE_REASONS = [
     "artifact_missing",
     "planning_missing",
+    "planning_control_handoff_missing",
+    "control_process_failed",
     "control_missing",
     "no_control",
     "stuck",

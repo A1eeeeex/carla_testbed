@@ -203,6 +203,20 @@ def analyze_control_health_run_dir(
             "apollo_reference_line_contract_report.json",
         ],
     )
+    routing_response_decoded_report_path = _find_first(
+        root,
+        [
+            "analysis/routing_response_decoded/routing_response_decoded_report.json",
+            "routing_response_decoded_report.json",
+        ],
+    )
+    planning_materialization_report_path = _find_first(
+        root,
+        [
+            "analysis/planning_materialization/planning_materialization_report.json",
+            "planning_materialization_report.json",
+        ],
+    )
     summary = _read_json(summary_path)
     manifest = _read_json(manifest_path)
     control_handoff_debug = _read_json(control_handoff_path) if control_handoff_path else {}
@@ -224,6 +238,36 @@ def analyze_control_health_run_dir(
         if apollo_reference_line_contract_path
         else {}
     )
+    routing_response_decoded = (
+        _read_json(routing_response_decoded_report_path)
+        if routing_response_decoded_report_path
+        else {}
+    )
+    planning_materialization = (
+        _read_json(planning_materialization_report_path)
+        if planning_materialization_report_path
+        else {}
+    )
+    materialization_evidence = _effective_materialization_evidence(
+        summary=summary,
+        routing_response_decoded=routing_response_decoded,
+        routing_response_decoded_path=routing_response_decoded_report_path,
+        planning_debug=planning_debug,
+        planning_summary_path=planning_summary_path,
+        planning_materialization=planning_materialization,
+        planning_materialization_path=planning_materialization_report_path,
+        cyber_bridge_stats=cyber_bridge_stats,
+        cyber_bridge_stats_path=cyber_bridge_stats_path,
+        apollo_control_handoff=apollo_control_handoff,
+        apollo_control_handoff_path=apollo_control_handoff_report_path,
+    )
+    effective_summary = dict(summary)
+    if materialization_evidence.get("routing_materialized") is not None:
+        effective_summary["routing_materialized"] = materialization_evidence.get("routing_materialized")
+    if materialization_evidence.get("planning_materialized") is not None:
+        effective_summary["planning_materialized"] = materialization_evidence.get("planning_materialized")
+    if materialization_evidence.get("control_handoff_status") not in {None, ""}:
+        effective_summary["control_handoff_status"] = materialization_evidence.get("control_handoff_status")
     rows = _read_rows(timeseries_path)
     control_bridge_log = _analyze_control_bridge_log(control_bridge_log_path)
     control_row_level_trace_path = control_apply_trace_path or control_decode_debug_path
@@ -287,7 +331,7 @@ def analyze_control_health_run_dir(
     if timeseries_path is None:
         missing_inputs.append("timeseries")
 
-    handoff = _control_handoff_status(summary)
+    handoff = _control_handoff_status(effective_summary)
     metrics = _summary_metrics(summary)
     summary_latency = _num(metrics.get("control_latency_p95_ms"))
     timeseries_latency = _percentile(_series(rows, "control_latency_ms"), 0.95)
@@ -349,6 +393,7 @@ def analyze_control_health_run_dir(
             apollo_reference_line_contract=apollo_reference_line_contract,
             apollo_reference_line_contract_path=apollo_reference_line_contract_path,
         ),
+        "materialization_evidence": materialization_evidence,
     }
     report_metrics["oscillation_decomposition"] = _oscillation_decomposition(
         rows=rows,
@@ -372,7 +417,7 @@ def analyze_control_health_run_dir(
     )
     external_control_source = _external_control_source(control_row_level_trace_path)
     status, failure_reason, verdict_missing, warnings = _verdict(
-        summary=summary,
+        summary=effective_summary,
         handoff_status=handoff,
         metrics=report_metrics,
         missing_inputs=missing_inputs,
@@ -390,8 +435,8 @@ def analyze_control_health_run_dir(
         "status": status,
         "failure_reason": failure_reason,
         "runtime_contract_status": _runtime_contract_status(summary, manifest),
-        "routing_materialized": _summary_bool(summary, "routing_materialized"),
-        "planning_materialized": _summary_bool(summary, "planning_materialized"),
+        "routing_materialized": _summary_bool(effective_summary, "routing_materialized"),
+        "planning_materialized": _summary_bool(effective_summary, "planning_materialized"),
         "control_handoff_status": handoff,
         "apollo_control_handoff_status": apollo_control_handoff.get("verdict"),
         "apollo_control_handoff_failure_stage": apollo_control_handoff.get("failure_stage"),
@@ -465,12 +510,187 @@ def analyze_control_health_run_dir(
                 if apollo_reference_line_contract_path
                 else None
             ),
+            "routing_response_decoded_report_path": (
+                str(routing_response_decoded_report_path)
+                if routing_response_decoded_report_path
+                else None
+            ),
+            "planning_materialization_report_path": (
+                str(planning_materialization_report_path)
+                if planning_materialization_report_path
+                else None
+            ),
         },
         "interpretation_boundary": (
             "Control-health report checks handoff and raw/mapped/applied command evidence only. "
             "It does not prove Apollo planning quality or full perception/localization."
         ),
     }
+
+
+def _effective_materialization_evidence(
+    *,
+    summary: Mapping[str, Any],
+    routing_response_decoded: Mapping[str, Any],
+    routing_response_decoded_path: Path | None,
+    planning_debug: Mapping[str, Any],
+    planning_summary_path: Path | None,
+    planning_materialization: Mapping[str, Any],
+    planning_materialization_path: Path | None,
+    cyber_bridge_stats: Mapping[str, Any],
+    cyber_bridge_stats_path: Path | None,
+    apollo_control_handoff: Mapping[str, Any],
+    apollo_control_handoff_path: Path | None,
+) -> dict[str, Any]:
+    summary_routing = _summary_bool(summary, "routing_materialized")
+    summary_planning = _summary_bool(summary, "planning_materialized")
+    summary_handoff = _control_handoff_status(summary)
+
+    routing_artifact = _routing_materialized_from_artifacts(
+        routing_response_decoded=routing_response_decoded,
+        cyber_bridge_stats=cyber_bridge_stats,
+    )
+    planning_artifact = _planning_materialized_from_artifacts(
+        planning_debug=planning_debug,
+        planning_materialization=planning_materialization,
+    )
+    handoff_artifact = _handoff_status_from_artifacts(apollo_control_handoff)
+
+    warnings: list[str] = []
+    routing = summary_routing
+    routing_source = "summary.routing_materialized" if summary_routing is not None else None
+    if routing_artifact is True and summary_routing is not True:
+        routing = True
+        routing_source = _routing_materialization_source(
+            routing_response_decoded_path=routing_response_decoded_path,
+            cyber_bridge_stats_path=cyber_bridge_stats_path,
+            routing_response_decoded=routing_response_decoded,
+            cyber_bridge_stats=cyber_bridge_stats,
+        )
+        if summary_routing is False:
+            warnings.append("summary_routing_materialized_false_overridden_by_artifact")
+
+    planning = summary_planning
+    planning_source = "summary.planning_materialized" if summary_planning is not None else None
+    if planning_artifact is True and summary_planning is not True:
+        planning = True
+        planning_source = _planning_materialization_source(
+            planning_summary_path=planning_summary_path,
+            planning_materialization_path=planning_materialization_path,
+            planning_debug=planning_debug,
+            planning_materialization=planning_materialization,
+        )
+        if summary_planning is False:
+            warnings.append("summary_planning_materialized_false_overridden_by_artifact")
+
+    handoff = summary_handoff
+    handoff_source = "summary.control_handoff_status" if summary_handoff is not None else None
+    stale_handoff_values = {None, "", "planning_not_materialized", "planning_missing", "not_materialized"}
+    if (
+        handoff_artifact == EXPECTED_HANDOFF_STATUS
+        and summary_handoff != EXPECTED_HANDOFF_STATUS
+        and summary_handoff in stale_handoff_values
+    ):
+        handoff = EXPECTED_HANDOFF_STATUS
+        handoff_source = str(apollo_control_handoff_path) if apollo_control_handoff_path else "apollo_control_handoff_report"
+        if summary_handoff not in {None, ""}:
+            warnings.append("summary_control_handoff_status_overridden_by_apollo_handoff_report")
+
+    return {
+        "routing_materialized": routing,
+        "routing_materialized_source": routing_source,
+        "routing_materialized_summary_value": summary_routing,
+        "routing_materialized_artifact_value": routing_artifact,
+        "planning_materialized": planning,
+        "planning_materialized_source": planning_source,
+        "planning_materialized_summary_value": summary_planning,
+        "planning_materialized_artifact_value": planning_artifact,
+        "control_handoff_status": handoff,
+        "control_handoff_status_source": handoff_source,
+        "control_handoff_summary_value": summary_handoff,
+        "control_handoff_artifact_value": handoff_artifact,
+        "warnings": warnings,
+    }
+
+
+def _routing_materialized_from_artifacts(
+    *,
+    routing_response_decoded: Mapping[str, Any],
+    cyber_bridge_stats: Mapping[str, Any],
+) -> bool | None:
+    status = str(routing_response_decoded.get("status") or "").strip().lower()
+    lane_count = _num(routing_response_decoded.get("lane_segment_count"))
+    if status in {"pass", "warn"} and (lane_count is None or lane_count > 0):
+        return True
+    routing_success_count = _num(cyber_bridge_stats.get("routing_success_count"))
+    if routing_success_count is not None:
+        return routing_success_count > 0
+    return None
+
+
+def _planning_materialized_from_artifacts(
+    *,
+    planning_debug: Mapping[str, Any],
+    planning_materialization: Mapping[str, Any],
+) -> bool | None:
+    nonzero = _num(planning_debug.get("messages_with_nonzero_trajectory_points"))
+    total = _num(planning_debug.get("total_messages_received"))
+    if nonzero is not None:
+        return nonzero > 0
+    if total is not None and total <= 0:
+        return False
+    status = str(planning_materialization.get("status") or "").strip().lower()
+    if status in {"pass", "warn"}:
+        return True
+    blocking = planning_materialization.get("blocking_reasons")
+    if status == "fail" or blocking:
+        return False
+    return None
+
+
+def _handoff_status_from_artifacts(apollo_control_handoff: Mapping[str, Any]) -> str | None:
+    if not apollo_control_handoff:
+        return None
+    verdict = str(
+        apollo_control_handoff.get("verdict")
+        or apollo_control_handoff.get("status")
+        or ""
+    ).strip().lower()
+    failure_stage = str(apollo_control_handoff.get("failure_stage") or "").strip().lower()
+    blocking = [item for item in (apollo_control_handoff.get("blocking_reasons") or []) if item]
+    if verdict in {"pass", "warn"} and failure_stage in {"", "none"} and not blocking:
+        return EXPECTED_HANDOFF_STATUS
+    return None
+
+
+def _routing_materialization_source(
+    *,
+    routing_response_decoded_path: Path | None,
+    cyber_bridge_stats_path: Path | None,
+    routing_response_decoded: Mapping[str, Any],
+    cyber_bridge_stats: Mapping[str, Any],
+) -> str | None:
+    status = str(routing_response_decoded.get("status") or "").strip().lower()
+    if status in {"pass", "warn"} and routing_response_decoded_path is not None:
+        return str(routing_response_decoded_path)
+    if _num(cyber_bridge_stats.get("routing_success_count")) is not None and cyber_bridge_stats_path is not None:
+        return str(cyber_bridge_stats_path)
+    return None
+
+
+def _planning_materialization_source(
+    *,
+    planning_summary_path: Path | None,
+    planning_materialization_path: Path | None,
+    planning_debug: Mapping[str, Any],
+    planning_materialization: Mapping[str, Any],
+) -> str | None:
+    if _num(planning_debug.get("messages_with_nonzero_trajectory_points")) is not None and planning_summary_path is not None:
+        return str(planning_summary_path)
+    status = str(planning_materialization.get("status") or "").strip().lower()
+    if status in {"pass", "warn"} and planning_materialization_path is not None:
+        return str(planning_materialization_path)
+    return None
 
 
 def _control_attribution_summary(
@@ -1479,6 +1699,9 @@ def _verdict(
         warnings.append("control_apply_observation_delay_high")
     warnings.extend(_control_bridge_log_warnings(metrics, thresholds))
     warnings.extend(_gt_state_sampling_warnings(metrics))
+    materialization = metrics.get("materialization_evidence")
+    if isinstance(materialization, Mapping):
+        warnings.extend(str(item) for item in (materialization.get("warnings") or []) if item)
 
     progress_after_apply = _num(metrics.get("route_s_after_first_applied_control_delta_m"))
     if (

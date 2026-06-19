@@ -49,9 +49,9 @@ The legacy harness still writes CSV-oriented frame data.
   - `available_truth_fields`
   - `output_control_mode`
   - `transport_mode`
-  - `ego_spawn_index`
-  - `ego_spawn_s_offset_m`
-  - `ego_spawn_source`
+  - `fixed_scene_case`
+  - `target_actor_contract`
+  - `artifact_contract_version`
 - `algorithm_variant_id` and `algorithm_variant_manifest_path` for any
   capability claim. The variant manifest must resolve inside the package and
   identify the same variant; missing or mismatched variant metadata keeps the
@@ -59,12 +59,9 @@ The legacy harness still writes CSV-oriented frame data.
 - non-critical metadata such as smoke mode or runtime notes
 
 Use the manifest to identify what the run claimed to execute. Do not use it as
-a replacement for per-frame evidence.
-
-For Phase 1 fixed-scene diagnostics, `ego_spawn_s_offset_m` records a configured
-or CLI-provided shift along the CARLA waypoint route before spawning ego. It is
-RunConfig/setup evidence for reproducing the scene, not a backend behavior
-metric and not an autonomy capability claim.
+a replacement for per-frame evidence. Phase 1 target actor fields are input
+contract evidence only; v-t-gap and status reports still decide whether the run
+is evaluable.
 
 ## `config.resolved.yaml`
 
@@ -148,26 +145,59 @@ Additional run-local artifacts:
     actor.
 - `artifacts/scenario_actor_trace.jsonl`
   - fixed-scene actor state trace; used by `v-t-gap` extraction.
-- `artifacts/safety_event_trace.jsonl`
-  - optional Phase 1 runtime safety-event trace for CARLA collision and lane
-    invasion sensors. `carla_builtin` creates this file even when no safety
-    event occurs, so `summary.json.safety_event_trace_path` is a stable path.
-  - rows use `schema_version=builtin_safety_event.v1` and record event type,
-    frame/timestamp, collision actor identity, or crossed lane-marking types
-    when CARLA provides them.
-  - this is scenario-run safety evidence only. A clean safety trace for
-    `carla_builtin` is not Apollo, Autoware, or natural-driving capability
-    evidence.
+  - route-ahead fixed-scene runs may include `trajectory_progress_m`,
+    `route_progress_gap_m`, and `route_progress_gap_source`; these are
+    scenario-playback progress fields, not Apollo HDMap/Frenet evidence.
 - `analysis/v_t_gap/v_t_gap_report.json`
   - schema: `v_t_gap.v1`
+  - `status=not_applicable` is valid for route-only scenarios whose
+    `target_actor_contract.status` is `not_required`, such as lane keeping,
+    curve diagnostics, or junction turns. This means no target-gap metric
+    applies; it is not a missing-target failure and not a following-behavior
+    success.
 - `analysis/v_t_gap/v_t_gap.csv`
   - fields include `sim_time_s`, `ego_speed_mps`, `target_speed_mps`,
     `gap_m`, `relative_speed_mps`, `target_actor_id`,
     `target_actor_role`, `gap_method`, `gap_degraded`, and
-    `gap_degraded_reason`.
+    `gap_degraded_reason`, `lateral_offset_m`,
+    `longitudinal_center_gap_m`, `source_files`, `validity`, and
+    `invalid_reason`.
+  - route-aware rows may also include `ego_route_s`, `target_route_s`,
+    `ego_lane_id`, `target_lane_id`, `route_s_direction_anchor_m`,
+    `route_s_direction_anchor_source`, `route_s_direction_corrected`, and
+    `route_gap_unavailable_reason`.
   - `gap_method=bumper_to_bumper_longitudinal_projection` is the preferred
     Phase 1 follow-target gap evidence and requires ego/target vehicle
-    dimensions from runtime traces.
+    dimensions from runtime traces. For legacy Apollo compatibility runs, the
+    extractor may use ego dimensions from
+    `artifacts/carla_vehicle_characteristics.json` and target dimensions from
+    `artifacts/scenario_actor_trace.jsonl` derived from obstacle GT contract
+    rows. It still records the source files and does not infer a gap when the
+    target actor contract is missing.
+  - `gap_method=route_s_bumper_gap` is valid only when ego and target
+    route/lane metadata are comparable, currently same `lane_id` plus ego and
+    target vehicle lengths. Because CARLA lane-local `waypoint.s` may run
+    opposite ego forward direction, the row records the direction anchor used
+    to sign the route-s gap. If same-lane `route_s` disagrees materially with
+    the actor-trace forward anchor, the extractor records
+    `route_gap_unavailable_reason=route_s_anchor_conflict` and must fall back
+    to trajectory-progress or another degraded method instead of reporting a
+    false unsafe bumper gap. Missing or mismatched lane ids must stay
+    degraded/diagnostic rather than being mixed into a false bumper gap.
+  - `gap_method=trajectory_progress_bumper_gap` is a Phase 1 fixed-scene
+    fallback for lane/road transitions where same-lane `route_s` is not
+    comparable. It uses the initial observed center gap plus ego/target
+    cumulative trajectory progress, and records fields such as
+    `ego_trajectory_progress_m`, `target_trajectory_progress_m`,
+    `trajectory_progress_initial_center_gap_m`, and
+    `trajectory_progress_source`. This is observed scenario-playback gap
+    evidence; it is not a substitute for an Apollo HDMap/Frenet projection
+    contract in natural-driving claims.
+  - `gap_method=bumper_to_bumper_longitudinal_projection_lateral_degraded`
+    means the target was too far lateral for ego-frame longitudinal projection
+    to be claim-grade bumper-gap evidence. Phase 1 status can report
+    `degraded/degraded_gap_method`; it must not count a negative degraded
+    projection as `failed/unsafe_gap`.
   - `gap_method=center_distance_fallback` or
     `existing_lead_gap_m_degraded` is diagnostic/degraded evidence, not a
     claim-grade bumper gap.
@@ -178,25 +208,394 @@ Additional run-local artifacts:
     `invalid_reasons`, `degraded_reasons`, `failed_reasons`, and `notes`.
   - invalid runs are setup/artifact/config/backend-readiness problems and must
     not count as backend losses.
+  - `phase1_metrics.lane_invasion_context` records the first timeseries row
+    where `lane_invasion_count > 0`, including ego pose, speed, displacement
+    from start, cross-track error, heading error, applied control, and whether
+    the trigger was near the scenario start. This makes near-start
+    lane-marking/spawn-footprint failures distinguishable from downstream
+    behavior failures without changing the `failed/lane_invasion`
+    classification.
+  - if the run is otherwise evaluable and the runtime summary records
+    `EGO_NOT_MOVING`, Phase 1 status maps it to `failed/stuck` before falling
+    back to a generic `degraded/large_final_gap` classification. More specific
+    failure reasons are used only when artifact evidence supports them:
+    `failed/control_apply_mismatch` requires an authoritative source-command
+    trace showing throttle while CARLA applied brake, while
+    `failed/planning_control_handoff_missing` means planning-topic debug showed
+    nonzero trajectory points but Apollo raw control debug input trajectory
+    headers stayed zero, or the control stream ended before the first nonzero
+    planning trajectory appeared. For Apollo external-stack runs, source command
+    evidence is read from `artifacts/bridge_control_decode.jsonl` first, then
+    `artifacts/apollo_control_raw.jsonl`, and only then from `timeseries.*`
+    compatibility fields.
+  - `phase1_metrics.control_motion` summarizes command/applied throttle and
+    brake evidence. `command_source` records whether command evidence came
+    from bridge decode, Apollo raw control, or timeseries fallback. If
+    `timeseries.control_source` is mostly `external_stack`, `cmd_*` fields are
+    treated as harness compatibility placeholders, not authoritative backend
+    commands. A signature such as `source_brake_applied` means the bridge or
+    Apollo raw trace commanded brake and CARLA applied brake; the run remains
+    `failed/stuck`, not `control_apply_mismatch`. A signature such as
+    `command_throttle_but_applied_brake` narrows a stuck run toward
+    command/apply semantics, but it remains diagnostic evidence and does not
+    change runtime behavior.
+  - `phase1_metrics.control_motion.source_control_context` records compact
+    upstream evidence from existing Apollo artifacts when available:
+    `artifacts/bridge_control_decode.jsonl`,
+    `artifacts/apollo_control_raw.jsonl`,
+    `artifacts/control_trajectory_consume_debug_live.jsonl`,
+    `artifacts/planning_topic_debug.jsonl`, and
+    `artifacts/planning_route_segment_debug.jsonl`. For example,
+    `source_brake_interpretation=planning_topic_nonzero_but_control_input_trajectory_zero`
+    means planning-topic debug rows contained nonzero trajectory points while
+    Apollo raw control debug input trajectory headers stayed zero. Phase 1 maps
+    this narrow symptom to `failed/planning_control_handoff_missing`. It is a
+    next-debug-action hint for planning/control handoff, not a root-cause proof
+    and not a CARLA apply-layer failure by itself.
+  - `phase1_metrics.derived_blocker_evidence` is an explanation layer assembled
+    from run-local reports such as
+    `analysis/control_health/control_health_report.json`,
+    `analysis/apollo_link_health/apollo_link_health_report.json`, and
+    `analysis/baguang_lane_event_contract/baguang_lane_event_contract_report.json`.
+    It lets `phase1_status_summary.md` echo the current shortest-blocker view,
+    for example an Apollo link-health primary blocker, a control-health failure
+    reason, or a Baguang lane-event departure classification. This evidence
+    does not reclassify the run, does not override `status` /
+    `failure_reason`, and does not make a failed run claim-grade.
+  - `analysis/apollo_control_handoff/apollo_control_handoff_report.json`
+    additionally checks temporal overlap between nonzero planning rows and
+    control output rows. The `planning_control_handoff` section records
+    `first_planning_timestamp_sec`, `last_planning_timestamp_sec`,
+    `first_nonzero_planning_timestamp_sec`,
+    `last_nonzero_planning_timestamp_sec`, `first_control_timestamp_sec`,
+    `last_control_timestamp_sec`, stream spans, and
+    `planning_nonzero_rows_after_control_stream_end`. If `failure_reasons`
+    contains `control_stream_ended_before_first_nonzero_planning`, first
+    inspect Apollo control output/process survival and why control stopped
+    producing commands before debugging trajectory consumption fields.
+  - Phase 1 Apollo fixed-scene compatibility runs should use planning-ready
+    deferred control start and write
+    `artifacts/apollo_control_deferred_start.log` plus
+    `artifacts/apollo_control_deferred_survival.json`. Missing survival evidence
+    does not prove the backend failed, but it leaves the control-process
+    lifecycle unverified and should be treated as a postprocess/online evidence
+    gap before tuning control mapping.
+    `run_phase1_postprocess()` ensures
+    `analysis/apollo_control_handoff/apollo_control_handoff_report.json` for
+    Apollo fixed-scene target runs before writing `phase1_status.json`. If that
+    handoff report shows `failure_stage=process_health`, Phase 1 status maps
+    the run to `failed/control_process_failed` rather than a generic stuck or
+    no-control label.
+    In the 2026-06-18 Baguang static follow-stop compatibility sample
+    `runs/phase1_apollo_static_compat_bvar_disabled_20260618_110639`,
+    `deferred_control_disable_bvar_dump=true` removed the bvar-dump log line
+    as a confounder, but Control still exited with
+    `process_health.crash_reason=tcmalloc_invalid_free` from
+    `artifacts/apollo_control_deferred_mainboard.log`. Treat this as an Apollo
+    Control process-survival blocker; it is not evidence of CARLA actuation,
+    v-t-gap, or fixed-scene playback failure.
+    The follow-up diagnostic overlay sample
+    `runs/phase1_apollo_static_compat_control_overlay_20260618_112758`
+    staged 17 historical control runtime files and advanced the same scenario
+    to `apollo_control_handoff.verdict=warn` with
+    `failure_stage=none`; `/apollo/control`, bridge receive, decode, mapping,
+    apply, and vehicle response evidence all materialized. That run still
+    failed Phase 1 as `failed/lane_invasion`, so the overlay is diagnostic
+    process-survival evidence only. Do not promote it to default runtime or
+    treat it as an Apollo behavior pass without repeated no-regression evidence.
+  - fixed-scene playback validity includes both
+    `analysis/fixed_scene_contract/fixed_scene_contract_report.json` and
+    `analysis/scenario_actor_contract/scenario_actor_contract_report.json`.
+    If a non-ego scenario actor fails its scripted behavior contract, for
+    example a lead vehicle cannot execute the requested speed profile, the run
+    is `invalid/fixed_scene_failed` even if `v_t_gap` contains an unsafe gap.
+    The unsafe gap is diagnostic evidence, not a backend loss, until the fixed
+    scene actor behavior itself is valid.
+  - Apollo fixed-scene target-actor runs require obstacle GT contract evidence
+    that the scenario target actor reached Apollo perception. If
+    `backend_type=apollo_reference_backend` and the target actor contract is
+    resolved, missing `analysis/obstacle_gt_contract/obstacle_gt_contract_report.json`
+    or `artifacts/obstacle_gt_contract.jsonl` is classified as
+    `invalid/missing_apollo_obstacle_gt_contract`, not as an Apollo behavior
+    failure.
+  - The preferred fixed-scene obstacle linkage source is
+    `fixed_scene_runtime_state.actor_roles`. If an Apollo bridge run only has
+    row-level obstacle evidence, `obstacle_gt_contract.jsonl` may link the
+    target by fields such as `front_obstacle_actor_role=lead_vehicle` plus
+    `carla_actor_id`; the report records
+    `actor_role_source=obstacle_gt_contract_record_roles` and a warning so the
+    provenance is visible.
 - `analysis/phase1_status/artifact_completeness.json`
   - records whether the Phase 1 run-local artifact spine is present.
+  - echoes `artifact_contract_version`, `target_actor_contract`, and
+    `target_actor_contract_status` for auditability. This echo does not by
+    itself make a run valid; `phase1_status.json` still classifies invalid,
+    degraded, failed, or successful outcomes.
 
-`carla_builtin` fixed-scene runs invoke the Phase 1 postprocess spine after
-runtime completion. The postprocess writes `analysis/v_t_gap/`,
-`analysis/phase1_status/`, and artifact completeness without changing control
-behavior.
+`carla_builtin` fixed-scene and route-only diagnostic runs invoke the Phase 1
+postprocess spine after runtime completion. The postprocess writes
+`analysis/v_t_gap/`, `analysis/phase1_status/`, and artifact completeness
+without changing control behavior. When postprocess is rerun, it refreshes the
+Phase 1 echo fields in an existing `summary.json`, such as
+`phase1_status`, `phase1_failure_reason`, `v_t_gap_status`, and
+`artifact_completeness_status`; the authoritative Phase 1 classification
+remains `analysis/phase1_status/phase1_status.json`. Route-only runs do not require
+`fixed_scene_resolved.json`, `fixed_scene_runtime_state.json`,
+`scenario_actor_trace.jsonl`, or `scenario_phase_events.jsonl` when the target
+actor contract is explicitly `not_required`.
+
+`carla_builtin` online runs also attach CARLA collision and lane-invasion
+sensors to the ego vehicle when the local runtime supports them. The run
+summary and `timeseries.csv` expose `collision_count`, `lane_invasion_count`,
+`collision_sensor_available`, and `lane_invasion_sensor_available`; individual
+events are written to `artifacts/safety_event_trace.jsonl`. If sensor creation
+fails, the run can still complete as diagnostic playback, but
+`phase1_status.phase1_metrics.safety_event_evidence` marks the corresponding
+surface unavailable so ScenarioComparison cannot use that safety event as a
+cross-backend behavior loss.
+
+Legacy Apollo online runs can be explicitly bound to a Phase 1 fixed-scene
+scenario after the fact when the operator knows which `ScenarioCase` was
+intended:
+
+```bash
+python tools/bind_phase1_scenario_run.py \
+  --run-dir <apollo_run> \
+  --scenario configs/scenarios/town01/follow_stop_097.yaml \
+  --role-alias lead_vehicle=front \
+  --postprocess
+```
+
+This writes `analysis/phase1_scenario_binding/phase1_scenario_binding_report.json`,
+updates `manifest.json` with the Phase 1 scenario identity, and writes
+`artifacts/fixed_scene_resolved.json` from the tracked scenario YAML. Role
+aliases are explicit operator declarations, for example mapping a legacy
+bridge row role `front` to the Phase 1 canonical role `lead_vehicle`.
+For Apollo legacy runs, postprocess readiness prefers the runtime
+`artifacts/cyber_bridge_stats.json` `front_obstacle_behavior` block when no
+resolved bridge config path is available. That checks the bridge role names
+and actor-probe setting observed in the run, while still marking
+operator-declared role aliases as warning-level setup evidence.
+If a legacy Apollo run records `phase1_scenario_path` in `manifest.json`,
+`summary.json`, `config.resolved.yaml`, or `typed_runtime.effective_legacy.yaml`,
+`run_phase1_postprocess()` can perform this binding automatically. For legacy
+bridges that publish the target role as `front`, postprocess maps it to the
+Phase 1 canonical `lead_vehicle` role only as explicit setup evidence; obstacle
+GT, `v-t-gap`, handoff, and status reports still decide whether the run is
+evaluable.
+
+Binding is setup evidence only. It does not verify that fixed-scene playback
+actually followed the storyboard, and it does not turn a legacy Apollo smoke
+into backend behavior success. `phase1_status.json`, `v_t_gap_report.json`,
+`obstacle_gt_contract_report.json`, artifact completeness, and
+`ScenarioComparison` still decide whether the run is evaluable.
 
 Comparison directory artifacts:
 
 - `comparison_manifest.json`
 - `comparison_summary.json`
   - schema: `phase1_comparison.v1`
-  - includes `comparison_status`, `comparison_target_status`, and
-    `backend_coverage`.
+  - includes `comparison_id`, `scenario_case`, `participating_runs`,
+    `backends`, `comparison_status`, `comparison_target_status`,
+    `backend_coverage`, `invalid_runs`, `backend_results`, `v_t_gap_files`,
+    `summary_notes`, and `evidence_files`.
+  - when present, run entries and backend results echo
+    `apollo_control_handoff_status`,
+    `apollo_control_handoff_failure_stage`, and
+    `apollo_control_handoff_blocking_reasons` from
+    `analysis/apollo_control_handoff/apollo_control_handoff_report.json`.
+    The Markdown table also shows the handoff stage so an Apollo backend loss
+    can be separated from target/gap/playback failures without opening every
+    nested artifact.
+  - when present, backend results also carry
+    `phase1_metrics.derived_blocker_evidence` from each run. The Markdown table
+    may surface compact fields such as link-health primary blocker,
+    control-health failure reason, and lane-event departure class. These fields
+    explain an evaluable run-level failure; they do not change whether the run
+    is evaluable, do not convert an invalid run into a backend loss, and do not
+    declare an Apollo natural-driving pass; any such claim still requires a
+    matching `natural_driving_report.json`.
+  - `scenario_case` is the comparison identity. Legacy online runs may carry
+    older or generic `scenario_id` values; if they normalize to the same
+    `scenario_case`, comparison may proceed while preserving the original
+    values in `scenario_ids` for auditability.
   - `comparison_target_status=apollo_vs_planning_control_evaluable` is the
     Phase 1 target comparison shape. Same-backend comparisons are valid
     regression evidence but are labeled `same_backend_regression`, not Phase 1
     ApolloBackend-vs-PlanningControlBackend completion.
+  - if a participating run declares blocking assists such as a route follower,
+    dummy lateral control, straight acceleration override, or lateral
+    stabilizer, the run may remain evaluable as assisted scenario evidence but
+    the comparison target is not `apollo_vs_planning_control_evaluable`; failed
+    assisted runs must not be counted as reference-backend losses.
+  - safety-event failures require a matching safety-event evidence surface
+    across participating evaluable runs. `phase1_status.phase1_metrics` now
+    includes `safety_event_evidence.collision` and
+    `safety_event_evidence.lane_invasion`, each recording whether the summary
+    or `timeseries.*` exposes the corresponding counter. If one backend fails
+    with `lane_invasion` or `collision` and another evaluable backend lacks
+    the same event counter surface, `ScenarioComparison` must report
+    `comparison_status=partially_evaluable` and
+    `comparison_target_status=safety_event_evidence_mismatch`; the safety
+    failure remains a run-level `failed/*`, but it is not counted as a
+    cross-backend loss.
+  - if every participating evaluable backend fails with lane invasion within
+    the first few meters while `lane_invasion_context` shows low cross-track
+    and heading error, `ScenarioComparison` reports
+    `comparison_target_status=shared_safety_event_context_issue`. The run-level
+    outcome remains non-pass, but this shared near-start lane-event context is
+    treated as a scenario/map/sensor contract issue rather than a backend
+    behavior loss. For Baguang, `baguang_lane_event_contract_report.json`
+    should be used to support or reject this quarantine boundary. That report
+    should prefer run-specific ego footprint evidence from
+    `timeseries.bbox_extent_y_m`, `timeseries.ego_width_m`, or
+    `artifacts/carla_vehicle_characteristics.json` before falling back to a
+    default half-width. When `artifacts/safety_event_trace.jsonl` includes
+    `crossed_lane_marking_types`, the contract should also report whether the
+    crossed marking types match the parsed target-lane `roadMark` types; a
+    mismatch is diagnostic map/sensor evidence, not a backend control result.
+    If an offset sweep is available, it should be recorded in the contract as
+    `offset_sweep`. A result such as `road_start_only_trigger=true` means the
+    lane event is localized to the road-start/spawn neighborhood and must not
+    be counted as a backend behavior loss until the map/sensor contract is
+    repaired or the scenario start is shifted and revalidated. The
+    `follow_stop_static_300m_spawn2m` diagnostic variant records
+    `manifest.ego_spawn_s_offset_m=2.0`; the 2026-06-18 builtin validation
+    runs `runs/phase1_baguang_follow_stop_static_spawn2m_builtin_20260618_140307`
+    and
+    `runs/phase1_baguang_follow_stop_static_spawn2m_builtin_20260618_140340_30s`
+    both produced `lane_invasion_count=0` and
+    `baguang_lane_event_contract.status=pass`. This proves the road-start
+    mitigation for the builtin diagnostic backend only. The Apollo LaunchPlan
+    can dispatch the matching shifted-start compatibility config
+    `configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml`,
+    and the 2026-06-18 online sample
+    `runs/phase1_baguang_apollo_followstop_static_spawn2m_compat_20260618_142848`
+    proved the offset reached runtime metadata:
+    `artifacts/scenario_metadata.json.ego_spawn_s_offset_m=2.0`,
+    `front_alignment.longitudinal_m≈300m`,
+    `lane_invasion_count=0`, `collision_count=0`,
+    `obstacle_gt_contract.status=pass`, `v_t_gap.status=pass`,
+    and `baguang_lane_event_contract.status=pass`. That run is evaluable but
+    failed with `phase1_status=failed/control_process_failed` and
+    `apollo_control_handoff.failure_stage=process_health`, so it is an
+    ApolloBackend process-health failure rather than a spawn/target/gap invalid
+    run or an Apollo behavior success.
+    The follow-up explicit overlay sample
+    `runs/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_compat_20260618_145220`
+    used
+    `configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_compat.yaml`
+    and wrote `artifacts/apollo_control_runtime_overlay_manifest.json` with
+    `selected_count=17`. It restored `apollo_control_handoff` to
+    `warn/failure_stage=none` and made `/apollo/control` materialize, but the
+    run then failed as `phase1_status=failed/lane_invasion` after about 55.6m
+    of Apollo-controlled motion. The refreshed
+    `baguang_lane_event_contract_report.json` records
+    `departure_diagnostics.classification=downstream_progressive_lane_departure`
+    with cross-track and heading error growing before the event. The same block
+    now prefers `artifacts/control_apply_trace.jsonl` over compatibility
+    timeseries control placeholders. In that authoritative trace, Apollo raw
+    steer grows to about `-0.159`, mapped and CARLA-applied steer both reach
+    about `-0.0396`, and
+    `mapped_to_applied_steer_abs_error.max_abs_error=0.0`. The same report
+    records `raw_to_mapped_steer_gain.mean≈0.244`, final gain `0.25`, and
+    Apollo raw steer sharing the cross-track-error sign. This is diagnostic
+    process-survival evidence plus an ApolloBackend lateral-behavior /
+    source-steer / legacy-mapping-semantics attribution failure; it is not an
+    Apollo behavior pass, not a CARLA apply mismatch proof, and the overlay
+    remains non-default.
+    The refreshed `analysis/control_health/control_health_report.json` now
+    treats stale summary fields such as `routing_materialized=false`,
+    `planning_materialized=false`, and
+    `control_handoff_status=planning_not_materialized` as lower-priority than
+    explicit routing response, planning-topic, and control-handoff artifacts.
+    For this run it records `routing_materialized=true`,
+    `planning_materialized=true`,
+    `control_handoff_status=control_consuming_with_nonzero_planning`, and
+    `failure_reason=apollo_raw_command_oscillation`, with warnings that the
+    summary fields were overridden by stronger artifacts. This fallback is an
+    evidence-consistency repair only; it does not hide explicit
+    `control_missing` summaries and it does not turn the Apollo run into a
+    behavior success.
+    To compare native control-process failures with a diagnostic overlay run,
+    use `tools/analyze_apollo_control_runtime_diff.py`. It writes
+    `analysis/apollo_control_runtime_diff/apollo_control_runtime_diff_report.json`
+    and a markdown summary. The report compares overlay targets, control
+    survival, handoff crash signatures, and Apollo docker library manifests.
+    A positive diff is diagnostic runtime evidence only: it can show that a
+    control-runtime overlay correlates with process survival, but it does not
+    make the overlay default and does not count as Apollo natural-driving
+    success.
+    Exact-target smoke probes in
+    `artifacts/apollo_control_runtime_smoke_exact_20260618_204258/` can narrow
+    the suspect runtime files without running CARLA, but their result is weaker
+    than a full online run. In the 2026-06-18 probes,
+    `liblat_controller.so` alone and the three controller libraries passed the
+    isolated control-DAG smoke, yet the corresponding online runs
+    `runs/phase1_baguang_apollo_spawn2m_lat_overlay_20260618_205014` and
+    `runs/phase1_baguang_apollo_spawn2m_controller_overlay_20260618_210017`
+    still ended with `NO_CONTROL_LOG`. Larger online bisection variants also
+    failed: `runs/phase1_baguang_apollo_spawn2m_proto_only_overlay_20260618_220859`
+    staged only `lib_control_cmd_proto_mcc_bin.so` and still reported
+    `apollo_control_handoff.failure_stage=process_health`,
+    `crash_reason=tcmalloc_invalid_free`, and no control survival at 5s/10s.
+    That proto-only run is `phase1_status=invalid` because its obstacle GT
+    contract failed, so it is not a backend behavior loss; it remains valid as
+    read-only control-runtime bisection evidence. The run
+    `runs/phase1_baguang_apollo_spawn2m_controllers_submodules_overlay_20260618_211422`
+    staged 13 controller/submodule files, and
+    `runs/phase1_baguang_apollo_spawn2m_no_controlmsgs_overlay_20260618_212342`
+    staged the full set minus `lib_control_cmd_proto_mcc_bin.so`; both remained
+    `apollo_control_handoff.failure_stage=process_health` /
+    `NO_CONTROL_LOG`. A positive-control rerun,
+    `runs/phase1_baguang_apollo_spawn2m_full_overlay_rerun_20260618_213330`,
+    staged the full 17-file set and restored
+    `apollo_control_handoff.verdict=warn`, `failure_stage=none`, and bridge
+    `control_rx_count/control_tx_count=9231/9231`, but still failed Phase 1 as
+    `failed/lane_invasion`. The machine-readable bisection summary is
+    `artifacts/apollo_control_runtime_overlay_online_bisect_20260618_212000/online_bisect_summary.json`.
+    The focused 16-vs-17 report
+    `artifacts/apollo_control_runtime_overlay_online_bisect_20260618_212000/runtime_diff_16_vs_17/apollo_control_runtime_diff_report.json`
+    sets
+    `primary_difference=control_cmd_proto_runtime_target_correlates_with_process_survival`
+    and records `single_added_name=lib_control_cmd_proto_mcc_bin.so`. The
+    follow-up diffs
+    `artifacts/apollo_control_runtime_overlay_online_bisect_20260618_212000/runtime_diff_no_overlay_vs_proto_only/`
+    and
+    `artifacts/apollo_control_runtime_overlay_online_bisect_20260618_212000/runtime_diff_proto_only_vs_full_17/`
+    show that the proto library alone does not improve survival; the remaining
+    16 control runtime files are still required in the current online
+    diagnostic condition.
+    The
+    read-only provenance report
+    `artifacts/apollo_control_runtime_overlay_online_bisect_20260618_212000/control_cmd_proto_provenance/control_cmd_proto_provenance.json`
+    compares the overlay source with the current restored target inside the
+    Apollo container. It records different hashes
+    (`689c6e8d6...` vs `8c210ec8...`), different sizes (about `0.9MB` vs
+    `2.2MB`), and different ELF path style (`RPATH` vs Bazel-style `RUNPATH`).
+    This supports a control-command protobuf runtime provenance/ABI hypothesis;
+    it is still read-only diagnostic evidence, not permission to patch Apollo
+    binaries or make the overlay default.
+    Reproduce the provenance report with:
+    `python tools/analyze_apollo_control_runtime_provenance.py --overlay-manifest runs/phase1_baguang_apollo_spawn2m_full_overlay_rerun_20260618_213330/artifacts/apollo_control_runtime_overlay_manifest.json --record-name lib_control_cmd_proto_mcc_bin.so --container apollo_neo_dev_10.0.0_pkg --source-run runs/phase1_baguang_apollo_spawn2m_full_overlay_rerun_20260618_213330 --baseline-run runs/phase1_baguang_apollo_spawn2m_no_controlmsgs_overlay_20260618_212342 --online-diff-report artifacts/apollo_control_runtime_overlay_online_bisect_20260618_212000/runtime_diff_16_vs_17/apollo_control_runtime_diff_report.json --out artifacts/apollo_control_runtime_overlay_online_bisect_20260618_212000/control_cmd_proto_provenance`.
+    The set-level provenance report
+    `artifacts/apollo_control_runtime_overlay_online_bisect_20260618_212000/full_17_overlay_set_provenance/apollo_control_runtime_overlay_set_provenance_report.json`
+    compares every source/target pair in the 17-file overlay manifest. It
+    records `existing_pair_count=17`, `same_content_count=0`,
+    `different_content_count=17`, `records_with_elf_path_style_diff=13`, and
+    `records_with_needed_libraries_diff=12`. This narrows the current evidence
+    away from a single-file proto explanation and toward a runtime-set
+    ABI/configuration mismatch hypothesis. The report remains diagnostic-only:
+    it does not make the overlay default, does not prove Apollo behavior
+    success, and should not be used as a capability claim.
+    Reproduce the set-level provenance with:
+    `python tools/analyze_apollo_control_runtime_provenance.py --all-records --overlay-manifest runs/phase1_baguang_apollo_spawn2m_full_overlay_rerun_20260618_213330/artifacts/apollo_control_runtime_overlay_manifest.json --container apollo_neo_dev_10.0.0_pkg --source-run runs/phase1_baguang_apollo_spawn2m_full_overlay_rerun_20260618_213330 --baseline-run runs/phase1_baguang_apollo_spawn2m_no_controlmsgs_overlay_20260618_212342 --online-diff-report artifacts/apollo_control_runtime_overlay_online_bisect_20260618_212000/runtime_diff_proto_only_vs_full_17/apollo_control_runtime_diff_report.json --out artifacts/apollo_control_runtime_overlay_online_bisect_20260618_212000/full_17_overlay_set_provenance`.
+    The
+    current inference is that this control command protobuf runtime target in
+    combination with the other 16 files is part of the online control
+    materialization condition. This remains a diagnostic runtime differential;
+    smaller subsets are not behavior evidence, and the full overlay must not
+    be promoted to default without separate no-regression evidence.
   - if an Apollo run is present but invalid, `backend_coverage` keeps the
     Apollo backend visible while `comparison_target_status` reports that there
     is no evaluable Apollo reference backend.
@@ -218,6 +617,79 @@ backend readiness checks. For `apollo_cyberrt` fixed-scene scenarios it writes
 `status=invalid/failure_reason=backend_not_ready` when the fixed-scene Apollo
 runtime is not migrated. That scaffold is ingestible by ScenarioComparison, but
 it is not online behavior evidence and must not count as an Apollo backend loss.
+The scaffold may also write static-only fixed-scene compile artifacts such as
+`artifacts/fixed_scene_resolved.json`,
+`analysis/fixed_scene_contract/fixed_scene_contract_report.json`, and
+`analysis/scenario_actor_contract/scenario_actor_contract_report.json`. These
+reports can prove the ScenarioCase is structurally compilable, but they remain
+`insufficient_data` without runtime actor trace and phase events. An online
+Apollo fixed-scene run additionally needs fixed-scene runtime state, scenario
+actor trace, CyberRT/bridge artifacts, and obstacle GT contract evidence for
+the target actor before `phase1_status` can evaluate backend behavior.
+
+For Apollo compatibility runs that already produce row-level
+`artifacts/obstacle_gt_contract.jsonl`, Phase 1 postprocess may derive
+`artifacts/fixed_scene_runtime_state.json` and
+`artifacts/scenario_actor_trace.jsonl` from observed fields such as
+`front_obstacle_actor_role`, `carla_actor_id`, position, speed, and
+front-obstacle gap. The derived files are marked
+`derived_from_apollo_obstacle_gt_contract` and are valid only as compatibility
+evidence that a target actor was observed in Apollo obstacle/probe rows. They
+may be preserved on repeated postprocess runs and reported as
+`artifact_sources.*=preserved_existing`; this is idempotent evidence reuse, not
+a new runtime observation.
+do not by themselves prove the target actor was published in Apollo perception
+obstacles, do not prove fixed-scene playback success, and do not override
+`backend_not_ready`, missing CyberRT artifacts, or failed obstacle contracts
+such as `fixed_scene_actor_probe_not_published_to_apollo_obstacles`.
+
+Apollo fixed-scene scaffolds may also write
+`analysis/phase1_apollo_fixed_scene_readiness/phase1_apollo_fixed_scene_readiness_report.json`.
+This is a run-preflight/config-readiness artifact. It checks whether the Apollo
+bridge `front_obstacle_behavior` configuration can probe the fixed-scene target
+actor role and therefore produce row-level obstacle evidence for the target.
+For example, a Baguang follow-stop target role of `lead_vehicle` is not ready if
+the bridge role list only contains `front`, or if actor probing is disabled.
+Readiness pass/warn/fail is not behavior evidence; it only explains whether an
+online Apollo fixed-scene run is configured to make the target actor visible in
+auditable obstacle rows.
+`run_phase1_postprocess()` also writes this report automatically for Apollo
+fixed-scene target runs, so archived run directories can be refreshed without
+rerunning CARLA or Apollo.
+
+Operator preflight for a resolved or candidate bridge config:
+
+```bash
+python tools/analyze_phase1_apollo_fixed_scene_readiness.py \
+  --scenario configs/scenarios/baguang/follow_stop_static_300m.yaml \
+  --bridge-config <resolved_apollo_bridge_config.yaml> \
+  --out <run>/analysis/phase1_apollo_fixed_scene_readiness
+```
+
+For the shifted-start diagnostic variant, use:
+
+```bash
+python tools/analyze_phase1_apollo_fixed_scene_readiness.py \
+  --scenario configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml \
+  --bridge-config <resolved_apollo_bridge_config.yaml> \
+  --out <run>/analysis/phase1_apollo_fixed_scene_readiness
+```
+
+The Phase 1 scaffold can also record the same bridge config path in
+`manifest.json` / `preflight.json` and use it for readiness:
+
+```bash
+python tools/run_phase1_scenario.py \
+  --scenario configs/scenarios/baguang/follow_stop_static_300m.yaml \
+  --backend apollo_cyberrt \
+  --bridge-config configs/io/examples/phase1_baguang_apollo_fixed_scene_bridge.yaml \
+  --run-dir runs/<apollo_fixed_scene_preflight>
+```
+
+`configs/io/examples/phase1_baguang_apollo_fixed_scene_bridge.yaml` is a
+Phase 1 readiness example that enables actor probing and includes
+`lead_vehicle` in `front_obstacle_behavior.role_names`. It still does not start
+Apollo or prove online behavior.
 
 Scenario catalog artifacts:
 
@@ -227,11 +699,27 @@ Scenario catalog artifacts:
 The catalog is a review/orchestration artifact, not run evidence by itself. It
 lists each P0/P1 case with separate `case_yaml_status`, `template_status`,
 `carla_online_status`, `apollo_online_status`, `v_t_gap_status`, and
-`comparison_status` / `comparison_target_status` fields. A scenario with
-YAML/template evidence but missing online or target-comparison evidence must
-remain `PARTIAL` or `NOT_YET`, never `DONE`. `tools/phase1_scenario_catalog.py`
-supports `--evidence-root` for review packs or copied run evidence; without it,
-the catalog scans `<repo>/runs`.
+`comparison_status` / `comparison_target_status` fields. For fixed-scene Apollo
+runs it also surfaces `apollo_fixed_scene_readiness_status` and
+`apollo_fixed_scene_readiness` when the readiness report is present, and
+`apollo_fixed_scene_runtime_dispatch_status` /
+`apollo_fixed_scene_runtime_dispatch_reason` when Apollo preflight/runtime
+artifacts show whether fixed-scene dispatch actually executed. This keeps
+bridge-config readiness separate from runtime migration: a readiness `pass`
+with `apollo_fixed_scene_runtime_not_migrated` is still only scaffold evidence.
+Missing actor-probe, role-name mismatch, or runtime-dispatch absence remains a
+setup/evidence blocker rather than being counted as an Apollo behavior loss. It
+also records `scenario_case_ids`, `case_files`, and `target_actor_contract` so
+reviewers can trace which concrete ScenarioCase and target role support each
+readiness row. A scenario with YAML/template evidence but missing online or
+target-comparison evidence must remain `PARTIAL` or `NOT_YET`, never `DONE`.
+`tools/phase1_scenario_catalog.py` supports `--evidence-root` for review packs
+or copied run evidence; without it, the catalog scans `<repo>/runs`.
+When the selected representative comparison carries
+`phase1_metrics.derived_blocker_evidence`, the catalog may echo compact
+link-health, control-health, and lane-event blocker summaries. These summaries
+are review navigation hints only; `phase1_status.json` and
+`comparison_summary.json` remain the authoritative run/comparison outcomes.
 
 ## `logs/`
 

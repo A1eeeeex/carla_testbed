@@ -28,7 +28,11 @@ from carla_testbed.adapters.apollo.messages import (
     localization_debug_from_dict,
     write_localization_estimate_to_pb,
 )
-from carla_testbed.adapters.apollo.vehicle_reference import load_vehicle_reference
+from carla_testbed.adapters.apollo.vehicle_reference import (
+    VehicleReferenceConfig,
+    load_vehicle_reference,
+    resolve_localization_back_offset_m as resolve_vehicle_reference_localization_back_offset_m,
+)
 from carla_testbed.analysis.apollo_reference_line_contract import build_reference_line_contract_event
 from tools.apollo10_cyber_bridge.control_apply_trace import build_control_apply_trace_payload
 
@@ -394,6 +398,17 @@ def _localization_reference_mode(back_offset_m: float) -> str:
     return "custom_offset"
 
 
+def _resolve_localization_back_offset_m(
+    raw_value: Any,
+    *,
+    vehicle_reference: Optional[VehicleReferenceConfig],
+) -> Tuple[float, str, str]:
+    return resolve_vehicle_reference_localization_back_offset_m(
+        raw_value,
+        vehicle_reference=vehicle_reference,
+    )
+
+
 def _bridge_path_text(
     raw: Any,
     *,
@@ -442,6 +457,19 @@ def _finite_or_none(value: Any) -> Optional[float]:
     except Exception:
         return None
     return out if math.isfinite(out) else None
+
+
+def _actor_type_label_from_type_id(type_id: Any) -> Optional[str]:
+    text = str(type_id or "").strip().lower()
+    if not text:
+        return None
+    if text.startswith("vehicle.") or ".vehicle." in text or "vehicle" in text:
+        return "VEHICLE"
+    if text.startswith("walker.") or "pedestrian" in text or "walker" in text:
+        return "PEDESTRIAN"
+    if "bicycle" in text or "bike" in text:
+        return "BICYCLE"
+    return "UNKNOWN"
 
 
 def _finite_delta_sec(later: Any, earlier: Any) -> Optional[float]:
@@ -1556,31 +1584,43 @@ class ApolloGtBridge:
         }
         self.max_obstacles = int(bridge_cfg.get("max_obstacles", 64))
         self.radius_m = float(bridge_cfg.get("radius_m", 120.0))
-        self.localization_back_offset_m = float(
-            bridge_cfg.get("localization_back_offset_m", 0.0)
-        )
-        self.localization_reference_mode = _localization_reference_mode(
-            self.localization_back_offset_m
-        )
         default_vehicle_reference_path = (
             Path(__file__).resolve().parents[2]
             / "configs"
             / "vehicles"
             / "ego_vehicle_reference.verified.yaml"
         )
-        self.vehicle_reference_path = str(
+        raw_vehicle_reference_path = (
             bridge_cfg.get("vehicle_reference_path", default_vehicle_reference_path)
             or default_vehicle_reference_path
         )
+        vehicle_reference_path = Path(str(raw_vehicle_reference_path)).expanduser()
+        if not vehicle_reference_path.is_absolute():
+            vehicle_reference_path = (
+                Path(__file__).resolve().parents[2] / vehicle_reference_path
+            ).resolve()
+        self.vehicle_reference_path = str(vehicle_reference_path)
         self.vehicle_reference_confidence = "unknown"
         self.vehicle_reference_hard_gate_eligible = False
         self.vehicle_reference_load_error = ""
+        vehicle_reference: Optional[VehicleReferenceConfig] = None
         try:
             vehicle_reference = load_vehicle_reference(self.vehicle_reference_path)
             self.vehicle_reference_confidence = vehicle_reference.confidence
             self.vehicle_reference_hard_gate_eligible = bool(vehicle_reference.hard_gate_eligible)
         except Exception as exc:
             self.vehicle_reference_load_error = str(exc)
+        (
+            self.localization_back_offset_m,
+            self.localization_back_offset_source,
+            self.localization_back_offset_resolve_error,
+        ) = _resolve_localization_back_offset_m(
+            bridge_cfg.get("localization_back_offset_m", 0.0),
+            vehicle_reference=vehicle_reference,
+        )
+        self.localization_reference_mode = _localization_reference_mode(
+            self.localization_back_offset_m
+        )
         self.apollo_control_state_reference = APOLLO_CONTROL_STATE_REFERENCE
         self.map_file_path_raw = str(bridge_cfg.get("map_file", "")).strip()
         self.map_file_path = _bridge_path_text(self.map_file_path_raw)
@@ -1596,6 +1636,8 @@ class ApolloGtBridge:
         self.debug_pose_print = bool(bridge_cfg.get("debug_pose_print", False))
         self.stats["localization"] = {
             "back_offset_m": float(self.localization_back_offset_m),
+            "back_offset_source": self.localization_back_offset_source,
+            "back_offset_resolve_error": self.localization_back_offset_resolve_error,
             "reference_mode": self.localization_reference_mode,
             "expected_rear_axle_back_offset_m": REAR_AXLE_LOCALIZATION_BACK_OFFSET_M,
             "offset_error_m": float(
@@ -6277,6 +6319,8 @@ class ApolloGtBridge:
             "raw_y": pose_info["raw_y"],
             "raw_yaw_deg": math.degrees(pose_info["raw_yaw"]),
             "localization_back_offset_m": float(self.localization_back_offset_m),
+            "localization_back_offset_source": self.localization_back_offset_source,
+            "localization_back_offset_resolve_error": self.localization_back_offset_resolve_error,
             "localization_reference_mode": self.localization_reference_mode,
             "apollo_control_state_reference": self.apollo_control_state_reference,
             "map_x": x,
@@ -7397,6 +7441,8 @@ class ApolloGtBridge:
                 "carla_frame_id": direct_world_frame,
                 "localization_reference_mode": self.localization_reference_mode,
                 "localization_back_offset_m": float(self.localization_back_offset_m),
+                "localization_back_offset_source": self.localization_back_offset_source,
+                "localization_back_offset_resolve_error": self.localization_back_offset_resolve_error,
                 "apollo_control_state_reference": self.apollo_control_state_reference,
                 "angular_velocity_source": angular_velocity_source,
                 "acceleration_source": acceleration_source,
@@ -10597,6 +10643,8 @@ class ApolloGtBridge:
             "map_x_after_back_offset": float(pose_info["map_x"]),
             "map_y_after_back_offset": float(pose_info["map_y"]),
             "localization_back_offset_m": float(self.localization_back_offset_m),
+            "localization_back_offset_source": self.localization_back_offset_source,
+            "localization_back_offset_resolve_error": self.localization_back_offset_resolve_error,
             "localization_reference_mode": self.localization_reference_mode,
             "apollo_control_state_reference": self.apollo_control_state_reference,
             "routing_start_raw_x": raw_x0,
@@ -11250,6 +11298,7 @@ class ApolloGtBridge:
                     front_actor_length_m = None
                     front_actor_width_m = None
                     front_actor_height_m = None
+                    front_actor_type_id = None
                     if front_actor is not None:
                         try:
                             front_actor_id = int(getattr(front_actor, "id"))
@@ -11258,8 +11307,15 @@ class ApolloGtBridge:
                         try:
                             attrs = getattr(front_actor, "attributes", {}) or {}
                             front_actor_role = str(attrs.get("role_name", "") or "")
+                            front_actor_type_id = str(
+                                getattr(front_actor, "type_id", "")
+                                or attrs.get("type_id", "")
+                                or attrs.get("base_type", "")
+                                or ""
+                            )
                         except Exception:
                             front_actor_role = ""
+                            front_actor_type_id = None
                         try:
                             tr = front_actor.get_transform()
                             front_actor_x = float(getattr(tr.location, "x", 0.0))
@@ -11995,6 +12051,9 @@ class ApolloGtBridge:
                             "ego_actor_id": self._ego_actor_id_for_obstacle_contract(),
                             "carla_actor_id": front_actor_id,
                             "apollo_perception_id": front_actor_id,
+                            "blueprint_id": front_actor_type_id,
+                            "type": _actor_type_label_from_type_id(front_actor_type_id),
+                            "obstacle_type_source": "carla_actor_type_id" if front_actor_type_id else "missing",
                             "is_ego": False,
                             "front_obstacle_actor_x": front_actor_x,
                             "front_obstacle_actor_y": front_actor_y,
@@ -12316,7 +12375,8 @@ def _default_config() -> Dict[str, Any]:
             "publish_rate_hz": 20.0,
             "max_obstacles": 64,
             "radius_m": 120.0,
-            "localization_back_offset_m": 0.0,
+            "localization_back_offset_m": "auto",
+            "vehicle_reference_path": "configs/vehicles/ego_vehicle_reference.verified.yaml",
             "map_file": "",
             "map_bounds_file": "",
             "debug_pose_print": False,

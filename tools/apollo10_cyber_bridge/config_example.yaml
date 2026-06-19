@@ -48,7 +48,8 @@ bridge:
     chassis_publish_policy: allow_cached_republish
   max_obstacles: 64
   radius_m: 120.0
-  localization_back_offset_m: 0.0
+  localization_back_offset_m: auto
+  vehicle_reference_path: configs/vehicles/ego_vehicle_reference.verified.yaml
   localization_acceleration_filter:
     # Disabled by default for legacy compatibility. Claim-grade lane-keep
     # profiles may enable this to remove finite-difference GT acceleration

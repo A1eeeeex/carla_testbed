@@ -78,12 +78,21 @@ TRAFFIC_LIGHT_SCENARIOS = {
 ROUTE_CONTRACT_BLOCKER_PRIORITY = (
     "scenario_route_length_inconsistent",
     "apollo_routing_goal_mismatch",
+    "apollo_routing_goal_projection_disabled_by_config",
+    "apollo_routing_goal_projection_not_accepted",
+    "apollo_routing_goal_projection_untrusted",
+    "apollo_routing_goal_snap_distance_high",
+    "apollo_routing_goal_lateral_error_high",
+    "unaccepted_goal_projection_applied",
+    "untrusted_goal_projection_applied",
     "apollo_routing_lane_sequence_mismatch",
     "apollo_routing_length_mismatch",
     "apollo_routing_missing_scenario_lane",
     "route_identity_inconsistent",
     "claim_route_not_materialized",
     "long_goal_not_compatible_with_scenario_route",
+    "reference_line_missing_after_routing_request",
+    "route_segments_failed_after_routing_request",
     "routing_response_runtime_evidence_missing",
 )
 
@@ -1402,6 +1411,14 @@ def _should_regenerate_apollo_route_contract(report: Mapping[str, Any] | None) -
     decoded_available = isinstance(decoded, Mapping) and decoded.get("available") is True
     blockers = {str(item) for item in (report.get("blocking_reasons") or []) if item}
     status = _normalize_status(report.get("status"))
+    last_request = report.get("last_routing_request")
+    goal_projection = last_request.get("goal_projection") if isinstance(last_request, Mapping) else None
+    if (
+        isinstance(goal_projection, Mapping)
+        and goal_projection.get("reason") == "disabled_by_config"
+        and "apollo_routing_goal_projection_disabled_by_config" not in blockers
+    ):
+        return True
     if status == "insufficient_data" and "routing_response_runtime_evidence_missing" in blockers:
         return True
     if not decoded_available and "routing_response_runtime_evidence_missing" in blockers:
@@ -1436,6 +1453,35 @@ def _apollo_route_contract_has_runtime_evidence(report: Mapping[str, Any]) -> bo
         (isinstance(decoded, Mapping) and decoded.get("available") is True)
         or (isinstance(last_response, Mapping) and last_response.get("available") is True)
     )
+
+
+def _apollo_route_contract_runtime_route_established(report: Mapping[str, Any] | None) -> bool:
+    """True when Apollo produced and Planning consumed a concrete route window.
+
+    This is weaker than claim-route compatibility. It only means the runtime
+    route is no longer missing, so claim-route blockers should not be reported
+    as a route-establishment outage in link-health.
+    """
+    if not isinstance(report, Mapping):
+        return False
+    decoded = report.get("routing_response_decoded")
+    last_response = report.get("last_routing_response")
+    has_routing_response = bool(
+        (isinstance(decoded, Mapping) and decoded.get("available") is True)
+        or (isinstance(last_response, Mapping) and last_response.get("available") is True)
+    )
+    active = report.get("latest_planning_active_route_segment")
+    if not isinstance(active, Mapping):
+        return False
+    route_segment_count = _first_num(active.get("route_segment_count"))
+    route_segment_length = _first_num(active.get("route_segment_total_length_m"))
+    create_status = str(active.get("create_route_segments_status") or "").strip().lower()
+    has_active_segment = bool(
+        route_segment_count is not None
+        and route_segment_count > 0
+        and (route_segment_length is None or route_segment_length > 0.0)
+    ) or create_status in {"ready", "pass"}
+    return has_routing_response and has_active_segment
 
 
 def _should_regenerate_apollo_reference_line_contract(report: Mapping[str, Any] | None) -> bool:
@@ -1690,17 +1736,27 @@ def _route_establishment_layer(
     route_contract_status = _normalize_status(route_contract.get("status")) if route_contract else "insufficient_data"
     route_contract_blocking = list(route_contract.get("blocking_reasons") or []) if route_contract else []
     route_contract_warnings = list(route_contract.get("warnings") or []) if route_contract else ["apollo_route_contract_missing"]
+    runtime_route_established = _apollo_route_contract_runtime_route_established(route_contract)
+    route_contract_blocks_establishment = bool(route_contract_status == "fail" and not runtime_route_established)
+    if runtime_route_established and route_contract_status == "fail":
+        route_contract_warnings = [
+            *route_contract_warnings,
+            "claim_route_contract_failed_but_runtime_route_established",
+        ]
     if report:
         route_establishment = report.get("route_establishment")
         if not isinstance(route_establishment, Mapping):
             route_establishment = {}
         blocking = list(report.get("blocking_reasons") or [])
-        blocking.extend(route_contract_blocking)
+        if route_contract_blocks_establishment:
+            blocking.extend(route_contract_blocking)
         if route_establishment.get("route_established") is False:
             blocking.extend(route_establishment.get("blocking_reasons") or [])
         status = _normalize_status(report.get("verdict") or report.get("status"))
-        if route_contract_status == "fail":
+        if route_contract_blocks_establishment:
             status = "fail"
+        elif runtime_route_established and route_contract_status == "fail" and status in PASS_WARN:
+            status = "warn"
         elif route_contract_status == "insufficient_data" and status == "pass":
             status = "insufficient_data"
         return _layer(
@@ -1726,6 +1782,8 @@ def _route_establishment_layer(
                 "route_completion_ratio": route_establishment.get("route_completion_ratio"),
                 "summary_fail_reason": summary.get("fail_reason"),
                 "route_contract_status": route_contract_status,
+                "runtime_route_established_from_route_contract": runtime_route_established,
+                "route_contract_blocking_reasons": route_contract_blocking,
                 "route_contract_missing_fields": (
                     list(route_contract.get("missing_fields") or []) if route_contract else []
                 ),
@@ -1781,7 +1839,8 @@ def _route_establishment_layer(
     )
     blocking: list[str] = []
     warnings: list[str] = list(route_contract_warnings)
-    blocking.extend(route_contract_blocking)
+    if route_contract_blocks_establishment:
+        blocking.extend(route_contract_blocking)
     if planning_total is None:
         status = "insufficient_data"
         blocking.append("planning_materialization_report_or_summary_missing")
@@ -1796,8 +1855,10 @@ def _route_establishment_layer(
         if routing_success_count is None or routing_success_count < 1:
             blocking.append("routing_success_missing")
         warnings.append("planning_materialization_report_missing_using_summary_fallback")
-    if route_contract_status == "fail":
+    if route_contract_blocks_establishment:
         status = "fail"
+    elif runtime_route_established and route_contract_status == "fail" and status in PASS_WARN:
+        status = "warn"
     elif route_contract_status == "insufficient_data" and status == "pass":
         status = "insufficient_data"
     route_established = status == "pass"
@@ -1819,6 +1880,8 @@ def _route_establishment_layer(
             "routing_success_count": routing_success_count,
             "summary_fail_reason": fail_reason,
             "route_contract_status": route_contract_status,
+            "runtime_route_established_from_route_contract": runtime_route_established,
+            "route_contract_blocking_reasons": route_contract_blocking,
             "route_contract_missing_fields": (
                 list(route_contract.get("missing_fields") or []) if route_contract else []
             ),
@@ -2981,6 +3044,11 @@ def _blocker_summary(layers: Mapping[str, Mapping[str, Any]]) -> tuple[str | Non
         secondary = [item for item in blockers if item != semantic_primary]
         return semantic_primary, secondary
 
+    control_process_primary = _control_process_primary_for_control_reference_gap(layers)
+    if control_process_primary:
+        secondary = [item for item in blockers if item != control_process_primary]
+        return control_process_primary, secondary
+
     hdmap_reference_gap = _hdmap_reference_evidence_gap_primary(layers)
     if hdmap_reference_gap:
         secondary = [item for item in blockers if item != hdmap_reference_gap]
@@ -3110,6 +3178,43 @@ def _is_planning_gap_only_channel_failure(channel_layer: Mapping[str, Any]) -> b
         return False
     issues = {str(item) for item in metrics.get("planning_issues") or []}
     return bool(issues) and issues.issubset({"message_gap_too_large"})
+
+
+def _control_process_primary_for_control_reference_gap(
+    layers: Mapping[str, Mapping[str, Any]],
+) -> str | None:
+    """Do not blame reference-line evidence for a control-debug gap caused by control crash.
+
+    Reference-line reports include control-reference evidence. If the Planning
+    trajectory and HDMap projection are otherwise present but control debug is
+    missing because the control process never produced output, the actionable
+    primary blocker is the handoff/process layer.
+    """
+
+    reference = layers.get("planning_reference_line", {})
+    if reference.get("status") != "insufficient_data" or reference.get("blocking_reasons"):
+        return None
+    ref_warnings = {str(item) for item in reference.get("warnings") or []}
+    ref_insufficient = set(_layer_insufficient_reasons(reference))
+    control_ref_missing = bool(
+        "control_reference.control_reference_debug" in ref_warnings
+        or "control_reference_debug" in ref_insufficient
+        or "control_reference.control_reference_debug" in ref_insufficient
+    )
+    if not control_ref_missing:
+        return None
+    handoff = layers.get("routing_planning_control_handoff", {})
+    handoff_reasons = {str(item) for item in handoff.get("blocking_reasons") or []}
+    control_process_reasons = {
+        "process_health_failed",
+        "control_process_missing",
+        "control_process_crash_before_control_output",
+        "control_process_crashed",
+        "control_rx_missing",
+    }
+    if handoff.get("status") == "fail" and handoff_reasons.intersection(control_process_reasons):
+        return _layer_blocker_name("routing_planning_control_handoff", handoff)
+    return None
 
 
 def _semantic_primary_for_claim_boundary(layers: Mapping[str, Mapping[str, Any]]) -> str | None:

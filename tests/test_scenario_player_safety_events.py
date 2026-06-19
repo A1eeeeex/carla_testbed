@@ -50,17 +50,6 @@ def test_safety_event_tracker_degrades_when_blueprints_are_missing(tmp_path) -> 
     assert tracker.destroy() == []
 
 
-def test_safety_event_tracker_creates_empty_trace_without_events(tmp_path) -> None:
-    tracker = SafetyEventTracker(world=_SafetyWorld(), ego=object(), artifact_dir=tmp_path)
-
-    trace_path = tmp_path / "safety_event_trace.jsonl"
-
-    assert trace_path.is_file()
-    assert trace_path.read_text(encoding="utf-8") == ""
-    assert tracker.snapshot()["collision_count"] == 0
-    assert tracker.snapshot()["lane_invasion_count"] == 0
-
-
 def test_empty_safety_snapshot_marks_surface_unavailable() -> None:
     snapshot = empty_safety_snapshot()
 

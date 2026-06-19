@@ -3117,6 +3117,21 @@ class CyberRTBackend(Backend):
             return out
         return []
 
+    def _docker_control_runtime_overlay_names(self) -> list[str]:
+        cfg = self._docker_cfg()
+        raw = cfg.get("control_runtime_overlay_names")
+        if isinstance(raw, str):
+            text = raw.strip()
+            return [text] if text else []
+        if isinstance(raw, (list, tuple)):
+            out: list[str] = []
+            for item in raw:
+                text = str(item).strip()
+                if text:
+                    out.append(text)
+            return out
+        return []
+
     @staticmethod
     def _docker_control_runtime_overlay_targets() -> Dict[str, str]:
         return {
@@ -3211,9 +3226,11 @@ PY"""
         state_path = "/tmp/tb_control_runtime_overlay_active.json"
         overlay_artifact = artifacts / "apollo_control_runtime_overlay_manifest.json"
         target_map = self._docker_control_runtime_overlay_targets()
+        overlay_names = self._docker_control_runtime_overlay_names()
         self._write_backend_startup_trace(
             "control_runtime_overlay_stage_begin",
             source_dirs=source_dirs,
+            overlay_names=overlay_names,
         )
         script = f"""python3 - <<'PY'
 from pathlib import Path
@@ -3221,6 +3238,7 @@ import json, os, shutil, time
 
 source_dirs = {json.dumps(source_dirs, ensure_ascii=False)}
 target_map = {json.dumps(target_map, ensure_ascii=False)}
+overlay_names = set({json.dumps(overlay_names, ensure_ascii=False)})
 state_path = Path({state_path!r})
 selected = {{}}
 missing_source_dirs = []
@@ -3230,8 +3248,9 @@ for raw_dir in source_dirs:
         missing_source_dirs.append(str(src_dir))
         continue
     for item in src_dir.rglob('*'):
-        if item.is_file() and item.name in target_map:
+        if item.is_file() and item.name in target_map and (not overlay_names or item.name in overlay_names):
             selected[item.name] = str(item)
+missing_configured_names = sorted(name for name in overlay_names if name not in selected)
 backup_root = Path(f"/tmp/tb_control_runtime_overlay_{{int(time.time())}}")
 backup_root.mkdir(parents=True, exist_ok=True)
 records = []
@@ -3255,6 +3274,8 @@ payload = {{
     "overlay_active": bool(records),
     "backup_root": str(backup_root),
     "source_dirs": source_dirs,
+    "configured_names": sorted(overlay_names),
+    "missing_configured_names": missing_configured_names,
     "missing_source_dirs": missing_source_dirs,
     "selected_count": len(records),
     "records": records,
@@ -3743,6 +3764,7 @@ PY"""
         direct_log_artifact = artifacts / "apollo_control_deferred_mainboard.log"
         launch_log_artifact = artifacts / "apollo_control_deferred_launch.log"
         control_pattern = "modules/control/control_component/dag/control.dag"
+        control_pgrep_pattern = "modules/control/control_component/dag/control[.]dag"
         deferred_stamp = int(time.time())
         deferred_log_dir = "/apollo_workspace/log"
         direct_log = f"{deferred_log_dir}/control.deferred.{deferred_stamp}.tb.log"
@@ -3793,13 +3815,13 @@ PY"""
             "rm -f /apollo_workspace/dumps/control.data >/dev/null 2>&1 || true; "
             "chown -R ubuntu:ubuntu /apollo_workspace/dumps >/dev/null 2>&1 || true; "
             "chmod 0777 /apollo_workspace/dumps >/dev/null 2>&1 || true; "
-            f"pgrep -f '{control_pattern}' | grep -vw $$ | "
+            f"pgrep -f '{control_pgrep_pattern}' | grep -vw $$ | "
             "xargs -r kill -9 >/dev/null 2>&1 || true; "
             "selected_start_mode=missing; "
             + start_body
             + "echo selected_start_mode=${selected_start_mode}; "
             "sleep 2; "
-            f"pgrep -af '{control_pattern}' || true"
+            f"pgrep -af '{control_pgrep_pattern}' || true"
         )
         out = subprocess.run(
             ["docker", "exec", "-i", "-u", module_user, container, "bash", "-lc", cmd],

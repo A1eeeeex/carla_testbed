@@ -99,6 +99,24 @@ def test_route_contract_fail_blocks_reference_line_pass(tmp_path: Path) -> None:
     assert "apollo_route_contract_not_pass" in report["blocking_reasons"]
 
 
+def test_route_contract_warn_without_blockers_keeps_reference_line_evaluable(tmp_path: Path) -> None:
+    run_dir = _copy_case(tmp_path, "pass")
+    _write_hdmap_projection(
+        run_dir / "artifacts" / "apollo_hdmap_projection.jsonl",
+        heading_error_rad=0.01,
+        lateral_error_m=0.05,
+    )
+    _write_route_contract(run_dir, status="warn", blocking_reasons=[])
+
+    report = analyze_apollo_reference_line_contract_run_dir(run_dir)
+
+    assert report["status"] == "warn"
+    assert report["apollo_route_contract_status"] == "warn"
+    assert report["blocking_reasons"] == []
+    assert "apollo_route_contract_warn_reference_line_claim_warning_propagated" in report["warnings"]
+    assert "apollo_route_contract_warn_reference_line_claim_downgraded" not in report["warnings"]
+
+
 def test_planning_materialization_fail_downgrades_reference_line_claim_window(tmp_path: Path) -> None:
     run_dir = _copy_case(tmp_path, "pass")
     _write_hdmap_projection(

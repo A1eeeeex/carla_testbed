@@ -43,6 +43,7 @@ class FollowStopConfig:
     ego_offset_y_m: float = 0.0
     ego_offset_z_m: float = 0.0
     ego_yaw_offset_deg: float = 0.0
+    ego_spawn_s_offset_m: float = 0.0
     front_offset_x_m: float = 0.0
     front_offset_y_m: float = 0.0
     front_offset_z_m: float = 0.0
@@ -199,6 +200,51 @@ class FollowStopScenario(Scenario):
             for tf in spawns
         ]
 
+    def _ego_spawn_points(
+        self,
+        carla_map: carla.Map,
+        spawns: list[carla.Transform],
+    ) -> list[carla.Transform]:
+        s_offset_m = float(self.cfg.ego_spawn_s_offset_m or 0.0)
+        if s_offset_m < -1e-6:
+            raise RuntimeError(
+                "Follow-stop ego_spawn_s_offset_m currently supports non-negative "
+                f"route-ahead offsets only: {s_offset_m}"
+            )
+        if s_offset_m > 1e-6:
+            base_tf = spawns[self.cfg.ego_idx]
+            shifted_tf = self._waypoint_ahead_transform(
+                carla_map,
+                base_tf,
+                s_offset_m,
+                label="ego_spawn_s_offset",
+            )
+            return [
+                self._offset_transform(
+                    tf,
+                    offset_x_m=0.0,
+                    offset_y_m=0.0,
+                    offset_z_m=0.0,
+                    yaw_offset_deg=0.0,
+                )
+                if idx != self.cfg.ego_idx
+                else self._offset_transform(
+                    shifted_tf,
+                    offset_x_m=float(self.cfg.ego_offset_x_m),
+                    offset_y_m=float(self.cfg.ego_offset_y_m),
+                    offset_z_m=float(self.cfg.ego_offset_z_m),
+                    yaw_offset_deg=float(self.cfg.ego_yaw_offset_deg),
+                )
+                for idx, tf in enumerate(spawns)
+            ]
+        return self._offset_spawn_points(
+            spawns,
+            offset_x_m=float(self.cfg.ego_offset_x_m),
+            offset_y_m=float(self.cfg.ego_offset_y_m),
+            offset_z_m=float(self.cfg.ego_offset_z_m),
+            yaw_offset_deg=float(self.cfg.ego_yaw_offset_deg),
+        )
+
     def _maybe_apply_actor_offset(
         self,
         actor: carla.Vehicle,
@@ -270,6 +316,10 @@ class FollowStopScenario(Scenario):
         elif front_placement_mode != "waypoint_ahead":
             raise RuntimeError(f"Unsupported follow-stop front_placement_mode={front_placement_mode!r}")
 
+        requested_ego_idx = self.cfg.ego_idx
+        ego_spawns = self._ego_spawn_points(carla_map, spawns)
+        ego_spawn_for_front = ego_spawns[requested_ego_idx]
+
         try:
             veh_bp.set_attribute("role_name", self.cfg.front_id)
         except Exception:
@@ -284,7 +334,7 @@ class FollowStopScenario(Scenario):
             front_spawns = [
                 self._front_waypoint_ahead_transform(
                     carla_map,
-                    spawns[self.cfg.ego_idx],
+                    ego_spawn_for_front,
                     float(self.cfg.front_waypoint_ahead_m or self.cfg.front_target_ahead_m or 300.0),
                 )
             ]
@@ -334,15 +384,13 @@ class FollowStopScenario(Scenario):
         except Exception:
             pass
 
-        requested_ego_idx = self.cfg.ego_idx
-        ego_spawns = self._offset_spawn_points(
-            spawns,
-            offset_x_m=float(self.cfg.ego_offset_x_m),
-            offset_y_m=float(self.cfg.ego_offset_y_m),
-            offset_z_m=float(self.cfg.ego_offset_z_m),
-            yaw_offset_deg=float(self.cfg.ego_yaw_offset_deg),
+        ego, ego_idx = spawn_with_retry(
+            world,
+            veh_bp,
+            ego_spawns,
+            preferred_idx=requested_ego_idx,
+            max_tries=1 if abs(float(self.cfg.ego_spawn_s_offset_m or 0.0)) > 1e-6 else 5,
         )
-        ego, ego_idx = spawn_with_retry(world, veh_bp, ego_spawns, preferred_idx=requested_ego_idx)
         if ego is None:
             front.destroy()
             raise RuntimeError("Failed to spawn ego vehicle")
@@ -352,8 +400,9 @@ class FollowStopScenario(Scenario):
             )
         if ego_spawns is not spawns:
             print(
-                "[followstop] applied ego pre-spawn offset: dx=%.3f dy=%.3f dz=%.3f dyaw=%.3f"
+                "[followstop] applied ego pre-spawn offset: s=%.3f dx=%.3f dy=%.3f dz=%.3f dyaw=%.3f"
                 % (
+                    self.cfg.ego_spawn_s_offset_m,
                     self.cfg.ego_offset_x_m,
                     self.cfg.ego_offset_y_m,
                     self.cfg.ego_offset_z_m,
@@ -409,6 +458,7 @@ class FollowStopScenario(Scenario):
             },
             "front_placement_mode": str(self.cfg.front_placement_mode or "spawn_index"),
             "front_waypoint_ahead_m": self.cfg.front_waypoint_ahead_m,
+            "ego_spawn_s_offset_m": float(self.cfg.ego_spawn_s_offset_m),
             "ego_initial_hold": {
                 "brake": float(self.cfg.ego_initial_brake),
                 "hand_brake": bool(self.cfg.ego_initial_hand_brake),
@@ -474,18 +524,40 @@ class FollowStopScenario(Scenario):
         ego_tf: carla.Transform,
         ahead_m: float,
     ) -> carla.Transform:
+        selected_tf = self._waypoint_ahead_transform(
+            carla_map,
+            ego_tf,
+            ahead_m,
+            label="front_waypoint_ahead",
+        )
+        return self._offset_transform(
+            selected_tf,
+            offset_x_m=float(self.cfg.front_offset_x_m),
+            offset_y_m=float(self.cfg.front_offset_y_m),
+            offset_z_m=float(self.cfg.front_offset_z_m),
+            yaw_offset_deg=float(self.cfg.front_yaw_offset_deg),
+        )
+
+    def _waypoint_ahead_transform(
+        self,
+        carla_map: carla.Map,
+        base_tf: carla.Transform,
+        ahead_m: float,
+        *,
+        label: str,
+    ) -> carla.Transform:
         try:
             start_wp = carla_map.get_waypoint(
-                ego_tf.location,
+                base_tf.location,
                 project_to_road=True,
                 lane_type=carla.LaneType.Driving,
             )
         except TypeError:
-            start_wp = carla_map.get_waypoint(ego_tf.location)
+            start_wp = carla_map.get_waypoint(base_tf.location)
         selection = select_waypoint_ahead_transform(start_wp, float(ahead_m))
         if not selection.found or selection.selected_transform is None:
             raise RuntimeError(
-                "Failed to place front vehicle by waypoint_ahead: "
+                f"Failed to resolve {label} by waypoint_ahead: "
                 f"ahead_m={ahead_m} reason={selection.reason}"
             )
         selected_tf = selection.selected_transform
@@ -494,8 +566,8 @@ class FollowStopScenario(Scenario):
         try:
             # Waypoint locations can sit on the road surface, while CARLA spawn
             # points are lifted enough for vehicle collision boxes. Reuse the
-            # ego spawn lift so RoadRunner maps do not reject the front actor.
-            z_lift = float(ego_tf.location.z) - float(start_tf.location.z)
+            # base spawn lift so RoadRunner maps do not reject the actor.
+            z_lift = float(base_tf.location.z) - float(start_tf.location.z)
         except Exception:
             z_lift = 0.0
         if abs(z_lift) > 1e-6:
@@ -511,13 +583,7 @@ class FollowStopScenario(Scenario):
                     roll=float(selected_tf.rotation.roll),
                 ),
             )
-        return self._offset_transform(
-            selected_tf,
-            offset_x_m=float(self.cfg.front_offset_x_m),
-            offset_y_m=float(self.cfg.front_offset_y_m),
-            offset_z_m=float(self.cfg.front_offset_z_m),
-            yaw_offset_deg=float(self.cfg.front_yaw_offset_deg),
-        )
+        return selected_tf
 
     def destroy(self):
         if self.actors:

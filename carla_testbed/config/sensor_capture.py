@@ -20,5 +20,13 @@ def sensor_capture_enabled_from_config(cfg: Mapping[str, Any]) -> tuple[bool, st
     return True, "default_enabled"
 
 
+def legacy_record_from_config(cfg: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return legacy `record` config from raw or normalized config shapes."""
+    legacy_record = _mapping(cfg.get("record"))
+    if legacy_record:
+        return legacy_record
+    return _mapping(_mapping(_mapping(cfg.get("recording")).get("artifacts")).get("legacy_record"))
+
+
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}

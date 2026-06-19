@@ -492,6 +492,62 @@ def test_projection_samples_can_include_manifest_route_trace_with_frame_transfor
     assert [sample.metadata.get("carla_lane_key") for sample in samples] == ["15:1", "13:-1", "15:1"]
 
 
+def test_projection_samples_can_fallback_to_scenario_goal_route(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "artifacts" / "scenario_goal.json",
+        {
+            "frame": "relative",
+            "source": "ego_heading_ahead",
+            "goal_ahead_m": 300.0,
+            "goal": {"x": -2.3029, "y": -5.0963, "z": 0.4461},
+            "goal_raw_carla": {"x": -2.3029, "y": -5.0963, "z": 0.4461},
+            "start_at_write_time": {"x": 297.6970, "y": 5.2539, "z": 0.4461},
+        },
+    )
+    transform_path = tmp_path / "apollo_frame_transform.yaml"
+    _write_json(
+        transform_path,
+        {
+            "transform": {
+                "tx": 0.0,
+                "ty": 0.0,
+                "tz": 0.0,
+                "yaw_rad": 0.0,
+                "scale": 1.0,
+                "y_flip": True,
+            }
+        },
+    )
+
+    without_transform = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_route_samples=True,
+        route_sample_step_m=100.0,
+        max_samples=0,
+    )
+    samples = load_localization_projection_samples(
+        run_dir=run_dir,
+        include_route_samples=True,
+        frame_transform_path=transform_path,
+        route_sample_step_m=100.0,
+        max_samples=0,
+    )
+
+    assert without_transform == []
+    assert len(samples) == 4
+    assert all(sample.sample_type == "route" for sample in samples)
+    assert all("scenario_goal.json" in sample.source_artifact for sample in samples)
+    assert round(samples[0].x, 3) == 297.697
+    assert round(samples[0].y, 3) == 5.254
+    assert round(samples[-1].x, 3) == -2.303
+    assert round(samples[-1].y, 3) == 5.096
+    assert samples[0].metadata["scenario_goal_sample_source"] == "goal_raw_carla"
+    assert samples[0].metadata["route_heading_source"] == "scenario_goal_chord"
+    assert abs(samples[0].metadata["expected_route_distance_m"] - 300.0) < 0.01
+    assert all(sample.heading is not None and abs(abs(sample.heading) - 3.141) < 0.01 for sample in samples)
+
+
 def test_projection_samples_transform_runtime_route_json_carla_frame(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_json(

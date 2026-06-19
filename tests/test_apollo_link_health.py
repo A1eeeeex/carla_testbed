@@ -621,6 +621,141 @@ def test_route_contract_mismatch_outranks_route_establishment_latency(tmp_path: 
     assert report["primary_blocker"] == "route_establishment:apollo_routing_goal_mismatch"
 
 
+def test_reference_line_missing_after_routing_request_outranks_runtime_missing(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    route_contract_path = run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json"
+    route_contract = json.loads(route_contract_path.read_text(encoding="utf-8"))
+    route_contract.update(
+        {
+            "status": "fail",
+            "blocking_reasons": [
+                "routing_response_runtime_evidence_missing",
+                "reference_line_missing_after_routing_request",
+                "route_segments_failed_after_routing_request",
+            ],
+            "last_routing_request": {
+                "available": True,
+                "routing_phase": "long",
+                "routing_request_kind": "long_phase_route",
+                "goal_distance_m": 300.0,
+                "goal_validity_snapshot": {
+                    "available": True,
+                    "reference_line_provider_status": "failed",
+                    "create_route_segments_status": "failed",
+                    "lane_follow_map_status": "reference_line_missing",
+                },
+            },
+        }
+    )
+    _write_json(route_contract_path, route_contract)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    layer = report["layers"]["route_establishment"]
+    assert "reference_line_missing_after_routing_request" in layer["blocking_reasons"]
+    assert "routing_response_runtime_evidence_missing" in layer["blocking_reasons"]
+    assert report["primary_blocker"] == "route_establishment:reference_line_missing_after_routing_request"
+
+
+def test_goal_projection_failure_outranks_long_goal_route_boundary(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    route_contract_path = run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json"
+    route_contract = json.loads(route_contract_path.read_text(encoding="utf-8"))
+    route_contract.update(
+        {
+            "status": "fail",
+            "blocking_reasons": [
+                "apollo_routing_goal_projection_not_accepted",
+                "apollo_routing_goal_snap_distance_high",
+                "long_goal_not_compatible_with_scenario_route",
+            ],
+        }
+    )
+    _write_json(route_contract_path, route_contract)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert (
+        report["primary_blocker"]
+        == "route_establishment:apollo_routing_goal_projection_not_accepted"
+    )
+
+
+def test_claim_route_failure_does_not_mask_runtime_route_established(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "verdict": "pass",
+            "planning_message_count": 380,
+            "materialization_status": "observed_nonempty",
+            "nonempty_trajectory_count": 222,
+            "nonempty_trajectory_ratio": 222 / 380,
+            "route_establishment": {"route_established": True, "blocking_reasons": []},
+            "blocking_reasons": [],
+            "warnings": [],
+        },
+    )
+    route_contract_path = run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json"
+    route_contract = json.loads(route_contract_path.read_text(encoding="utf-8"))
+    route_contract.update(
+        {
+            "status": "fail",
+            "blocking_reasons": [
+                "apollo_routing_goal_snap_distance_high",
+                "long_goal_not_compatible_with_scenario_route",
+            ],
+            "routing_response_decoded": {"available": True, "status": "pass"},
+            "last_routing_response": {"available": True, "lane_window_count": 1},
+            "latest_planning_active_route_segment": {
+                "available": True,
+                "create_route_segments_status": "ready",
+                "route_segment_count": 1,
+                "route_segment_total_length_m": 305.1,
+            },
+        }
+    )
+    _write_json(route_contract_path, route_contract)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    layer = report["layers"]["route_establishment"]
+    assert layer["status"] == "warn"
+    assert "apollo_routing_goal_snap_distance_high" not in layer["blocking_reasons"]
+    assert "claim_route_contract_failed_but_runtime_route_established" in layer["warnings"]
+    assert layer["key_metrics"]["runtime_route_established_from_route_contract"] is True
+    assert layer["key_metrics"]["route_contract_blocking_reasons"] == [
+        "apollo_routing_goal_snap_distance_high",
+        "long_goal_not_compatible_with_scenario_route",
+    ]
+
+
+def test_goal_projection_disabled_by_config_outranks_generic_projection_failure(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    route_contract_path = run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json"
+    route_contract = json.loads(route_contract_path.read_text(encoding="utf-8"))
+    route_contract.update(
+        {
+            "status": "fail",
+            "blocking_reasons": [
+                "apollo_routing_goal_projection_disabled_by_config",
+                "apollo_routing_goal_projection_not_accepted",
+                "apollo_routing_goal_snap_distance_high",
+                "long_goal_not_compatible_with_scenario_route",
+            ],
+        }
+    )
+    _write_json(route_contract_path, route_contract)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert (
+        report["primary_blocker"]
+        == "route_establishment:apollo_routing_goal_projection_disabled_by_config"
+    )
+
+
 def test_scenario_route_length_inconsistency_outranks_apollo_goal_mismatch(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     route_contract_path = run_dir / "analysis/apollo_route_contract/apollo_route_contract_report.json"
@@ -1619,6 +1754,47 @@ def test_control_process_crash_is_explicit_handoff_blocker(tmp_path: Path) -> No
     )
 
 
+def test_control_process_failure_outranks_control_reference_gap(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    ref_path = run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json"
+    ref = json.loads(ref_path.read_text(encoding="utf-8"))
+    ref["status"] = "insufficient_data"
+    ref["warnings"] = [
+        "apollo_route_contract_warn_reference_line_claim_warning_propagated",
+        "control_reference.control_reference_debug",
+    ]
+    ref.setdefault("contracts", {})
+    ref["contracts"]["apollo_hdmap_projection"] = {"status": "pass", "blocking_reasons": []}
+    ref["contracts"]["planning_trajectory"] = {"status": "pass", "blocking_reasons": []}
+    ref["contracts"]["control_reference"] = {
+        "status": "insufficient_data",
+        "missing_fields": ["control_reference_debug"],
+    }
+    _write_json(ref_path, ref)
+
+    handoff_path = run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json"
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    handoff["verdict"] = "fail"
+    handoff["failure_stage"] = "process_health"
+    handoff["blocking_reasons"] = ["process_health_failed"]
+    handoff["process_health"] = {
+        "status": "fail",
+        "crash_detected": True,
+        "crash_reason": "process exited before control output",
+    }
+    handoff["bridge_receive"] = {"control_rx_count": 0}
+    handoff["control_channel"] = {"message_count": 0}
+    _write_json(handoff_path, handoff)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert (
+        report["primary_blocker"]
+        == "routing_planning_control_handoff:control_process_crash_before_control_output"
+    )
+    assert "planning_reference_line:insufficient_data" in report["secondary_blockers"]
+
+
 def test_control_oscillation_becomes_primary_only_after_localization_and_reference_pass(
     tmp_path: Path,
 ) -> None:
@@ -2479,6 +2655,29 @@ def test_stale_route_contract_warn_regenerates_after_projection_or_transform_ava
         "status": "warn",
         "warnings": ["apollo_route_xy_comparison_frame_transform_missing"],
         "routing_response_decoded": {"available": True},
+    }
+
+    assert _should_regenerate_apollo_route_contract(report) is True
+
+
+def test_stale_route_contract_regenerates_for_disabled_goal_projection_reason() -> None:
+    report = {
+        "schema_version": "apollo_route_contract.v1",
+        "status": "fail",
+        "blocking_reasons": [
+            "apollo_routing_goal_projection_not_accepted",
+            "apollo_routing_goal_snap_distance_high",
+        ],
+        "last_routing_request": {
+            "goal_projection": {
+                "available": True,
+                "accepted": False,
+                "applied": False,
+                "trusted_lane_centerline": True,
+                "distance_m": 5.1,
+                "reason": "disabled_by_config",
+            }
+        },
     }
 
     assert _should_regenerate_apollo_route_contract(report) is True
