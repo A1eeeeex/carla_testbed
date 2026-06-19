@@ -1,0 +1,12 @@
+schema_version: phase1_apollo_fixed_scene_bridge_config.v1
+description: >
+  Phase 1 fixed-scene readiness overlay for Baguang lead-vehicle scenarios.
+  This config is preflight evidence only; it does not execute Apollo or prove
+  fixed-scene behavior.
+bridge:
+  claim_evidence_artifact_sample_stride: 1
+  front_obstacle_behavior:
+    mode: cruise_then_stop
+    actor_probe_enabled: true
+    role_names:
+      - lead_vehicle
