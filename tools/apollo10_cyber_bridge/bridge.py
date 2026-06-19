@@ -1695,6 +1695,7 @@ class ApolloGtBridge:
         self.control_apply_trace_path = self.artifacts_dir / "control_apply_trace.jsonl"
         self.obstacle_gt_contract_path = self.artifacts_dir / "obstacle_gt_contract.jsonl"
         self.obstacle_contract_debug_path = self.obstacle_gt_contract_path
+        self._front_actor_dimension_cache: Dict[int, Dict[str, float]] = {}
         self.lateral_guard_debug_path = self.artifacts_dir / "lateral_guard_debug.jsonl"
         self.health_summary_path = self.artifacts_dir / "bridge_health_summary.json"
         self.bridge_transport_summary_path = self.artifacts_dir / "bridge_transport_summary.json"
@@ -2842,6 +2843,45 @@ class ApolloGtBridge:
         self.stats["planning"] = self._planning_status()
         self.stats["health"] = self._health_summary()
         self._write_planning_topic_debug_summary()
+
+    def _front_actor_dimensions(self, actor_id: Optional[int], actor: Any) -> Dict[str, Any]:
+        length = None
+        width = None
+        height = None
+        source = "missing"
+        warnings: List[str] = []
+        try:
+            extent = getattr(getattr(actor, "bounding_box", None), "extent", None)
+            if extent is not None:
+                length = 2.0 * float(getattr(extent, "x", 0.0))
+                width = 2.0 * float(getattr(extent, "y", 0.0))
+                height = 2.0 * float(getattr(extent, "z", 0.0))
+                source = "carla_actor_bbox"
+        except Exception:
+            length = None
+            width = None
+            height = None
+            source = "carla_actor_bbox_error"
+        values = {"length": length, "width": width, "height": height}
+        if all(_finite_or_none(value) is not None and float(value) > 0.0 for value in values.values()):
+            if actor_id is not None:
+                self._front_actor_dimension_cache[int(actor_id)] = {
+                    key: float(value) for key, value in values.items() if value is not None
+                }
+            return {**values, "source": source, "warnings": warnings}
+        cached = self._front_actor_dimension_cache.get(int(actor_id)) if actor_id is not None else None
+        if cached:
+            warnings.append("front_actor_bbox_non_positive_used_cached_dimensions")
+            return {
+                "length": cached.get("length"),
+                "width": cached.get("width"),
+                "height": cached.get("height"),
+                "source": "cached_carla_actor_bbox",
+                "warnings": warnings,
+            }
+        if source != "missing":
+            warnings.append("front_actor_bbox_non_positive")
+        return {**values, "source": source, "warnings": warnings}
 
     def _cyber_create_writer(self, channel: str, msg_type: Any):
         for fn in ("create_writer", "CreateWriter"):
@@ -11298,6 +11338,8 @@ class ApolloGtBridge:
                     front_actor_length_m = None
                     front_actor_width_m = None
                     front_actor_height_m = None
+                    front_actor_dimension_source = "missing"
+                    front_actor_dimension_warnings: List[str] = []
                     front_actor_type_id = None
                     if front_actor is not None:
                         try:
@@ -11334,16 +11376,12 @@ class ApolloGtBridge:
                             )
                         except Exception:
                             front_actor_speed_mps = None
-                        try:
-                            extent = getattr(getattr(front_actor, "bounding_box", None), "extent", None)
-                            if extent is not None:
-                                front_actor_length_m = 2.0 * float(getattr(extent, "x", 0.0))
-                                front_actor_width_m = 2.0 * float(getattr(extent, "y", 0.0))
-                                front_actor_height_m = 2.0 * float(getattr(extent, "z", 0.0))
-                        except Exception:
-                            front_actor_length_m = None
-                            front_actor_width_m = None
-                            front_actor_height_m = None
+                        dimensions = self._front_actor_dimensions(front_actor_id, front_actor)
+                        front_actor_length_m = dimensions.get("length")
+                        front_actor_width_m = dimensions.get("width")
+                        front_actor_height_m = dimensions.get("height")
+                        front_actor_dimension_source = str(dimensions.get("source") or "missing")
+                        front_actor_dimension_warnings = list(dimensions.get("warnings") or [])
                     def desired_point_distance(prefix: str) -> Optional[float]:
                         px = _finite_or_none(desired_in.get(f"{prefix}_x"))
                         py = _finite_or_none(desired_in.get(f"{prefix}_y"))
@@ -12065,6 +12103,8 @@ class ApolloGtBridge:
                             "length": _finite_or_none(front_actor_length_m),
                             "width": _finite_or_none(front_actor_width_m),
                             "height": _finite_or_none(front_actor_height_m),
+                            "dimension_source": front_actor_dimension_source,
+                            "dimension_warnings": front_actor_dimension_warnings,
                             "velocity_source": "carla_actor_state" if front_actor is not None else "missing",
                             "velocity": {
                                 "x": _finite_or_none(front_actor_speed_mps),

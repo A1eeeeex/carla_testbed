@@ -27,11 +27,12 @@ fixed_scene:
         lane: adjacent
         s_offset_m: 22.0
         lateral_offset_m: -3.6
+        prefer_waypoint: false
         feasibility:
           enabled: true
           s_offset_tolerance_m: 3.0
           max_lateral_m: 4.5
-          require_waypoint: true
+          require_waypoint: false
   params:
     duration_s: 29.0
     duration_policy: lead_reaches_road_end

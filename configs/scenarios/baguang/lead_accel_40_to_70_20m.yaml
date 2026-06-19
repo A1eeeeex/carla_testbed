@@ -26,11 +26,12 @@ fixed_scene:
         relative_to: ego
         lane: same
         s_offset_m: 20.0
+        prefer_waypoint: false
         feasibility:
           enabled: true
           s_offset_tolerance_m: 3.0
           max_lateral_m: 2.5
-          require_waypoint: true
+          require_waypoint: false
   params:
     duration_s: 17.6
     duration_policy: lead_reaches_road_end

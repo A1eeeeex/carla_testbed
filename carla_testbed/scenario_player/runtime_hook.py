@@ -23,18 +23,23 @@ class FixedSceneRuntimeHook(RunHook):
     setup_state: CarlaFixedSceneRuntimeState
     name: str = "fixed_scene_runtime"
     tick_count: int = 0
+    start_sim_time_s: float | None = None
     errors: list[str] = field(default_factory=list)
     last_tick_result: dict[str, Any] = field(default_factory=dict)
     _closed: bool = False
 
     def after_world_tick(self, frame_context: FrameContext) -> None:
+        current_sim_time = float(frame_context.sim_time_s)
+        if self.start_sim_time_s is None:
+            self.start_sim_time_s = current_sim_time
+        scene_sim_time = max(0.0, current_sim_time - float(self.start_sim_time_s))
         result = self.runtime.tick(
             {
                 "world": self.world,
                 "ego_actor": self.ego_actor,
                 "run_dir": self.run_dir,
                 "artifact_dir": self.artifact_dir,
-                "sim_time_sec": frame_context.sim_time_s,
+                "sim_time_sec": scene_sim_time,
                 "world_frame": frame_context.frame_id,
             }
         )
@@ -42,6 +47,8 @@ class FixedSceneRuntimeHook(RunHook):
         self.last_tick_result = dict(result)
         frame_context.metadata["fixed_scene_runtime"] = {
             "tick_count": self.tick_count,
+            "scene_sim_time_s": scene_sim_time,
+            "world_sim_time_s": current_sim_time,
             "active_roles": self.runtime.active_roles(),
             "current_phase": result.get("current_phase"),
             "applied_roles": sorted((result.get("applied_controls") or {}).keys()),
@@ -65,6 +72,7 @@ class FixedSceneRuntimeHook(RunHook):
             "status": "fail" if self.setup_state.errors or self.errors else "pass",
             "scene_id": self.storyboard.get("scene_id"),
             "tick_count": self.tick_count,
+            "start_sim_time_s": self.start_sim_time_s,
             "active_roles": self.runtime.active_roles(),
             "target_actor_role": target_actor_role_from_storyboard(self.storyboard),
             "setup_state": self.setup_state.to_dict(),

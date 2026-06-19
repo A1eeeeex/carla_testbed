@@ -61,6 +61,78 @@ def test_carla_runtime_allows_curved_route_ahead_spawn_without_straight_frame_la
     assert "spawn_feasibility_route_ahead_skipped_straight_frame_lateral_check" in feasibility["warnings"]
 
 
+def test_carla_runtime_uses_ego_frame_fallback_when_waypoint_not_preferred(tmp_path) -> None:
+    world = _FakeBadShortAheadWaypointWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml")
+    storyboard = compile_fixed_scene_template(template)
+    runtime = CarlaFixedSceneRuntime()
+
+    state = runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+
+    feasibility = state.spawn_feasibility["lead_vehicle"]
+    assert state.errors == []
+    assert feasibility["spawn_source"] == "fallback_transform_ahead"
+    assert feasibility["route_ahead_selection"] is False
+    assert feasibility["route_distance_m"] is None
+    assert math.isclose(feasibility["actual_longitudinal_offset_m"], 20.0)
+    assert math.isclose(feasibility["actual_euclidean_offset_m"], 20.0)
+    assert feasibility["blocking_reasons"] == []
+
+
+def test_carla_runtime_settles_ego_pose_before_spawning_target_actor(tmp_path) -> None:
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    world = _FakeMaterializingWorld(
+        ego=ego,
+        materialized_transform=_Transform(_Location(100.0, 0.0, 0.0), _Rotation(yaw=0.0)),
+    )
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml")
+    storyboard = compile_fixed_scene_template(template)
+    runtime = CarlaFixedSceneRuntime()
+
+    state = runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+
+    feasibility = state.spawn_feasibility["lead_vehicle"]
+    assert state.errors == []
+    assert world.tick_count == 2
+    assert math.isclose(world.spawned[0].transform.location.x, 120.0)
+    assert math.isclose(feasibility["actual_longitudinal_offset_m"], 20.0)
+
+
+def test_carla_runtime_falls_back_when_preferred_waypoint_has_gross_distance_mismatch(tmp_path) -> None:
+    world = _FakeBadShortAheadWaypointWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml")
+    template["roles"]["lead_vehicle"]["spawn"]["prefer_waypoint"] = True
+    storyboard = compile_fixed_scene_template(template)
+    runtime = CarlaFixedSceneRuntime()
+
+    state = runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+
+    feasibility = state.spawn_feasibility["lead_vehicle"]
+    assert state.errors == []
+    assert feasibility["spawn_source"] == "fallback_after_bad_waypoint_next"
+    assert feasibility["route_distance_m"] == 20.0
+    assert math.isclose(feasibility["actual_longitudinal_offset_m"], 20.0)
+    assert feasibility["blocking_reasons"] == []
+
+
+def test_carla_runtime_blocks_bad_waypoint_fallback_when_waypoint_required(tmp_path) -> None:
+    world = _FakeBadShortAheadWaypointWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml")
+    template["roles"]["lead_vehicle"]["spawn"]["feasibility"]["require_waypoint"] = True
+    storyboard = compile_fixed_scene_template(template)
+    runtime = CarlaFixedSceneRuntime()
+
+    state = runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+
+    feasibility = state.spawn_feasibility["lead_vehicle"]
+    assert feasibility["spawn_source"] == "fallback_after_bad_waypoint_next"
+    assert "waypoint_spawn_required_but_fallback_used" in feasibility["blocking_reasons"]
+    assert any("waypoint_spawn_required_but_fallback_used" in error for error in state.errors)
+
+
 def test_carla_runtime_applies_follow_stop_controls(tmp_path) -> None:
     world = _FakeWorld()
     ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
@@ -119,6 +191,31 @@ def test_carla_runtime_static_lead_stays_held(tmp_path) -> None:
     assert applied["hand_brake"] is True
 
 
+def test_carla_runtime_holds_actor_after_storyboard_stop(tmp_path) -> None:
+    world = _FakeWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml")
+    template["roles"]["lead_vehicle"]["spawn"]["feasibility"]["require_waypoint"] = False
+    storyboard = compile_fixed_scene_template(template)
+    runtime = CarlaFixedSceneRuntime()
+    runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+    lead = runtime.actors["lead_vehicle"]
+    lead.velocity = _Vector(12.0, 0.0, 0.0)
+
+    result = runtime.tick({"world": world, "ego_actor": ego, "sim_time_sec": 21.0, "world_frame": 1})
+
+    applied = result["applied_controls"]["lead_vehicle"]["clamped_command"]
+    assert result["stopped"] is True
+    assert applied["throttle"] == 0.0
+    assert applied["brake"] == 1.0
+    assert applied["hand_brake"] is True
+    assert lead.target_velocity is not None
+    assert math.isclose(lead.target_velocity.x, 0.0, abs_tol=0.01)
+    assert result["applied_controls"]["lead_vehicle"]["requested_command"]["metadata"]["controller"] == (
+        "fixed_scene_runtime_stop_hold"
+    )
+
+
 def test_fixed_scene_runtime_hook_ticks_and_exposes_target_actor(tmp_path) -> None:
     world = _FakeWorld()
     ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
@@ -151,6 +248,39 @@ def test_fixed_scene_runtime_hook_ticks_and_exposes_target_actor(tmp_path) -> No
     assert payload["target_actor_role"] == "lead_vehicle"
     assert (tmp_path / "artifacts" / "fixed_scene_resolved.json").exists()
     assert (tmp_path / "artifacts" / "scenario_actor_trace.jsonl").exists()
+
+    hook.close()
+
+
+def test_fixed_scene_runtime_hook_uses_relative_scene_time(tmp_path) -> None:
+    world = _FakeWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    template_path = tmp_path / "lead_accel.yaml"
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml")
+    template["roles"]["lead_vehicle"]["spawn"]["feasibility"]["require_waypoint"] = False
+    template_path.write_text(json.dumps(template), encoding="utf-8")
+    hook = setup_fixed_scene_runtime_hook(
+        world=world,
+        ego_actor=ego,
+        run_dir=tmp_path,
+        artifact_dir=tmp_path / "artifacts",
+        scenario_path=template_path,
+    )
+
+    first = type("FrameContext", (), {"frame_id": 10, "sim_time_s": 40.0, "step": 0, "metadata": {}})()
+    second = type("FrameContext", (), {"frame_id": 11, "sim_time_s": 42.5, "step": 1, "metadata": {}})()
+    hook.after_world_tick(first)
+    hook.after_world_tick(second)
+
+    assert first.metadata["fixed_scene_runtime"]["scene_sim_time_s"] == 0.0
+    assert second.metadata["fixed_scene_runtime"]["scene_sim_time_s"] == 2.5
+    assert hook.to_dict()["start_sim_time_s"] == 40.0
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "artifacts" / "scenario_actor_trace.jsonl").read_text().splitlines()
+    ]
+    assert rows[0]["sim_time_sec"] == 0.0
+    assert rows[1]["sim_time_sec"] == 2.5
 
     hook.close()
 
@@ -295,6 +425,18 @@ class _FakeWorld:
         return actor
 
 
+class _FakeMaterializingWorld(_FakeWorld):
+    def __init__(self, *, ego, materialized_transform) -> None:
+        super().__init__()
+        self.ego = ego
+        self.materialized_transform = materialized_transform
+        self.tick_count = 0
+
+    def tick(self):
+        self.tick_count += 1
+        self.ego.transform = self.materialized_transform
+
+
 class _FakeBranchingWaypointWorld(_FakeWorld):
     def __init__(self) -> None:
         super().__init__()
@@ -368,6 +510,39 @@ class _FakeCurvedAheadWaypointMap:
         if getattr(location, "x", 0.0) <= 1.0:
             return self.start
         return self.curved_ahead
+
+
+class _FakeBadShortAheadWaypointWorld(_FakeWorld):
+    def __init__(self) -> None:
+        super().__init__()
+        self.map = _FakeBadShortAheadWaypointMap()
+
+    def get_map(self):
+        return self.map
+
+
+class _FakeBadShortAheadWaypointMap:
+    def __init__(self) -> None:
+        self.start = _FakeWaypoint(
+            s=0.0,
+            road_id=4,
+            section_id=0,
+            lane_id=-2,
+            transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)),
+        )
+        self.bad_ahead = _FakeWaypoint(
+            s=20.0,
+            road_id=4,
+            section_id=0,
+            lane_id=-1,
+            transform=_Transform(_Location(320.0, -3.7, 0.0), _Rotation(yaw=0.0)),
+        )
+        self.start._candidates = [self.bad_ahead]
+
+    def get_waypoint(self, location):
+        if getattr(location, "x", 0.0) <= 30.0:
+            return self.start
+        return self.bad_ahead
 
 
 class _FakeProjectionWorld:

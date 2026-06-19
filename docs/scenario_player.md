@@ -61,6 +61,13 @@ diagnostics on `straight_road_for_baguang`:
 These scenes include spawn feasibility checks. If the lead vehicle cannot be
 placed at the requested ahead distance and lane, the fixed-scene contract must
 fail rather than silently accepting a fallback spawn.
+For Baguang dynamic 20m lead/cut-in cases, scenario configs set
+`prefer_waypoint: false` because online evidence showed CARLA
+`waypoint.next(20m)` can jump hundreds of meters on the custom map. The runtime
+still rejects grossly inconsistent waypoint candidates when waypoint placement
+is requested, and the fallback path must pass actual longitudinal/lateral
+offset checks. This is a custom-map playback safeguard, not evidence that
+Apollo HDMap routing or lane equivalence is correct.
 
 Templates compile to `fixed_scene_storyboard.v1`, usually written as:
 

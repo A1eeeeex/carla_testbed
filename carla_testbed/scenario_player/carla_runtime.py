@@ -102,6 +102,11 @@ class CarlaFixedSceneRuntime:
         if world is None or ego is None:
             self.state = state
             return state
+        # CARLA may not materialize a freshly spawned actor transform until the
+        # next world tick. Spawn fixed-scene actors from the materialized ego
+        # pose, otherwise short-gap scenarios can place the target hundreds of
+        # meters away from the actual ego pose.
+        _tick_world_if_available(world)
         for role, role_cfg in dict(resolved.get("roles", {})).items():
             if role == "ego":
                 continue
@@ -137,6 +142,18 @@ class CarlaFixedSceneRuntime:
                 continue
             apply_result = self._apply_action(actor=actor, action=action, context=context)
             applied[role] = apply_result.to_dict()
+        if result.get("stopped"):
+            for role, actor in self.actors.items():
+                apply_result = self._apply_action(
+                    actor=actor,
+                    action={
+                        "type": "hold_stop",
+                        "role": role,
+                        "controller": "fixed_scene_runtime_stop_hold",
+                    },
+                    context=context,
+                )
+                applied[role] = apply_result.to_dict()
         result["applied_controls"] = applied
         return result
 
@@ -408,12 +425,31 @@ def _select_spawn_transform_result(world: Any, ego: Any, spawn_cfg: Mapping[str,
     if ego_transform is None:
         return _SpawnSelection(transform=None, source="missing_ego_transform")
     s_offset_m = float(spawn_cfg.get("s_offset_m", spawn_cfg.get("distance_m", 0.0)) or 0.0)
+    feasibility_cfg = spawn_cfg.get("feasibility") if isinstance(spawn_cfg.get("feasibility"), Mapping) else {}
+    require_waypoint = bool(feasibility_cfg.get("require_waypoint", False))
+    prefer_waypoint = bool(spawn_cfg.get("prefer_waypoint", True))
     carla_map = world.get_map() if hasattr(world, "get_map") else None
-    if carla_map is not None and hasattr(carla_map, "get_waypoint"):
+    if (require_waypoint or prefer_waypoint) and carla_map is not None and hasattr(carla_map, "get_waypoint"):
         try:
             waypoint = carla_map.get_waypoint(getattr(ego_transform, "location"))
             selection = select_waypoint_ahead_transform(waypoint, s_offset_m)
             if selection.found and selection.selected_transform is not None:
+                candidate_distance = _distance_xy(
+                    getattr(ego_transform, "location", None),
+                    getattr(selection.selected_transform, "location", None),
+                )
+                max_reasonable = _route_ahead_max_reasonable_distance(
+                    expected_s=s_offset_m,
+                    tolerance_m=_spawn_tolerance_m(spawn_cfg),
+                )
+                if candidate_distance is not None and candidate_distance > max_reasonable:
+                    return _SpawnSelection(
+                        transform=_fallback_transform_ahead(ego_transform, spawn_cfg),
+                        source="fallback_after_bad_waypoint_next",
+                        route_distance_m=float(selection.distance_m),
+                        waypoint_candidate_count=int(selection.candidate_count),
+                        selected_heading_diff_deg=selection.selected_heading_diff_deg,
+                    )
                 return _SpawnSelection(
                     transform=_offset_transform(selection.selected_transform, spawn_cfg),
                     source="carla_waypoint_next",
@@ -490,6 +526,7 @@ def _spawn_feasibility(
     actor_tf = _safe_call(actor, "get_transform") or getattr(actor, "transform", None)
     longitudinal = None
     lateral = None
+    euclidean = None
     blocking: list[str] = []
     warnings: list[str] = []
     if ego_tf is not None and actor_tf is not None:
@@ -497,6 +534,10 @@ def _spawn_feasibility(
             getattr(ego_tf, "location", None),
             getattr(actor_tf, "location", None),
             _float_attr(getattr(ego_tf, "rotation", None), "yaw", 0.0) or 0.0,
+        )
+        euclidean = _distance_xy(
+            getattr(ego_tf, "location", None),
+            getattr(actor_tf, "location", None),
         )
     else:
         warnings.append("spawn_feasibility_pose_missing")
@@ -506,6 +547,17 @@ def _spawn_feasibility(
             blocking.append("actor_spawned_behind_ego")
         if abs(longitudinal - expected_s) > tolerance_m:
             blocking.append("longitudinal_offset_out_of_tolerance")
+    if enabled and route_ahead_selection and euclidean is not None:
+        # A route-ahead waypoint can legitimately curve away from the ego
+        # forward axis, but its Euclidean separation should not be wildly larger
+        # than the requested route distance. This catches bad map waypoint jumps
+        # such as a 20m lead spawning hundreds of meters away.
+        max_reasonable_distance = _route_ahead_max_reasonable_distance(
+            expected_s=expected_s,
+            tolerance_m=tolerance_m,
+        )
+        if euclidean > max_reasonable_distance:
+            blocking.append("route_ahead_euclidean_offset_out_of_tolerance")
     if enabled and lateral is not None and abs(lateral) > max_lateral_m and not route_ahead_selection:
         blocking.append("lateral_offset_out_of_tolerance")
     if require_waypoint and selection.source != "carla_waypoint_next":
@@ -527,6 +579,7 @@ def _spawn_feasibility(
         "expected_s_offset_m": expected_s,
         "actual_longitudinal_offset_m": longitudinal,
         "actual_lateral_offset_m": lateral,
+        "actual_euclidean_offset_m": euclidean,
         "route_ahead_selection": route_ahead_selection,
         "route_distance_m": selection.route_distance_m,
         "waypoint_candidate_count": selection.waypoint_candidate_count,
@@ -549,6 +602,15 @@ def _relative_longitudinal_lateral(ego_location: Any, actor_location: Any, ego_y
     longitudinal = dx * math.cos(yaw) + dy * math.sin(yaw)
     lateral = -dx * math.sin(yaw) + dy * math.cos(yaw)
     return longitudinal, lateral
+
+
+def _spawn_tolerance_m(spawn_cfg: Mapping[str, Any]) -> float:
+    feasibility_cfg = spawn_cfg.get("feasibility") if isinstance(spawn_cfg.get("feasibility"), Mapping) else {}
+    return float(feasibility_cfg.get("s_offset_tolerance_m", 10.0) or 10.0)
+
+
+def _route_ahead_max_reasonable_distance(*, expected_s: float, tolerance_m: float) -> float:
+    return max(float(expected_s) + float(tolerance_m), float(expected_s) * 1.5, 10.0)
 
 
 def _same_lane_check(world: Any, ego_tf: Any, actor_tf: Any, spawn_cfg: Mapping[str, Any]) -> dict[str, Any]:

@@ -773,6 +773,31 @@ def test_bridge_front_obstacle_status_exposes_actor_probe_boundary() -> None:
     assert status["actor_probe_enabled"] is False
 
 
+def test_bridge_front_actor_dimensions_cache_handles_terminal_zero_bbox() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter._front_actor_dimension_cache = {}
+    actor = types.SimpleNamespace(
+        bounding_box=types.SimpleNamespace(
+            extent=types.SimpleNamespace(x=2.45, y=0.92, z=0.75),
+        )
+    )
+
+    first = adapter._front_actor_dimensions(101, actor)
+    actor.bounding_box.extent = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
+    second = adapter._front_actor_dimensions(101, actor)
+
+    assert first["source"] == "carla_actor_bbox"
+    assert first["length"] == pytest.approx(4.9)
+    assert second["source"] == "cached_carla_actor_bbox"
+    assert second["length"] == pytest.approx(first["length"])
+    assert second["width"] == pytest.approx(first["width"])
+    assert second["height"] == pytest.approx(first["height"])
+    assert "front_actor_bbox_non_positive_used_cached_dimensions" in second["warnings"]
+
+
 def test_bridge_extracts_simple_lon_debug_context_for_control_attribution() -> None:
     _install_fake_protobuf()
     _install_fake_carla()

@@ -45,7 +45,7 @@ def analyze_scenario_actor_contract(
     elif template == "static_lead_stop":
         behavior = _analyze_static_lead_stop(rows)
     elif template == "lead_vehicle_accel_decel":
-        behavior = _analyze_speed_profile(rows, storyboard)
+        behavior = _analyze_speed_profile(rows, storyboard, events)
     elif template in {"cut_in", "cut_out"}:
         behavior = _analyze_lane_change(rows, template=template, storyboard=storyboard)
     else:
@@ -194,23 +194,35 @@ def _analyze_follow_stop(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _analyze_speed_profile(rows: Sequence[Mapping[str, Any]], storyboard: Mapping[str, Any]) -> dict[str, Any]:
+def _analyze_speed_profile(
+    rows: Sequence[Mapping[str, Any]],
+    storyboard: Mapping[str, Any],
+    events: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
     lead_rows = [row for row in rows if str(row.get("actor_role")) == "lead_vehicle"]
     missing_fields: list[str] = []
     warnings: list[str] = []
     blocking_reasons: list[str] = []
+    phase_completed_at = _phase_completed_at(events, "lead_speed_profile")
+    evaluated_rows = _rows_until(lead_rows, phase_completed_at)
     if not lead_rows:
         missing_fields.append("lead_vehicle_trace")
         return {
             "type": "lead_vehicle_accel_decel",
             "lead_trace_rows": 0,
+            "evaluated_trace_rows": 0,
+            "phase_completed_time_sec": phase_completed_at,
             "speed_profile_error_p95_mps": None,
             "missing_fields": missing_fields,
             "warnings": warnings,
             "blocking_reasons": blocking_reasons,
         }
     errors: list[float] = []
-    for row in lead_rows:
+    if not evaluated_rows:
+        evaluated_rows = list(lead_rows)
+        if phase_completed_at is not None:
+            warnings.append("speed_profile_completion_window_had_no_timestamped_rows")
+    for row in evaluated_rows:
         target = _num(row.get("target_speed_mps"))
         actual = _num(row.get("actual_speed_mps"))
         if target is not None and actual is not None:
@@ -224,6 +236,8 @@ def _analyze_speed_profile(rows: Sequence[Mapping[str, Any]], storyboard: Mappin
     return {
         "type": "lead_vehicle_accel_decel",
         "lead_trace_rows": len(lead_rows),
+        "evaluated_trace_rows": len(evaluated_rows),
+        "phase_completed_time_sec": phase_completed_at,
         "speed_profile_error_p95_mps": p95,
         "speed_profile_error_threshold_mps": threshold,
         "missing_fields": missing_fields,
@@ -493,6 +507,30 @@ def _read_jsonl(path: str | Path | None) -> list[dict[str, Any]]:
             if isinstance(data, dict):
                 rows.append(data)
     return rows
+
+
+def _phase_completed_at(events: Sequence[Mapping[str, Any]], phase_id: str) -> float | None:
+    times = [
+        value
+        for value in (
+            _num(row.get("sim_time_sec"))
+            for row in events
+            if row.get("event") == "phase_completed" and str(row.get("phase")) == phase_id
+        )
+        if value is not None
+    ]
+    return min(times) if times else None
+
+
+def _rows_until(rows: Sequence[Mapping[str, Any]], end_time_sec: float | None) -> list[Mapping[str, Any]]:
+    if end_time_sec is None:
+        return list(rows)
+    filtered: list[Mapping[str, Any]] = []
+    for row in rows:
+        sim_time = _num(row.get("sim_time_sec"))
+        if sim_time is None or sim_time <= end_time_sec:
+            filtered.append(row)
+    return filtered
 
 
 def _num(value: Any) -> float | None:
