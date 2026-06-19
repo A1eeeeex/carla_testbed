@@ -746,19 +746,24 @@ lists each P0/P1 case with separate `case_yaml_status`, `template_status`,
 `carla_online_status`, `apollo_online_status`, `v_t_gap_status`, and
 `comparison_status` / `comparison_target_status` fields. For fixed-scene Apollo
 runs it also surfaces `apollo_fixed_scene_readiness_status` and
-`apollo_fixed_scene_readiness` when the readiness report is present, and
+`apollo_fixed_scene_readiness` when the readiness report is present,
+`apollo_fixed_scene_dispatch_contract` / `apollo_fixed_scene_dispatch_mode`
+when the LaunchPlan dispatch report is present, and
 `apollo_fixed_scene_runtime_dispatch_status` /
 `apollo_fixed_scene_runtime_dispatch_reason` when Apollo preflight/runtime
 artifacts show whether fixed-scene dispatch actually executed. This keeps
-bridge-config readiness separate from runtime migration: a readiness `pass`
-with `dispatch_mode=runtime_migration_required` or
-`apollo_fixed_scene_runtime_not_migrated` is still only scaffold evidence.
+bridge-config readiness, dispatch-contract evidence, and runtime migration
+separate: a readiness `pass` with a missing dispatch report,
+`dispatch_mode=runtime_migration_required`, or
+`apollo_fixed_scene_runtime_not_migrated` is still only scaffold/setup evidence.
 Missing actor-probe, role-name mismatch, or runtime-dispatch absence remains a
 setup/evidence blocker rather than being counted as an Apollo behavior loss. It
 also records `scenario_case_ids`, `case_files`, and `target_actor_contract` so
 reviewers can trace which concrete ScenarioCase and target role support each
-readiness row. A scenario with YAML/template evidence but missing online or
-target-comparison evidence must remain `PARTIAL` or `NOT_YET`, never `DONE`.
+readiness row. A fixed-scene scenario with online runs but missing Apollo
+dispatch-contract evidence must remain `PARTIAL`; a scenario with
+YAML/template evidence but missing online or target-comparison evidence must
+remain `PARTIAL` or `NOT_YET`, never `DONE`.
 `tools/phase1_scenario_catalog.py` supports `--evidence-root` for review packs
 or copied run evidence; without it, the catalog scans `<repo>/runs`.
 When the selected representative comparison carries

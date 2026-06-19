@@ -218,6 +218,10 @@ def _catalog_entry(
         missing_items.append("apollo_fixed_scene_readiness_report")
     elif has_fixed_scene and apollo_readiness != STATUS_DONE:
         missing_items.append("apollo_fixed_scene_not_ready")
+    if has_fixed_scene and apollo_dispatch_contract == STATUS_NOT_YET:
+        missing_items.append("apollo_fixed_scene_dispatch_contract_report")
+    elif has_fixed_scene and apollo_dispatch_contract != STATUS_DONE:
+        missing_items.append("apollo_fixed_scene_dispatch_contract")
     if has_fixed_scene and apollo_runtime_dispatch != STATUS_DONE:
         missing_items.append("apollo_fixed_scene_runtime_dispatch")
     if v_t_gap_readiness == STATUS_NOT_YET:
@@ -233,6 +237,7 @@ def _catalog_entry(
         and online["carla_online_status"] == STATUS_DONE
         and online["apollo_online_status"] == STATUS_DONE
         and (not has_fixed_scene or apollo_readiness == STATUS_DONE)
+        and (not has_fixed_scene or apollo_dispatch_contract == STATUS_DONE)
         and (not has_fixed_scene or apollo_runtime_dispatch == STATUS_DONE)
         and v_t_gap_readiness == STATUS_DONE
         and comparison_readiness == STATUS_DONE
@@ -380,6 +385,10 @@ def _catalog_next_actions(
         actions.append("generate Apollo fixed-scene readiness evidence for the target role")
     if "apollo_fixed_scene_not_ready" in missing_set:
         actions.append("fix Apollo fixed-scene target-obstacle/readiness blockers before online dispatch")
+    if "apollo_fixed_scene_dispatch_contract_report" in missing_set:
+        actions.append("generate Apollo fixed-scene dispatch contract evidence from the RunPlan/LaunchPlan")
+    if "apollo_fixed_scene_dispatch_contract" in missing_set:
+        actions.append("fix Apollo fixed-scene dispatch contract blockers before treating runtime dispatch as evaluable")
     if "apollo_fixed_scene_runtime_dispatch" in missing_set:
         actions.append(
             "produce an evaluable Apollo fixed-scene runtime dispatch; "

@@ -346,6 +346,74 @@ def test_phase1_catalog_surfaces_dynamic_dispatch_contract_without_online_done(t
     assert "apollo_fixed_scene_runtime_dispatch" in lead["missing_items"]
 
 
+def test_phase1_catalog_requires_dispatch_contract_for_fixed_scene_done(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    _write_catalog_run(
+        evidence_root / "apollo_follow_stop",
+        backend="apollo_cyberrt",
+        backend_type="apollo_reference_backend",
+        scenario_case="baguang_follow_stop_static_300m",
+        status="success",
+    )
+    readiness_dir = (
+        evidence_root
+        / "apollo_follow_stop"
+        / "analysis"
+        / "phase1_apollo_fixed_scene_readiness"
+    )
+    readiness_dir.mkdir(parents=True)
+    (readiness_dir / "phase1_apollo_fixed_scene_readiness_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_apollo_fixed_scene_readiness.v1",
+                "status": "pass",
+                "blocking_reasons": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_catalog_run(
+        evidence_root / "builtin_follow_stop",
+        backend="carla_builtin",
+        backend_type="planning_control_backend",
+        scenario_case="baguang_follow_stop_static_300m",
+        status="success",
+    )
+    comparison = evidence_root / "comparisons" / "follow_stop_missing_dispatch_contract"
+    comparison.mkdir(parents=True)
+    (comparison / "comparison_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_comparison.v1",
+                "scenario_case": "baguang_follow_stop_static_300m",
+                "comparison_status": "comparable",
+                "comparison_target_status": "apollo_vs_planning_control_evaluable",
+                "participating_runs": [
+                    {"backend": "apollo_cyberrt"},
+                    {"backend": "carla_builtin"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_phase1_scenario_catalog(".", evidence_root=evidence_root)
+    follow_stop = {item["scenario"]: item for item in report["scenarios"]}["follow_stop_static"]
+
+    assert follow_stop["carla_online_status"] == "DONE"
+    assert follow_stop["apollo_online_status"] == "DONE"
+    assert follow_stop["apollo_fixed_scene_readiness"] == "DONE"
+    assert follow_stop["apollo_fixed_scene_dispatch_contract"] == "NOT_YET"
+    assert follow_stop["apollo_fixed_scene_runtime_dispatch_status"] == "DONE"
+    assert follow_stop["comparison_readiness"] == "DONE"
+    assert follow_stop["overall_status"] == "PARTIAL"
+    assert "apollo_fixed_scene_dispatch_contract_report" in follow_stop["missing_items"]
+    assert any(
+        "generate Apollo fixed-scene dispatch contract evidence" in action
+        for action in follow_stop["next_action"]
+    )
+
+
 def test_phase1_catalog_uses_preflight_missing_expected_artifacts_when_status_is_legacy(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     run = evidence_root / "phase1_apollo_follow_stop"

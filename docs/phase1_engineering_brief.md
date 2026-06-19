@@ -634,22 +634,25 @@ Latest local validation snapshot, `2026-06-19`:
   `runs/phase1_comparisons/junction031_apollo_online_lateral_20260619_181629_vs_builtin_20260619_181912/`.
   These comparisons are `comparable` with
   `comparison_target_status=apollo_vs_planning_control_evaluable`.
-- The generated catalog currently reports `4` DONE scenarios, `4` PARTIAL, and
-  `0` NOT_YET. `lane_keep_straight`, `lane_keep_curve`,
-  `junction_turn_no_signal`, and `follow_stop_static` are DONE as Phase 1
-  scenario-platform evidence, not as Apollo natural-driving success.
-  In `follow_stop_097`, Apollo is evaluable `failed/unsafe_gap`, and
-  `carla_builtin` is evaluable `failed/scenario_phase_trigger_not_reached`.
+- The generated catalog currently reports `3` DONE scenarios, `5` PARTIAL, and
+  `0` NOT_YET after the fixed-scene dispatch-contract gate was tightened.
+  `lane_keep_straight`, `lane_keep_curve`, and `junction_turn_no_signal` are
+  DONE as Phase 1 scenario-platform evidence, not as Apollo natural-driving
+  success. `follow_stop_static` remains evaluable but is now PARTIAL until its
+  Apollo fixed-scene dispatch contract report is generated from RunPlan /
+  LaunchPlan evidence. In `follow_stop_097`, Apollo is evaluable
+  `failed/unsafe_gap`, and `carla_builtin` is evaluable
+  `failed/scenario_phase_trigger_not_reached`.
   In `junction_turn_no_signal`, the new Apollo route-only run is evaluable
   `failed/route_establishment_latency` after explicit route-only
   `phase1_scenario_binding`; `v_t_gap` is `not_applicable` because the case has
   no target actor. Remaining PARTIAL rows are fixed-scene target cases that
   still primarily need evaluable ApolloBackend online evidence.
 - The generated catalog now separates Apollo fixed-scene bridge-config
-  readiness from Apollo fixed-scene runtime dispatch. A readiness report can be
-  `DONE` while `apollo_fixed_scene_runtime_dispatch_status=PARTIAL` with
-  `apollo_fixed_scene_runtime_not_migrated`; that remains setup evidence, not
-  Apollo behavior evidence.
+  readiness, Apollo fixed-scene dispatch-contract evidence, and Apollo
+  fixed-scene runtime dispatch. A readiness report can be `DONE` while the
+  dispatch contract is `NOT_YET` or the runtime dispatch is `PARTIAL`; those
+  remain setup/evidence blockers, not Apollo behavior losses.
 
 Implementation note added after the 2026-06-17 continuous loop:
 
