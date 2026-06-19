@@ -1,0 +1,65 @@
+schema_version: scenario_spec.v1
+scenario_id: baguang_lead_hard_brake_70_to_0_20m
+map: straight_road_for_baguang
+route_id: straight_road_for_baguang_mainline_lead_hard_brake_20m
+scenario_class: lead_hard_brake
+gate_role: diagnostic_gate
+target_actor:
+  required: true
+  role: lead_vehicle
+  activation:
+    activation_semantics: active_from_scenario_start
+    active_after_phase: null
+fixed_scene:
+  schema_version: fixed_scene_template.v1
+  template: lead_vehicle_accel_decel
+  roles:
+    ego:
+      control_owner: backend
+      spawn_ref: carla_spawn_index_0
+      initial_speed_mps: 19.44
+    lead_vehicle:
+      control_owner: fixed_scene_player
+      blueprint: vehicle.lincoln.mkz_2020
+      initial_speed_mps: 19.44
+      spawn:
+        relative_to: ego
+        lane: same
+        s_offset_m: 20.0
+        feasibility:
+          enabled: true
+          s_offset_tolerance_m: 3.0
+          max_lateral_m: 2.5
+          require_waypoint: true
+  params:
+    duration_s: 20.0
+    ego_initial_speed_mps: 19.44
+    ego_target_speed_mps: 19.44
+    ego_target_speed_kph: 70.0
+    lead_initial_speed_mps: 19.44
+    lead_initial_speed_kph: 70.0
+    lead_final_speed_mps: 0.0
+    lead_final_speed_kph: 0.0
+    lead_speed_change_time_s: 3.0
+    lead_deceleration_mps2: 4.86
+    initial_gap_m: 20.0
+    speed_profile_interpolation: linear
+    speed_profile:
+      - {t: 0.0, speed_mps: 19.44}
+      - {t: 3.0, speed_mps: 19.44}
+      - {t: 7.0, speed_mps: 0.0}
+      - {t: 20.0, speed_mps: 0.0}
+  success_criteria:
+    speed_profile_executed: true
+    lead_vehicle_stops: true
+    min_stop_gap_m: 6.0
+required_artifacts:
+  - fixed_scene_resolved.json
+  - fixed_scene_runtime_state.json
+  - scenario_actor_trace.jsonl
+  - scenario_phase_events.jsonl
+  - ego_control_trace.jsonl
+claim_boundary:
+  fixed_scene_playback_is_not_autonomy_evidence: true
+  builtin_controller_is_diagnostic_only: true
+notes: "Baguang P1 hard-brake diagnostic scene: both vehicles start near 70kph with 20m gap; after 3s the lead linearly brakes to a stop over 4s. This defines the ScenarioCase only; online playback and backend comparison remain separate evidence."

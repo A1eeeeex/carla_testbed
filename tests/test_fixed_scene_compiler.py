@@ -34,6 +34,16 @@ def test_baguang_static_lead_stop_compiles_without_cruise_or_brake_trigger() -> 
     assert storyboard["roles"]["lead_vehicle"]["spawn"]["feasibility"]["require_waypoint"] is True
 
 
+def test_baguang_static_lead_stop_spawn2m_variant_preserves_ego_offset() -> None:
+    template = load_fixed_scene_template("configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml")
+
+    storyboard = compile_fixed_scene_template(template)
+
+    assert storyboard["scene_id"] == "baguang_follow_stop_static_300m_spawn2m"
+    assert storyboard["roles"]["ego"]["spawn"]["s_offset_m"] == 2.0
+    assert storyboard["roles"]["lead_vehicle"]["spawn"]["s_offset_m"] == 300.0
+
+
 def test_baguang_lead_accel_profile_matches_40_to_70_kph() -> None:
     template = load_fixed_scene_template("configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml")
 
@@ -72,6 +82,26 @@ def test_baguang_lead_decel_profile_matches_70_to_40_kph() -> None:
     assert storyboard["params"]["duration_policy"] == "lead_reaches_road_end"
     assert storyboard["params"]["ego_target_speed_mps"] == 19.44
     assert storyboard["roles"]["lead_vehicle"]["initial_speed_mps"] == 19.44
+
+
+def test_baguang_lead_hard_brake_profile_matches_70_to_stop() -> None:
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_hard_brake_70_to_0_20m.yaml")
+
+    storyboard = compile_fixed_scene_template(template)
+
+    validate_fixed_scene_storyboard(storyboard)
+    action = storyboard["storyboard"]["phases"][0]["actions"][0]
+    assert storyboard["scene_id"] == "baguang_lead_hard_brake_70_to_0_20m"
+    assert storyboard["scenario_class"] == "lead_hard_brake"
+    assert storyboard["target_actor_contract"]["status"] == "resolved"
+    assert storyboard["target_actor_contract"]["target_actor_role"] == "lead_vehicle"
+    assert action["interpolation"] == "linear"
+    assert action["profile"] == [
+        {"t": 0.0, "speed_mps": 19.44},
+        {"t": 3.0, "speed_mps": 19.44},
+        {"t": 7.0, "speed_mps": 0.0},
+        {"t": 20.0, "speed_mps": 0.0},
+    ]
 
 
 def test_cut_in_compiles_lane_change_action() -> None:
