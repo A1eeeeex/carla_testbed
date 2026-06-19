@@ -73,6 +73,11 @@ def test_apollo_fixed_scene_scaffold_writes_invalid_backend_not_ready(tmp_path) 
     assert preflight["offline_fixed_scene_artifacts"]["status"] == "static_only"
     assert preflight["offline_fixed_scene_artifacts"]["apollo_fixed_scene_readiness"]["status"] == "fail"
     assert preflight["offline_fixed_scene_artifacts"]["apollo_fixed_scene_dispatch"]["status"] == "pass"
+    assert preflight["apollo_fixed_scene_dispatch_contract"]["status"] == "pass"
+    assert (
+        preflight["apollo_fixed_scene_dispatch_contract"]["dispatch_mode"]
+        == "guarded_legacy_transition_available"
+    )
     assert preflight["offline_fixed_scene_artifacts"]["fixed_scene_contract_status"] == "insufficient_data"
     assert preflight["offline_fixed_scene_artifacts"]["scenario_actor_contract_status"] == "insufficient_data"
     assert "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json" in preflight["expected_artifacts"]
@@ -87,6 +92,14 @@ def test_apollo_fixed_scene_scaffold_writes_invalid_backend_not_ready(tmp_path) 
     assert phase1_status["evaluable"] is False
     assert phase1_status["artifact_contract_version"] == "phase1_scenario_run_artifacts.v1"
     assert phase1_status["target_actor_contract"]["target_actor_role"] == "lead_vehicle"
+    assert phase1_status["apollo_fixed_scene_dispatch_contract"]["status"] == "pass"
+    assert (
+        phase1_status["apollo_fixed_scene_dispatch_contract"]["dispatch_mode"]
+        == "guarded_legacy_transition_available"
+    )
+    assert phase1_status["offline_fixed_scene_artifacts"]["apollo_fixed_scene_dispatch"].endswith(
+        "analysis/phase1_apollo_fixed_scene_dispatch/phase1_apollo_fixed_scene_dispatch_report.json"
+    )
     assert "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json" in phase1_status["expected_artifacts"]
     assert "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json" in phase1_status["missing_expected_artifacts"]
     assert "artifacts/fixed_scene_resolved.json" not in phase1_status["missing_expected_artifacts"]

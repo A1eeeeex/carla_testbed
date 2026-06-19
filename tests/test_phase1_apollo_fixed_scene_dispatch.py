@@ -79,6 +79,9 @@ def test_scaffold_writes_dispatch_contract_report(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     preflight = json.loads((run_dir / "preflight.json").read_text(encoding="utf-8"))
+    phase1_status = json.loads(
+        (run_dir / "analysis" / "phase1_status" / "phase1_status.json").read_text(encoding="utf-8")
+    )
     dispatch_path = (
         run_dir
         / "analysis"
@@ -88,6 +91,13 @@ def test_scaffold_writes_dispatch_contract_report(tmp_path: Path) -> None:
     dispatch = json.loads(dispatch_path.read_text(encoding="utf-8"))
 
     assert preflight["offline_fixed_scene_artifacts"]["apollo_fixed_scene_dispatch"]["status"] == "partial"
+    assert preflight["apollo_fixed_scene_dispatch_contract"]["status"] == "partial"
+    assert preflight["apollo_fixed_scene_dispatch_contract"]["dispatch_mode"] == "runtime_migration_required"
+    assert phase1_status["apollo_fixed_scene_dispatch_contract"]["status"] == "partial"
+    assert phase1_status["apollo_fixed_scene_dispatch_contract"]["dispatch_mode"] == "runtime_migration_required"
+    assert "apollo_fixed_scene_runtime_migration_required" in phase1_status[
+        "apollo_fixed_scene_dispatch_contract"
+    ]["blocking_reasons"]
     assert dispatch["status"] == "partial"
     assert dispatch["dispatch_mode"] == "runtime_migration_required"
     assert "apollo_fixed_scene_runtime_migration_required" in dispatch["blocking_reasons"]

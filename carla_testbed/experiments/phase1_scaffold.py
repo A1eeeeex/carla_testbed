@@ -125,8 +125,38 @@ def existing_offline_fixed_scene_artifacts(run_dir: str | Path) -> dict[str, str
         / "analysis"
         / "scenario_actor_contract"
         / "scenario_actor_contract_report.json",
+        "apollo_fixed_scene_readiness": root
+        / "analysis"
+        / "phase1_apollo_fixed_scene_readiness"
+        / "phase1_apollo_fixed_scene_readiness_report.json",
+        "apollo_fixed_scene_dispatch": root
+        / "analysis"
+        / "phase1_apollo_fixed_scene_dispatch"
+        / "phase1_apollo_fixed_scene_dispatch_report.json",
     }
     return {name: str(path) for name, path in paths.items() if path.exists()}
+
+
+def apollo_fixed_scene_dispatch_summary(run_dir: str | Path) -> dict[str, Any] | None:
+    root = Path(run_dir).expanduser()
+    report_path = (
+        root
+        / "analysis"
+        / "phase1_apollo_fixed_scene_dispatch"
+        / "phase1_apollo_fixed_scene_dispatch_report.json"
+    )
+    report = _read_json(report_path)
+    if not report:
+        return None
+    return {
+        "status": report.get("status"),
+        "dispatch_mode": report.get("dispatch_mode"),
+        "starts_runtime": report.get("starts_runtime"),
+        "commands_present": report.get("commands_present"),
+        "blocking_reasons": list(report.get("blocking_reasons") or []),
+        "warnings": list(report.get("warnings") or []),
+        "report_path": str(report_path),
+    }
 
 
 def phase1_preflight_status(
@@ -236,6 +266,7 @@ def build_phase1_scaffold_status(
         "preflight_status": "backend_not_ready",
         "preflight_reasons": reasons,
         "offline_fixed_scene_artifacts": existing_offline_fixed_scene_artifacts(root),
+        "apollo_fixed_scene_dispatch_contract": apollo_fixed_scene_dispatch_summary(root),
         "v_t_gap_status": None,
         "summary_status": summary.get("status"),
         "summary_success": summary.get("success"),
@@ -269,6 +300,16 @@ def write_json(path: str | Path, payload: Mapping[str, Any]) -> None:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(dict(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(data) if isinstance(data, Mapping) else {}
 
 
 def missing_expected_artifacts(

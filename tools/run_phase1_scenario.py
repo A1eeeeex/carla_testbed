@@ -15,6 +15,7 @@ from carla_testbed.analysis.phase1_status import write_phase1_status  # noqa: E4
 from carla_testbed.backends.registry import default_backend_registry  # noqa: E402
 from carla_testbed.experiments.phase1_scaffold import (  # noqa: E402
     APOLLO_FIXED_SCENE_PREFLIGHT_SCHEMA_VERSION,
+    apollo_fixed_scene_dispatch_summary,
     build_phase1_scaffold_manifest,
     build_phase1_scaffold_status,
     missing_expected_artifacts,
@@ -106,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             run_dir, launch_plan.get("expected_artifacts") or [], assume_scaffold_written=True
         ),
         "offline_fixed_scene_artifacts": offline_fixed_scene_artifacts,
+        "apollo_fixed_scene_dispatch_contract": apollo_fixed_scene_dispatch_summary(run_dir),
         "bridge_config_path": args.bridge_config,
         "fixed_scene_enabled": fixed_scene_enabled,
         "claim_boundary": (
