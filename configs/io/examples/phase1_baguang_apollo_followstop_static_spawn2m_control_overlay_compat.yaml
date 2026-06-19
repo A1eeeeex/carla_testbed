@@ -157,6 +157,7 @@ runtime:
     extra_args: ""
   postprocess:
     phase1_scenario_path: configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml
+    auto_export_apollo_hdmap_projection: true
 
 record:
   probe:
