@@ -143,6 +143,7 @@ class ApolloCyberRTBackend:
                     "artifacts/fixed_scene_resolved.json",
                     "artifacts/fixed_scene_runtime_state.json",
                     "artifacts/scenario_actor_trace.jsonl",
+                    "artifacts/scenario_phase_events.jsonl",
                     "artifacts/obstacle_gt_contract.jsonl",
                     "analysis/fixed_scene_contract/fixed_scene_contract_report.json",
                     "analysis/scenario_actor_contract/scenario_actor_contract_report.json",

@@ -36,6 +36,10 @@ from carla_testbed.analysis.obstacle_gt_contract import (
 from carla_testbed.analysis.phase1_status import classify_phase1_run, write_phase1_status
 from carla_testbed.analysis.v_t_gap import extract_v_t_gap, write_v_t_gap_report
 from carla_testbed.experiments.phase1_apollo_fixed_scene_compat import derive_apollo_fixed_scene_artifacts
+from carla_testbed.experiments.phase1_apollo_fixed_scene_dispatch import (
+    analyze_apollo_fixed_scene_dispatch,
+    write_apollo_fixed_scene_dispatch_report,
+)
 from carla_testbed.experiments.phase1_apollo_fixed_scene_readiness import (
     analyze_apollo_fixed_scene_readiness,
     write_apollo_fixed_scene_readiness_report,
@@ -58,6 +62,8 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     root = Path(run_dir).expanduser()
     analysis = root / "analysis"
     apollo_fixed_scene_compat_report: dict[str, Any] | None = None
+    apollo_fixed_scene_dispatch_report: dict[str, Any] | None = None
+    apollo_fixed_scene_dispatch_paths: dict[str, str] | None = None
     apollo_fixed_scene_readiness_report: dict[str, Any] | None = None
     apollo_fixed_scene_readiness_paths: dict[str, str] | None = None
     apollo_control_handoff_report: dict[str, Any] | None = None
@@ -76,6 +82,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     apollo_link_health_paths: dict[str, str] | None = None
     phase1_scenario_binding_report = _ensure_phase1_scenario_binding(root)
     if _is_apollo_fixed_scene_target_run(root):
+        apollo_fixed_scene_dispatch_report, apollo_fixed_scene_dispatch_paths = _write_apollo_dispatch(root)
         apollo_fixed_scene_readiness_report, apollo_fixed_scene_readiness_paths = _write_apollo_readiness(root)
         apollo_fixed_scene_compat_report = derive_apollo_fixed_scene_artifacts(root)
         _write_obstacle_gt_contract(root)
@@ -103,6 +110,9 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         "phase1_failure_reason": phase1_report.get("failure_reason"),
         "apollo_fixed_scene_compat_status": (
             apollo_fixed_scene_compat_report.get("status") if apollo_fixed_scene_compat_report else None
+        ),
+        "apollo_fixed_scene_dispatch_status": (
+            apollo_fixed_scene_dispatch_report.get("status") if apollo_fixed_scene_dispatch_report else None
         ),
         "apollo_fixed_scene_readiness_status": (
             apollo_fixed_scene_readiness_report.get("status") if apollo_fixed_scene_readiness_report else None
@@ -159,6 +169,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
                 if apollo_fixed_scene_compat_report
                 else {}
             ),
+            **({"apollo_fixed_scene_dispatch": apollo_fixed_scene_dispatch_paths} if apollo_fixed_scene_dispatch_paths else {}),
             **({"apollo_fixed_scene_readiness": apollo_fixed_scene_readiness_paths} if apollo_fixed_scene_readiness_paths else {}),
             **({"apollo_control_handoff": apollo_control_handoff_paths} if apollo_control_handoff_paths else {}),
             **({"control_health": control_health_paths} if control_health_paths else {}),
@@ -415,6 +426,29 @@ def _write_apollo_readiness(root: Path) -> tuple[dict[str, Any], dict[str, str]]
     paths = write_apollo_fixed_scene_readiness_report(
         report,
         root / "analysis" / "phase1_apollo_fixed_scene_readiness",
+    )
+    return report, paths
+
+
+def _write_apollo_dispatch(root: Path) -> tuple[dict[str, Any], dict[str, str]]:
+    manifest = _read_json(root / "manifest.json")
+    summary = _read_json(root / "summary.json")
+    launch_plan = manifest.get("launch_plan") if isinstance(manifest.get("launch_plan"), Mapping) else None
+    if launch_plan is None:
+        preflight = _read_json(root / "preflight.json")
+        raw_launch = preflight.get("launch_plan")
+        launch_plan = raw_launch if isinstance(raw_launch, Mapping) else None
+    report = analyze_apollo_fixed_scene_dispatch(
+        backend=str(manifest.get("backend") or manifest.get("backend_name") or summary.get("backend") or ""),
+        backend_type=str(manifest.get("backend_type") or summary.get("backend_type") or ""),
+        scenario_id=str(manifest.get("scenario_id") or summary.get("scenario_id") or root.name),
+        scenario_class=str(manifest.get("scenario_class") or summary.get("scenario_class") or ""),
+        target_actor_contract=_target_actor_contract(root, manifest),
+        launch_plan=launch_plan,
+    )
+    paths = write_apollo_fixed_scene_dispatch_report(
+        report,
+        root / "analysis" / "phase1_apollo_fixed_scene_dispatch",
     )
     return report, paths
 

@@ -51,9 +51,19 @@ def test_apollo_fixed_scene_scaffold_writes_invalid_backend_not_ready(tmp_path) 
         / "phase1_apollo_fixed_scene_readiness"
         / "phase1_apollo_fixed_scene_readiness_report.json"
     )
+    dispatch_path = (
+        run_dir
+        / "analysis"
+        / "phase1_apollo_fixed_scene_dispatch"
+        / "phase1_apollo_fixed_scene_dispatch_report.json"
+    )
     assert readiness_path.exists()
+    assert dispatch_path.exists()
     readiness = json.loads(readiness_path.read_text(encoding="utf-8"))
+    dispatch = json.loads(dispatch_path.read_text(encoding="utf-8"))
     assert readiness["status"] == "fail"
+    assert dispatch["status"] == "pass"
+    assert dispatch["dispatch_mode"] == "guarded_legacy_transition_available"
     assert "target_role_not_in_front_obstacle_role_names" in readiness["blocking_reasons"]
     assert preflight["schema_version"] == "apollo_fixed_scene_preflight.v1"
     assert preflight["status"] == "backend_not_ready"
@@ -62,6 +72,7 @@ def test_apollo_fixed_scene_scaffold_writes_invalid_backend_not_ready(tmp_path) 
     assert preflight["target_actor_contract"]["target_actor_role"] == "lead_vehicle"
     assert preflight["offline_fixed_scene_artifacts"]["status"] == "static_only"
     assert preflight["offline_fixed_scene_artifacts"]["apollo_fixed_scene_readiness"]["status"] == "fail"
+    assert preflight["offline_fixed_scene_artifacts"]["apollo_fixed_scene_dispatch"]["status"] == "pass"
     assert preflight["offline_fixed_scene_artifacts"]["fixed_scene_contract_status"] == "insufficient_data"
     assert preflight["offline_fixed_scene_artifacts"]["scenario_actor_contract_status"] == "insufficient_data"
     assert "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json" in preflight["expected_artifacts"]
@@ -115,6 +126,7 @@ def test_apollo_static_follow_stop_launch_plan_exposes_guarded_compat_command() 
     assert "configs/io/examples/phase1_baguang_apollo_followstop_static_compat.yaml" in command
     assert "--legacy-dispatch" in command
     assert "artifacts/obstacle_gt_contract.jsonl" in launch.expected_artifacts
+    assert "artifacts/scenario_phase_events.jsonl" in launch.expected_artifacts
     assert "artifacts/apollo_control_deferred_start.log" in launch.expected_artifacts
     assert "artifacts/apollo_control_deferred_survival.json" in launch.expected_artifacts
     assert "analysis/apollo_control_handoff/apollo_control_handoff_report.json" in launch.expected_artifacts

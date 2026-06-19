@@ -66,7 +66,13 @@ def main(argv: list[str] | None = None) -> int:
 
     fixed_scene_enabled = bool(plan.scenario.fixed_scene)
     offline_fixed_scene_artifacts = (
-        write_offline_fixed_scene_artifacts(plan, run_dir, repo_root=REPO_ROOT, bridge_config_path=args.bridge_config)
+        write_offline_fixed_scene_artifacts(
+            plan,
+            run_dir,
+            repo_root=REPO_ROOT,
+            launch_plan=launch_plan,
+            bridge_config_path=args.bridge_config,
+        )
         if fixed_scene_enabled else {}
     )
     status, reasons = phase1_preflight_status(

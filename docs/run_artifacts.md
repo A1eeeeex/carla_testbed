@@ -717,6 +717,25 @@ Phase 1 readiness example that enables actor probing and includes
 `lead_vehicle` in `front_obstacle_behavior.role_names`. It still does not start
 Apollo or prove online behavior.
 
+Apollo fixed-scene scaffolds and postprocess may also write
+`analysis/phase1_apollo_fixed_scene_dispatch/phase1_apollo_fixed_scene_dispatch_report.json`.
+This is a LaunchPlan contract check, not online evidence. It separates:
+
+- `dispatch_mode=guarded_legacy_transition_available`: a narrow static
+  Baguang follow-stop compatibility command exists, but must still be run and
+  postprocessed before any behavior comparison.
+- `dispatch_mode=runtime_migration_required`: dynamic lead accel/decel,
+  cut-in/cut-out, and hard-brake cases still need Apollo runtime migration
+  before they can be evaluable.
+
+Inspect dispatch readiness without starting CARLA/Apollo:
+
+```bash
+python tools/analyze_phase1_apollo_fixed_scene_dispatch.py \
+  --scenario baguang_lead_decel_70_to_40_20m \
+  --out <run>/analysis/phase1_apollo_fixed_scene_dispatch
+```
+
 Scenario catalog artifacts:
 
 - `phase1_scenario_catalog.json`
@@ -732,7 +751,8 @@ runs it also surfaces `apollo_fixed_scene_readiness_status` and
 `apollo_fixed_scene_runtime_dispatch_reason` when Apollo preflight/runtime
 artifacts show whether fixed-scene dispatch actually executed. This keeps
 bridge-config readiness separate from runtime migration: a readiness `pass`
-with `apollo_fixed_scene_runtime_not_migrated` is still only scaffold evidence.
+with `dispatch_mode=runtime_migration_required` or
+`apollo_fixed_scene_runtime_not_migrated` is still only scaffold evidence.
 Missing actor-probe, role-name mismatch, or runtime-dispatch absence remains a
 setup/evidence blocker rather than being counted as an Apollo behavior loss. It
 also records `scenario_case_ids`, `case_files`, and `target_actor_contract` so

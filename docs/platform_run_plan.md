@@ -223,3 +223,10 @@ is a static follow-stop compatibility path only; dynamic lead accel/decel,
 cut-in/cut-out, and other fixed-scene cases remain `runtime migration required`
 until they produce fixed-scene actor trace, obstacle GT linkage, v-t-gap,
 phase1_status, and comparison artifacts from a real online run.
+
+Use `tools/analyze_phase1_apollo_fixed_scene_dispatch.py` to inspect this
+LaunchPlan boundary before online work. A dispatch report with
+`guarded_legacy_transition_available` means an operator command exists but has
+not produced behavior evidence. A dispatch report with
+`runtime_migration_required` is a setup/evidence blocker and must not be counted
+as an Apollo backend behavior loss.

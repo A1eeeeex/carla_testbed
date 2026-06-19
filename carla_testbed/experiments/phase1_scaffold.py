@@ -16,6 +16,9 @@ from carla_testbed.analysis.scenario_actor_contract import (
 from carla_testbed.experiments.phase1_apollo_fixed_scene_readiness import (
     write_apollo_fixed_scene_readiness_for_plan,
 )
+from carla_testbed.experiments.phase1_apollo_fixed_scene_dispatch import (
+    write_apollo_fixed_scene_dispatch_for_plan,
+)
 from carla_testbed.scenario_player.compiler import compile_fixed_scene_template
 from carla_testbed.scenario_player.manifest_contract import fixed_scene_manifest_fields_from_template_path
 from carla_testbed.scenario_player.schema import load_fixed_scene_template
@@ -29,6 +32,7 @@ def write_offline_fixed_scene_artifacts(
     run_dir: str | Path,
     *,
     repo_root: str | Path,
+    launch_plan: Mapping[str, Any] | None = None,
     bridge_config_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Write static fixed-scene scaffold artifacts without faking runtime evidence."""
@@ -59,6 +63,7 @@ def write_offline_fixed_scene_artifacts(
     fixed_paths = write_fixed_scene_contract_report(fixed_report, analysis / "fixed_scene_contract")
     actor_paths = write_scenario_actor_contract_report(actor_report, analysis / "scenario_actor_contract")
     apollo_readiness = None
+    apollo_dispatch = None
     if getattr(getattr(plan, "platform", None), "name", None) == "apollo_cyberrt":
         target_contract = (
             storyboard.get("target_actor_contract") if isinstance(storyboard.get("target_actor_contract"), dict) else None
@@ -70,6 +75,13 @@ def write_offline_fixed_scene_artifacts(
             target_actor_contract=target_contract,
             bridge_config_path=bridge_config_path,
         )
+        if launch_plan is not None:
+            apollo_dispatch = write_apollo_fixed_scene_dispatch_for_plan(
+                plan,
+                launch_plan,
+                root,
+                target_actor_contract=target_contract,
+            )
     return {
         "status": "static_only",
         "fixed_scene_resolved": str(storyboard_path),
@@ -83,6 +95,16 @@ def write_offline_fixed_scene_artifacts(
                 }
             }
             if apollo_readiness
+            else {}
+        ),
+        **(
+            {
+                "apollo_fixed_scene_dispatch": {
+                    "status": apollo_dispatch.get("status"),
+                    "paths": apollo_dispatch.get("paths"),
+                }
+            }
+            if apollo_dispatch
             else {}
         ),
         "fixed_scene_contract_status": fixed_report.get("status"),
