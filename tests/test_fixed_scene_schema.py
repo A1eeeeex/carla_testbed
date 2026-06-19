@@ -73,6 +73,31 @@ def test_trigger_dsl_aliases_match_proposed_yaml_shape() -> None:
     )
 
 
+def test_relative_distance_trigger_prefers_route_progress_gap_when_available() -> None:
+    actors = ScenarioActorRegistry()
+    actors.update(
+        {
+            "ego": {"x": 0.0, "y": 0.0, "speed_mps": 20.0, "trajectory_progress_m": 220.0},
+            "lead_vehicle": {
+                "x": 250.0,
+                "y": 200.0,
+                "speed_mps": 16.0,
+                "trajectory_progress_m": 300.0,
+                "route_progress_gap_m": 70.0,
+                "route_progress_gap_source": "trajectory_progress_initial_center_gap",
+            },
+        }
+    )
+
+    assert actors.distance("ego", "lead_vehicle") > 300.0
+    assert evaluate_trigger(
+        {"type": "relative_distance", "from": "ego", "to": "lead_vehicle", "lte_m": 80.0},
+        sim_time_sec=0.0,
+        world_frame=1,
+        actors=actors,
+    )
+
+
 def test_relative_longitudinal_trigger_uses_ego_body_frame_yaw_zero() -> None:
     actors = ScenarioActorRegistry()
     actors.update(

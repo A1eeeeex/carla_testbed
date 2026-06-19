@@ -26,6 +26,40 @@ def test_carla_runtime_spawns_lead_actor_and_writes_artifacts(tmp_path) -> None:
     assert (tmp_path / "fixed_scene_runtime_state.json").exists()
 
 
+def test_carla_runtime_prefers_heading_continuous_waypoint_branch(tmp_path) -> None:
+    world = _FakeBranchingWaypointWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    storyboard = compile_fixed_scene_template(load_fixed_scene_template("configs/scenarios/town01/follow_stop_097.yaml"))
+    runtime = CarlaFixedSceneRuntime()
+
+    state = runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+
+    assert state.errors == []
+    assert state.spawn_feasibility["lead_vehicle"]["status"] == "pass"
+    assert math.isclose(world.spawned[0].transform.location.x, 300.0)
+    assert math.isclose(world.spawned[0].transform.location.y, 0.0)
+    assert math.isclose(world.spawned[0].transform.rotation.yaw, 2.0)
+
+
+def test_carla_runtime_allows_curved_route_ahead_spawn_without_straight_frame_lateral_failure(tmp_path) -> None:
+    world = _FakeCurvedAheadWaypointWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    storyboard = compile_fixed_scene_template(load_fixed_scene_template("configs/scenarios/town01/follow_stop_097.yaml"))
+    runtime = CarlaFixedSceneRuntime()
+
+    state = runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+
+    feasibility = state.spawn_feasibility["lead_vehicle"]
+    assert state.errors == []
+    assert feasibility["status"] == "warn"
+    assert feasibility["route_ahead_selection"] is True
+    assert feasibility["route_distance_m"] == 300.0
+    assert feasibility["actual_lateral_offset_m"] > 50.0
+    assert feasibility["lane_check"]["status"] == "pass_route_continuity"
+    assert feasibility["blocking_reasons"] == []
+    assert "spawn_feasibility_route_ahead_skipped_straight_frame_lateral_check" in feasibility["warnings"]
+
+
 def test_carla_runtime_applies_follow_stop_controls(tmp_path) -> None:
     world = _FakeWorld()
     ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
@@ -154,6 +188,33 @@ def test_lane_change_direction_sign_yaw_ninety_left_and_right() -> None:
     assert math.isclose(left_actor.transform.location.x, 3.6, abs_tol=0.01)
 
 
+def test_route_follow_steer_uses_waypoint_lookahead() -> None:
+    world = _FakeRouteLookaheadWorld(
+        current_tf=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)),
+        lookahead_tf=_Transform(_Location(8.0, 8.0, 0.0), _Rotation(yaw=45.0)),
+    )
+    actor = _FakeActor(actor_id=14, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+
+    steer = carla_runtime_module._route_follow_steer(actor, world)
+
+    assert steer > 0.0
+    assert steer <= 0.35
+
+
+def test_target_velocity_uses_route_heading_when_available() -> None:
+    world = _FakeRouteLookaheadWorld(
+        current_tf=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=90.0)),
+        lookahead_tf=_Transform(_Location(0.0, 8.0, 0.0), _Rotation(yaw=90.0)),
+    )
+    actor = _FakeActor(actor_id=15, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+
+    carla_runtime_module._set_actor_target_velocity(actor, 10.0, world=world)
+
+    assert actor.target_velocity is not None
+    assert math.isclose(actor.target_velocity.x, 0.0, abs_tol=0.01)
+    assert math.isclose(actor.target_velocity.y, 10.0, abs_tol=0.01)
+
+
 def test_carla_runtime_module_does_not_import_carla_runtime() -> None:
     import carla_testbed.scenario_player.carla_runtime as module
 
@@ -197,6 +258,81 @@ class _FakeWorld:
         return actor
 
 
+class _FakeBranchingWaypointWorld(_FakeWorld):
+    def __init__(self) -> None:
+        super().__init__()
+        self.map = _FakeBranchingWaypointMap()
+
+    def get_map(self):
+        return self.map
+
+
+class _FakeBranchingWaypointMap:
+    def __init__(self) -> None:
+        self.start = _FakeWaypoint(
+            s=0.0,
+            road_id=1,
+            section_id=0,
+            lane_id=1,
+            transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)),
+        )
+        self.curved_branch = _FakeWaypoint(
+            s=300.0,
+            road_id=2,
+            section_id=0,
+            lane_id=1,
+            transform=_Transform(_Location(300.0, 20.0, 0.0), _Rotation(yaw=35.0)),
+        )
+        self.same_lane = _FakeWaypoint(
+            s=300.0,
+            road_id=1,
+            section_id=0,
+            lane_id=1,
+            transform=_Transform(_Location(300.0, 0.0, 0.0), _Rotation(yaw=2.0)),
+        )
+        self.start._candidates = [self.curved_branch, self.same_lane]
+
+    def get_waypoint(self, location):
+        if getattr(location, "x", 0.0) <= 1.0:
+            return self.start
+        if abs(getattr(location, "y", 0.0)) < 1.0:
+            return self.same_lane
+        return self.curved_branch
+
+
+class _FakeCurvedAheadWaypointWorld(_FakeWorld):
+    def __init__(self) -> None:
+        super().__init__()
+        self.map = _FakeCurvedAheadWaypointMap()
+
+    def get_map(self):
+        return self.map
+
+
+class _FakeCurvedAheadWaypointMap:
+    def __init__(self) -> None:
+        self.start = _FakeWaypoint(
+            s=0.0,
+            road_id=15,
+            section_id=0,
+            lane_id=1,
+            transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)),
+        )
+        self.curved_ahead = _FakeWaypoint(
+            s=300.0,
+            road_id=3,
+            section_id=0,
+            lane_id=1,
+            transform=_Transform(_Location(247.0, 53.0, 0.0), _Rotation(yaw=0.0)),
+        )
+        self.start._candidates = [self.curved_ahead]
+
+    def get_waypoint(self, location):
+        if getattr(location, "x", 0.0) <= 1.0:
+            return self.start
+        return self.curved_ahead
+
+
 class _FakeProjectionWorld:
     def __init__(self, *, s, road_id, section_id, lane_id):
         self.map = _FakeProjectionMap(s=s, road_id=road_id, section_id=section_id, lane_id=lane_id)
@@ -213,12 +349,42 @@ class _FakeProjectionMap:
         return self.waypoint
 
 
+class _FakeRouteLookaheadWorld(_FakeWorld):
+    def __init__(self, *, current_tf, lookahead_tf) -> None:
+        super().__init__()
+        self.map = _FakeRouteLookaheadMap(current_tf=current_tf, lookahead_tf=lookahead_tf)
+
+    def get_map(self):
+        return self.map
+
+
+class _FakeRouteLookaheadMap:
+    def __init__(self, *, current_tf, lookahead_tf) -> None:
+        self.lookahead = _FakeWaypoint(s=8.0, road_id=1, section_id=0, lane_id=1, transform=lookahead_tf)
+        self.current = _FakeWaypoint(
+            s=0.0,
+            road_id=1,
+            section_id=0,
+            lane_id=1,
+            transform=current_tf,
+            candidates=[self.lookahead],
+        )
+
+    def get_waypoint(self, location):
+        return self.current
+
+
 class _FakeWaypoint:
-    def __init__(self, *, s, road_id, section_id, lane_id):
+    def __init__(self, *, s, road_id, section_id, lane_id, transform=None, candidates=None):
         self.s = s
         self.road_id = road_id
         self.section_id = section_id
         self.lane_id = lane_id
+        self.transform = transform
+        self._candidates = list(candidates or [])
+
+    def next(self, distance_m):
+        return list(self._candidates)
 
 
 class _BlueprintLibrary:

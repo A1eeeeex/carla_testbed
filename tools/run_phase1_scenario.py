@@ -6,24 +6,25 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from carla_testbed.analysis.phase1_status import PHASE1_STATUS_SCHEMA_VERSION, write_phase1_status  # noqa: E402
+from carla_testbed.analysis.phase1_status import write_phase1_status  # noqa: E402
 from carla_testbed.backends.registry import default_backend_registry  # noqa: E402
 from carla_testbed.experiments.phase1_scaffold import (  # noqa: E402
-    existing_offline_fixed_scene_artifacts,
+    APOLLO_FIXED_SCENE_PREFLIGHT_SCHEMA_VERSION,
+    build_phase1_scaffold_manifest,
+    build_phase1_scaffold_status,
+    missing_expected_artifacts,
+    phase1_preflight_status,
+    write_json,
     write_offline_fixed_scene_artifacts,
+    write_phase1_scaffold_events,
 )
 from carla_testbed.platform.compiler import compile_run_plan, write_run_plan  # noqa: E402
 from carla_testbed.platform.registry import PlatformRegistry  # noqa: E402
-from carla_testbed.scenario_player.manifest_contract import fixed_scene_manifest_fields_from_template_path  # noqa: E402
-
-
-APOLLO_FIXED_SCENE_PREFLIGHT_SCHEMA_VERSION = "apollo_fixed_scene_preflight.v1"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -68,14 +69,14 @@ def main(argv: list[str] | None = None) -> int:
         write_offline_fixed_scene_artifacts(plan, run_dir, repo_root=REPO_ROOT, bridge_config_path=args.bridge_config)
         if fixed_scene_enabled else {}
     )
-    status, reasons = _preflight_status(
+    status, reasons = phase1_preflight_status(
         backend=args.backend,
         fixed_scene_enabled=fixed_scene_enabled,
         backend_preflight=backend_preflight,
         launch_plan=launch_plan,
     )
     now = time.time()
-    manifest = _manifest(
+    manifest = build_phase1_scaffold_manifest(
         plan=plan,
         contract=contract,
         launch_plan=launch_plan,
@@ -95,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         "launch_plan": launch_plan,
         "target_actor_contract": manifest.get("target_actor_contract"),
         "expected_artifacts": launch_plan.get("expected_artifacts") or [],
-        "missing_expected_artifacts": _missing_expected_artifacts(
+        "missing_expected_artifacts": missing_expected_artifacts(
             run_dir, launch_plan.get("expected_artifacts") or [], assume_scaffold_written=True
         ),
         "offline_fixed_scene_artifacts": offline_fixed_scene_artifacts,
@@ -125,11 +126,11 @@ def main(argv: list[str] | None = None) -> int:
         "wall_duration_s": 0.0,
         "claim_boundary": "invalid_preflight_scaffold_not_backend_behavior_loss",
     }
-    _write_json(run_dir / "manifest.json", manifest)
-    _write_json(run_dir / "preflight.json", preflight)
-    _write_json(run_dir / "summary.json", summary)
-    _write_events(run_dir / "events.jsonl", plan, status, reasons)
-    phase1_status = _phase1_status(plan, manifest, summary, run_dir, reasons)
+    write_json(run_dir / "manifest.json", manifest)
+    write_json(run_dir / "preflight.json", preflight)
+    write_json(run_dir / "summary.json", summary)
+    write_phase1_scaffold_events(run_dir / "events.jsonl", plan, status, reasons)
+    phase1_status = build_phase1_scaffold_status(plan, manifest, summary, run_dir, reasons)
     write_phase1_status(phase1_status, run_dir / "analysis" / "phase1_status")
     result = {
         "run_dir": str(run_dir),
@@ -149,164 +150,6 @@ def _default_algorithm(backend: str) -> str:
     if backend == "autoware_ros2":
         return "autoware/universe_gt_localization"
     raise ValueError(f"unsupported backend: {backend}")
-
-
-def _preflight_status(
-    *,
-    backend: str,
-    fixed_scene_enabled: bool,
-    backend_preflight: Mapping[str, Any],
-    launch_plan: Mapping[str, Any],
-) -> tuple[str, list[str]]:
-    reasons: list[str] = []
-    if backend == "apollo_cyberrt" and fixed_scene_enabled and not bool(launch_plan.get("starts_runtime")):
-        reasons.append("apollo_fixed_scene_runtime_not_migrated")
-    if backend_preflight.get("status") not in {"ready", "pass"}:
-        reasons.extend(str(item) for item in backend_preflight.get("missing_requirements") or [])
-    if not launch_plan.get("starts_runtime"):
-        reasons.append("phase1_scaffold_does_not_start_runtime")
-    reasons = sorted(set(item for item in reasons if item))
-    return ("ready", []) if not reasons else ("backend_not_ready", reasons)
-
-
-def _manifest(
-    *,
-    plan: Any,
-    contract: Mapping[str, Any],
-    launch_plan: Mapping[str, Any],
-    run_dir: Path,
-    preflight_status: str,
-    start_time_wall_s: float,
-    bridge_config_path: str | None = None,
-) -> dict[str, Any]:
-    fixed_scene_fields = fixed_scene_manifest_fields_from_template_path(plan.source_profiles.get("scenario"))
-    return {
-        "schema_version": "phase1_scenario_run_manifest.v1",
-        "run_id": plan.identity.run_id,
-        "scenario_id": plan.scenario.scenario_id,
-        "scenario_class": plan.scenario.scenario_class,
-        "scenario_case": plan.scenario.scenario_id,
-        "map": plan.scenario.map,
-        "backend": contract.get("backend"),
-        "backend_name": contract.get("backend_name") or contract.get("backend"),
-        "backend_type": contract.get("backend_type"),
-        "backend_ready": preflight_status == "ready",
-        "starts_runtime": False,
-        "starts_carla": contract.get("starts_carla"),
-        "starts_apollo": contract.get("starts_apollo"),
-        "starts_autoware": contract.get("starts_autoware"),
-        "input_contract": contract.get("input_contract"),
-        "adapter_path": contract.get("adapter_path"),
-        "available_truth_fields": contract.get("available_truth_fields") or [],
-        "output_control_mode": contract.get("output_control_mode"),
-        "transport_mode": contract.get("transport_mode"),
-        "bridge_config_path": bridge_config_path,
-        "fixed_scene_enabled": bool(plan.scenario.fixed_scene),
-        **fixed_scene_fields,
-        "expected_artifacts": launch_plan.get("expected_artifacts") or [],
-        "launch_plan": launch_plan,
-        "source_profiles": dict(plan.source_profiles),
-        "start_time_wall_s": start_time_wall_s,
-        "run_dir": str(run_dir),
-        "claim_boundary": "phase1_preflight_manifest_not_behavior_evidence",
-    }
-
-
-def _phase1_status(
-    plan: Any,
-    manifest: Mapping[str, Any],
-    summary: Mapping[str, Any],
-    run_dir: Path,
-    reasons: list[str],
-) -> dict[str, Any]:
-    return {
-        "schema_version": PHASE1_STATUS_SCHEMA_VERSION,
-        "run_dir": str(run_dir),
-        "run_id": plan.identity.run_id,
-        "scenario_id": plan.scenario.scenario_id,
-        "scenario_case": plan.scenario.scenario_id,
-        "backend": manifest.get("backend"),
-        "backend_name": manifest.get("backend_name"),
-        "backend_type": manifest.get("backend_type"),
-        "status": "invalid",
-        "failure_reason": "backend_not_ready",
-        "invalid_reasons": ["backend_not_ready"],
-        "degraded_reasons": [],
-        "failed_reasons": [],
-        "original_failure_reason": summary.get("fail_reason"),
-        "evaluable": False,
-        "target_actor_contract": manifest.get("target_actor_contract"),
-        "artifact_contract_version": manifest.get("artifact_contract_version"),
-        "evidence_files": [
-            str(run_dir / "manifest.json"),
-            str(run_dir / "preflight.json"),
-            str(run_dir / "summary.json"),
-        ],
-        "missing_artifacts": [],
-        "expected_artifacts": manifest.get("expected_artifacts") or [],
-        "missing_expected_artifacts": _missing_expected_artifacts(
-            run_dir, manifest.get("expected_artifacts") or [], assume_scaffold_written=True
-        ),
-        "required_artifacts": {
-            "manifest": "present",
-            "summary": "present",
-            "preflight": "present",
-            "timeseries": "missing",
-            "v_t_gap_report": "missing",
-        },
-        "preflight_status": "backend_not_ready",
-        "preflight_reasons": reasons,
-        "offline_fixed_scene_artifacts": existing_offline_fixed_scene_artifacts(run_dir),
-        "v_t_gap_status": None,
-        "summary_status": summary.get("status"),
-        "summary_success": summary.get("success"),
-        "notes": [
-            "invalid_run_is_setup_or_evidence_failure_not_backend_loss",
-            "apollo_fixed_scene_scaffold_does_not_execute_runtime",
-        ],
-        "claim_boundary": "phase1_status_is_scenario_evaluation_not_natural_driving_claim",
-    }
-
-
-def _write_events(path: Path, plan: Any, status: str, reasons: list[str]) -> None:
-    rows = [
-        {
-            "event_type": "phase1_preflight_start",
-            "run_id": plan.identity.run_id,
-            "backend": plan.platform.name,
-            "scenario_id": plan.scenario.scenario_id,
-        },
-        {
-            "event_type": "phase1_preflight_end",
-            "run_id": plan.identity.run_id,
-            "status": status,
-            "reasons": reasons,
-        },
-    ]
-    path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
-
-
-def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(dict(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _missing_expected_artifacts(
-    run_dir: Path,
-    expected_artifacts: list[str],
-    *,
-    assume_scaffold_written: bool = False,
-) -> list[str]:
-    scaffold = {"manifest.json", "summary.json", "events.jsonl", "config.resolved.yaml", "run_plan.resolved.yaml"}
-    missing: list[str] = []
-    for rel in expected_artifacts:
-        if not rel:
-            continue
-        if assume_scaffold_written and rel in scaffold:
-            continue
-        if not (run_dir / rel).exists():
-            missing.append(rel)
-    return missing
 
 
 if __name__ == "__main__":

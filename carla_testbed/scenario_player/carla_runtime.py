@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -11,6 +11,7 @@ from carla_testbed.scenario_player.actions import speed_profile_target_mps
 from carla_testbed.scenario_player.actor_registry import ScenarioActorState
 from carla_testbed.scenario_player.player import FixedSceneFrameContext, FixedScenePlayer
 from carla_testbed.scenario_player.schema import validate_fixed_scene_storyboard
+from carla_testbed.scenarios.followstop_geometry import select_waypoint_ahead_transform
 
 
 @dataclass
@@ -55,6 +56,9 @@ class _ControlCommand:
 class _SpawnSelection:
     transform: Any | None
     source: str
+    route_distance_m: float | None = None
+    waypoint_candidate_count: int = 0
+    selected_heading_diff_deg: float | None = None
 
 
 class CarlaFixedSceneRuntime:
@@ -72,6 +76,9 @@ class CarlaFixedSceneRuntime:
         self.state: CarlaFixedSceneRuntimeState | None = None
         self._artifact_dir: Path | None = None
         self._lane_change_states: dict[str, dict[str, Any]] = {}
+        self._trajectory_progress_m: dict[str, float] = {}
+        self._trajectory_last_xy: dict[str, tuple[float, float]] = {}
+        self._trajectory_initial_gap_m: dict[str, float] = {}
 
     def setup(self, context: Any, storyboard: Mapping[str, Any]) -> CarlaFixedSceneRuntimeState:
         resolved = dict(storyboard)
@@ -116,6 +123,7 @@ class CarlaFixedSceneRuntime:
         actors = {"ego": _actor_state("ego", ego, world=world)}
         for role, actor in self.actors.items():
             actors[role] = _actor_state(role, actor, world=world)
+        actors = self._annotate_trajectory_progress(actors)
         frame = FixedSceneFrameContext(
             sim_time_sec=float(_context_attr(context, "sim_time_sec", _context_attr(context, "sim_time", 0.0)) or 0.0),
             world_frame=int(_context_attr(context, "world_frame", _context_attr(context, "frame", 0)) or 0),
@@ -141,6 +149,9 @@ class CarlaFixedSceneRuntime:
                 errors.append(f"{getattr(actor, 'id', 'unknown')}: {type(exc).__name__}: {exc}")
         self.actors.clear()
         self._lane_change_states.clear()
+        self._trajectory_progress_m.clear()
+        self._trajectory_last_xy.clear()
+        self._trajectory_initial_gap_m.clear()
         if self.player is not None:
             self.player.teardown()
         if self.state is not None:
@@ -150,6 +161,53 @@ class CarlaFixedSceneRuntime:
 
     def active_roles(self) -> list[str]:
         return sorted(self.actors)
+
+    def actor_state(self, role: str) -> ScenarioActorState | None:
+        if self.player is None:
+            return None
+        return self.player.actors.get(role)
+
+    def _annotate_trajectory_progress(
+        self, actors: dict[str, ScenarioActorState]
+    ) -> dict[str, ScenarioActorState]:
+        annotated: dict[str, ScenarioActorState] = {}
+        for role, actor in actors.items():
+            progress = self._update_trajectory_progress(role, actor)
+            annotated[role] = replace(actor, trajectory_progress_m=progress)
+        ego = annotated.get("ego")
+        if ego is None or ego.x is None or ego.y is None:
+            return annotated
+        ego_progress = ego.trajectory_progress_m
+        if ego_progress is None:
+            return annotated
+        for role, actor in list(annotated.items()):
+            if role == "ego" or actor.x is None or actor.y is None or actor.trajectory_progress_m is None:
+                continue
+            initial_gap = self._trajectory_initial_gap_m.get(role)
+            if initial_gap is None:
+                initial_gap = _distance_xy_xy(ego.x, ego.y, actor.x, actor.y)
+                self._trajectory_initial_gap_m[role] = initial_gap
+            route_gap = initial_gap + actor.trajectory_progress_m - ego_progress
+            annotated[role] = replace(
+                actor,
+                route_progress_gap_m=route_gap,
+                route_progress_gap_source="trajectory_progress_initial_center_gap",
+            )
+        return annotated
+
+    def _update_trajectory_progress(self, role: str, actor: ScenarioActorState) -> float | None:
+        if actor.x is None or actor.y is None:
+            return self._trajectory_progress_m.get(role)
+        current = (float(actor.x), float(actor.y))
+        progress = float(self._trajectory_progress_m.get(role, 0.0))
+        previous = self._trajectory_last_xy.get(role)
+        if previous is not None:
+            step = _distance_xy_xy(previous[0], previous[1], current[0], current[1])
+            if math.isfinite(step):
+                progress += max(0.0, step)
+        self._trajectory_last_xy[role] = current
+        self._trajectory_progress_m[role] = progress
+        return progress
 
     def _spawn_role_actor(
         self,
@@ -196,8 +254,9 @@ class CarlaFixedSceneRuntime:
 
     def _apply_action(self, *, actor: Any, action: Mapping[str, Any], context: Any) -> ControlApplyResult:
         action_type = str(action.get("type"))
+        world = _context_attr(context, "world", None)
         if action_type in {"brake_to_stop", "hold_stop"}:
-            _set_actor_target_velocity(actor, 0.0)
+            _set_actor_target_velocity(actor, 0.0, world=world)
             command = _ControlCommand(
                 throttle=0.0,
                 brake=1.0,
@@ -212,7 +271,7 @@ class CarlaFixedSceneRuntime:
         if action_type == "lane_change":
             _apply_lane_change_transform(actor=actor, action=action, context=context, states=self._lane_change_states)
         if target_speed is not None:
-            _set_actor_target_velocity(actor, target_speed)
+            _set_actor_target_velocity(actor, target_speed, world=world)
         actual_speed = _actor_speed_mps(actor)
         throttle = 0.0
         brake = 0.0
@@ -225,7 +284,7 @@ class CarlaFixedSceneRuntime:
         command = _ControlCommand(
             throttle=throttle,
             brake=brake,
-            steer=_steer_from_action(action),
+            steer=_steer_from_action(action, actor=actor, world=world),
             metadata={
                 "action_type": action_type,
                 "controller": action.get("controller"),
@@ -353,11 +412,15 @@ def _select_spawn_transform_result(world: Any, ego: Any, spawn_cfg: Mapping[str,
     if carla_map is not None and hasattr(carla_map, "get_waypoint"):
         try:
             waypoint = carla_map.get_waypoint(getattr(ego_transform, "location"))
-            candidates = list(waypoint.next(s_offset_m)) if waypoint is not None and hasattr(waypoint, "next") else []
-            if candidates:
-                transform = getattr(candidates[0], "transform", None)
-                if transform is not None:
-                    return _SpawnSelection(transform=_offset_transform(transform, spawn_cfg), source="carla_waypoint_next")
+            selection = select_waypoint_ahead_transform(waypoint, s_offset_m)
+            if selection.found and selection.selected_transform is not None:
+                return _SpawnSelection(
+                    transform=_offset_transform(selection.selected_transform, spawn_cfg),
+                    source="carla_waypoint_next",
+                    route_distance_m=float(selection.distance_m),
+                    waypoint_candidate_count=int(selection.candidate_count),
+                    selected_heading_diff_deg=selection.selected_heading_diff_deg,
+                )
         except Exception:
             pass
     return _SpawnSelection(transform=_fallback_transform_ahead(ego_transform, spawn_cfg), source="fallback_transform_ahead")
@@ -389,12 +452,15 @@ def _set_actor_initial_speed(actor: Any, transform: Any, speed_mps: float | None
         return
 
 
-def _set_actor_target_velocity(actor: Any, speed_mps: float) -> None:
+def _set_actor_target_velocity(actor: Any, speed_mps: float, *, world: Any | None = None) -> None:
     transform = _safe_call(actor, "get_transform") or getattr(actor, "transform", None)
     setter = getattr(actor, "set_target_velocity", None)
     if not callable(setter) or transform is None:
         return
-    yaw = math.radians(_float_attr(getattr(transform, "rotation", None), "yaw", 0.0) or 0.0)
+    yaw_deg = _route_yaw_deg(world, transform) if world is not None else None
+    if yaw_deg is None:
+        yaw_deg = _float_attr(getattr(transform, "rotation", None), "yaw", 0.0) or 0.0
+    yaw = math.radians(yaw_deg)
     vector = _make_vector(
         x=float(speed_mps) * math.cos(yaw),
         y=float(speed_mps) * math.sin(yaw),
@@ -434,17 +500,25 @@ def _spawn_feasibility(
         )
     else:
         warnings.append("spawn_feasibility_pose_missing")
-    if enabled and longitudinal is not None:
+    route_ahead_selection = selection.source == "carla_waypoint_next" and spawn_cfg.get("lane") == "same"
+    if enabled and longitudinal is not None and not route_ahead_selection:
         if longitudinal < 0.0:
             blocking.append("actor_spawned_behind_ego")
         if abs(longitudinal - expected_s) > tolerance_m:
             blocking.append("longitudinal_offset_out_of_tolerance")
-    if enabled and lateral is not None and abs(lateral) > max_lateral_m:
+    if enabled and lateral is not None and abs(lateral) > max_lateral_m and not route_ahead_selection:
         blocking.append("lateral_offset_out_of_tolerance")
     if require_waypoint and selection.source != "carla_waypoint_next":
         blocking.append("waypoint_spawn_required_but_fallback_used")
     lane_check = _same_lane_check(world, ego_tf, actor_tf, spawn_cfg)
-    if lane_check.get("status") == "fail":
+    if route_ahead_selection and lane_check.get("status") == "fail":
+        lane_check = {
+            **lane_check,
+            "status": "pass_route_continuity",
+            "route_continuity_source": "carla_waypoint_next",
+        }
+        warnings.append("spawn_feasibility_route_ahead_skipped_straight_frame_lateral_check")
+    elif lane_check.get("status") == "fail":
         blocking.append("same_lane_check_failed")
     elif lane_check.get("status") == "warn":
         warnings.extend(lane_check.get("warnings") or [])
@@ -453,6 +527,10 @@ def _spawn_feasibility(
         "expected_s_offset_m": expected_s,
         "actual_longitudinal_offset_m": longitudinal,
         "actual_lateral_offset_m": lateral,
+        "route_ahead_selection": route_ahead_selection,
+        "route_distance_m": selection.route_distance_m,
+        "waypoint_candidate_count": selection.waypoint_candidate_count,
+        "selected_heading_diff_deg": selection.selected_heading_diff_deg,
         "s_offset_tolerance_m": tolerance_m,
         "max_lateral_m": max_lateral_m,
         "spawn_source": selection.source,
@@ -641,9 +719,9 @@ def _gap_target_speed(*, actor: Any, action: Mapping[str, Any], context: Any) ->
     return max(0.0, target)
 
 
-def _steer_from_action(action: Mapping[str, Any]) -> float:
+def _steer_from_action(action: Mapping[str, Any], *, actor: Any | None = None, world: Any | None = None) -> float:
     if action.get("type") != "lane_change":
-        return 0.0
+        return _route_follow_steer(actor, world)
     direction = str(action.get("direction") or "").lower()
     if not direction and action.get("target_lane_offset") is not None:
         try:
@@ -657,6 +735,52 @@ def _steer_from_action(action: Mapping[str, Any]) -> float:
     if direction in {"right", "adjacent_right"}:
         return abs(magnitude)
     return 0.0
+
+
+def _route_follow_steer(actor: Any | None, world: Any | None, *, lookahead_m: float = 8.0) -> float:
+    transform = _safe_call(actor, "get_transform") or getattr(actor, "transform", None)
+    if actor is None or world is None or transform is None:
+        return 0.0
+    target = _route_lookahead_transform(world, transform, lookahead_m=lookahead_m)
+    actor_location = getattr(transform, "location", None)
+    target_location = getattr(target, "location", None)
+    if actor_location is None or target_location is None:
+        return 0.0
+    dx = (_float_attr(target_location, "x", 0.0) or 0.0) - (_float_attr(actor_location, "x", 0.0) or 0.0)
+    dy = (_float_attr(target_location, "y", 0.0) or 0.0) - (_float_attr(actor_location, "y", 0.0) or 0.0)
+    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+        return 0.0
+    target_yaw = math.degrees(math.atan2(dy, dx))
+    actor_yaw = _float_attr(getattr(transform, "rotation", None), "yaw", 0.0) or 0.0
+    heading_error = _wrap_degrees(target_yaw - actor_yaw)
+    return max(-0.35, min(0.35, math.radians(heading_error) * 0.8))
+
+
+def _route_yaw_deg(world: Any | None, transform: Any | None) -> float | None:
+    target = _route_lookahead_transform(world, transform, lookahead_m=2.0)
+    rotation = getattr(target, "rotation", None)
+    return _float_attr(rotation, "yaw") if rotation is not None else None
+
+
+def _route_lookahead_transform(world: Any | None, transform: Any | None, *, lookahead_m: float) -> Any | None:
+    carla_map = world.get_map() if world is not None and hasattr(world, "get_map") else None
+    if carla_map is None or transform is None or not hasattr(carla_map, "get_waypoint"):
+        return None
+    try:
+        waypoint = carla_map.get_waypoint(getattr(transform, "location"))
+    except Exception:
+        return None
+    selection = select_waypoint_ahead_transform(waypoint, float(lookahead_m))
+    if selection.found and selection.selected_transform is not None:
+        return selection.selected_transform
+    return getattr(waypoint, "transform", None)
+
+
+def _wrap_degrees(value: float) -> float:
+    wrapped = (float(value) + 180.0) % 360.0 - 180.0
+    if wrapped == -180.0:
+        return 180.0
+    return wrapped
 
 
 def _apply_lane_change_transform(
@@ -788,6 +912,10 @@ def _distance_xy(left: Any, right: Any) -> float:
         (_float_attr(left, "x", 0.0) or 0.0) - (_float_attr(right, "x", 0.0) or 0.0),
         (_float_attr(left, "y", 0.0) or 0.0) - (_float_attr(right, "y", 0.0) or 0.0),
     )
+
+
+def _distance_xy_xy(left_x: float, left_y: float, right_x: float, right_y: float) -> float:
+    return math.hypot(float(left_x) - float(right_x), float(left_y) - float(right_y))
 
 
 def _float_attr(obj: Any, name: str, default: float | None = None) -> float | None:

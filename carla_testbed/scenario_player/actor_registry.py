@@ -22,6 +22,9 @@ class ScenarioActorState:
     bbox_extent_z_m: float | None = None
     route_s: float | None = None
     lane_id: str | None = None
+    trajectory_progress_m: float | None = None
+    route_progress_gap_m: float | None = None
+    route_progress_gap_source: str | None = None
     applied_control: Mapping[str, Any] | None = None
 
     @classmethod
@@ -42,6 +45,9 @@ class ScenarioActorState:
             bbox_extent_z_m=_optional_float(data.get("bbox_extent_z_m")),
             route_s=_optional_float(data.get("route_s")),
             lane_id=_optional_text(data.get("lane_id")),
+            trajectory_progress_m=_optional_float(data.get("trajectory_progress_m")),
+            route_progress_gap_m=_optional_float(data.get("route_progress_gap_m")),
+            route_progress_gap_source=_optional_text(data.get("route_progress_gap_source")),
             applied_control=data.get("applied_control") if isinstance(data.get("applied_control"), Mapping) else None,
         )
 
@@ -70,6 +76,12 @@ class ScenarioActorRegistry:
         if a is None or b is None or a.x is None or a.y is None or b.x is None or b.y is None:
             return None
         return math.hypot(a.x - b.x, a.y - b.y)
+
+    def trigger_distance(self, from_role: str, to_role: str) -> float | None:
+        target = self.get(to_role)
+        if from_role == "ego" and target is not None and target.route_progress_gap_m is not None:
+            return target.route_progress_gap_m
+        return self.distance(from_role, to_role)
 
     def relative_longitudinal_lateral(self, from_role: str, to_role: str) -> tuple[float, float] | None:
         source = self.get(from_role)

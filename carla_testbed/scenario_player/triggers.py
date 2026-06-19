@@ -68,7 +68,7 @@ def evaluate_trigger(
     if trigger_type == "relative_distance":
         from_role = str(trigger.get("from_role", trigger.get("from", "ego")))
         to_role = str(trigger.get("to_role", trigger.get("to", "lead_vehicle")))
-        distance = actors.distance(from_role, to_role)
+        distance = actors.trigger_distance(from_role, to_role)
         op, value = _op_value(
             trigger,
             default_op="<=",

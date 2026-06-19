@@ -296,6 +296,9 @@ def _duration_policy_check(storyboard: Mapping[str, Any], trace_rows: Sequence[M
     policy = params.get("duration_policy")
     lead_role = str(params.get("lead_role", "lead_vehicle"))
     route_end = _num(params.get("lead_route_end_s_m"))
+    route_end_tolerance = _num(params.get("lead_route_end_tolerance_m"))
+    if route_end_tolerance is None:
+        route_end_tolerance = 0.5
     warnings: list[str] = []
     blocking: list[str] = []
     if policy != "lead_reaches_road_end":
@@ -304,7 +307,9 @@ def _duration_policy_check(storyboard: Mapping[str, Any], trace_rows: Sequence[M
             "required": False,
             "lead_role": lead_role,
             "lead_route_end_s_m": route_end,
+            "lead_route_end_tolerance_m": route_end_tolerance,
             "lead_route_s_max_m": None,
+            "lead_route_end_margin_m": None,
             "actor_route_s_available": False,
             "verified": None,
             "warnings": warnings,
@@ -326,7 +331,12 @@ def _duration_policy_check(storyboard: Mapping[str, Any], trace_rows: Sequence[M
     elif route_s_max is None:
         warnings.append("duration_policy_not_verified_by_actor_route_s")
         verified = False
-    elif route_s_max < route_end:
+    margin = (route_s_max - route_end) if route_s_max is not None and route_end is not None else None
+    if route_end is None:
+        pass
+    elif route_s_max is None:
+        pass
+    elif route_s_max + route_end_tolerance < route_end:
         blocking.append("duration_policy_route_end_not_reached")
         verified = False
     else:
@@ -336,7 +346,9 @@ def _duration_policy_check(storyboard: Mapping[str, Any], trace_rows: Sequence[M
         "required": True,
         "lead_role": lead_role,
         "lead_route_end_s_m": route_end,
+        "lead_route_end_tolerance_m": route_end_tolerance,
         "lead_route_s_max_m": route_s_max,
+        "lead_route_end_margin_m": margin,
         "actor_route_s_available": bool(route_values),
         "verified": verified,
         "warnings": warnings,
