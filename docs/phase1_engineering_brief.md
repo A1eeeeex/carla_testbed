@@ -151,6 +151,17 @@ Interpretation:
   `control_health`. This avoids stale `control_attribution_report.json` files
   built from sparse `timeseries.csv` rows when richer
   `artifacts/control_apply_trace.jsonl` evidence is available.
+- `apollo_link_health` now prefers an explicit
+  `analysis/assist_ledger/assist_ledger.json` over stale embedded
+  `summary.json` / `manifest.json` assist ledgers. On the latest
+  representative Apollo cut-in run, the no-assist layer therefore no longer
+  reports `legacy_followstop` as an active blocker after the postprocessed
+  ledger proves `active_assists=[]`. The same refreshed report still blocks
+  claimability on
+  `no_assist_claim_boundary:planning_nonempty_ratio_not_claim_grade`
+  (`planning_nonempty_ratio≈0.494`), so the next behavior loop should inspect
+  Planning materialization / reference-line consumption rather than spending
+  another cycle on assist cleanup.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.

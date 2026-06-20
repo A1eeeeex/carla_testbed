@@ -368,6 +368,7 @@ def analyze_apollo_link_health(
             summary=summary,
             manifest=manifest,
             bridge_stats=cyber_bridge_stats,
+            assist_ledger=payloads.get("assist_ledger", {}),
             control_handoff=payloads.get("apollo_control_handoff", {}),
             control_health=payloads.get("control_health", {}),
             apollo_reference_line_contract=payloads.get("apollo_reference_line_contract", {}),
@@ -713,6 +714,14 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
                 "analysis/apollo_planning_materialization/planning_materialization_report.json",
                 "analysis/planning_materialization/planning_materialization_report.json",
                 "planning_materialization_report.json",
+            ],
+        ),
+        "assist_ledger": _find_first(
+            root,
+            [
+                "analysis/assist_ledger/assist_ledger.json",
+                "artifacts/assist_ledger.json",
+                "assist_ledger.json",
             ],
         ),
         "carla_tick_health_summary": _find_first(
@@ -2761,6 +2770,7 @@ def _no_assist_layer(
     summary: Mapping[str, Any],
     manifest: Mapping[str, Any],
     bridge_stats: Mapping[str, Any],
+    assist_ledger: Mapping[str, Any] | None,
     control_handoff: Mapping[str, Any],
     control_health: Mapping[str, Any],
     apollo_reference_line_contract: Mapping[str, Any],
@@ -2768,7 +2778,8 @@ def _no_assist_layer(
     planning_topic_debug_summary: Mapping[str, Any],
     inputs: Mapping[str, Path | None],
 ) -> dict[str, Any]:
-    ledger = build_runtime_assist_ledger(
+    ledger = _select_assist_ledger(
+        assist_ledger=assist_ledger,
         summary=summary,
         manifest=manifest,
         bridge_stats=bridge_stats,
@@ -2860,6 +2871,18 @@ def _no_assist_layer(
         status = "insufficient_data"
     else:
         status = "warn" if active else "pass"
+    if blocking_assists:
+        next_action = "Declare and eliminate blocking assists before unassisted natural-driving claims."
+    elif "planning_nonempty_ratio_not_claim_grade" in reasons:
+        next_action = (
+            "Inspect Planning availability over the claim window: startup warmup, "
+            "reference-line provider readiness, route segment continuity, and "
+            "planning_topic_debug non-empty trajectory ratio."
+        )
+    elif reasons:
+        next_action = "Fill no-assist claim-boundary evidence gaps before using this run as claim-grade evidence."
+    else:
+        next_action = "Proceed to behavior outcome gates; no active assist blocker is reported."
     return _layer(
         status=status,
         blocking_reasons=reasons,
@@ -2904,8 +2927,24 @@ def _no_assist_layer(
             "why_not_claimable": reasons,
             "explicit_claim_blockers": explicit_blockers,
         },
-        artifact_paths=_paths(inputs, "summary", "manifest", "cyber_bridge_stats", "control_health"),
-        next_action="Declare and eliminate blocking assists before unassisted natural-driving claims.",
+        artifact_paths=_paths(inputs, "summary", "manifest", "cyber_bridge_stats", "control_health", "assist_ledger"),
+        next_action=next_action,
+    )
+
+
+def _select_assist_ledger(
+    *,
+    assist_ledger: Mapping[str, Any] | None,
+    summary: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    bridge_stats: Mapping[str, Any],
+) -> dict[str, Any]:
+    if isinstance(assist_ledger, Mapping) and assist_ledger.get("schema_version") == "assist_ledger.v1":
+        return dict(assist_ledger)
+    return build_runtime_assist_ledger(
+        summary=summary,
+        manifest=manifest,
+        bridge_stats=bridge_stats,
     )
 
 

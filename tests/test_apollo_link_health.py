@@ -2147,6 +2147,9 @@ def test_planning_nonempty_claim_boundary_next_action_points_to_planning_not_ass
     assert report["primary_blocker"] == "no_assist_claim_boundary:planning_nonempty_ratio_not_claim_grade"
     assert "Planning availability" in report["next_highest_value_validation"]
     assert "not an assist cleanup" in report["next_highest_value_validation"]
+    layer = report["layers"]["no_assist_claim_boundary"]
+    assert "Planning availability" in layer["next_action"]
+    assert "blocking assists" not in layer["next_action"]
     assert report["can_claim_unassisted_natural_driving"] is False
 
 
@@ -2200,6 +2203,79 @@ def test_summary_dummy_lateral_blocks_no_assist_claim(tmp_path: Path) -> None:
     assert layer["status"] == "fail"
     assert layer["key_metrics"]["active_assists"] == ["dummy_lateral"]
     assert layer["key_metrics"]["blocking_assists"] == ["dummy_lateral"]
+    assert "blocking_assists_active" in layer["blocking_reasons"]
+    assert report["can_claim_unassisted_natural_driving"] is False
+
+
+def test_explicit_assist_ledger_report_overrides_stale_runtime_ledger(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    stale_ledger = {
+        "schema_version": "assist_ledger.v1",
+        "active_assists": ["legacy_followstop"],
+        "blocking_assists": ["legacy_followstop"],
+        "non_blocking_assists": [],
+        "assist_confidence": "explicit",
+        "source_artifact": "config",
+        "can_claim_unassisted_natural_driving": False,
+    }
+    for name in ("summary.json", "manifest.json"):
+        path = run_dir / name
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["assist_ledger"] = stale_ledger
+        _write_json(path, payload)
+    explicit_clean_ledger = {
+        "schema_version": "assist_ledger.v1",
+        "active_assists": [],
+        "blocking_assists": [],
+        "non_blocking_assists": [],
+        "assist_sources": {},
+        "assist_confidence": "explicit",
+        "source_artifact": "analysis",
+        "can_claim_unassisted_natural_driving": True,
+        "warnings": [],
+    }
+    _write_json(run_dir / "analysis/assist_ledger/assist_ledger.json", explicit_clean_ledger)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    layer = report["layers"]["no_assist_claim_boundary"]
+    assert layer["status"] == "pass"
+    assert layer["key_metrics"]["active_assists"] == []
+    assert layer["key_metrics"]["blocking_assists"] == []
+    assert layer["key_metrics"]["assist_confidence"] == "explicit"
+    assert "blocking_assists_active" not in layer["blocking_reasons"]
+    assert layer["artifact_paths"]["assist_ledger"].endswith(
+        "analysis/assist_ledger/assist_ledger.json"
+    )
+    assert report["can_claim_unassisted_natural_driving"] is True
+
+
+def test_stale_runtime_ledger_still_blocks_when_explicit_report_missing(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    stale_ledger = {
+        "schema_version": "assist_ledger.v1",
+        "active_assists": ["legacy_followstop"],
+        "blocking_assists": ["legacy_followstop"],
+        "non_blocking_assists": [],
+        "assist_confidence": "explicit",
+        "source_artifact": "config",
+        "can_claim_unassisted_natural_driving": False,
+    }
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["assist_ledger"] = stale_ledger
+    _write_json(summary_path, summary)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    layer = report["layers"]["no_assist_claim_boundary"]
+    assert layer["status"] == "fail"
+    assert layer["key_metrics"]["active_assists"] == ["legacy_followstop"]
+    assert layer["key_metrics"]["blocking_assists"] == ["legacy_followstop"]
     assert "blocking_assists_active" in layer["blocking_reasons"]
     assert report["can_claim_unassisted_natural_driving"] is False
 
