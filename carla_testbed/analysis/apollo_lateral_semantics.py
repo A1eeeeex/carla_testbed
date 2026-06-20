@@ -247,6 +247,15 @@ def analyze_apollo_lateral_semantics_run_dir(
                 "apollo_reference_line_contract_report.json",
             ],
         ),
+        route_definition=_find_first(
+            root,
+            [
+                "route.json",
+                "artifacts/route.json",
+                "artifacts/route_definition_claim.json",
+                "analysis/apollo_route_contract/route_definition_claim.json",
+            ],
+        ),
         run_dir=root,
         thresholds=thresholds,
     )
@@ -262,6 +271,7 @@ def analyze_apollo_lateral_semantics(
     kappa_audit_summary: str | Path | None = None,
     localization_contract: str | Path | None = None,
     reference_line_contract: str | Path | None = None,
+    route_definition: str | Path | None = None,
     run_dir: str | Path | None = None,
     thresholds: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
@@ -275,6 +285,7 @@ def analyze_apollo_lateral_semantics(
     kappa_summary = _read_json(kappa_audit_summary)
     localization_contract_payload = _read_json(localization_contract)
     reference_line_contract_payload = _read_json(reference_line_contract)
+    route_definition_payload = _read_json(route_definition)
     semantic_rows = _merge_control_trace_fields([*timeseries_rows, *planning_rows], control_trace_rows)
     rows = [*semantic_rows, *control_trace_rows]
     supplemental = _supplemental_values(route_health_payload, source_summary, kappa_summary)
@@ -380,6 +391,7 @@ def analyze_apollo_lateral_semantics(
         rows,
         active_thresholds,
         hdmap_route_lateral_consistency=hdmap_route_lateral_consistency,
+        route_definition_payload=route_definition_payload,
     )
     anomalies = _anomalies(
         values,
@@ -450,6 +462,7 @@ def analyze_apollo_lateral_semantics(
             "kappa_audit_summary": None if kappa_audit_summary is None else str(Path(kappa_audit_summary)),
             "localization_contract": None if localization_contract is None else str(Path(localization_contract)),
             "reference_line_contract": None if reference_line_contract is None else str(Path(reference_line_contract)),
+            "route_definition": None if route_definition is None else str(Path(route_definition)),
         },
         "interpretation_boundary": (
             "This report identifies a suspected lateral-semantics layer with confidence; "
@@ -1232,6 +1245,7 @@ def _lateral_sign_alignment_summary(
     thresholds: Mapping[str, float],
     *,
     hdmap_route_lateral_consistency: Mapping[str, Any] | None = None,
+    route_definition_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not rows:
         return {
@@ -1293,6 +1307,7 @@ def _lateral_sign_alignment_summary(
     route_lateral_provenance = _route_lateral_provenance(
         rows,
         hdmap_route_lateral_consistency=hdmap_route_lateral_consistency or {},
+        route_definition_payload=route_definition_payload or {},
     )
     sample_count = max((int(value["sample_count"]) for value in pairs.values()), default=0)
     return {
@@ -1479,8 +1494,10 @@ def _route_lateral_provenance(
     rows: Sequence[Mapping[str, Any]],
     *,
     hdmap_route_lateral_consistency: Mapping[str, Any],
+    route_definition_payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     route_lateral_source = _resolved_field(rows, ROUTE_LATERAL_ERROR_ALIASES)
+    route_definition = _route_definition_geometry_summary(route_definition_payload)
     route_geometry_count = 0
     route_geometry_cte_deltas: list[float] = []
     for row in rows:
@@ -1518,6 +1535,13 @@ def _route_lateral_provenance(
         "route_geometry_fields_available": route_geometry_count > 0,
         "route_geometry_sample_count": route_geometry_count,
         "route_geometry_recomputed_cte_abs_delta_p95_m": _percentile(route_geometry_cte_deltas, 0.95),
+        "route_definition_geometry_status": route_definition["status"],
+        "route_definition_schema_version": route_definition["schema_version"],
+        "route_definition_status": route_definition["route_status"],
+        "route_definition_point_count": route_definition["point_count"],
+        "route_definition_sample_count": route_definition["sample_count"],
+        "route_definition_declared_sample_count": route_definition["declared_sample_count"],
+        "route_definition_reason": route_definition["reason"],
         "hdmap_route_lateral_consistency_status": hdmap_status,
         "hdmap_route_lateral_alignment_mode": hdmap_alignment,
         "hdmap_route_lateral_delta_p95_m": hdmap_delta,
@@ -1528,6 +1552,47 @@ def _route_lateral_provenance(
             "route_heading samples, they identify a convention candidate but do not verify the "
             "route-frame sign convention from route geometry alone."
         ),
+    }
+
+
+def _route_definition_geometry_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, Mapping) or not payload:
+        return {
+            "status": "missing",
+            "schema_version": None,
+            "route_status": None,
+            "point_count": 0,
+            "sample_count": 0,
+            "declared_sample_count": None,
+            "reason": "route_definition_artifact_missing",
+        }
+    points = payload.get("points")
+    samples = payload.get("scenario_route_samples")
+    point_count = len(points) if isinstance(points, list) else 0
+    sample_count = len(samples) if isinstance(samples, list) else 0
+    declared_sample_count = payload.get("scenario_route_sample_count")
+    schema_version = payload.get("schema_version")
+    route_status = payload.get("status")
+    if point_count > 0 or sample_count > 0:
+        status = "materialized_geometry_available"
+        reason = "route_definition_contains_materialized_points_or_samples"
+    elif schema_version == "route_stub.v1" or route_status == "insufficient_data":
+        status = "stub_or_insufficient"
+        reason = "route_definition_stub_cannot_support_route_geometry_recompute"
+    elif declared_sample_count:
+        status = "declared_only"
+        reason = "route_definition_declares_sample_count_without_materialized_samples"
+    else:
+        status = "no_materialized_geometry"
+        reason = "route_definition_has_no_points_or_samples"
+    return {
+        "status": status,
+        "schema_version": schema_version,
+        "route_status": route_status,
+        "point_count": point_count,
+        "sample_count": sample_count,
+        "declared_sample_count": declared_sample_count,
+        "reason": reason,
     }
 
 

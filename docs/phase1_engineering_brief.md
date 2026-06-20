@@ -65,6 +65,7 @@ Layered progress status:
 
 - Phase 1 overall: `PARTIAL`
 - Accepted comparison-surface catalog: `DONE`
+- Phase 1 completion gate: `PARTIAL`
 - Representative Apollo behavior capability: `PARTIAL / failing samples remain`
 - Apollo natural-driving or no-interference capability claim: `NOT_CLAIMED`
 
@@ -82,6 +83,13 @@ Interpretation:
 - The Phase 1 platform skeleton is substantially built: scenario definitions,
   target actor contracts, `v-t-gap`, status classification, ScenarioComparison,
   and Apollo sidecar evidence all exist.
+- The latest Pro audit conclusion should be read literally: Phase 1 is not
+  complete yet. The accepted-bundle surface is a useful mechanism and current
+  catalog milestone, but it is not the same thing as a Phase 1 completion
+  certificate. Phase 1 completion still requires representative same-case
+  online bundles that bind exact run IDs, complete artifacts, target
+  interaction validity, metric validity, assist status, and comparison verdicts
+  without mixing best evidence across unrelated runs.
 - The latest Pro-review progress reading is: Phase 1 has moved from artifact
   scaffolding to evidence-backed blocker reduction. The accepted
   comparison-surface catalog is auditable, but Phase 1 is not complete until
@@ -160,6 +168,11 @@ Interpretation:
   (`failed/lane_invasion`). The active `cycle=inf` milestone has therefore
   shifted from accepted-bundle construction to representative Apollo behavior
   blocker reduction and cleaner external-backend runtime integration.
+- The current Phase 1 completion gap is therefore no longer primarily a missing
+  catalog-mechanism problem. The active gap is behavior/evidence closure:
+  representative Apollo online runs must become stable enough for same-case
+  comparison without blocking assists, stale transition metadata, target-phase
+  invalidity, or missing route/reference-line lateral semantics evidence.
 - For representative failed Phase 1 runs, `phase1_status.json` now surfaces a
   `primary_behavior_blocker`, `behavior_blocker_layer`, and
   `behavior_next_action` distilled from derived evidence such as
@@ -229,7 +242,11 @@ Interpretation:
   `route_lateral_provenance.evidence_level=hdmap_projection_consistency`,
   because this run lacks `route_x` / `route_y` / `route_heading` samples that
   would let the analyzer recompute signed route CTE from route geometry alone.
-  The next validation should materialize those route geometry fields or an
+  Manual inspection confirms that the run-local `route.json` is a
+  `route_stub.v1` artifact with no route points, while
+  `route_definition_claim.json` declares sample count without materialized
+  route samples. The next validation should materialize `route_x` /
+  `route_y` / `route_heading` fields, materialized route samples, or an
   equivalent official projection-to-route pairing before treating the sign
   convention as verified.
 - `apollo_link_health` now uses that lateral-semantics warning as the

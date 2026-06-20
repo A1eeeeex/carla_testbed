@@ -675,6 +675,77 @@ def test_run_dir_consumes_localization_hdmap_lateral_consistency(tmp_path: Path)
     assert report["source"]["localization_contract"].endswith("localization_contract_report.json")
 
 
+def test_run_dir_records_route_stub_as_non_geometry_provenance(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "artifacts").mkdir(parents=True)
+    rows = _base_rows()
+    for row in rows:
+        row["cross_track_error"] = 0.6
+        row["apollo_debug_simple_lat_lateral_error_m"] = -0.6
+        row["apollo_steer_raw"] = 0.3
+    _write_rows(run_dir / "artifacts" / "debug_timeseries.csv", rows)
+    (run_dir / "route.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "route_stub.v1",
+                "status": "insufficient_data",
+                "route_id": "route_without_geometry",
+                "points": [],
+                "claim_boundary": "stub only",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+    provenance = report["lateral_sign_alignment"]["route_lateral_provenance"]
+
+    assert provenance["evidence_level"] == "alias_only"
+    assert provenance["route_definition_geometry_status"] == "stub_or_insufficient"
+    assert provenance["route_definition_schema_version"] == "route_stub.v1"
+    assert provenance["route_definition_point_count"] == 0
+    assert provenance["route_definition_reason"] == (
+        "route_definition_stub_cannot_support_route_geometry_recompute"
+    )
+    assert report["source"]["route_definition"].endswith("route.json")
+
+
+def test_run_dir_records_declared_route_samples_without_materialized_geometry(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "artifacts").mkdir(parents=True)
+    rows = _base_rows()
+    for row in rows:
+        row["cross_track_error"] = 0.6
+        row["apollo_debug_simple_lat_lateral_error_m"] = -0.6
+        row["apollo_steer_raw"] = 0.3
+    _write_rows(run_dir / "artifacts" / "debug_timeseries.csv", rows)
+    (run_dir / "artifacts" / "route_definition_claim.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "route_definition_claim.v1",
+                "status": "warn",
+                "scenario_route_sample_count": 61,
+                "scenario_route_samples": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+    provenance = report["lateral_sign_alignment"]["route_lateral_provenance"]
+
+    assert provenance["route_definition_geometry_status"] == "declared_only"
+    assert provenance["route_definition_declared_sample_count"] == 61
+    assert provenance["route_definition_sample_count"] == 0
+    assert provenance["route_definition_reason"] == (
+        "route_definition_declares_sample_count_without_materialized_samples"
+    )
+
+
 def test_cli_run_dir_writes_report(tmp_path: Path) -> None:
     out = tmp_path / "out"
     result = subprocess.run(
