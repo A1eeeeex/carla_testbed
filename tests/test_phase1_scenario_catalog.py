@@ -24,6 +24,7 @@ def test_phase1_catalog_lists_p0_p1_readiness_without_claiming_done(tmp_path) ->
     assert "scenario_comparison_report" in scenarios["follow_stop_static"]["missing"]
     assert scenarios["follow_stop_static"]["comparison_status"] == "NOT_YET"
     assert scenarios["follow_stop_static"]["comparison_target_status"] == "NOT_YET"
+    assert scenarios["follow_stop_static"]["accepted_bundle_status"] == "NOT_YET"
     assert any("CARLA builtin" in action for action in scenarios["follow_stop_static"]["next_action"])
     assert any(
         "Apollo fixed-scene runtime dispatch" in action
@@ -852,7 +853,7 @@ def test_phase1_catalog_matches_numbered_curve_diagnostic_comparison(tmp_path) -
     assert any(item["evidence_type"] == "comparison_online" for item in curve["evidence"])
 
 
-def test_route_only_lane_keep_can_be_done_without_fixed_scene_compile(tmp_path) -> None:
+def test_route_only_lane_keep_needs_phase1_acceptance_bundle_for_done(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     _write_catalog_run(
         evidence_root / "apollo_lane_keep",
@@ -895,9 +896,69 @@ def test_route_only_lane_keep_can_be_done_without_fixed_scene_compile(tmp_path) 
     assert lane["apollo_online_status"] == "DONE"
     assert lane["v_t_gap_readiness"] == "DONE"
     assert lane["comparison_readiness"] == "DONE"
-    assert lane["overall_status"] == "DONE"
-    assert not lane["missing_items"]
+    assert lane["accepted_bundle_status"] == "NOT_YET"
+    assert lane["overall_status"] == "PARTIAL"
+    assert "accepted_phase1_comparison_bundle" in lane["missing_items"]
     assert "route_only_scenario_has_no_fixed_scene_compile_requirement" in lane["notes"]
+
+
+def test_route_only_lane_keep_done_requires_accepted_bundle(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    _write_catalog_run(
+        evidence_root / "apollo_lane_keep",
+        backend="apollo_cyberrt",
+        backend_type="apollo_reference_backend",
+        scenario_case="town01_lane_keep_097",
+        status="failed",
+    )
+    _write_catalog_run(
+        evidence_root / "builtin_lane_keep",
+        backend="carla_builtin",
+        backend_type="planning_control_backend",
+        scenario_case="town01_lane_keep_097",
+        status="success",
+    )
+    comparison = evidence_root / "comparisons" / "lane_keep"
+    comparison.mkdir(parents=True)
+    (comparison / "comparison_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_comparison.v1",
+                "scenario_case": "town01_lane_keep_097",
+                "comparison_status": "comparable",
+                "comparison_target_status": "apollo_vs_planning_control_evaluable",
+                "participating_runs": [
+                    {"backend": "apollo_cyberrt"},
+                    {"backend": "carla_builtin"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    acceptance = evidence_root / "comparisons" / "lane_keep" / "acceptance"
+    acceptance.mkdir(parents=True)
+    (acceptance / "phase1_acceptance_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_acceptance.v1",
+                "status": "DONE",
+                "scenario_case": "town01_lane_keep_097",
+                "comparison_id": "lane_keep",
+                "apollo_run_id": "apollo_lane_keep",
+                "planning_control_run_id": "builtin_lane_keep",
+                "blocking_reasons": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_phase1_scenario_catalog(".", evidence_root=evidence_root)
+    lane = {item["scenario"]: item for item in report["scenarios"]}["lane_keep_straight"]
+
+    assert lane["accepted_bundle_status"] == "DONE"
+    assert lane["overall_status"] == "DONE"
+    assert "accepted_phase1_comparison_bundle" not in lane["missing_items"]
+    assert lane["representative_evidence"]["phase1_acceptance"]["status"] == "DONE"
 
 
 def _write_catalog_run(run, *, backend, backend_type, scenario_case, status):

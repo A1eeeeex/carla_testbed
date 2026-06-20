@@ -241,11 +241,55 @@ def test_blocking_assist_keeps_comparison_out_of_phase1_reference_target(tmp_pat
 
     report = compare_scenario_runs([run_a, run_b])
 
-    assert report["comparison_status"] == "comparable"
+    assert report["comparison_status"] == "partially_evaluable"
     assert report["comparison_target_status"] == "blocking_assists_present_not_phase1_reference"
+    assert report["reason"] == "blocking_assists_present_not_phase1_reference"
+    assert report["validity_gates"]["blocking_assists_absent"] is False
     apollo = [item for item in report["backend_results"] if item["backend"] == "apollo_cyberrt"][0]
     assert apollo["blocking_assists"] == ["straight_acc_override"]
     assert apollo["counts_as_backend_loss"] is False
+
+
+def test_target_interaction_not_exercised_blocks_comparable_cut_in(tmp_path) -> None:
+    run_a = _write_run(
+        tmp_path,
+        "apollo",
+        "apollo_cyberrt",
+        "apollo_reference_backend",
+        "failed",
+        "lane_invasion",
+        scenario_id="baguang_cut_in_35kph_left_to_right_10m",
+        scenario_case="baguang_cut_in_35kph_left_to_right_10m",
+        scenario_interaction_evaluable=False,
+        scenario_interaction_reason="required_phase_not_reached",
+        target_metric_evaluable=False,
+        target_metric_status="invalid",
+        target_metric_reason="missing_target_activation_phase",
+    )
+    run_b = _write_run(
+        tmp_path,
+        "builtin",
+        "carla_builtin",
+        "planning_control_backend",
+        "failed",
+        "lane_invasion",
+        scenario_id="baguang_cut_in_35kph_left_to_right_10m",
+        scenario_case="baguang_cut_in_35kph_left_to_right_10m",
+        scenario_interaction_evaluable=False,
+        scenario_interaction_reason="required_phase_not_reached",
+        target_metric_evaluable=False,
+        target_metric_status="invalid",
+        target_metric_reason="missing_target_activation_phase",
+    )
+
+    report = compare_scenario_runs([run_a, run_b])
+
+    assert report["comparison_status"] == "partially_evaluable"
+    assert report["comparison_target_status"] == "target_interaction_not_exercised"
+    assert report["reason"] == "target_interaction_not_exercised"
+    assert report["validity_gates"]["interaction_complete"] is False
+    assert report["validity_gates"]["target_metric_valid"] is False
+    assert all(item["counts_as_backend_loss"] is False for item in report["backend_results"])
 
 
 def test_scenario_comparison_writer(tmp_path) -> None:
@@ -441,6 +485,11 @@ def _write_run(
     handoff_process_crash_reason=None,
     safety_event_evidence=None,
     lane_invasion_context=None,
+    scenario_interaction_evaluable=None,
+    scenario_interaction_reason=None,
+    target_metric_evaluable=None,
+    target_metric_status=None,
+    target_metric_reason=None,
 ):
     run = tmp_path / name
     analysis = run / "analysis" / "phase1_status"
@@ -473,6 +522,41 @@ def _write_run(
                 "status": status,
                 "failure_reason": reason,
                 "evaluable": status != "invalid",
+                **(
+                    {"run_evaluable": status != "invalid"}
+                    if status != "invalid"
+                    else {"run_evaluable": False}
+                ),
+                **(
+                    {"scenario_interaction_evaluable": scenario_interaction_evaluable}
+                    if scenario_interaction_evaluable is not None
+                    else {}
+                ),
+                **(
+                    {"scenario_interaction_reason": scenario_interaction_reason}
+                    if scenario_interaction_reason is not None
+                    else {}
+                ),
+                **(
+                    {"target_metric_evaluable": target_metric_evaluable}
+                    if target_metric_evaluable is not None
+                    else {}
+                ),
+                **(
+                    {"target_metric_status": target_metric_status}
+                    if target_metric_status is not None
+                    else {}
+                ),
+                **(
+                    {"target_metric_reason": target_metric_reason}
+                    if target_metric_reason is not None
+                    else {}
+                ),
+                "counts_as_backend_loss_for_target_scenario": (
+                    status == "failed"
+                    and scenario_interaction_evaluable is not False
+                    and target_metric_evaluable is not False
+                ),
                 "invalid_reasons": [reason] if status == "invalid" and reason else [],
                 "missing_expected_artifacts": missing_expected_artifacts or [],
                 "phase1_metrics": {

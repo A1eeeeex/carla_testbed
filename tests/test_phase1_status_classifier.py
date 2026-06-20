@@ -19,6 +19,12 @@ def test_missing_timeseries_is_invalid_not_backend_failure(tmp_path) -> None:
     assert report["failed_reasons"] == []
     assert report["degraded_reasons"] == []
     assert report["evaluable"] is False
+    assert report["run_evaluable"] is False
+    assert report["scenario_interaction_evaluable"] is False
+    assert report["scenario_interaction_reason"] == "run_invalid"
+    assert report["target_metric_evaluable"] is False
+    assert report["target_metric_reason"] == "run_invalid"
+    assert report["counts_as_backend_loss_for_target_scenario"] is False
     assert any(path.endswith("manifest.json") for path in report["evidence_files"])
     assert "invalid_run_is_setup_or_evidence_failure_not_backend_loss" in report["notes"]
 
@@ -242,6 +248,13 @@ def test_early_lane_invasion_before_phase_activation_is_evaluable_failure(tmp_pa
     assert report["failed_reasons"] == ["lane_invasion"]
     assert report["invalid_reasons"] == []
     assert report["evaluable"] is True
+    assert report["run_evaluable"] is True
+    assert report["scenario_interaction_evaluable"] is False
+    assert report["scenario_interaction_reason"] == "required_phase_not_reached"
+    assert report["target_metric_evaluable"] is False
+    assert report["target_metric_status"] == "invalid"
+    assert report["target_metric_reason"] == "missing_target_activation_phase"
+    assert report["counts_as_backend_loss_for_target_scenario"] is False
 
 
 def test_large_final_gap_is_degraded(tmp_path) -> None:

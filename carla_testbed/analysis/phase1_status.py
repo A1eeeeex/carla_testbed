@@ -140,7 +140,10 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"Failure reason: `{report.get('failure_reason')}`",
         "",
-        f"Evaluable: `{report.get('evaluable')}`",
+        f"Run evaluable: `{report.get('run_evaluable')}`",
+        f"Scenario interaction evaluable: `{report.get('scenario_interaction_evaluable')}`",
+        f"Target metric evaluable: `{report.get('target_metric_evaluable')}`",
+        f"Backend-loss eligible for target scenario: `{report.get('counts_as_backend_loss_for_target_scenario')}`",
     ]
     metrics = report.get("phase1_metrics") if isinstance(report.get("phase1_metrics"), Mapping) else {}
     lane_context = (
@@ -212,6 +215,14 @@ def _status(
     invalid_reasons = [reason] if status == "invalid" and reason else []
     failed_reasons = [reason] if status == "failed" and reason else []
     degraded_reasons = [reason] if status == "degraded" and reason else []
+    evaluability = _phase1_evaluability(
+        root=root,
+        manifest=manifest,
+        summary=summary,
+        status=status,
+        target_contract=target_contract,
+        v_t_gap=v_t_gap,
+    )
     return {
         "schema_version": PHASE1_STATUS_SCHEMA_VERSION,
         "run_dir": str(root),
@@ -227,7 +238,16 @@ def _status(
         "degraded_reasons": degraded_reasons,
         "failed_reasons": failed_reasons,
         "original_failure_reason": original_reason,
-        "evaluable": status != "invalid",
+        "evaluable": evaluability["run_evaluable"],
+        "run_evaluable": evaluability["run_evaluable"],
+        "scenario_interaction_evaluable": evaluability["scenario_interaction_evaluable"],
+        "scenario_interaction_reason": evaluability["scenario_interaction_reason"],
+        "target_metric_evaluable": evaluability["target_metric_evaluable"],
+        "target_metric_status": evaluability["target_metric_status"],
+        "target_metric_reason": evaluability["target_metric_reason"],
+        "counts_as_backend_loss_for_target_scenario": evaluability[
+            "counts_as_backend_loss_for_target_scenario"
+        ],
         "target_actor_contract": dict(target_contract) if target_contract else None,
         "artifact_contract_version": manifest.get("artifact_contract_version"),
         "phase1_metrics": {
@@ -246,6 +266,106 @@ def _status(
         "notes": _status_notes(status, reason),
         "claim_boundary": "phase1_status_is_scenario_evaluation_not_natural_driving_claim",
     }
+
+
+def _phase1_evaluability(
+    *,
+    root: Path,
+    manifest: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    status: str,
+    target_contract: Mapping[str, Any],
+    v_t_gap: Mapping[str, Any],
+) -> dict[str, Any]:
+    run_evaluable = status != "invalid"
+    target_required = _target_required(target_contract, manifest)
+    fixed_interaction = _fixed_scene_interaction_evidence(root)
+    if not run_evaluable:
+        scenario_interaction_evaluable = False
+        scenario_interaction_reason = "run_invalid"
+    elif target_required and not fixed_interaction["evaluable"]:
+        scenario_interaction_evaluable = False
+        scenario_interaction_reason = str(fixed_interaction["reason"] or "required_phase_not_reached")
+    else:
+        scenario_interaction_evaluable = True
+        scenario_interaction_reason = None
+
+    target_metric_status, target_metric_evaluable, target_metric_reason = _target_metric_evidence(
+        target_required=target_required,
+        v_t_gap=v_t_gap,
+        run_evaluable=run_evaluable,
+    )
+    return {
+        "run_evaluable": run_evaluable,
+        "scenario_interaction_evaluable": scenario_interaction_evaluable,
+        "scenario_interaction_reason": scenario_interaction_reason,
+        "target_metric_evaluable": target_metric_evaluable,
+        "target_metric_status": target_metric_status,
+        "target_metric_reason": target_metric_reason,
+        "counts_as_backend_loss_for_target_scenario": bool(
+            run_evaluable
+            and scenario_interaction_evaluable
+            and target_metric_evaluable
+            and status == "failed"
+        ),
+    }
+
+
+def _target_required(target_contract: Mapping[str, Any], manifest: Mapping[str, Any]) -> bool:
+    status = str(target_contract.get("status") or "")
+    if status == "not_required":
+        return False
+    if target_contract.get("required") is False:
+        return False
+    scenario_class = str(
+        manifest.get("scenario_class")
+        or manifest.get("scenario_type")
+        or manifest.get("scenario_id")
+        or ""
+    )
+    return scenario_class not in {"lane_keep", "lane_keep_straight", "curve_diagnostic", "junction"}
+
+
+def _fixed_scene_interaction_evidence(root: Path) -> dict[str, Any]:
+    fixed_scene_report = _read_json(root / "analysis" / "fixed_scene_contract" / "fixed_scene_contract_report.json")
+    scenario_actor_report = _read_json(
+        root / "analysis" / "scenario_actor_contract" / "scenario_actor_contract_report.json"
+    )
+    if not fixed_scene_report and not scenario_actor_report:
+        return {"evaluable": True, "reason": None}
+    fixed_status = str(fixed_scene_report.get("status") or "")
+    actor_status = str(scenario_actor_report.get("status") or "")
+    if fixed_status == "pass" and actor_status in {"", "pass", "warn"}:
+        return {"evaluable": True, "reason": None}
+    if _fixed_scene_unreached_without_setup_blocker(fixed_scene_report, scenario_actor_report):
+        return {"evaluable": False, "reason": "required_phase_not_reached"}
+    if fixed_status == "fail" or actor_status == "fail":
+        return {"evaluable": False, "reason": "fixed_scene_or_actor_contract_failed"}
+    if actor_status == "insufficient_data":
+        return {"evaluable": False, "reason": "scenario_actor_contract_insufficient_data"}
+    return {"evaluable": True, "reason": None}
+
+
+def _target_metric_evidence(
+    *,
+    target_required: bool,
+    v_t_gap: Mapping[str, Any],
+    run_evaluable: bool,
+) -> tuple[str, bool, str | None]:
+    if not target_required:
+        return ("not_applicable", True, None)
+    if not run_evaluable:
+        return ("not_evaluable", False, "run_invalid")
+    if not v_t_gap:
+        return ("missing", False, "missing_v_t_gap")
+    raw_status = str(v_t_gap.get("status") or "")
+    if raw_status in {"pass", "warn", "fail"}:
+        return (raw_status, True, None)
+    if raw_status == "invalid":
+        return ("invalid", False, str(v_t_gap.get("invalid_reason") or "v_t_gap_invalid"))
+    if raw_status == "not_applicable":
+        return ("not_applicable", False, "target_metric_not_applicable_for_required_target")
+    return (raw_status or "unknown", False, "target_metric_unknown")
 
 
 def _required_artifacts(root: Path) -> dict[str, str]:

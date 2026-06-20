@@ -145,6 +145,9 @@ def _catalog_entry(
             "comparison_status": online["comparison_status"],
             "comparison_target_status": online["comparison_target_status"],
             "comparison_readiness": STATUS_NOT_YET,
+            "accepted_bundle_status": online["accepted_bundle_status"],
+            "accepted_bundle_path": online["accepted_bundle_path"],
+            "accepted_bundle": online["accepted_bundle"],
             "evidence": _sort_evidence(online["evidence"]),
             "representative_evidence": _representative_evidence(online["evidence"]),
             "scenario_case_ids": [],
@@ -210,6 +213,8 @@ def _catalog_entry(
         online["apollo_fixed_scene_runtime_dispatch_reason"] if has_fixed_scene else None
     )
     comparison_readiness = _comparison_readiness(online)
+    accepted_bundle_status = online["accepted_bundle_status"]
+    accepted_bundle = online["accepted_bundle"]
     if online["carla_online_status"] != STATUS_DONE:
         missing_items.append("carla_online_evidence")
     if online["apollo_online_status"] != STATUS_DONE:
@@ -230,17 +235,13 @@ def _catalog_entry(
         missing_items.append("scenario_comparison_report")
     elif comparison_readiness != STATUS_DONE:
         missing_items.append("cross_backend_scenario_comparison")
+    if accepted_bundle_status != STATUS_DONE:
+        missing_items.append("accepted_phase1_comparison_bundle")
     overall = STATUS_PARTIAL
     if (
         compile_status == STATUS_DONE
         and target_status in {"resolved", "not_required"}
-        and online["carla_online_status"] == STATUS_DONE
-        and online["apollo_online_status"] == STATUS_DONE
-        and (not has_fixed_scene or apollo_readiness == STATUS_DONE)
-        and (not has_fixed_scene or apollo_dispatch_contract == STATUS_DONE)
-        and (not has_fixed_scene or apollo_runtime_dispatch == STATUS_DONE)
-        and v_t_gap_readiness == STATUS_DONE
-        and comparison_readiness == STATUS_DONE
+        and accepted_bundle_status == STATUS_DONE
     ):
         overall = STATUS_DONE
     elif compile_status == STATUS_DONE and target_status in {"resolved", "not_required"}:
@@ -278,6 +279,9 @@ def _catalog_entry(
         "comparison_status": online["comparison_status"],
         "comparison_target_status": online["comparison_target_status"],
         "comparison_readiness": comparison_readiness,
+        "accepted_bundle_status": accepted_bundle_status,
+        "accepted_bundle_path": online["accepted_bundle_path"],
+        "accepted_bundle": accepted_bundle,
         "scenario_case_ids": scenario_case_ids,
         "case_files": evidence_paths,
         "target_actor_contract": target_contract,
@@ -298,8 +302,8 @@ def _catalog_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"Schema: `{report.get('schema_version')}`",
         "",
-        "| Scenario | Case IDs | Priority | Status | Case YAML | Template | Target | Target role | CARLA online | Apollo online | Apollo readiness | Apollo dispatch contract | Apollo runtime dispatch | v-t-gap | Comparison | Comparison target | Missing | Next action |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Scenario | Case IDs | Priority | Status | Accepted bundle | Case YAML | Template | Target | Target role | CARLA online | Apollo online | Apollo readiness | Apollo dispatch contract | Apollo runtime dispatch | v-t-gap | Comparison | Comparison target | Missing | Next action |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in report.get("scenarios") or []:
         if not isinstance(item, Mapping):
@@ -309,11 +313,12 @@ def _catalog_markdown(report: Mapping[str, Any]) -> str:
         case_ids = ", ".join(str(value) for value in item.get("scenario_case_ids") or []) or "-"
         target_contract = item.get("target_actor_contract") if isinstance(item.get("target_actor_contract"), Mapping) else {}
         lines.append(
-            "| {scenario} | {case_ids} | {priority} | {overall} | {case} | {template} | {target} | {target_role} | {carla} | {apollo} | {apollo_readiness} | {apollo_dispatch_contract} | {apollo_runtime} | {vtgap} | {comparison} | {comparison_target} | {missing} | {next_action} |".format(
+            "| {scenario} | {case_ids} | {priority} | {overall} | {accepted} | {case} | {template} | {target} | {target_role} | {carla} | {apollo} | {apollo_readiness} | {apollo_dispatch_contract} | {apollo_runtime} | {vtgap} | {comparison} | {comparison_target} | {missing} | {next_action} |".format(
                 scenario=item.get("scenario"),
                 case_ids=case_ids,
                 priority=item.get("priority"),
                 overall=item.get("overall_status"),
+                accepted=item.get("accepted_bundle_status") or STATUS_NOT_YET,
                 case=item.get("case_yaml_status"),
                 template=item.get("template_status") or item.get("fixed_scene_compile_status"),
                 target=item.get("target_actor_status"),
@@ -409,6 +414,11 @@ def _catalog_next_actions(
         actions.append("write a ScenarioComparison report after at least two backend runs exist")
     if "cross_backend_scenario_comparison" in missing_set:
         actions.append("compare only evaluable ApolloBackend and PlanningControlBackend runs for the same ScenarioCase")
+    if "accepted_phase1_comparison_bundle" in missing_set:
+        actions.append(
+            "write a Phase1AcceptanceBundle from one exact Apollo run, one exact PlanningControl run, "
+            "and one exact accepted comparison before marking this scenario DONE"
+        )
     primary_blocker = _representative_apollo_blocker(evidence)
     if primary_blocker:
         actions.append(f"current representative Apollo blocker: {primary_blocker}")
@@ -480,6 +490,10 @@ def _discover_online_evidence(
     comparison_target_status: str = STATUS_NOT_YET
     comparison_backend_count = 0
     best_comparison_rank = (-1, -1, -1, 0)
+    accepted_bundle_status = STATUS_NOT_YET
+    accepted_bundle_path: str | None = None
+    accepted_bundle: dict[str, Any] | None = None
+    best_acceptance_rank = (-1, 0)
 
     runs_dir = evidence_root or (root / "runs")
     if runs_dir.exists():
@@ -666,6 +680,40 @@ def _discover_online_evidence(
                 )
             )
 
+    if runs_dir.exists():
+        for acceptance_path in _safe_find_files(runs_dir, "phase1_acceptance_report.json"):
+            acceptance = _read_json(acceptance_path)
+            if not _matches_scenario(acceptance, aliases, acceptance_path.parent.name):
+                continue
+            raw_status = str(acceptance.get("status") or STATUS_UNKNOWN)
+            readiness = _phase1_readiness_from_status(raw_status)
+            rank = (1 if raw_status == STATUS_DONE else 0, _timestamp_rank(str(acceptance_path)))
+            if rank > best_acceptance_rank:
+                best_acceptance_rank = rank
+                accepted_bundle_status = readiness
+                try:
+                    accepted_bundle_path = str(acceptance_path.relative_to(root))
+                except ValueError:
+                    accepted_bundle_path = str(acceptance_path)
+                accepted_bundle = {
+                    "status": raw_status,
+                    "comparison_id": acceptance.get("comparison_id"),
+                    "apollo_run_id": acceptance.get("apollo_run_id"),
+                    "planning_control_run_id": acceptance.get("planning_control_run_id"),
+                    "blocking_reasons": acceptance.get("blocking_reasons") or [],
+                    "path": accepted_bundle_path,
+                }
+            evidence.append(
+                _evidence(
+                    acceptance_path,
+                    root,
+                    "phase1_acceptance",
+                    status=readiness,
+                    note=_phase1_acceptance_evidence_note(acceptance),
+                    details=_phase1_acceptance_evidence_details(acceptance),
+                )
+            )
+
     return {
         "evidence": evidence,
         "carla_online_status": carla_online_status,
@@ -681,6 +729,9 @@ def _discover_online_evidence(
         "comparison_status": comparison_status,
         "comparison_target_status": comparison_target_status,
         "comparison_backend_count": comparison_backend_count,
+        "accepted_bundle_status": accepted_bundle_status,
+        "accepted_bundle_path": accepted_bundle_path,
+        "accepted_bundle": accepted_bundle,
     }
 
 
@@ -728,6 +779,7 @@ def _evidence_sort_key(item: Mapping[str, Any]) -> tuple[int, int, int, int, str
         "apollo_fixed_scene_dispatch_contract": 5,
         "v_t_gap": 6,
         "comparison_online": 7,
+        "phase1_acceptance": 8,
     }
     status_order = {
         STATUS_DONE: 0,
@@ -1048,6 +1100,39 @@ def _comparison_evidence_details(summary: Mapping[str, Any]) -> dict[str, Any]:
     return details
 
 
+def _phase1_acceptance_evidence_note(report: Mapping[str, Any]) -> str:
+    parts = [
+        f"status={report.get('status') or 'missing'}",
+        f"comparison={report.get('comparison_id') or 'missing'}",
+    ]
+    blockers = _short_list(report.get("blocking_reasons"))
+    if blockers:
+        parts.append(f"blocking_reasons={','.join(blockers)}")
+    apollo_run = report.get("apollo_run_id")
+    planning_run = report.get("planning_control_run_id")
+    if apollo_run:
+        parts.append(f"apollo_run={apollo_run}")
+    if planning_run:
+        parts.append(f"planning_control_run={planning_run}")
+    return "; ".join(parts)
+
+
+def _phase1_acceptance_evidence_details(report: Mapping[str, Any]) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    for key in (
+        "comparison_id",
+        "apollo_run_id",
+        "planning_control_run_id",
+        "blocking_reasons",
+        "gates",
+        "claim_boundary",
+    ):
+        value = report.get(key)
+        if value not in (None, [], {}):
+            details[key] = value
+    return details
+
+
 def _comparison_backend_derived_details(row: Mapping[str, Any]) -> dict[str, Any]:
     metrics = row.get("phase1_metrics") if isinstance(row.get("phase1_metrics"), Mapping) else {}
     derived = (
@@ -1219,7 +1304,16 @@ def _value_matches_alias(value: str, aliases: set[str]) -> bool:
 def _phase1_readiness_from_status(status: str) -> str:
     if status in {STATUS_DONE, "pass", "warn", "not_applicable"}:
         return STATUS_DONE
-    if status in {"invalid", "fail", "failed", "partial", "unknown", "insufficient_data", STATUS_UNKNOWN}:
+    if status in {
+        "invalid",
+        "fail",
+        "failed",
+        "partial",
+        STATUS_PARTIAL,
+        "unknown",
+        "insufficient_data",
+        STATUS_UNKNOWN,
+    }:
         return STATUS_PARTIAL
     return STATUS_NOT_YET
 

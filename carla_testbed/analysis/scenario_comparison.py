@@ -22,8 +22,8 @@ def compare_scenario_runs(run_dirs: Sequence[str | Path]) -> dict[str, Any]:
     runs = [_run_entry(Path(path).expanduser()) for path in run_dirs]
     scenario_ids = sorted({str(run.get("scenario_id")) for run in runs if run.get("scenario_id")})
     scenario_cases = sorted({str(run.get("scenario_case")) for run in runs if run.get("scenario_case")})
-    invalid_runs = [run for run in runs if run.get("phase1_status") == "invalid"]
-    evaluable_runs = [run for run in runs if run.get("phase1_status") != "invalid"]
+    invalid_runs = [run for run in runs if not _run_evaluable(run)]
+    evaluable_runs = [run for run in runs if _run_evaluable(run)]
     if not runs:
         comparison_status = "invalid"
         reason = "no_runs_provided"
@@ -44,19 +44,28 @@ def compare_scenario_runs(run_dirs: Sequence[str | Path]) -> dict[str, Any]:
         reason = None
     safety_event_evidence = _safety_event_evidence_comparison(runs)
     safety_event_context = _safety_event_context_comparison(runs)
+    backend_coverage = _backend_coverage(runs)
+    validity_gates = _comparison_validity_gates(
+        runs=runs,
+        backend_coverage=backend_coverage,
+        comparison_status=comparison_status,
+    )
     if comparison_status == "comparable" and safety_event_evidence.get("comparison_blocking"):
         comparison_status = "partially_evaluable"
         reason = str(safety_event_evidence.get("reason") or "safety_event_evidence_mismatch")
     elif comparison_status == "comparable" and safety_event_context.get("comparison_blocking"):
         comparison_status = "partially_evaluable"
         reason = str(safety_event_context.get("reason") or "shared_safety_event_context_issue")
-    backend_coverage = _backend_coverage(runs)
+    elif comparison_status == "comparable" and validity_gates.get("comparison_blocking"):
+        comparison_status = "partially_evaluable"
+        reason = str(validity_gates.get("reason") or "phase1_validity_gate_failed")
     comparison_target_status = _comparison_target_status(
         comparison_status=comparison_status,
         backend_coverage=backend_coverage,
         runs=runs,
         safety_event_evidence=safety_event_evidence,
         safety_event_context=safety_event_context,
+        validity_gates=validity_gates,
     )
     backends = sorted({str(run.get("backend")) for run in runs if run.get("backend")})
     comparison_id = _comparison_id(
@@ -73,12 +82,13 @@ def compare_scenario_runs(run_dirs: Sequence[str | Path]) -> dict[str, Any]:
         "comparison_status": comparison_status,
         "comparison_target_status": comparison_target_status,
         "backend_coverage": backend_coverage,
+        "validity_gates": validity_gates,
         "safety_event_evidence": safety_event_evidence,
         "safety_event_context": safety_event_context,
         "reason": reason,
         "participating_runs": runs,
-        "invalid_runs": [run for run in runs if run.get("phase1_status") == "invalid"],
-        "evaluable_runs": [run for run in runs if run.get("phase1_status") != "invalid"],
+        "invalid_runs": [run for run in runs if not _run_evaluable(run)],
+        "evaluable_runs": [run for run in runs if _run_evaluable(run)],
         "backend_results": _backend_results(
             runs,
             comparison_status=comparison_status,
@@ -112,6 +122,7 @@ def write_scenario_comparison(report: Mapping[str, Any], out_dir: str | Path) ->
         "comparison_status": report.get("comparison_status"),
         "comparison_target_status": report.get("comparison_target_status"),
         "backend_coverage": report.get("backend_coverage"),
+        "validity_gates": report.get("validity_gates") or {},
         "participating_run_dirs": [run.get("run_dir") for run in report.get("participating_runs") or []],
         "evaluable_run_dirs": [run.get("run_dir") for run in report.get("evaluable_runs") or []],
         "invalid_run_dirs": [run.get("run_dir") for run in report.get("invalid_runs") or []],
@@ -151,8 +162,12 @@ def _run_entry(run_dir: Path) -> dict[str, Any]:
         else {}
     )
     assist_ledger = read_assist_ledger_from_run_dir(run_dir)
+    artifact_completeness = _read_json(
+        run_dir / "analysis" / "artifact_completeness" / "artifact_completeness_report.json"
+    )
     artifact_paths = _run_artifact_paths(run_dir)
     phase1_metrics = _phase1_metrics_with_current_derived_blockers(run_dir, phase1_status)
+    run_evaluable = bool(phase1_status.get("run_evaluable", phase1_status.get("evaluable")))
     return {
         "run_dir": str(run_dir),
         "run_id": manifest.get("run_id") or phase1_status.get("run_id") or run_dir.name,
@@ -168,7 +183,16 @@ def _run_entry(run_dir: Path) -> dict[str, Any]:
         "backend_type": manifest.get("backend_type") or phase1_status.get("backend_type"),
         "phase1_status": phase1_status.get("status"),
         "failure_reason": phase1_status.get("failure_reason"),
-        "evaluable": phase1_status.get("evaluable"),
+        "evaluable": run_evaluable,
+        "run_evaluable": run_evaluable,
+        "scenario_interaction_evaluable": phase1_status.get("scenario_interaction_evaluable"),
+        "scenario_interaction_reason": phase1_status.get("scenario_interaction_reason"),
+        "target_metric_evaluable": phase1_status.get("target_metric_evaluable"),
+        "target_metric_status": phase1_status.get("target_metric_status"),
+        "target_metric_reason": phase1_status.get("target_metric_reason"),
+        "counts_as_backend_loss_for_target_scenario": phase1_status.get(
+            "counts_as_backend_loss_for_target_scenario"
+        ),
         "phase1_metrics": phase1_metrics,
         "invalid_reasons": list(phase1_status.get("invalid_reasons") or []),
         "missing_artifacts": list(phase1_status.get("missing_artifacts") or []),
@@ -178,6 +202,8 @@ def _run_entry(run_dir: Path) -> dict[str, Any]:
         "active_assists": list(assist_ledger.get("active_assists") or []),
         "blocking_assists": list(assist_ledger.get("blocking_assists") or []),
         "assist_confidence": assist_ledger.get("assist_confidence"),
+        "artifact_completeness_status": artifact_completeness.get("status") if artifact_completeness else None,
+        "artifact_complete": artifact_completeness.get("artifact_complete") if artifact_completeness else None,
         "v_t_gap_status": v_t_gap.get("status") if v_t_gap else phase1_status.get("v_t_gap_status"),
         "apollo_control_handoff_status": apollo_control_handoff.get("verdict")
         or apollo_control_handoff.get("status"),
@@ -226,7 +252,7 @@ def _backend_results(
 ) -> list[dict[str, Any]]:
     results = []
     for run in runs:
-        evaluable = bool(run.get("evaluable"))
+        evaluable = _run_evaluable(run)
         results.append(
             {
                 "backend": run.get("backend"),
@@ -235,6 +261,14 @@ def _backend_results(
                 "phase1_status": run.get("phase1_status"),
                 "failure_reason": run.get("failure_reason"),
                 "invalid_reasons": list(run.get("invalid_reasons") or []),
+                "run_evaluable": run.get("run_evaluable", run.get("evaluable")),
+                "scenario_interaction_evaluable": run.get("scenario_interaction_evaluable"),
+                "scenario_interaction_reason": run.get("scenario_interaction_reason"),
+                "target_metric_evaluable": run.get("target_metric_evaluable"),
+                "target_metric_status": run.get("target_metric_status"),
+                "target_metric_reason": run.get("target_metric_reason"),
+                "artifact_completeness_status": run.get("artifact_completeness_status"),
+                "artifact_complete": run.get("artifact_complete"),
                 "missing_artifacts": list(run.get("missing_artifacts") or []),
                 "missing_expected_artifacts": list(run.get("missing_expected_artifacts") or []),
                 "phase1_metrics": dict(run.get("phase1_metrics") or {}),
@@ -254,6 +288,7 @@ def _backend_results(
                     comparison_status == "comparable"
                     and comparison_target_status == "apollo_vs_planning_control_evaluable"
                     and evaluable
+                    and run.get("counts_as_backend_loss_for_target_scenario") is not False
                     and run.get("phase1_status") == "failed"
                 ),
             }
@@ -303,6 +338,89 @@ def _summary_notes(comparison_status: str, reason: str | None, comparison_target
     return notes
 
 
+def _run_evaluable(run: Mapping[str, Any]) -> bool:
+    return bool(run.get("run_evaluable", run.get("evaluable", run.get("phase1_status") != "invalid")))
+
+
+def _comparison_validity_gates(
+    *,
+    runs: Sequence[Mapping[str, Any]],
+    backend_coverage: Mapping[str, Any],
+    comparison_status: str,
+) -> dict[str, Any]:
+    if comparison_status != "comparable":
+        return {
+            "comparison_blocking": False,
+            "reason": None,
+            "same_case": comparison_status != "invalid",
+            "backend_coverage": False,
+            "interaction_complete": False,
+            "target_metric_valid": False,
+            "artifact_complete": False,
+            "blocking_assists_absent": not _blocking_assists_present(runs),
+        }
+    interaction_complete = all(_run_interaction_evaluable(run) for run in runs)
+    target_metric_valid = all(_run_target_metric_evaluable(run) for run in runs)
+    artifact_complete = all(_run_artifact_complete_for_comparison(run) for run in runs)
+    blocking_assists_absent = not _blocking_assists_present(runs)
+    backend_ok = bool(
+        int(backend_coverage.get("evaluable_apollo_reference_backend") or 0) > 0
+        and int(backend_coverage.get("evaluable_planning_control_backend") or 0) > 0
+    )
+    reason = None
+    if not interaction_complete:
+        reason = "target_interaction_not_exercised"
+    elif not target_metric_valid:
+        reason = "target_metric_not_evaluable"
+    elif not artifact_complete:
+        reason = "artifact_completeness_failed"
+    elif not blocking_assists_absent:
+        reason = "blocking_assists_present_not_phase1_reference"
+    return {
+        "comparison_blocking": reason is not None,
+        "reason": reason,
+        "same_case": True,
+        "backend_coverage": backend_ok,
+        "interaction_complete": interaction_complete,
+        "target_metric_valid": target_metric_valid,
+        "artifact_complete": artifact_complete,
+        "blocking_assists_absent": blocking_assists_absent,
+        "run_gates": [
+            {
+                "run_id": run.get("run_id"),
+                "backend": run.get("backend"),
+                "run_evaluable": _run_evaluable(run),
+                "scenario_interaction_evaluable": run.get("scenario_interaction_evaluable"),
+                "scenario_interaction_reason": run.get("scenario_interaction_reason"),
+                "target_metric_evaluable": run.get("target_metric_evaluable"),
+                "target_metric_status": run.get("target_metric_status"),
+                "target_metric_reason": run.get("target_metric_reason"),
+                "artifact_complete": run.get("artifact_complete"),
+                "artifact_completeness_status": run.get("artifact_completeness_status"),
+                "blocking_assists": list(run.get("blocking_assists") or []),
+            }
+            for run in runs
+        ],
+    }
+
+
+def _run_interaction_evaluable(run: Mapping[str, Any]) -> bool:
+    value = run.get("scenario_interaction_evaluable")
+    return True if value is None else bool(value)
+
+
+def _run_target_metric_evaluable(run: Mapping[str, Any]) -> bool:
+    value = run.get("target_metric_evaluable")
+    return True if value is None else bool(value)
+
+
+def _run_artifact_complete_for_comparison(run: Mapping[str, Any]) -> bool:
+    artifact_complete = run.get("artifact_complete")
+    if artifact_complete is False:
+        return False
+    return True
+
+
 def _backend_coverage(runs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     by_type: dict[str, int] = {}
     evaluable_by_type: dict[str, int] = {}
@@ -316,7 +434,7 @@ def _backend_coverage(runs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             unknown_backend_type_count += 1
         by_type[backend_type] = by_type.get(backend_type, 0) + 1
         by_backend[backend] = by_backend.get(backend, 0) + 1
-        if bool(run.get("evaluable")):
+        if _run_evaluable(run):
             evaluable_by_type[backend_type] = evaluable_by_type.get(backend_type, 0) + 1
             evaluable_by_backend[backend] = evaluable_by_backend.get(backend, 0) + 1
     return {
@@ -341,18 +459,20 @@ def _comparison_target_status(
     runs: Sequence[Mapping[str, Any]],
     safety_event_evidence: Mapping[str, Any],
     safety_event_context: Mapping[str, Any],
+    validity_gates: Mapping[str, Any],
 ) -> str:
     if safety_event_evidence.get("comparison_blocking"):
         return "safety_event_evidence_mismatch"
     if safety_event_context.get("comparison_blocking"):
         return "shared_safety_event_context_issue"
+    validity_reason = str(validity_gates.get("reason") or "")
+    if validity_reason:
+        return validity_reason
     if int(backend_coverage.get("unknown_backend_type_count") or 0) > 0:
         return "unknown_backend_coverage"
     apollo = int(backend_coverage.get("evaluable_apollo_reference_backend") or 0)
     planning = int(backend_coverage.get("evaluable_planning_control_backend") or 0)
     all_types = set(str(item) for item in backend_coverage.get("backend_types") or [])
-    if comparison_status == "comparable" and _blocking_assists_present(runs):
-        return "blocking_assists_present_not_phase1_reference"
     if comparison_status == "comparable" and apollo > 0 and planning > 0:
         return "apollo_vs_planning_control_evaluable"
     if comparison_status == "comparable" and len(set(backend_coverage.get("evaluable_backend_types") or [])) <= 1:
@@ -398,7 +518,7 @@ def _run_safety_event_evidence(run: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _safety_event_evidence_comparison(runs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    evaluable_runs = [run for run in runs if run.get("phase1_status") != "invalid"]
+    evaluable_runs = [run for run in runs if _run_evaluable(run)]
     event_checks = {
         "lane_invasion": _safety_event_check(evaluable_runs, "lane_invasion"),
         "collision": _safety_event_check(evaluable_runs, "collision"),
@@ -425,7 +545,7 @@ def _safety_event_evidence_comparison(runs: Sequence[Mapping[str, Any]]) -> dict
 
 
 def _safety_event_context_comparison(runs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    evaluable_runs = [run for run in runs if run.get("phase1_status") != "invalid"]
+    evaluable_runs = [run for run in runs if _run_evaluable(run)]
     lane_check = _shared_near_start_lane_invasion_check(evaluable_runs)
     blocking_events = ["lane_invasion"] if lane_check.get("comparison_blocking") else []
     reason = "shared_near_start_lane_invasion_context_issue" if blocking_events else None
@@ -654,7 +774,7 @@ def _write_combined_v_t_gap(report: Mapping[str, Any], output_path: Path) -> boo
     for run in report.get("participating_runs") or []:
         if not isinstance(run, Mapping):
             continue
-        if run.get("phase1_status") == "invalid" or run.get("evaluable") is False:
+        if not _run_evaluable(run) or not _run_target_metric_evaluable(run):
             continue
         csv_path = Path(str((run.get("artifact_paths") or {}).get("v_t_gap", ""))).with_name("v_t_gap.csv")
         if not csv_path.exists():
