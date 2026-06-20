@@ -575,6 +575,8 @@ def test_run_dir_merges_control_decode_debug_simple_lat_fields(tmp_path: Path) -
     alignment = report["lateral_sign_alignment"]["first_high_lateral_sample"]
     assert alignment["source_steer_vs_route_lateral_error"] == "same_sign"
     assert alignment["source_steer_vs_simple_lat_lateral_error"] == "opposite_sign"
+    assert alignment["route_lateral_error_vs_simple_lat_lateral_error"] == "opposite_sign"
+    assert "route_lateral_error_opposes_simple_lat_lateral_error" in _types(report)
     assert report["correlation_summary"]["apollo_simple_lat_lateral_error_abs"]["p95"] > 0.60
 
 

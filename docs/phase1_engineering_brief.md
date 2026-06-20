@@ -203,10 +203,14 @@ Interpretation:
   `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742`,
   `source_steer_vs_route_lateral_error=same_sign` and
   `applied_steer_vs_route_lateral_error=same_sign`, while
+  `route_lateral_error_vs_simple_lat_lateral_error=opposite_sign` and
   `source_steer_vs_simple_lat_lateral_error=opposite_sign`. Across all active
-  high-lateral samples, the source-steer / route-lateral same-sign ratio is
-  `1.0`, while source-steer / Apollo simple_lat lateral same-sign ratio is
-  `0.0`. This is a sign-convention and lateral-semantics
+  high-lateral samples, the route-lateral / Apollo simple_lat opposite-sign
+  ratio is `1.0`, the source-steer / route-lateral same-sign ratio is `1.0`,
+  and the source-steer / Apollo simple_lat lateral same-sign ratio is `0.0`.
+  The refreshed `apollo_link_health` primary blocker is now
+  `apollo_lateral_semantics:route_lateral_error_opposes_simple_lat_lateral_error`.
+  This is a sign-convention and lateral-semantics
   sense check around the lane event; it is not proof of a steering-sign bug and
   does not justify changing `steer_scale`, physical mapping, or controller
   smoothing before reference-line / simple_lat semantics are closed.

@@ -1332,6 +1332,14 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 report,
                 "lateral_sign_alignment.source_steer_vs_simple_lat_lateral_error.same_sign_ratio",
             ),
+            "route_lateral_simple_lat_opposite_sign_ratio": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_error_vs_simple_lat_lateral_error.opposite_sign_ratio",
+            ),
+            "first_high_route_lateral_vs_simple_lat_lateral_error": _nested(
+                report,
+                "lateral_sign_alignment.first_high_lateral_sample.route_lateral_error_vs_simple_lat_lateral_error",
+            ),
             "apollo_steer_raw_abs_p95": _nested(report, "correlation_summary.apollo_steer_raw_abs.p95"),
             "carla_steer_applied_abs_p95": _nested(report, "correlation_summary.carla_steer_applied_abs.p95"),
         },
@@ -3489,7 +3497,15 @@ def _lateral_semantics_warning_primary(layers: Mapping[str, Mapping[str, Any]]) 
     )
     if not natural_missing:
         return None
-    reason = anomaly_types[0] if anomaly_types else str(metrics.get("suspected_layer") or "lateral_semantics_anomaly")
+    priority = (
+        "route_lateral_error_opposes_simple_lat_lateral_error",
+        "source_steer_same_sign_as_lateral_error",
+        "actual_lateral_drift_matches_hdmap_projection",
+        "planning_nonempty_but_reference_line_debug_missing",
+    )
+    reason = next((item for item in priority if item in anomaly_types), None)
+    if reason is None:
+        reason = anomaly_types[0] if anomaly_types else str(metrics.get("suspected_layer") or "lateral_semantics_anomaly")
     return f"apollo_lateral_semantics:{reason}"
 
 

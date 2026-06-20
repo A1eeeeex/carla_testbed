@@ -558,6 +558,7 @@ def _anomalies(
     source_vs_simple_lat = lateral_sign_alignment.get("source_steer_vs_simple_lat_lateral_error")
     mapped_vs_route = lateral_sign_alignment.get("mapped_steer_vs_route_lateral_error")
     applied_vs_route = lateral_sign_alignment.get("applied_steer_vs_route_lateral_error")
+    route_vs_simple_lat = lateral_sign_alignment.get("route_lateral_error_vs_simple_lat_lateral_error")
     first_high_alignment = lateral_sign_alignment.get("first_high_lateral_sample")
     source_route_same = _num(source_vs_route.get("same_sign_ratio")) if isinstance(source_vs_route, Mapping) else None
     source_simple_same = (
@@ -571,6 +572,31 @@ def _anomalies(
         isinstance(first_high_alignment, Mapping)
         and first_high_alignment.get("source_steer_vs_route_lateral_error") == "same_sign"
     )
+    route_simple_opposite = (
+        _num(route_vs_simple_lat.get("opposite_sign_ratio")) if isinstance(route_vs_simple_lat, Mapping) else None
+    )
+    route_simple_count = _num(route_vs_simple_lat.get("sample_count")) if isinstance(route_vs_simple_lat, Mapping) else 0.0
+    first_high_route_simple_opposite = (
+        isinstance(first_high_alignment, Mapping)
+        and first_high_alignment.get("route_lateral_error_vs_simple_lat_lateral_error") == "opposite_sign"
+    )
+    if (
+        (route_simple_opposite is not None and route_simple_opposite >= high_ratio and route_simple_count >= min_samples)
+        or first_high_route_simple_opposite
+    ):
+        anomalies.append(
+            _anomaly(
+                "route_lateral_error_opposes_simple_lat_lateral_error",
+                (
+                    "CARLA route cross-track error and Apollo simple_lat lateral error have opposite signs "
+                    "during active lateral-error samples; this is a reference-line/frame-convention "
+                    "semantics check, not a control mapping fix by itself"
+                ),
+                "reference_line_semantics",
+                route_lateral_error_vs_simple_lat_lateral_error=route_vs_simple_lat,
+                first_high_lateral_sample=first_high_alignment,
+            )
+        )
     if (
         (source_route_same is not None and source_route_same >= high_ratio and source_route_count >= min_samples)
         or (
@@ -591,6 +617,7 @@ def _anomalies(
                 "reference_line_semantics",
                 source_steer_vs_route_lateral_error=source_vs_route,
                 source_steer_vs_simple_lat_lateral_error=source_vs_simple_lat,
+                route_lateral_error_vs_simple_lat_lateral_error=route_vs_simple_lat,
                 mapped_steer_vs_route_lateral_error=mapped_vs_route,
                 applied_steer_vs_route_lateral_error=applied_vs_route,
                 first_high_lateral_sample=first_high_alignment,
@@ -1200,6 +1227,13 @@ def _lateral_sign_alignment_summary(
             left_min_abs=lateral_min,
             right_min_abs=steer_min,
         ),
+        "route_lateral_error_vs_simple_lat_lateral_error": _sign_pair_stats(
+            rows,
+            ROUTE_LATERAL_ERROR_ALIASES,
+            FIELD_ALIASES["apollo_simple_lat_lateral_error"],
+            left_min_abs=lateral_min,
+            right_min_abs=lateral_min,
+        ),
         "mapped_steer_vs_route_lateral_error": _sign_pair_stats(
             rows,
             ROUTE_LATERAL_ERROR_ALIASES,
@@ -1269,6 +1303,7 @@ def _first_high_lateral_sign_alignment(
         "carla_steer_applied": applied_steer,
         "source_steer_vs_route_lateral_error": _sign_relation(cross_track, source_steer, steer_min_abs),
         "source_steer_vs_simple_lat_lateral_error": _sign_relation(simple_lat, source_steer, steer_min_abs),
+        "route_lateral_error_vs_simple_lat_lateral_error": _sign_relation(cross_track, simple_lat, lateral_min_abs),
         "mapped_steer_vs_route_lateral_error": _sign_relation(cross_track, mapped_steer, steer_min_abs),
         "applied_steer_vs_route_lateral_error": _sign_relation(cross_track, applied_steer, steer_min_abs),
     }

@@ -1887,6 +1887,11 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
             "confidence": "medium",
             "anomalies": [
                 {
+                    "type": "route_lateral_error_opposes_simple_lat_lateral_error",
+                    "suspected_layer": "reference_line_semantics",
+                    "reason": "route lateral and simple_lat lateral have opposite signs",
+                },
+                {
                     "type": "planning_nonempty_but_reference_line_debug_missing",
                     "suspected_layer": "reference_line_semantics",
                     "reason": "Planning trajectories are non-empty while reference-line debug is missing",
@@ -1910,9 +1915,11 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
                 "first_high_lateral_sample": {
                     "source_steer_vs_route_lateral_error": "same_sign",
                     "applied_steer_vs_route_lateral_error": "same_sign",
+                    "route_lateral_error_vs_simple_lat_lateral_error": "opposite_sign",
                 },
                 "source_steer_vs_route_lateral_error": {"same_sign_ratio": 0.55},
                 "source_steer_vs_simple_lat_lateral_error": {"same_sign_ratio": 0.0},
+                "route_lateral_error_vs_simple_lat_lateral_error": {"opposite_sign_ratio": 1.0},
             },
         },
     )
@@ -1920,7 +1927,7 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     report = analyze_apollo_link_health_run_dir(run_dir)
 
     assert report["primary_blocker"] == (
-        "apollo_lateral_semantics:planning_nonempty_but_reference_line_debug_missing"
+        "apollo_lateral_semantics:route_lateral_error_opposes_simple_lat_lateral_error"
     )
     assert "natural_driving_outcome:insufficient_data" in report["secondary_blockers"]
     lateral = report["layers"]["apollo_lateral_semantics"]
@@ -1930,6 +1937,8 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert lateral["key_metrics"]["first_high_source_steer_vs_route_lateral_error"] == "same_sign"
     assert lateral["key_metrics"]["first_high_applied_steer_vs_route_lateral_error"] == "same_sign"
     assert lateral["key_metrics"]["source_steer_route_lateral_same_sign_ratio"] == 0.55
+    assert lateral["key_metrics"]["route_lateral_simple_lat_opposite_sign_ratio"] == 1.0
+    assert lateral["key_metrics"]["first_high_route_lateral_vs_simple_lat_lateral_error"] == "opposite_sign"
     assert report["can_claim_unassisted_natural_driving"] is False
 
 
