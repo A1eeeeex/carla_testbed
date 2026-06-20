@@ -139,6 +139,13 @@ Interpretation:
   the latest Apollo cut-in sample (`failed/lane_invasion`). The next milestone
   shifts from accepted-bundle construction to representative Apollo behavior
   blocker reduction and cleaner external-backend runtime integration.
+- For representative failed Phase 1 runs, `phase1_status.json` now surfaces a
+  `primary_behavior_blocker`, `behavior_blocker_layer`, and
+  `behavior_next_action` distilled from derived evidence such as
+  `baguang_lane_event_contract` and `control_health`. These fields are operator
+  triage aids only: they explain why an evaluable scenario failed, but they do
+  not reclassify invalid runs, do not change ScenarioComparison acceptance, and
+  do not create Apollo natural-driving capability evidence.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.

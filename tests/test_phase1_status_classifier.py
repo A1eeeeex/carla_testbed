@@ -1099,6 +1099,13 @@ def test_phase1_status_echoes_derived_blocker_evidence_without_reclassifying(tmp
 
     assert report["status"] == "failed"
     assert report["failure_reason"] == "lane_invasion"
+    assert report["primary_behavior_blocker"] == "lane_departure_with_source_steer_same_sign"
+    assert report["behavior_blocker_layer"] == "lane_event_contract"
+    assert "raw->mapped->applied steer" in report["behavior_next_action"]
+    assert (
+        report["behavior_blocker_evidence"]["departure_classification"]
+        == "downstream_progressive_lane_departure"
+    )
     derived = report["phase1_metrics"]["derived_blocker_evidence"]
     assert derived["available"] is True
     assert derived["control_health"]["failure_reason"] == "apollo_raw_command_oscillation"
@@ -1119,6 +1126,8 @@ def test_phase1_status_echoes_derived_blocker_evidence_without_reclassifying(tmp
     summary_text = (run / "analysis" / "phase1_status" / "phase1_status_summary.md").read_text(encoding="utf-8")
     assert paths["summary"].endswith("phase1_status_summary.md")
     assert "Derived Blocker Evidence" in summary_text
+    assert "Primary Behavior Blocker" in summary_text
+    assert "lane_departure_with_source_steer_same_sign" in summary_text
     assert "apollo_raw_command_oscillation" in summary_text
 
 

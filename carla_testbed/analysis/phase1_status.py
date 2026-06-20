@@ -145,6 +145,21 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
         f"Target metric evaluable: `{report.get('target_metric_evaluable')}`",
         f"Backend-loss eligible for target scenario: `{report.get('counts_as_backend_loss_for_target_scenario')}`",
     ]
+    if report.get("primary_behavior_blocker"):
+        lines.extend(
+            [
+                "",
+                "## Primary Behavior Blocker",
+                "",
+                f"- blocker: `{report.get('primary_behavior_blocker')}`",
+                f"- layer: `{report.get('behavior_blocker_layer')}`",
+                f"- next_action: `{report.get('behavior_next_action')}`",
+                (
+                    "- claim_boundary: `Phase 1 blocker attribution explains an evaluable "
+                    "scenario failure; it is not natural-driving capability evidence.`"
+                ),
+            ]
+        )
     metrics = report.get("phase1_metrics") if isinstance(report.get("phase1_metrics"), Mapping) else {}
     lane_context = (
         metrics.get("lane_invasion_context")
@@ -224,6 +239,12 @@ def _status(
         target_contract=target_contract,
         v_t_gap=v_t_gap,
     )
+    derived_blocker_evidence = _derived_blocker_evidence(root)
+    behavior_blocker = _primary_behavior_blocker(
+        status=status,
+        reason=reason,
+        derived_blocker_evidence=derived_blocker_evidence,
+    )
     return {
         "schema_version": PHASE1_STATUS_SCHEMA_VERSION,
         "run_dir": str(root),
@@ -238,6 +259,10 @@ def _status(
         "invalid_reasons": invalid_reasons,
         "degraded_reasons": degraded_reasons,
         "failed_reasons": failed_reasons,
+        "primary_behavior_blocker": behavior_blocker["primary_behavior_blocker"],
+        "behavior_blocker_layer": behavior_blocker["behavior_blocker_layer"],
+        "behavior_next_action": behavior_blocker["behavior_next_action"],
+        "behavior_blocker_evidence": behavior_blocker["behavior_blocker_evidence"],
         "original_failure_reason": original_reason,
         "evaluable": evaluability["run_evaluable"],
         "run_evaluable": evaluability["run_evaluable"],
@@ -258,7 +283,7 @@ def _status(
             "safety_event_evidence": _safety_event_evidence(root, summary),
             "control_motion": _control_motion_metrics(root),
             "lane_invasion_context": _lane_invasion_context(root, summary),
-            "derived_blocker_evidence": _derived_blocker_evidence(root),
+            "derived_blocker_evidence": derived_blocker_evidence,
         },
         "evidence_files": _evidence_files(root),
         "missing_artifacts": missing_artifacts,
@@ -480,6 +505,102 @@ def _derived_blocker_evidence(root: Path) -> dict[str, Any]:
             "Derived blocker evidence explains an evaluable Phase 1 failure. "
             "It does not override phase1 status, and it is not natural-driving capability evidence."
         ),
+    }
+
+
+def _primary_behavior_blocker(
+    *,
+    status: str,
+    reason: str | None,
+    derived_blocker_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    empty = {
+        "primary_behavior_blocker": None,
+        "behavior_blocker_layer": None,
+        "behavior_next_action": None,
+        "behavior_blocker_evidence": {},
+    }
+    if status != "failed" or not reason:
+        return empty
+
+    lane_event = (
+        derived_blocker_evidence.get("baguang_lane_event_contract")
+        if isinstance(derived_blocker_evidence.get("baguang_lane_event_contract"), Mapping)
+        else {}
+    )
+    control_health = (
+        derived_blocker_evidence.get("control_health")
+        if isinstance(derived_blocker_evidence.get("control_health"), Mapping)
+        else {}
+    )
+
+    if reason == "lane_invasion":
+        if lane_event.get("available"):
+            interpretation = list(lane_event.get("departure_interpretation") or [])
+            same_sign = "raw_steer_same_sign_as_cross_track_error" in interpretation
+            blocker = (
+                "lane_departure_with_source_steer_same_sign"
+                if same_sign
+                else "lane_departure_evidence"
+            )
+            return {
+                "primary_behavior_blocker": blocker,
+                "behavior_blocker_layer": "lane_event_contract",
+                "behavior_next_action": (
+                    "Inspect Apollo lateral/reference-line and raw->mapped->applied steer "
+                    "around the first lane event; do not tune PID or relax the lane-event "
+                    "gate before this attribution is checked."
+                ),
+                "behavior_blocker_evidence": {
+                    "lane_event_reason": lane_event.get("reason"),
+                    "departure_classification": lane_event.get("departure_classification"),
+                    "departure_interpretation": interpretation,
+                    "lane_invasion_event_can_be_used_as_hard_gate": lane_event.get(
+                        "lane_invasion_event_can_be_used_as_hard_gate"
+                    ),
+                    "path": lane_event.get("path"),
+                },
+            }
+        return {
+            "primary_behavior_blocker": "lane_invasion_without_lane_event_contract",
+            "behavior_blocker_layer": "missing_lane_event_contract",
+            "behavior_next_action": (
+                "Generate baguang_lane_event_contract_report.json before counting this "
+                "lane invasion as backend behavior evidence."
+            ),
+            "behavior_blocker_evidence": {},
+        }
+
+    if reason in {
+        "unstable_control",
+        "control_apply_mismatch",
+        "no_control",
+        "planning_control_handoff_missing",
+    }:
+        return {
+            "primary_behavior_blocker": control_health.get("failure_reason") or reason,
+            "behavior_blocker_layer": "control_health",
+            "behavior_next_action": (
+                "Inspect control_health, control_handoff, and raw/mapped/applied traces; "
+                "do not hide source-command behavior with smoothing or clamps."
+            ),
+            "behavior_blocker_evidence": {
+                "control_health_failure_reason": control_health.get("failure_reason"),
+                "control_semantics_primary_factor": control_health.get(
+                    "control_semantics_primary_factor"
+                ),
+                "control_semantics_suspected_factors": control_health.get(
+                    "control_semantics_suspected_factors"
+                ),
+                "path": control_health.get("path"),
+            },
+        }
+
+    return {
+        "primary_behavior_blocker": reason,
+        "behavior_blocker_layer": "phase1_status",
+        "behavior_next_action": "Inspect scenario-specific evidence before changing runtime behavior.",
+        "behavior_blocker_evidence": {},
     }
 
 
