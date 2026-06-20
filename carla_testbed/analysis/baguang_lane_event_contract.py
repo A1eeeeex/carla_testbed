@@ -156,7 +156,7 @@ def analyze_lane_event_run_dir(
     target_width = target_lane.width_m if target_lane is not None else None
     footprint = _ego_half_width_report(root, rows, float(ego_half_width_m))
     actual_half_width = float(footprint.get("ego_half_width_m") or ego_half_width_m)
-    estimated_crossing_offset = _estimated_crossing_offset(
+    base_crossing_offset = _estimated_crossing_offset(
         lane_width_m=target_width,
         ego_half_width_m=actual_half_width,
         target_lane=target_lane,
@@ -164,17 +164,38 @@ def analyze_lane_event_run_dir(
     trigger_cte = _number(trigger.get("cross_track_error")) if trigger else None
     trigger_heading = _number(trigger.get("heading_error")) if trigger else None
     trigger_displacement = _number(trigger.get("distance_from_start_x_m")) if trigger else None
+    initial_heading = _first_number_aliases(rows, ("heading_error", "heading_error_rad"))
+    initial_lateral_extent = _footprint_lateral_extent_m(
+        ego_half_width_m=actual_half_width,
+        ego_half_length_m=_number(footprint.get("ego_half_length_m")),
+        heading_error_rad=initial_heading,
+    )
+    trigger_lateral_extent = _footprint_lateral_extent_m(
+        ego_half_width_m=actual_half_width,
+        ego_half_length_m=_number(footprint.get("ego_half_length_m")),
+        heading_error_rad=trigger_heading,
+    )
+    initial_crossing_offset = _estimated_crossing_offset(
+        lane_width_m=target_width,
+        ego_half_width_m=initial_lateral_extent,
+        target_lane=target_lane,
+    )
+    trigger_crossing_offset = _estimated_crossing_offset(
+        lane_width_m=target_width,
+        ego_half_width_m=trigger_lateral_extent,
+        target_lane=target_lane,
+    )
     marking_match = _crossed_marking_match_report(trigger, target_lane)
     departure_diagnostics = _departure_diagnostics(
         rows,
         trigger=trigger,
-        estimated_crossing_offset_m=estimated_crossing_offset,
+        estimated_crossing_offset_m=trigger_crossing_offset,
         early_event_distance_m=float(early_event_distance_m),
         control_apply_rows=_read_jsonl_rows(root / "artifacts" / "control_apply_trace.jsonl"),
     )
     initial_cte = _first_number_aliases(rows, ("cross_track_error", "cross_track_error_m"))
-    initial_footprint = _footprint_crossing_check(initial_cte, estimated_crossing_offset)
-    trigger_footprint = _footprint_crossing_check(trigger_cte, estimated_crossing_offset)
+    initial_footprint = _footprint_crossing_check(initial_cte, initial_crossing_offset)
+    trigger_footprint = _footprint_crossing_check(trigger_cte, trigger_crossing_offset)
     inconsistent_trigger = bool(
         trigger
         and trigger_cte is not None
@@ -184,7 +205,7 @@ def analyze_lane_event_run_dir(
     )
     geometrically_implausible = bool(
         trigger_cte is not None
-        and estimated_crossing_offset is not None
+        and trigger_crossing_offset is not None
         and trigger_footprint.get("footprint_intersects_marking") is False
     )
     quarantine = bool(lane_events and geometrically_implausible)
@@ -232,8 +253,15 @@ def analyze_lane_event_run_dir(
             "target_lane_id": target_lane.lane_id if target_lane else None,
             "target_lane_width_m": target_width,
             "ego_half_width_m": actual_half_width,
+            "ego_half_length_m": footprint.get("ego_half_length_m"),
             "ego_half_width_source": footprint.get("source"),
-            "estimated_center_offset_to_cross_mark_m": estimated_crossing_offset,
+            "estimated_center_offset_to_cross_mark_m": base_crossing_offset,
+            "initial_center_offset_to_footprint_crossing_threshold_m": initial_crossing_offset,
+            "trigger_center_offset_to_footprint_crossing_threshold_m": trigger_crossing_offset,
+            "initial_footprint_lateral_extent_m": initial_lateral_extent,
+            "trigger_footprint_lateral_extent_m": trigger_lateral_extent,
+            "initial_heading_error_used_rad": initial_heading,
+            "trigger_heading_error_used_rad": trigger_heading,
             "initial_abs_cross_track_error_m": abs(initial_cte) if initial_cte is not None else None,
             "initial_clearance_to_marking_m": initial_footprint.get("clearance_to_marking_m"),
             "initial_footprint_intersects_marking": initial_footprint.get("footprint_intersects_marking"),
@@ -363,6 +391,18 @@ def _estimated_crossing_offset(
     ]
     max_mark_half_width = (max(mark_widths) / 2.0) if mark_widths else 0.0
     return max(0.0, (lane_width_m / 2.0) - float(ego_half_width_m) - max_mark_half_width)
+
+
+def _footprint_lateral_extent_m(
+    *,
+    ego_half_width_m: float,
+    ego_half_length_m: float | None,
+    heading_error_rad: float | None,
+) -> float:
+    if ego_half_length_m is None or ego_half_length_m <= 0.0 or heading_error_rad is None:
+        return float(ego_half_width_m)
+    yaw = abs(float(heading_error_rad))
+    return abs(math.cos(yaw)) * float(ego_half_width_m) + abs(math.sin(yaw)) * float(ego_half_length_m)
 
 
 def _footprint_crossing_check(
@@ -931,40 +971,61 @@ def _normalize_marking_types(value: Any) -> list[str]:
 
 def _ego_half_width_report(root: Path, rows: list[dict[str, str]], default_half_width_m: float) -> dict[str, Any]:
     bbox_extent_y = _first_number(rows, "bbox_extent_y_m")
+    bbox_extent_x = _first_number(rows, "bbox_extent_x_m")
     if bbox_extent_y is not None and bbox_extent_y > 0.0:
-        return {
+        payload = {
             "ego_half_width_m": bbox_extent_y,
             "source": "timeseries.bbox_extent_y_m",
             "confidence": "runtime_bbox",
         }
+        if bbox_extent_x is not None and bbox_extent_x > 0.0:
+            payload["ego_half_length_m"] = bbox_extent_x
+        return payload
     ego_width = _first_number(rows, "ego_width_m")
+    ego_length = _first_number(rows, "ego_length_m")
     if ego_width is not None and ego_width > 0.0:
-        return {
+        payload = {
             "ego_half_width_m": ego_width / 2.0,
             "ego_width_m": ego_width,
             "source": "timeseries.ego_width_m",
             "confidence": "runtime_bbox",
         }
+        if ego_length is not None and ego_length > 0.0:
+            payload["ego_half_length_m"] = ego_length / 2.0
+            payload["ego_length_m"] = ego_length
+        return payload
     characteristics = _read_json(root / "artifacts" / "carla_vehicle_characteristics.json")
     left = _number(characteristics.get("left_edge_to_center"))
     right = _number(characteristics.get("right_edge_to_center"))
+    front = _number(characteristics.get("front_edge_to_center"))
+    back = _number(characteristics.get("back_edge_to_center"))
     if left is not None or right is not None:
         half_width = max(value for value in (left, right) if value is not None)
-        return {
+        payload = {
             "ego_half_width_m": half_width,
             "left_edge_to_center_m": left,
             "right_edge_to_center_m": right,
             "source": "artifacts/carla_vehicle_characteristics.json",
             "confidence": "runtime_vehicle_characteristics",
         }
+        if front is not None or back is not None:
+            payload["ego_half_length_m"] = max(value for value in (front, back) if value is not None)
+            payload["front_edge_to_center_m"] = front
+            payload["back_edge_to_center_m"] = back
+        return payload
     width = _number(characteristics.get("width"))
+    length = _number(characteristics.get("length"))
     if width is not None and width > 0.0:
-        return {
+        payload = {
             "ego_half_width_m": width / 2.0,
             "ego_width_m": width,
             "source": "artifacts/carla_vehicle_characteristics.json:width",
             "confidence": "runtime_vehicle_characteristics",
         }
+        if length is not None and length > 0.0:
+            payload["ego_half_length_m"] = length / 2.0
+            payload["ego_length_m"] = length
+        return payload
     return {
         "ego_half_width_m": float(default_half_width_m),
         "source": "default",

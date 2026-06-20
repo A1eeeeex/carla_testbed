@@ -211,6 +211,37 @@ def test_downstream_lane_invasion_before_footprint_crossing_is_quarantined(tmp_p
     assert run_report["static_crossing_check"]["trigger_footprint_intersects_marking"] is False
 
 
+def test_yaw_aware_vehicle_footprint_prevents_false_quarantine(tmp_path: Path) -> None:
+    xodr = tmp_path / "straight_road_for_baguang.xodr"
+    run = tmp_path / "run"
+    _write_xodr(xodr)
+    _write_run(run, cross_track_error=0.62, heading_error=0.166, distance_x=40.0)
+    artifacts = run / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "carla_vehicle_characteristics.json").write_text(
+        json.dumps(
+            {
+                "front_edge_to_center": 2.44,
+                "back_edge_to_center": 2.45,
+                "left_edge_to_center": 0.918,
+                "right_edge_to_center": 0.918,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_baguang_lane_event_contract(xodr_path=xodr, run_dirs=[run])
+    run_report = report["run_reports"][0]
+    crossing = run_report["static_crossing_check"]
+
+    assert report["quarantine_recommended"] is False
+    assert report["claim_boundary"]["lane_invasion_event_can_be_used_as_hard_gate"] is True
+    assert run_report["reason"] == "possible_real_lane_departure_or_unclassified_lane_event"
+    assert crossing["trigger_footprint_intersects_marking"] is True
+    assert crossing["trigger_footprint_lateral_extent_m"] > crossing["ego_half_width_m"]
+    assert crossing["trigger_center_offset_to_footprint_crossing_threshold_m"] < 0.62
+
+
 def test_departure_diagnostics_reports_mapped_applied_steer_mismatch(tmp_path: Path) -> None:
     xodr = tmp_path / "straight_road_for_baguang.xodr"
     run = tmp_path / "run"
