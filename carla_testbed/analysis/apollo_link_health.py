@@ -1341,6 +1341,26 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 report,
                 "lateral_sign_alignment.route_lateral_error_vs_simple_lat_lateral_error.opposite_sign_ratio",
             ),
+            "route_lateral_provenance_evidence_level": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance.evidence_level",
+            ),
+            "route_lateral_provenance_interpretation": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance.interpretation",
+            ),
+            "route_lateral_source_field": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance.route_lateral_source_field",
+            ),
+            "route_geometry_sample_count": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance.route_geometry_sample_count",
+            ),
+            "route_geometry_recomputed_cte_abs_delta_p95_m": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance.route_geometry_recomputed_cte_abs_delta_p95_m",
+            ),
             "route_simple_lat_sign_convention_candidate": _nested(
                 report,
                 "lateral_sign_alignment.route_simple_lat_magnitude_alignment.magnitude_agreement_candidate",

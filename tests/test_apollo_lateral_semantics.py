@@ -35,6 +35,7 @@ def _write_rows(path: Path, rows: list[dict[str, object]]) -> Path:
         "ego_y",
         "route_x",
         "route_y",
+        "route_heading",
         "apollo_debug_simple_lat_target_point_x",
         "apollo_debug_simple_lat_target_point_y",
         "apollo_debug_simple_lon_matched_point_x",
@@ -595,13 +596,43 @@ def test_route_simple_lat_opposite_sign_matching_magnitude_is_convention_candida
 
     report = _analyze(tmp_path, rows)
     alignment = report["lateral_sign_alignment"]["route_simple_lat_magnitude_alignment"]
+    provenance = report["lateral_sign_alignment"]["route_lateral_provenance"]
 
     assert alignment["magnitude_agreement_candidate"] is True
     assert alignment["opposite_sign_ratio"] == 1.0
     assert alignment["opposite_sign_abs_sum_p95_m"] == 0.0
     assert alignment["abs_magnitude_delta_p95_m"] == 0.0
+    assert provenance["evidence_level"] == "alias_only"
+    assert provenance["route_lateral_source_field"] == "cross_track_error"
     assert "route_simple_lat_sign_convention_mismatch_candidate" in _types(report)
     assert "route_lateral_error_opposes_simple_lat_lateral_error" in _types(report)
+
+
+def test_route_lateral_provenance_records_recomputed_route_geometry_cte(
+    tmp_path: Path,
+) -> None:
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["sim_time"] = 40.0 + index * 0.05
+        row["route_x"] = float(index)
+        row["route_y"] = 0.0
+        row["route_heading"] = 0.0
+        row["ego_x"] = float(index)
+        row["ego_y"] = 0.60
+        row["cross_track_error"] = 0.60
+        row["apollo_debug_simple_lat_lateral_error_m"] = -0.60
+        row["apollo_steer_raw"] = 0.30
+        row["bridge_steer_mapped"] = 0.075
+        row["carla_steer_applied"] = 0.075
+
+    report = _analyze(tmp_path, rows)
+    provenance = report["lateral_sign_alignment"]["route_lateral_provenance"]
+
+    assert provenance["evidence_level"] == "route_geometry_available"
+    assert provenance["route_geometry_fields_available"] is True
+    assert provenance["route_geometry_sample_count"] == 4
+    assert provenance["route_geometry_recomputed_cte_abs_delta_p95_m"] == 0.0
+    assert provenance["interpretation"] == "route_geometry_fields_allow_signed_cte_recompute"
 
 
 def test_run_dir_consumes_localization_hdmap_lateral_consistency(tmp_path: Path) -> None:

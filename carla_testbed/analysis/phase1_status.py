@@ -587,6 +587,12 @@ def _primary_behavior_blocker(
                     "route_simple_lat_sign_convention_candidate": link_health.get(
                         "route_simple_lat_sign_convention_candidate"
                     ),
+                    "route_lateral_provenance_evidence_level": link_health.get(
+                        "route_lateral_provenance_evidence_level"
+                    ),
+                    "route_lateral_provenance_interpretation": link_health.get(
+                        "route_lateral_provenance_interpretation"
+                    ),
                     "route_simple_lat_opposite_sign_abs_sum_p95_m": link_health.get(
                         "route_simple_lat_opposite_sign_abs_sum_p95_m"
                     ),
@@ -691,6 +697,12 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         "can_claim_unassisted_natural_driving": report.get("can_claim_unassisted_natural_driving"),
         "route_simple_lat_sign_convention_candidate": lateral_metrics.get(
             "route_simple_lat_sign_convention_candidate"
+        ),
+        "route_lateral_provenance_evidence_level": lateral_metrics.get(
+            "route_lateral_provenance_evidence_level"
+        ),
+        "route_lateral_provenance_interpretation": lateral_metrics.get(
+            "route_lateral_provenance_interpretation"
         ),
         "route_simple_lat_opposite_sign_abs_sum_p95_m": lateral_metrics.get(
             "route_simple_lat_opposite_sign_abs_sum_p95_m"

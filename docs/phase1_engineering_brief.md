@@ -225,7 +225,13 @@ Interpretation:
   cross-track convention against Apollo simple_lat semantics before changing
   control mapping, steering scale, smoothing, or controller gains. This is
   still a `warn`-level attribution result, not a behavior fix and not an Apollo
-  capability claim.
+  capability claim. The provenance is explicitly bounded:
+  `route_lateral_provenance.evidence_level=hdmap_projection_consistency`,
+  because this run lacks `route_x` / `route_y` / `route_heading` samples that
+  would let the analyzer recompute signed route CTE from route geometry alone.
+  The next validation should materialize those route geometry fields or an
+  equivalent official projection-to-route pairing before treating the sign
+  convention as verified.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The

@@ -376,7 +376,11 @@ def analyze_apollo_lateral_semantics(
     hdmap_route_lateral_consistency = _hdmap_route_lateral_consistency(localization_contract_payload)
     reference_debug_summary = _reference_debug_summary(reference_line_contract_payload)
     drift_window_summary = _drift_window_summary(rows, active_thresholds)
-    lateral_sign_alignment = _lateral_sign_alignment_summary(rows, active_thresholds)
+    lateral_sign_alignment = _lateral_sign_alignment_summary(
+        rows,
+        active_thresholds,
+        hdmap_route_lateral_consistency=hdmap_route_lateral_consistency,
+    )
     anomalies = _anomalies(
         values,
         stats,
@@ -561,6 +565,7 @@ def _anomalies(
     applied_vs_route = lateral_sign_alignment.get("applied_steer_vs_route_lateral_error")
     route_vs_simple_lat = lateral_sign_alignment.get("route_lateral_error_vs_simple_lat_lateral_error")
     first_high_alignment = lateral_sign_alignment.get("first_high_lateral_sample")
+    route_lateral_provenance = lateral_sign_alignment.get("route_lateral_provenance")
     source_route_same = _num(source_vs_route.get("same_sign_ratio")) if isinstance(source_vs_route, Mapping) else None
     source_simple_same = (
         _num(source_vs_simple_lat.get("same_sign_ratio")) if isinstance(source_vs_simple_lat, Mapping) else None
@@ -598,6 +603,7 @@ def _anomalies(
                 ),
                 "reference_line_semantics",
                 route_simple_lat_magnitude_alignment=route_simple_magnitude,
+                route_lateral_provenance=route_lateral_provenance,
                 first_high_lateral_sample=first_high_alignment,
             )
         )
@@ -1224,6 +1230,8 @@ def _drift_context(
 def _lateral_sign_alignment_summary(
     rows: Sequence[Mapping[str, Any]],
     thresholds: Mapping[str, float],
+    *,
+    hdmap_route_lateral_consistency: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not rows:
         return {
@@ -1282,6 +1290,10 @@ def _lateral_sign_alignment_summary(
         min_samples=int(thresholds["sign_alignment_min_samples"]),
         abs_delta_p95_threshold_m=thresholds["route_simple_lat_sign_convention_abs_delta_p95_m"],
     )
+    route_lateral_provenance = _route_lateral_provenance(
+        rows,
+        hdmap_route_lateral_consistency=hdmap_route_lateral_consistency or {},
+    )
     sample_count = max((int(value["sample_count"]) for value in pairs.values()), default=0)
     return {
         "available": sample_count > 0,
@@ -1294,6 +1306,7 @@ def _lateral_sign_alignment_summary(
             "sense-check. It must be interpreted with the route frame, steering convention, "
             "and raw/mapped/applied control chain before any runtime control change."
         ),
+        "route_lateral_provenance": route_lateral_provenance,
         "route_simple_lat_magnitude_alignment": route_simple_magnitude,
         **pairs,
     }
@@ -1458,6 +1471,62 @@ def _route_simple_lat_magnitude_alignment(
             "opposite_sign_matching_magnitude_suggests_route_simple_lat_sign_convention_mismatch"
             if candidate
             else "insufficient_or_nonmatching_route_simple_lat_magnitude_evidence"
+        ),
+    }
+
+
+def _route_lateral_provenance(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    hdmap_route_lateral_consistency: Mapping[str, Any],
+) -> dict[str, Any]:
+    route_lateral_source = _resolved_field(rows, ROUTE_LATERAL_ERROR_ALIASES)
+    route_geometry_count = 0
+    route_geometry_cte_deltas: list[float] = []
+    for row in rows:
+        ego_x = _row_value(row, FIELD_ALIASES["ego_x"])
+        ego_y = _row_value(row, FIELD_ALIASES["ego_y"])
+        route_x = _row_value(row, FIELD_ALIASES["route_x"])
+        route_y = _row_value(row, FIELD_ALIASES["route_y"])
+        route_heading = _row_value(row, ["route_heading"])
+        route_lateral = _row_value(row, ROUTE_LATERAL_ERROR_ALIASES)
+        if None in {ego_x, ego_y, route_x, route_y, route_heading}:
+            continue
+        route_geometry_count += 1
+        if route_lateral is not None:
+            recomputed = -math.sin(float(route_heading)) * (float(ego_x) - float(route_x)) + math.cos(
+                float(route_heading)
+            ) * (float(ego_y) - float(route_y))
+            route_geometry_cte_deltas.append(abs(float(route_lateral) - recomputed))
+    hdmap_status = hdmap_route_lateral_consistency.get("status")
+    hdmap_alignment = hdmap_route_lateral_consistency.get("alignment_mode")
+    hdmap_delta = hdmap_route_lateral_consistency.get("best_abs_delta_p95_m")
+    if route_geometry_count:
+        interpretation = "route_geometry_fields_allow_signed_cte_recompute"
+        evidence_level = "route_geometry_available"
+    elif hdmap_status == "pass":
+        interpretation = "route_lateral_sign_supported_by_hdmap_projection_consistency"
+        evidence_level = "hdmap_projection_consistency"
+    elif route_lateral_source:
+        interpretation = "route_lateral_alias_present_without_geometry_or_projection_provenance"
+        evidence_level = "alias_only"
+    else:
+        interpretation = "route_lateral_source_missing"
+        evidence_level = "missing"
+    return {
+        "route_lateral_source_field": route_lateral_source,
+        "route_geometry_fields_available": route_geometry_count > 0,
+        "route_geometry_sample_count": route_geometry_count,
+        "route_geometry_recomputed_cte_abs_delta_p95_m": _percentile(route_geometry_cte_deltas, 0.95),
+        "hdmap_route_lateral_consistency_status": hdmap_status,
+        "hdmap_route_lateral_alignment_mode": hdmap_alignment,
+        "hdmap_route_lateral_delta_p95_m": hdmap_delta,
+        "evidence_level": evidence_level,
+        "interpretation": interpretation,
+        "claim_boundary": (
+            "Route/simple_lat sign diagnostics are attribution evidence. Without route_x/route_y/"
+            "route_heading samples, they identify a convention candidate but do not verify the "
+            "route-frame sign convention from route geometry alone."
         ),
     }
 
@@ -1944,6 +2013,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
             f"- source_steer_vs_route_lateral_error: `{_nested(report, 'lateral_sign_alignment.source_steer_vs_route_lateral_error')}`",
             f"- source_steer_vs_simple_lat_lateral_error: `{_nested(report, 'lateral_sign_alignment.source_steer_vs_simple_lat_lateral_error')}`",
             f"- applied_steer_vs_route_lateral_error: `{_nested(report, 'lateral_sign_alignment.applied_steer_vs_route_lateral_error')}`",
+            f"- route_lateral_provenance: `{_nested(report, 'lateral_sign_alignment.route_lateral_provenance')}`",
             f"- route_simple_lat_magnitude_alignment: `{_nested(report, 'lateral_sign_alignment.route_simple_lat_magnitude_alignment')}`",
             f"- first_high_lateral_sample: `{_nested(report, 'lateral_sign_alignment.first_high_lateral_sample')}`",
             "",

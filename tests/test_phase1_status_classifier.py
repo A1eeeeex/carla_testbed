@@ -1188,6 +1188,10 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
                     "apollo_lateral_semantics": {
                         "key_metrics": {
                             "route_simple_lat_sign_convention_candidate": True,
+                            "route_lateral_provenance_evidence_level": "hdmap_projection_consistency",
+                            "route_lateral_provenance_interpretation": (
+                                "route_lateral_sign_supported_by_hdmap_projection_consistency"
+                            ),
                             "route_simple_lat_opposite_sign_abs_sum_p95_m": 0.028,
                             "route_simple_lat_abs_magnitude_delta_p95_m": 0.028,
                             "route_simple_lat_alignment_interpretation": (
@@ -1237,6 +1241,10 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
         "apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate"
     )
     assert evidence["route_simple_lat_sign_convention_candidate"] is True
+    assert evidence["route_lateral_provenance_evidence_level"] == "hdmap_projection_consistency"
+    assert evidence["route_lateral_provenance_interpretation"] == (
+        "route_lateral_sign_supported_by_hdmap_projection_consistency"
+    )
     assert evidence["route_simple_lat_opposite_sign_abs_sum_p95_m"] == 0.028
 
 
