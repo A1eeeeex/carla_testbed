@@ -206,6 +206,12 @@ def test_reference_debug_missing_with_nonempty_planning_is_context_anomaly(tmp_p
                     "reference_line_count_zero_ratio": 1.0,
                     "routing_segment_count_zero_ratio": 0.08,
                 },
+                "reference_debug_diagnostic": {
+                    "classification": "planning_reference_line_debug_export_gap",
+                    "route_segment_available": True,
+                    "control_simple_lat_reference_available": True,
+                    "control_reference_join_coverage_ratio": 0.95,
+                },
             }
         ),
         encoding="utf-8",
@@ -221,6 +227,9 @@ def test_reference_debug_missing_with_nonempty_planning_is_context_anomaly(tmp_p
     assert report["reference_debug_summary"]["nonempty_planning_with_reference_debug_missing"] is True
     assert report["reference_debug_summary"]["reference_line_provider_ready_ratio"] == 0.0
     assert report["reference_debug_summary"]["reference_line_count_zero_ratio"] == 1.0
+    assert report["reference_debug_summary"]["debug_gap_classification"] == "planning_reference_line_debug_export_gap"
+    assert report["reference_debug_summary"]["control_simple_lat_reference_available"] is True
+    assert report["anomalies"][0]["evidence"]["control_reference_join_coverage_ratio"] == 0.95
 
 
 def test_lateral_drift_window_records_route_s_and_target_context(tmp_path: Path) -> None:

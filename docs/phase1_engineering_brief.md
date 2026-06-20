@@ -199,6 +199,15 @@ Interpretation:
   The next highest-value validation is therefore to close the gap between
   Planning reference-line debug/export evidence and Control simple_lat
   reference semantics, before changing actuation mapping.
+- The reference-line contract now records this as a structured diagnostic:
+  `reference_debug_diagnostic.classification=planning_reference_line_debug_export_gap`.
+  On the same run, that diagnostic reports claim-window non-empty trajectory
+  ratio `0.994`, `route_segment_available=true`, `reference_line_count_zero_ratio=1.0`,
+  `reference_line_provider_ready_ratio=0.0`, and
+  `control_simple_lat_reference_available=true`. This makes the next blocker
+  an evidence/export closure problem between Planning reference-line debug and
+  Control simple_lat semantics, not a reason to change Apollo source,
+  `steer_scale`, or CARLA actuation mapping.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.

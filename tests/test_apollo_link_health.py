@@ -1901,6 +1901,9 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
                 "status": "warn",
                 "reference_line_provider_ready_ratio": 0.0,
                 "reference_line_count_zero_ratio": 1.0,
+                "debug_gap_classification": "planning_reference_line_debug_export_gap",
+                "control_simple_lat_reference_available": True,
+                "control_reference_join_coverage_ratio": 0.95,
             },
         },
     )
@@ -1911,6 +1914,10 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
         "apollo_lateral_semantics:planning_nonempty_but_reference_line_debug_missing"
     )
     assert "natural_driving_outcome:insufficient_data" in report["secondary_blockers"]
+    lateral = report["layers"]["apollo_lateral_semantics"]
+    assert lateral["key_metrics"]["reference_debug_classification"] == "planning_reference_line_debug_export_gap"
+    assert lateral["key_metrics"]["control_simple_lat_reference_available"] is True
+    assert lateral["key_metrics"]["control_reference_join_coverage_ratio"] == 0.95
     assert report["can_claim_unassisted_natural_driving"] is False
 
 

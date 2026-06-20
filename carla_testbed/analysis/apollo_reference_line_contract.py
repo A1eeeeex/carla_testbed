@@ -418,6 +418,8 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Apollo HDMap projection contract: `{projection_contract.get('status')}`",
             f"- Non-empty trajectory ratio: `{evidence.get('nonempty_trajectory_ratio')}`",
             f"- Reference-line provider ready ratio: `{evidence.get('reference_line_provider_ready_ratio')}`",
+            f"- Reference debug classification: `{_mapping(report.get('reference_debug_diagnostic')).get('classification')}`",
+            f"- Control simple_lat reference available: `{_mapping(report.get('reference_debug_diagnostic')).get('control_simple_lat_reference_available')}`",
             f"- Planning ref heading p95 rad: `{metrics.get('planning_ref_heading_error_p95_rad')}`",
             f"- Normal trajectory heading p95 rad: `{metrics.get('normal_trajectory_heading_error_p95_rad')}`",
             f"- PATH_FALLBACK trajectory ratio: `{metrics.get('path_fallback_trajectory_ratio')}`",
@@ -451,6 +453,7 @@ def _report(
     hdmap_projection = summarize_apollo_hdmap_projection(hdmap_projection_rows or [])
     evidence = _evidence(rows, hdmap_projection)
     metrics = _metrics(rows)
+    reference_debug_diagnostic = _reference_debug_diagnostic(rows, evidence, metrics)
     report_contracts = dict(contracts or _contracts(rows=rows, evidence=evidence, metrics=metrics, hdmap_projection=hdmap_projection))
     status, warnings = _downgrade_for_planning_materialization(
         status,
@@ -470,6 +473,7 @@ def _report(
         "warnings": sorted(set(warnings)),
         "evidence": evidence,
         "metrics": metrics,
+        "reference_debug_diagnostic": reference_debug_diagnostic,
         "contracts": report_contracts,
         "planning_trajectory_contract": report_contracts.get("planning_trajectory") or {},
         "control_reference_contract": report_contracts.get("control_reference") or {},
@@ -931,6 +935,63 @@ def _metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:
         "fallback_join_coverage_ratio": _fallback_join_coverage_ratio(rows),
         "fallback_join_tolerance_ms": FALLBACK_JOIN_TOLERANCE_S * 1000.0,
         "fallback_join_dropped_unaligned_rows": _fallback_join_dropped_unaligned_rows(rows),
+    }
+
+
+def _reference_debug_diagnostic(
+    rows: Sequence[Mapping[str, Any]],
+    evidence: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+) -> dict[str, Any]:
+    row_count = len(rows)
+    route_segment_available_count = sum(1 for row in rows if _routing_segment_available(row))
+    trajectory_nonempty_count = sum(1 for row in rows if _planning_trajectory_nonempty(row))
+    reference_line_positive_count = sum(
+        1
+        for row in rows
+        if (_num(_nested(row, "planning.reference_line_count")) or 0.0) > 0.0
+    )
+    provider_ready_ratio = _num(evidence.get("reference_line_provider_ready_ratio"))
+    reference_line_zero_ratio = _num(metrics.get("reference_line_count_zero_ratio"))
+    claim_window_ratio = _num(evidence.get("planning_claim_window_nonempty_trajectory_ratio"))
+    control_available = bool(evidence.get("control_reference_available"))
+    route_segment_available = route_segment_available_count > 0
+    trajectory_nonempty = trajectory_nonempty_count > 0
+    reference_line_debug_available = reference_line_positive_count > 0 or (
+        provider_ready_ratio is not None and provider_ready_ratio > 0.0
+    )
+    if row_count <= 0:
+        classification = "insufficient_data"
+    elif reference_line_debug_available:
+        classification = "reference_line_debug_available"
+    elif trajectory_nonempty and route_segment_available and control_available:
+        classification = "planning_reference_line_debug_export_gap"
+    elif trajectory_nonempty and route_segment_available:
+        classification = "planning_reference_line_debug_missing_control_reference_missing"
+    elif trajectory_nonempty:
+        classification = "planning_nonempty_route_segment_missing"
+    else:
+        classification = "planning_not_materialized"
+    return {
+        "classification": classification,
+        "row_count": row_count,
+        "trajectory_nonempty_count": trajectory_nonempty_count,
+        "trajectory_nonempty_ratio": evidence.get("nonempty_trajectory_ratio"),
+        "claim_window_nonempty_ratio": claim_window_ratio,
+        "claim_window_source": evidence.get("planning_claim_window_source"),
+        "route_segment_available_count": route_segment_available_count,
+        "route_segment_available": route_segment_available,
+        "reference_line_debug_available": reference_line_debug_available,
+        "reference_line_count_positive_count": reference_line_positive_count,
+        "reference_line_count_zero_ratio": reference_line_zero_ratio,
+        "reference_line_provider_ready_ratio": provider_ready_ratio,
+        "control_simple_lat_reference_available": control_available,
+        "control_reference_join_coverage_ratio": metrics.get("fallback_join_coverage_ratio"),
+        "interpretation": (
+            "classification separates Planning route/trajectory materialization from whether "
+            "reference-line debug counters are exported and whether Control simple_lat reference "
+            "semantics are visible."
+        ),
     }
 
 

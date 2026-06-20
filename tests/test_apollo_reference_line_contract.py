@@ -482,6 +482,44 @@ def test_control_debug_only_distinguishes_apollo_reference_from_lane_projection(
     assert "reference_line_heading_error_high" not in report["blocking_reasons"]
 
 
+def test_reference_debug_diagnostic_separates_export_gap_from_control_simple_lat() -> None:
+    rows = [
+        {
+            "planning": {
+                "trajectory_point_count": 100,
+                "first_trajectory_point_theta": 0.01,
+                "reference_line_count": 0,
+                "reference_line_provider_status": "trajectory_nonzero_debug_missing",
+                "routing_segment_count": 1,
+            },
+            "routing": {"routing_segment_count": 1},
+            "control": {
+                "debug_simple_lat_heading": 0.0,
+                "debug_simple_lat_ref_heading": 0.0,
+                "debug_simple_lat_heading_error": 0.01,
+                "debug_simple_lat_lateral_error": 0.12,
+            },
+            "computed": {
+                "localization_to_planning_first_heading_error_rad": 0.01,
+                "localization_to_control_ref_heading_error_rad": 0.01,
+                "localization_to_control_lateral_error_m": 0.12,
+                "planning_reference_available": True,
+                "control_reference_available": True,
+            },
+        }
+    ]
+
+    report = analyze_apollo_reference_line_contract(rows)
+
+    diagnostic = report["reference_debug_diagnostic"]
+    assert diagnostic["classification"] == "planning_reference_line_debug_export_gap"
+    assert diagnostic["route_segment_available"] is True
+    assert diagnostic["reference_line_debug_available"] is False
+    assert diagnostic["control_simple_lat_reference_available"] is True
+    assert diagnostic["reference_line_count_zero_ratio"] == 1.0
+    assert report["contracts"]["control_reference"]["status"] == "pass"
+
+
 def test_existing_contract_rows_are_augmented_with_control_decode_debug(tmp_path: Path) -> None:
     contract = tmp_path / "apollo_reference_line_contract.jsonl"
     control = tmp_path / "bridge_control_decode.jsonl"

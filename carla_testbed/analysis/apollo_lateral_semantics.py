@@ -520,6 +520,10 @@ def _anomalies(
                 reference_line_provider_ready_ratio=reference_debug_summary.get("reference_line_provider_ready_ratio"),
                 reference_line_count_zero_ratio=reference_debug_summary.get("reference_line_count_zero_ratio"),
                 routing_segment_count_zero_ratio=reference_debug_summary.get("routing_segment_count_zero_ratio"),
+                debug_gap_classification=reference_debug_summary.get("debug_gap_classification"),
+                route_segment_available=reference_debug_summary.get("route_segment_available"),
+                control_simple_lat_reference_available=reference_debug_summary.get("control_simple_lat_reference_available"),
+                control_reference_join_coverage_ratio=reference_debug_summary.get("control_reference_join_coverage_ratio"),
             )
         )
     applied_p95 = _stat(stats, "carla_steer_applied_abs", "p95")
@@ -1084,6 +1088,7 @@ def _reference_debug_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         }
     evidence = payload.get("evidence") if isinstance(payload.get("evidence"), Mapping) else {}
     metrics = payload.get("metrics") if isinstance(payload.get("metrics"), Mapping) else {}
+    diagnostic = payload.get("reference_debug_diagnostic") if isinstance(payload.get("reference_debug_diagnostic"), Mapping) else {}
     warnings = [str(item) for item in payload.get("warnings", []) if item not in {None, ""}]
     nonempty_ratio = _num(evidence.get("nonempty_trajectory_ratio"))
     ready_ratio = _num(evidence.get("reference_line_provider_ready_ratio"))
@@ -1103,6 +1108,10 @@ def _reference_debug_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "reference_line_provider_ready_ratio": ready_ratio,
         "reference_line_count_zero_ratio": count_zero_ratio,
         "routing_segment_count_zero_ratio": routing_segment_zero_ratio,
+        "debug_gap_classification": diagnostic.get("classification"),
+        "route_segment_available": diagnostic.get("route_segment_available"),
+        "control_simple_lat_reference_available": diagnostic.get("control_simple_lat_reference_available"),
+        "control_reference_join_coverage_ratio": diagnostic.get("control_reference_join_coverage_ratio"),
         "nonempty_planning_with_reference_debug_missing": bool(debug_missing),
     }
 

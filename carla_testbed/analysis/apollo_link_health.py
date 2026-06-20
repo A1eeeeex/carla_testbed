@@ -572,6 +572,9 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
             "reference_debug_status",
             "reference_line_provider_ready_ratio",
             "reference_line_count_zero_ratio",
+            "reference_debug_classification",
+            "control_simple_lat_reference_available",
+            "control_reference_join_coverage_ratio",
             "apollo_steer_raw_abs_p95",
             "carla_steer_applied_abs_p95",
         ),
@@ -1299,6 +1302,18 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
             "reference_line_count_zero_ratio": _nested(
                 report,
                 "reference_debug_summary.reference_line_count_zero_ratio",
+            ),
+            "reference_debug_classification": _nested(
+                report,
+                "reference_debug_summary.debug_gap_classification",
+            ),
+            "control_simple_lat_reference_available": _nested(
+                report,
+                "reference_debug_summary.control_simple_lat_reference_available",
+            ),
+            "control_reference_join_coverage_ratio": _nested(
+                report,
+                "reference_debug_summary.control_reference_join_coverage_ratio",
             ),
             "apollo_steer_raw_abs_p95": _nested(report, "correlation_summary.apollo_steer_raw_abs.p95"),
             "carla_steer_applied_abs_p95": _nested(report, "correlation_summary.carla_steer_applied_abs.p95"),
