@@ -746,6 +746,48 @@ def test_run_dir_records_declared_route_samples_without_materialized_geometry(
     )
 
 
+def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["sim_time"] = 100.0 + index * 0.05
+        row["cross_track_error"] = 0.6
+        row["apollo_debug_simple_lat_lateral_error_m"] = -0.6
+        row["apollo_steer_raw"] = 0.3
+    _write_rows(artifacts / "debug_timeseries.csv", rows)
+    (artifacts / "apollo_hdmap_projection.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "source": "apollo_hdmap_api",
+                    "status": "ok",
+                    "sim_time": 100.0 + index * 0.05,
+                    "projection_l": -0.6,
+                    "nearest_lane_id": "0_0_2",
+                }
+            )
+            for index in range(len(rows))
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+    alignment = report["lateral_sign_alignment"]["official_hdmap_projection_alignment"]
+
+    assert report["source"]["hdmap_projection"].endswith("apollo_hdmap_projection.jsonl")
+    assert alignment["source"] == "apollo_hdmap_api"
+    assert alignment["matched_sample_count"] == 4
+    assert alignment["nearest_lane_ids"] == ["0_0_2"]
+    assert alignment["route_lateral_vs_projection_lateral"]["opposite_sign_ratio"] == 1.0
+    assert alignment["simple_lat_vs_projection_lateral"]["same_sign_ratio"] == 1.0
+    assert alignment["route_lateral_vs_projection_lateral"]["opposite_sign_abs_sum_p95_m"] == 0.0
+
+
 def test_cli_run_dir_writes_report(tmp_path: Path) -> None:
     out = tmp_path / "out"
     result = subprocess.run(

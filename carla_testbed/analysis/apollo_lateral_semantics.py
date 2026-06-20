@@ -240,6 +240,13 @@ def analyze_apollo_lateral_semantics_run_dir(
                 "localization_contract_report.json",
             ],
         ),
+        hdmap_projection=_find_first(
+            root,
+            [
+                "artifacts/apollo_hdmap_projection.jsonl",
+                "apollo_hdmap_projection.jsonl",
+            ],
+        ),
         reference_line_contract=_find_first(
             root,
             [
@@ -270,6 +277,7 @@ def analyze_apollo_lateral_semantics(
     source_steer_summary: str | Path | None = None,
     kappa_audit_summary: str | Path | None = None,
     localization_contract: str | Path | None = None,
+    hdmap_projection: str | Path | Sequence[str | Path] | None = None,
     reference_line_contract: str | Path | None = None,
     route_definition: str | Path | None = None,
     run_dir: str | Path | None = None,
@@ -284,6 +292,7 @@ def analyze_apollo_lateral_semantics(
     source_summary = _read_json(source_steer_summary)
     kappa_summary = _read_json(kappa_audit_summary)
     localization_contract_payload = _read_json(localization_contract)
+    hdmap_projection_rows = _read_rows(hdmap_projection)
     reference_line_contract_payload = _read_json(reference_line_contract)
     route_definition_payload = _read_json(route_definition)
     semantic_rows = _merge_control_trace_fields([*timeseries_rows, *planning_rows], control_trace_rows)
@@ -391,6 +400,7 @@ def analyze_apollo_lateral_semantics(
         rows,
         active_thresholds,
         hdmap_route_lateral_consistency=hdmap_route_lateral_consistency,
+        hdmap_projection_rows=hdmap_projection_rows,
         route_definition_payload=route_definition_payload,
     )
     anomalies = _anomalies(
@@ -461,6 +471,7 @@ def analyze_apollo_lateral_semantics(
             "source_steer_summary": None if source_steer_summary is None else str(Path(source_steer_summary)),
             "kappa_audit_summary": None if kappa_audit_summary is None else str(Path(kappa_audit_summary)),
             "localization_contract": None if localization_contract is None else str(Path(localization_contract)),
+            "hdmap_projection": _path_repr(hdmap_projection),
             "reference_line_contract": None if reference_line_contract is None else str(Path(reference_line_contract)),
             "route_definition": None if route_definition is None else str(Path(route_definition)),
         },
@@ -1245,6 +1256,7 @@ def _lateral_sign_alignment_summary(
     thresholds: Mapping[str, float],
     *,
     hdmap_route_lateral_consistency: Mapping[str, Any] | None = None,
+    hdmap_projection_rows: Sequence[Mapping[str, Any]] | None = None,
     route_definition_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not rows:
@@ -1309,6 +1321,11 @@ def _lateral_sign_alignment_summary(
         hdmap_route_lateral_consistency=hdmap_route_lateral_consistency or {},
         route_definition_payload=route_definition_payload or {},
     )
+    official_projection_alignment = _official_hdmap_projection_alignment(
+        rows,
+        hdmap_projection_rows or [],
+        lateral_min_abs=lateral_min,
+    )
     sample_count = max((int(value["sample_count"]) for value in pairs.values()), default=0)
     return {
         "available": sample_count > 0,
@@ -1323,6 +1340,7 @@ def _lateral_sign_alignment_summary(
         ),
         "route_lateral_provenance": route_lateral_provenance,
         "route_simple_lat_magnitude_alignment": route_simple_magnitude,
+        "official_hdmap_projection_alignment": official_projection_alignment,
         **pairs,
     }
 
@@ -1593,6 +1611,119 @@ def _route_definition_geometry_summary(payload: Mapping[str, Any]) -> dict[str, 
         "sample_count": sample_count,
         "declared_sample_count": declared_sample_count,
         "reason": reason,
+    }
+
+
+def _official_hdmap_projection_alignment(
+    rows: Sequence[Mapping[str, Any]],
+    projection_rows: Sequence[Mapping[str, Any]],
+    *,
+    lateral_min_abs: float,
+    max_dt_s: float = 0.25,
+) -> dict[str, Any]:
+    candidates: list[tuple[float, float, Mapping[str, Any]]] = []
+    official_count = 0
+    for projection in projection_rows:
+        if projection.get("source") == "apollo_hdmap_api":
+            official_count += 1
+        if projection.get("source") != "apollo_hdmap_api":
+            continue
+        status = projection.get("status") or projection.get("projection_status")
+        if status not in {None, "", "ok", "pass"}:
+            continue
+        timestamp = _row_value(projection, ["sim_time", "timestamp", "apollo_time"])
+        lateral = _row_value(projection, ["projection_l", "lateral_error_m"])
+        if timestamp is None or lateral is None:
+            continue
+        candidates.append((float(timestamp), float(lateral), projection))
+    candidates.sort(key=lambda item: item[0])
+    candidate_times = [item[0] for item in candidates]
+    route_projection_same = 0
+    route_projection_opposite = 0
+    simple_projection_same = 0
+    simple_projection_opposite = 0
+    route_projection_abs_sum: list[float] = []
+    route_projection_abs_magnitude_delta: list[float] = []
+    matched_dt: list[float] = []
+    matched_lanes: set[str] = set()
+    for row in rows:
+        row_time = _row_value(row, ["sim_time", "timestamp", "ts_sec", "time"])
+        route_lateral = _row_value(row, ROUTE_LATERAL_ERROR_ALIASES)
+        if row_time is None or route_lateral is None or not candidates:
+            continue
+        index = bisect_left(candidate_times, float(row_time))
+        nearest: list[tuple[float, float, Mapping[str, Any]]] = []
+        for candidate_index in (index - 1, index, index + 1):
+            if 0 <= candidate_index < len(candidates):
+                nearest.append(candidates[candidate_index])
+        if not nearest:
+            continue
+        projection_time, projection_lateral, projection = min(
+            nearest,
+            key=lambda item: abs(item[0] - float(row_time)),
+        )
+        dt = abs(projection_time - float(row_time))
+        if dt > max_dt_s:
+            continue
+        if abs(route_lateral) < lateral_min_abs or abs(projection_lateral) < lateral_min_abs:
+            continue
+        matched_dt.append(dt)
+        lane_id = projection.get("nearest_lane_id")
+        if lane_id not in {None, ""}:
+            matched_lanes.add(str(lane_id))
+        route_projection_abs_sum.append(abs(float(route_lateral) + projection_lateral))
+        route_projection_abs_magnitude_delta.append(abs(abs(float(route_lateral)) - abs(projection_lateral)))
+        if float(route_lateral) * projection_lateral > 0.0:
+            route_projection_same += 1
+        elif float(route_lateral) * projection_lateral < 0.0:
+            route_projection_opposite += 1
+        simple_lat = _row_value(row, FIELD_ALIASES["apollo_simple_lat_lateral_error"])
+        if simple_lat is not None and abs(simple_lat) >= lateral_min_abs:
+            if float(simple_lat) * projection_lateral > 0.0:
+                simple_projection_same += 1
+            elif float(simple_lat) * projection_lateral < 0.0:
+                simple_projection_opposite += 1
+    route_sample_count = route_projection_same + route_projection_opposite
+    simple_sample_count = simple_projection_same + simple_projection_opposite
+    return {
+        "available": official_count > 0,
+        "status": "available" if route_sample_count else ("insufficient_data" if official_count else "missing"),
+        "source": "apollo_hdmap_api" if official_count else None,
+        "projection_row_count": len(projection_rows),
+        "official_projection_row_count": official_count,
+        "matched_sample_count": route_sample_count,
+        "max_match_dt_s": max_dt_s,
+        "match_dt_p95_s": _percentile(matched_dt, 0.95),
+        "nearest_lane_ids": sorted(matched_lanes),
+        "route_lateral_vs_projection_lateral": {
+            "sample_count": route_sample_count,
+            "same_sign_count": route_projection_same,
+            "opposite_sign_count": route_projection_opposite,
+            "same_sign_ratio": (route_projection_same / route_sample_count) if route_sample_count else None,
+            "opposite_sign_ratio": (
+                route_projection_opposite / route_sample_count
+                if route_sample_count
+                else None
+            ),
+            "opposite_sign_abs_sum_p95_m": _percentile(route_projection_abs_sum, 0.95),
+            "abs_magnitude_delta_p95_m": _percentile(route_projection_abs_magnitude_delta, 0.95),
+        },
+        "simple_lat_vs_projection_lateral": {
+            "sample_count": simple_sample_count,
+            "same_sign_count": simple_projection_same,
+            "opposite_sign_count": simple_projection_opposite,
+            "same_sign_ratio": (simple_projection_same / simple_sample_count) if simple_sample_count else None,
+            "opposite_sign_ratio": (
+                simple_projection_opposite / simple_sample_count
+                if simple_sample_count
+                else None
+            ),
+        },
+        "claim_boundary": (
+            "Official Apollo HDMap projection rows can support lateral sign attribution, "
+            "but they do not replace materialized scenario route geometry or prove ego "
+            "behavior success."
+        ),
     }
 
 

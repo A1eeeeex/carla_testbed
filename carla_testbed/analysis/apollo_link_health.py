@@ -1361,6 +1361,29 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 report,
                 "lateral_sign_alignment.route_lateral_provenance.route_geometry_recomputed_cte_abs_delta_p95_m",
             ),
+            "route_definition_geometry_status": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance.route_definition_geometry_status",
+            ),
+            "official_hdmap_projection_matched_sample_count": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment.matched_sample_count",
+            ),
+            "route_lateral_projection_lateral_opposite_sign_ratio": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "route_lateral_vs_projection_lateral.opposite_sign_ratio",
+            ),
+            "simple_lat_projection_lateral_same_sign_ratio": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_vs_projection_lateral.same_sign_ratio",
+            ),
+            "route_projection_abs_magnitude_delta_p95_m": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "route_lateral_vs_projection_lateral.abs_magnitude_delta_p95_m",
+            ),
             "route_simple_lat_sign_convention_candidate": _nested(
                 report,
                 "lateral_sign_alignment.route_simple_lat_magnitude_alignment.magnitude_agreement_candidate",

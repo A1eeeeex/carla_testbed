@@ -249,6 +249,16 @@ Interpretation:
   `route_y` / `route_heading` fields, materialized route samples, or an
   equivalent official projection-to-route pairing before treating the sign
   convention as verified.
+- The lateral-semantics analyzer now also consumes row-level
+  `artifacts/apollo_hdmap_projection.jsonl` when present. On the same run, 80
+  official Apollo HDMap projection rows are available and 13 high-lateral
+  samples time-align with the sparse timeseries. The row-level evidence shows
+  `route_lateral_vs_projection_lateral.opposite_sign_ratio=1.0` and
+  `simple_lat_vs_projection_lateral.same_sign_ratio=1.0` on lane `0_0_2`.
+  However, the route/projection magnitude delta p95 is about `0.195m`, so this
+  supports the sign-convention suspicion but still does not prove that
+  `cross_track_error` and Apollo projection/simple_lat are the same quantity
+  with only a sign flip.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The

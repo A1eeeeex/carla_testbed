@@ -593,6 +593,21 @@ def _primary_behavior_blocker(
                     "route_lateral_provenance_interpretation": link_health.get(
                         "route_lateral_provenance_interpretation"
                     ),
+                    "route_definition_geometry_status": link_health.get(
+                        "route_definition_geometry_status"
+                    ),
+                    "official_hdmap_projection_matched_sample_count": link_health.get(
+                        "official_hdmap_projection_matched_sample_count"
+                    ),
+                    "route_lateral_projection_lateral_opposite_sign_ratio": link_health.get(
+                        "route_lateral_projection_lateral_opposite_sign_ratio"
+                    ),
+                    "simple_lat_projection_lateral_same_sign_ratio": link_health.get(
+                        "simple_lat_projection_lateral_same_sign_ratio"
+                    ),
+                    "route_projection_abs_magnitude_delta_p95_m": link_health.get(
+                        "route_projection_abs_magnitude_delta_p95_m"
+                    ),
                     "route_simple_lat_opposite_sign_abs_sum_p95_m": link_health.get(
                         "route_simple_lat_opposite_sign_abs_sum_p95_m"
                     ),
@@ -703,6 +718,21 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         ),
         "route_lateral_provenance_interpretation": lateral_metrics.get(
             "route_lateral_provenance_interpretation"
+        ),
+        "route_definition_geometry_status": lateral_metrics.get(
+            "route_definition_geometry_status"
+        ),
+        "official_hdmap_projection_matched_sample_count": lateral_metrics.get(
+            "official_hdmap_projection_matched_sample_count"
+        ),
+        "route_lateral_projection_lateral_opposite_sign_ratio": lateral_metrics.get(
+            "route_lateral_projection_lateral_opposite_sign_ratio"
+        ),
+        "simple_lat_projection_lateral_same_sign_ratio": lateral_metrics.get(
+            "simple_lat_projection_lateral_same_sign_ratio"
+        ),
+        "route_projection_abs_magnitude_delta_p95_m": lateral_metrics.get(
+            "route_projection_abs_magnitude_delta_p95_m"
         ),
         "route_simple_lat_opposite_sign_abs_sum_p95_m": lateral_metrics.get(
             "route_simple_lat_opposite_sign_abs_sum_p95_m"
