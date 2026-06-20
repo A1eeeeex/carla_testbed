@@ -325,8 +325,11 @@ Additional run-local artifacts:
     HDMap `projection_l`. When `localization_x/y` and `lane_heading_at_s` are
     present, it also records the lane-center projection point reconstructed
     from `projection_l`; this is official HDMap projection geometry, not
-    materialized scenario route geometry, and it does not prove ego behavior
-    success.
+    materialized scenario route geometry. When Apollo Control simple_lat
+    matched/current-reference/target point coordinates are available, the CSV
+    also records their signed lateral offsets to the local HDMap projection
+    line. Those point offsets are local-tangent diagnostics only; they do not
+    prove full reference-line geometry or ego behavior success.
     `run_phase1_postprocess()` refreshes the dependent reports in evidence
     order: Apollo HDMap projection, Apollo route contract, reference-line
     contract, module-consumption, then link-health. This prevents stale route

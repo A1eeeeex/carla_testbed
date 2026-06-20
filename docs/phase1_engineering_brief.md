@@ -266,6 +266,13 @@ Interpretation:
   includes a centerline point reconstructed from official `projection_l` and
   `lane_heading_at_s` when available; this is projection geometry evidence,
   not materialized scenario route geometry.
+  The same pairing now checks Apollo Control simple_lat matched and target
+  point coordinates against the local HDMap projection line. On the latest
+  cut-in sample, matched/target point lateral offsets are near zero
+  (`p95≈1e-6m`) while `current_reference_point` coordinates are not present in
+  that trace. This narrows the suspected gap away from raw point coordinates
+  being off-lane and toward the route/simple_lat sign convention and
+  reference-line debug/export semantics.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The

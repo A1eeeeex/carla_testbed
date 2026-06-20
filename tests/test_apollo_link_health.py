@@ -1948,6 +1948,11 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
                     "simple_lat_vs_projection_lateral": {
                         "same_sign_ratio": 1.0,
                     },
+                    "simple_lat_points_vs_projection_line": {
+                        "matched_point_lateral_abs_p95_m": 0.000001,
+                        "current_reference_point_lateral_abs_p95_m": None,
+                        "target_point_lateral_abs_p95_m": 0.000002,
+                    },
                 },
             },
         },
@@ -1978,6 +1983,9 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert lateral["key_metrics"]["route_lateral_projection_lateral_opposite_sign_ratio"] == 1.0
     assert lateral["key_metrics"]["simple_lat_projection_lateral_same_sign_ratio"] == 1.0
     assert lateral["key_metrics"]["route_projection_abs_magnitude_delta_p95_m"] == 0.195
+    assert lateral["key_metrics"]["simple_lat_matched_point_projection_line_lateral_abs_p95_m"] == 0.000001
+    assert lateral["key_metrics"]["simple_lat_current_reference_point_projection_line_lateral_abs_p95_m"] is None
+    assert lateral["key_metrics"]["simple_lat_target_point_projection_line_lateral_abs_p95_m"] == 0.000002
     assert lateral["key_metrics"]["route_simple_lat_sign_convention_candidate"] is True
     assert lateral["key_metrics"]["route_simple_lat_opposite_sign_abs_sum_p95_m"] == 0.02
     assert lateral["key_metrics"]["route_simple_lat_abs_magnitude_delta_p95_m"] == 0.02

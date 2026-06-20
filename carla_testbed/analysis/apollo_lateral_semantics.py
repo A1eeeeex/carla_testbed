@@ -113,6 +113,14 @@ FIELD_ALIASES = {
         "apollo_debug_simple_mpc_matched_point_y",
         "apollo_matched_point_y",
     ],
+    "apollo_current_reference_point_x": [
+        "apollo_debug_simple_lat_current_reference_point_x",
+        "debug_simple_lat_current_reference_point_x",
+    ],
+    "apollo_current_reference_point_y": [
+        "apollo_debug_simple_lat_current_reference_point_y",
+        "debug_simple_lat_current_reference_point_y",
+    ],
     "apollo_target_point_x": [
         "apollo_debug_simple_lat_target_point_x",
         "apollo_target_point_x",
@@ -523,6 +531,12 @@ def _write_projection_pairing_csv(report: Mapping[str, Any], path: Path) -> bool
         "hdmap_projection_l_recomputed_m",
         "projection_l_recompute_delta_m",
         "projection_centerline_geometry_available",
+        "apollo_matched_point_hdmap_line_lateral_m",
+        "apollo_matched_point_hdmap_line_longitudinal_m",
+        "apollo_current_reference_point_hdmap_line_lateral_m",
+        "apollo_current_reference_point_hdmap_line_longitudinal_m",
+        "apollo_target_point_hdmap_line_lateral_m",
+        "apollo_target_point_hdmap_line_longitudinal_m",
         "nearest_lane_id",
         "route_lateral_vs_projection_lateral",
         "simple_lat_vs_projection_lateral",
@@ -1687,6 +1701,9 @@ def _official_hdmap_projection_alignment(
     route_projection_abs_sum: list[float] = []
     route_projection_abs_magnitude_delta: list[float] = []
     projection_l_recompute_delta: list[float] = []
+    matched_point_lateral_offsets: list[float] = []
+    current_reference_point_lateral_offsets: list[float] = []
+    target_point_lateral_offsets: list[float] = []
     matched_dt: list[float] = []
     matched_lanes: set[str] = set()
     matched_samples: list[dict[str, Any]] = []
@@ -1740,6 +1757,30 @@ def _official_hdmap_projection_alignment(
         projection_geometry = _projection_centerline_geometry(projection, projection_lateral)
         if projection_geometry.get("projection_l_recompute_delta_m") is not None:
             projection_l_recompute_delta.append(float(projection_geometry["projection_l_recompute_delta_m"]))
+        matched_point = _point_offset_from_projection_line(
+            row,
+            projection_geometry,
+            FIELD_ALIASES["apollo_matched_point_x"],
+            FIELD_ALIASES["apollo_matched_point_y"],
+        )
+        current_reference_point = _point_offset_from_projection_line(
+            row,
+            projection_geometry,
+            FIELD_ALIASES["apollo_current_reference_point_x"],
+            FIELD_ALIASES["apollo_current_reference_point_y"],
+        )
+        target_point = _point_offset_from_projection_line(
+            row,
+            projection_geometry,
+            FIELD_ALIASES["apollo_target_point_x"],
+            FIELD_ALIASES["apollo_target_point_y"],
+        )
+        if matched_point.get("lateral_m") is not None:
+            matched_point_lateral_offsets.append(abs(float(matched_point["lateral_m"])))
+        if current_reference_point.get("lateral_m") is not None:
+            current_reference_point_lateral_offsets.append(abs(float(current_reference_point["lateral_m"])))
+        if target_point.get("lateral_m") is not None:
+            target_point_lateral_offsets.append(abs(float(target_point["lateral_m"])))
         matched_samples.append(
             {
                 "sim_time": float(row_time),
@@ -1753,6 +1794,12 @@ def _official_hdmap_projection_alignment(
                 "simple_lat_vs_projection_lateral": simple_projection_relation,
                 "route_projection_abs_sum_m": abs(float(route_lateral) + projection_lateral),
                 "route_projection_abs_magnitude_delta_m": abs(abs(float(route_lateral)) - abs(projection_lateral)),
+                "apollo_matched_point_hdmap_line_lateral_m": matched_point.get("lateral_m"),
+                "apollo_matched_point_hdmap_line_longitudinal_m": matched_point.get("longitudinal_m"),
+                "apollo_current_reference_point_hdmap_line_lateral_m": current_reference_point.get("lateral_m"),
+                "apollo_current_reference_point_hdmap_line_longitudinal_m": current_reference_point.get("longitudinal_m"),
+                "apollo_target_point_hdmap_line_lateral_m": target_point.get("lateral_m"),
+                "apollo_target_point_hdmap_line_longitudinal_m": target_point.get("longitudinal_m"),
                 **projection_geometry,
             }
         )
@@ -1770,6 +1817,22 @@ def _official_hdmap_projection_alignment(
         "nearest_lane_ids": sorted(matched_lanes),
         "projection_centerline_geometry_sample_count": len(projection_l_recompute_delta),
         "projection_l_recompute_delta_p95_m": _percentile(projection_l_recompute_delta, 0.95),
+        "simple_lat_points_vs_projection_line": {
+            "matched_point_lateral_abs_p95_m": _percentile(matched_point_lateral_offsets, 0.95),
+            "current_reference_point_lateral_abs_p95_m": _percentile(
+                current_reference_point_lateral_offsets,
+                0.95,
+            ),
+            "target_point_lateral_abs_p95_m": _percentile(target_point_lateral_offsets, 0.95),
+            "matched_point_sample_count": len(matched_point_lateral_offsets),
+            "current_reference_point_sample_count": len(current_reference_point_lateral_offsets),
+            "target_point_sample_count": len(target_point_lateral_offsets),
+            "interpretation": (
+                "Point lateral offsets are measured against the local official HDMap projection "
+                "tangent line. They are diagnostic only and do not replace full reference-line "
+                "geometry."
+            ),
+        },
         "matched_samples": matched_samples,
         "route_lateral_vs_projection_lateral": {
             "sample_count": route_sample_count,
@@ -1831,6 +1894,31 @@ def _projection_centerline_geometry(
         "hdmap_projection_l_recomputed_m": recomputed_l,
         "projection_l_recompute_delta_m": abs(recomputed_l - float(projection_lateral)),
         "projection_centerline_geometry_available": True,
+    }
+
+
+def _point_offset_from_projection_line(
+    row: Mapping[str, Any],
+    projection_geometry: Mapping[str, Any],
+    x_aliases: Sequence[str],
+    y_aliases: Sequence[str],
+) -> dict[str, float | None]:
+    point_x = _row_value(row, x_aliases)
+    point_y = _row_value(row, y_aliases)
+    center_x = projection_geometry.get("hdmap_projection_center_x")
+    center_y = projection_geometry.get("hdmap_projection_center_y")
+    heading = projection_geometry.get("hdmap_projection_lane_heading_rad")
+    if point_x is None or point_y is None or center_x is None or center_y is None or heading is None:
+        return {"lateral_m": None, "longitudinal_m": None}
+    forward_x = math.cos(float(heading))
+    forward_y = math.sin(float(heading))
+    left_x = -math.sin(float(heading))
+    left_y = math.cos(float(heading))
+    dx = float(point_x) - float(center_x)
+    dy = float(point_y) - float(center_y)
+    return {
+        "lateral_m": left_x * dx + left_y * dy,
+        "longitudinal_m": forward_x * dx + forward_y * dy,
     }
 
 
@@ -2127,6 +2215,16 @@ def _normalize_control_decode_debug_row(row: Mapping[str, Any]) -> dict[str, Any
             parsed.get("debug_simple_lat_target_point_y"),
             raw.get("debug_simple_lat_current_target_point_y"),
         ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_current_reference_point_x",
+        _first_numeric_value(parsed.get("debug_simple_lat_current_reference_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_current_reference_point_y",
+        _first_numeric_value(parsed.get("debug_simple_lat_current_reference_point_y")),
     )
     _set_if_numeric(
         normalized,

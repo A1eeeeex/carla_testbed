@@ -608,6 +608,15 @@ def _primary_behavior_blocker(
                     "route_projection_abs_magnitude_delta_p95_m": link_health.get(
                         "route_projection_abs_magnitude_delta_p95_m"
                     ),
+                    "simple_lat_matched_point_projection_line_lateral_abs_p95_m": link_health.get(
+                        "simple_lat_matched_point_projection_line_lateral_abs_p95_m"
+                    ),
+                    "simple_lat_current_reference_point_projection_line_lateral_abs_p95_m": link_health.get(
+                        "simple_lat_current_reference_point_projection_line_lateral_abs_p95_m"
+                    ),
+                    "simple_lat_target_point_projection_line_lateral_abs_p95_m": link_health.get(
+                        "simple_lat_target_point_projection_line_lateral_abs_p95_m"
+                    ),
                     "route_simple_lat_opposite_sign_abs_sum_p95_m": link_health.get(
                         "route_simple_lat_opposite_sign_abs_sum_p95_m"
                     ),
@@ -733,6 +742,15 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         ),
         "route_projection_abs_magnitude_delta_p95_m": lateral_metrics.get(
             "route_projection_abs_magnitude_delta_p95_m"
+        ),
+        "simple_lat_matched_point_projection_line_lateral_abs_p95_m": lateral_metrics.get(
+            "simple_lat_matched_point_projection_line_lateral_abs_p95_m"
+        ),
+        "simple_lat_current_reference_point_projection_line_lateral_abs_p95_m": lateral_metrics.get(
+            "simple_lat_current_reference_point_projection_line_lateral_abs_p95_m"
+        ),
+        "simple_lat_target_point_projection_line_lateral_abs_p95_m": lateral_metrics.get(
+            "simple_lat_target_point_projection_line_lateral_abs_p95_m"
         ),
         "route_simple_lat_opposite_sign_abs_sum_p95_m": lateral_metrics.get(
             "route_simple_lat_opposite_sign_abs_sum_p95_m"

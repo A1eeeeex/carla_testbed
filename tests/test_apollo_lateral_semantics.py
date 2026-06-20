@@ -37,6 +37,8 @@ def _write_rows(path: Path, rows: list[dict[str, object]]) -> Path:
         "route_x",
         "route_y",
         "route_heading",
+        "apollo_debug_simple_lat_current_reference_point_x",
+        "apollo_debug_simple_lat_current_reference_point_y",
         "apollo_debug_simple_lat_target_point_x",
         "apollo_debug_simple_lat_target_point_y",
         "apollo_debug_simple_lon_matched_point_x",
@@ -759,6 +761,12 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
         row["cross_track_error"] = 0.6
         row["apollo_debug_simple_lat_lateral_error_m"] = -0.6
         row["apollo_steer_raw"] = 0.3
+        row["apollo_debug_simple_lon_matched_point_x"] = float(index)
+        row["apollo_debug_simple_lon_matched_point_y"] = 1.2
+        row["apollo_debug_simple_lat_current_reference_point_x"] = float(index)
+        row["apollo_debug_simple_lat_current_reference_point_y"] = 1.2
+        row["apollo_debug_simple_lat_target_point_x"] = float(index) + 5.0
+        row["apollo_debug_simple_lat_target_point_y"] = 1.2
     _write_rows(artifacts / "debug_timeseries.csv", rows)
     (artifacts / "apollo_hdmap_projection.jsonl").write_text(
         "\n".join(
@@ -792,6 +800,10 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
     assert alignment["route_lateral_vs_projection_lateral"]["opposite_sign_abs_sum_p95_m"] == 0.0
     assert alignment["projection_centerline_geometry_sample_count"] == 4
     assert alignment["projection_l_recompute_delta_p95_m"] == 0.0
+    point_alignment = alignment["simple_lat_points_vs_projection_line"]
+    assert point_alignment["matched_point_lateral_abs_p95_m"] == 0.0
+    assert point_alignment["current_reference_point_lateral_abs_p95_m"] == 0.0
+    assert point_alignment["target_point_lateral_abs_p95_m"] == 0.0
     assert len(alignment["matched_samples"]) == 4
     assert alignment["matched_samples"][0]["projection_centerline_geometry_available"] is True
 
@@ -805,6 +817,8 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
     assert float(pairing_rows[0]["route_projection_abs_sum_m"]) == 0.0
     assert pairing_rows[0]["projection_centerline_geometry_available"] == "True"
     assert float(pairing_rows[0]["projection_l_recompute_delta_m"]) == 0.0
+    assert float(pairing_rows[0]["apollo_matched_point_hdmap_line_lateral_m"]) == 0.0
+    assert float(pairing_rows[0]["apollo_target_point_hdmap_line_lateral_m"]) == 0.0
 
 
 def test_cli_run_dir_writes_report(tmp_path: Path) -> None:
