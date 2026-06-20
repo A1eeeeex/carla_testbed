@@ -3139,6 +3139,11 @@ def _blocker_summary(layers: Mapping[str, Mapping[str, Any]]) -> tuple[str | Non
         secondary = [item for item in blockers if item != actual_lateral_drift]
         return actual_lateral_drift, secondary
 
+    lateral_semantics_primary = _lateral_semantics_warning_primary(layers)
+    if lateral_semantics_primary:
+        secondary = [item for item in blockers if item != lateral_semantics_primary]
+        return lateral_semantics_primary, secondary
+
     planning_primary = _planning_materialization_primary(layers)
     if planning_primary:
         secondary = [item for item in blockers if item != planning_primary]
@@ -3419,6 +3424,41 @@ def _actual_lateral_drift_primary(layers: Mapping[str, Mapping[str, Any]]) -> st
     ):
         return "natural_driving_outcome:actual_lateral_drift_matches_hdmap_projection"
     return None
+
+
+def _lateral_semantics_warning_primary(layers: Mapping[str, Mapping[str, Any]]) -> str | None:
+    lateral = layers.get("apollo_lateral_semantics", {})
+    if lateral.get("status") != "warn":
+        return None
+    metrics = lateral.get("key_metrics") if isinstance(lateral.get("key_metrics"), Mapping) else {}
+    anomaly_types = [str(item) for item in metrics.get("anomaly_types") or [] if item]
+    if not anomaly_types and "lateral_semantics_anomaly" not in set(lateral.get("warnings") or []):
+        return None
+    for prerequisite in (
+        "environment_world",
+        "bridge_runtime",
+        "channel_health",
+        "localization_gt_contract",
+        "chassis_gt_contract",
+        "hdmap_projection",
+        "planning_reference_line",
+        "route_establishment",
+        "apollo_module_consumption",
+        "routing_planning_control_handoff",
+        "control_mapping_apply",
+        "no_assist_claim_boundary",
+    ):
+        if not _non_blocking(layers.get(prerequisite, {})):
+            return None
+    natural = layers.get("natural_driving_outcome", {})
+    natural_missing = (
+        natural.get("status") == "insufficient_data"
+        and "natural_driving_report_missing" in set(natural.get("warnings") or [])
+    )
+    if not natural_missing:
+        return None
+    reason = anomaly_types[0] if anomaly_types else str(metrics.get("suspected_layer") or "lateral_semantics_anomaly")
+    return f"apollo_lateral_semantics:{reason}"
 
 
 def _layer_blocker_name(name: str, layer: Mapping[str, Any]) -> str:

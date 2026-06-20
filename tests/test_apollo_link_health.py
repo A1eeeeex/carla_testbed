@@ -1868,6 +1868,52 @@ def test_link_health_surfaces_hdmap_route_lateral_drift_attribution(tmp_path: Pa
     assert "real closed-loop lateral drift" in report["next_highest_value_validation"]
 
 
+def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phase1_triage(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    (run_dir / "analysis/natural_driving/natural_driving_report.json").unlink()
+    _write_json(
+        run_dir / "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
+        {
+            "schema_version": "apollo_lateral_semantics.v1",
+            "verdict": {
+                "status": "warn",
+                "failure_reason": "lateral_semantics_anomaly",
+                "suspected_layer": "reference_line_semantics",
+                "confidence": "medium",
+            },
+            "suspected_layer": "reference_line_semantics",
+            "confidence": "medium",
+            "anomalies": [
+                {
+                    "type": "planning_nonempty_but_reference_line_debug_missing",
+                    "suspected_layer": "reference_line_semantics",
+                    "reason": "Planning trajectories are non-empty while reference-line debug is missing",
+                }
+            ],
+            "correlation_summary": {
+                "cross_track_error_abs": {"p95": 0.20},
+                "apollo_steer_raw_abs": {"p95": 0.28},
+                "carla_steer_applied_abs": {"p95": 0.04},
+            },
+            "reference_debug_summary": {
+                "status": "warn",
+                "reference_line_provider_ready_ratio": 0.0,
+                "reference_line_count_zero_ratio": 1.0,
+            },
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert report["primary_blocker"] == (
+        "apollo_lateral_semantics:planning_nonempty_but_reference_line_debug_missing"
+    )
+    assert "natural_driving_outcome:insufficient_data" in report["secondary_blockers"]
+    assert report["can_claim_unassisted_natural_driving"] is False
+
+
 def test_control_process_crash_is_explicit_handoff_blocker(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     handoff_path = run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json"

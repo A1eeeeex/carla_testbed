@@ -181,6 +181,13 @@ Interpretation:
   debug remains missing/zero (`reference_line_count_zero_ratio=1.0` and
   `reference_line_provider_ready_ratio=0.0`). This is attribution evidence, not
   a behavior fix or an Apollo natural-driving claim.
+- `apollo_link_health` now uses that lateral-semantics warning as the
+  representative Apollo cut-in primary blocker when all upstream link layers
+  are non-blocking and `natural_driving_report.json` is merely absent. The
+  refreshed primary blocker is
+  `apollo_lateral_semantics:planning_nonempty_but_reference_line_debug_missing`;
+  `natural_driving_outcome:insufficient_data` remains a secondary blocker and
+  still prevents any unassisted natural-driving claim.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.
