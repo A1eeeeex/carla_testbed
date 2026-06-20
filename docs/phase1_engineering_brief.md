@@ -61,8 +61,15 @@ validation run, a `carla_builtin` safety-sensor attach-order fix validated with
 a new online cut-in run, and a lateral-semantics postprocess refresh that
 consumes authoritative Apollo control-apply trace evidence.
 
-Current catalog status using `tools/phase1_scenario_catalog.py --repo .
---evidence-root runs`:
+Layered progress status:
+
+- Phase 1 overall: `PARTIAL`
+- Accepted comparison-surface catalog: `DONE`
+- Representative Apollo behavior capability: `PARTIAL / failing samples remain`
+- Apollo natural-driving or no-interference capability claim: `NOT_CLAIMED`
+
+Current accepted comparison-surface catalog status using
+`tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:
 
 - Total scenarios tracked: `8`
 - Accepted `DONE`: `8`
@@ -81,6 +88,11 @@ Interpretation:
   to self-contained materialized evidence and makes ScenarioComparison use the
   Phase 1 artifact-completeness profile rather than the stricter natural-driving
   claim/materialization profile.
+- The corrected reading is therefore not "Phase 1 is complete." The corrected
+  reading is: "the current eight-row accepted comparison-surface catalog is
+  self-contained and auditable, while Phase 1 overall remains `PARTIAL` until
+  representative Apollo behavior blockers and the external-backend runtime path
+  are reduced enough to support stable same-case online comparisons."
 - A stricter Baguang lane-event contract audit temporarily demoted
   `cut_in_simple` from accepted `DONE` to `PARTIAL`. The refreshed Apollo run
   starts inside the cut-in activation window. The Apollo sidecar sample
@@ -134,11 +146,12 @@ Interpretation:
   `v_t_gap_report.json`, `v_t_gap.csv`, comparison artifacts, and an executable
   control trace surface under the bundle-local `evidence/` directory. Target
   actor rows also materialize scenario actor trace and phase events.
-- This completes the current Phase 1 accepted comparison-surface catalog. It
-  does not mean Apollo behavior succeeded in the DONE scenarios: several
-  representative Apollo and builtin runs are still evaluable failures, including
-  the latest Apollo cut-in sample (`failed/lane_invasion`). The next milestone
-  shifts from accepted-bundle construction to representative Apollo behavior
+- This completes only the current Phase 1 accepted comparison-surface catalog.
+  It does not complete Phase 1 as a whole and does not mean Apollo behavior
+  succeeded in the DONE scenarios: several representative Apollo and builtin
+  runs are still evaluable failures, including the latest Apollo cut-in sample
+  (`failed/lane_invasion`). The active `cycle=inf` milestone has therefore
+  shifted from accepted-bundle construction to representative Apollo behavior
   blocker reduction and cleaner external-backend runtime integration.
 - For representative failed Phase 1 runs, `phase1_status.json` now surfaces a
   `primary_behavior_blocker`, `behavior_blocker_layer`, and
@@ -181,6 +194,17 @@ Interpretation:
   debug remains missing/zero (`reference_line_count_zero_ratio=1.0` and
   `reference_line_provider_ready_ratio=0.0`). This is attribution evidence, not
   a behavior fix or an Apollo natural-driving claim.
+- The same lateral-semantics refresh now records a conservative
+  `lateral_sign_alignment` diagnostic. For the first high-lateral sample in
+  `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742`,
+  `source_steer_vs_route_lateral_error=same_sign` and
+  `applied_steer_vs_route_lateral_error=same_sign`. Across all active
+  high-lateral samples, however, the source-steer / route-lateral same-sign
+  ratio is only about `0.545`, while source-steer / Apollo simple_lat lateral
+  same-sign ratio is `0.0`. This is a sign-convention and lateral-semantics
+  sense check around the lane event; it is not proof of a steering-sign bug and
+  does not justify changing `steer_scale`, physical mapping, or controller
+  smoothing before reference-line / simple_lat semantics are closed.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The

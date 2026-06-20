@@ -1905,6 +1905,15 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
                 "control_simple_lat_reference_available": True,
                 "control_reference_join_coverage_ratio": 0.95,
             },
+            "lateral_sign_alignment": {
+                "status": "available",
+                "first_high_lateral_sample": {
+                    "source_steer_vs_route_lateral_error": "same_sign",
+                    "applied_steer_vs_route_lateral_error": "same_sign",
+                },
+                "source_steer_vs_route_lateral_error": {"same_sign_ratio": 0.55},
+                "source_steer_vs_simple_lat_lateral_error": {"same_sign_ratio": 0.0},
+            },
         },
     )
 
@@ -1918,6 +1927,9 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert lateral["key_metrics"]["reference_debug_classification"] == "planning_reference_line_debug_export_gap"
     assert lateral["key_metrics"]["control_simple_lat_reference_available"] is True
     assert lateral["key_metrics"]["control_reference_join_coverage_ratio"] == 0.95
+    assert lateral["key_metrics"]["first_high_source_steer_vs_route_lateral_error"] == "same_sign"
+    assert lateral["key_metrics"]["first_high_applied_steer_vs_route_lateral_error"] == "same_sign"
+    assert lateral["key_metrics"]["source_steer_route_lateral_same_sign_ratio"] == 0.55
     assert report["can_claim_unassisted_natural_driving"] is False
 
 

@@ -1315,6 +1315,23 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 report,
                 "reference_debug_summary.control_reference_join_coverage_ratio",
             ),
+            "lateral_sign_alignment_status": _nested(report, "lateral_sign_alignment.status"),
+            "first_high_source_steer_vs_route_lateral_error": _nested(
+                report,
+                "lateral_sign_alignment.first_high_lateral_sample.source_steer_vs_route_lateral_error",
+            ),
+            "first_high_applied_steer_vs_route_lateral_error": _nested(
+                report,
+                "lateral_sign_alignment.first_high_lateral_sample.applied_steer_vs_route_lateral_error",
+            ),
+            "source_steer_route_lateral_same_sign_ratio": _nested(
+                report,
+                "lateral_sign_alignment.source_steer_vs_route_lateral_error.same_sign_ratio",
+            ),
+            "source_steer_simple_lat_lateral_same_sign_ratio": _nested(
+                report,
+                "lateral_sign_alignment.source_steer_vs_simple_lat_lateral_error.same_sign_ratio",
+            ),
             "apollo_steer_raw_abs_p95": _nested(report, "correlation_summary.apollo_steer_raw_abs.p95"),
             "carla_steer_applied_abs_p95": _nested(report, "correlation_summary.carla_steer_applied_abs.p95"),
         },

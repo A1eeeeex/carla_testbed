@@ -270,6 +270,45 @@ def test_lateral_drift_window_records_route_s_and_target_context(tmp_path: Path)
     assert first_context["apollo_simple_lon_current_station"]["count"] > 0
 
 
+def test_lateral_sign_alignment_records_source_steer_same_sign_evidence(tmp_path: Path) -> None:
+    rows = _base_rows()
+    for row in rows:
+        row["cross_track_error"] = 0.65
+        row["apollo_debug_simple_lat_lateral_error_m"] = 0.60
+        row["apollo_steer_raw"] = 0.30
+        row["bridge_steer_mapped"] = 0.075
+        row["carla_steer_applied"] = 0.075
+        row["ego_yaw_rate"] = 0.04
+
+    report = _analyze(tmp_path, rows)
+
+    assert report["verdict"]["status"] == "warn"
+    assert report["suspected_layer"] == "reference_line_semantics"
+    assert "source_steer_same_sign_as_lateral_error" in _types(report)
+    alignment = report["lateral_sign_alignment"]
+    assert alignment["source_steer_vs_route_lateral_error"]["same_sign_ratio"] == 1.0
+    assert alignment["source_steer_vs_simple_lat_lateral_error"]["same_sign_ratio"] == 1.0
+    assert alignment["applied_steer_vs_route_lateral_error"]["same_sign_ratio"] == 1.0
+
+
+def test_lateral_sign_alignment_opposite_sign_is_not_an_anomaly(tmp_path: Path) -> None:
+    rows = _base_rows()
+    for row in rows:
+        row["cross_track_error"] = 0.65
+        row["apollo_debug_simple_lat_lateral_error_m"] = 0.60
+        row["apollo_steer_raw"] = -0.30
+        row["bridge_steer_mapped"] = -0.075
+        row["carla_steer_applied"] = -0.075
+        row["ego_yaw_rate"] = 0.04
+
+    report = _analyze(tmp_path, rows)
+
+    assert "source_steer_same_sign_as_lateral_error" not in _types(report)
+    alignment = report["lateral_sign_alignment"]
+    assert alignment["source_steer_vs_route_lateral_error"]["opposite_sign_ratio"] == 1.0
+    assert alignment["source_steer_vs_simple_lat_lateral_error"]["opposite_sign_ratio"] == 1.0
+
+
 def test_missing_fields_gracefully_degrade(tmp_path: Path) -> None:
     path = _write_rows(tmp_path / "timeseries.csv", [{"run_id": "missing"}])
     report = analyze_apollo_lateral_semantics(timeseries=path)

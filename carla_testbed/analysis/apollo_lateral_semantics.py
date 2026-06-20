@@ -165,6 +165,10 @@ DEFAULT_THRESHOLDS = {
     "route_s_station_delta_high_p95_m": 20.0,
     "matched_point_near_ego_p95_m": 0.30,
     "matched_point_far_from_route_p95_m": 0.50,
+    "lateral_sign_active_abs_m": 0.20,
+    "steer_sign_active_abs": 0.02,
+    "sign_alignment_ratio_high": 0.80,
+    "sign_alignment_min_samples": 3,
 }
 
 DRIFT_WINDOW_FIELD_ALIASES = {
@@ -352,6 +356,7 @@ def analyze_apollo_lateral_semantics(
     hdmap_route_lateral_consistency = _hdmap_route_lateral_consistency(localization_contract_payload)
     reference_debug_summary = _reference_debug_summary(reference_line_contract_payload)
     drift_window_summary = _drift_window_summary(rows, active_thresholds)
+    lateral_sign_alignment = _lateral_sign_alignment_summary(rows, active_thresholds)
     anomalies = _anomalies(
         values,
         stats,
@@ -359,6 +364,7 @@ def analyze_apollo_lateral_semantics(
         rows=rows,
         hdmap_route_lateral_consistency=hdmap_route_lateral_consistency,
         reference_debug_summary=reference_debug_summary,
+        lateral_sign_alignment=lateral_sign_alignment,
     )
     if not rows and not route_health_payload:
         anomalies.append(_anomaly("insufficient_data", "missing_timeseries_and_route_health", "insufficient_data"))
@@ -398,6 +404,7 @@ def analyze_apollo_lateral_semantics(
         "hdmap_route_lateral_consistency": hdmap_route_lateral_consistency,
         "reference_debug_summary": reference_debug_summary,
         "drift_window_summary": drift_window_summary,
+        "lateral_sign_alignment": lateral_sign_alignment,
         "suspected_layer": suspected_layer,
         "confidence": confidence,
         "missing_fields": sorted(set(missing_fields)),
@@ -449,6 +456,7 @@ def _anomalies(
     rows: Sequence[Mapping[str, Any]],
     hdmap_route_lateral_consistency: Mapping[str, Any] | None = None,
     reference_debug_summary: Mapping[str, Any] | None = None,
+    lateral_sign_alignment: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     anomalies: list[dict[str, Any]] = []
     route_max = _stat(stats, "route_curvature_abs", "max")
@@ -524,6 +532,49 @@ def _anomalies(
                 route_segment_available=reference_debug_summary.get("route_segment_available"),
                 control_simple_lat_reference_available=reference_debug_summary.get("control_simple_lat_reference_available"),
                 control_reference_join_coverage_ratio=reference_debug_summary.get("control_reference_join_coverage_ratio"),
+            )
+        )
+    lateral_sign_alignment = lateral_sign_alignment if isinstance(lateral_sign_alignment, Mapping) else {}
+    source_vs_route = lateral_sign_alignment.get("source_steer_vs_route_lateral_error")
+    source_vs_simple_lat = lateral_sign_alignment.get("source_steer_vs_simple_lat_lateral_error")
+    mapped_vs_route = lateral_sign_alignment.get("mapped_steer_vs_route_lateral_error")
+    applied_vs_route = lateral_sign_alignment.get("applied_steer_vs_route_lateral_error")
+    first_high_alignment = lateral_sign_alignment.get("first_high_lateral_sample")
+    source_route_same = _num(source_vs_route.get("same_sign_ratio")) if isinstance(source_vs_route, Mapping) else None
+    source_simple_same = (
+        _num(source_vs_simple_lat.get("same_sign_ratio")) if isinstance(source_vs_simple_lat, Mapping) else None
+    )
+    source_route_count = _num(source_vs_route.get("sample_count")) if isinstance(source_vs_route, Mapping) else 0.0
+    source_simple_count = _num(source_vs_simple_lat.get("sample_count")) if isinstance(source_vs_simple_lat, Mapping) else 0.0
+    min_samples = int(thresholds["sign_alignment_min_samples"])
+    high_ratio = thresholds["sign_alignment_ratio_high"]
+    first_high_source_same = (
+        isinstance(first_high_alignment, Mapping)
+        and first_high_alignment.get("source_steer_vs_route_lateral_error") == "same_sign"
+    )
+    if (
+        (source_route_same is not None and source_route_same >= high_ratio and source_route_count >= min_samples)
+        or (
+            source_simple_same is not None
+            and source_simple_same >= high_ratio
+            and source_simple_count >= min_samples
+        )
+        or first_high_source_same
+    ):
+        anomalies.append(
+            _anomaly(
+                "source_steer_same_sign_as_lateral_error",
+                (
+                    "Apollo source steer has the same sign as route/simple_lat lateral error "
+                    "during active lateral-error samples; this is a sign-convention/semantics "
+                    "sense check, not proof of a steering-sign bug by itself"
+                ),
+                "reference_line_semantics",
+                source_steer_vs_route_lateral_error=source_vs_route,
+                source_steer_vs_simple_lat_lateral_error=source_vs_simple_lat,
+                mapped_steer_vs_route_lateral_error=mapped_vs_route,
+                applied_steer_vs_route_lateral_error=applied_vs_route,
+                first_high_lateral_sample=first_high_alignment,
             )
         )
     applied_p95 = _stat(stats, "carla_steer_applied_abs", "p95")
@@ -1058,6 +1109,156 @@ def _drift_context(
     }
 
 
+def _lateral_sign_alignment_summary(
+    rows: Sequence[Mapping[str, Any]],
+    thresholds: Mapping[str, float],
+) -> dict[str, Any]:
+    if not rows:
+        return {
+            "available": False,
+            "status": "insufficient_data",
+            "reason": "missing_rows",
+        }
+    lateral_min = thresholds["lateral_sign_active_abs_m"]
+    steer_min = thresholds["steer_sign_active_abs"]
+    pairs = {
+        "source_steer_vs_route_lateral_error": _sign_pair_stats(
+            rows,
+            FIELD_ALIASES["cross_track_error"],
+            FIELD_ALIASES["apollo_steer_raw"],
+            left_min_abs=lateral_min,
+            right_min_abs=steer_min,
+        ),
+        "source_steer_vs_simple_lat_lateral_error": _sign_pair_stats(
+            rows,
+            FIELD_ALIASES["apollo_simple_lat_lateral_error"],
+            FIELD_ALIASES["apollo_steer_raw"],
+            left_min_abs=lateral_min,
+            right_min_abs=steer_min,
+        ),
+        "mapped_steer_vs_route_lateral_error": _sign_pair_stats(
+            rows,
+            FIELD_ALIASES["cross_track_error"],
+            FIELD_ALIASES["bridge_steer_mapped"],
+            left_min_abs=lateral_min,
+            right_min_abs=steer_min,
+        ),
+        "applied_steer_vs_route_lateral_error": _sign_pair_stats(
+            rows,
+            FIELD_ALIASES["cross_track_error"],
+            FIELD_ALIASES["carla_steer_applied"],
+            left_min_abs=lateral_min,
+            right_min_abs=steer_min,
+        ),
+    }
+    first_high_alignment = _first_high_lateral_sign_alignment(
+        rows,
+        lateral_min_abs=thresholds["drift_window_high_lateral_abs_m"],
+        steer_min_abs=steer_min,
+    )
+    sample_count = max((int(value["sample_count"]) for value in pairs.values()), default=0)
+    return {
+        "available": sample_count > 0,
+        "status": "available" if sample_count > 0 else "insufficient_data",
+        "lateral_min_abs_m": lateral_min,
+        "steer_min_abs": steer_min,
+        "first_high_lateral_sample": first_high_alignment,
+        "interpretation_boundary": (
+            "Same-sign steer/lateral-error alignment is only a convention and semantics "
+            "sense-check. It must be interpreted with the route frame, steering convention, "
+            "and raw/mapped/applied control chain before any runtime control change."
+        ),
+        **pairs,
+    }
+
+
+def _first_high_lateral_sign_alignment(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    lateral_min_abs: float,
+    steer_min_abs: float,
+) -> dict[str, Any]:
+    samples = _drift_samples(rows)
+    first_high = next(
+        (sample for sample in samples if abs(float(sample.get("cross_track_error", 0.0))) >= lateral_min_abs),
+        None,
+    )
+    if first_high is None:
+        return {
+            "available": False,
+            "reason": "no_high_lateral_sample",
+            "lateral_min_abs_m": lateral_min_abs,
+        }
+    cross_track = first_high.get("cross_track_error")
+    simple_lat = first_high.get("apollo_simple_lat_lateral_error")
+    source_steer = first_high.get("apollo_steer_raw")
+    mapped_steer = first_high.get("bridge_steer_mapped")
+    applied_steer = first_high.get("carla_steer_applied")
+    return {
+        "available": True,
+        "sim_time": first_high.get("sim_time"),
+        "route_s": first_high.get("route_s"),
+        "cross_track_error": cross_track,
+        "apollo_simple_lat_lateral_error": simple_lat,
+        "apollo_steer_raw": source_steer,
+        "bridge_steer_mapped": mapped_steer,
+        "carla_steer_applied": applied_steer,
+        "source_steer_vs_route_lateral_error": _sign_relation(cross_track, source_steer, steer_min_abs),
+        "source_steer_vs_simple_lat_lateral_error": _sign_relation(simple_lat, source_steer, steer_min_abs),
+        "mapped_steer_vs_route_lateral_error": _sign_relation(cross_track, mapped_steer, steer_min_abs),
+        "applied_steer_vs_route_lateral_error": _sign_relation(cross_track, applied_steer, steer_min_abs),
+    }
+
+
+def _sign_relation(left: float | None, right: float | None, active_min_abs: float) -> str:
+    if left is None or right is None:
+        return "missing"
+    if abs(float(right)) < active_min_abs:
+        return "inactive"
+    product = float(left) * float(right)
+    if product > 0.0:
+        return "same_sign"
+    if product < 0.0:
+        return "opposite_sign"
+    return "zero"
+
+
+def _sign_pair_stats(
+    rows: Sequence[Mapping[str, Any]],
+    left_aliases: Sequence[str],
+    right_aliases: Sequence[str],
+    *,
+    left_min_abs: float,
+    right_min_abs: float,
+) -> dict[str, Any]:
+    same_sign = 0
+    opposite_sign = 0
+    ignored_inactive = 0
+    for row in rows:
+        left = _row_value(row, left_aliases)
+        right = _row_value(row, right_aliases)
+        if left is None or right is None:
+            continue
+        if abs(left) < left_min_abs or abs(right) < right_min_abs:
+            ignored_inactive += 1
+            continue
+        if left * right > 0.0:
+            same_sign += 1
+        elif left * right < 0.0:
+            opposite_sign += 1
+        else:
+            ignored_inactive += 1
+    sample_count = same_sign + opposite_sign
+    return {
+        "sample_count": sample_count,
+        "same_sign_count": same_sign,
+        "opposite_sign_count": opposite_sign,
+        "same_sign_ratio": (same_sign / sample_count) if sample_count else None,
+        "opposite_sign_ratio": (opposite_sign / sample_count) if sample_count else None,
+        "ignored_inactive_count": ignored_inactive,
+    }
+
+
 def _hdmap_route_lateral_consistency(payload: Mapping[str, Any]) -> dict[str, Any]:
     consistency = payload.get("hdmap_route_lateral_consistency") if isinstance(payload, Mapping) else None
     if not isinstance(consistency, Mapping):
@@ -1433,6 +1634,14 @@ def _markdown(report: Mapping[str, Any]) -> str:
             f"- first_high_lateral: `{_nested(report, 'drift_window_summary.first_high_lateral')}`",
             f"- max_abs_lateral: `{_nested(report, 'drift_window_summary.max_abs_lateral')}`",
             f"- phase_samples: `{_nested(report, 'drift_window_summary.phase_samples')}`",
+            "",
+            "## Lateral Sign Alignment",
+            "",
+            f"- status: `{_nested(report, 'lateral_sign_alignment.status')}`",
+            f"- source_steer_vs_route_lateral_error: `{_nested(report, 'lateral_sign_alignment.source_steer_vs_route_lateral_error')}`",
+            f"- source_steer_vs_simple_lat_lateral_error: `{_nested(report, 'lateral_sign_alignment.source_steer_vs_simple_lat_lateral_error')}`",
+            f"- applied_steer_vs_route_lateral_error: `{_nested(report, 'lateral_sign_alignment.applied_steer_vs_route_lateral_error')}`",
+            f"- first_high_lateral_sample: `{_nested(report, 'lateral_sign_alignment.first_high_lateral_sample')}`",
             "",
             "## Missing Fields",
             "",
