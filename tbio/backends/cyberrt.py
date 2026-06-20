@@ -945,6 +945,7 @@ class CyberRTBackend(Backend):
     def _apollo_core_log_files() -> tuple[str, ...]:
         return (
             "planning.INFO",
+            "prediction.INFO",
             "control.INFO",
             "routing.INFO",
             "external_command.INFO",

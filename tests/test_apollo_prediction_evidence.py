@@ -214,6 +214,31 @@ def test_dynamic_case_with_prediction_runtime_but_no_output_fails_explicitly(tmp
     assert "prediction_module_observed_without_prediction_channel_output" in report["warnings"]
 
 
+def test_prediction_info_log_errors_are_consumed(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path, scenario_class="cut_in")
+    _channel_stats(run_dir, prediction_count=0, obstacle_count=4)
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "apollo_modules_status.log").write_text(
+        "96128 mainboard -d modules/prediction/dag/prediction.dag -p prediction -s CYBER_DEFAULT\n",
+        encoding="utf-8",
+    )
+    (artifacts / "apollo_prediction.INFO").write_text(
+        "INFO prediction started\nERROR predictor did not publish trajectories\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_prediction_evidence_run_dir(run_dir)
+
+    assert report["prediction_runtime_observed"] is True
+    assert report["prediction_logs_present"] is True
+    assert report["prediction_errors"]
+    assert report["prediction_errors"][0]["path"].endswith("apollo_prediction.INFO")
+    assert "prediction_logs_contain_errors" in report["warnings"]
+    assert report["prediction_mode"] == "missing"
+    assert report["verdict"] == "fail"
+
+
 def test_prediction_log_errors_warn_or_fail(tmp_path: Path) -> None:
     run_dir = _run_dir(tmp_path)
     _channel_stats(run_dir, prediction_count=10)

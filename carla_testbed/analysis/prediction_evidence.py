@@ -436,7 +436,12 @@ def _prediction_log_errors(paths: Sequence[Path]) -> list[dict[str, Any]]:
 
 def _find_prediction_logs(root: Path) -> list[Path]:
     candidates: list[Path] = []
-    for pattern in ("*prediction*.log", "*prediction*.txt"):
+    for pattern in (
+        "*prediction*.INFO",
+        "*prediction*.INFO.tail",
+        "*prediction*.log",
+        "*prediction*.txt",
+    ):
         candidates.extend(path for path in root.rglob(pattern) if path.is_file())
     return sorted(set(candidates))
 

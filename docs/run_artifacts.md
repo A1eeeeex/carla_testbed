@@ -1380,6 +1380,14 @@ Prediction runtime was observed but no `/apollo/prediction` output was
 observed. Static lane-keep bypass evidence must not be generalized to dynamic,
 junction, or traffic-light scenarios; those remain blocked unless native
 prediction or an explicit scenario-scoped override exists.
+For Apollo transition/CyberRT runs, the review package should also include
+`artifacts/apollo_prediction.INFO` when available, alongside
+`artifacts/apollo_log_capture_meta.json` and
+`artifacts/apollo_log_snapshot_meta.json`. If the Prediction mainboard was
+observed but `/apollo/prediction` has zero messages, this log snapshot is the
+first artifact to inspect for initialization, input, or runtime errors. Missing
+Prediction logs do not make the run pass; they leave the root cause less
+observable.
 
 `artifacts/control_apply_trace.jsonl` is the preferred row-level control-chain
 evidence for Apollo CyberRT truth-input runs. Each row preserves Apollo raw

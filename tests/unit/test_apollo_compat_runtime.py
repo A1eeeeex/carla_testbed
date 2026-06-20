@@ -8,6 +8,13 @@ import yaml
 
 from carla_testbed.config import load_config
 from carla_testbed.runtime import apollo_compat
+from tbio.backends.cyberrt import CyberRTBackend
+
+
+def test_transition_backend_snapshots_prediction_log() -> None:
+    log_files = CyberRTBackend._apollo_core_log_files()
+
+    assert "prediction.INFO" in log_files
 
 
 def _write_transition_config(tmp_path: Path, *, phase1_scenario_path: str | None = None) -> Path:
