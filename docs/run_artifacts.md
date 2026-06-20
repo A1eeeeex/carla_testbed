@@ -322,8 +322,11 @@ Additional run-local artifacts:
     `timeseries.*` rows with official `apollo_hdmap_api` projection rows. The
     CSV is a row-level audit surface for signs and magnitudes of
     `cross_track_error`, Apollo `simple_lat` lateral error, and
-    HDMap `projection_l`; it is not route geometry evidence and does not
-    prove ego behavior success.
+    HDMap `projection_l`. When `localization_x/y` and `lane_heading_at_s` are
+    present, it also records the lane-center projection point reconstructed
+    from `projection_l`; this is official HDMap projection geometry, not
+    materialized scenario route geometry, and it does not prove ego behavior
+    success.
     `run_phase1_postprocess()` refreshes the dependent reports in evidence
     order: Apollo HDMap projection, Apollo route contract, reference-line
     contract, module-consumption, then link-health. This prevents stale route

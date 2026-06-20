@@ -517,6 +517,12 @@ def _write_projection_pairing_csv(report: Mapping[str, Any], path: Path) -> bool
         "route_lateral_error_m",
         "apollo_simple_lat_lateral_error_m",
         "hdmap_projection_l_m",
+        "hdmap_projection_center_x",
+        "hdmap_projection_center_y",
+        "hdmap_projection_lane_heading_rad",
+        "hdmap_projection_l_recomputed_m",
+        "projection_l_recompute_delta_m",
+        "projection_centerline_geometry_available",
         "nearest_lane_id",
         "route_lateral_vs_projection_lateral",
         "simple_lat_vs_projection_lateral",
@@ -1680,6 +1686,7 @@ def _official_hdmap_projection_alignment(
     simple_projection_opposite = 0
     route_projection_abs_sum: list[float] = []
     route_projection_abs_magnitude_delta: list[float] = []
+    projection_l_recompute_delta: list[float] = []
     matched_dt: list[float] = []
     matched_lanes: set[str] = set()
     matched_samples: list[dict[str, Any]] = []
@@ -1730,6 +1737,9 @@ def _official_hdmap_projection_alignment(
                 simple_projection_relation = "zero"
         elif simple_lat is not None:
             simple_projection_relation = "inactive"
+        projection_geometry = _projection_centerline_geometry(projection, projection_lateral)
+        if projection_geometry.get("projection_l_recompute_delta_m") is not None:
+            projection_l_recompute_delta.append(float(projection_geometry["projection_l_recompute_delta_m"]))
         matched_samples.append(
             {
                 "sim_time": float(row_time),
@@ -1743,6 +1753,7 @@ def _official_hdmap_projection_alignment(
                 "simple_lat_vs_projection_lateral": simple_projection_relation,
                 "route_projection_abs_sum_m": abs(float(route_lateral) + projection_lateral),
                 "route_projection_abs_magnitude_delta_m": abs(abs(float(route_lateral)) - abs(projection_lateral)),
+                **projection_geometry,
             }
         )
     route_sample_count = route_projection_same + route_projection_opposite
@@ -1757,6 +1768,8 @@ def _official_hdmap_projection_alignment(
         "max_match_dt_s": max_dt_s,
         "match_dt_p95_s": _percentile(matched_dt, 0.95),
         "nearest_lane_ids": sorted(matched_lanes),
+        "projection_centerline_geometry_sample_count": len(projection_l_recompute_delta),
+        "projection_l_recompute_delta_p95_m": _percentile(projection_l_recompute_delta, 0.95),
         "matched_samples": matched_samples,
         "route_lateral_vs_projection_lateral": {
             "sample_count": route_sample_count,
@@ -1787,6 +1800,37 @@ def _official_hdmap_projection_alignment(
             "but they do not replace materialized scenario route geometry or prove ego "
             "behavior success."
         ),
+    }
+
+
+def _projection_centerline_geometry(
+    projection: Mapping[str, Any],
+    projection_lateral: float,
+) -> dict[str, Any]:
+    x = _row_value(projection, ["localization_x", "x_apollo"])
+    y = _row_value(projection, ["localization_y", "y_apollo"])
+    heading = _row_value(projection, ["lane_heading_at_s"])
+    if x is None or y is None or heading is None:
+        return {
+            "hdmap_projection_center_x": None,
+            "hdmap_projection_center_y": None,
+            "hdmap_projection_lane_heading_rad": heading,
+            "hdmap_projection_l_recomputed_m": None,
+            "projection_l_recompute_delta_m": None,
+            "projection_centerline_geometry_available": False,
+        }
+    left_x = -math.sin(float(heading))
+    left_y = math.cos(float(heading))
+    center_x = float(x) - float(projection_lateral) * left_x
+    center_y = float(y) - float(projection_lateral) * left_y
+    recomputed_l = left_x * (float(x) - center_x) + left_y * (float(y) - center_y)
+    return {
+        "hdmap_projection_center_x": center_x,
+        "hdmap_projection_center_y": center_y,
+        "hdmap_projection_lane_heading_rad": float(heading),
+        "hdmap_projection_l_recomputed_m": recomputed_l,
+        "projection_l_recompute_delta_m": abs(recomputed_l - float(projection_lateral)),
+        "projection_centerline_geometry_available": True,
     }
 
 

@@ -262,7 +262,10 @@ Interpretation:
   The analyzer now writes
   `analysis/apollo_lateral_semantics/apollo_lateral_projection_pairing.csv`
   when such matched projection samples exist, so review packs can audit the
-  row-level pairing instead of trusting only aggregate JSON metrics.
+  row-level pairing instead of trusting only aggregate JSON metrics. The CSV
+  includes a centerline point reconstructed from official `projection_l` and
+  `lane_heading_at_s` when available; this is projection geometry evidence,
+  not materialized scenario route geometry.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The

@@ -768,6 +768,9 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
                     "status": "ok",
                     "sim_time": 100.0 + index * 0.05,
                     "projection_l": -0.6,
+                    "localization_x": float(index),
+                    "localization_y": 0.6,
+                    "lane_heading_at_s": 0.0,
                     "nearest_lane_id": "0_0_2",
                 }
             )
@@ -787,7 +790,10 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
     assert alignment["route_lateral_vs_projection_lateral"]["opposite_sign_ratio"] == 1.0
     assert alignment["simple_lat_vs_projection_lateral"]["same_sign_ratio"] == 1.0
     assert alignment["route_lateral_vs_projection_lateral"]["opposite_sign_abs_sum_p95_m"] == 0.0
+    assert alignment["projection_centerline_geometry_sample_count"] == 4
+    assert alignment["projection_l_recompute_delta_p95_m"] == 0.0
     assert len(alignment["matched_samples"]) == 4
+    assert alignment["matched_samples"][0]["projection_centerline_geometry_available"] is True
 
     outputs = write_apollo_lateral_semantics_report(report, tmp_path / "out")
     pairing_path = Path(outputs["apollo_lateral_projection_pairing_csv"])
@@ -797,6 +803,8 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
     assert pairing_rows[0]["route_lateral_vs_projection_lateral"] == "opposite_sign"
     assert pairing_rows[0]["simple_lat_vs_projection_lateral"] == "same_sign"
     assert float(pairing_rows[0]["route_projection_abs_sum_m"]) == 0.0
+    assert pairing_rows[0]["projection_centerline_geometry_available"] == "True"
+    assert float(pairing_rows[0]["projection_l_recompute_delta_m"]) == 0.0
 
 
 def test_cli_run_dir_writes_report(tmp_path: Path) -> None:
