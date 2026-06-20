@@ -107,6 +107,13 @@ def extract_v_t_gap(
             warnings=[],
             invalid_reason="missing_target_actor_trace",
         )
+    target_rows, time_alignment = _align_actor_trace_timebase(
+        timeseries_rows=ts_rows,
+        target_rows=target_rows,
+        manifest=manifest,
+        root=root,
+        warnings=warnings,
+    )
     target_rows, activation_filter = _apply_target_activation_filter(target_rows, target_contract)
     if activation_filter["status"] == "invalid":
         return _report(
@@ -120,6 +127,7 @@ def extract_v_t_gap(
             warnings=[],
             invalid_reason="missing_target_activation_phase",
             target_activation_filter=activation_filter,
+            time_alignment=time_alignment,
         )
     activation_start = _float_value(activation_filter, "activation_start_s")
     if activation_start is not None:
@@ -155,6 +163,7 @@ def extract_v_t_gap(
         warnings=warnings,
         invalid_reason=None if extracted else "no_v_t_gap_rows",
         target_activation_filter=activation_filter,
+        time_alignment=time_alignment,
     )
 
 
@@ -503,6 +512,7 @@ def _report(
     warnings: list[str],
     invalid_reason: str | None = None,
     target_activation_filter: Mapping[str, Any] | None = None,
+    time_alignment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_files = {
         "timeseries": str(timeseries_path) if timeseries_path else None,
@@ -537,6 +547,7 @@ def _report(
         "fixed_scene_resolved_path": str(fixed_scene_resolved_path) if fixed_scene_resolved_path else None,
         "target_actor_contract": dict(target_contract),
         "target_activation_filter": dict(target_activation_filter or _default_activation_filter(target_contract)),
+        "time_alignment": dict(time_alignment or {"status": "not_evaluated"}),
         "target_actor_role": target_contract.get("target_actor_role"),
         "target_actor_id": target_ids[0] if target_ids else target_contract.get("target_actor_id"),
         "row_count": len(rows),
@@ -609,6 +620,119 @@ def _default_activation_filter(target_contract: Mapping[str, Any]) -> dict[str, 
         "rows_before_filter": None,
         "rows_after_filter": None,
     }
+
+
+def _align_actor_trace_timebase(
+    *,
+    timeseries_rows: list[dict[str, Any]],
+    target_rows: list[dict[str, Any]],
+    manifest: Mapping[str, Any],
+    root: Path | None,
+    warnings: list[str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    ts_min, ts_max = _time_range(timeseries_rows)
+    trace_min, trace_max = _time_range(target_rows)
+    start_sim_time = _fixed_scene_runtime_start_sim_time_s(manifest, root)
+    report: dict[str, Any] = {
+        "status": "not_applied",
+        "source": None,
+        "offset_s": 0.0,
+        "timeseries_min_s": ts_min,
+        "timeseries_max_s": ts_max,
+        "actor_trace_min_s": trace_min,
+        "actor_trace_max_s": trace_max,
+    }
+    if ts_min is None or trace_min is None:
+        report["status"] = "insufficient_data"
+        return target_rows, report
+    current_delta = abs(trace_min - ts_min)
+    if start_sim_time is not None:
+        shifted_delta = abs((trace_min + start_sim_time) - ts_min)
+        if current_delta > 1.0 and shifted_delta < current_delta:
+            aligned = _shift_trace_times(
+                target_rows,
+                offset_s=start_sim_time,
+                source="fixed_scene_runtime_hook.start_sim_time_s",
+            )
+            report.update(
+                {
+                    "status": "applied",
+                    "source": "fixed_scene_runtime_hook.start_sim_time_s",
+                    "offset_s": start_sim_time,
+                    "aligned_actor_trace_min_s": trace_min + start_sim_time,
+                    "aligned_actor_trace_max_s": (trace_max + start_sim_time) if trace_max is not None else None,
+                }
+            )
+            return aligned, report
+    if current_delta > 60.0 and abs(trace_min) < 60.0:
+        offset = ts_min - trace_min
+        warnings.append("actor_trace_timebase_offset_inferred_from_timeseries_min")
+        aligned = _shift_trace_times(target_rows, offset_s=offset, source="timeseries_min_inferred")
+        report.update(
+            {
+                "status": "applied",
+                "source": "timeseries_min_inferred",
+                "offset_s": offset,
+                "aligned_actor_trace_min_s": trace_min + offset,
+                "aligned_actor_trace_max_s": (trace_max + offset) if trace_max is not None else None,
+            }
+        )
+        return aligned, report
+    if current_delta > 1.0:
+        warnings.append("actor_trace_timeseries_timebase_mismatch_unresolved")
+        report["status"] = "unresolved"
+    return target_rows, report
+
+
+def _fixed_scene_runtime_start_sim_time_s(manifest: Mapping[str, Any], root: Path | None) -> float | None:
+    candidates: list[Mapping[str, Any]] = []
+    metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), Mapping) else {}
+    scenario_metadata = (
+        metadata.get("scenario_metadata") if isinstance(metadata.get("scenario_metadata"), Mapping) else {}
+    )
+    for payload in (
+        scenario_metadata.get("fixed_scene_runtime_hook"),
+        metadata.get("fixed_scene_runtime_hook"),
+        manifest.get("fixed_scene_runtime_hook"),
+    ):
+        if isinstance(payload, Mapping):
+            candidates.append(payload)
+    if root is not None:
+        hook_path = root / "artifacts" / "fixed_scene_runtime_hook.json"
+        if hook_path.exists():
+            payload = _read_json(hook_path)
+            if payload:
+                candidates.append(payload)
+    for candidate in candidates:
+        value = _float_value(candidate, "start_sim_time_s", "start_sim_time", "runtime_start_sim_time_s")
+        if value is not None:
+            return value
+    return None
+
+
+def _shift_trace_times(rows: list[dict[str, Any]], *, offset_s: float, source: str) -> list[dict[str, Any]]:
+    shifted: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        original = _float_value(item, "sim_time_sec", "sim_time_s", "sim_time", "time")
+        if original is not None:
+            item.setdefault("original_sim_time_sec", original)
+            item["sim_time_sec"] = original + float(offset_s)
+            item["timebase_alignment_offset_s"] = float(offset_s)
+            item["timebase_alignment_source"] = source
+        shifted.append(item)
+    return shifted
+
+
+def _time_range(rows: list[dict[str, Any]]) -> tuple[float | None, float | None]:
+    values = [
+        value
+        for value in (_float_value(row, "sim_time_sec", "sim_time_s", "sim_time", "time") for row in rows)
+        if value is not None
+    ]
+    if not values:
+        return None, None
+    return min(values), max(values)
 
 
 def _validity_from_status(status: str) -> str:

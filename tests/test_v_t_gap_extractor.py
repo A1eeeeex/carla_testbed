@@ -320,6 +320,53 @@ def test_v_t_gap_respects_active_after_phase_target_activation(tmp_path) -> None
     assert [row["sim_time_s"] for row in report["rows"]] == [5.0, 6.0]
 
 
+def test_v_t_gap_aligns_relative_actor_trace_to_absolute_apollo_timeseries(tmp_path) -> None:
+    run = _write_cut_in_run_fixture(tmp_path)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "scenario_metadata": {
+                        "fixed_scene_runtime_hook": {
+                            "start_sim_time_s": 100.0,
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    with (run / "timeseries.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["sim_time", "ego_speed_mps", "ego_x", "ego_y", "ego_yaw_rad", "ego_length_m", "ego_width_m"],
+        )
+        writer.writeheader()
+        for sim_time, ego_x in [(100.0, 0.0), (105.0, 5.0), (106.0, 6.0)]:
+            writer.writerow(
+                {
+                    "sim_time": sim_time,
+                    "ego_speed_mps": 10.0,
+                    "ego_x": ego_x,
+                    "ego_y": 0.0,
+                    "ego_yaw_rad": 0.0,
+                    "ego_length_m": 4.0,
+                    "ego_width_m": 2.0,
+                }
+            )
+
+    report = extract_v_t_gap(run_dir=run)
+
+    assert report["status"] == "pass"
+    assert report["time_alignment"]["status"] == "applied"
+    assert report["time_alignment"]["source"] == "fixed_scene_runtime_hook.start_sim_time_s"
+    assert report["time_alignment"]["offset_s"] == 100.0
+    assert report["target_activation_filter"]["activation_start_s"] == 105.0
+    assert [row["sim_time_s"] for row in report["rows"]] == [105.0, 106.0]
+    assert report["rows"][0]["longitudinal_center_gap_m"] == 14.0
+    assert report["rows"][0]["gap_m"] == 10.0
+
+
 def test_v_t_gap_invalid_when_activation_phase_has_no_timestamp(tmp_path) -> None:
     run = _write_cut_in_run_fixture(tmp_path)
     trace_path = run / "artifacts" / "scenario_actor_trace.jsonl"
