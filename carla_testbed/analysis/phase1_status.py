@@ -220,6 +220,7 @@ def _status(
         manifest=manifest,
         summary=summary,
         status=status,
+        reason=reason,
         target_contract=target_contract,
         v_t_gap=v_t_gap,
     )
@@ -245,6 +246,8 @@ def _status(
         "target_metric_evaluable": evaluability["target_metric_evaluable"],
         "target_metric_status": evaluability["target_metric_status"],
         "target_metric_reason": evaluability["target_metric_reason"],
+        "safety_event_hard_gate_eligible": evaluability["safety_event_hard_gate_eligible"],
+        "safety_event_hard_gate_reason": evaluability["safety_event_hard_gate_reason"],
         "counts_as_backend_loss_for_target_scenario": evaluability[
             "counts_as_backend_loss_for_target_scenario"
         ],
@@ -274,6 +277,7 @@ def _phase1_evaluability(
     manifest: Mapping[str, Any],
     summary: Mapping[str, Any],
     status: str,
+    reason: str | None,
     target_contract: Mapping[str, Any],
     v_t_gap: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -295,6 +299,11 @@ def _phase1_evaluability(
         v_t_gap=v_t_gap,
         run_evaluable=run_evaluable,
     )
+    safety_event_hard_gate_eligible, safety_event_hard_gate_reason = _safety_event_hard_gate_eligibility(
+        root=root,
+        status=status,
+        reason=reason,
+    )
     return {
         "run_evaluable": run_evaluable,
         "scenario_interaction_evaluable": scenario_interaction_evaluable,
@@ -302,13 +311,33 @@ def _phase1_evaluability(
         "target_metric_evaluable": target_metric_evaluable,
         "target_metric_status": target_metric_status,
         "target_metric_reason": target_metric_reason,
+        "safety_event_hard_gate_eligible": safety_event_hard_gate_eligible,
+        "safety_event_hard_gate_reason": safety_event_hard_gate_reason,
         "counts_as_backend_loss_for_target_scenario": bool(
             run_evaluable
             and scenario_interaction_evaluable
             and target_metric_evaluable
+            and safety_event_hard_gate_eligible
             and status == "failed"
         ),
     }
+
+
+def _safety_event_hard_gate_eligibility(
+    *,
+    root: Path,
+    status: str,
+    reason: str | None,
+) -> tuple[bool, str | None]:
+    if status != "failed" or reason != "lane_invasion":
+        return True, None
+    lane_event = _read_json(root / "analysis" / "baguang_lane_event_contract" / "baguang_lane_event_contract_report.json")
+    if not lane_event:
+        return True, None
+    boundary = lane_event.get("claim_boundary") if isinstance(lane_event.get("claim_boundary"), Mapping) else {}
+    if boundary.get("lane_invasion_event_can_be_used_as_hard_gate") is False:
+        return False, str(boundary.get("reason") or "lane_event_contract_blocks_hard_gate")
+    return True, None
 
 
 def _target_required(target_contract: Mapping[str, Any], manifest: Mapping[str, Any]) -> bool:
@@ -515,6 +544,13 @@ def _baguang_lane_event_blocker_summary(report: Mapping[str, Any], path: Path) -
         "path": str(path) if path.exists() else None,
         "status": report.get("status"),
         "reason": first.get("reason"),
+        "lane_invasion_event_can_be_used_as_hard_gate": (
+            first.get("lane_invasion_event_can_be_used_as_hard_gate")
+            if "lane_invasion_event_can_be_used_as_hard_gate" in first
+            else (report.get("claim_boundary") or {}).get("lane_invasion_event_can_be_used_as_hard_gate")
+            if isinstance(report.get("claim_boundary"), Mapping)
+            else None
+        ),
         "departure_classification": departure.get("classification"),
         "departure_interpretation": list(departure.get("interpretation") or []),
     }

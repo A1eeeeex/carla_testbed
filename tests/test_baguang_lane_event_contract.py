@@ -193,6 +193,24 @@ def test_high_cte_lane_invasion_is_not_quarantined(tmp_path: Path) -> None:
     assert diagnostics["control"]["mapped_to_applied_steer_abs_error"]["max_abs_error"] == 0.0
 
 
+def test_downstream_lane_invasion_before_footprint_crossing_is_quarantined(tmp_path: Path) -> None:
+    xodr = tmp_path / "straight_road_for_baguang.xodr"
+    run = tmp_path / "run"
+    _write_xodr(xodr)
+    _write_run(run, cross_track_error=0.6, heading_error=0.15, distance_x=40.0)
+
+    report = analyze_baguang_lane_event_contract(xodr_path=xodr, run_dirs=[run])
+    run_report = report["run_reports"][0]
+
+    assert report["status"] == "warn"
+    assert report["quarantine_recommended"] is True
+    assert report["claim_boundary"]["lane_invasion_event_can_be_used_as_hard_gate"] is False
+    assert run_report["lane_invasion_event_can_be_used_as_hard_gate"] is False
+    assert run_report["reason"] == "lane_invasion_trigger_before_static_footprint_crossing"
+    assert run_report["static_crossing_check"]["trigger_geometrically_implausible"] is True
+    assert run_report["static_crossing_check"]["trigger_footprint_intersects_marking"] is False
+
+
 def test_departure_diagnostics_reports_mapped_applied_steer_mismatch(tmp_path: Path) -> None:
     xodr = tmp_path / "straight_road_for_baguang.xodr"
     run = tmp_path / "run"

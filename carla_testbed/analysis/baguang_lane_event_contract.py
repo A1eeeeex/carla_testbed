@@ -71,6 +71,14 @@ def analyze_baguang_lane_event_contract(
     ]
     status = _overall_status(xodr_report, run_reports)
     quarantine = any(report.get("quarantine_recommended") for report in run_reports)
+    quarantine_reason = next(
+        (
+            str(report.get("reason"))
+            for report in run_reports
+            if report.get("quarantine_recommended") and report.get("reason")
+        ),
+        "lane_invasion_trigger_inconsistent_with_centerline_evidence",
+    )
     return {
         "schema_version": BAGUANG_LANE_EVENT_CONTRACT_SCHEMA_VERSION,
         "status": status,
@@ -80,11 +88,7 @@ def analyze_baguang_lane_event_contract(
         "quarantine_recommended": quarantine,
         "claim_boundary": {
             "lane_invasion_event_can_be_used_as_hard_gate": not quarantine,
-            "reason": (
-                "lane_invasion_trigger_inconsistent_with_centerline_evidence"
-                if quarantine
-                else "no_inconsistent_lane_invasion_trigger_observed"
-            ),
+            "reason": quarantine_reason if quarantine else "no_inconsistent_lane_invasion_trigger_observed",
         },
         "thresholds": {
             "ego_half_width_m": float(ego_half_width_m),
@@ -183,13 +187,17 @@ def analyze_lane_event_run_dir(
         and estimated_crossing_offset is not None
         and trigger_footprint.get("footprint_intersects_marking") is False
     )
-    quarantine = bool(lane_events and inconsistent_trigger and geometrically_implausible)
+    quarantine = bool(lane_events and geometrically_implausible)
     if not lane_events:
         status = "pass"
         reason = "no_lane_invasion_event_observed"
     elif quarantine:
         status = "warn"
-        reason = "lane_invasion_trigger_inconsistent_with_centerline_evidence"
+        reason = (
+            "lane_invasion_trigger_inconsistent_with_centerline_evidence"
+            if inconsistent_trigger
+            else "lane_invasion_trigger_before_static_footprint_crossing"
+        )
     elif inconsistent_trigger:
         status = "warn"
         reason = "early_low_cte_lane_invasion_without_static_crossing_check"
@@ -201,6 +209,7 @@ def analyze_lane_event_run_dir(
         "status": status,
         "reason": reason,
         "quarantine_recommended": quarantine,
+        "lane_invasion_event_can_be_used_as_hard_gate": not quarantine,
         "summary": {
             "success": summary.get("success"),
             "fail_reason": summary.get("fail_reason"),

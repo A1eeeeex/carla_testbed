@@ -493,7 +493,7 @@ def _discover_online_evidence(
     accepted_bundle_status = STATUS_NOT_YET
     accepted_bundle_path: str | None = None
     accepted_bundle: dict[str, Any] | None = None
-    best_acceptance_rank = (-1, 0)
+    best_acceptance_rank = (0, -1)
 
     runs_dir = evidence_root or (root / "runs")
     if runs_dir.exists():
@@ -688,8 +688,8 @@ def _discover_online_evidence(
             raw_status = str(acceptance.get("status") or STATUS_UNKNOWN)
             readiness = _phase1_acceptance_readiness(acceptance)
             rank = (
-                1 if readiness == STATUS_DONE else 0,
                 _timestamp_rank(str(acceptance_path)),
+                1 if readiness == STATUS_DONE else 0,
             )
             if rank > best_acceptance_rank:
                 best_acceptance_rank = rank
@@ -774,6 +774,7 @@ def _representative_evidence(evidence: list[dict[str, Any]]) -> dict[str, dict[s
 
 
 def _evidence_sort_key(item: Mapping[str, Any]) -> tuple[int, int, int, int, str]:
+    evidence_type = str(item.get("evidence_type") or "")
     type_order = {
         "case_yaml": 0,
         "fixed_scene_compile": 1,
@@ -795,8 +796,16 @@ def _evidence_sort_key(item: Mapping[str, Any]) -> tuple[int, int, int, int, str
         STATUS_NOT_YET: 3,
     }
     path_text = str(item.get("path") or "")
+    if evidence_type in {"comparison_online", "phase1_acceptance"}:
+        return (
+            type_order.get(evidence_type, 99),
+            -_timestamp_rank(path_text),
+            status_order.get(str(item.get("status") or ""), 4),
+            _phase1_run_status_rank(str(item.get("phase1_run_status") or "")),
+            path_text,
+        )
     return (
-        type_order.get(str(item.get("evidence_type") or ""), 99),
+        type_order.get(evidence_type, 99),
         status_order.get(str(item.get("status") or ""), 4),
         _phase1_run_status_rank(str(item.get("phase1_run_status") or "")),
         -_timestamp_rank(path_text),
@@ -1306,7 +1315,7 @@ def _comparison_summary_rank(
         "invalid": 2,
         "unknown": 1,
     }.get(str(comparison_status or ""), 0)
-    return (target_rank, status_rank, int(backend_count), _timestamp_rank(path_text))
+    return (_timestamp_rank(path_text), target_rank, status_rank, int(backend_count))
 
 
 def _matches_scenario(payload: Mapping[str, Any], aliases: set[str], path_hint: str = "") -> bool:

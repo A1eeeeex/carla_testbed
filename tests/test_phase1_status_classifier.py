@@ -257,6 +257,63 @@ def test_early_lane_invasion_before_phase_activation_is_evaluable_failure(tmp_pa
     assert report["counts_as_backend_loss_for_target_scenario"] is False
 
 
+def test_lane_event_contract_can_block_backend_loss_attribution(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    (run / "summary.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "exit_reason": "LANE_INVASION_HARD",
+                "lane_invasion_count": 1,
+                "collision_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps({"status": "pass", "rows": [{"gap_m": 20.0}], "target_actor_contract": {"status": "resolved"}}),
+        encoding="utf-8",
+    )
+    lane_event = run / "analysis" / "baguang_lane_event_contract"
+    lane_event.mkdir(parents=True)
+    (lane_event / "baguang_lane_event_contract_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "baguang_lane_event_contract.v1",
+                "status": "warn",
+                "claim_boundary": {
+                    "lane_invasion_event_can_be_used_as_hard_gate": False,
+                    "reason": "lane_invasion_trigger_before_static_footprint_crossing",
+                },
+                "run_reports": [
+                    {
+                        "reason": "lane_invasion_trigger_before_static_footprint_crossing",
+                        "lane_invasion_event_can_be_used_as_hard_gate": False,
+                        "departure_diagnostics": {
+                            "classification": "downstream_progressive_lane_departure",
+                            "interpretation": ["trigger_geometrically_implausible"],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "lane_invasion"
+    assert report["run_evaluable"] is True
+    assert report["scenario_interaction_evaluable"] is True
+    assert report["target_metric_evaluable"] is True
+    assert report["safety_event_hard_gate_eligible"] is False
+    assert report["safety_event_hard_gate_reason"] == "lane_invasion_trigger_before_static_footprint_crossing"
+    assert report["counts_as_backend_loss_for_target_scenario"] is False
+
+
 def test_duration_policy_not_reached_after_target_interaction_is_evaluable_failure(tmp_path) -> None:
     run = _base_run(tmp_path)
     (run / "summary.json").write_text(

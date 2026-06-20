@@ -189,6 +189,40 @@ def test_shared_near_start_lane_invasion_context_blocks_backend_loss(tmp_path) -
     assert all(item["counts_as_backend_loss"] is False for item in report["backend_results"])
 
 
+def test_lane_event_contract_blocks_lane_invasion_backend_loss(tmp_path) -> None:
+    run_a = _write_run(
+        tmp_path,
+        "apollo",
+        "apollo_cyberrt",
+        "apollo_reference_backend",
+        "failed",
+        "lane_invasion",
+    )
+    status_path = run_a / "analysis" / "phase1_status" / "phase1_status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status["phase1_metrics"]["derived_blocker_evidence"] = {
+        "available": True,
+        "baguang_lane_event_contract": {
+            "available": True,
+            "status": "warn",
+            "reason": "lane_invasion_trigger_before_static_footprint_crossing",
+            "lane_invasion_event_can_be_used_as_hard_gate": False,
+            "departure_classification": "downstream_progressive_lane_departure",
+        },
+    }
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    run_b = _write_run(tmp_path, "builtin", "carla_builtin", "planning_control_backend", "success")
+
+    report = compare_scenario_runs([run_a, run_b])
+
+    assert report["comparison_status"] == "partially_evaluable"
+    assert report["comparison_target_status"] == "shared_safety_event_context_issue"
+    assert report["reason"] == "lane_event_contract_blocks_hard_gate"
+    lane_event = report["safety_event_context"]["event_checks"]["lane_event_contract"]
+    assert lane_event["blocked_run_ids"] == ["apollo"]
+    assert all(item["counts_as_backend_loss"] is False for item in report["backend_results"])
+
+
 def test_high_error_shared_lane_invasion_remains_backend_failure(tmp_path) -> None:
     lane_context = {
         "available": True,

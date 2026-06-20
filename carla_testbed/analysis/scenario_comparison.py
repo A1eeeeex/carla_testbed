@@ -718,19 +718,30 @@ def _safety_event_evidence_comparison(runs: Sequence[Mapping[str, Any]]) -> dict
 def _safety_event_context_comparison(runs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     evaluable_runs = [run for run in runs if _run_evaluable(run)]
     lane_check = _shared_near_start_lane_invasion_check(evaluable_runs)
-    blocking_events = ["lane_invasion"] if lane_check.get("comparison_blocking") else []
-    reason = "shared_near_start_lane_invasion_context_issue" if blocking_events else None
+    lane_contract_check = _lane_event_contract_hard_gate_check(evaluable_runs)
+    blocking_events = []
+    reason = None
+    if lane_contract_check.get("comparison_blocking"):
+        blocking_events.append("lane_invasion")
+        reason = str(lane_contract_check.get("reason") or "lane_event_contract_blocks_hard_gate")
+    elif lane_check.get("comparison_blocking"):
+        blocking_events.append("lane_invasion")
+        reason = "shared_near_start_lane_invasion_context_issue"
     return {
         "schema_version": "phase1_safety_event_context_comparison.v1",
         "comparison_blocking": bool(blocking_events),
         "reason": reason,
         "blocking_events": blocking_events,
-        "event_checks": {"lane_invasion": lane_check},
+        "event_checks": {
+            "lane_invasion": lane_check,
+            "lane_event_contract": lane_contract_check,
+        },
         "claim_boundary": (
             "A lane-invasion failure shared by all evaluable backends within the first few meters, "
             "with low cross-track and heading error, is treated as a scenario/sensor contract issue "
-            "until the lane-event contract is repaired or explained. It remains a non-pass outcome, "
-            "but it is not counted as a backend behavior loss."
+            "until the lane-event contract is repaired or explained. A lane-event contract that marks "
+            "lane_invasion_event_can_be_used_as_hard_gate=false also blocks backend-loss attribution. "
+            "It remains a non-pass outcome, but it is not counted as a backend behavior loss."
         ),
     }
 
@@ -756,6 +767,44 @@ def _shared_near_start_lane_invasion_check(runs: Sequence[Mapping[str, Any]]) ->
         },
         "reason": "shared_near_start_low_error_lane_invasion" if comparison_blocking else None,
     }
+
+
+def _lane_event_contract_hard_gate_check(runs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    triggered = [run for run in runs if str(run.get("failure_reason") or "") == "lane_invasion"]
+    blocked: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for run in triggered:
+        lane_event = _run_baguang_lane_event_summary(run)
+        if not lane_event.get("available"):
+            missing.append(str(run.get("run_id")))
+            continue
+        if lane_event.get("lane_invasion_event_can_be_used_as_hard_gate") is False:
+            blocked.append(
+                {
+                    "run_id": run.get("run_id"),
+                    "reason": lane_event.get("reason"),
+                    "departure_classification": lane_event.get("departure_classification"),
+                }
+            )
+    return {
+        "event_name": "lane_invasion",
+        "comparison_blocking": bool(blocked),
+        "reason": "lane_event_contract_blocks_hard_gate" if blocked else None,
+        "blocked_run_ids": [str(item.get("run_id")) for item in blocked],
+        "missing_contract_run_ids": missing,
+        "blocked_runs": blocked,
+    }
+
+
+def _run_baguang_lane_event_summary(run: Mapping[str, Any]) -> Mapping[str, Any]:
+    metrics = run.get("phase1_metrics") if isinstance(run.get("phase1_metrics"), Mapping) else {}
+    derived = metrics.get("derived_blocker_evidence") if isinstance(metrics.get("derived_blocker_evidence"), Mapping) else {}
+    lane_event = (
+        derived.get("baguang_lane_event_contract")
+        if isinstance(derived.get("baguang_lane_event_contract"), Mapping)
+        else {}
+    )
+    return lane_event
 
 
 def _lane_invasion_context_for_run(run: Mapping[str, Any]) -> dict[str, Any]:

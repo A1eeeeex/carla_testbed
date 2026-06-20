@@ -1028,6 +1028,125 @@ def test_route_only_lane_keep_done_with_self_contained_accepted_bundle(tmp_path)
     assert lane["representative_evidence"]["phase1_acceptance"]["bundle_self_contained"] is True
 
 
+def test_phase1_catalog_uses_latest_accepted_bundle_not_best_stale_done(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    _write_catalog_run(
+        evidence_root / "apollo_lane_keep",
+        backend="apollo_cyberrt",
+        backend_type="apollo_reference_backend",
+        scenario_case="town01_lane_keep_097",
+        status="failed",
+    )
+    _write_catalog_run(
+        evidence_root / "builtin_lane_keep",
+        backend="carla_builtin",
+        backend_type="planning_control_backend",
+        scenario_case="town01_lane_keep_097",
+        status="success",
+    )
+    old_acceptance = evidence_root / "phase1_acceptance_lane_keep_20260620_010000" / "acceptance"
+    old_acceptance.mkdir(parents=True)
+    (old_acceptance / "phase1_acceptance_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_acceptance.v1",
+                "status": "DONE",
+                "scenario_case": "town01_lane_keep_097",
+                "comparison_id": "old_lane_keep",
+                "apollo_run_id": "apollo_lane_keep",
+                "planning_control_run_id": "builtin_lane_keep",
+                "blocking_reasons": [],
+                "gates": {"bundle_self_contained": True},
+                "bundle_materialization": {"self_contained": True, "missing_required_files": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    new_acceptance = evidence_root / "phase1_acceptance_lane_keep_20260620_020000" / "acceptance"
+    new_acceptance.mkdir(parents=True)
+    (new_acceptance / "phase1_acceptance_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_acceptance.v1",
+                "status": "PARTIAL",
+                "scenario_case": "town01_lane_keep_097",
+                "comparison_id": "new_lane_keep",
+                "apollo_run_id": "apollo_lane_keep",
+                "planning_control_run_id": "builtin_lane_keep",
+                "blocking_reasons": ["comparison_valid"],
+                "gates": {"bundle_self_contained": True},
+                "bundle_materialization": {"self_contained": True, "missing_required_files": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_phase1_scenario_catalog(".", evidence_root=evidence_root)
+    lane = {item["scenario"]: item for item in report["scenarios"]}["lane_keep_straight"]
+
+    assert lane["accepted_bundle_status"] == "PARTIAL"
+    assert lane["overall_status"] == "PARTIAL"
+    assert lane["accepted_bundle"]["comparison_id"] == "new_lane_keep"
+    assert lane["accepted_bundle_path"].endswith(
+        "phase1_acceptance_lane_keep_20260620_020000/acceptance/phase1_acceptance_report.json"
+    )
+
+
+def test_phase1_catalog_uses_latest_comparison_not_best_stale_comparable(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    _write_catalog_run(
+        evidence_root / "apollo_lane_keep",
+        backend="apollo_cyberrt",
+        backend_type="apollo_reference_backend",
+        scenario_case="town01_lane_keep_097",
+        status="failed",
+    )
+    _write_catalog_run(
+        evidence_root / "builtin_lane_keep",
+        backend="carla_builtin",
+        backend_type="planning_control_backend",
+        scenario_case="town01_lane_keep_097",
+        status="success",
+    )
+    old_comparison = evidence_root / "comparisons" / "lane_keep_20260620_010000"
+    old_comparison.mkdir(parents=True)
+    (old_comparison / "comparison_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_comparison.v1",
+                "scenario_case": "town01_lane_keep_097",
+                "comparison_status": "comparable",
+                "comparison_target_status": "apollo_vs_planning_control_evaluable",
+                "participating_runs": [{"backend": "apollo_cyberrt"}, {"backend": "carla_builtin"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    new_comparison = evidence_root / "comparisons" / "lane_keep_20260620_020000"
+    new_comparison.mkdir(parents=True)
+    (new_comparison / "comparison_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_comparison.v1",
+                "scenario_case": "town01_lane_keep_097",
+                "comparison_status": "partially_evaluable",
+                "comparison_target_status": "shared_safety_event_context_issue",
+                "reason": "lane_event_contract_blocks_hard_gate",
+                "participating_runs": [{"backend": "apollo_cyberrt"}, {"backend": "carla_builtin"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_phase1_scenario_catalog(".", evidence_root=evidence_root)
+    lane = {item["scenario"]: item for item in report["scenarios"]}["lane_keep_straight"]
+
+    assert lane["comparison_status"] == "partially_evaluable"
+    assert lane["comparison_target_status"] == "shared_safety_event_context_issue"
+    comparison_evidence = lane["representative_evidence"]["comparison_online"]
+    assert comparison_evidence["path"].endswith("lane_keep_20260620_020000/comparison_summary.json")
+
+
 def _write_catalog_run(run, *, backend, backend_type, scenario_case, status):
     (run / "analysis" / "phase1_status").mkdir(parents=True)
     (run / "analysis" / "v_t_gap").mkdir(parents=True)
