@@ -72,24 +72,29 @@ FIELD_ALIASES = {
         "e_y_m",
     ],
     "apollo_simple_lat_lateral_error": [
+        "apollo_simple_lat_lateral_error",
         "apollo_debug_simple_lat_lateral_error_m",
         "debug_simple_lat_lateral_error_m",
         "e_y_m",
     ],
     "apollo_simple_lon_current_station": [
+        "apollo_simple_lon_current_station",
         "apollo_debug_simple_lon_current_station_m",
         "debug_simple_lon_current_station_m",
     ],
     "apollo_simple_lon_station_reference": [
+        "apollo_simple_lon_station_reference",
         "apollo_debug_simple_lon_station_reference_m",
         "debug_simple_lon_station_reference_m",
     ],
     "apollo_simple_lat_target_point_s": [
+        "apollo_simple_lat_target_point_s",
         "apollo_debug_simple_lat_target_point_s",
         "debug_simple_lat_target_point_s",
         "apollo_target_point_s",
     ],
     "apollo_simple_lon_matched_point_s": [
+        "apollo_simple_lon_matched_point_s",
         "apollo_debug_simple_lon_matched_point_s",
         "debug_simple_lon_matched_point_s",
         "apollo_matched_point_s",
@@ -177,6 +182,13 @@ DRIFT_WINDOW_FIELD_ALIASES = {
     **FIELD_ALIASES,
 }
 
+ROUTE_LATERAL_ERROR_ALIASES = [
+    "cross_track_error",
+    "lateral_error",
+    "route_cross_track_error",
+    "route_lateral_error",
+]
+
 
 def analyze_apollo_lateral_semantics_run_dir(
     run_dir: str | Path,
@@ -204,7 +216,14 @@ def analyze_apollo_lateral_semantics_run_dir(
                 "planning_debug.json",
             ],
         ),
-        control_trace=_find_first(root, ["artifacts/control_apply_trace.jsonl", "control_apply_trace.jsonl"]),
+        control_trace=[
+            path
+            for path in (
+                _find_first(root, ["artifacts/control_apply_trace.jsonl", "control_apply_trace.jsonl"]),
+                _find_first(root, ["artifacts/control_decode_debug.jsonl", "control_decode_debug.jsonl"]),
+            )
+            if path is not None
+        ],
         source_steer_summary=_find_first(
             root,
             ["artifacts/source_steer_summary.json", "source_steer_summary.json"],
@@ -237,7 +256,7 @@ def analyze_apollo_lateral_semantics(
     timeseries: str | Path | Sequence[str | Path] | None = None,
     route_health: str | Path | None = None,
     planning_debug: str | Path | None = None,
-    control_trace: str | Path | None = None,
+    control_trace: str | Path | Sequence[str | Path] | None = None,
     source_steer_summary: str | Path | None = None,
     kappa_audit_summary: str | Path | None = None,
     localization_contract: str | Path | None = None,
@@ -419,7 +438,7 @@ def analyze_apollo_lateral_semantics(
         "source": {
             "run_dir": None if run_dir is None else str(Path(run_dir)),
             "timeseries": _path_repr(timeseries),
-            "control_trace": None if control_trace is None else str(Path(control_trace)),
+            "control_trace": _path_repr(control_trace),
             "route_health": None if route_health is None else str(Path(route_health)),
             "planning_debug": None if planning_debug is None else str(Path(planning_debug)),
             "source_steer_summary": None if source_steer_summary is None else str(Path(source_steer_summary)),
@@ -841,22 +860,48 @@ def _merge_control_trace_fields(
         "ego_yaw_rate",
         "steer_scale",
         "steering_sign",
+        "apollo_simple_lat_lateral_error",
+        "apollo_simple_lon_current_station",
+        "apollo_simple_lon_station_reference",
+        "apollo_simple_lat_target_point_s",
+        "apollo_simple_lon_matched_point_s",
+        "heading_error",
+        "reference_lane_curvature",
+        "apollo_target_point_kappa",
+        "apollo_matched_point_x",
+        "apollo_matched_point_y",
+        "apollo_target_point_x",
+        "apollo_target_point_y",
     )
     for row in semantic_rows:
         current = dict(row)
         sim_time = _row_value(current, DRIFT_WINDOW_FIELD_ALIASES["sim_time"])
-        nearest = _nearest_control_row(sim_time, times, indexed)
-        if nearest is None:
-            merged.append(current)
-            continue
-        nearest_time = _row_value(nearest, DRIFT_WINDOW_FIELD_ALIASES["sim_time"])
-        current["_control_trace_merge_dt_s"] = abs(float(sim_time) - float(nearest_time))
+        merge_dts: list[float] = []
         for field in control_fields:
+            nearest = _nearest_control_row_with_field(sim_time, times, indexed, FIELD_ALIASES.get(field, [field]))
+            if nearest is None:
+                continue
+            nearest_time = _row_value(nearest, DRIFT_WINDOW_FIELD_ALIASES["sim_time"])
+            if nearest_time is not None and sim_time is not None:
+                merge_dts.append(abs(float(sim_time) - float(nearest_time)))
             value = _row_value(nearest, FIELD_ALIASES.get(field, [field]))
             if value is not None:
                 current[field] = value
+        if merge_dts:
+            current["_control_trace_merge_dt_s"] = min(merge_dts)
         merged.append(current)
     return merged
+
+
+def _nearest_control_row_with_field(
+    sim_time: float | None,
+    times: Sequence[float],
+    indexed: Sequence[tuple[float, Mapping[str, Any]]],
+    aliases: Sequence[str],
+) -> Mapping[str, Any] | None:
+    candidates = _nearest_control_candidates(sim_time, times, indexed)
+    rows_with_field = [row for _, row in candidates if _row_value(row, aliases) is not None]
+    return rows_with_field[0] if rows_with_field else None
 
 
 def _nearest_control_row(
@@ -864,20 +909,38 @@ def _nearest_control_row(
     times: Sequence[float],
     indexed: Sequence[tuple[float, Mapping[str, Any]]],
 ) -> Mapping[str, Any] | None:
+    candidates = _nearest_control_candidates(sim_time, times, indexed)
+    return candidates[0][1] if candidates else None
+
+
+def _nearest_control_candidates(
+    sim_time: float | None,
+    times: Sequence[float],
+    indexed: Sequence[tuple[float, Mapping[str, Any]]],
+) -> list[tuple[float, Mapping[str, Any]]]:
     if sim_time is None or not times:
-        return None
+        return []
     insert_at = bisect_left(times, sim_time)
     candidates: list[tuple[float, Mapping[str, Any]]] = []
-    if insert_at < len(indexed):
-        candidates.append(indexed[insert_at])
-    if insert_at > 0:
-        candidates.append(indexed[insert_at - 1])
-    if not candidates:
-        return None
-    nearest_time, nearest_row = min(candidates, key=lambda item: abs(float(item[0]) - float(sim_time)))
-    if abs(float(nearest_time) - float(sim_time)) > CONTROL_TRACE_MERGE_MAX_DT_S:
-        return None
-    return nearest_row
+    cursor = insert_at
+    while cursor < len(indexed):
+        item = indexed[cursor]
+        if abs(float(item[0]) - float(sim_time)) > CONTROL_TRACE_MERGE_MAX_DT_S:
+            break
+        candidates.append(item)
+        cursor += 1
+    cursor = insert_at - 1
+    while cursor >= 0:
+        item = indexed[cursor]
+        if abs(float(item[0]) - float(sim_time)) > CONTROL_TRACE_MERGE_MAX_DT_S:
+            break
+        candidates.append(item)
+        cursor -= 1
+    return [
+        item
+        for item in sorted(candidates, key=lambda item: abs(float(item[0]) - float(sim_time)))
+        if abs(float(item[0]) - float(sim_time)) <= CONTROL_TRACE_MERGE_MAX_DT_S
+    ]
 
 
 def _flatten_mapping(payload: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
@@ -994,6 +1057,7 @@ def _drift_samples(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, float]]:
             field: _row_value(row, DRIFT_WINDOW_FIELD_ALIASES.get(field, [field]))
             for field in fields
         }
+        sample["cross_track_error"] = _row_value(row, ROUTE_LATERAL_ERROR_ALIASES)
         if sample["cross_track_error"] is None:
             continue
         if sample["sim_time"] is None and sample["route_s"] is None:
@@ -1124,7 +1188,7 @@ def _lateral_sign_alignment_summary(
     pairs = {
         "source_steer_vs_route_lateral_error": _sign_pair_stats(
             rows,
-            FIELD_ALIASES["cross_track_error"],
+            ROUTE_LATERAL_ERROR_ALIASES,
             FIELD_ALIASES["apollo_steer_raw"],
             left_min_abs=lateral_min,
             right_min_abs=steer_min,
@@ -1138,14 +1202,14 @@ def _lateral_sign_alignment_summary(
         ),
         "mapped_steer_vs_route_lateral_error": _sign_pair_stats(
             rows,
-            FIELD_ALIASES["cross_track_error"],
+            ROUTE_LATERAL_ERROR_ALIASES,
             FIELD_ALIASES["bridge_steer_mapped"],
             left_min_abs=lateral_min,
             right_min_abs=steer_min,
         ),
         "applied_steer_vs_route_lateral_error": _sign_pair_stats(
             rows,
-            FIELD_ALIASES["cross_track_error"],
+            ROUTE_LATERAL_ERROR_ALIASES,
             FIELD_ALIASES["carla_steer_applied"],
             left_min_abs=lateral_min,
             right_min_abs=steer_min,
@@ -1440,6 +1504,8 @@ def _read_rows(path: str | Path | Sequence[str | Path] | None) -> list[dict[str,
         rows = _read_jsonl(resolved)
         if "control_apply_trace" in resolved.name:
             return [_normalize_control_apply_trace_row(row) for row in rows]
+        if "control_decode_debug" in resolved.name:
+            return [_normalize_control_decode_debug_row(row) for row in rows]
         return rows
     if resolved.suffix == ".json":
         payload = _read_json(resolved)
@@ -1481,6 +1547,104 @@ def _normalize_control_apply_trace_row(row: Mapping[str, Any]) -> dict[str, Any]
     )
     _set_if_numeric(normalized, "steer_scale", row.get("steer_scale"))
     _set_if_numeric(normalized, "steering_sign", row.get("steering_sign"))
+    return normalized
+
+
+def _normalize_control_decode_debug_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    parsed = row.get("parsed_control") if isinstance(row.get("parsed_control"), Mapping) else {}
+    raw = row.get("raw_control_msg_dump") if isinstance(row.get("raw_control_msg_dump"), Mapping) else {}
+    output = row.get("output_to_carla") if isinstance(row.get("output_to_carla"), Mapping) else {}
+    _set_if_numeric(normalized, "sim_time", _first_numeric_value(output.get("gt_state_sim_time_sec")))
+    _set_if_numeric(normalized, "apollo_steer_raw", _first_numeric_value(parsed.get("steer")))
+    _set_if_numeric(
+        normalized,
+        "bridge_steer_mapped",
+        _first_numeric_value(output.get("mapped_carla_steer_cmd"), output.get("steer")),
+    )
+    _set_if_numeric(normalized, "steer_scale", output.get("steer_scale"))
+    _set_if_numeric(normalized, "steering_sign", output.get("steer_sign"))
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_lateral_error_m",
+        _first_numeric_value(
+            parsed.get("debug_simple_lat_lateral_error_m"),
+            raw.get("debug_simple_lat_lateral_error"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_heading_error_rad",
+        _first_numeric_value(
+            parsed.get("debug_simple_lat_heading_error_rad"),
+            raw.get("debug_simple_lat_heading_error"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_curvature",
+        _first_numeric_value(parsed.get("debug_simple_lat_curvature"), raw.get("debug_simple_lat_curvature")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_target_point_kappa",
+        _first_numeric_value(
+            parsed.get("debug_simple_lat_target_point_kappa"),
+            raw.get("debug_simple_lat_current_target_point_kappa"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_target_point_s",
+        _first_numeric_value(
+            parsed.get("debug_simple_lat_target_point_s"),
+            raw.get("debug_simple_lat_current_target_point_s"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_target_point_x",
+        _first_numeric_value(
+            parsed.get("debug_simple_lat_target_point_x"),
+            raw.get("debug_simple_lat_current_target_point_x"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_target_point_y",
+        _first_numeric_value(
+            parsed.get("debug_simple_lat_target_point_y"),
+            raw.get("debug_simple_lat_current_target_point_y"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lon_current_station_m",
+        _first_numeric_value(parsed.get("debug_simple_lon_current_station_m"), raw.get("debug_simple_lon_current_station")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lon_station_reference_m",
+        _first_numeric_value(
+            parsed.get("debug_simple_lon_station_reference_m"),
+            raw.get("debug_simple_lon_station_reference"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lon_matched_point_s",
+        _first_numeric_value(parsed.get("debug_simple_lon_matched_point_s"), raw.get("debug_simple_lon_current_matched_point_s")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lon_matched_point_x",
+        _first_numeric_value(parsed.get("debug_simple_lon_matched_point_x"), raw.get("debug_simple_lon_current_matched_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lon_matched_point_y",
+        _first_numeric_value(parsed.get("debug_simple_lon_matched_point_y"), raw.get("debug_simple_lon_current_matched_point_y")),
+    )
     return normalized
 
 

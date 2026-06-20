@@ -181,14 +181,18 @@ Interpretation:
   The next behavior loop should inspect lateral/reference-line semantics and
   raw/mapped/applied steer around the lane event, not assist cleanup or
   startup planning warmup.
-- `apollo_lateral_semantics` now consumes
-  `artifacts/control_apply_trace.jsonl` and time-aligns raw/mapped/applied
-  control fields into sparse `timeseries.*` rows. On the latest representative
-  Apollo cut-in run, the refreshed report shows the first high-lateral sample
-  at `sim_time≈10320.679s` with `apollo_steer_raw≈0.461`,
-  `bridge_steer_mapped≈0.115`, `carla_steer_applied≈0.115`,
-  `cross_track_error≈0.513m`, and `heading_error≈0.120rad`. That removes the
-  earlier false appearance that source steer was zero during the lane event.
+- `apollo_lateral_semantics` now consumes both
+  `artifacts/control_apply_trace.jsonl` and
+  `artifacts/control_decode_debug.jsonl`, then time-aligns raw/mapped/applied
+  control and Apollo `simple_lat` debug fields into sparse `timeseries.*` rows.
+  On the latest representative Apollo cut-in run, the refreshed report shows
+  the first high-lateral sample at `sim_time≈10320.679s` with
+  `apollo_steer_raw≈0.494`, `bridge_steer_mapped≈0.124`,
+  `carla_steer_applied≈0.115`, `cross_track_error≈0.513m`,
+  `apollo_simple_lat_lateral_error≈-0.546m`, and
+  `heading_error≈-0.128rad`. That removes the earlier false appearance that
+  source steer was zero or that Apollo simple_lat evidence was missing during
+  the lane event.
   The report is still `warn`, with suspected layer
   `reference_line_semantics` because Planning is non-empty while reference-line
   debug remains missing/zero (`reference_line_count_zero_ratio=1.0` and
@@ -198,10 +202,11 @@ Interpretation:
   `lateral_sign_alignment` diagnostic. For the first high-lateral sample in
   `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742`,
   `source_steer_vs_route_lateral_error=same_sign` and
-  `applied_steer_vs_route_lateral_error=same_sign`. Across all active
-  high-lateral samples, however, the source-steer / route-lateral same-sign
-  ratio is only about `0.545`, while source-steer / Apollo simple_lat lateral
-  same-sign ratio is `0.0`. This is a sign-convention and lateral-semantics
+  `applied_steer_vs_route_lateral_error=same_sign`, while
+  `source_steer_vs_simple_lat_lateral_error=opposite_sign`. Across all active
+  high-lateral samples, the source-steer / route-lateral same-sign ratio is
+  `1.0`, while source-steer / Apollo simple_lat lateral same-sign ratio is
+  `0.0`. This is a sign-convention and lateral-semantics
   sense check around the lane event; it is not proof of a steering-sign bug and
   does not justify changing `steer_scale`, physical mapping, or controller
   smoothing before reference-line / simple_lat semantics are closed.

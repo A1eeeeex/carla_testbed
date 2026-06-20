@@ -507,7 +507,7 @@ def test_run_dir_merges_control_apply_trace_over_sparse_timeseries_control_field
 
     report = analyze_apollo_lateral_semantics_run_dir(run_dir)
 
-    assert report["source"]["control_trace"].endswith("artifacts/control_apply_trace.jsonl")
+    assert any(str(path).endswith("artifacts/control_apply_trace.jsonl") for path in report["source"]["control_trace"])
     assert report["correlation_summary"]["apollo_steer_raw_abs"]["max"] == 0.45
     assert report["correlation_summary"]["bridge_steer_mapped_abs"]["max"] == 0.1125
     assert report["correlation_summary"]["carla_steer_applied_abs"]["max"] == 0.1125
@@ -516,6 +516,66 @@ def test_run_dir_merges_control_apply_trace_over_sparse_timeseries_control_field
     assert first_high["bridge_steer_mapped"] == 0.075
     assert first_high["carla_steer_applied"] == 0.075
     assert report["resolved_fields"]["apollo_steer_raw"] == "apollo_steer_raw"
+
+
+def test_run_dir_merges_control_decode_debug_simple_lat_fields(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "artifacts").mkdir(parents=True)
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["sim_time"] = 20.0 + index * 0.05
+        row["route_s"] = index * 2.0
+        row["cross_track_error"] = [0.05, 0.25, 0.60, 0.70][index]
+        row["heading_error"] = [0.01, 0.03, 0.12, 0.14][index]
+        row["apollo_steer_raw"] = 0.0
+        row["bridge_steer_mapped"] = 0.0
+        row["carla_steer_applied"] = 0.0
+    _write_rows(run_dir / "timeseries.csv", rows)
+    decode_rows = []
+    for index, steer in enumerate((0.0, 0.10, 0.30, 0.35)):
+        sim_time = 20.0 + index * 0.05
+        decode_rows.append(
+            {
+                "ts_sec": 1000.0 + index,
+                "parsed_control": {
+                    "steer": steer,
+                    "debug_simple_lat_lateral_error_m": -rows[index]["cross_track_error"],
+                    "debug_simple_lat_heading_error_rad": -rows[index]["heading_error"],
+                    "debug_simple_lat_curvature": 0.0,
+                    "debug_simple_lat_target_point_kappa": 0.0,
+                    "debug_simple_lat_target_point_s": -1.0 - index * 0.1,
+                    "debug_simple_lat_target_point_x": 10.0 + index,
+                    "debug_simple_lat_target_point_y": 5.0,
+                    "debug_simple_lon_current_station_m": -1.0,
+                    "debug_simple_lon_station_reference_m": 0.0,
+                    "debug_simple_lon_matched_point_s": 0.0,
+                    "debug_simple_lon_matched_point_x": 11.0 + index,
+                    "debug_simple_lon_matched_point_y": 5.0,
+                },
+                "output_to_carla": {
+                    "gt_state_sim_time_sec": sim_time,
+                    "mapped_carla_steer_cmd": steer * 0.25,
+                    "steer_sign": 1.0,
+                },
+            }
+        )
+    (run_dir / "artifacts" / "control_decode_debug.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in decode_rows),
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+
+    assert any(str(path).endswith("artifacts/control_decode_debug.jsonl") for path in report["source"]["control_trace"])
+    first_high = report["drift_window_summary"]["phase_samples"]["first_high_lateral"]
+    assert first_high["cross_track_error"] == 0.60
+    assert first_high["apollo_simple_lat_lateral_error"] == -0.60
+    assert first_high["apollo_steer_raw"] == 0.30
+    assert first_high["apollo_simple_lat_target_point_s"] == -1.2
+    alignment = report["lateral_sign_alignment"]["first_high_lateral_sample"]
+    assert alignment["source_steer_vs_route_lateral_error"] == "same_sign"
+    assert alignment["source_steer_vs_simple_lat_lateral_error"] == "opposite_sign"
+    assert report["correlation_summary"]["apollo_simple_lat_lateral_error_abs"]["p95"] > 0.60
 
 
 def test_run_dir_consumes_localization_hdmap_lateral_consistency(tmp_path: Path) -> None:
