@@ -109,6 +109,16 @@ def test_phase1_acceptance_writer_outputs_json_and_summary(tmp_path) -> None:
         / "apollo_run"
         / "timeseries.csv"
     ).exists()
+    assert (
+        tmp_path
+        / "acceptance"
+        / "evidence"
+        / "runs"
+        / "apollo_run"
+        / "analysis"
+        / "apollo_link_health"
+        / "apollo_link_health_report.json"
+    ).exists()
 
 
 def test_phase1_acceptance_writer_blocks_non_self_contained_bundle(tmp_path) -> None:
@@ -232,6 +242,17 @@ def _write_run(path, run_id, backend, backend_type):
         json.dumps({"status": "success", "run_evaluable": True}),
         encoding="utf-8",
     )
+    if backend == "apollo_cyberrt":
+        (path / "analysis" / "apollo_link_health").mkdir(parents=True)
+        (path / "analysis" / "prediction_evidence").mkdir(parents=True)
+        (path / "analysis" / "apollo_link_health" / "apollo_link_health_report.json").write_text(
+            json.dumps({"primary_blocker": "lane_invasion:demo"}),
+            encoding="utf-8",
+        )
+        (path / "analysis" / "prediction_evidence" / "prediction_evidence_report.json").write_text(
+            json.dumps({"prediction_mode": "native_observed"}),
+            encoding="utf-8",
+        )
     (path / "analysis" / "v_t_gap" / "v_t_gap_report.json").write_text(
         json.dumps({"status": "pass"}),
         encoding="utf-8",

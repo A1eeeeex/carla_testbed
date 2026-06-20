@@ -338,6 +338,71 @@ def test_comparison_backfills_legacy_phase1_status_evaluability_fields(tmp_path)
     assert rows["apollo_cyberrt"]["target_metric_status"] == "pass"
 
 
+def test_scenario_comparison_uses_phase1_artifact_completeness_profile(tmp_path) -> None:
+    run_a = _write_run(
+        tmp_path,
+        "apollo",
+        "apollo_cyberrt",
+        "apollo_reference_backend",
+        "failed",
+        "lane_invasion",
+    )
+    run_b = _write_run(tmp_path, "builtin", "carla_builtin", "planning_control_backend", "failed", "lane_invasion")
+    for run in (run_a, run_b):
+        _write_phase1_artifact_completeness(run, status="pass")
+        _write_generic_artifact_completeness(
+            run,
+            status="insufficient_data",
+            artifact_complete=False,
+            missing_artifacts=[],
+            missing_raw_evidence_artifacts=["route.json:points_missing"],
+        )
+
+    report = compare_scenario_runs([run_a, run_b])
+
+    assert report["comparison_status"] == "comparable"
+    assert report["comparison_target_status"] == "apollo_vs_planning_control_evaluable"
+    assert report["validity_gates"]["artifact_complete"] is True
+    rows = {row["backend"]: row for row in report["backend_results"]}
+    assert rows["apollo_cyberrt"]["artifact_complete"] is True
+    assert rows["apollo_cyberrt"]["artifact_completeness_status"] == "pass"
+    assert rows["apollo_cyberrt"]["artifact_completeness_source"] == "phase1_status_artifact_completeness"
+    assert rows["apollo_cyberrt"]["artifact_completeness_warnings"] == [
+        "generic_artifact_completeness_not_phase1_complete:status=insufficient_data"
+    ]
+
+
+def test_generic_artifact_completeness_still_blocks_without_phase1_profile(tmp_path) -> None:
+    run_a = _write_run(
+        tmp_path,
+        "apollo",
+        "apollo_cyberrt",
+        "apollo_reference_backend",
+        "failed",
+        "lane_invasion",
+    )
+    run_b = _write_run(tmp_path, "builtin", "carla_builtin", "planning_control_backend", "success")
+    _write_generic_artifact_completeness(
+        run_a,
+        status="insufficient_data",
+        artifact_complete=False,
+        missing_artifacts=["timeseries.csv/jsonl"],
+        missing_raw_evidence_artifacts=[],
+    )
+    _write_phase1_artifact_completeness(run_b, status="pass")
+
+    report = compare_scenario_runs([run_a, run_b])
+
+    assert report["comparison_status"] == "partially_evaluable"
+    assert report["comparison_target_status"] == "artifact_completeness_failed"
+    assert report["reason"] == "artifact_completeness_failed"
+    assert report["validity_gates"]["artifact_complete"] is False
+    rows = {row["backend"]: row for row in report["backend_results"]}
+    assert rows["apollo_cyberrt"]["artifact_complete"] is False
+    assert rows["apollo_cyberrt"]["artifact_completeness_source"] == "run_artifact_completeness_generic_profile"
+    assert all(item["counts_as_backend_loss"] is False for item in report["backend_results"])
+
+
 def test_scenario_comparison_writer(tmp_path) -> None:
     run_a = _write_run(tmp_path, "apollo", "apollo_cyberrt", "apollo_reference_backend", "success")
     run_b = _write_run(tmp_path, "builtin", "carla_builtin", "planning_control_backend", "success")
@@ -682,6 +747,45 @@ def _write_run(
             }
         )
     return run
+
+
+def _write_phase1_artifact_completeness(run, *, status):
+    path = run / "analysis" / "phase1_status" / "artifact_completeness.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_artifact_completeness.v1",
+                "status": status,
+                "missing_artifacts": [] if status == "pass" else ["timeseries"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_generic_artifact_completeness(
+    run,
+    *,
+    status,
+    artifact_complete,
+    missing_artifacts,
+    missing_raw_evidence_artifacts,
+):
+    path = run / "analysis" / "artifact_completeness" / "artifact_completeness_report.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "run_artifact_completeness.v1",
+                "status": status,
+                "artifact_complete": artifact_complete,
+                "missing_artifacts": missing_artifacts,
+                "missing_raw_evidence_artifacts": missing_raw_evidence_artifacts,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _safety_event_evidence_payload(status, reason, safety_event_evidence):

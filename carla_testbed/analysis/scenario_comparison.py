@@ -167,6 +167,14 @@ def _run_entry(run_dir: Path) -> dict[str, Any]:
     artifact_completeness = _read_json(
         run_dir / "analysis" / "artifact_completeness" / "artifact_completeness_report.json"
     )
+    phase1_artifact_completeness = _read_json(
+        run_dir / "analysis" / "phase1_status" / "artifact_completeness.json"
+    )
+    comparison_artifact_completeness = _comparison_artifact_completeness(
+        phase1_status=phase1_status,
+        phase1_artifact_completeness=phase1_artifact_completeness,
+        run_artifact_completeness=artifact_completeness,
+    )
     artifact_paths = _run_artifact_paths(run_dir)
     phase1_metrics = _phase1_metrics_with_current_derived_blockers(run_dir, phase1_status)
     run_evaluable = bool(phase1_status.get("run_evaluable", phase1_status.get("evaluable")))
@@ -204,8 +212,10 @@ def _run_entry(run_dir: Path) -> dict[str, Any]:
         "active_assists": list(assist_ledger.get("active_assists") or []),
         "blocking_assists": list(assist_ledger.get("blocking_assists") or []),
         "assist_confidence": assist_ledger.get("assist_confidence"),
-        "artifact_completeness_status": artifact_completeness.get("status") if artifact_completeness else None,
-        "artifact_complete": artifact_completeness.get("artifact_complete") if artifact_completeness else None,
+        "artifact_completeness_status": comparison_artifact_completeness.get("status"),
+        "artifact_complete": comparison_artifact_completeness.get("artifact_complete"),
+        "artifact_completeness_source": comparison_artifact_completeness.get("source"),
+        "artifact_completeness_warnings": list(comparison_artifact_completeness.get("warnings") or []),
         "v_t_gap_status": v_t_gap.get("status") if v_t_gap else phase1_status.get("v_t_gap_status"),
         "apollo_control_handoff_status": apollo_control_handoff.get("verdict")
         or apollo_control_handoff.get("status"),
@@ -232,11 +242,123 @@ def _phase1_metrics_with_current_derived_blockers(
     return metrics
 
 
+def _comparison_artifact_completeness(
+    *,
+    phase1_status: Mapping[str, Any],
+    phase1_artifact_completeness: Mapping[str, Any],
+    run_artifact_completeness: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Resolve artifact completeness for Phase 1 ScenarioComparison.
+
+    ScenarioComparison uses the Phase 1 scenario-run surface. A generic
+    run-artifact report may also check claim-grade raw evidence, so it can be
+    stricter than the Phase 1 comparison contract. Keep those stricter findings
+    visible as warnings instead of turning an otherwise evaluable Phase 1 run
+    into a setup/artifact failure.
+    """
+
+    phase1_missing = list(phase1_status.get("missing_artifacts") or []) + list(
+        phase1_status.get("missing_expected_artifacts") or []
+    )
+    if phase1_missing:
+        return {
+            "status": "insufficient_data",
+            "artifact_complete": False,
+            "source": "phase1_status_missing_artifacts",
+            "missing_artifacts": phase1_missing,
+            "warnings": [],
+        }
+
+    if _is_legacy_phase1_artifact_completeness(phase1_artifact_completeness):
+        return _normalize_phase1_artifact_completeness(
+            phase1_artifact_completeness,
+            source="phase1_status_artifact_completeness",
+            run_artifact_completeness=run_artifact_completeness,
+        )
+
+    if _is_run_artifact_phase1_profile(run_artifact_completeness):
+        return _normalize_phase1_artifact_completeness(
+            run_artifact_completeness,
+            source="run_artifact_completeness_phase1_profile",
+            run_artifact_completeness=run_artifact_completeness,
+        )
+
+    if run_artifact_completeness:
+        return {
+            "status": run_artifact_completeness.get("status"),
+            "artifact_complete": run_artifact_completeness.get("artifact_complete"),
+            "source": "run_artifact_completeness_generic_profile",
+            "missing_artifacts": list(run_artifact_completeness.get("missing_artifacts") or []),
+            "warnings": list(run_artifact_completeness.get("warnings") or []),
+        }
+
+    return {
+        "status": None,
+        "artifact_complete": None,
+        "source": "missing_artifact_completeness_report",
+        "missing_artifacts": [],
+        "warnings": [],
+    }
+
+
+def _is_legacy_phase1_artifact_completeness(report: Mapping[str, Any]) -> bool:
+    return str(report.get("schema_version") or "") == "phase1_artifact_completeness.v1"
+
+
+def _is_run_artifact_phase1_profile(report: Mapping[str, Any]) -> bool:
+    return (
+        str(report.get("schema_version") or "") == "run_artifact_completeness.v1"
+        and str(report.get("profile") or "") == "phase1"
+    )
+
+
+def _normalize_phase1_artifact_completeness(
+    report: Mapping[str, Any],
+    *,
+    source: str,
+    run_artifact_completeness: Mapping[str, Any],
+) -> dict[str, Any]:
+    missing = list(report.get("missing_artifacts") or [])
+    status = str(report.get("status") or ("pass" if not missing else "insufficient_data"))
+    if "artifact_complete" in report:
+        artifact_complete = bool(report.get("artifact_complete"))
+    else:
+        artifact_complete = status == "pass" and not missing
+    warnings = list(report.get("warnings") or [])
+    if (
+        run_artifact_completeness
+        and not _is_run_artifact_phase1_profile(run_artifact_completeness)
+        and run_artifact_completeness.get("artifact_complete") is False
+    ):
+        generic_missing = list(run_artifact_completeness.get("missing_artifacts") or [])
+        generic_raw_missing = list(run_artifact_completeness.get("missing_raw_evidence_artifacts") or [])
+        if generic_missing or generic_raw_missing:
+            warnings.append(
+                "generic_artifact_completeness_not_phase1_complete:"
+                f"status={run_artifact_completeness.get('status')}"
+            )
+    return {
+        "status": status,
+        "artifact_complete": artifact_complete,
+        "source": source,
+        "missing_artifacts": missing,
+        "warnings": warnings,
+    }
+
+
 def _run_artifact_paths(run_dir: Path) -> dict[str, str]:
     candidates = {
         "manifest": run_dir / "manifest.json",
         "summary": run_dir / "summary.json",
         "phase1_status": run_dir / "analysis" / "phase1_status" / "phase1_status.json",
+        "phase1_artifact_completeness": run_dir
+        / "analysis"
+        / "phase1_status"
+        / "artifact_completeness.json",
+        "run_artifact_completeness": run_dir
+        / "analysis"
+        / "artifact_completeness"
+        / "artifact_completeness_report.json",
         "v_t_gap": run_dir / "analysis" / "v_t_gap" / "v_t_gap_report.json",
         "apollo_control_handoff": run_dir
         / "analysis"
@@ -271,6 +393,8 @@ def _backend_results(
                 "target_metric_reason": run.get("target_metric_reason"),
                 "artifact_completeness_status": run.get("artifact_completeness_status"),
                 "artifact_complete": run.get("artifact_complete"),
+                "artifact_completeness_source": run.get("artifact_completeness_source"),
+                "artifact_completeness_warnings": list(run.get("artifact_completeness_warnings") or []),
                 "missing_artifacts": list(run.get("missing_artifacts") or []),
                 "missing_expected_artifacts": list(run.get("missing_expected_artifacts") or []),
                 "phase1_metrics": dict(run.get("phase1_metrics") or {}),
@@ -442,6 +566,8 @@ def _comparison_validity_gates(
                 "target_metric_reason": run.get("target_metric_reason"),
                 "artifact_complete": run.get("artifact_complete"),
                 "artifact_completeness_status": run.get("artifact_completeness_status"),
+                "artifact_completeness_source": run.get("artifact_completeness_source"),
+                "artifact_completeness_warnings": list(run.get("artifact_completeness_warnings") or []),
                 "blocking_assists": list(run.get("blocking_assists") or []),
             }
             for run in runs

@@ -55,7 +55,8 @@ success means:
 ## Current Phase 1 Progress Snapshot
 
 Latest reviewed snapshot: `2026-06-20`, after the latest GPT Pro audit of the
-accepted-bundle evidence.
+accepted-bundle evidence and the follow-up ScenarioComparison completeness
+resolver fix.
 
 Current catalog status using `tools/phase1_scenario_catalog.py --repo .
 --evidence-root runs`:
@@ -71,23 +72,30 @@ Interpretation:
 - The Phase 1 platform skeleton is substantially built: scenario definitions,
   target actor contracts, `v-t-gap`, status classification, ScenarioComparison,
   and Apollo sidecar evidence all exist.
-- The latest Pro audit found that the previous `8/8 DONE` statement was still
-  too optimistic. The available accepted-bundle outputs are useful mechanism
-  evidence, but the review package did not independently preserve enough raw
-  artifacts to re-compute all comparisons and found stale/invalid surfaces in
-  representative rows.
-- `cut_in_simple` is the clearest blocker: the latest refreshed Apollo runs now
-  start inside the cut-in activation window, but both participating backends
-  still fail with `lane_invasion`. The newer Apollo sidecar sample
+- The latest Pro audit found that the earlier `8/8 DONE` statement was still
+  too optimistic because some review-pack surfaces were stale or could not be
+  independently re-computed. The follow-up fix keeps accepted-bundle rows tied
+  to self-contained materialized evidence and makes ScenarioComparison use the
+  Phase 1 artifact-completeness profile rather than the stricter natural-driving
+  claim/materialization profile.
+- `cut_in_simple` is now accepted as a Phase 1 comparison-surface row: the
+  latest refreshed Apollo run starts inside the cut-in activation window and the
+  refreshed comparison is `comparable` with target status
+  `apollo_vs_planning_control_evaluable`. Both participating backends still fail
+  with `lane_invasion`. The newer Apollo sidecar sample
   `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700`
   snapshots `artifacts/apollo_planning.data`; `prediction_evidence_report.json`
   reads Apollo Planning bvar counters and reports native Prediction evidence
   with `prediction_message_count_source=planning_bvar`. That removes the earlier
   `prediction_evidence:closed_loop` primary blocker for this sample, but it does
-  not make the row complete: the run remains an evaluable `lane_invasion`
-  failure and still cannot support an Apollo natural-driving claim.
-- All current P0/P1 rows now have self-contained Phase 1 accepted bundles under
-  `runs/phase1_acceptance_*_selfcontained_control_20260620_185256/acceptance/`.
+  not make the behavior successful: the run remains an evaluable
+  `lane_invasion` failure and still cannot support an Apollo natural-driving
+  claim.
+- All current P0/P1 rows now have self-contained Phase 1 accepted bundles. Most
+  rows are under
+  `runs/phase1_acceptance_*_selfcontained_control_20260620_185256/acceptance/`;
+  `cut_in_simple` is refreshed under
+  `runs/phase1_acceptance_cut_in_simple_bvar_selfcontained_control_20260620_190842/acceptance/`.
   Each bundle has `bundle_self_contained=true` and materializes run summaries,
   manifests, `timeseries.*`, `events.jsonl`, `phase1_status.json`,
   `v_t_gap_report.json`, `v_t_gap.csv`, comparison artifacts, and an executable
@@ -508,7 +516,7 @@ Status definitions:
 | scenario case catalog | Enumerate reusable ScenarioCases | DONE | `carla_testbed/analysis/phase1_scenario_catalog.py`; `tools/phase1_scenario_catalog.py`; `carla_testbed/analysis/phase1_acceptance.py`; `tools/phase1_acceptance.py`; `artifacts/phase1_scenario_catalog_current/phase1_scenario_catalog.json`; `tests/test_phase1_scenario_catalog.py`; `tests/test_phase1_acceptance.py` | Catalog now reports `8 DONE / 0 PARTIAL` because every current P0/P1 row has a self-contained accepted bundle with run summaries, manifests, `timeseries.*`, `events.jsonl`, phase/status reports, v-t-gap evidence, comparison artifacts, and executable control trace surface. This is Phase 1 comparison-surface completion, not Apollo natural-driving success. | Keep the catalog report in review packs and use it as the gate before shifting effort to behavior blocker reduction. |
 | follow_stop_static | P0 static lead stop | DONE | `configs/scenarios/baguang/follow_stop_static_300m.yaml`; `configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml`; `configs/scenario_templates/static_lead_stop.yaml`; `runs/phase1_acceptance_follow_stop_static_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_phase1_scenario_catalog.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py` | Self-contained accepted comparison bundle exists and includes target actor traces, phase events, v-t-gap, comparison, acceptance, and control trace surfaces. The representative Apollo run is still an evaluable behavior failure, so this is not Apollo follow-stop success. | Use accepted evidence to prioritize behavior blocker reduction rather than rebuilding the comparison surface. |
 | lead_decel_accel | P0 lead speed-change following | DONE | `configs/scenario_templates/lead_vehicle_accel_decel.yaml`; `configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml`; `configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml`; `runs/phase1_acceptance_lead_decel_accel_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_v_t_gap_extractor.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py` | Self-contained accepted comparison bundle exists with target actor, phase, v-t-gap, and control trace evidence. Participating runs remain evaluable failures, so this is comparison-surface completion only. | Use the bundle to compare failure timing and reduce representative Apollo/Baguang lane-invasion blockers. |
-| cut_in_simple | P0 target enters ego lane | DONE | `configs/scenario_templates/cut_in.yaml`; `configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml`; `configs/scenarios/town01/cut_in_097.yaml`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/artifacts/apollo_planning.data`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/analysis/prediction_evidence/prediction_evidence_report.json`; `runs/phase1_acceptance_cut_in_simple_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_player.py::test_baguang_cut_in_starts_at_configured_activation_gap`; `tests/test_apollo_prediction_evidence.py::test_planning_bvar_prediction_count_counts_as_native_observed_with_source`; `tests/test_phase1_acceptance.py` | Self-contained accepted comparison bundle exists and the newest Apollo sample shows native Prediction evidence from Planning bvar. Both backends still remain evaluable `lane_invasion` failures; this is not cut-in behavior success. | Shift from evidence-surface completion to reducing the representative lane-invasion/control-route blocker. |
+| cut_in_simple | P0 target enters ego lane | DONE | `configs/scenario_templates/cut_in.yaml`; `configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml`; `configs/scenarios/town01/cut_in_097.yaml`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/artifacts/apollo_planning.data`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/analysis/prediction_evidence/prediction_evidence_report.json`; `runs/phase1_comparisons/baguang_cut_in_bvar_prediction_vs_builtin_20260620_190842/comparison_summary.json`; `runs/phase1_acceptance_cut_in_simple_bvar_selfcontained_control_20260620_190842/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_player.py::test_baguang_cut_in_starts_at_configured_activation_gap`; `tests/test_apollo_prediction_evidence.py::test_planning_bvar_prediction_count_counts_as_native_observed_with_source`; `tests/test_scenario_comparison.py::test_scenario_comparison_uses_phase1_artifact_completeness_profile`; `tests/test_phase1_acceptance.py` | Self-contained accepted comparison bundle exists and the newest Apollo sample shows native Prediction evidence from Planning bvar. ScenarioComparison uses the Phase 1 artifact-completeness profile for this row while preserving the stricter generic claim-profile insufficiency as a warning. Both backends still remain evaluable `lane_invasion` failures; this is not cut-in behavior success. | Shift from evidence-surface completion to reducing the representative lane-invasion/control-route blocker. |
 | lane_keep_straight | P0 lateral baseline | DONE | `configs/scenarios/town01/lane_keep_097.yaml`; `runs/phase1_acceptance_lane_keep_straight_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_phase1_scenario_catalog.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py`; `tests/test_run_artifact_completeness.py` | Route-only Phase 1 comparison-surface evidence is self-contained and accepted, including executable control trace surfaces. Apollo's participating run remains an evaluable failure, not natural-driving capability evidence. | Use this accepted route-only row as the template for future review packs. |
 | lane_keep_curve | P0 lateral curve baseline | DONE | `configs/scenarios/town01/curve217_diagnostic.yaml`; `runs/phase1_acceptance_lane_keep_curve_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_phase1_status_classifier.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py`; `tests/test_run_artifact_completeness.py` | Route-only curve comparison-surface evidence is self-contained and accepted. Apollo behavior remains diagnosable with route/reference-line style blockers; do not tune control from this result alone. | Use this surface for route/reference-line blocker reduction. |
 | cut_out_simple | P1 target exits ego lane | DONE | `configs/scenario_templates/cut_out.yaml`; `configs/scenarios/baguang/cut_out_35kph_right_to_left_25m.yaml`; `configs/scenarios/town01/cut_out_097.yaml`; `runs/phase1_acceptance_cut_out_simple_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py::test_baguang_cut_out_compiles_lane_change_phase`; `tests/test_phase1_acceptance.py`; `tests/test_apollo_fixed_scene_launch_plan.py::test_apollo_baguang_cut_out_launch_plan_uses_sidecar_runtime_command` | Self-contained accepted comparison bundle exists with lane-change actor/phase evidence and control trace surfaces. Both participating runs remain evaluable `lane_invasion` failures, so this is not cut-out behavior success. | Keep lane-change playback evidence separate from ego autonomy success and use the bundle for blocker triage. |

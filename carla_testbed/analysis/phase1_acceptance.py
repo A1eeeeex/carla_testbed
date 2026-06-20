@@ -9,6 +9,20 @@ from typing import Any, Mapping
 PHASE1_ACCEPTANCE_SCHEMA_VERSION = "phase1_acceptance.v1"
 STATUS_DONE = "DONE"
 STATUS_PARTIAL = "PARTIAL"
+OPTIONAL_RUN_ANALYSIS_ARTIFACTS: tuple[tuple[str, str], ...] = (
+    ("analysis/apollo_link_health/apollo_link_health_report.json", "apollo_link_health_report"),
+    ("analysis/prediction_evidence/prediction_evidence_report.json", "prediction_evidence_report"),
+    (
+        "analysis/baguang_lane_event_contract/baguang_lane_event_contract_report.json",
+        "baguang_lane_event_contract_report",
+    ),
+    ("analysis/control_health/control_health_report.json", "control_health_report"),
+    ("analysis/control_attribution/control_attribution_report.json", "control_attribution_report"),
+    ("analysis/apollo_control_handoff/apollo_control_handoff_report.json", "apollo_control_handoff_report"),
+    ("analysis/apollo_module_consumption/apollo_module_consumption_report.json", "apollo_module_consumption_report"),
+    ("analysis/route_health/route_health.json", "route_health_report"),
+    ("analysis/artifact_completeness/artifact_completeness_report.json", "artifact_completeness_report"),
+)
 
 
 def analyze_phase1_acceptance(comparison_dir: str | Path) -> dict[str, Any]:
@@ -206,6 +220,8 @@ def _materialize_acceptance_bundle(report: Mapping[str, Any], output: Path) -> d
             dest_root / "artifacts" / "safety_event_trace.jsonl",
             "safety_event_trace",
         )
+        for relative_path, role in OPTIONAL_RUN_ANALYSIS_ARTIFACTS:
+            copy_optional(run_dir / relative_path, dest_root / relative_path, role)
         if _target_artifacts_required(run):
             copy_required(
                 run_dir / "artifacts" / "scenario_actor_trace.jsonl",
