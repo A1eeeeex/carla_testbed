@@ -195,6 +195,7 @@ def analyze_prediction_evidence(
     prediction_hz = _number(_channel_value(prediction_channel, "hz"))
     obstacle_count = _message_count(obstacles_channel)
     prediction_log_errors = _prediction_log_errors(prediction_log_paths)
+    prediction_log_activity = _prediction_log_activity(prediction_log_paths)
     prediction_logs_present = bool(prediction_log_paths)
     obstacle_contract_status = str(obstacle_gt_contract.get("status") or "")
     perception_available = bool(obstacle_count and obstacle_count > 0) or obstacle_contract_status in {
@@ -267,6 +268,12 @@ def analyze_prediction_evidence(
 
     if perception_available and prediction_mode != "native_observed":
         warnings.append("perception_obstacles_do_not_count_as_prediction")
+    if (
+        prediction_log_activity
+        and prediction_mode != "native_observed"
+        and not (prediction_count and prediction_count > 0)
+    ):
+        warnings.append("prediction_internal_log_activity_without_channel_output")
     if prediction_log_errors:
         warnings.append("prediction_logs_contain_errors")
         if any(error.get("severity") == "fatal" for error in prediction_log_errors):
@@ -292,6 +299,9 @@ def analyze_prediction_evidence(
         "prediction_hz": prediction_hz,
         "prediction_logs_present": prediction_logs_present,
         "prediction_runtime_observed": prediction_runtime_observed,
+        "prediction_internal_log_activity_observed": bool(prediction_log_activity),
+        "prediction_internal_log_activity_count": len(prediction_log_activity),
+        "prediction_internal_log_activity_samples": prediction_log_activity[:5],
         "prediction_errors": prediction_log_errors,
         "planning_requires_prediction": planning_requires_prediction,
         "bypass_reason": bypass_reason,
@@ -335,6 +345,11 @@ def prediction_evidence_summary_md(report: Mapping[str, Any]) -> str:
             f"- Scenario class: `{report.get('scenario_class')}`",
             f"- Prediction mode: `{report.get('prediction_mode')}`",
             f"- Prediction runtime observed: `{report.get('prediction_runtime_observed')}`",
+            (
+                "- Prediction internal log activity observed: "
+                f"`{report.get('prediction_internal_log_activity_observed')}` "
+                f"({report.get('prediction_internal_log_activity_count') or 0} samples)"
+            ),
             f"- Verdict: `{report.get('verdict')}`",
             f"- Hard gate eligible: `{report.get('hard_gate_eligible')}`",
             f"- Blocking capabilities: `{', '.join(report.get('blocking_capabilities') or []) or 'none'}`",
@@ -432,6 +447,44 @@ def _prediction_log_errors(paths: Sequence[Path]) -> list[dict[str, Any]]:
                     }
                 )
     return errors
+
+
+def _prediction_log_activity(paths: Sequence[Path]) -> list[dict[str, Any]]:
+    """Extract lightweight evidence that Prediction did internal work.
+
+    This is intentionally weaker than native /apollo/prediction evidence. It
+    helps distinguish "module not observed" from "module observed but no output
+    channel evidence" without upgrading prediction_mode.
+    """
+
+    activity: list[dict[str, Any]] = []
+    markers = (
+        "EVALUATOR",
+        "PREDICTOR",
+        "PREDICTION OBSTACLE",
+        "NORMAL OBSTACLE",
+        "FEATURE OUTPUT",
+        "TRAJECTORY",
+    )
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line_number, line in enumerate(lines, start=1):
+            upper = line.upper()
+            if "FATAL" in upper or "ERROR" in upper:
+                continue
+            if not any(marker in upper for marker in markers):
+                continue
+            activity.append(
+                {
+                    "path": str(path),
+                    "line": line_number,
+                    "message": line[:240],
+                }
+            )
+    return activity
 
 
 def _find_prediction_logs(root: Path) -> list[Path]:

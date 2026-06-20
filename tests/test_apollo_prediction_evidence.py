@@ -239,6 +239,33 @@ def test_prediction_info_log_errors_are_consumed(tmp_path: Path) -> None:
     assert report["verdict"] == "fail"
 
 
+def test_prediction_info_internal_activity_does_not_count_as_native_output(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path, scenario_class="cut_in")
+    _channel_stats(run_dir, prediction_count=0, obstacle_count=4)
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "apollo_modules_status.log").write_text(
+        "96128 mainboard -d modules/prediction/dag/prediction.dag -p prediction -s CYBER_DEFAULT\n",
+        encoding="utf-8",
+    )
+    (artifacts / "apollo_prediction.INFO").write_text(
+        "I0620 prediction_component.cc:111] Normal Obstacle: 52 used CRUISE_MLP_EVALUATOR\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_prediction_evidence_run_dir(run_dir)
+
+    assert report["prediction_runtime_observed"] is True
+    assert report["prediction_logs_present"] is True
+    assert report["prediction_internal_log_activity_observed"] is True
+    assert report["prediction_internal_log_activity_count"] == 1
+    assert report["prediction_channel_available"] is False
+    assert report["prediction_mode"] == "missing"
+    assert report["verdict"] == "fail"
+    assert "closed_loop" in report["blocking_capabilities"]
+    assert "prediction_internal_log_activity_without_channel_output" in report["warnings"]
+
+
 def test_prediction_log_errors_warn_or_fail(tmp_path: Path) -> None:
     run_dir = _run_dir(tmp_path)
     _channel_stats(run_dir, prediction_count=10)

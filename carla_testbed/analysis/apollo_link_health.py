@@ -616,6 +616,8 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
         "prediction_evidence": (
             "prediction_mode",
             "prediction_runtime_observed",
+            "prediction_internal_log_activity_observed",
+            "prediction_internal_log_activity_count",
             "prediction_channel_available",
             "prediction_message_count",
             "planning_requires_prediction",
@@ -2700,6 +2702,12 @@ def _prediction_layer(
             "scenario_class": scenario_class,
             "prediction_mode": report.get("prediction_mode"),
             "prediction_runtime_observed": report.get("prediction_runtime_observed"),
+            "prediction_internal_log_activity_observed": report.get(
+                "prediction_internal_log_activity_observed"
+            ),
+            "prediction_internal_log_activity_count": report.get(
+                "prediction_internal_log_activity_count"
+            ),
             "prediction_channel_available": report.get("prediction_channel_available"),
             "prediction_message_count": report.get("prediction_message_count"),
             "prediction_hz": report.get("prediction_hz"),

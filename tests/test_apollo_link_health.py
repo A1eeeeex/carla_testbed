@@ -491,6 +491,10 @@ def test_dynamic_prediction_placeholder_is_regenerated_and_written_before_consum
         "96128 mainboard -d modules/prediction/dag/prediction.dag -p prediction -s CYBER_DEFAULT\n",
         encoding="utf-8",
     )
+    (run_dir / "artifacts/apollo_prediction.INFO").write_text(
+        "I0620 prediction_component.cc:111] Normal Obstacle: 52 used CRUISE_MLP_EVALUATOR\n",
+        encoding="utf-8",
+    )
     module_report = json.loads(
         (run_dir / "analysis/apollo_module_consumption/apollo_module_consumption_report.json").read_text(
             encoding="utf-8"
@@ -522,6 +526,8 @@ def test_dynamic_prediction_placeholder_is_regenerated_and_written_before_consum
     assert prediction_layer["status"] == "fail"
     assert prediction_layer["key_metrics"]["prediction_mode"] == "missing"
     assert prediction_layer["key_metrics"]["prediction_runtime_observed"] is True
+    assert prediction_layer["key_metrics"]["prediction_internal_log_activity_observed"] is True
+    assert prediction_layer["key_metrics"]["prediction_internal_log_activity_count"] == 1
     assert "prediction_evidence:closed_loop" in report["why_not_claimable"]
 
     persisted = json.loads(
@@ -531,7 +537,9 @@ def test_dynamic_prediction_placeholder_is_regenerated_and_written_before_consum
     )
     assert persisted["prediction_mode"] == "missing"
     assert persisted["prediction_runtime_observed"] is True
+    assert persisted["prediction_internal_log_activity_observed"] is True
     assert "prediction_module_observed_without_prediction_channel_output" in persisted["warnings"]
+    assert "prediction_internal_log_activity_without_channel_output" in persisted["warnings"]
 
     module_layer = report["layers"]["apollo_module_consumption"]
     assert module_layer["key_metrics"]["prediction_mode"] == "missing"

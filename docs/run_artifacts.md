@@ -1388,6 +1388,12 @@ observed but `/apollo/prediction` has zero messages, this log snapshot is the
 first artifact to inspect for initialization, input, or runtime errors. Missing
 Prediction logs do not make the run pass; they leave the root cause less
 observable.
+`prediction_evidence_report.json` may also report
+`prediction_internal_log_activity_observed=true` when the INFO log contains
+evaluator/predictor/obstacle activity such as `CRUISE_MLP_EVALUATOR`. That is
+diagnostic evidence that the Prediction process did internal work. It is not
+native `/apollo/prediction` output evidence and must not change
+`prediction_mode=missing` into `native_observed`.
 
 `artifacts/control_apply_trace.jsonl` is the preferred row-level control-chain
 evidence for Apollo CyberRT truth-input runs. Each row preserves Apollo raw
