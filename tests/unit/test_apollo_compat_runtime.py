@@ -204,6 +204,34 @@ def test_typed_transition_backend_uses_resolved_config_and_preserves_reports(
     assert routing["lane_segment_count"] == 1
 
 
+def test_transition_events_append_without_erasing_backend_events(tmp_path: Path) -> None:
+    run_dir = tmp_path / "claim_transition"
+    run_dir.mkdir()
+    events_path = run_dir / "events.jsonl"
+    backend_event = {
+        "event_type": "lane_invasion",
+        "crossed_lane_marking_count": 1,
+        "crossed_lane_marking_types": ["Solid"],
+    }
+    events_path.write_text(json.dumps(backend_event, sort_keys=True) + "\n", encoding="utf-8")
+
+    apollo_compat._append_transition_events(
+        run_dir,
+        start_wall=1.0,
+        end_wall=2.0,
+        exit_code=0,
+        error_text="",
+        staged_effective_config_path=tmp_path / "typed_runtime.effective_legacy.yaml",
+    )
+
+    rows = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert rows[0] == backend_event
+    assert [row["event_type"] for row in rows[1:]] == [
+        "typed_apollo_claim_runtime_start",
+        "typed_apollo_claim_runtime_end",
+    ]
+
+
 def test_transition_backend_syncs_valid_routing_response_into_report_and_jsonl(
     tmp_path: Path,
     monkeypatch,

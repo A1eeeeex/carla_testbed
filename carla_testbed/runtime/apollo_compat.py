@@ -324,7 +324,7 @@ def _append_transition_events(
     error_text: str,
     staged_effective_config_path: Path,
 ) -> None:
-    events = RunArtifactStore(root).open_events()
+    events = RunArtifactStore(root).open_events(append=True)
     events.append(
         {
             "event_type": "typed_apollo_claim_runtime_start",

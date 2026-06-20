@@ -55,8 +55,9 @@ success means:
 ## Current Phase 1 Progress Snapshot
 
 Latest reviewed snapshot: `2026-06-20`, after the latest GPT Pro audit of the
-accepted-bundle evidence, the ScenarioComparison completeness resolver fix, and
-the follow-up Baguang lane-event hard-gate audit.
+accepted-bundle evidence, the ScenarioComparison completeness resolver fix, the
+Baguang lane-event hard-gate audit, and a fresh Apollo sidecar cut-in online
+validation run.
 
 Current catalog status using `tools/phase1_scenario_catalog.py --repo .
 --evidence-root runs`:
@@ -80,25 +81,33 @@ Interpretation:
   claim/materialization profile.
 - A stricter Baguang lane-event contract audit then demoted
   `cut_in_simple` from accepted `DONE` to `PARTIAL`. The refreshed Apollo run
-  starts inside the cut-in activation window and the newer Apollo sidecar sample
+  starts inside the cut-in activation window. The Apollo sidecar sample
   `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700`
   snapshots `artifacts/apollo_planning.data`; `prediction_evidence_report.json`
   reads Apollo Planning bvar counters and reports native Prediction evidence
   with `prediction_message_count_source=planning_bvar`. That removes the earlier
-  `prediction_evidence:closed_loop` primary blocker for this sample. However,
-  `baguang_lane_event_contract_report.json` now marks
+  `prediction_evidence:closed_loop` primary blocker for this sample. A later
+  online sample,
+  `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742`,
+  verifies that typed transition events no longer overwrite runtime
+  `events.jsonl`: the root event log preserves `run_start`, `lane_invasion`,
+  `failure`, `run_end`, and typed transition start/end rows. The lane-invasion
+  row includes `crossed_lane_marking_types=["Solid"]`, which gives the
+  lane-event contract a real marking source rather than missing evidence.
+  However, the same `baguang_lane_event_contract_report.json` still marks
   `lane_invasion_event_can_be_used_as_hard_gate=false` with reason
   `lane_invasion_trigger_before_static_footprint_crossing`. The refreshed
   comparison
-  `runs/phase1_comparisons/baguang_cut_in_lane_event_contract_vs_builtin_20260620_191822/comparison_summary.json`
-  is therefore `partially_evaluable` with target status
-  `shared_safety_event_context_issue`, and neither backend receives a backend
+  `runs/phase1_comparisons/baguang_cut_in_lane_event_contract_vs_builtin_20260620_200033/comparison_summary.json`
+  is therefore `partially_evaluable` with reason
+  `lane_event_contract_blocks_hard_gate` and target status
+  `shared_safety_event_context_issue`; neither backend receives a backend
   behavior loss for that lane event.
 - Seven current P0/P1 rows have self-contained Phase 1 accepted `DONE` bundles.
   Most rows are under
   `runs/phase1_acceptance_*_selfcontained_control_20260620_185256/acceptance/`;
   `cut_in_simple` is refreshed under
-  `runs/phase1_acceptance_cut_in_simple_lane_event_contract_20260620_191822/acceptance/`
+  `runs/phase1_acceptance_cut_in_simple_lane_event_contract_20260620_200033/acceptance/`
   and is `PARTIAL`.
   Each bundle has `bundle_self_contained=true` and materializes run summaries,
   manifests, `timeseries.*`, `events.jsonl`, `phase1_status.json`,
@@ -520,10 +529,10 @@ Status definitions:
 | ---------- | ------------ | ------ | ------------- | --- | ----------------- |
 | fixed_scene_player offline compiler/storyboard layer | Compile fixed scene templates to deterministic storyboards | DONE | `carla_testbed/scenario_player/compiler.py`; `carla_testbed/scenario_player/schema.py`; `configs/scenario_templates/*.yaml`; `tests/test_fixed_scene_compiler.py` | This proves offline storyboard construction, not online CARLA playback quality. | Keep compiler stable; add catalog summary before extending scenarios. |
 | fixed_scene_player CARLA online playback validation | Validate non-ego actor playback in CARLA | PARTIAL | `carla_testbed/scenario_player/carla_runtime.py`; `docs/scenario_player.md`; `tests/test_fixed_scene_carla_runtime.py`; `tools/run_fixed_scene_carla_smoke.py`; `tools/run_builtin_ego_fixed_scene.py` | Runtime support exists and latest local evidence includes CARLA builtin playback for all current P0/P1 catalog rows, but this remains host/run dependent and is not Apollo evidence. | Keep catalog evidence explicit and add Apollo fixed-scene compatibility before marking scenarios DONE. |
-| scenario case catalog | Enumerate reusable ScenarioCases | PARTIAL | `carla_testbed/analysis/phase1_scenario_catalog.py`; `tools/phase1_scenario_catalog.py`; `carla_testbed/analysis/phase1_acceptance.py`; `tools/phase1_acceptance.py`; `artifacts/phase1_scenario_catalog_current/phase1_scenario_catalog.json`; `tests/test_phase1_scenario_catalog.py`; `tests/test_phase1_acceptance.py` | Catalog now reports `7 DONE / 1 PARTIAL`. Seven rows have self-contained accepted bundles with run summaries, manifests, `timeseries.*`, `events.jsonl`, phase/status reports, v-t-gap evidence, comparison artifacts, and executable control trace surface. `cut_in_simple` is intentionally PARTIAL because the latest lane-event contract marks the lane-invasion event as not hard-gate eligible. This is Phase 1 comparison-surface evidence, not Apollo natural-driving success. | Repair or explain the Baguang cut-in lane-event trigger geometry, then refresh the catalog before claiming full Phase 1 catalog completion. |
+| scenario case catalog | Enumerate reusable ScenarioCases | PARTIAL | `carla_testbed/analysis/phase1_scenario_catalog.py`; `tools/phase1_scenario_catalog.py`; `carla_testbed/analysis/phase1_acceptance.py`; `tools/phase1_acceptance.py`; `artifacts/phase1_scenario_catalog_current/phase1_scenario_catalog.json`; `tests/test_phase1_scenario_catalog.py`; `tests/test_phase1_acceptance.py` | Catalog now reports `7 DONE / 1 PARTIAL`. Seven rows have self-contained accepted bundles with run summaries, manifests, `timeseries.*`, `events.jsonl`, phase/status reports, v-t-gap evidence, comparison artifacts, and executable control trace surface. `cut_in_simple` is intentionally PARTIAL because the latest lane-event contract uses preserved runtime lane-invasion marking evidence but still marks the event as not hard-gate eligible. This is Phase 1 comparison-surface evidence, not Apollo natural-driving success. | Repair or explain the Baguang cut-in lane-event trigger geometry, then refresh the catalog before claiming full Phase 1 catalog completion. |
 | follow_stop_static | P0 static lead stop | DONE | `configs/scenarios/baguang/follow_stop_static_300m.yaml`; `configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml`; `configs/scenario_templates/static_lead_stop.yaml`; `runs/phase1_acceptance_follow_stop_static_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_phase1_scenario_catalog.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py` | Self-contained accepted comparison bundle exists and includes target actor traces, phase events, v-t-gap, comparison, acceptance, and control trace surfaces. The representative Apollo run is still an evaluable behavior failure, so this is not Apollo follow-stop success. | Use accepted evidence to prioritize behavior blocker reduction rather than rebuilding the comparison surface. |
 | lead_decel_accel | P0 lead speed-change following | DONE | `configs/scenario_templates/lead_vehicle_accel_decel.yaml`; `configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml`; `configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml`; `runs/phase1_acceptance_lead_decel_accel_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_v_t_gap_extractor.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py` | Self-contained accepted comparison bundle exists with target actor, phase, v-t-gap, and control trace evidence. Participating runs remain evaluable failures, so this is comparison-surface completion only. | Use the bundle to compare failure timing and reduce representative Apollo/Baguang lane-invasion blockers. |
-| cut_in_simple | P0 target enters ego lane | PARTIAL | `configs/scenario_templates/cut_in.yaml`; `configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml`; `configs/scenarios/town01/cut_in_097.yaml`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/artifacts/apollo_planning.data`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/analysis/prediction_evidence/prediction_evidence_report.json`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/analysis/baguang_lane_event_contract/baguang_lane_event_contract_report.json`; `runs/phase1_comparisons/baguang_cut_in_lane_event_contract_vs_builtin_20260620_191822/comparison_summary.json`; `runs/phase1_acceptance_cut_in_simple_lane_event_contract_20260620_191822/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_player.py::test_baguang_cut_in_starts_at_configured_activation_gap`; `tests/test_apollo_prediction_evidence.py::test_planning_bvar_prediction_count_counts_as_native_observed_with_source`; `tests/test_scenario_comparison.py::test_lane_event_contract_blocks_lane_invasion_backend_loss`; `tests/test_baguang_lane_event_contract.py::test_downstream_lane_invasion_before_footprint_crossing_is_quarantined`; `tests/test_phase1_acceptance.py` | The newest Apollo sample shows native Prediction evidence from Planning bvar, and the scenario starts inside the target activation window. The latest lane-event contract marks `lane_invasion_event_can_be_used_as_hard_gate=false` because the event triggers before the static footprint crosses the lane marking. The refreshed comparison is `partially_evaluable/shared_safety_event_context_issue`, and backend losses are blocked. This is not cut-in behavior success and not a valid backend-loss comparison. | Repair or verify lane-invasion trigger geometry, lane-marking/XODR semantics, or sensor event provenance before accepting cut-in as a completed Phase 1 comparison row. |
+| cut_in_simple | P0 target enters ego lane | PARTIAL | `configs/scenario_templates/cut_in.yaml`; `configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml`; `configs/scenarios/town01/cut_in_097.yaml`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/artifacts/apollo_planning.data`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/analysis/prediction_evidence/prediction_evidence_report.json`; `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742/events.jsonl`; `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742/analysis/baguang_lane_event_contract/baguang_lane_event_contract_report.json`; `runs/phase1_comparisons/baguang_cut_in_lane_event_contract_vs_builtin_20260620_200033/comparison_summary.json`; `runs/phase1_acceptance_cut_in_simple_lane_event_contract_20260620_200033/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_player.py::test_baguang_cut_in_starts_at_configured_activation_gap`; `tests/test_apollo_prediction_evidence.py::test_planning_bvar_prediction_count_counts_as_native_observed_with_source`; `tests/test_scenario_comparison.py::test_lane_event_contract_blocks_lane_invasion_backend_loss`; `tests/test_baguang_lane_event_contract.py::test_downstream_lane_invasion_before_footprint_crossing_is_quarantined`; `tests/unit/test_apollo_compat_runtime.py::test_transition_events_append_without_erasing_backend_events`; `tests/test_phase1_acceptance.py` | The newest correctly configured Apollo cut-in sample preserves root `events.jsonl` runtime events and includes `crossed_lane_marking_types=["Solid"]`; scenario actor contract passes and `v_t_gap` is available. The lane-event contract still marks `lane_invasion_event_can_be_used_as_hard_gate=false` because the trigger occurs before the static footprint crosses the lane marking. The refreshed comparison is `partially_evaluable/shared_safety_event_context_issue` with reason `lane_event_contract_blocks_hard_gate`, and backend losses are blocked. This is not cut-in behavior success and not a valid backend-loss comparison. | Repair or verify lane-invasion trigger geometry, lane-marking/XODR semantics, or sensor event provenance before accepting cut-in as a completed Phase 1 comparison row. |
 | lane_keep_straight | P0 lateral baseline | DONE | `configs/scenarios/town01/lane_keep_097.yaml`; `runs/phase1_acceptance_lane_keep_straight_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_phase1_scenario_catalog.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py`; `tests/test_run_artifact_completeness.py` | Route-only Phase 1 comparison-surface evidence is self-contained and accepted, including executable control trace surfaces. Apollo's participating run remains an evaluable failure, not natural-driving capability evidence. | Use this accepted route-only row as the template for future review packs. |
 | lane_keep_curve | P0 lateral curve baseline | DONE | `configs/scenarios/town01/curve217_diagnostic.yaml`; `runs/phase1_acceptance_lane_keep_curve_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_phase1_status_classifier.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py`; `tests/test_run_artifact_completeness.py` | Route-only curve comparison-surface evidence is self-contained and accepted. Apollo behavior remains diagnosable with route/reference-line style blockers; do not tune control from this result alone. | Use this surface for route/reference-line blocker reduction. |
 | cut_out_simple | P1 target exits ego lane | DONE | `configs/scenario_templates/cut_out.yaml`; `configs/scenarios/baguang/cut_out_35kph_right_to_left_25m.yaml`; `configs/scenarios/town01/cut_out_097.yaml`; `runs/phase1_acceptance_cut_out_simple_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py::test_baguang_cut_out_compiles_lane_change_phase`; `tests/test_phase1_acceptance.py`; `tests/test_apollo_fixed_scene_launch_plan.py::test_apollo_baguang_cut_out_launch_plan_uses_sidecar_runtime_command` | Self-contained accepted comparison bundle exists with lane-change actor/phase evidence and control trace surfaces. Both participating runs remain evaluable `lane_invasion` failures, so this is not cut-out behavior success. | Keep lane-change playback evidence separate from ego autonomy success and use the bundle for blocker triage. |
@@ -768,14 +777,18 @@ Implementation note added after the 2026-06-17 continuous loop:
   capability pass.
 - `cut_in_simple` now has Baguang Apollo sidecar evidence, refreshed
   `carla_builtin` evidence, native Prediction evidence from
-  `artifacts/apollo_planning.data`, and a self-contained
+  `artifacts/apollo_planning.data`, preserved runtime lane-invasion marking
+  evidence in root `events.jsonl`, and a self-contained
   `phase1_acceptance_report.json` bundle. The scenario starts inside the target
-  activation window, so target transition is exercised. However, the latest
-  Baguang lane-event contract marks the observed lane-invasion event as not
-  hard-gate eligible because the trigger occurs before the static footprint
-  crosses the lane marking. The latest comparison is therefore
-  `partially_evaluable/shared_safety_event_context_issue`, and cut-in remains
-  `PARTIAL` until the lane-event trigger geometry is repaired or explained.
+  activation window, so target transition is exercised. The latest online sample
+  includes `crossed_lane_marking_types=["Solid"]`, `scenario_actor_contract=pass`,
+  and `v_t_gap=warn`. However, the latest Baguang lane-event contract still
+  marks the observed lane-invasion event as not hard-gate eligible because the
+  trigger occurs before the static footprint crosses the lane marking. The
+  latest comparison is therefore
+  `partially_evaluable/shared_safety_event_context_issue` with reason
+  `lane_event_contract_blocks_hard_gate`, and cut-in remains `PARTIAL` until the
+  lane-event trigger geometry is repaired or explained.
 - `cut_out_simple` now has a Baguang fixed-scene ScenarioCase,
   `configs/scenarios/baguang/cut_out_35kph_right_to_left_25m.yaml`, online
   Apollo sidecar evidence, online `carla_builtin` evidence, a comparable
