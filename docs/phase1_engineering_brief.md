@@ -57,8 +57,9 @@ success means:
 Latest reviewed snapshot: `2026-06-20`, after the latest GPT Pro audit of the
 accepted-bundle evidence, the ScenarioComparison completeness resolver fix, the
 Baguang lane-event hard-gate audit, a fresh Apollo sidecar cut-in online
-validation run, and a `carla_builtin` safety-sensor attach-order fix validated
-with a new online cut-in run.
+validation run, a `carla_builtin` safety-sensor attach-order fix validated with
+a new online cut-in run, and a lateral-semantics postprocess refresh that
+consumes authoritative Apollo control-apply trace evidence.
 
 Current catalog status using `tools/phase1_scenario_catalog.py --repo .
 --evidence-root runs`:
@@ -167,6 +168,19 @@ Interpretation:
   The next behavior loop should inspect lateral/reference-line semantics and
   raw/mapped/applied steer around the lane event, not assist cleanup or
   startup planning warmup.
+- `apollo_lateral_semantics` now consumes
+  `artifacts/control_apply_trace.jsonl` and time-aligns raw/mapped/applied
+  control fields into sparse `timeseries.*` rows. On the latest representative
+  Apollo cut-in run, the refreshed report shows the first high-lateral sample
+  at `sim_time≈10320.679s` with `apollo_steer_raw≈0.461`,
+  `bridge_steer_mapped≈0.115`, `carla_steer_applied≈0.115`,
+  `cross_track_error≈0.513m`, and `heading_error≈0.120rad`. That removes the
+  earlier false appearance that source steer was zero during the lane event.
+  The report is still `warn`, with suspected layer
+  `reference_line_semantics` because Planning is non-empty while reference-line
+  debug remains missing/zero (`reference_line_count_zero_ratio=1.0` and
+  `reference_line_provider_ready_ratio=0.0`). This is attribution evidence, not
+  a behavior fix or an Apollo natural-driving claim.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.

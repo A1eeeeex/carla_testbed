@@ -3,10 +3,12 @@ from __future__ import annotations
 import csv
 import json
 import math
+from bisect import bisect_left
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 APOLLO_LATERAL_SEMANTICS_SCHEMA_VERSION = "apollo_lateral_semantics.v1"
+CONTROL_TRACE_MERGE_MAX_DT_S = 0.075
 
 FIELD_ALIASES = {
     "apollo_steer_raw": [
@@ -198,6 +200,7 @@ def analyze_apollo_lateral_semantics_run_dir(
                 "planning_debug.json",
             ],
         ),
+        control_trace=_find_first(root, ["artifacts/control_apply_trace.jsonl", "control_apply_trace.jsonl"]),
         source_steer_summary=_find_first(
             root,
             ["artifacts/source_steer_summary.json", "source_steer_summary.json"],
@@ -230,6 +233,7 @@ def analyze_apollo_lateral_semantics(
     timeseries: str | Path | Sequence[str | Path] | None = None,
     route_health: str | Path | None = None,
     planning_debug: str | Path | None = None,
+    control_trace: str | Path | None = None,
     source_steer_summary: str | Path | None = None,
     kappa_audit_summary: str | Path | None = None,
     localization_contract: str | Path | None = None,
@@ -241,12 +245,14 @@ def analyze_apollo_lateral_semantics(
     active_thresholds.update(thresholds or {})
     timeseries_rows = _read_rows(timeseries)
     planning_rows = _read_rows(planning_debug)
+    control_trace_rows = _read_rows(control_trace)
     route_health_payload = _read_json(route_health)
     source_summary = _read_json(source_steer_summary)
     kappa_summary = _read_json(kappa_audit_summary)
     localization_contract_payload = _read_json(localization_contract)
     reference_line_contract_payload = _read_json(reference_line_contract)
-    rows = [*timeseries_rows, *planning_rows]
+    semantic_rows = _merge_control_trace_fields([*timeseries_rows, *planning_rows], control_trace_rows)
+    rows = [*semantic_rows, *control_trace_rows]
     supplemental = _supplemental_values(route_health_payload, source_summary, kappa_summary)
 
     resolved_fields = {
@@ -350,6 +356,7 @@ def analyze_apollo_lateral_semantics(
         values,
         stats,
         active_thresholds,
+        rows=rows,
         hdmap_route_lateral_consistency=hdmap_route_lateral_consistency,
         reference_debug_summary=reference_debug_summary,
     )
@@ -405,6 +412,7 @@ def analyze_apollo_lateral_semantics(
         "source": {
             "run_dir": None if run_dir is None else str(Path(run_dir)),
             "timeseries": _path_repr(timeseries),
+            "control_trace": None if control_trace is None else str(Path(control_trace)),
             "route_health": None if route_health is None else str(Path(route_health)),
             "planning_debug": None if planning_debug is None else str(Path(planning_debug)),
             "source_steer_summary": None if source_steer_summary is None else str(Path(source_steer_summary)),
@@ -438,6 +446,7 @@ def _anomalies(
     stats: Mapping[str, Any],
     thresholds: Mapping[str, float],
     *,
+    rows: Sequence[Mapping[str, Any]],
     hdmap_route_lateral_consistency: Mapping[str, Any] | None = None,
     reference_debug_summary: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
@@ -639,8 +648,8 @@ def _anomalies(
                 target_point_distance_max_jump=target_jump,
             )
         )
-    raw_mapping_error = _raw_mapped_expected_error(values, thresholds)
-    mapped_applied_error = _pair_error(values["bridge_steer_mapped"], values["carla_steer_applied"])
+    raw_mapping_error = _raw_mapped_expected_error(rows)
+    mapped_applied_error = _paired_field_error(rows, "bridge_steer_mapped", "carla_steer_applied")
     if (
         raw_mapping_error is not None
         and raw_mapping_error > thresholds["raw_mapped_expected_error_p95"]
@@ -752,6 +761,68 @@ def _supplemental_values(*payloads: Mapping[str, Any]) -> dict[str, list[float]]
                         if number is not None:
                             result[field].append(number)
     return result
+
+
+def _merge_control_trace_fields(
+    semantic_rows: Sequence[Mapping[str, Any]],
+    control_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    if not semantic_rows or not control_rows:
+        return [dict(row) for row in semantic_rows]
+    indexed = [
+        (sim_time, row)
+        for row in control_rows
+        if (sim_time := _row_value(row, DRIFT_WINDOW_FIELD_ALIASES["sim_time"])) is not None
+    ]
+    if not indexed:
+        return [dict(row) for row in semantic_rows]
+    indexed.sort(key=lambda item: item[0])
+    times = [item[0] for item in indexed]
+    merged: list[dict[str, Any]] = []
+    control_fields = (
+        "apollo_steer_raw",
+        "bridge_steer_mapped",
+        "carla_steer_applied",
+        "ego_yaw_rate",
+        "steer_scale",
+        "steering_sign",
+    )
+    for row in semantic_rows:
+        current = dict(row)
+        sim_time = _row_value(current, DRIFT_WINDOW_FIELD_ALIASES["sim_time"])
+        nearest = _nearest_control_row(sim_time, times, indexed)
+        if nearest is None:
+            merged.append(current)
+            continue
+        nearest_time = _row_value(nearest, DRIFT_WINDOW_FIELD_ALIASES["sim_time"])
+        current["_control_trace_merge_dt_s"] = abs(float(sim_time) - float(nearest_time))
+        for field in control_fields:
+            value = _row_value(nearest, FIELD_ALIASES.get(field, [field]))
+            if value is not None:
+                current[field] = value
+        merged.append(current)
+    return merged
+
+
+def _nearest_control_row(
+    sim_time: float | None,
+    times: Sequence[float],
+    indexed: Sequence[tuple[float, Mapping[str, Any]]],
+) -> Mapping[str, Any] | None:
+    if sim_time is None or not times:
+        return None
+    insert_at = bisect_left(times, sim_time)
+    candidates: list[tuple[float, Mapping[str, Any]]] = []
+    if insert_at < len(indexed):
+        candidates.append(indexed[insert_at])
+    if insert_at > 0:
+        candidates.append(indexed[insert_at - 1])
+    if not candidates:
+        return None
+    nearest_time, nearest_row = min(candidates, key=lambda item: abs(float(item[0]) - float(sim_time)))
+    if abs(float(nearest_time) - float(sim_time)) > CONTROL_TRACE_MERGE_MAX_DT_S:
+        return None
+    return nearest_row
 
 
 def _flatten_mapping(payload: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
@@ -1036,18 +1107,30 @@ def _reference_debug_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _raw_mapped_expected_error(values: Mapping[str, list[float]], thresholds: Mapping[str, float]) -> float | None:
-    raw = values["apollo_steer_raw"]
-    mapped = values["bridge_steer_mapped"]
-    scale_values = values.get("steer_scale") or []
-    sign_values = values.get("steering_sign") or [1.0]
-    if not raw or not mapped or not scale_values:
-        return None
-    scale = scale_values[0]
-    sign = sign_values[0] if sign_values else 1.0
-    count = min(len(raw), len(mapped))
-    errors = [abs(_clamp(raw[index] * scale * sign, -1.0, 1.0) - mapped[index]) for index in range(count)]
-    return _percentile(errors, 0.95)
+def _raw_mapped_expected_error(rows: Sequence[Mapping[str, Any]]) -> float | None:
+    errors: list[float] = []
+    for row in rows:
+        raw = _row_value(row, FIELD_ALIASES["apollo_steer_raw"])
+        mapped = _row_value(row, FIELD_ALIASES["bridge_steer_mapped"])
+        scale = _row_value(row, FIELD_ALIASES["steer_scale"])
+        sign = _row_value(row, FIELD_ALIASES["steering_sign"])
+        if raw is None or mapped is None or scale is None:
+            continue
+        errors.append(abs(_clamp(raw * scale * (sign if sign is not None else 1.0), -1.0, 1.0) - mapped))
+    return _percentile(errors, 0.95) if errors else None
+
+
+def _paired_field_error(rows: Sequence[Mapping[str, Any]], left_field: str, right_field: str) -> float | None:
+    errors: list[float] = []
+    left_aliases = FIELD_ALIASES.get(left_field, [left_field])
+    right_aliases = FIELD_ALIASES.get(right_field, [right_field])
+    for row in rows:
+        left = _row_value(row, left_aliases)
+        right = _row_value(row, right_aliases)
+        if left is None or right is None:
+            continue
+        errors.append(abs(left - right))
+    return _percentile(errors, 0.95) if errors else None
 
 
 def _pair_error(left: Sequence[float], right: Sequence[float]) -> float | None:
@@ -1144,7 +1227,10 @@ def _read_rows(path: str | Path | Sequence[str | Path] | None) -> list[dict[str,
     if not resolved.exists():
         return []
     if resolved.suffix == ".jsonl":
-        return _read_jsonl(resolved)
+        rows = _read_jsonl(resolved)
+        if "control_apply_trace" in resolved.name:
+            return [_normalize_control_apply_trace_row(row) for row in rows]
+        return rows
     if resolved.suffix == ".json":
         payload = _read_json(resolved)
         rows = payload.get("rows") or payload.get("data") or payload.get("messages")
@@ -1153,6 +1239,53 @@ def _read_rows(path: str | Path | Sequence[str | Path] | None) -> list[dict[str,
         return [payload] if payload else []
     with resolved.open(encoding="utf-8", newline="") as handle:
         return [dict(row) for row in csv.DictReader(handle)]
+
+
+def _normalize_control_apply_trace_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    apollo_raw = row.get("apollo_raw") if isinstance(row.get("apollo_raw"), Mapping) else {}
+    bridge_mapped = row.get("bridge_mapped") if isinstance(row.get("bridge_mapped"), Mapping) else {}
+    carla_applied = row.get("carla_applied") if isinstance(row.get("carla_applied"), Mapping) else {}
+    vehicle_response = row.get("vehicle_response") if isinstance(row.get("vehicle_response"), Mapping) else {}
+    gt_state = row.get("gt_state") if isinstance(row.get("gt_state"), Mapping) else {}
+    _set_if_numeric(normalized, "sim_time", _first_numeric_value(row.get("sim_time"), row.get("timestamp"), gt_state.get("sim_time_sec")))
+    _set_if_numeric(normalized, "apollo_steer_raw", _first_numeric_value(row.get("apollo_steer_raw"), apollo_raw.get("steer")))
+    _set_if_numeric(
+        normalized,
+        "bridge_steer_mapped",
+        _first_numeric_value(
+            row.get("bridge_steer_mapped"),
+            bridge_mapped.get("mapped_carla_steer_cmd"),
+            bridge_mapped.get("steer"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "carla_steer_applied",
+        _first_numeric_value(row.get("carla_steer_applied"), carla_applied.get("steer")),
+    )
+    _set_if_numeric(
+        normalized,
+        "ego_yaw_rate",
+        _first_numeric_value(row.get("ego_yaw_rate"), vehicle_response.get("yaw_rate_rad_s")),
+    )
+    _set_if_numeric(normalized, "steer_scale", row.get("steer_scale"))
+    _set_if_numeric(normalized, "steering_sign", row.get("steering_sign"))
+    return normalized
+
+
+def _first_numeric_value(*values: Any) -> float | None:
+    for value in values:
+        number = _num(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _set_if_numeric(payload: dict[str, Any], key: str, value: Any) -> None:
+    number = _num(value)
+    if number is not None:
+        payload[key] = number
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

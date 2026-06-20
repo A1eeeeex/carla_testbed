@@ -426,6 +426,50 @@ def test_run_dir_uses_debug_timeseries_for_apollo_semantic_fields(tmp_path: Path
     assert report["resolved_fields"]["apollo_target_point_kappa"] == "apollo_debug_simple_lat_target_point_kappa"
 
 
+def test_run_dir_merges_control_apply_trace_over_sparse_timeseries_control_fields(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "artifacts").mkdir(parents=True)
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["sim_time"] = 10.0 + index * 0.05
+        row["route_s"] = index * 2.0
+        row["cross_track_error"] = 0.60 + index * 0.05
+        row["heading_error"] = 0.10 + index * 0.01
+        row["apollo_steer_raw"] = 0.0
+        row["bridge_steer_mapped"] = 0.0
+        row["carla_steer_applied"] = 0.0
+        row["ego_yaw_rate"] = 0.0
+    _write_rows(run_dir / "timeseries.csv", rows)
+    trace_rows = []
+    for index, raw in enumerate((0.30, 0.35, 0.40, 0.45)):
+        trace_rows.append(
+            {
+                "schema_version": "control_apply_trace.v1",
+                "sim_time": 10.0 + index * 0.05,
+                "apollo_raw": {"steer": raw},
+                "bridge_mapped": {"mapped_carla_steer_cmd": raw * 0.25},
+                "carla_applied": {"steer": raw * 0.25},
+                "vehicle_response": {"yaw_rate_rad_s": raw * 0.10},
+            }
+        )
+    (run_dir / "artifacts" / "control_apply_trace.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in trace_rows),
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+
+    assert report["source"]["control_trace"].endswith("artifacts/control_apply_trace.jsonl")
+    assert report["correlation_summary"]["apollo_steer_raw_abs"]["max"] == 0.45
+    assert report["correlation_summary"]["bridge_steer_mapped_abs"]["max"] == 0.1125
+    assert report["correlation_summary"]["carla_steer_applied_abs"]["max"] == 0.1125
+    first_high = report["drift_window_summary"]["phase_samples"]["first_high_lateral"]
+    assert first_high["apollo_steer_raw"] == 0.30
+    assert first_high["bridge_steer_mapped"] == 0.075
+    assert first_high["carla_steer_applied"] == 0.075
+    assert report["resolved_fields"]["apollo_steer_raw"] == "apollo_steer_raw"
+
+
 def test_run_dir_consumes_localization_hdmap_lateral_consistency(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     (run_dir / "artifacts").mkdir(parents=True)

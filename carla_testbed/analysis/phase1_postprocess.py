@@ -12,6 +12,10 @@ from carla_testbed.analysis.apollo_hdmap_projection import (
     write_apollo_hdmap_projection_report,
 )
 from carla_testbed.analysis.apollo_link_health import analyze_and_write_apollo_link_health
+from carla_testbed.analysis.apollo_lateral_semantics import (
+    analyze_apollo_lateral_semantics_run_dir,
+    write_apollo_lateral_semantics_report,
+)
 from carla_testbed.analysis.apollo_module_consumption import (
     analyze_apollo_module_consumption_run_dir,
     write_apollo_module_consumption_report,
@@ -97,6 +101,8 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     control_attribution_paths: dict[str, str] | None = None
     control_health_report: dict[str, Any] | None = None
     control_health_paths: dict[str, str] | None = None
+    apollo_lateral_semantics_report: dict[str, Any] | None = None
+    apollo_lateral_semantics_paths: dict[str, str] | None = None
     apollo_link_health_report: dict[str, Any] | None = None
     apollo_link_health_paths: dict[str, str] | None = None
     fixed_scene_contract_report: dict[str, Any] | None = None
@@ -118,6 +124,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         apollo_module_consumption_report, apollo_module_consumption_paths = _write_apollo_module_consumption(root)
         control_attribution_report, control_attribution_paths = _write_control_attribution(root)
         control_health_report, control_health_paths = _write_control_health(root)
+        apollo_lateral_semantics_report, apollo_lateral_semantics_paths = _write_apollo_lateral_semantics(root)
         apollo_link_health_report, apollo_link_health_paths = _write_apollo_link_health(root)
     v_t_gap_report = extract_v_t_gap(run_dir=root)
     v_t_gap_paths = write_v_t_gap_report(v_t_gap_report, analysis / "v_t_gap")
@@ -170,6 +177,11 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
             else None
         ),
         "control_health_status": (control_health_report.get("status") if control_health_report else None),
+        "apollo_lateral_semantics_status": (
+            (apollo_lateral_semantics_report.get("verdict") or {}).get("status")
+            if apollo_lateral_semantics_report
+            else None
+        ),
         "apollo_hdmap_projection_status": (
             apollo_hdmap_projection_report.get("status") if apollo_hdmap_projection_report else None
         ),
@@ -218,6 +230,11 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
             **({"apollo_control_handoff": apollo_control_handoff_paths} if apollo_control_handoff_paths else {}),
             **({"control_attribution": control_attribution_paths} if control_attribution_paths else {}),
             **({"control_health": control_health_paths} if control_health_paths else {}),
+            **(
+                {"apollo_lateral_semantics": apollo_lateral_semantics_paths}
+                if apollo_lateral_semantics_paths
+                else {}
+            ),
             **({"apollo_hdmap_projection": apollo_hdmap_projection_paths} if apollo_hdmap_projection_paths else {}),
             **({"apollo_route_contract": apollo_route_contract_paths} if apollo_route_contract_paths else {}),
             **(
@@ -388,6 +405,14 @@ def _write_control_health(root: Path) -> tuple[dict[str, Any] | None, dict[str, 
     return report, paths
 
 
+def _write_apollo_lateral_semantics(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    if not _apollo_lateral_semantics_raw_exists(root):
+        return None, None
+    report = analyze_apollo_lateral_semantics_run_dir(root)
+    paths = write_apollo_lateral_semantics_report(report, root / "analysis" / "apollo_lateral_semantics")
+    return report, paths
+
+
 def _write_apollo_link_health(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
     if not (root / "manifest.json").exists() and not (root / "summary.json").exists():
         return None, None
@@ -522,6 +547,22 @@ def _control_health_raw_exists(root: Path) -> bool:
             root / "artifacts" / "control_decode_debug.jsonl",
             root / "timeseries.csv",
             root / "timeseries.jsonl",
+        )
+    )
+
+
+def _apollo_lateral_semantics_raw_exists(root: Path) -> bool:
+    return any(
+        path.exists()
+        for path in (
+            root / "artifacts" / "debug_timeseries.csv",
+            root / "timeseries.csv",
+            root / "timeseries.jsonl",
+            root / "artifacts" / "control_apply_trace.jsonl",
+            root / "artifacts" / "planning_topic_debug.jsonl",
+            root / "planning_topic_debug.jsonl",
+            root / "analysis" / "apollo_reference_line_contract" / "apollo_reference_line_contract_report.json",
+            root / "analysis" / "localization_contract" / "localization_contract_report.json",
         )
     )
 

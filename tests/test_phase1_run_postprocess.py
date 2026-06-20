@@ -618,6 +618,63 @@ def test_phase1_postprocess_refreshes_apollo_control_reports_before_status(tmp_p
     assert control_health["status"] == "warn"
 
 
+def test_phase1_postprocess_writes_lateral_semantics_before_link_health(tmp_path, monkeypatch) -> None:
+    run = _write_complete_run(tmp_path)
+    _make_run_apollo_fixed_scene(run)
+    calls: list[str] = []
+
+    def fake_lateral(run_dir):
+        calls.append("lateral")
+        assert (run_dir / "analysis" / "control_health" / "control_health_report.json").exists()
+        return {
+            "schema_version": "apollo_lateral_semantics.v1",
+            "verdict": {"status": "warn", "failure_reason": "lateral_semantics_anomaly"},
+            "suspected_layer": "reference_line_semantics",
+            "confidence": "medium",
+        }
+
+    def fake_write_lateral(report, out_dir):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report_path = out_dir / "apollo_lateral_semantics_report.json"
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "apollo_lateral_semantics_report": str(report_path),
+            "apollo_lateral_semantics_summary": str(out_dir / "apollo_lateral_semantics_summary.md"),
+        }
+
+    def fake_link_health(run_dir, out_dir):
+        calls.append("link_health")
+        lateral = run_dir / "analysis" / "apollo_lateral_semantics" / "apollo_lateral_semantics_report.json"
+        assert lateral.exists()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report_path = out_dir / "apollo_link_health_report.json"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "apollo_link_health.v1",
+                    "primary_blocker": "apollo_lateral_semantics:warn",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "apollo_link_health_report": str(report_path),
+            "apollo_link_health_summary": str(out_dir / "apollo_link_health_summary.md"),
+        }
+
+    monkeypatch.setattr(phase1_postprocess, "analyze_apollo_lateral_semantics_run_dir", fake_lateral)
+    monkeypatch.setattr(phase1_postprocess, "write_apollo_lateral_semantics_report", fake_write_lateral)
+    monkeypatch.setattr(phase1_postprocess, "analyze_and_write_apollo_link_health", fake_link_health)
+
+    report = run_phase1_postprocess(run)
+
+    assert calls == ["lateral", "link_health"]
+    assert report["apollo_lateral_semantics_status"] == "warn"
+    assert report["outputs"]["apollo_lateral_semantics"]["apollo_lateral_semantics_report"].endswith(
+        "apollo_lateral_semantics_report.json"
+    )
+
+
 def test_phase1_postprocess_refreshes_projection_and_reference_before_link_health(tmp_path, monkeypatch) -> None:
     run = _write_complete_run(tmp_path)
     _make_run_apollo_fixed_scene(run)
