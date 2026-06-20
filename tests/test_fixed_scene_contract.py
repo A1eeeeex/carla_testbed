@@ -105,6 +105,77 @@ def test_static_lead_hold_phase_does_not_require_completion_for_short_smoke(tmp_
     assert "fixed_scene_required_phase_not_completed" not in report["blocking_reasons"]
 
 
+def test_lane_change_progress_can_complete_phase_without_stop_event(tmp_path) -> None:
+    template = load_fixed_scene_template("configs/scenarios/baguang/cut_out_35kph_right_to_left_25m.yaml")
+    storyboard = compile_fixed_scene_template(template)
+    storyboard_path = tmp_path / "fixed_scene_resolved.json"
+    trace_path = tmp_path / "scenario_actor_trace.jsonl"
+    events_path = tmp_path / "scenario_phase_events.jsonl"
+    storyboard_path.write_text(json.dumps(storyboard), encoding="utf-8")
+    trace_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in [
+                {
+                    "schema_version": "scenario_actor_trace.v1",
+                    "scene_id": storyboard["scene_id"],
+                    "phase": "lead_ahead_prepare",
+                    "actor_role": "lead_vehicle",
+                    "action_type": "gap_control",
+                },
+                {
+                    "schema_version": "scenario_actor_trace.v1",
+                    "scene_id": storyboard["scene_id"],
+                    "phase": "cut_out_lane_change",
+                    "actor_role": "lead_vehicle",
+                    "action_type": "lane_change",
+                    "lane_change_progress": 1.0,
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    events_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in [
+                {
+                    "schema_version": "scenario_phase_event.v1",
+                    "scene_id": storyboard["scene_id"],
+                    "phase": "lead_ahead_prepare",
+                    "event": "phase_started",
+                },
+                {
+                    "schema_version": "scenario_phase_event.v1",
+                    "scene_id": storyboard["scene_id"],
+                    "phase": "cut_out_lane_change",
+                    "event": "phase_started",
+                },
+                {
+                    "schema_version": "scenario_phase_event.v1",
+                    "scene_id": storyboard["scene_id"],
+                    "phase": "lead_ahead_prepare",
+                    "event": "phase_completed",
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_fixed_scene_contract(
+        storyboard_path=storyboard_path,
+        trace_path=trace_path,
+        events_path=events_path,
+    )
+
+    assert report["status"] == "pass"
+    assert report["trace_inferred_completed_phases"] == ["cut_out_lane_change"]
+    assert report["missing_completed_required_phases"] == []
+    assert "fixed_scene_required_phase_not_completed" not in report["blocking_reasons"]
+
+
 def test_duration_policy_allows_small_route_end_tolerance(tmp_path) -> None:
     storyboard_path, trace_path, events_path = _write_duration_policy_fixture(tmp_path, route_s=299.91)
 

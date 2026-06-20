@@ -103,6 +103,12 @@ default. A required phase that never starts or never completes is a contract
 failure, and stopping the scene before required phases complete is reported as
 `stop_before_required_phase_completed`. Optional phases must be marked with
 `required: false` in the storyboard.
+For scripted lane-change phases, an online run may end before the scene-level
+stop trigger after the target has already completed its lane-change action. In
+that narrow case, `lane_change_progress >= 0.95` in
+`scenario_actor_trace.jsonl` is accepted as fixed-scene phase completion
+evidence even if a `phase_completed` event was not written. This validates
+target playback only; it is not ego autonomy or Apollo behavior success.
 
 For `duration_policy: lead_reaches_road_end`, the compiler emits an
 `actor_route_s` stop condition plus a simulation-time fallback. Claim-grade

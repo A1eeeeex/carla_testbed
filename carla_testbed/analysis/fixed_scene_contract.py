@@ -118,13 +118,15 @@ def analyze_fixed_scene_contract(
             if row.get("event") == "phase_started" and row.get("phase") is not None
         }
     )
-    completed_phases = sorted(
+    event_completed_phases = sorted(
         {
             str(row.get("phase"))
             for row in event_rows
             if row.get("event") == "phase_completed" and row.get("phase") is not None
         }
     )
+    trace_inferred_completed_phases = _trace_inferred_completed_phases(phases, trace_rows)
+    completed_phases = sorted(set(event_completed_phases) | set(trace_inferred_completed_phases))
     missing_started_phases = sorted(set(phase_ids) - set(started_phases))
     missing_required_phases = sorted(set(required_phases) - set(started_phases))
     missing_completed_required_phases = sorted(set(required_completion_phases) - set(completed_phases))
@@ -170,6 +172,8 @@ def analyze_fixed_scene_contract(
         "traced_roles": traced_roles,
         "started_phases": started_phases,
         "completed_phases": completed_phases,
+        "event_completed_phases": event_completed_phases,
+        "trace_inferred_completed_phases": trace_inferred_completed_phases,
         "missing_trace_roles": missing_trace_roles,
         "missing_started_phases": missing_started_phases,
         "missing_required_phases": missing_required_phases,
@@ -289,6 +293,40 @@ def _phase_requires_completion(phase: Mapping[str, Any]) -> bool:
     if phase.get("completion_required") is False:
         return False
     return True
+
+
+def _trace_inferred_completed_phases(
+    phases: Sequence[Mapping[str, Any]],
+    trace_rows: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Infer completion for phases whose trace carries explicit progress evidence.
+
+    Some online runs terminate before the scene-level stop trigger after a lane
+    change has already reached full progress. In that case there may be no
+    phase_completed event, but the actor trace is still direct runtime evidence
+    that the target action finished. Keep this narrow: do not infer generic
+    phase completion from trace presence alone.
+    """
+    lane_change_phase_ids = {
+        str(phase.get("id"))
+        for phase in phases
+        if phase.get("id") is not None
+        and any(
+            isinstance(action, Mapping) and action.get("type") == "lane_change"
+            for action in phase.get("actions", [])
+        )
+    }
+    completed: set[str] = set()
+    for row in trace_rows:
+        phase_id = str(row.get("phase") or "")
+        if phase_id not in lane_change_phase_ids:
+            continue
+        if str(row.get("action_type") or "") != "lane_change":
+            continue
+        progress = _num(row.get("lane_change_progress"))
+        if progress is not None and progress >= 0.95:
+            completed.add(phase_id)
+    return sorted(completed)
 
 
 def _duration_policy_check(storyboard: Mapping[str, Any], trace_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
