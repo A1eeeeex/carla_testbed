@@ -56,15 +56,16 @@ success means:
 
 Latest reviewed snapshot: `2026-06-20`, after the latest GPT Pro audit of the
 accepted-bundle evidence, the ScenarioComparison completeness resolver fix, the
-Baguang lane-event hard-gate audit, and a fresh Apollo sidecar cut-in online
-validation run.
+Baguang lane-event hard-gate audit, a fresh Apollo sidecar cut-in online
+validation run, and a `carla_builtin` safety-sensor attach-order fix validated
+with a new online cut-in run.
 
 Current catalog status using `tools/phase1_scenario_catalog.py --repo .
 --evidence-root runs`:
 
 - Total scenarios tracked: `8`
-- Accepted `DONE`: `7`
-- `PARTIAL`: `1`
+- Accepted `DONE`: `8`
+- `PARTIAL`: `0`
 - `NOT_YET`: `0`
 - `UNKNOWN`: `0`
 
@@ -79,7 +80,7 @@ Interpretation:
   to self-contained materialized evidence and makes ScenarioComparison use the
   Phase 1 artifact-completeness profile rather than the stricter natural-driving
   claim/materialization profile.
-- A stricter Baguang lane-event contract audit then demoted
+- A stricter Baguang lane-event contract audit temporarily demoted
   `cut_in_simple` from accepted `DONE` to `PARTIAL`. The refreshed Apollo run
   starts inside the cut-in activation window. The Apollo sidecar sample
   `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700`
@@ -107,26 +108,31 @@ Interpretation:
   lane-departure failure, but the paired `carla_builtin` comparison run still
   has a low-CTE lane-invasion quarantine, so the backend comparison cannot yet
   produce a clean win/loss verdict.
-- Seven current P0/P1 rows have self-contained Phase 1 accepted `DONE` bundles.
+- The paired `carla_builtin` quarantine was traced to safety sensors attaching
+  before CARLA's ego-spawn settling tick. The runner now attaches safety sensors
+  after the stabilization tick, so spawn-time lane-invasion transients are setup
+  provenance rather than run behavior evidence. The validation run
+  `runs/phase1_builtin_baguang_cut_in_safety_attach_online_20260620_203218`
+  has `lane_invasion_count=0`, `baguang_lane_event_contract_status=pass`,
+  `scenario_actor_contract=pass`, and `v_t_gap=pass`.
+- All eight current P0/P1 rows now have self-contained Phase 1 accepted `DONE`
+  bundles.
   Most rows are under
   `runs/phase1_acceptance_*_selfcontained_control_20260620_185256/acceptance/`;
   `cut_in_simple` is refreshed under
-  `runs/phase1_acceptance_cut_in_simple_lane_event_contract_20260620_201342/acceptance/`
-  and is `PARTIAL`.
+  `runs/phase1_acceptance_cut_in_simple_lane_event_contract_20260620_203316/acceptance/`
+  and is `DONE`.
   Each bundle has `bundle_self_contained=true` and materializes run summaries,
   manifests, `timeseries.*`, `events.jsonl`, `phase1_status.json`,
   `v_t_gap_report.json`, `v_t_gap.csv`, comparison artifacts, and an executable
   control trace surface under the bundle-local `evidence/` directory. Target
   actor rows also materialize scenario actor trace and phase events.
-- This completes most of the current Phase 1 accepted comparison-surface
-  catalog, but not the whole catalog. The immediate remaining Phase 1 catalog
-  blocker is the cut-in comparison safety-event context: until the paired
-  builtin lane-invasion trigger is repaired or explained, `cut_in_simple` must
-  remain `PARTIAL`.
-  This does not mean Apollo behavior succeeded in the DONE scenarios: several
-  representative Apollo and builtin runs are still evaluable failures. The next
-  milestone shifts from accepted-bundle construction to lane-event contract
-  repair and representative Apollo behavior blocker reduction.
+- This completes the current Phase 1 accepted comparison-surface catalog. It
+  does not mean Apollo behavior succeeded in the DONE scenarios: several
+  representative Apollo and builtin runs are still evaluable failures, including
+  the latest Apollo cut-in sample (`failed/lane_invasion`). The next milestone
+  shifts from accepted-bundle construction to representative Apollo behavior
+  blocker reduction and cleaner external-backend runtime integration.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.
@@ -534,10 +540,10 @@ Status definitions:
 | ---------- | ------------ | ------ | ------------- | --- | ----------------- |
 | fixed_scene_player offline compiler/storyboard layer | Compile fixed scene templates to deterministic storyboards | DONE | `carla_testbed/scenario_player/compiler.py`; `carla_testbed/scenario_player/schema.py`; `configs/scenario_templates/*.yaml`; `tests/test_fixed_scene_compiler.py` | This proves offline storyboard construction, not online CARLA playback quality. | Keep compiler stable; add catalog summary before extending scenarios. |
 | fixed_scene_player CARLA online playback validation | Validate non-ego actor playback in CARLA | PARTIAL | `carla_testbed/scenario_player/carla_runtime.py`; `docs/scenario_player.md`; `tests/test_fixed_scene_carla_runtime.py`; `tools/run_fixed_scene_carla_smoke.py`; `tools/run_builtin_ego_fixed_scene.py` | Runtime support exists and latest local evidence includes CARLA builtin playback for all current P0/P1 catalog rows, but this remains host/run dependent and is not Apollo evidence. | Keep catalog evidence explicit and add Apollo fixed-scene compatibility before marking scenarios DONE. |
-| scenario case catalog | Enumerate reusable ScenarioCases | PARTIAL | `carla_testbed/analysis/phase1_scenario_catalog.py`; `tools/phase1_scenario_catalog.py`; `carla_testbed/analysis/phase1_acceptance.py`; `tools/phase1_acceptance.py`; `artifacts/phase1_scenario_catalog_current/phase1_scenario_catalog.json`; `tests/test_phase1_scenario_catalog.py`; `tests/test_phase1_acceptance.py` | Catalog now reports `7 DONE / 1 PARTIAL`. Seven rows have self-contained accepted bundles with run summaries, manifests, `timeseries.*`, `events.jsonl`, phase/status reports, v-t-gap evidence, comparison artifacts, and executable control trace surface. `cut_in_simple` is intentionally PARTIAL because the latest comparison still has a shared safety-event context issue: Apollo's event is hard-gate eligible after yaw-aware footprint correction, but the paired builtin lane event remains quarantined. This is Phase 1 comparison-surface evidence, not Apollo natural-driving success. | Repair or explain the Baguang builtin/shared lane-event trigger provenance, then refresh the catalog before claiming full Phase 1 catalog completion. |
+| scenario case catalog | Enumerate reusable ScenarioCases | DONE | `carla_testbed/analysis/phase1_scenario_catalog.py`; `tools/phase1_scenario_catalog.py`; `carla_testbed/analysis/phase1_acceptance.py`; `tools/phase1_acceptance.py`; `artifacts/phase1_scenario_catalog_current/phase1_scenario_catalog.json`; `tests/test_phase1_scenario_catalog.py`; `tests/test_phase1_acceptance.py` | Catalog now reports `8 DONE / 0 PARTIAL`. All current P0/P1 rows have self-contained accepted bundles with run summaries, manifests, `timeseries.*`, `events.jsonl`, phase/status reports, v-t-gap evidence, comparison artifacts, and executable control trace surface. `cut_in_simple` is accepted after the Apollo event was made hard-gate eligible by yaw-aware footprint analysis and the paired builtin run was refreshed after safety sensors moved behind the spawn-settling tick. This is Phase 1 comparison-surface evidence, not Apollo natural-driving success. | Use the accepted catalog to prioritize representative Apollo behavior blocker reduction and keep new scenario rows behind the same acceptance bundle gate. |
 | follow_stop_static | P0 static lead stop | DONE | `configs/scenarios/baguang/follow_stop_static_300m.yaml`; `configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml`; `configs/scenario_templates/static_lead_stop.yaml`; `runs/phase1_acceptance_follow_stop_static_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_phase1_scenario_catalog.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py` | Self-contained accepted comparison bundle exists and includes target actor traces, phase events, v-t-gap, comparison, acceptance, and control trace surfaces. The representative Apollo run is still an evaluable behavior failure, so this is not Apollo follow-stop success. | Use accepted evidence to prioritize behavior blocker reduction rather than rebuilding the comparison surface. |
 | lead_decel_accel | P0 lead speed-change following | DONE | `configs/scenario_templates/lead_vehicle_accel_decel.yaml`; `configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml`; `configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml`; `runs/phase1_acceptance_lead_decel_accel_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_v_t_gap_extractor.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py` | Self-contained accepted comparison bundle exists with target actor, phase, v-t-gap, and control trace evidence. Participating runs remain evaluable failures, so this is comparison-surface completion only. | Use the bundle to compare failure timing and reduce representative Apollo/Baguang lane-invasion blockers. |
-| cut_in_simple | P0 target enters ego lane | PARTIAL | `configs/scenario_templates/cut_in.yaml`; `configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml`; `configs/scenarios/town01/cut_in_097.yaml`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/artifacts/apollo_planning.data`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/analysis/prediction_evidence/prediction_evidence_report.json`; `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742/events.jsonl`; `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742/analysis/baguang_lane_event_contract/baguang_lane_event_contract_report.json`; `runs/phase1_comparisons/baguang_cut_in_lane_event_contract_vs_builtin_20260620_201342/comparison_summary.json`; `runs/phase1_acceptance_cut_in_simple_lane_event_contract_20260620_201342/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_player.py::test_baguang_cut_in_starts_at_configured_activation_gap`; `tests/test_apollo_prediction_evidence.py::test_planning_bvar_prediction_count_counts_as_native_observed_with_source`; `tests/test_scenario_comparison.py::test_lane_event_contract_blocks_lane_invasion_backend_loss`; `tests/test_baguang_lane_event_contract.py::test_downstream_lane_invasion_before_footprint_crossing_is_quarantined`; `tests/test_baguang_lane_event_contract.py::test_yaw_aware_vehicle_footprint_prevents_false_quarantine`; `tests/unit/test_apollo_compat_runtime.py::test_transition_events_append_without_erasing_backend_events`; `tests/test_phase1_acceptance.py` | The newest correctly configured Apollo cut-in sample preserves root `events.jsonl` runtime events and includes `crossed_lane_marking_types=["Solid"]`; scenario actor contract passes and `v_t_gap` is available. After yaw-aware vehicle footprint correction, the Apollo lane event is hard-gate eligible and classified as `possible_real_lane_departure_or_unclassified_lane_event`. The refreshed comparison is still `partially_evaluable/shared_safety_event_context_issue` with reason `lane_event_contract_blocks_hard_gate` because the paired builtin lane event remains quarantined at near-zero CTE. This is not cut-in behavior success and not a valid backend-loss comparison. | Repair or verify builtin/shared lane-invasion trigger provenance, lane-marking/XODR semantics, or sensor event timing before accepting cut-in as a completed Phase 1 comparison row. |
+| cut_in_simple | P0 target enters ego lane | DONE | `configs/scenario_templates/cut_in.yaml`; `configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml`; `configs/scenarios/town01/cut_in_097.yaml`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/artifacts/apollo_planning.data`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/analysis/prediction_evidence/prediction_evidence_report.json`; `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742/events.jsonl`; `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742/analysis/baguang_lane_event_contract/baguang_lane_event_contract_report.json`; `runs/phase1_builtin_baguang_cut_in_safety_attach_online_20260620_203218/summary.json`; `runs/phase1_comparisons/baguang_cut_in_lane_event_contract_vs_builtin_20260620_203316/comparison_summary.json`; `runs/phase1_acceptance_cut_in_simple_lane_event_contract_20260620_203316/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_player.py::test_baguang_cut_in_starts_at_configured_activation_gap`; `tests/test_apollo_prediction_evidence.py::test_planning_bvar_prediction_count_counts_as_native_observed_with_source`; `tests/test_scenario_comparison.py::test_lane_event_contract_blocks_lane_invasion_backend_loss`; `tests/test_baguang_lane_event_contract.py::test_downstream_lane_invasion_before_footprint_crossing_is_quarantined`; `tests/test_baguang_lane_event_contract.py::test_yaw_aware_vehicle_footprint_prevents_false_quarantine`; `tests/unit/test_apollo_compat_runtime.py::test_transition_events_append_without_erasing_backend_events`; `tests/test_builtin_ego_runner_safety_integration.py`; `tests/test_phase1_acceptance.py` | The newest correctly configured Apollo cut-in sample preserves root `events.jsonl` runtime events and includes `crossed_lane_marking_types=["Solid"]`; scenario actor contract passes and `v_t_gap` is available. After yaw-aware vehicle footprint correction, the Apollo lane event is hard-gate eligible and classified as `possible_real_lane_departure_or_unclassified_lane_event`. The refreshed builtin run attaches safety sensors after ego spawn settling, has `lane_invasion_count=0`, and clears the previous low-CTE quarantine. The final comparison is `comparable/apollo_vs_planning_control_evaluable` and the acceptance bundle is self-contained `DONE`. This is accepted Phase 1 comparison-surface evidence; Apollo's representative run still failed with lane invasion. | Use this accepted bundle to reduce Apollo cut-in behavior blockers; do not reinterpret it as Apollo cut-in success. |
 | lane_keep_straight | P0 lateral baseline | DONE | `configs/scenarios/town01/lane_keep_097.yaml`; `runs/phase1_acceptance_lane_keep_straight_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_phase1_scenario_catalog.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py`; `tests/test_run_artifact_completeness.py` | Route-only Phase 1 comparison-surface evidence is self-contained and accepted, including executable control trace surfaces. Apollo's participating run remains an evaluable failure, not natural-driving capability evidence. | Use this accepted route-only row as the template for future review packs. |
 | lane_keep_curve | P0 lateral curve baseline | DONE | `configs/scenarios/town01/curve217_diagnostic.yaml`; `runs/phase1_acceptance_lane_keep_curve_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_phase1_status_classifier.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py`; `tests/test_run_artifact_completeness.py` | Route-only curve comparison-surface evidence is self-contained and accepted. Apollo behavior remains diagnosable with route/reference-line style blockers; do not tune control from this result alone. | Use this surface for route/reference-line blocker reduction. |
 | cut_out_simple | P1 target exits ego lane | DONE | `configs/scenario_templates/cut_out.yaml`; `configs/scenarios/baguang/cut_out_35kph_right_to_left_25m.yaml`; `configs/scenarios/town01/cut_out_097.yaml`; `runs/phase1_acceptance_cut_out_simple_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py::test_baguang_cut_out_compiles_lane_change_phase`; `tests/test_phase1_acceptance.py`; `tests/test_apollo_fixed_scene_launch_plan.py::test_apollo_baguang_cut_out_launch_plan_uses_sidecar_runtime_command` | Self-contained accepted comparison bundle exists with lane-change actor/phase evidence and control trace surfaces. Both participating runs remain evaluable `lane_invasion` failures, so this is not cut-out behavior success. | Keep lane-change playback evidence separate from ego autonomy success and use the bundle for blocker triage. |
@@ -791,11 +797,11 @@ Implementation note added after the 2026-06-17 continuous loop:
   vehicle footprint, so the Apollo sample's lane-invasion event is
   hard-gate-eligible and classified as
   `possible_real_lane_departure_or_unclassified_lane_event`. The paired
-  `carla_builtin` run still has a low-CTE lane-event quarantine, so the latest
-  comparison remains
-  `partially_evaluable/shared_safety_event_context_issue` with reason
-  `lane_event_contract_blocks_hard_gate`, and cut-in remains `PARTIAL` until the
-  builtin/shared lane-event trigger provenance is repaired or explained.
+  `carla_builtin` runner now attaches safety sensors after the ego-spawn
+  settling tick, so spawn-time lane-invasion callbacks are excluded from run
+  behavior evidence. The refreshed builtin run has `lane_invasion_count=0`, the
+  comparison is `comparable/apollo_vs_planning_control_evaluable`, and the
+  acceptance bundle is `DONE`.
 - `cut_out_simple` now has a Baguang fixed-scene ScenarioCase,
   `configs/scenarios/baguang/cut_out_35kph_right_to_left_25m.yaml`, online
   Apollo sidecar evidence, online `carla_builtin` evidence, a comparable
@@ -805,9 +811,8 @@ Implementation note added after the 2026-06-17 continuous loop:
   not a cut-out behavior pass.
 - Current catalog completion is governed by self-contained accepted bundles,
   not by the old cross-run readiness snapshot. Current P0/P1 catalog progress
-  is `7 DONE / 1 PARTIAL`; this means most accepted comparison-surface rows are
-  complete, while cut-in is blocked by lane-event contract hard-gate evidence.
-  It does not mean every backend behavior passed.
+  is `8 DONE / 0 PARTIAL`; this means the current accepted comparison-surface
+  rows are complete. It does not mean every backend behavior passed.
 - `carla_builtin` route-only scenarios now write Phase 1 artifacts without
   fixed-scene actor files. The postprocess spine treats their `v-t-gap` report
   as `not_applicable`, not `invalid`.

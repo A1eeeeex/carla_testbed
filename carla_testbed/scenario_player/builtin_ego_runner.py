@@ -152,9 +152,12 @@ def _run_builtin_ego_route_only(
     try:
         _append_event(events_path, {"event": "run_started", "wall_time_s": start_wall})
         ego = _spawn_ego(world, spawn_index=spawn_index, spawn_s_offset_m=spawn_s_offset_m)
-        safety_tracker = _SafetyEventTracker(world=world, ego=ego, artifact_dir=artifacts)
+        # Let CARLA settle the newly spawned ego before safety sensors start
+        # producing claimable run events. Spawn-time lane-invasion callbacks are
+        # setup provenance, not backend behavior evidence.
         _tick_world_if_available(world)
         route_plan = _build_route_plan(world, ego, scenario)
+        safety_tracker = _SafetyEventTracker(world=world, ego=ego, artifact_dir=artifacts)
         with trace_path.open("w", encoding="utf-8") as trace_fh, timeseries_path.open(
             "w", encoding="utf-8", newline=""
         ) as ts_fh:
@@ -433,7 +436,9 @@ def run_builtin_ego_fixed_scene(
     try:
         _append_event(events_path, {"event": "run_started", "wall_time_s": start_wall})
         ego = _spawn_ego(world, spawn_index=spawn_index, spawn_s_offset_m=spawn_s_offset_m)
-        safety_tracker = _SafetyEventTracker(world=world, ego=ego, artifact_dir=artifacts)
+        # Let CARLA settle the newly spawned ego before safety sensors start
+        # producing claimable run events. Spawn-time lane-invasion callbacks are
+        # setup provenance, not backend behavior evidence.
         _tick_world_if_available(world)
         _set_initial_speed(ego, _safe_call(ego, "get_transform"), _ego_initial_speed(storyboard))
         route_plan = _build_route_plan(world, ego, storyboard)
@@ -446,6 +451,7 @@ def run_builtin_ego_fixed_scene(
             },
             storyboard,
         )
+        safety_tracker = _SafetyEventTracker(world=world, ego=ego, artifact_dir=artifacts)
         with trace_path.open("w", encoding="utf-8") as trace_fh, timeseries_path.open(
             "w", encoding="utf-8", newline=""
         ) as ts_fh:

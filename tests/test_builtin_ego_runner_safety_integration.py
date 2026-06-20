@@ -75,6 +75,7 @@ def test_builtin_runner_writes_safety_event_summary_timeseries_and_trace(monkeyp
         for line in (run_dir / "artifacts" / "safety_event_trace.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert [row["event_type"] for row in event_rows] == ["collision", "lane_invasion"]
+    assert {row["frame"] for row in event_rows} == {2}
     assert all(sensor.stopped for sensor in world.sensors)
     assert all(sensor.destroyed for sensor in world.sensors)
 
@@ -149,11 +150,17 @@ class _FakeWorld:
 
     def tick(self):
         self.frame += 1
-        if self.frame == 1:
-            self._trigger("sensor.other.collision", _Event(frame=1, timestamp=0.05, other_actor=_OtherActor()))
+        # Frame 1 represents the ego-spawn settling tick. The runner should not
+        # attach safety sensors until after this tick, so these callbacks would
+        # be ignored even if CARLA produced spawn-time transients.
+        if self.frame in {1, 2}:
+            self._trigger(
+                "sensor.other.collision",
+                _Event(frame=self.frame, timestamp=0.05 * self.frame, other_actor=_OtherActor()),
+            )
             self._trigger(
                 "sensor.other.lane_invasion",
-                _Event(frame=1, timestamp=0.05, crossed_lane_markings=[_LaneMarking("Solid")]),
+                _Event(frame=self.frame, timestamp=0.05 * self.frame, crossed_lane_markings=[_LaneMarking("Solid")]),
             )
         return self.frame
 
