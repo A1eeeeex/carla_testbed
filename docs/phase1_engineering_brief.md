@@ -61,8 +61,8 @@ Current catalog status using `tools/phase1_scenario_catalog.py --repo .
 --evidence-root runs`:
 
 - Total scenarios tracked: `8`
-- Accepted `DONE`: `0`
-- `PARTIAL`: `8`
+- Accepted `DONE`: `1`
+- `PARTIAL`: `7`
 - `NOT_YET`: `0`
 - `UNKNOWN`: `0`
 
@@ -86,11 +86,19 @@ Interpretation:
   `prediction_evidence:closed_loop` primary blocker for this sample, but it does
   not make the row complete: the run remains an evaluable `lane_invasion`
   failure and still cannot support an Apollo natural-driving claim.
-- The next Phase 1 milestone is to convert one representative row at a time
-  into a self-contained, re-computable accepted bundle with raw `timeseries.*`,
-  actor trace, phase events, `v_t_gap.csv`, comparison summary, acceptance
-  report, and no stale evidence. Until that exists for the catalog, Phase 1
-  remains `PARTIAL`.
+- `lane_keep_straight` now has the first self-contained Phase 1 accepted
+  bundle:
+  `runs/phase1_acceptance_lane_keep_straight_selfcontained_20260620_184238/acceptance/phase1_acceptance_report.json`.
+  Its `bundle_self_contained` gate is true and it materializes run summaries,
+  manifests, `timeseries.csv`, `events.jsonl`, `phase1_status.json`,
+  `v_t_gap_report.json`, `v_t_gap.csv`, and comparison artifacts under the
+  bundle-local `evidence/` directory. This proves one route-only comparison
+  surface is accepted; it does not prove Apollo lane-keeping success.
+- The next Phase 1 milestone is to convert the remaining representative rows
+  into self-contained, re-computable accepted bundles with raw `timeseries.*`,
+  target actor trace when applicable, phase events when applicable,
+  `v_t_gap.csv`, comparison summary, acceptance report, and no stale evidence.
+  Until that exists for all catalog rows, Phase 1 remains `PARTIAL`.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.
@@ -502,7 +510,7 @@ Status definitions:
 | follow_stop_static | P0 static lead stop | PARTIAL | `configs/scenarios/baguang/follow_stop_static_300m.yaml`; `configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml`; `configs/scenarios/town01/follow_stop_097.yaml`; `configs/scenario_templates/static_lead_stop.yaml`; `configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml`; `runs/phase1_acceptance_follow_stop_static_20260620_154807/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_phase1_scenario_catalog.py`; `tests/test_baguang_lane_event_contract.py`; `tests/test_scenario_comparison.py`; `tests/test_apollo_fixed_scene_launch_plan.py`; `tests/test_phase1_acceptance.py`; `tests/test_phase1_run_postprocess.py` | Mechanism evidence exists, but the accepted bundle is not yet enough to mark the row complete under the latest external audit because raw artifacts and independent recomputation evidence remain incomplete. The Apollo run remains an evaluable `lane_invasion` / downstream blocker failure. | Rebuild a self-contained accepted bundle with raw traces, v-t-gap CSV, comparison, acceptance report, and no stale evidence. |
 | lead_decel_accel | P0 lead speed-change following | PARTIAL | `configs/scenario_templates/lead_vehicle_accel_decel.yaml`; `configs/scenarios/town01/lead_accel_decel_097.yaml`; `configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml`; `configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml`; `runs/phase1_acceptance_lead_decel_accel_20260620_155835/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_v_t_gap_extractor.py`; `tests/test_phase1_run_postprocess.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py` | Scenario and analyzer surfaces exist, but participating runs are still evaluable `lane_invasion` failures and the review evidence is not self-contained enough for DONE. | Re-run/postprocess as a complete bundle and preserve raw actor/phase/control/timeseries evidence. |
 | cut_in_simple | P0 target enters ego lane | PARTIAL | `configs/scenario_templates/cut_in.yaml`; `configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml`; `configs/scenarios/town01/cut_in_097.yaml`; `runs/phase1_apollo_sidecar_cut_in_target_evaluable_online_20260620_165920/analysis/prediction_evidence/prediction_evidence_report.json`; `runs/phase1_apollo_sidecar_cut_in_prediction_log_online_20260620_175400/artifacts/apollo_prediction.INFO`; `runs/phase1_apollo_sidecar_cut_in_prediction_log_online_20260620_175400/analysis/prediction_evidence/prediction_evidence_report.json`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/artifacts/apollo_planning.data`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/analysis/prediction_evidence/prediction_evidence_report.json`; `runs/phase1_acceptance_cut_in_simple_20260620_170727/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_player.py::test_baguang_cut_in_starts_at_configured_activation_gap`; `tests/test_scenario_actor_contract.py::test_lane_change_contract_uses_actor_world_motion_when_ego_relative_lateral_drifts`; `tests/test_phase1_status_classifier.py::test_duration_policy_not_reached_after_target_interaction_is_evaluable_failure`; `tests/test_apollo_prediction_evidence.py::test_planning_bvar_prediction_count_counts_as_native_observed_with_source`; `tests/test_apollo_link_health.py::test_dynamic_prediction_placeholder_is_regenerated_and_written_before_consumption` | Target activation is now exercised. The newest Apollo sample snapshots Planning bvar counters and `prediction_evidence_report.json` reports native Prediction evidence from `planning_bvar`, so Prediction is no longer the primary blocker in that sample. Both backends still remain evaluable `lane_invasion` failures, and the existing accepted-bundle surface is still not self-contained enough for DONE. This is narrower blocker evidence, not completion. | Keep prediction bvar evidence in future packs, then reduce the representative cut-in `lane_invasion` failure or rebuild a self-contained accepted bundle for a simpler row first. |
-| lane_keep_straight | P0 lateral baseline | PARTIAL | `configs/scenarios/town01/lane_keep_097.yaml`; `runs/phase1_acceptance_lane_keep_straight_20260620_153947/acceptance/phase1_acceptance_report.json`; `tests/test_phase1_scenario_catalog.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py`; `tests/test_run_artifact_completeness.py` | Route-only comparison evidence exists, but the latest audit requires a self-contained review bundle before this can be counted as DONE. Apollo's participating run remains an evaluable failure, not natural-driving pass evidence; any natural-driving pass claim would require `natural_driving_report.json` plus the no-interference artifacts. | Repackage with raw artifacts and authoritative status/comparison surfaces. |
+| lane_keep_straight | P0 lateral baseline | DONE | `configs/scenarios/town01/lane_keep_097.yaml`; `runs/phase1_acceptance_lane_keep_straight_selfcontained_20260620_184238/acceptance/phase1_acceptance_report.json`; `runs/phase1_acceptance_lane_keep_straight_selfcontained_20260620_184238/acceptance/evidence/`; `tests/test_phase1_scenario_catalog.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py`; `tests/test_run_artifact_completeness.py` | Route-only Phase 1 comparison-surface evidence is now self-contained and accepted. Apollo's participating run remains an evaluable failure, not natural-driving pass evidence; any natural-driving pass claim would require `natural_driving_report.json` plus the no-interference artifacts. | Use this as the accepted-bundle pattern for the remaining target-actor rows, where actor trace and phase events are required. |
 | lane_keep_curve | P0 lateral curve baseline | PARTIAL | `configs/scenarios/town01/curve217_diagnostic.yaml`; `runs/phase1_acceptance_lane_keep_curve_20260620_155918/acceptance/phase1_acceptance_report.json`; `tests/test_phase1_status_classifier.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py`; `tests/test_run_artifact_completeness.py` | Accepted-bundle mechanics exist, but Apollo remains evaluable with `route_establishment_latency`/reference-line style blockers, and raw evidence must be preserved for recomputation. | Use this surface for route/reference-line blocker reduction; do not tune control from this result alone. |
 | cut_out_simple | P1 target exits ego lane | PARTIAL | `configs/scenario_templates/cut_out.yaml`; `configs/scenarios/town01/cut_out_097.yaml`; `configs/scenarios/baguang/cut_out_35kph_right_to_left_25m.yaml`; `runs/phase1_acceptance_cut_out_simple_20260620_1622/acceptance/phase1_acceptance_report.json`; `carla_testbed/scenario_player/templates/cut_out.py`; `tests/test_fixed_scene_compiler.py::test_baguang_cut_out_compiles_lane_change_phase`; `tests/test_fixed_scene_contract.py::test_lane_change_progress_can_complete_phase_without_stop_event`; `tests/test_phase1_acceptance.py`; `tests/test_apollo_fixed_scene_launch_plan.py::test_apollo_baguang_cut_out_launch_plan_uses_sidecar_runtime_command` | Lane-change trace completion evidence exists, but both participating runs remain evaluable `lane_invasion` failures and the row still needs a review-complete accepted bundle. | Keep lane-change playback evidence separate from ego autonomy success and preserve raw traces in future packs. |
 | junction_turn_no_signal | P1 junction/turn case | PARTIAL | `configs/scenarios/town01/junction_031.yaml`; `runs/phase1_acceptance_junction_turn_no_signal_20260620_155921/acceptance/phase1_acceptance_report.json`; `tests/test_phase1_scenario_binding.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py`; `tests/test_run_artifact_completeness.py` | Route-only junction comparison evidence exists, but Apollo remains evaluable with runtime/route-establishment blockers and the review bundle is not yet self-contained enough for DONE. | Re-run/postprocess with full artifacts and keep traffic-light/natural-driving claims out of this no-signal row. |
@@ -763,8 +771,9 @@ Implementation note added after the 2026-06-17 continuous loop:
   evaluable failures, so this is accepted Phase 1 comparison-surface evidence,
   not a cut-out behavior pass.
 - Current catalog completion is governed by accepted bundles, not by the old
-  cross-run readiness snapshot. After the latest Pro audit, current P0/P1
-  catalog progress is treated as `0 DONE / 8 PARTIAL` until each row has a
+  cross-run readiness snapshot. After adding the self-contained
+  `lane_keep_straight` acceptance bundle, current P0/P1 catalog progress is
+  `1 DONE / 7 PARTIAL`. Remaining rows stay `PARTIAL` until each has a
   self-contained, independently re-computable accepted bundle in the review
   package.
 - `carla_builtin` route-only scenarios now write Phase 1 artifacts without

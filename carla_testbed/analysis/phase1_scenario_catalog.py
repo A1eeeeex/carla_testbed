@@ -686,8 +686,11 @@ def _discover_online_evidence(
             if not _matches_scenario(acceptance, aliases, acceptance_path.parent.name):
                 continue
             raw_status = str(acceptance.get("status") or STATUS_UNKNOWN)
-            readiness = _phase1_readiness_from_status(raw_status)
-            rank = (1 if raw_status == STATUS_DONE else 0, _timestamp_rank(str(acceptance_path)))
+            readiness = _phase1_acceptance_readiness(acceptance)
+            rank = (
+                1 if readiness == STATUS_DONE else 0,
+                _timestamp_rank(str(acceptance_path)),
+            )
             if rank > best_acceptance_rank:
                 best_acceptance_rank = rank
                 accepted_bundle_status = readiness
@@ -701,6 +704,7 @@ def _discover_online_evidence(
                     "apollo_run_id": acceptance.get("apollo_run_id"),
                     "planning_control_run_id": acceptance.get("planning_control_run_id"),
                     "blocking_reasons": acceptance.get("blocking_reasons") or [],
+                    "bundle_self_contained": _phase1_acceptance_bundle_self_contained(acceptance),
                     "path": accepted_bundle_path,
                 }
             evidence.append(
@@ -1104,6 +1108,7 @@ def _phase1_acceptance_evidence_note(report: Mapping[str, Any]) -> str:
     parts = [
         f"status={report.get('status') or 'missing'}",
         f"comparison={report.get('comparison_id') or 'missing'}",
+        f"bundle_self_contained={_phase1_acceptance_bundle_self_contained(report)}",
     ]
     blockers = _short_list(report.get("blocking_reasons"))
     if blockers:
@@ -1125,12 +1130,33 @@ def _phase1_acceptance_evidence_details(report: Mapping[str, Any]) -> dict[str, 
         "planning_control_run_id",
         "blocking_reasons",
         "gates",
+        "bundle_materialization",
         "claim_boundary",
     ):
         value = report.get(key)
         if value not in (None, [], {}):
             details[key] = value
+    details["bundle_self_contained"] = _phase1_acceptance_bundle_self_contained(report)
     return details
+
+
+def _phase1_acceptance_readiness(report: Mapping[str, Any]) -> str:
+    raw_status = str(report.get("status") or STATUS_UNKNOWN)
+    if raw_status != STATUS_DONE:
+        return _phase1_readiness_from_status(raw_status)
+    return STATUS_DONE if _phase1_acceptance_bundle_self_contained(report) else STATUS_PARTIAL
+
+
+def _phase1_acceptance_bundle_self_contained(report: Mapping[str, Any]) -> bool:
+    gates = report.get("gates") if isinstance(report.get("gates"), Mapping) else {}
+    if gates.get("bundle_self_contained") is True:
+        return True
+    materialization = (
+        report.get("bundle_materialization")
+        if isinstance(report.get("bundle_materialization"), Mapping)
+        else {}
+    )
+    return materialization.get("self_contained") is True
 
 
 def _comparison_backend_derived_details(row: Mapping[str, Any]) -> dict[str, Any]:

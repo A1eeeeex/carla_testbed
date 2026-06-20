@@ -98,6 +98,36 @@ def test_phase1_acceptance_writer_outputs_json_and_summary(tmp_path) -> None:
     assert outputs["summary"].endswith("phase1_acceptance_summary.md")
     written = json.loads((tmp_path / "acceptance" / "phase1_acceptance_report.json").read_text())
     assert written["status"] == "DONE"
+    assert written["gates"]["bundle_self_contained"] is True
+    assert written["bundle_materialization"]["self_contained"] is True
+    assert (tmp_path / "acceptance" / "evidence" / "comparison" / "comparison_summary.json").exists()
+    assert (
+        tmp_path
+        / "acceptance"
+        / "evidence"
+        / "runs"
+        / "apollo_run"
+        / "timeseries.csv"
+    ).exists()
+
+
+def test_phase1_acceptance_writer_blocks_non_self_contained_bundle(tmp_path) -> None:
+    comparison = _write_comparison(tmp_path, "missing_raw")
+    apollo_run = tmp_path / "missing_raw_apollo"
+    (apollo_run / "timeseries.csv").unlink()
+    report = analyze_phase1_acceptance(comparison)
+
+    outputs = write_phase1_acceptance(report, tmp_path / "acceptance")
+
+    written = json.loads((tmp_path / "acceptance" / "phase1_acceptance_report.json").read_text())
+    assert outputs["report"].endswith("phase1_acceptance_report.json")
+    assert written["status"] == "PARTIAL"
+    assert written["gates"]["bundle_self_contained"] is False
+    assert "bundle_self_contained" in written["blocking_reasons"]
+    missing_roles = {
+        item.get("role") for item in written["bundle_materialization"]["missing_required_files"]
+    }
+    assert "timeseries_surface" in missing_roles
 
 
 def _write_comparison(
@@ -147,6 +177,7 @@ def _write_comparison(
 def _write_run(path, run_id, backend, backend_type):
     (path / "analysis" / "phase1_status").mkdir(parents=True)
     (path / "analysis" / "v_t_gap").mkdir(parents=True)
+    (path / "artifacts").mkdir(parents=True)
     (path / "manifest.json").write_text(
         json.dumps(
             {
@@ -160,12 +191,48 @@ def _write_run(path, run_id, backend, backend_type):
         encoding="utf-8",
     )
     (path / "summary.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+    (path / "timeseries.csv").write_text(
+        "sim_time,ego_speed_mps\n0.0,0.0\n0.1,1.0\n",
+        encoding="utf-8",
+    )
+    (path / "events.jsonl").write_text(
+        json.dumps({"event": "start", "sim_time": 0.0}) + "\n",
+        encoding="utf-8",
+    )
     (path / "analysis" / "phase1_status" / "phase1_status.json").write_text(
         json.dumps({"status": "success", "run_evaluable": True}),
         encoding="utf-8",
     )
     (path / "analysis" / "v_t_gap" / "v_t_gap_report.json").write_text(
         json.dumps({"status": "pass"}),
+        encoding="utf-8",
+    )
+    (path / "analysis" / "v_t_gap" / "v_t_gap.csv").write_text(
+        "sim_time,gap_m\n0.0,25.0\n",
+        encoding="utf-8",
+    )
+    (path / "artifacts" / "scenario_actor_trace.jsonl").write_text(
+        json.dumps(
+            {
+                "sim_time": 0.0,
+                "role": "lead_vehicle",
+                "actor_id": 101,
+                "x": 25.0,
+                "y": 0.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (path / "artifacts" / "scenario_phase_events.jsonl").write_text(
+        json.dumps(
+            {
+                "sim_time": 0.0,
+                "phase": "follow_stop_static",
+                "target_actor_role": "lead_vehicle",
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
 

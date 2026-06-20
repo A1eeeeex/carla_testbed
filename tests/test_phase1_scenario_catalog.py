@@ -902,7 +902,7 @@ def test_route_only_lane_keep_needs_phase1_acceptance_bundle_for_done(tmp_path) 
     assert "route_only_scenario_has_no_fixed_scene_compile_requirement" in lane["notes"]
 
 
-def test_route_only_lane_keep_done_requires_accepted_bundle(tmp_path) -> None:
+def test_route_only_lane_keep_done_requires_self_contained_accepted_bundle(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     _write_catalog_run(
         evidence_root / "apollo_lane_keep",
@@ -955,10 +955,77 @@ def test_route_only_lane_keep_done_requires_accepted_bundle(tmp_path) -> None:
     report = analyze_phase1_scenario_catalog(".", evidence_root=evidence_root)
     lane = {item["scenario"]: item for item in report["scenarios"]}["lane_keep_straight"]
 
+    assert lane["accepted_bundle_status"] == "PARTIAL"
+    assert lane["overall_status"] == "PARTIAL"
+    assert "accepted_phase1_comparison_bundle" in lane["missing_items"]
+    assert lane["representative_evidence"]["phase1_acceptance"]["status"] == "PARTIAL"
+    assert lane["representative_evidence"]["phase1_acceptance"]["bundle_self_contained"] is False
+    assert "bundle_self_contained=False" in lane["representative_evidence"]["phase1_acceptance"]["note"]
+
+
+def test_route_only_lane_keep_done_with_self_contained_accepted_bundle(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    _write_catalog_run(
+        evidence_root / "apollo_lane_keep",
+        backend="apollo_cyberrt",
+        backend_type="apollo_reference_backend",
+        scenario_case="town01_lane_keep_097",
+        status="failed",
+    )
+    _write_catalog_run(
+        evidence_root / "builtin_lane_keep",
+        backend="carla_builtin",
+        backend_type="planning_control_backend",
+        scenario_case="town01_lane_keep_097",
+        status="success",
+    )
+    comparison = evidence_root / "comparisons" / "lane_keep"
+    comparison.mkdir(parents=True)
+    (comparison / "comparison_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_comparison.v1",
+                "scenario_case": "town01_lane_keep_097",
+                "comparison_status": "comparable",
+                "comparison_target_status": "apollo_vs_planning_control_evaluable",
+                "participating_runs": [
+                    {"backend": "apollo_cyberrt"},
+                    {"backend": "carla_builtin"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    acceptance = evidence_root / "comparisons" / "lane_keep" / "acceptance"
+    acceptance.mkdir(parents=True)
+    (acceptance / "phase1_acceptance_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_acceptance.v1",
+                "status": "DONE",
+                "scenario_case": "town01_lane_keep_097",
+                "comparison_id": "lane_keep",
+                "apollo_run_id": "apollo_lane_keep",
+                "planning_control_run_id": "builtin_lane_keep",
+                "blocking_reasons": [],
+                "gates": {"bundle_self_contained": True},
+                "bundle_materialization": {
+                    "self_contained": True,
+                    "missing_required_files": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_phase1_scenario_catalog(".", evidence_root=evidence_root)
+    lane = {item["scenario"]: item for item in report["scenarios"]}["lane_keep_straight"]
+
     assert lane["accepted_bundle_status"] == "DONE"
     assert lane["overall_status"] == "DONE"
     assert "accepted_phase1_comparison_bundle" not in lane["missing_items"]
     assert lane["representative_evidence"]["phase1_acceptance"]["status"] == "DONE"
+    assert lane["representative_evidence"]["phase1_acceptance"]["bundle_self_contained"] is True
 
 
 def _write_catalog_run(run, *, backend, backend_type, scenario_case, status):

@@ -25,11 +25,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     report = analyze_phase1_acceptance(args.comparison_dir)
     outputs = write_phase1_acceptance(report, args.out)
+    final_report = json.loads(Path(outputs["report"]).read_text(encoding="utf-8"))
     print(
         json.dumps(
             {
-                "status": report.get("status"),
-                "blocking_reasons": report.get("blocking_reasons"),
+                "status": final_report.get("status"),
+                "blocking_reasons": final_report.get("blocking_reasons"),
+                "bundle_self_contained": (
+                    final_report.get("gates", {}).get("bundle_self_contained")
+                    if isinstance(final_report.get("gates"), dict)
+                    else None
+                ),
                 "outputs": outputs,
             },
             indent=2,
