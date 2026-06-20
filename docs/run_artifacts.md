@@ -317,6 +317,13 @@ Additional run-local artifacts:
     are HDMap projection evidence only. Export success does not change driving
     behavior, does not repair lane invasion, and does not make a diagnostic
     compatibility run claim-grade.
+    `analysis/apollo_lateral_semantics/apollo_lateral_projection_pairing.csv`
+    may be emitted when lateral-semantics analysis can time-align sparse
+    `timeseries.*` rows with official `apollo_hdmap_api` projection rows. The
+    CSV is a row-level audit surface for signs and magnitudes of
+    `cross_track_error`, Apollo `simple_lat` lateral error, and
+    HDMap `projection_l`; it is not route geometry evidence and does not
+    prove ego behavior success.
     `run_phase1_postprocess()` refreshes the dependent reports in evidence
     order: Apollo HDMap projection, Apollo route contract, reference-line
     contract, module-consumption, then link-health. This prevents stale route

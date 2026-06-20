@@ -259,6 +259,10 @@ Interpretation:
   supports the sign-convention suspicion but still does not prove that
   `cross_track_error` and Apollo projection/simple_lat are the same quantity
   with only a sign flip.
+  The analyzer now writes
+  `analysis/apollo_lateral_semantics/apollo_lateral_projection_pairing.csv`
+  when such matched projection samples exist, so review packs can audit the
+  row-level pairing instead of trusting only aggregate JSON metrics.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The

@@ -10,6 +10,7 @@ from carla_testbed.analysis.apollo_lateral_semantics import (
     FIELD_ALIASES,
     analyze_apollo_lateral_semantics,
     analyze_apollo_lateral_semantics_run_dir,
+    write_apollo_lateral_semantics_report,
 )
 
 FIXTURE_RUN = Path("tests/fixtures/apollo_lateral/straight_high_kappa")
@@ -786,6 +787,16 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
     assert alignment["route_lateral_vs_projection_lateral"]["opposite_sign_ratio"] == 1.0
     assert alignment["simple_lat_vs_projection_lateral"]["same_sign_ratio"] == 1.0
     assert alignment["route_lateral_vs_projection_lateral"]["opposite_sign_abs_sum_p95_m"] == 0.0
+    assert len(alignment["matched_samples"]) == 4
+
+    outputs = write_apollo_lateral_semantics_report(report, tmp_path / "out")
+    pairing_path = Path(outputs["apollo_lateral_projection_pairing_csv"])
+    with pairing_path.open(encoding="utf-8", newline="") as handle:
+        pairing_rows = list(csv.DictReader(handle))
+    assert len(pairing_rows) == 4
+    assert pairing_rows[0]["route_lateral_vs_projection_lateral"] == "opposite_sign"
+    assert pairing_rows[0]["simple_lat_vs_projection_lateral"] == "same_sign"
+    assert float(pairing_rows[0]["route_projection_abs_sum_m"]) == 0.0
 
 
 def test_cli_run_dir_writes_report(tmp_path: Path) -> None:

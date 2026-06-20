@@ -488,12 +488,48 @@ def write_apollo_lateral_semantics_report(report: Mapping[str, Any], out_dir: st
     output_dir.mkdir(parents=True, exist_ok=True)
     report_path = output_dir / "apollo_lateral_semantics_report.json"
     summary_path = output_dir / "apollo_lateral_semantics_summary.md"
+    projection_pairing_path = output_dir / "apollo_lateral_projection_pairing.csv"
     report_path.write_text(json.dumps(dict(report), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     summary_path.write_text(_markdown(report), encoding="utf-8")
-    return {
+    outputs = {
         "apollo_lateral_semantics_report": str(report_path),
         "apollo_lateral_semantics_summary": str(summary_path),
     }
+    if _write_projection_pairing_csv(report, projection_pairing_path):
+        outputs["apollo_lateral_projection_pairing_csv"] = str(projection_pairing_path)
+    return outputs
+
+
+def _write_projection_pairing_csv(report: Mapping[str, Any], path: Path) -> bool:
+    alignment = report.get("lateral_sign_alignment")
+    if not isinstance(alignment, Mapping):
+        return False
+    projection = alignment.get("official_hdmap_projection_alignment")
+    if not isinstance(projection, Mapping):
+        return False
+    samples = projection.get("matched_samples")
+    if not isinstance(samples, list) or not samples:
+        return False
+    fieldnames = [
+        "sim_time",
+        "projection_sim_time",
+        "match_dt_s",
+        "route_lateral_error_m",
+        "apollo_simple_lat_lateral_error_m",
+        "hdmap_projection_l_m",
+        "nearest_lane_id",
+        "route_lateral_vs_projection_lateral",
+        "simple_lat_vs_projection_lateral",
+        "route_projection_abs_sum_m",
+        "route_projection_abs_magnitude_delta_m",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for sample in samples:
+            if isinstance(sample, Mapping):
+                writer.writerow({key: sample.get(key) for key in fieldnames})
+    return True
 
 
 def _anomalies(
@@ -1646,6 +1682,7 @@ def _official_hdmap_projection_alignment(
     route_projection_abs_magnitude_delta: list[float] = []
     matched_dt: list[float] = []
     matched_lanes: set[str] = set()
+    matched_samples: list[dict[str, Any]] = []
     for row in rows:
         row_time = _row_value(row, ["sim_time", "timestamp", "ts_sec", "time"])
         route_lateral = _row_value(row, ROUTE_LATERAL_ERROR_ALIASES)
@@ -1673,16 +1710,41 @@ def _official_hdmap_projection_alignment(
             matched_lanes.add(str(lane_id))
         route_projection_abs_sum.append(abs(float(route_lateral) + projection_lateral))
         route_projection_abs_magnitude_delta.append(abs(abs(float(route_lateral)) - abs(projection_lateral)))
+        route_projection_relation = "zero"
         if float(route_lateral) * projection_lateral > 0.0:
             route_projection_same += 1
+            route_projection_relation = "same_sign"
         elif float(route_lateral) * projection_lateral < 0.0:
             route_projection_opposite += 1
+            route_projection_relation = "opposite_sign"
         simple_lat = _row_value(row, FIELD_ALIASES["apollo_simple_lat_lateral_error"])
+        simple_projection_relation = "missing"
         if simple_lat is not None and abs(simple_lat) >= lateral_min_abs:
             if float(simple_lat) * projection_lateral > 0.0:
                 simple_projection_same += 1
+                simple_projection_relation = "same_sign"
             elif float(simple_lat) * projection_lateral < 0.0:
                 simple_projection_opposite += 1
+                simple_projection_relation = "opposite_sign"
+            else:
+                simple_projection_relation = "zero"
+        elif simple_lat is not None:
+            simple_projection_relation = "inactive"
+        matched_samples.append(
+            {
+                "sim_time": float(row_time),
+                "projection_sim_time": projection_time,
+                "match_dt_s": dt,
+                "route_lateral_error_m": float(route_lateral),
+                "apollo_simple_lat_lateral_error_m": simple_lat,
+                "hdmap_projection_l_m": projection_lateral,
+                "nearest_lane_id": lane_id,
+                "route_lateral_vs_projection_lateral": route_projection_relation,
+                "simple_lat_vs_projection_lateral": simple_projection_relation,
+                "route_projection_abs_sum_m": abs(float(route_lateral) + projection_lateral),
+                "route_projection_abs_magnitude_delta_m": abs(abs(float(route_lateral)) - abs(projection_lateral)),
+            }
+        )
     route_sample_count = route_projection_same + route_projection_opposite
     simple_sample_count = simple_projection_same + simple_projection_opposite
     return {
@@ -1695,6 +1757,7 @@ def _official_hdmap_projection_alignment(
         "max_match_dt_s": max_dt_s,
         "match_dt_p95_s": _percentile(matched_dt, 0.95),
         "nearest_lane_ids": sorted(matched_lanes),
+        "matched_samples": matched_samples,
         "route_lateral_vs_projection_lateral": {
             "sample_count": route_sample_count,
             "same_sign_count": route_projection_same,
@@ -2211,6 +2274,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
             f"- applied_steer_vs_route_lateral_error: `{_nested(report, 'lateral_sign_alignment.applied_steer_vs_route_lateral_error')}`",
             f"- route_lateral_provenance: `{_nested(report, 'lateral_sign_alignment.route_lateral_provenance')}`",
             f"- route_simple_lat_magnitude_alignment: `{_nested(report, 'lateral_sign_alignment.route_simple_lat_magnitude_alignment')}`",
+            f"- official_hdmap_projection_alignment: `{_nested(report, 'lateral_sign_alignment.official_hdmap_projection_alignment')}`",
             f"- first_high_lateral_sample: `{_nested(report, 'lateral_sign_alignment.first_high_lateral_sample')}`",
             "",
             "## Missing Fields",

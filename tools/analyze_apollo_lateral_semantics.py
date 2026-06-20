@@ -52,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
                 "confidence": report.get("confidence"),
                 "report": outputs["apollo_lateral_semantics_report"],
                 "summary": outputs["apollo_lateral_semantics_summary"],
+                "projection_pairing_csv": outputs.get("apollo_lateral_projection_pairing_csv"),
             },
             indent=2,
             sort_keys=True,
