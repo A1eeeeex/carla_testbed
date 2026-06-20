@@ -32,6 +32,10 @@ from carla_testbed.analysis.baguang_lane_event_contract import (
     analyze_baguang_lane_event_contract,
     write_baguang_lane_event_contract_report,
 )
+from carla_testbed.analysis.control_attribution import (
+    analyze_control_attribution_run_dir,
+    write_control_attribution_report,
+)
 from carla_testbed.analysis.control_health import analyze_control_health_run_dir, write_control_health_report
 from carla_testbed.analysis.fixed_scene_contract import (
     analyze_fixed_scene_contract_run_dir,
@@ -89,6 +93,8 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     apollo_reference_line_contract_paths: dict[str, str] | None = None
     apollo_module_consumption_report: dict[str, Any] | None = None
     apollo_module_consumption_paths: dict[str, str] | None = None
+    control_attribution_report: dict[str, Any] | None = None
+    control_attribution_paths: dict[str, str] | None = None
     control_health_report: dict[str, Any] | None = None
     control_health_paths: dict[str, str] | None = None
     apollo_link_health_report: dict[str, Any] | None = None
@@ -110,6 +116,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         apollo_route_contract_report, apollo_route_contract_paths = _write_apollo_route_contract(root)
         apollo_reference_line_contract_report, apollo_reference_line_contract_paths = _write_apollo_reference_line_contract(root)
         apollo_module_consumption_report, apollo_module_consumption_paths = _write_apollo_module_consumption(root)
+        control_attribution_report, control_attribution_paths = _write_control_attribution(root)
         control_health_report, control_health_paths = _write_control_health(root)
         apollo_link_health_report, apollo_link_health_paths = _write_apollo_link_health(root)
     v_t_gap_report = extract_v_t_gap(run_dir=root)
@@ -156,6 +163,11 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         ),
         "apollo_control_handoff_status": (
             apollo_control_handoff_report.get("status") if apollo_control_handoff_report else None
+        ),
+        "control_attribution_status": (
+            (control_attribution_report.get("verdict") or {}).get("status")
+            if control_attribution_report
+            else None
         ),
         "control_health_status": (control_health_report.get("status") if control_health_report else None),
         "apollo_hdmap_projection_status": (
@@ -204,6 +216,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
             **({"apollo_fixed_scene_dispatch": apollo_fixed_scene_dispatch_paths} if apollo_fixed_scene_dispatch_paths else {}),
             **({"apollo_fixed_scene_readiness": apollo_fixed_scene_readiness_paths} if apollo_fixed_scene_readiness_paths else {}),
             **({"apollo_control_handoff": apollo_control_handoff_paths} if apollo_control_handoff_paths else {}),
+            **({"control_attribution": control_attribution_paths} if control_attribution_paths else {}),
             **({"control_health": control_health_paths} if control_health_paths else {}),
             **({"apollo_hdmap_projection": apollo_hdmap_projection_paths} if apollo_hdmap_projection_paths else {}),
             **({"apollo_route_contract": apollo_route_contract_paths} if apollo_route_contract_paths else {}),
@@ -357,6 +370,14 @@ def _apollo_control_handoff_raw_exists(root: Path) -> bool:
             root / "artifacts" / "control_apply_trace.jsonl",
         )
     )
+
+
+def _write_control_attribution(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    if not _apollo_control_handoff_raw_exists(root):
+        return None, None
+    report = analyze_control_attribution_run_dir(root)
+    paths = write_control_attribution_report(report, root / "analysis" / "control_attribution")
+    return report, paths
 
 
 def _write_control_health(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:

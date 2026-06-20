@@ -146,6 +146,11 @@ Interpretation:
   triage aids only: they explain why an evaluable scenario failed, but they do
   not reclassify invalid runs, do not change ScenarioComparison acceptance, and
   do not create Apollo natural-driving capability evidence.
+- Phase 1 postprocess refreshes Apollo control evidence in dependency order:
+  `apollo_control_handoff` first, then `control_attribution`, then
+  `control_health`. This avoids stale `control_attribution_report.json` files
+  built from sparse `timeseries.csv` rows when richer
+  `artifacts/control_apply_trace.jsonl` evidence is available.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.
