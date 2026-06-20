@@ -174,10 +174,37 @@ def _materialize_acceptance_bundle(report: Mapping[str, Any], output: Path) -> d
             role="timeseries_surface",
         )
         copy_required(run_dir / "events.jsonl", dest_root / "events.jsonl", "events_jsonl")
+        _copy_one_of(
+            [
+                (
+                    run_dir / "artifacts" / "control_apply_trace.jsonl",
+                    dest_root / "artifacts" / "control_apply_trace.jsonl",
+                    "control_apply_trace",
+                ),
+                (
+                    run_dir / "artifacts" / "ego_control_trace.jsonl",
+                    dest_root / "artifacts" / "ego_control_trace.jsonl",
+                    "ego_control_trace",
+                ),
+                (
+                    run_dir / "artifacts" / "apollo_control_raw.jsonl",
+                    dest_root / "artifacts" / "apollo_control_raw.jsonl",
+                    "apollo_control_raw",
+                ),
+            ],
+            copied=copied,
+            missing=missing,
+            role="control_trace_surface",
+        )
         copy_optional(
             run_dir / "analysis" / "v_t_gap" / "v_t_gap.csv",
             dest_root / "analysis" / "v_t_gap" / "v_t_gap.csv",
             "v_t_gap_csv",
+        )
+        copy_optional(
+            run_dir / "artifacts" / "safety_event_trace.jsonl",
+            dest_root / "artifacts" / "safety_event_trace.jsonl",
+            "safety_event_trace",
         )
         if _target_artifacts_required(run):
             copy_required(

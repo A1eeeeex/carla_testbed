@@ -130,6 +130,23 @@ def test_phase1_acceptance_writer_blocks_non_self_contained_bundle(tmp_path) -> 
     assert "timeseries_surface" in missing_roles
 
 
+def test_phase1_acceptance_writer_requires_control_trace_surface(tmp_path) -> None:
+    comparison = _write_comparison(tmp_path, "missing_control_trace")
+    apollo_run = tmp_path / "missing_control_trace_apollo"
+    (apollo_run / "artifacts" / "control_apply_trace.jsonl").unlink()
+    report = analyze_phase1_acceptance(comparison)
+
+    write_phase1_acceptance(report, tmp_path / "acceptance")
+
+    written = json.loads((tmp_path / "acceptance" / "phase1_acceptance_report.json").read_text())
+    assert written["status"] == "PARTIAL"
+    assert written["gates"]["bundle_self_contained"] is False
+    missing_roles = {
+        item.get("role") for item in written["bundle_materialization"]["missing_required_files"]
+    }
+    assert "control_trace_surface" in missing_roles
+
+
 def _write_comparison(
     tmp_path,
     name,
@@ -199,6 +216,18 @@ def _write_run(path, run_id, backend, backend_type):
         json.dumps({"event": "start", "sim_time": 0.0}) + "\n",
         encoding="utf-8",
     )
+    if backend == "apollo_cyberrt":
+        (path / "artifacts" / "control_apply_trace.jsonl").write_text(
+            json.dumps({"sim_time": 0.0, "throttle": 0.0, "brake": 0.0, "steer": 0.0})
+            + "\n",
+            encoding="utf-8",
+        )
+    else:
+        (path / "artifacts" / "ego_control_trace.jsonl").write_text(
+            json.dumps({"sim_time": 0.0, "throttle": 0.0, "brake": 0.0, "steer": 0.0})
+            + "\n",
+            encoding="utf-8",
+        )
     (path / "analysis" / "phase1_status" / "phase1_status.json").write_text(
         json.dumps({"status": "success", "run_evaluable": True}),
         encoding="utf-8",
