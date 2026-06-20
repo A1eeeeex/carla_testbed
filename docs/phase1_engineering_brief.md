@@ -188,6 +188,17 @@ Interpretation:
   `apollo_lateral_semantics:planning_nonempty_but_reference_line_debug_missing`;
   `natural_driving_outcome:insufficient_data` remains a secondary blocker and
   still prevents any unassisted natural-driving claim.
+- Manual artifact inspection of the same run confirms the next evidence gap:
+  `apollo_reference_line_debug.jsonl`,
+  `stage5_apollo_reference_line_debug.jsonl`, and
+  `planning_route_segment_debug.jsonl` each contain `316` rows with
+  `reference_line_count=0` throughout, while the final Planning debug row has
+  `route_segment_count=1`, lane id `0_0_2`, and non-empty trajectory evidence.
+  `bridge_control_decode.jsonl` also contains `796` rows of Apollo Control
+  simple_lat target-point / curvature / planning-lateral-consumption debug.
+  The next highest-value validation is therefore to close the gap between
+  Planning reference-line debug/export evidence and Control simple_lat
+  reference semantics, before changing actuation mapping.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.
