@@ -128,6 +128,31 @@ def _record_hook_timings(stage_durations_s: dict[str, float], timings: Any) -> N
         stage_durations_s[f"hook.{safe_method_name}.{safe_hook_name}"] = duration_s
 
 
+def _lane_marking_types(event: Any) -> list[str]:
+    markings = getattr(event, "crossed_lane_markings", []) or []
+    return [str(getattr(marking, "type", "")) for marking in markings]
+
+
+def _lane_invasion_artifact_event(
+    *,
+    invasion: Any,
+    frame_id: int,
+    timestamp: float,
+    step: int,
+    lane_invasion_count: int,
+) -> dict[str, Any]:
+    marking_types = _lane_marking_types(invasion)
+    return {
+        "event_type": "lane_invasion",
+        "frame": frame_id,
+        "t": timestamp,
+        "step": step,
+        "lane_invasion_count": lane_invasion_count,
+        "crossed_lane_marking_count": len(marking_types),
+        "crossed_lane_marking_types": marking_types,
+    }
+
+
 def _update_tick_loop_timing_summary(
     summary: dict[str, Any],
     *,
@@ -338,8 +363,7 @@ class TestHarness:
             }
             events.append(Event(event_type="collision", frame_id=frame_id, timestamp=timestamp, meta=meta))
         for inv in invasions or []:
-            marks = getattr(inv, "crossed_lane_markings", []) or []
-            meta = {"mark_types": [str(getattr(m, "type", "")) for m in marks]}
+            meta = {"mark_types": _lane_marking_types(inv)}
             events.append(Event(event_type="lane_invasion", frame_id=frame_id, timestamp=timestamp, meta=meta))
 
         ego_truth = None
@@ -418,9 +442,8 @@ class TestHarness:
         if invasion_events:
             hard = False
             for e in invasion_events:
-                marks = getattr(e, "crossed_lane_markings", []) or []
-                for m in marks:
-                    if hasattr(m, "type") and "Solid" in str(m.type):
+                for marking_type in _lane_marking_types(e):
+                    if "Solid" in marking_type:
                         hard = True
                         break
                 if hard:
@@ -827,15 +850,15 @@ class TestHarness:
                             "collision_count": self.state.collision_count,
                         }
                     )
-                for _ in invasions or []:
+                for invasion in invasions or []:
                     artifact_events.append(
-                        {
-                            "event_type": "lane_invasion",
-                            "frame": frame_id,
-                            "t": timestamp,
-                            "step": step,
-                            "lane_invasion_count": self.state.lane_invasion_count,
-                        }
+                        _lane_invasion_artifact_event(
+                            invasion=invasion,
+                            frame_id=frame_id,
+                            timestamp=timestamp,
+                            step=step,
+                            lane_invasion_count=self.state.lane_invasion_count,
+                        )
                     )
                 frame_ctx.ego_state = {"speed_mps": v}
                 frame_ctx.scene_state = {

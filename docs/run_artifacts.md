@@ -115,6 +115,10 @@ events include:
 - `run_end`
 
 Events should be useful for debugging without scanning a full timeseries.
+When available, `lane_invasion` event rows should include
+`crossed_lane_marking_count` and `crossed_lane_marking_types`; without those
+fields, downstream Baguang lane-event contracts may quarantine the event rather
+than count it as a backend behavior loss.
 
 ## `timeseries.csv` / `timeseries.jsonl`
 

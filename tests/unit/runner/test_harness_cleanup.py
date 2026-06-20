@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("carla")
 
 from carla_testbed.core.lifecycle import LifecycleManager
-from carla_testbed.runner.harness import _register_harness_cleanup_resources
+from carla_testbed.runner.harness import _lane_invasion_artifact_event, _register_harness_cleanup_resources
 
 
 class FakeResource:
@@ -87,3 +87,32 @@ def test_harness_cleanup_continues_after_resource_error() -> None:
     assert len(errors) == 1
     assert errors[0].name == "bag_recorder"
     assert isinstance(errors[0].error, RuntimeError)
+
+
+def test_lane_invasion_artifact_event_preserves_crossed_marking_types() -> None:
+    event = type(
+        "LaneEvent",
+        (),
+        {
+            "crossed_lane_markings": [
+                type("Marking", (), {"type": "Solid"})(),
+                type("Marking", (), {"type": "Broken"})(),
+            ]
+        },
+    )()
+
+    row = _lane_invasion_artifact_event(
+        invasion=event,
+        frame_id=42,
+        timestamp=12.5,
+        step=7,
+        lane_invasion_count=2,
+    )
+
+    assert row["event_type"] == "lane_invasion"
+    assert row["frame"] == 42
+    assert row["t"] == 12.5
+    assert row["step"] == 7
+    assert row["lane_invasion_count"] == 2
+    assert row["crossed_lane_marking_count"] == 2
+    assert row["crossed_lane_marking_types"] == ["Solid", "Broken"]
