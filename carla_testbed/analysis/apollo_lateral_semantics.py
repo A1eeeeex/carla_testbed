@@ -1827,6 +1827,16 @@ def _official_hdmap_projection_alignment(
             "matched_point_sample_count": len(matched_point_lateral_offsets),
             "current_reference_point_sample_count": len(current_reference_point_lateral_offsets),
             "target_point_sample_count": len(target_point_lateral_offsets),
+            "point_coverage_status": _simple_lat_point_coverage_status(
+                matched_count=len(matched_point_lateral_offsets),
+                current_reference_count=len(current_reference_point_lateral_offsets),
+                target_count=len(target_point_lateral_offsets),
+            ),
+            "missing_point_fields": _simple_lat_missing_point_fields(
+                matched_count=len(matched_point_lateral_offsets),
+                current_reference_count=len(current_reference_point_lateral_offsets),
+                target_count=len(target_point_lateral_offsets),
+            ),
             "interpretation": (
                 "Point lateral offsets are measured against the local official HDMap projection "
                 "tangent line. They are diagnostic only and do not replace full reference-line "
@@ -1864,6 +1874,37 @@ def _official_hdmap_projection_alignment(
             "behavior success."
         ),
     }
+
+
+def _simple_lat_point_coverage_status(
+    *,
+    matched_count: int,
+    current_reference_count: int,
+    target_count: int,
+) -> str:
+    if matched_count > 0 and current_reference_count > 0 and target_count > 0:
+        return "matched_current_reference_target_available"
+    if matched_count > 0 and target_count > 0 and current_reference_count == 0:
+        return "matched_and_target_available_current_reference_missing"
+    if matched_count > 0 or current_reference_count > 0 or target_count > 0:
+        return "partial_point_coordinate_coverage"
+    return "missing_point_coordinate_coverage"
+
+
+def _simple_lat_missing_point_fields(
+    *,
+    matched_count: int,
+    current_reference_count: int,
+    target_count: int,
+) -> list[str]:
+    missing: list[str] = []
+    if matched_count == 0:
+        missing.append("apollo_matched_point_x_y")
+    if current_reference_count == 0:
+        missing.append("apollo_current_reference_point_x_y")
+    if target_count == 0:
+        missing.append("apollo_target_point_x_y")
+    return missing
 
 
 def _projection_centerline_geometry(

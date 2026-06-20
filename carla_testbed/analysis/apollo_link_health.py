@@ -1389,15 +1389,40 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 "lateral_sign_alignment.official_hdmap_projection_alignment."
                 "simple_lat_points_vs_projection_line.matched_point_lateral_abs_p95_m",
             ),
+            "simple_lat_matched_point_projection_line_sample_count": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_points_vs_projection_line.matched_point_sample_count",
+            ),
             "simple_lat_current_reference_point_projection_line_lateral_abs_p95_m": _nested(
                 report,
                 "lateral_sign_alignment.official_hdmap_projection_alignment."
                 "simple_lat_points_vs_projection_line.current_reference_point_lateral_abs_p95_m",
             ),
+            "simple_lat_current_reference_point_projection_line_sample_count": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_points_vs_projection_line.current_reference_point_sample_count",
+            ),
             "simple_lat_target_point_projection_line_lateral_abs_p95_m": _nested(
                 report,
                 "lateral_sign_alignment.official_hdmap_projection_alignment."
                 "simple_lat_points_vs_projection_line.target_point_lateral_abs_p95_m",
+            ),
+            "simple_lat_target_point_projection_line_sample_count": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_points_vs_projection_line.target_point_sample_count",
+            ),
+            "simple_lat_point_coverage_status": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_points_vs_projection_line.point_coverage_status",
+            ),
+            "simple_lat_missing_point_fields": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_points_vs_projection_line.missing_point_fields",
             ),
             "route_simple_lat_sign_convention_candidate": _nested(
                 report,

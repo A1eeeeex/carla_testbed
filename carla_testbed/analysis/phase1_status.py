@@ -611,11 +611,26 @@ def _primary_behavior_blocker(
                     "simple_lat_matched_point_projection_line_lateral_abs_p95_m": link_health.get(
                         "simple_lat_matched_point_projection_line_lateral_abs_p95_m"
                     ),
+                    "simple_lat_matched_point_projection_line_sample_count": link_health.get(
+                        "simple_lat_matched_point_projection_line_sample_count"
+                    ),
                     "simple_lat_current_reference_point_projection_line_lateral_abs_p95_m": link_health.get(
                         "simple_lat_current_reference_point_projection_line_lateral_abs_p95_m"
                     ),
+                    "simple_lat_current_reference_point_projection_line_sample_count": link_health.get(
+                        "simple_lat_current_reference_point_projection_line_sample_count"
+                    ),
                     "simple_lat_target_point_projection_line_lateral_abs_p95_m": link_health.get(
                         "simple_lat_target_point_projection_line_lateral_abs_p95_m"
+                    ),
+                    "simple_lat_target_point_projection_line_sample_count": link_health.get(
+                        "simple_lat_target_point_projection_line_sample_count"
+                    ),
+                    "simple_lat_point_coverage_status": link_health.get(
+                        "simple_lat_point_coverage_status"
+                    ),
+                    "simple_lat_missing_point_fields": link_health.get(
+                        "simple_lat_missing_point_fields"
                     ),
                     "route_simple_lat_opposite_sign_abs_sum_p95_m": link_health.get(
                         "route_simple_lat_opposite_sign_abs_sum_p95_m"
@@ -746,11 +761,26 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         "simple_lat_matched_point_projection_line_lateral_abs_p95_m": lateral_metrics.get(
             "simple_lat_matched_point_projection_line_lateral_abs_p95_m"
         ),
+        "simple_lat_matched_point_projection_line_sample_count": lateral_metrics.get(
+            "simple_lat_matched_point_projection_line_sample_count"
+        ),
         "simple_lat_current_reference_point_projection_line_lateral_abs_p95_m": lateral_metrics.get(
             "simple_lat_current_reference_point_projection_line_lateral_abs_p95_m"
         ),
+        "simple_lat_current_reference_point_projection_line_sample_count": lateral_metrics.get(
+            "simple_lat_current_reference_point_projection_line_sample_count"
+        ),
         "simple_lat_target_point_projection_line_lateral_abs_p95_m": lateral_metrics.get(
             "simple_lat_target_point_projection_line_lateral_abs_p95_m"
+        ),
+        "simple_lat_target_point_projection_line_sample_count": lateral_metrics.get(
+            "simple_lat_target_point_projection_line_sample_count"
+        ),
+        "simple_lat_point_coverage_status": lateral_metrics.get(
+            "simple_lat_point_coverage_status"
+        ),
+        "simple_lat_missing_point_fields": lateral_metrics.get(
+            "simple_lat_missing_point_fields"
         ),
         "route_simple_lat_opposite_sign_abs_sum_p95_m": lateral_metrics.get(
             "route_simple_lat_opposite_sign_abs_sum_p95_m"

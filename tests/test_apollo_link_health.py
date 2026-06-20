@@ -1950,8 +1950,13 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
                     },
                     "simple_lat_points_vs_projection_line": {
                         "matched_point_lateral_abs_p95_m": 0.000001,
+                        "matched_point_sample_count": 13,
                         "current_reference_point_lateral_abs_p95_m": None,
+                        "current_reference_point_sample_count": 0,
                         "target_point_lateral_abs_p95_m": 0.000002,
+                        "target_point_sample_count": 13,
+                        "point_coverage_status": "matched_and_target_available_current_reference_missing",
+                        "missing_point_fields": ["apollo_current_reference_point_x_y"],
                     },
                 },
             },
@@ -1984,8 +1989,17 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert lateral["key_metrics"]["simple_lat_projection_lateral_same_sign_ratio"] == 1.0
     assert lateral["key_metrics"]["route_projection_abs_magnitude_delta_p95_m"] == 0.195
     assert lateral["key_metrics"]["simple_lat_matched_point_projection_line_lateral_abs_p95_m"] == 0.000001
+    assert lateral["key_metrics"]["simple_lat_matched_point_projection_line_sample_count"] == 13
     assert lateral["key_metrics"]["simple_lat_current_reference_point_projection_line_lateral_abs_p95_m"] is None
+    assert lateral["key_metrics"]["simple_lat_current_reference_point_projection_line_sample_count"] == 0
     assert lateral["key_metrics"]["simple_lat_target_point_projection_line_lateral_abs_p95_m"] == 0.000002
+    assert lateral["key_metrics"]["simple_lat_target_point_projection_line_sample_count"] == 13
+    assert lateral["key_metrics"]["simple_lat_point_coverage_status"] == (
+        "matched_and_target_available_current_reference_missing"
+    )
+    assert lateral["key_metrics"]["simple_lat_missing_point_fields"] == [
+        "apollo_current_reference_point_x_y"
+    ]
     assert lateral["key_metrics"]["route_simple_lat_sign_convention_candidate"] is True
     assert lateral["key_metrics"]["route_simple_lat_opposite_sign_abs_sum_p95_m"] == 0.02
     assert lateral["key_metrics"]["route_simple_lat_abs_magnitude_delta_p95_m"] == 0.02

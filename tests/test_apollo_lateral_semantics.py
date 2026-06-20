@@ -804,6 +804,8 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
     assert point_alignment["matched_point_lateral_abs_p95_m"] == 0.0
     assert point_alignment["current_reference_point_lateral_abs_p95_m"] == 0.0
     assert point_alignment["target_point_lateral_abs_p95_m"] == 0.0
+    assert point_alignment["point_coverage_status"] == "matched_current_reference_target_available"
+    assert point_alignment["missing_point_fields"] == []
     assert len(alignment["matched_samples"]) == 4
     assert alignment["matched_samples"][0]["projection_centerline_geometry_available"] is True
 
