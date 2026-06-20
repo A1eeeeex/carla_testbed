@@ -449,6 +449,94 @@ def test_prediction_evidence_unknown_placeholder_is_regenerated_as_explicit_bypa
     )
 
 
+def test_dynamic_prediction_placeholder_is_regenerated_and_written_before_consumption(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    for rel in ("summary.json", "manifest.json"):
+        path = run_dir / rel
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["scenario_id"] = "baguang_cut_in_35kph_left_to_right_10m"
+        payload["scenario_class"] = "cut_in"
+        _write_json(path, payload)
+    _write_json(
+        run_dir / "analysis/prediction_evidence/prediction_evidence_report.json",
+        {
+            "schema_version": "prediction_evidence.v1",
+            "scenario_class": "cut_in",
+            "prediction_mode": "unknown",
+            "status": "insufficient_data",
+            "verdict": "insufficient_data",
+            "hard_gate_eligible": False,
+            "blocking_capabilities": ["prediction_status_unknown"],
+        },
+    )
+    _write_json(
+        run_dir / "channel_stats.json",
+        {
+            "schema_version": "channel_stats.v1",
+            "channels": {
+                "/apollo/perception/obstacles": {
+                    "message_count": 20,
+                    "hz": 20.0,
+                    "max_gap_ms": 60.0,
+                    "timestamp_monotonic": True,
+                    "sequence_monotonic": True,
+                    "stale_count": 0,
+                }
+            },
+        },
+    )
+    (run_dir / "artifacts/apollo_modules_status.log").write_text(
+        "96128 mainboard -d modules/prediction/dag/prediction.dag -p prediction -s CYBER_DEFAULT\n",
+        encoding="utf-8",
+    )
+    module_report = json.loads(
+        (run_dir / "analysis/apollo_module_consumption/apollo_module_consumption_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    module_report["prediction_mode"] = "unknown"
+    _write_json(
+        run_dir / "analysis/apollo_module_consumption/apollo_module_consumption_report.json",
+        module_report,
+    )
+    _write_json(
+        run_dir / "analysis/planning_materialization/planning_materialization_report.json",
+        {
+            "schema_version": "planning_materialization.v1",
+            "verdict": "warn",
+            "planning_message_count": 100,
+            "nonempty_trajectory_ratio": 1.0,
+            "claim_window_nonempty_ratio": 1.0,
+            "claim_window_source": "after_routing_success",
+            "blocking_reasons": [],
+            "warnings": [],
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    prediction_layer = report["layers"]["prediction_evidence"]
+    assert prediction_layer["artifact_paths"]["source_kind"] == "regenerated_from_run_artifacts"
+    assert prediction_layer["status"] == "fail"
+    assert prediction_layer["key_metrics"]["prediction_mode"] == "missing"
+    assert prediction_layer["key_metrics"]["prediction_runtime_observed"] is True
+    assert "prediction_evidence:closed_loop" in report["why_not_claimable"]
+
+    persisted = json.loads(
+        (run_dir / "analysis/prediction_evidence/prediction_evidence_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert persisted["prediction_mode"] == "missing"
+    assert persisted["prediction_runtime_observed"] is True
+    assert "prediction_module_observed_without_prediction_channel_output" in persisted["warnings"]
+
+    module_layer = report["layers"]["apollo_module_consumption"]
+    assert module_layer["key_metrics"]["prediction_mode"] == "missing"
+
+
 def test_missing_module_consumption_blocks_claim(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     (run_dir / "analysis/apollo_module_consumption/apollo_module_consumption_report.json").unlink()

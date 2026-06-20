@@ -1373,11 +1373,13 @@ obstacles do not count as prediction evidence. Link-health treats missing or
 unknown prediction state as `insufficient_data` for claim boundaries.
 If a compatibility runtime pre-created an `unknown` prediction placeholder,
 link-health may recompute this layer from `channel_stats.json`, summary/
-manifest scenario class, and the replacement matrix. That can make the boundary
-explicit, for example `bypassed_with_gt_obstacles` for static lane-keep
-diagnostics, but it still keeps `hard_gate_eligible=false` and blocks
-closed-loop natural-driving claims unless native prediction or an explicit
-scenario override exists.
+manifest scenario class, Apollo module-status logs, and the replacement
+matrix. That can make the boundary explicit, for example
+`bypassed_with_gt_obstacles` for static lane-keep diagnostics or `missing` when
+Prediction runtime was observed but no `/apollo/prediction` output was
+observed. Static lane-keep bypass evidence must not be generalized to dynamic,
+junction, or traffic-light scenarios; those remain blocked unless native
+prediction or an explicit scenario-scoped override exists.
 
 `artifacts/control_apply_trace.jsonl` is the preferred row-level control-chain
 evidence for Apollo CyberRT truth-input runs. Each row preserves Apollo raw

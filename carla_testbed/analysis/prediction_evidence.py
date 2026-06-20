@@ -17,9 +17,16 @@ OBSTACLES_CHANNEL = "/apollo/perception/obstacles"
 DEFAULT_REPLACEMENT_MATRIX = "configs/reference/apollo_gt_replacement_matrix.yaml"
 STATIC_BYPASS_SCENARIOS = {"lane_keep", "lane_keep_097"}
 DYNAMIC_OR_INTERACTION_SCENARIOS = {
+    "cut_in",
+    "cut_out",
     "dynamic_obstacle",
     "follow_stop",
+    "follow_stop_static",
     "junction_turn",
+    "lead_accel",
+    "lead_decel",
+    "lead_decel_accel",
+    "lead_hard_brake",
     "traffic_light_red_stop",
     "traffic_light_green_go",
     "traffic_light_red_to_green_release",
@@ -41,7 +48,7 @@ def analyze_prediction_evidence_run_dir(
         bridge_runtime_stats=_read_json(
             _find_first(root, ["artifacts/" + _BRIDGE_STATS_NAME + ".json", _BRIDGE_STATS_NAME + ".json"])
         ),
-        planning_topic_debug_summary=_read_json(
+    planning_topic_debug_summary=_read_json(
             _find_first(
                 root,
                 [
@@ -61,6 +68,7 @@ def analyze_prediction_evidence_run_dir(
         ),
         scenario_metadata=_read_json(root / "artifacts" / "scenario_metadata.json"),
         prediction_log_paths=_find_prediction_logs(root),
+        prediction_runtime_observed=_prediction_runtime_observed(root),
         replacement_matrix=_load_replacement_matrix(replacement_matrix_path),
     )
 
@@ -75,6 +83,7 @@ def analyze_prediction_evidence_files(
     obstacle_gt_contract: str | Path | None = None,
     scenario_metadata: str | Path | None = None,
     prediction_logs: Sequence[str | Path] | None = None,
+    prediction_runtime_observed: bool | None = None,
     replacement_matrix_path: str | Path | None = DEFAULT_REPLACEMENT_MATRIX,
 ) -> dict[str, Any]:
     return analyze_prediction_evidence(
@@ -96,6 +105,7 @@ def analyze_prediction_evidence_files(
         prediction_log_paths=[
             Path(path).expanduser() for path in prediction_logs or [] if Path(path).expanduser().exists()
         ],
+        prediction_runtime_observed=prediction_runtime_observed,
         replacement_matrix=_load_replacement_matrix(replacement_matrix_path),
     )
 
@@ -110,6 +120,7 @@ def analyze_prediction_evidence(
     obstacle_gt_contract: Mapping[str, Any] | None = None,
     scenario_metadata: Mapping[str, Any] | None = None,
     prediction_log_paths: Sequence[Path] = (),
+    prediction_runtime_observed: bool | None = None,
     replacement_matrix: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary = summary or {}
@@ -208,6 +219,12 @@ def analyze_prediction_evidence(
         prediction_mode = "native_observed"
         verdict = "pass"
         hard_gate_eligible = True
+    elif prediction_runtime_observed is True and _scenario_requires_prediction(scenario_class):
+        prediction_mode = "missing"
+        verdict = "fail"
+        hard_gate_eligible = False
+        blocking_capabilities.extend(_blocked_for_missing_prediction(scenario_class))
+        warnings.append("prediction_module_observed_without_prediction_channel_output")
     elif not planning_requires_prediction:
         prediction_mode = "not_required_for_case"
         verdict = "warn"
@@ -274,6 +291,7 @@ def analyze_prediction_evidence(
         "prediction_message_count": prediction_count,
         "prediction_hz": prediction_hz,
         "prediction_logs_present": prediction_logs_present,
+        "prediction_runtime_observed": prediction_runtime_observed,
         "prediction_errors": prediction_log_errors,
         "planning_requires_prediction": planning_requires_prediction,
         "bypass_reason": bypass_reason,
@@ -316,6 +334,7 @@ def prediction_evidence_summary_md(report: Mapping[str, Any]) -> str:
             f"- Route ID: `{report.get('route_id')}`",
             f"- Scenario class: `{report.get('scenario_class')}`",
             f"- Prediction mode: `{report.get('prediction_mode')}`",
+            f"- Prediction runtime observed: `{report.get('prediction_runtime_observed')}`",
             f"- Verdict: `{report.get('verdict')}`",
             f"- Hard gate eligible: `{report.get('hard_gate_eligible')}`",
             f"- Blocking capabilities: `{', '.join(report.get('blocking_capabilities') or []) or 'none'}`",
@@ -420,6 +439,34 @@ def _find_prediction_logs(root: Path) -> list[Path]:
     for pattern in ("*prediction*.log", "*prediction*.txt"):
         candidates.extend(path for path in root.rglob(pattern) if path.is_file())
     return sorted(set(candidates))
+
+
+def _prediction_runtime_observed(root: Path) -> bool | None:
+    """Return whether Apollo Prediction mainboard was observed in runtime status artifacts."""
+
+    saw_status = False
+    needles = (
+        "modules/prediction/dag/prediction.dag",
+        "prediction.dag",
+        " -p prediction",
+    )
+    for relative in (
+        "artifacts/apollo_modules_start.log",
+        "artifacts/apollo_modules_status.log",
+        "artifacts/apollo_modules_status_final.log",
+        "artifacts/apollo_control_deferred_status.log",
+    ):
+        path = root / relative
+        if not path.is_file():
+            continue
+        saw_status = True
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if any(needle in text for needle in needles):
+            return True
+    return False if saw_status else None
 
 
 def _load_replacement_matrix(path: str | Path | None) -> dict[str, Any]:

@@ -40,7 +40,10 @@ from carla_testbed.analysis.planning_materialization import (
     analyze_planning_materialization_run_dir,
     write_planning_materialization_report,
 )
-from carla_testbed.analysis.prediction_evidence import analyze_prediction_evidence_run_dir
+from carla_testbed.analysis.prediction_evidence import (
+    analyze_prediction_evidence_run_dir,
+    write_prediction_evidence_report,
+)
 from carla_testbed.analysis.assist_ledger import build_runtime_assist_ledger
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -148,6 +151,18 @@ def analyze_apollo_link_health(
                 inputs["planning_materialization"] = Path(
                     outputs["planning_materialization_report"]
                 )
+        if _should_regenerate_prediction_evidence(payloads.get("prediction_evidence")):
+            regenerated_prediction = analyze_prediction_evidence_run_dir(root)
+            if _prediction_evidence_has_boundary(regenerated_prediction):
+                payloads["prediction_evidence"] = regenerated_prediction
+                source_kinds["prediction_evidence"] = "regenerated_from_run_artifacts"
+                outputs = write_prediction_evidence_report(
+                    regenerated_prediction,
+                    root / "analysis" / "prediction_evidence",
+                )
+                inputs["prediction_evidence"] = Path(
+                    outputs["prediction_evidence_report"]
+                )
         if _should_regenerate_apollo_module_consumption(
             payloads.get("apollo_module_consumption")
         ) and _apollo_module_consumption_raw_inputs_available(root):
@@ -228,11 +243,6 @@ def analyze_apollo_link_health(
                     root / "analysis" / "control_health",
                 )
                 inputs["control_health"] = Path(outputs["control_health_report"])
-        if _should_regenerate_prediction_evidence(payloads.get("prediction_evidence")):
-            regenerated_prediction = analyze_prediction_evidence_run_dir(root)
-            if _prediction_evidence_has_boundary(regenerated_prediction):
-                payloads["prediction_evidence"] = regenerated_prediction
-                source_kinds["prediction_evidence"] = "regenerated_from_run_artifacts"
         if inputs.get("channel_stats") is not None and _should_regenerate_channel_cadence(
             payloads.get("channel_cadence_diagnosis")
         ):
@@ -605,6 +615,7 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
         ),
         "prediction_evidence": (
             "prediction_mode",
+            "prediction_runtime_observed",
             "prediction_channel_available",
             "prediction_message_count",
             "planning_requires_prediction",
@@ -1401,6 +1412,8 @@ def _should_regenerate_apollo_module_consumption(report: Mapping[str, Any] | Non
         return False
     status = _normalize_status(report.get("status"))
     blocking = {str(item) for item in report.get("blocking_reasons") or [] if item}
+    if report.get("prediction_mode") in {None, "", "unknown"}:
+        return True
     route_contract_derived_blockers = {
         "claim_route_consumption_unverified",
         "route_contract_failed_before_module_consumption_claim",
@@ -2686,6 +2699,7 @@ def _prediction_layer(
         key_metrics={
             "scenario_class": scenario_class,
             "prediction_mode": report.get("prediction_mode"),
+            "prediction_runtime_observed": report.get("prediction_runtime_observed"),
             "prediction_channel_available": report.get("prediction_channel_available"),
             "prediction_message_count": report.get("prediction_message_count"),
             "prediction_hz": report.get("prediction_hz"),

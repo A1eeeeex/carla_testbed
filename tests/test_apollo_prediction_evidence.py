@@ -195,6 +195,25 @@ def test_bypassed_with_reason_dynamic_obstacle_fails_without_override(tmp_path: 
     assert "closed_loop" in report["blocking_capabilities"]
 
 
+def test_dynamic_case_with_prediction_runtime_but_no_output_fails_explicitly(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path, scenario_class="cut_in")
+    _channel_stats(run_dir, prediction_count=0, obstacle_count=4)
+    (run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+    (run_dir / "artifacts/apollo_modules_status.log").write_text(
+        "96128 mainboard -d modules/prediction/dag/prediction.dag -p prediction -s CYBER_DEFAULT\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_prediction_evidence_run_dir(run_dir)
+
+    assert report["prediction_runtime_observed"] is True
+    assert report["prediction_mode"] == "missing"
+    assert report["verdict"] == "fail"
+    assert report["hard_gate_eligible"] is False
+    assert "closed_loop" in report["blocking_capabilities"]
+    assert "prediction_module_observed_without_prediction_channel_output" in report["warnings"]
+
+
 def test_prediction_log_errors_warn_or_fail(tmp_path: Path) -> None:
     run_dir = _run_dir(tmp_path)
     _channel_stats(run_dir, prediction_count=10)
