@@ -533,30 +533,68 @@ def _primary_behavior_blocker(
         if isinstance(derived_blocker_evidence.get("control_health"), Mapping)
         else {}
     )
+    link_health = (
+        derived_blocker_evidence.get("apollo_link_health")
+        if isinstance(derived_blocker_evidence.get("apollo_link_health"), Mapping)
+        else {}
+    )
 
     if reason == "lane_invasion":
         if lane_event.get("available"):
             interpretation = list(lane_event.get("departure_interpretation") or [])
             same_sign = "raw_steer_same_sign_as_cross_track_error" in interpretation
+            route_simple_lat_sign_convention = (
+                link_health.get("primary_blocker")
+                == "apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate"
+            ) or (
+                link_health.get("route_simple_lat_sign_convention_candidate") is True
+            )
             blocker = (
+                "lane_departure_with_route_simple_lat_sign_convention_candidate"
+                if same_sign and route_simple_lat_sign_convention
+                else
                 "lane_departure_with_source_steer_same_sign"
                 if same_sign
                 else "lane_departure_evidence"
             )
-            return {
-                "primary_behavior_blocker": blocker,
-                "behavior_blocker_layer": "lane_event_contract",
-                "behavior_next_action": (
+            next_action = (
+                "Validate the sign convention between CARLA route cross-track error and "
+                "Apollo simple_lat lateral error before changing control mapping, steer "
+                "scale, smoothing, or controller gains."
+                if route_simple_lat_sign_convention
+                else (
                     "Inspect Apollo lateral/reference-line and raw->mapped->applied steer "
                     "around the first lane event; do not tune PID or relax the lane-event "
                     "gate before this attribution is checked."
+                )
+            )
+            return {
+                "primary_behavior_blocker": blocker,
+                "behavior_blocker_layer": (
+                    "apollo_lateral_semantics"
+                    if route_simple_lat_sign_convention
+                    else "lane_event_contract"
                 ),
+                "behavior_next_action": next_action,
                 "behavior_blocker_evidence": {
                     "lane_event_reason": lane_event.get("reason"),
                     "departure_classification": lane_event.get("departure_classification"),
                     "departure_interpretation": interpretation,
                     "lane_invasion_event_can_be_used_as_hard_gate": lane_event.get(
                         "lane_invasion_event_can_be_used_as_hard_gate"
+                    ),
+                    "apollo_link_health_primary_blocker": link_health.get("primary_blocker"),
+                    "route_simple_lat_sign_convention_candidate": link_health.get(
+                        "route_simple_lat_sign_convention_candidate"
+                    ),
+                    "route_simple_lat_opposite_sign_abs_sum_p95_m": link_health.get(
+                        "route_simple_lat_opposite_sign_abs_sum_p95_m"
+                    ),
+                    "route_simple_lat_abs_magnitude_delta_p95_m": link_health.get(
+                        "route_simple_lat_abs_magnitude_delta_p95_m"
+                    ),
+                    "route_simple_lat_alignment_interpretation": link_health.get(
+                        "route_simple_lat_alignment_interpretation"
                     ),
                     "path": lane_event.get("path"),
                 },
@@ -643,12 +681,26 @@ def _control_health_blocker_summary(report: Mapping[str, Any], path: Path) -> di
 
 
 def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -> dict[str, Any]:
+    lateral_metrics = _lookup_path(report, ("layers", "apollo_lateral_semantics", "key_metrics"))
+    lateral_metrics = lateral_metrics if isinstance(lateral_metrics, Mapping) else {}
     return {
         "available": bool(report),
         "path": str(path) if path.exists() else None,
         "primary_blocker": report.get("primary_blocker"),
         "secondary_blockers": list(report.get("secondary_blockers") or []),
         "can_claim_unassisted_natural_driving": report.get("can_claim_unassisted_natural_driving"),
+        "route_simple_lat_sign_convention_candidate": lateral_metrics.get(
+            "route_simple_lat_sign_convention_candidate"
+        ),
+        "route_simple_lat_opposite_sign_abs_sum_p95_m": lateral_metrics.get(
+            "route_simple_lat_opposite_sign_abs_sum_p95_m"
+        ),
+        "route_simple_lat_abs_magnitude_delta_p95_m": lateral_metrics.get(
+            "route_simple_lat_abs_magnitude_delta_p95_m"
+        ),
+        "route_simple_lat_alignment_interpretation": lateral_metrics.get(
+            "route_simple_lat_alignment_interpretation"
+        ),
     }
 
 

@@ -183,8 +183,9 @@ Interpretation:
   of blocking on stale `legacy_followstop` metadata or startup empty
   trajectories. The refreshed link-health primary blocker is now
   `natural_driving_outcome:insufficient_data`; the Phase 1 behavior report
-  still records `failed/lane_invasion` with
-  `primary_behavior_blocker=lane_departure_with_source_steer_same_sign`.
+  still records `failed/lane_invasion`; after the lateral-semantics caveat is
+  consumed, the current `primary_behavior_blocker` is
+  `lane_departure_with_route_simple_lat_sign_convention_candidate`.
   The next behavior loop should inspect lateral/reference-line semantics and
   raw/mapped/applied steer around the lane event, not assist cleanup or
   startup planning warmup.
