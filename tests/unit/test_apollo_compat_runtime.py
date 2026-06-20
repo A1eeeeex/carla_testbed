@@ -17,6 +17,31 @@ def test_transition_backend_snapshots_prediction_log() -> None:
     assert "prediction.INFO" in log_files
 
 
+def test_transition_backend_snapshots_planning_bvar_dump(tmp_path: Path) -> None:
+    app_root = tmp_path / "Apollo10.0" / "application-core"
+    (app_root / ".aem").mkdir(parents=True)
+    dumps = app_root / "dumps"
+    dumps.mkdir()
+    (dumps / "planning.data").write_text(
+        "mainboard_planning_apollo_prediction_recv_msgs_nums : 7\n",
+        encoding="utf-8",
+    )
+    artifacts = tmp_path / "run" / "artifacts"
+    backend = CyberRTBackend(
+        {
+            "artifacts": {"dir": str(artifacts)},
+            "algo": {"apollo": {"application_core_root": str(app_root)}},
+        }
+    )
+
+    backend._snapshot_apollo_bvar_dumps(artifacts)
+
+    assert (artifacts / "apollo_planning.data").read_text(encoding="utf-8").strip().endswith(": 7")
+    meta = json.loads((artifacts / "apollo_bvar_dump_snapshot_meta.json").read_text(encoding="utf-8"))
+    assert meta["files"]["planning.data"]["status"] == "ok"
+    assert meta["files"]["planning.data"]["snapshot"].endswith("apollo_planning.data")
+
+
 def _write_transition_config(tmp_path: Path, *, phase1_scenario_path: str | None = None) -> Path:
     config_path = tmp_path / "town01_apollo_route_only_claim_probe.yaml"
     config_path.write_text(

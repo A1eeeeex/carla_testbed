@@ -620,6 +620,8 @@ def _summary_key_metrics(layer_name: str, metrics: Any) -> str:
             "prediction_internal_log_activity_count",
             "prediction_channel_available",
             "prediction_message_count",
+            "prediction_message_count_source",
+            "prediction_planning_bvar_message_count",
             "planning_requires_prediction",
             "hard_gate_eligible",
             "bypass_reason",
@@ -2710,6 +2712,10 @@ def _prediction_layer(
             ),
             "prediction_channel_available": report.get("prediction_channel_available"),
             "prediction_message_count": report.get("prediction_message_count"),
+            "prediction_message_count_source": report.get("prediction_message_count_source"),
+            "prediction_planning_bvar_message_count": report.get(
+                "prediction_planning_bvar_message_count"
+            ),
             "prediction_hz": report.get("prediction_hz"),
             "planning_requires_prediction": report.get("planning_requires_prediction"),
             "hard_gate_eligible": report.get("hard_gate_eligible"),

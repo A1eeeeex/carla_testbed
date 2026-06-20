@@ -1394,6 +1394,15 @@ evaluator/predictor/obstacle activity such as `CRUISE_MLP_EVALUATOR`. That is
 diagnostic evidence that the Prediction process did internal work. It is not
 native `/apollo/prediction` output evidence and must not change
 `prediction_mode=missing` into `native_observed`.
+For Apollo transition/CyberRT runs, the backend also snapshots selected Apollo
+bvar dumps, including `artifacts/apollo_planning.data`, with metadata in
+`artifacts/apollo_bvar_dump_snapshot_meta.json`. When that dump contains
+`mainboard_planning_apollo_prediction_recv_msgs_nums > 0`, the prediction
+analyzer may report `prediction_mode=native_observed` with
+`prediction_message_count_source=planning_bvar`. This is stronger than INFO log
+activity because it proves Apollo Planning consumed prediction messages, but it
+must remain source-labelled and should not be confused with direct
+`channel_stats.json` observation.
 
 `artifacts/control_apply_trace.jsonl` is the preferred row-level control-chain
 evidence for Apollo CyberRT truth-input runs. Each row preserves Apollo raw

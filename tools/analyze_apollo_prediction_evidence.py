@@ -29,6 +29,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--obstacle-gt-contract", help="obstacle_gt_contract_report.json.")
     parser.add_argument("--prediction-log", action="append", default=[], help="Prediction log file.")
     parser.add_argument(
+        "--prediction-planning-bvar",
+        action="append",
+        default=[],
+        help="Apollo Planning bvar dump containing mainboard_planning_apollo_prediction_* counters.",
+    )
+    parser.add_argument(
         "--replacement-matrix",
         default="configs/reference/apollo_gt_replacement_matrix.yaml",
         help="GT replacement matrix used to resolve explicit scenario-scoped prediction bypass.",
@@ -60,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             planning_topic_debug_summary=args.planning_topic_debug_summary,
             obstacle_gt_contract=args.obstacle_gt_contract,
             prediction_logs=args.prediction_log,
+            prediction_planning_bvar=args.prediction_planning_bvar,
             replacement_matrix_path=replacement_matrix,
         )
     outputs = write_prediction_evidence_report(report, args.out)
@@ -67,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "prediction_mode": report.get("prediction_mode"),
+                "prediction_message_count": report.get("prediction_message_count"),
+                "prediction_message_count_source": report.get("prediction_message_count_source"),
                 "verdict": report.get("verdict"),
                 "hard_gate_eligible": report.get("hard_gate_eligible"),
                 "blocking_capabilities": report.get("blocking_capabilities") or [],

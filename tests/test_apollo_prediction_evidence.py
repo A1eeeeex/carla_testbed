@@ -266,6 +266,41 @@ def test_prediction_info_internal_activity_does_not_count_as_native_output(tmp_p
     assert "prediction_internal_log_activity_without_channel_output" in report["warnings"]
 
 
+def test_planning_bvar_prediction_count_counts_as_native_observed_with_source(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path, scenario_class="cut_in")
+    _channel_stats(run_dir, prediction_count=0, obstacle_count=4)
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "apollo_modules_status.log").write_text(
+        "96128 mainboard -d modules/prediction/dag/prediction.dag -p prediction -s CYBER_DEFAULT\n",
+        encoding="utf-8",
+    )
+    (artifacts / "apollo_planning.data").write_text(
+        "\n".join(
+            [
+                "mainboard_planning_apollo_prediction_cyber_count : 372",
+                "mainboard_planning_apollo_prediction_recv_msgs_nums : 373",
+                "mainboard_planning_apollo_prediction_total_msgs_nums : 373",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_prediction_evidence_run_dir(run_dir)
+
+    assert report["prediction_mode"] == "native_observed"
+    assert report["verdict"] == "pass"
+    assert report["hard_gate_eligible"] is True
+    assert report["prediction_channel_available"] is True
+    assert report["prediction_message_count"] == 373
+    assert report["prediction_message_count_source"] == "planning_bvar"
+    assert report["prediction_channel_stats_message_count"] is None
+    assert report["prediction_planning_bvar_available"] is True
+    assert report["prediction_planning_bvar_source"].endswith("apollo_planning.data")
+    assert "prediction_native_observed_from_planning_bvar_not_channel_stats" in report["warnings"]
+
+
 def test_prediction_log_errors_warn_or_fail(tmp_path: Path) -> None:
     run_dir = _run_dir(tmp_path)
     _channel_stats(run_dir, prediction_count=10)

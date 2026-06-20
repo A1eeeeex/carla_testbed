@@ -835,6 +835,24 @@ class CyberRTBackend(Backend):
                 break
         return None
 
+    def _apollo_host_dumps_dir(self) -> Optional[Path]:
+        app_root = self._apollo_application_core_root()
+        if app_root:
+            dumps_dir = (app_root / "dumps").resolve()
+            if dumps_dir.exists():
+                return dumps_dir
+        try:
+            apollo_root = self._apollo_root()
+        except Exception:
+            return None
+        for parent in [apollo_root] + list(apollo_root.parents):
+            if parent.name == "application-core":
+                dumps_dir = (parent / "dumps").resolve()
+                if dumps_dir.exists():
+                    return dumps_dir
+                break
+        return None
+
     def _apollo_internal_debug_dir_host(self) -> Optional[Path]:
         app_root = self._apollo_application_core_root()
         if not app_root:
@@ -1032,6 +1050,46 @@ class CyberRTBackend(Backend):
             summary["files"][name] = item
         (artifacts / "apollo_log_snapshot_meta.json").write_text(json.dumps(summary, indent=2))
         self._apollo_log_offsets = {}
+
+    @staticmethod
+    def _apollo_core_bvar_dump_files() -> tuple[str, ...]:
+        return (
+            "planning.data",
+            "planning.dag_external_command_process.dag.data",
+        )
+
+    def _snapshot_apollo_bvar_dumps(self, artifacts: Path) -> None:
+        artifacts.mkdir(parents=True, exist_ok=True)
+        dumps_dir = self._apollo_host_dumps_dir()
+        summary: Dict[str, Any] = {
+            "dumps_dir": str(dumps_dir) if dumps_dir else "",
+            "snapshotted_at_sec": time.time(),
+            "files": {},
+        }
+        if not dumps_dir:
+            (artifacts / "apollo_bvar_dump_snapshot_meta.json").write_text(json.dumps(summary, indent=2))
+            return
+        for name in self._apollo_core_bvar_dump_files():
+            src = dumps_dir / name
+            safe_name = "apollo_" + name.replace(".", "_", 1)
+            if name == "planning.data":
+                safe_name = "apollo_planning.data"
+            out = artifacts / safe_name
+            item: Dict[str, Any] = {"source": str(src)}
+            if not src.exists():
+                item["status"] = "missing"
+                summary["files"][name] = item
+                continue
+            try:
+                shutil.copyfile(src, out)
+                item["status"] = "ok"
+                item["snapshot"] = str(out)
+                item["bytes"] = out.stat().st_size
+            except Exception as exc:
+                item["status"] = "error"
+                item["error"] = str(exc)
+            summary["files"][name] = item
+        (artifacts / "apollo_bvar_dump_snapshot_meta.json").write_text(json.dumps(summary, indent=2))
 
     def _resolve_dreamview_record_region(self, artifacts: Path) -> Optional[tuple[int, int, int, int]]:
         self._ensure_dreamview_capture_state(artifacts)
@@ -6068,6 +6126,7 @@ PY"""
         self.control_proc = None
         self.bridge_proc = None
         self._snapshot_apollo_logs(artifacts)
+        self._snapshot_apollo_bvar_dumps(artifacts)
         self._snapshot_apollo_internal_debug(artifacts)
         self._docker_stage_dir = None
         self._docker_stats_path = None

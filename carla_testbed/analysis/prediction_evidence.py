@@ -68,6 +68,7 @@ def analyze_prediction_evidence_run_dir(
         ),
         scenario_metadata=_read_json(root / "artifacts" / "scenario_metadata.json"),
         prediction_log_paths=_find_prediction_logs(root),
+        prediction_planning_bvar_paths=_find_prediction_planning_bvar_dumps(root),
         prediction_runtime_observed=_prediction_runtime_observed(root),
         replacement_matrix=_load_replacement_matrix(replacement_matrix_path),
     )
@@ -83,6 +84,7 @@ def analyze_prediction_evidence_files(
     obstacle_gt_contract: str | Path | None = None,
     scenario_metadata: str | Path | None = None,
     prediction_logs: Sequence[str | Path] | None = None,
+    prediction_planning_bvar: Sequence[str | Path] | None = None,
     prediction_runtime_observed: bool | None = None,
     replacement_matrix_path: str | Path | None = DEFAULT_REPLACEMENT_MATRIX,
 ) -> dict[str, Any]:
@@ -105,6 +107,11 @@ def analyze_prediction_evidence_files(
         prediction_log_paths=[
             Path(path).expanduser() for path in prediction_logs or [] if Path(path).expanduser().exists()
         ],
+        prediction_planning_bvar_paths=[
+            Path(path).expanduser()
+            for path in prediction_planning_bvar or []
+            if Path(path).expanduser().exists()
+        ],
         prediction_runtime_observed=prediction_runtime_observed,
         replacement_matrix=_load_replacement_matrix(replacement_matrix_path),
     )
@@ -120,6 +127,7 @@ def analyze_prediction_evidence(
     obstacle_gt_contract: Mapping[str, Any] | None = None,
     scenario_metadata: Mapping[str, Any] | None = None,
     prediction_log_paths: Sequence[Path] = (),
+    prediction_planning_bvar_paths: Sequence[Path] = (),
     prediction_runtime_observed: bool | None = None,
     replacement_matrix: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -193,6 +201,21 @@ def analyze_prediction_evidence(
     obstacles_channel = _find_channel(channel_stats, OBSTACLES_CHANNEL, "obstacles", "perception_obstacles")
     prediction_count = _message_count(prediction_channel)
     prediction_hz = _number(_channel_value(prediction_channel, "hz"))
+    planning_bvar_evidence = _prediction_planning_bvar_evidence(prediction_planning_bvar_paths)
+    planning_bvar_count = planning_bvar_evidence.get("message_count")
+    if prediction_count is not None and prediction_count > 0:
+        prediction_observed_count = prediction_count
+        prediction_message_count_source = "channel_stats"
+    elif planning_bvar_count is not None and planning_bvar_count > 0:
+        prediction_observed_count = planning_bvar_count
+        prediction_message_count_source = "planning_bvar"
+    else:
+        prediction_observed_count = prediction_count if prediction_count is not None else planning_bvar_count
+        prediction_message_count_source = (
+            "channel_stats"
+            if prediction_count is not None
+            else ("planning_bvar" if planning_bvar_count is not None else "missing")
+        )
     obstacle_count = _message_count(obstacles_channel)
     prediction_log_errors = _prediction_log_errors(prediction_log_paths)
     prediction_log_activity = _prediction_log_activity(prediction_log_paths)
@@ -216,10 +239,12 @@ def analyze_prediction_evidence(
     if not summary and not manifest:
         missing_fields.append("summary_or_manifest")
 
-    if prediction_count and prediction_count > 0:
+    if prediction_observed_count and prediction_observed_count > 0:
         prediction_mode = "native_observed"
         verdict = "pass"
         hard_gate_eligible = True
+        if prediction_message_count_source == "planning_bvar":
+            warnings.append("prediction_native_observed_from_planning_bvar_not_channel_stats")
     elif prediction_runtime_observed is True and _scenario_requires_prediction(scenario_class):
         prediction_mode = "missing"
         verdict = "fail"
@@ -271,7 +296,7 @@ def analyze_prediction_evidence(
     if (
         prediction_log_activity
         and prediction_mode != "native_observed"
-        and not (prediction_count and prediction_count > 0)
+        and not (prediction_observed_count and prediction_observed_count > 0)
     ):
         warnings.append("prediction_internal_log_activity_without_channel_output")
     if prediction_log_errors:
@@ -294,8 +319,14 @@ def analyze_prediction_evidence(
         "prediction_mode": prediction_mode,
         "perception_obstacles_available": perception_available,
         "perception_obstacles_message_count": obstacle_count,
-        "prediction_channel_available": bool(prediction_count and prediction_count > 0),
-        "prediction_message_count": prediction_count,
+        "prediction_channel_available": bool(prediction_observed_count and prediction_observed_count > 0),
+        "prediction_message_count": prediction_observed_count,
+        "prediction_message_count_source": prediction_message_count_source,
+        "prediction_channel_stats_message_count": prediction_count,
+        "prediction_planning_bvar_available": bool(planning_bvar_count and planning_bvar_count > 0),
+        "prediction_planning_bvar_message_count": planning_bvar_count,
+        "prediction_planning_bvar_source": planning_bvar_evidence.get("source"),
+        "prediction_planning_bvar_fields": planning_bvar_evidence.get("fields") or {},
         "prediction_hz": prediction_hz,
         "prediction_logs_present": prediction_logs_present,
         "prediction_runtime_observed": prediction_runtime_observed,
@@ -345,6 +376,11 @@ def prediction_evidence_summary_md(report: Mapping[str, Any]) -> str:
             f"- Scenario class: `{report.get('scenario_class')}`",
             f"- Prediction mode: `{report.get('prediction_mode')}`",
             f"- Prediction runtime observed: `{report.get('prediction_runtime_observed')}`",
+            f"- Prediction message count source: `{report.get('prediction_message_count_source')}`",
+            (
+                "- Prediction planning bvar count: "
+                f"`{report.get('prediction_planning_bvar_message_count')}`"
+            ),
             (
                 "- Prediction internal log activity observed: "
                 f"`{report.get('prediction_internal_log_activity_observed')}` "
@@ -487,6 +523,42 @@ def _prediction_log_activity(paths: Sequence[Path]) -> list[dict[str, Any]]:
     return activity
 
 
+def _prediction_planning_bvar_evidence(paths: Sequence[Path]) -> dict[str, Any]:
+    fields: dict[str, int] = {}
+    source = ""
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        parsed: dict[str, int] = {}
+        for line in text.splitlines():
+            if "mainboard_planning_apollo_prediction_" not in line:
+                continue
+            if ":" not in line:
+                continue
+            key, raw_value = line.split(":", 1)
+            key = key.strip()
+            try:
+                value = int(float(raw_value.strip()))
+            except ValueError:
+                continue
+            parsed[key] = value
+        if not parsed:
+            continue
+        fields = parsed
+        source = str(path)
+        break
+    message_count = fields.get("mainboard_planning_apollo_prediction_recv_msgs_nums")
+    if message_count is None:
+        message_count = fields.get("mainboard_planning_apollo_prediction_total_msgs_nums")
+    return {
+        "source": source or None,
+        "message_count": message_count,
+        "fields": fields,
+    }
+
+
 def _find_prediction_logs(root: Path) -> list[Path]:
     candidates: list[Path] = []
     for pattern in (
@@ -496,6 +568,20 @@ def _find_prediction_logs(root: Path) -> list[Path]:
         "*prediction*.txt",
     ):
         candidates.extend(path for path in root.rglob(pattern) if path.is_file())
+    return sorted(set(candidates))
+
+
+def _find_prediction_planning_bvar_dumps(root: Path) -> list[Path]:
+    candidates: list[Path] = []
+    for relative in (
+        "artifacts/apollo_planning.data",
+        "artifacts/apollo_planning_bvar.data",
+        "artifacts/planning.data",
+        "apollo_planning.data",
+    ):
+        path = root / relative
+        if path.is_file():
+            candidates.append(path)
     return sorted(set(candidates))
 
 

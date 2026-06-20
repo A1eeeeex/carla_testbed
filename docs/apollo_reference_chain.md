@@ -88,7 +88,13 @@ needs `prediction_evidence_report.json` and an explicit `bypass_reason`.
 
 Prediction is an explicit gate, not a background field. The allowed modes are:
 
-- `native_observed`: `/apollo/prediction` has messages and channel evidence.
+- `native_observed`: `/apollo/prediction` has messages with native evidence.
+  Preferred evidence is direct channel stats. Apollo Planning bvar counters such
+  as `mainboard_planning_apollo_prediction_recv_msgs_nums` are also accepted as
+  input-side native evidence when copied into run artifacts as
+  `artifacts/apollo_planning.data`; reports must label
+  `prediction_message_count_source=planning_bvar` instead of pretending the
+  count came from `channel_stats.json`.
 - `bypassed_with_gt_obstacles`: allowed only with a scenario-scoped
   `bypass_reason`; static lane-keep diagnostics may warn, but natural-driving
   closed-loop claims require `native_observed` prediction unless an explicit
@@ -220,6 +226,14 @@ the negative case where no explicit bypass evidence should be available. Dynamic
 obstacle, junction, and traffic-light claims still require native prediction or
 an explicit scenario override; `/apollo/perception/obstacles` is not counted as
 `/apollo/prediction`.
+
+For Apollo transition/CyberRT runs, `artifacts/apollo_prediction.INFO` is useful
+runtime diagnostic evidence, but internal evaluator/predictor log lines do not
+prove native output. `artifacts/apollo_planning.data`, when present, captures
+Apollo Planning bvar counters and can prove that Planning consumed prediction
+messages. The prediction report must keep the two sources separate:
+`prediction_internal_log_activity_observed` is diagnostic only, while
+`prediction_message_count_source=planning_bvar` is input-side native evidence.
 
 For online runs, `scenario_class` must be explicit in `summary.json`,
 `manifest.json`, or `artifacts/scenario_metadata.json`. If the class is missing,
