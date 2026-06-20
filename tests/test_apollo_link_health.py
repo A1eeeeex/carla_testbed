@@ -1887,6 +1887,11 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
             "confidence": "medium",
             "anomalies": [
                 {
+                    "type": "route_simple_lat_sign_convention_mismatch_candidate",
+                    "suspected_layer": "reference_line_semantics",
+                    "reason": "route lateral and simple_lat lateral have opposite signs with matching magnitudes",
+                },
+                {
                     "type": "route_lateral_error_opposes_simple_lat_lateral_error",
                     "suspected_layer": "reference_line_semantics",
                     "reason": "route lateral and simple_lat lateral have opposite signs",
@@ -1920,6 +1925,12 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
                 "source_steer_vs_route_lateral_error": {"same_sign_ratio": 0.55},
                 "source_steer_vs_simple_lat_lateral_error": {"same_sign_ratio": 0.0},
                 "route_lateral_error_vs_simple_lat_lateral_error": {"opposite_sign_ratio": 1.0},
+                "route_simple_lat_magnitude_alignment": {
+                    "magnitude_agreement_candidate": True,
+                    "opposite_sign_abs_sum_p95_m": 0.02,
+                    "abs_magnitude_delta_p95_m": 0.02,
+                    "interpretation": "opposite_sign_matching_magnitude_suggests_route_simple_lat_sign_convention_mismatch",
+                },
             },
         },
     )
@@ -1927,7 +1938,7 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     report = analyze_apollo_link_health_run_dir(run_dir)
 
     assert report["primary_blocker"] == (
-        "apollo_lateral_semantics:route_lateral_error_opposes_simple_lat_lateral_error"
+        "apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate"
     )
     assert "natural_driving_outcome:insufficient_data" in report["secondary_blockers"]
     lateral = report["layers"]["apollo_lateral_semantics"]
@@ -1938,6 +1949,12 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert lateral["key_metrics"]["first_high_applied_steer_vs_route_lateral_error"] == "same_sign"
     assert lateral["key_metrics"]["source_steer_route_lateral_same_sign_ratio"] == 0.55
     assert lateral["key_metrics"]["route_lateral_simple_lat_opposite_sign_ratio"] == 1.0
+    assert lateral["key_metrics"]["route_simple_lat_sign_convention_candidate"] is True
+    assert lateral["key_metrics"]["route_simple_lat_opposite_sign_abs_sum_p95_m"] == 0.02
+    assert lateral["key_metrics"]["route_simple_lat_abs_magnitude_delta_p95_m"] == 0.02
+    assert lateral["key_metrics"]["route_simple_lat_alignment_interpretation"] == (
+        "opposite_sign_matching_magnitude_suggests_route_simple_lat_sign_convention_mismatch"
+    )
     assert lateral["key_metrics"]["first_high_route_lateral_vs_simple_lat_lateral_error"] == "opposite_sign"
     assert report["can_claim_unassisted_natural_driving"] is False
 

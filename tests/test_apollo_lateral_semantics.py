@@ -580,6 +580,30 @@ def test_run_dir_merges_control_decode_debug_simple_lat_fields(tmp_path: Path) -
     assert report["correlation_summary"]["apollo_simple_lat_lateral_error_abs"]["p95"] > 0.60
 
 
+def test_route_simple_lat_opposite_sign_matching_magnitude_is_convention_candidate(
+    tmp_path: Path,
+) -> None:
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["sim_time"] = 30.0 + index * 0.05
+        row["cross_track_error"] = 0.60 + index * 0.02
+        row["apollo_debug_simple_lat_lateral_error_m"] = -row["cross_track_error"]
+        row["apollo_steer_raw"] = 0.30
+        row["bridge_steer_mapped"] = 0.075
+        row["carla_steer_applied"] = 0.075
+        row["ego_yaw_rate"] = 0.04
+
+    report = _analyze(tmp_path, rows)
+    alignment = report["lateral_sign_alignment"]["route_simple_lat_magnitude_alignment"]
+
+    assert alignment["magnitude_agreement_candidate"] is True
+    assert alignment["opposite_sign_ratio"] == 1.0
+    assert alignment["opposite_sign_abs_sum_p95_m"] == 0.0
+    assert alignment["abs_magnitude_delta_p95_m"] == 0.0
+    assert "route_simple_lat_sign_convention_mismatch_candidate" in _types(report)
+    assert "route_lateral_error_opposes_simple_lat_lateral_error" in _types(report)
+
+
 def test_run_dir_consumes_localization_hdmap_lateral_consistency(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     (run_dir / "artifacts").mkdir(parents=True)

@@ -1234,6 +1234,11 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
             "Inspect Apollo target/matched point semantics, source-steer generation, and the route_s window "
             "where HDMap projection and CARLA cross-track both show drift."
         )
+    elif "route_simple_lat_sign_convention_mismatch_candidate" in anomaly_types:
+        next_action = (
+            "Verify and document the sign convention between CARLA route cross-track error and "
+            "Apollo simple_lat lateral error before changing control mapping, steer scale, or smoothing."
+        )
     elif suspected_layer == "reference_line_semantics":
         next_action = "Inspect reference-line curvature/heading and Apollo routing lane ids before changing control mapping."
     elif suspected_layer == "control_mapping":
@@ -1335,6 +1340,22 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
             "route_lateral_simple_lat_opposite_sign_ratio": _nested(
                 report,
                 "lateral_sign_alignment.route_lateral_error_vs_simple_lat_lateral_error.opposite_sign_ratio",
+            ),
+            "route_simple_lat_sign_convention_candidate": _nested(
+                report,
+                "lateral_sign_alignment.route_simple_lat_magnitude_alignment.magnitude_agreement_candidate",
+            ),
+            "route_simple_lat_opposite_sign_abs_sum_p95_m": _nested(
+                report,
+                "lateral_sign_alignment.route_simple_lat_magnitude_alignment.opposite_sign_abs_sum_p95_m",
+            ),
+            "route_simple_lat_abs_magnitude_delta_p95_m": _nested(
+                report,
+                "lateral_sign_alignment.route_simple_lat_magnitude_alignment.abs_magnitude_delta_p95_m",
+            ),
+            "route_simple_lat_alignment_interpretation": _nested(
+                report,
+                "lateral_sign_alignment.route_simple_lat_magnitude_alignment.interpretation",
             ),
             "first_high_route_lateral_vs_simple_lat_lateral_error": _nested(
                 report,
@@ -3498,6 +3519,7 @@ def _lateral_semantics_warning_primary(layers: Mapping[str, Mapping[str, Any]]) 
     if not natural_missing:
         return None
     priority = (
+        "route_simple_lat_sign_convention_mismatch_candidate",
         "route_lateral_error_opposes_simple_lat_lateral_error",
         "source_steer_same_sign_as_lateral_error",
         "actual_lateral_drift_matches_hdmap_projection",

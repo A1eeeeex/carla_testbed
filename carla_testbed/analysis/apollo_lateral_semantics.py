@@ -174,6 +174,7 @@ DEFAULT_THRESHOLDS = {
     "steer_sign_active_abs": 0.02,
     "sign_alignment_ratio_high": 0.80,
     "sign_alignment_min_samples": 3,
+    "route_simple_lat_sign_convention_abs_delta_p95_m": 0.10,
 }
 
 DRIFT_WINDOW_FIELD_ALIASES = {
@@ -580,6 +581,26 @@ def _anomalies(
         isinstance(first_high_alignment, Mapping)
         and first_high_alignment.get("route_lateral_error_vs_simple_lat_lateral_error") == "opposite_sign"
     )
+    route_simple_magnitude = lateral_sign_alignment.get("route_simple_lat_magnitude_alignment")
+    route_simple_sign_convention_candidate = (
+        isinstance(route_simple_magnitude, Mapping)
+        and route_simple_magnitude.get("magnitude_agreement_candidate") is True
+    )
+    if route_simple_sign_convention_candidate:
+        anomalies.append(
+            _anomaly(
+                "route_simple_lat_sign_convention_mismatch_candidate",
+                (
+                    "CARLA route cross-track error and Apollo simple_lat lateral error are "
+                    "opposite-sign with closely matching magnitudes during active samples; "
+                    "treat this as a likely frame/sign-convention mismatch candidate before "
+                    "changing control mapping or steer scale"
+                ),
+                "reference_line_semantics",
+                route_simple_lat_magnitude_alignment=route_simple_magnitude,
+                first_high_lateral_sample=first_high_alignment,
+            )
+        )
     if (
         (route_simple_opposite is not None and route_simple_opposite >= high_ratio and route_simple_count >= min_samples)
         or first_high_route_simple_opposite
@@ -1254,6 +1275,13 @@ def _lateral_sign_alignment_summary(
         lateral_min_abs=thresholds["drift_window_high_lateral_abs_m"],
         steer_min_abs=steer_min,
     )
+    route_simple_magnitude = _route_simple_lat_magnitude_alignment(
+        rows,
+        lateral_min_abs=lateral_min,
+        high_ratio=thresholds["sign_alignment_ratio_high"],
+        min_samples=int(thresholds["sign_alignment_min_samples"]),
+        abs_delta_p95_threshold_m=thresholds["route_simple_lat_sign_convention_abs_delta_p95_m"],
+    )
     sample_count = max((int(value["sample_count"]) for value in pairs.values()), default=0)
     return {
         "available": sample_count > 0,
@@ -1266,6 +1294,7 @@ def _lateral_sign_alignment_summary(
             "sense-check. It must be interpreted with the route frame, steering convention, "
             "and raw/mapped/applied control chain before any runtime control change."
         ),
+        "route_simple_lat_magnitude_alignment": route_simple_magnitude,
         **pairs,
     }
 
@@ -1306,6 +1335,16 @@ def _first_high_lateral_sign_alignment(
         "route_lateral_error_vs_simple_lat_lateral_error": _sign_relation(cross_track, simple_lat, lateral_min_abs),
         "mapped_steer_vs_route_lateral_error": _sign_relation(cross_track, mapped_steer, steer_min_abs),
         "applied_steer_vs_route_lateral_error": _sign_relation(cross_track, applied_steer, steer_min_abs),
+        "route_simple_lat_abs_sum_m": (
+            abs(float(cross_track) + float(simple_lat))
+            if cross_track is not None and simple_lat is not None
+            else None
+        ),
+        "route_simple_lat_abs_magnitude_delta_m": (
+            abs(abs(float(cross_track)) - abs(float(simple_lat)))
+            if cross_track is not None and simple_lat is not None
+            else None
+        ),
     }
 
 
@@ -1355,6 +1394,71 @@ def _sign_pair_stats(
         "same_sign_ratio": (same_sign / sample_count) if sample_count else None,
         "opposite_sign_ratio": (opposite_sign / sample_count) if sample_count else None,
         "ignored_inactive_count": ignored_inactive,
+    }
+
+
+def _route_simple_lat_magnitude_alignment(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    lateral_min_abs: float,
+    high_ratio: float,
+    min_samples: int,
+    abs_delta_p95_threshold_m: float,
+) -> dict[str, Any]:
+    opposite_abs_sum: list[float] = []
+    same_abs_delta: list[float] = []
+    abs_magnitude_delta: list[float] = []
+    same_sign = 0
+    opposite_sign = 0
+    ignored_inactive = 0
+    for row in rows:
+        route_lateral = _row_value(row, ROUTE_LATERAL_ERROR_ALIASES)
+        simple_lat = _row_value(row, FIELD_ALIASES["apollo_simple_lat_lateral_error"])
+        if route_lateral is None or simple_lat is None:
+            continue
+        if abs(route_lateral) < lateral_min_abs or abs(simple_lat) < lateral_min_abs:
+            ignored_inactive += 1
+            continue
+        abs_magnitude_delta.append(abs(abs(route_lateral) - abs(simple_lat)))
+        product = route_lateral * simple_lat
+        if product < 0.0:
+            opposite_sign += 1
+            opposite_abs_sum.append(abs(route_lateral + simple_lat))
+        elif product > 0.0:
+            same_sign += 1
+            same_abs_delta.append(abs(route_lateral - simple_lat))
+        else:
+            ignored_inactive += 1
+    sample_count = same_sign + opposite_sign
+    opposite_ratio = (opposite_sign / sample_count) if sample_count else None
+    opposite_abs_sum_p95 = _percentile(opposite_abs_sum, 0.95)
+    abs_magnitude_delta_p95 = _percentile(abs_magnitude_delta, 0.95)
+    candidate = bool(
+        sample_count >= min_samples
+        and opposite_ratio is not None
+        and opposite_ratio >= high_ratio
+        and opposite_abs_sum_p95 is not None
+        and opposite_abs_sum_p95 <= abs_delta_p95_threshold_m
+        and abs_magnitude_delta_p95 is not None
+        and abs_magnitude_delta_p95 <= abs_delta_p95_threshold_m
+    )
+    return {
+        "available": sample_count > 0,
+        "sample_count": sample_count,
+        "same_sign_count": same_sign,
+        "opposite_sign_count": opposite_sign,
+        "opposite_sign_ratio": opposite_ratio,
+        "ignored_inactive_count": ignored_inactive,
+        "opposite_sign_abs_sum_p95_m": opposite_abs_sum_p95,
+        "same_sign_abs_delta_p95_m": _percentile(same_abs_delta, 0.95),
+        "abs_magnitude_delta_p95_m": abs_magnitude_delta_p95,
+        "magnitude_agreement_candidate": candidate,
+        "threshold_abs_delta_p95_m": abs_delta_p95_threshold_m,
+        "interpretation": (
+            "opposite_sign_matching_magnitude_suggests_route_simple_lat_sign_convention_mismatch"
+            if candidate
+            else "insufficient_or_nonmatching_route_simple_lat_magnitude_evidence"
+        ),
     }
 
 
@@ -1840,6 +1944,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
             f"- source_steer_vs_route_lateral_error: `{_nested(report, 'lateral_sign_alignment.source_steer_vs_route_lateral_error')}`",
             f"- source_steer_vs_simple_lat_lateral_error: `{_nested(report, 'lateral_sign_alignment.source_steer_vs_simple_lat_lateral_error')}`",
             f"- applied_steer_vs_route_lateral_error: `{_nested(report, 'lateral_sign_alignment.applied_steer_vs_route_lateral_error')}`",
+            f"- route_simple_lat_magnitude_alignment: `{_nested(report, 'lateral_sign_alignment.route_simple_lat_magnitude_alignment')}`",
             f"- first_high_lateral_sample: `{_nested(report, 'lateral_sign_alignment.first_high_lateral_sample')}`",
             "",
             "## Missing Fields",

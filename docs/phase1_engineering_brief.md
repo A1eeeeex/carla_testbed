@@ -82,6 +82,13 @@ Interpretation:
 - The Phase 1 platform skeleton is substantially built: scenario definitions,
   target actor contracts, `v-t-gap`, status classification, ScenarioComparison,
   and Apollo sidecar evidence all exist.
+- The latest Pro-review progress reading is: Phase 1 has moved from artifact
+  scaffolding to evidence-backed blocker reduction. The accepted
+  comparison-surface catalog is auditable, but Phase 1 is not complete until
+  representative online runs demonstrate stable external-backend behavior on
+  the same scenario cases. In practical terms, the next cycle should optimize
+  the current highest-value Apollo behavior blocker, not create more generic
+  validation surfaces unless a missing artifact blocks that diagnosis.
 - The latest Pro audit found that the earlier `8/8 DONE` statement was still
   too optimistic because some review-pack surfaces were stale or could not be
   independently re-computed. The follow-up fix keeps accepted-bundle rows tied
@@ -208,19 +215,25 @@ Interpretation:
   high-lateral samples, the route-lateral / Apollo simple_lat opposite-sign
   ratio is `1.0`, the source-steer / route-lateral same-sign ratio is `1.0`,
   and the source-steer / Apollo simple_lat lateral same-sign ratio is `0.0`.
-  The refreshed `apollo_link_health` primary blocker is now
-  `apollo_lateral_semantics:route_lateral_error_opposes_simple_lat_lateral_error`.
-  This is a sign-convention and lateral-semantics
-  sense check around the lane event; it is not proof of a steering-sign bug and
-  does not justify changing `steer_scale`, physical mapping, or controller
-  smoothing before reference-line / simple_lat semantics are closed.
+  The next diagnostic refinement quantifies whether the opposite signs are also
+  matching-magnitude pairs. On the refreshed report, 18 active samples have
+  `route_simple_lat_magnitude_alignment.magnitude_agreement_candidate=true`,
+  `opposite_sign_ratio=1.0`, and
+  `opposite_sign_abs_sum_p95_m≈0.028m`. The preferred interpretation is now a
+  route/simple_lat sign-convention candidate: validate the CARLA route
+  cross-track convention against Apollo simple_lat semantics before changing
+  control mapping, steering scale, smoothing, or controller gains. This is
+  still a `warn`-level attribution result, not a behavior fix and not an Apollo
+  capability claim.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The
   refreshed primary blocker is
-  `apollo_lateral_semantics:planning_nonempty_but_reference_line_debug_missing`;
+  `apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate`;
   `natural_driving_outcome:insufficient_data` remains a secondary blocker and
-  still prevents any unassisted natural-driving claim.
+  still prevents any unassisted natural-driving claim. The reference-line debug
+  export gap remains important context, but it is no longer the latest primary
+  blocker for this specific cut-in sample.
 - Manual artifact inspection of the same run confirms the next evidence gap:
   `apollo_reference_line_debug.jsonl`,
   `stage5_apollo_reference_line_debug.jsonl`, and
