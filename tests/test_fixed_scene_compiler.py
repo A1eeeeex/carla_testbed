@@ -123,6 +123,10 @@ def test_baguang_cut_in_compiles_longitudinal_gap_trigger() -> None:
 
     storyboard = compile_fixed_scene_template(template)
 
+    assert storyboard["roles"]["lead_vehicle"]["spawn"]["s_offset_m"] == 10.0
+    assert storyboard["params"]["initial_gap_m"] == 10.0
+    assert storyboard["params"]["expected_lead_travel_m"] == 290.0
+    assert storyboard["params"]["duration_s"] == 35.0
     phases = storyboard["storyboard"]["phases"]
     assert phases[1]["id"] == "cut_in_lane_change"
     assert phases[1]["start"] == {
@@ -131,7 +135,7 @@ def test_baguang_cut_in_compiles_longitudinal_gap_trigger() -> None:
         "to_role": "lead_vehicle",
         "frame": "ego_body",
         "op": "<=",
-        "value_m": 10.0,
+        "value_m": 12.0,
     }
     action = phases[1]["actions"][0]
     assert action["type"] == "lane_change"
@@ -141,6 +145,8 @@ def test_baguang_cut_in_compiles_longitudinal_gap_trigger() -> None:
     assert action["lateral_shift_m"] == 3.6
     assert action["trigger_frame"] == "ego_body"
     assert storyboard["params"]["duration_policy"] == "lead_reaches_road_end"
+    assert storyboard["success_criteria"]["lane_change_start_gap_m"] == 10.0
+    assert storyboard["success_criteria"]["lane_change_start_gap_tolerance_m"] == 2.5
 
 
 def test_baguang_cut_out_compiles_lane_change_phase() -> None:

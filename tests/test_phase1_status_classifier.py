@@ -257,6 +257,78 @@ def test_early_lane_invasion_before_phase_activation_is_evaluable_failure(tmp_pa
     assert report["counts_as_backend_loss_for_target_scenario"] is False
 
 
+def test_duration_policy_not_reached_after_target_interaction_is_evaluable_failure(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    (run / "summary.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "exit_reason": "LANE_INVASION",
+                "lane_invasion_count": 1,
+                "collision_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "warn",
+                "rows": [{"gap_m": 20.0}],
+                "target_actor_contract": {
+                    "status": "resolved",
+                    "target_actor_role": "lead_vehicle",
+                    "activation": {
+                        "activation_semantics": "active_after_phase",
+                        "active_after_phase": "cut_in_lane_change",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    fixed_out = run / "analysis" / "fixed_scene_contract"
+    fixed_out.mkdir(parents=True)
+    (fixed_out / "fixed_scene_contract_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "fixed_scene_contract.v1",
+                "status": "fail",
+                "blocking_reasons": ["duration_policy_route_end_not_reached"],
+                "metrics": {
+                    "required_phase_start_ratio": 1.0,
+                    "required_phase_completion_ratio": 1.0,
+                },
+                "spawn_feasibility": {"lead_vehicle": {"status": "pass", "blocking_reasons": []}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    actor_out = run / "analysis" / "scenario_actor_contract"
+    actor_out.mkdir(parents=True)
+    (actor_out / "scenario_actor_contract_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "scenario_actor_contract.v1",
+                "status": "pass",
+                "blocking_reasons": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "lane_invasion"
+    assert report["run_evaluable"] is True
+    assert report["scenario_interaction_evaluable"] is True
+    assert report["target_metric_evaluable"] is True
+    assert report["counts_as_backend_loss_for_target_scenario"] is True
+
+
 def test_large_final_gap_is_degraded(tmp_path) -> None:
     run = _base_run(tmp_path)
     out = run / "analysis" / "v_t_gap"

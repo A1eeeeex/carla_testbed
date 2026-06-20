@@ -279,8 +279,10 @@ def _analyze_lane_change(
     if progress_values and not intent_completed:
         blocking_reasons.append("lane_change_not_completed")
     start_longitudinal = _num(lane_rows[0].get("longitudinal_to_ego_m")) if lane_rows else None
-    start_lateral = _num(lane_rows[0].get("lateral_to_ego_m")) if lane_rows else None
-    final_lateral = _num(lane_rows[-1].get("lateral_to_ego_m")) if lane_rows else None
+    shift_samples = _lane_change_shift_samples(lane_rows)
+    shift_source = shift_samples["source"]
+    start_lateral = shift_samples["start_lateral_m"]
+    final_lateral = shift_samples["final_lateral_m"]
     lateral_shift = (
         abs(float(final_lateral) - float(start_lateral))
         if final_lateral is not None and start_lateral is not None
@@ -327,6 +329,7 @@ def _analyze_lane_change(
         "lane_change_start_lateral_m": start_lateral,
         "lane_change_final_lateral_m": final_lateral,
         "lane_change_lateral_shift_m": lateral_shift,
+        "lane_change_lateral_shift_source": shift_source,
         "lane_change_min_lateral_shift_m": min_lateral_shift,
         "lane_change_runtime_modes": runtime_modes,
         "physics_controlled_lane_change": _all_true(row.get("physics_controlled_lane_change") for row in lane_rows),
@@ -414,18 +417,45 @@ def _lane_change_min_lateral_shift(
     return 0.8 * abs(lane_width)
 
 
+def _lane_change_shift_samples(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    world_y_samples = [_num(row.get("y")) for row in rows]
+    world_y_samples = [value for value in world_y_samples if value is not None]
+    if len(world_y_samples) >= 2:
+        return {
+            "source": "actor_world_y",
+            "start_lateral_m": world_y_samples[0],
+            "final_lateral_m": world_y_samples[-1],
+        }
+    ego_relative_samples = [_num(row.get("lateral_to_ego_m")) for row in rows]
+    ego_relative_samples = [value for value in ego_relative_samples if value is not None]
+    return {
+        "source": "ego_relative_lateral",
+        "start_lateral_m": ego_relative_samples[0] if ego_relative_samples else None,
+        "final_lateral_m": ego_relative_samples[-1] if ego_relative_samples else None,
+    }
+
+
 def _lane_change_lateral_dynamics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     samples: list[tuple[float, float]] = []
+    world_samples: list[tuple[float, float, float]] = []
     for row in rows:
         t = _num(row.get("sim_time_sec"))
         lateral = _num(row.get("lateral_to_ego_m"))
         if t is not None and lateral is not None:
             samples.append((t, lateral))
+        x = _num(row.get("x"))
+        y = _num(row.get("y"))
+        if t is not None and x is not None and y is not None:
+            world_samples.append((t, x, y))
+    world_samples = sorted(world_samples, key=lambda item: item[0])
     samples = sorted(samples, key=lambda item: item[0])
     lateral_speeds: list[float] = []
     lateral_accels: list[float] = []
     previous_speed: tuple[float, float] | None = None
     max_step = 0.0
+    max_world_step = 0.0
+    for (_, x0, y0), (_, x1, y1) in zip(world_samples, world_samples[1:]):
+        max_world_step = max(max_world_step, ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5)
     for (t0, l0), (t1, l1) in zip(samples, samples[1:]):
         dt = t1 - t0
         if dt <= 0:
@@ -442,12 +472,20 @@ def _lane_change_lateral_dynamics(rows: Sequence[Mapping[str, Any]]) -> dict[str
         previous_speed = (t1, speed)
     max_lateral_speed = max((abs(value) for value in lateral_speeds), default=None)
     max_lateral_accel = max((abs(value) for value in lateral_accels), default=None)
-    no_teleport = None if len(samples) < 2 else max_step <= 1.0
+    if len(world_samples) >= 2:
+        no_teleport = max_world_step <= 2.0
+        teleport_source = "actor_world_xy"
+    else:
+        no_teleport = None if len(samples) < 2 else max_step <= 1.0
+        teleport_source = "ego_relative_lateral"
     return {
         "sample_count": len(samples),
+        "world_sample_count": len(world_samples),
         "max_lateral_step_m": max_step if samples else None,
+        "max_world_step_m": max_world_step if world_samples else None,
         "max_lateral_speed_mps": max_lateral_speed,
         "max_lateral_accel_mps2": max_lateral_accel,
+        "teleport_check_source": teleport_source,
         "no_teleport_check": no_teleport,
     }
 

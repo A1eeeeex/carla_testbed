@@ -337,6 +337,8 @@ def _fixed_scene_interaction_evidence(root: Path) -> dict[str, Any]:
     actor_status = str(scenario_actor_report.get("status") or "")
     if fixed_status == "pass" and actor_status in {"", "pass", "warn"}:
         return {"evaluable": True, "reason": None}
+    if _fixed_scene_duration_only_after_actor_interaction(fixed_scene_report, scenario_actor_report):
+        return {"evaluable": True, "reason": None}
     if _fixed_scene_unreached_without_setup_blocker(fixed_scene_report, scenario_actor_report):
         return {"evaluable": False, "reason": "required_phase_not_reached"}
     if fixed_status == "fail" or actor_status == "fail":
@@ -1199,6 +1201,19 @@ def _fixed_scene_trigger_not_reached(
         if not actor_blockers or actor_blockers.issubset(actor_trigger_blockers):
             return True
     return False
+
+
+def _fixed_scene_duration_only_after_actor_interaction(
+    fixed_scene_report: Mapping[str, Any], scenario_actor_report: Mapping[str, Any]
+) -> bool:
+    fixed_blockers = {str(item) for item in fixed_scene_report.get("blocking_reasons") or []}
+    actor_status = str(scenario_actor_report.get("status") or "")
+    actor_blockers = {str(item) for item in scenario_actor_report.get("blocking_reasons") or []}
+    if fixed_blockers != {"duration_policy_route_end_not_reached"}:
+        return False
+    if actor_status not in {"pass", "warn"} or actor_blockers:
+        return False
+    return True
 
 
 def _fixed_scene_unreached_without_setup_blocker(

@@ -250,8 +250,59 @@ def test_baguang_cut_in_actor_contract_checks_start_gap_and_lateral_shift(tmp_pa
     assert report["status"] == "pass"
     assert report["behavior"]["lane_change_start_longitudinal_gap_m"] == 9.8
     assert report["behavior"]["lane_change_lateral_shift_m"] == 3.5
+    assert report["behavior"]["lane_change_lateral_shift_source"] == "ego_relative_lateral"
     assert report["behavior"]["lane_change_runtime_modes"] == ["set_transform_interpolation"]
     assert report["behavior"]["claim_grade_lane_change"] is False
+    assert report["behavior"]["lateral_dynamics"]["no_teleport_check"] is True
+
+
+def test_lane_change_contract_uses_actor_world_motion_when_ego_relative_lateral_drifts(tmp_path) -> None:
+    template = load_fixed_scene_template("configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml")
+    storyboard = compile_fixed_scene_template(template)
+    storyboard_path = tmp_path / "fixed_scene_resolved.json"
+    trace_path = tmp_path / "scenario_actor_trace.jsonl"
+    events_path = tmp_path / "scenario_phase_events.jsonl"
+    storyboard_path.write_text(json.dumps(storyboard), encoding="utf-8")
+    rows = [
+        {
+            "actor_role": "lead_vehicle",
+            "phase": "cut_in_lane_change",
+            "action_type": "lane_change",
+            "lane_change_progress": progress,
+            "longitudinal_to_ego_m": 11.9 + index,
+            "lateral_to_ego_m": relative_lateral,
+            "sim_time_sec": float(index),
+            "x": 100.0 - index * 0.5,
+            "y": world_y,
+            "lane_change_runtime_mode": "set_transform_interpolation",
+            "physics_controlled_lane_change": False,
+            "claim_grade_lane_change": False,
+            "velocity_source": "carla_get_velocity",
+        }
+        for index, (progress, world_y, relative_lateral) in enumerate(
+            [
+                (0.0, -1.6, -3.6),
+                (0.25, -2.5, -2.7),
+                (0.5, -3.4, -1.8),
+                (0.75, -4.3, 9.0),
+                (1.0, -5.2, 26.8),
+            ]
+        )
+    ]
+    events = [{"phase": "cut_in_lane_change", "event": "phase_started"}]
+    trace_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    events_path.write_text("\n".join(json.dumps(row) for row in events) + "\n", encoding="utf-8")
+
+    report = analyze_scenario_actor_contract(
+        storyboard_path=storyboard_path,
+        trace_path=trace_path,
+        events_path=events_path,
+    )
+
+    assert report["status"] == "pass"
+    assert round(report["behavior"]["lane_change_lateral_shift_m"], 3) == 3.6
+    assert report["behavior"]["lane_change_lateral_shift_source"] == "actor_world_y"
+    assert report["behavior"]["lateral_dynamics"]["teleport_check_source"] == "actor_world_xy"
     assert report["behavior"]["lateral_dynamics"]["no_teleport_check"] is True
 
 

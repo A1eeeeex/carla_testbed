@@ -53,15 +53,17 @@ diagnostics on `straight_road_for_baguang`:
     toward 40kph and the scene lasts until the lead reaches the current
     Baguang straight-road end.
 - `configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml`
-  - lead starts in the left adjacent lane at 35kph, ego starts in the right
-    lane at 40kph, and the lead performs a cosine-eased 4s right cut-in when
-    longitudinal gap reaches about 10m. The scene lasts until the lead reaches
-    the current Baguang straight-road end.
+  - lead starts in the left adjacent lane at 35kph at the 10m activation gap,
+    ego starts in the right lane at 40kph, and the lead performs a
+    cosine-eased 4s right cut-in immediately when the target-transition
+    condition is evaluable. The scene lasts until the lead reaches the current
+    Baguang straight-road end, with a simulation-time fallback only after that
+    should be reachable.
 
 These scenes include spawn feasibility checks. If the lead vehicle cannot be
 placed at the requested ahead distance and lane, the fixed-scene contract must
 fail rather than silently accepting a fallback spawn.
-For Baguang dynamic 20m lead/cut-in cases, scenario configs set
+For Baguang dynamic lead and cut-in cases, scenario configs set
 `prefer_waypoint: false` because online evidence showed CARLA
 `waypoint.next(20m)` can jump hundreds of meters on the custom map. The runtime
 still rejects grossly inconsistent waypoint candidates when waypoint placement
