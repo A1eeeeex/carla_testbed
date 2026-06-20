@@ -71,6 +71,24 @@ def test_phase1_acceptance_requires_explicit_artifact_completeness(tmp_path) -> 
     assert "artifact_complete" in report["blocking_reasons"]
 
 
+def test_phase1_acceptance_does_not_require_curves_for_route_only_not_applicable_metric(
+    tmp_path,
+) -> None:
+    comparison = _write_comparison(
+        tmp_path,
+        "route_only",
+        apollo_overrides={"target_metric_status": "not_applicable"},
+        builtin_overrides={"target_metric_status": "not_applicable"},
+        write_curves=False,
+    )
+
+    report = analyze_phase1_acceptance(comparison)
+
+    assert report["status"] == "DONE"
+    assert report["gates"]["comparison_curves_present"] is True
+    assert "comparison_curves_present" not in report["blocking_reasons"]
+
+
 def test_phase1_acceptance_writer_outputs_json_and_summary(tmp_path) -> None:
     comparison = _write_comparison(tmp_path, "write")
     report = analyze_phase1_acceptance(comparison)
@@ -90,21 +108,24 @@ def _write_comparison(
     builtin_overrides=None,
     comparison_status="comparable",
     comparison_target_status="apollo_vs_planning_control_evaluable",
+    write_curves=True,
 ):
     apollo = tmp_path / f"{name}_apollo"
     builtin = tmp_path / f"{name}_builtin"
     _write_run(apollo, "apollo_run", "apollo_cyberrt", "apollo_reference_backend")
     _write_run(builtin, "builtin_run", "carla_builtin", "planning_control_backend")
     comparison = tmp_path / "comparisons" / name
-    (comparison / "comparison_curves").mkdir(parents=True)
-    (comparison / "comparison_curves" / "v_t_gap_combined.csv").write_text(
-        "run_id,backend,t,gap_m\napollo_run,apollo_cyberrt,0,25\n",
-        encoding="utf-8",
-    )
+    if write_curves:
+        (comparison / "comparison_curves").mkdir(parents=True)
+        (comparison / "comparison_curves" / "v_t_gap_combined.csv").write_text(
+            "run_id,backend,t,gap_m\napollo_run,apollo_cyberrt,0,25\n",
+            encoding="utf-8",
+        )
     apollo_row = _run_row(apollo, "apollo_run", "apollo_cyberrt", "apollo_reference_backend")
     builtin_row = _run_row(builtin, "builtin_run", "carla_builtin", "planning_control_backend")
     apollo_row.update(apollo_overrides or {})
     builtin_row.update(builtin_overrides or {})
+    comparison.mkdir(parents=True, exist_ok=True)
     summary = {
         "schema_version": "phase1_comparison.v1",
         "comparison_id": name,
@@ -159,6 +180,7 @@ def _run_row(path, run_id, backend, backend_type):
         "run_evaluable": True,
         "scenario_interaction_evaluable": True,
         "target_metric_evaluable": True,
+        "target_metric_status": "pass",
         "artifact_complete": True,
         "blocking_assists": [],
     }

@@ -83,8 +83,11 @@ def check_run_artifact_completeness(
     run_dir: str | Path,
     *,
     scenario_class: str | None = None,
+    profile: str = "natural_driving",
 ) -> dict[str, Any]:
     root = Path(run_dir).expanduser()
+    if profile == "phase1":
+        return _check_phase1_artifact_completeness(root, scenario_class=scenario_class)
     manifest = _read_json(root / "manifest.json")
     summary = _read_json(root / "summary.json")
     inferred_scenario_class = scenario_class or _scenario_class(summary, manifest, root.name)
@@ -339,6 +342,161 @@ def check_run_artifact_completeness(
         "missing_control_trace_fields": missing_control_trace,
         "warnings": [],
     }
+
+
+def _check_phase1_artifact_completeness(
+    root: Path,
+    *,
+    scenario_class: str | None = None,
+) -> dict[str, Any]:
+    manifest = _read_json(root / "manifest.json")
+    summary = _read_json(root / "summary.json")
+    phase1_status = _read_json(root / "analysis" / "phase1_status" / "phase1_status.json")
+    inferred_scenario_class = scenario_class or _scenario_class(summary, manifest, root.name)
+    run_id = _text_field(summary, manifest, "run_id") or root.name
+    scenario_id = _text_field(summary, manifest, "scenario_id") or str(manifest.get("scenario_case") or "")
+    route_id = _route_id(summary, manifest)
+    target_contract = (
+        phase1_status.get("target_actor_contract")
+        if isinstance(phase1_status.get("target_actor_contract"), Mapping)
+        else manifest.get("target_actor_contract")
+    )
+    target_required = _phase1_target_required(target_contract, manifest, inferred_scenario_class)
+    backend_type = str(manifest.get("backend_type") or phase1_status.get("backend_type") or "")
+    artifacts = {
+        "manifest": str(root / "manifest.json") if (root / "manifest.json").exists() else None,
+        "summary": str(root / "summary.json") if (root / "summary.json").exists() else None,
+        "timeseries": str(_find_first(root, ["timeseries.csv", "timeseries.jsonl"]) or ""),
+        "phase1_status": str(root / "analysis" / "phase1_status" / "phase1_status.json")
+        if (root / "analysis" / "phase1_status" / "phase1_status.json").exists()
+        else None,
+        "v_t_gap": str(root / "analysis" / "v_t_gap" / "v_t_gap_report.json")
+        if (root / "analysis" / "v_t_gap" / "v_t_gap_report.json").exists()
+        else None,
+        "fixed_scene_resolved": str(root / "artifacts" / "fixed_scene_resolved.json")
+        if (root / "artifacts" / "fixed_scene_resolved.json").exists()
+        else None,
+        "scenario_actor_trace": str(root / "artifacts" / "scenario_actor_trace.jsonl")
+        if (root / "artifacts" / "scenario_actor_trace.jsonl").exists()
+        else None,
+        "scenario_phase_events": str(root / "artifacts" / "scenario_phase_events.jsonl")
+        if (root / "artifacts" / "scenario_phase_events.jsonl").exists()
+        else None,
+        "fixed_scene_contract": str(
+            root / "analysis" / "fixed_scene_contract" / "fixed_scene_contract_report.json"
+        )
+        if (root / "analysis" / "fixed_scene_contract" / "fixed_scene_contract_report.json").exists()
+        else None,
+        "scenario_actor_contract": str(
+            root / "analysis" / "scenario_actor_contract" / "scenario_actor_contract_report.json"
+        )
+        if (root / "analysis" / "scenario_actor_contract" / "scenario_actor_contract_report.json").exists()
+        else None,
+        "obstacle_gt_contract": str(
+            root / "analysis" / "obstacle_gt_contract" / "obstacle_gt_contract_report.json"
+        )
+        if (root / "analysis" / "obstacle_gt_contract" / "obstacle_gt_contract_report.json").exists()
+        else None,
+    }
+    required = ["manifest", "summary", "timeseries", "phase1_status", "v_t_gap"]
+    if target_required:
+        required.extend(
+            [
+                "fixed_scene_resolved",
+                "scenario_actor_trace",
+                "scenario_phase_events",
+                "fixed_scene_contract",
+                "scenario_actor_contract",
+            ]
+        )
+        if backend_type == "apollo_reference_backend":
+            required.append("obstacle_gt_contract")
+    missing_artifacts = [_phase1_artifact_label(key) for key in required if not artifacts.get(key)]
+    missing_manifest_fields = [
+        key
+        for key in ("scenario_id", "backend", "backend_type")
+        if not manifest.get(key)
+        and not (key == "scenario_id" and manifest.get("scenario_case"))
+        and not phase1_status.get(key)
+    ]
+    artifact_complete = not missing_artifacts and not missing_manifest_fields
+    return {
+        "schema_version": RUN_ARTIFACT_COMPLETENESS_SCHEMA_VERSION,
+        "profile": "phase1",
+        "run_dir": str(root),
+        "run_id": run_id,
+        "scenario_id": scenario_id,
+        "route_id": route_id,
+        "scenario_class": inferred_scenario_class,
+        "status": "pass" if artifact_complete else "insufficient_data",
+        "artifact_complete": artifact_complete,
+        "declared_complete": not missing_artifacts,
+        "physical_complete": artifact_complete,
+        "summary_complete": not missing_artifacts,
+        "raw_evidence_complete": True,
+        "target_actor_required": target_required,
+        "backend_type": backend_type or None,
+        "artifacts": artifacts,
+        "physical_artifacts": _physical_artifact_statuses(artifacts),
+        "missing_artifacts": missing_artifacts,
+        "missing_raw_evidence_artifacts": [],
+        "empty_artifacts": [],
+        "missing_manifest_fields": missing_manifest_fields,
+        "invalid_manifest_source_fields": [],
+        "invalid_report_source_fields": [],
+        "control_trace_available": True,
+        "missing_control_trace_fields": [],
+        "warnings": [
+            "phase1_profile_checks_scenario_run_surface_not_natural_driving_claim_artifacts"
+        ],
+    }
+
+
+def _phase1_target_required(
+    target_contract: Any,
+    manifest: Mapping[str, Any],
+    scenario_class: str,
+) -> bool:
+    if isinstance(target_contract, Mapping):
+        if target_contract.get("status") == "not_required":
+            return False
+        if target_contract.get("required") is False:
+            return False
+        if target_contract.get("status") == "resolved":
+            return True
+    scenario = str(
+        manifest.get("scenario_class")
+        or manifest.get("scenario_id")
+        or manifest.get("scenario_case")
+        or scenario_class
+        or ""
+    )
+    return any(
+        token in scenario
+        for token in (
+            "follow_stop",
+            "lead_",
+            "cut_in",
+            "cut_out",
+            "hard_brake",
+        )
+    )
+
+
+def _phase1_artifact_label(key: str) -> str:
+    return {
+        "manifest": "manifest.json",
+        "summary": "summary.json",
+        "timeseries": "timeseries.csv/jsonl",
+        "phase1_status": "analysis/phase1_status/phase1_status.json",
+        "v_t_gap": "analysis/v_t_gap/v_t_gap_report.json",
+        "fixed_scene_resolved": "artifacts/fixed_scene_resolved.json",
+        "scenario_actor_trace": "artifacts/scenario_actor_trace.jsonl",
+        "scenario_phase_events": "artifacts/scenario_phase_events.jsonl",
+        "fixed_scene_contract": "analysis/fixed_scene_contract/fixed_scene_contract_report.json",
+        "scenario_actor_contract": "analysis/scenario_actor_contract/scenario_actor_contract_report.json",
+        "obstacle_gt_contract": "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json",
+    }.get(key, key)
 
 
 def write_run_artifact_completeness_report(

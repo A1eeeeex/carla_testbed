@@ -292,6 +292,52 @@ def test_target_interaction_not_exercised_blocks_comparable_cut_in(tmp_path) -> 
     assert all(item["counts_as_backend_loss"] is False for item in report["backend_results"])
 
 
+def test_comparison_backfills_legacy_phase1_status_evaluability_fields(tmp_path) -> None:
+    run_a = _write_run(
+        tmp_path,
+        "apollo",
+        "apollo_cyberrt",
+        "apollo_reference_backend",
+        "failed",
+        "lane_invasion",
+        scenario_id="town01_lane_keep_097",
+        scenario_case="town01_lane_keep_097",
+    )
+    run_b = _write_run(
+        tmp_path,
+        "builtin",
+        "carla_builtin",
+        "planning_control_backend",
+        "success",
+        scenario_id="town01_lane_keep_097",
+        scenario_case="town01_lane_keep_097",
+    )
+    for run in (run_a, run_b):
+        path = run / "analysis" / "phase1_status" / "phase1_status.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        for key in (
+            "run_evaluable",
+            "scenario_interaction_evaluable",
+            "target_metric_evaluable",
+            "target_metric_status",
+            "counts_as_backend_loss_for_target_scenario",
+        ):
+            payload.pop(key, None)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    report = compare_scenario_runs([run_a, run_b])
+
+    assert report["comparison_status"] == "comparable"
+    assert report["comparison_target_status"] == "apollo_vs_planning_control_evaluable"
+    assert report["validity_gates"]["interaction_complete"] is True
+    assert report["validity_gates"]["target_metric_valid"] is True
+    rows = {row["backend"]: row for row in report["participating_runs"]}
+    assert rows["apollo_cyberrt"]["run_evaluable"] is True
+    assert rows["apollo_cyberrt"]["scenario_interaction_evaluable"] is True
+    assert rows["apollo_cyberrt"]["target_metric_evaluable"] is True
+    assert rows["apollo_cyberrt"]["target_metric_status"] == "pass"
+
+
 def test_scenario_comparison_writer(tmp_path) -> None:
     run_a = _write_run(tmp_path, "apollo", "apollo_cyberrt", "apollo_reference_backend", "success")
     run_b = _write_run(tmp_path, "builtin", "carla_builtin", "planning_control_backend", "success")

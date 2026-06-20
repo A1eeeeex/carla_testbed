@@ -44,7 +44,10 @@ def analyze_phase1_acceptance(comparison_dir: str | Path) -> dict[str, Any]:
             run.get("target_metric_evaluable") is True for run in participating_runs
         ),
         "artifact_complete": all(_artifact_complete(run) for run in participating_runs),
-        "comparison_curves_present": (root / "comparison_curves" / "v_t_gap_combined.csv").exists(),
+        "comparison_curves_present": (
+            not _comparison_curves_required(participating_runs)
+            or (root / "comparison_curves" / "v_t_gap_combined.csv").exists()
+        ),
     }
     blocking_reasons = [name for name, passed in gates.items() if not passed]
     status = STATUS_DONE if not blocking_reasons else STATUS_PARTIAL
@@ -94,6 +97,13 @@ def _artifact_complete(run: Mapping[str, Any]) -> bool:
         return False
     missing = run.get("missing_artifacts")
     return not bool(missing)
+
+
+def _comparison_curves_required(runs: list[dict[str, Any]]) -> bool:
+    if not runs:
+        return True
+    statuses = {str(run.get("target_metric_status") or "") for run in runs}
+    return not statuses or any(status != "not_applicable" for status in statuses)
 
 
 def _artifact_hashes(root: Path, *items: Any) -> list[dict[str, Any]]:

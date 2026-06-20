@@ -148,6 +148,8 @@ def _run_entry(run_dir: Path) -> dict[str, Any]:
     else:
         phase1_status = _status_with_safety_event_evidence(run_dir, phase1_status)
     v_t_gap = _read_json(run_dir / "analysis" / "v_t_gap" / "v_t_gap_report.json")
+    if _phase1_status_missing_evaluability_fields(phase1_status):
+        phase1_status = _backfill_phase1_status_evaluability_fields(phase1_status, v_t_gap)
     apollo_control_handoff = _read_json(
         run_dir / "analysis" / "apollo_control_handoff" / "apollo_control_handoff_report.json"
     )
@@ -340,6 +342,49 @@ def _summary_notes(comparison_status: str, reason: str | None, comparison_target
 
 def _run_evaluable(run: Mapping[str, Any]) -> bool:
     return bool(run.get("run_evaluable", run.get("evaluable", run.get("phase1_status") != "invalid")))
+
+
+def _phase1_status_missing_evaluability_fields(phase1_status: Mapping[str, Any]) -> bool:
+    return any(
+        key not in phase1_status
+        for key in (
+            "run_evaluable",
+            "scenario_interaction_evaluable",
+            "target_metric_evaluable",
+            "counts_as_backend_loss_for_target_scenario",
+        )
+    )
+
+
+def _backfill_phase1_status_evaluability_fields(
+    phase1_status: Mapping[str, Any],
+    v_t_gap: Mapping[str, Any],
+) -> dict[str, Any]:
+    status = str(phase1_status.get("status") or "")
+    run_evaluable = bool(phase1_status.get("evaluable", status != "invalid"))
+    v_t_gap_status = str(v_t_gap.get("status") or phase1_status.get("v_t_gap_status") or "")
+    target_metric_evaluable = v_t_gap_status in {"pass", "warn", "fail", "not_applicable"}
+    target_metric_status = v_t_gap_status or (
+        "not_evaluable" if not run_evaluable else "unknown"
+    )
+    scenario_interaction_evaluable = bool(
+        phase1_status.get("scenario_interaction_evaluable", run_evaluable)
+    )
+    updated = dict(phase1_status)
+    updated.setdefault("run_evaluable", run_evaluable)
+    updated.setdefault("scenario_interaction_evaluable", scenario_interaction_evaluable)
+    updated.setdefault("target_metric_evaluable", target_metric_evaluable)
+    updated.setdefault("target_metric_status", target_metric_status)
+    updated.setdefault(
+        "counts_as_backend_loss_for_target_scenario",
+        bool(
+            status == "failed"
+            and run_evaluable
+            and scenario_interaction_evaluable
+            and target_metric_evaluable
+        ),
+    )
+    return updated
 
 
 def _comparison_validity_gates(

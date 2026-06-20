@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 from carla_testbed.analysis.artifact_completeness import (
@@ -21,6 +22,56 @@ def _copy_run(tmp_path: Path, name: str = "lane_keep_097") -> Path:
 
 def _rewrite_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_minimal_phase1_run(
+    tmp_path: Path,
+    *,
+    scenario_case: str = "lane_keep_straight",
+    backend_type: str = "planning_control_backend",
+    target_required: bool = False,
+) -> Path:
+    run_dir = tmp_path / f"{scenario_case}_{backend_type}"
+    (run_dir / "analysis" / "phase1_status").mkdir(parents=True)
+    (run_dir / "analysis" / "v_t_gap").mkdir(parents=True)
+    manifest = {
+        "schema_version": "phase1_run_manifest.v1",
+        "run_id": run_dir.name,
+        "scenario_case": scenario_case,
+        "backend": "carla_builtin" if backend_type == "planning_control_backend" else "apollo",
+        "backend_type": backend_type,
+        "route_id": "route_lane_keep_straight",
+        "target_actor_contract": {
+            "required": target_required,
+            "status": "resolved" if target_required else "not_required",
+        },
+    }
+    summary = {
+        "run_id": run_dir.name,
+        "scenario_id": scenario_case,
+        "scenario_class": scenario_case,
+        "route_id": "route_lane_keep_straight",
+    }
+    phase1_status = {
+        "schema_version": "phase1_status.v1",
+        "status": "evaluable",
+        "scenario_case": scenario_case,
+        "backend_type": backend_type,
+        "target_actor_contract": manifest["target_actor_contract"],
+        "target_metric_status": "not_applicable" if not target_required else "evaluable",
+    }
+    v_t_gap = {
+        "schema_version": "v_t_gap.v1",
+        "status": "not_applicable" if not target_required else "pass",
+        "scenario_case": scenario_case,
+        "target_actor_required": target_required,
+    }
+    _rewrite_json(run_dir / "manifest.json", manifest)
+    _rewrite_json(run_dir / "summary.json", summary)
+    (run_dir / "timeseries.csv").write_text("sim_time,ego_speed\n0.0,0.0\n", encoding="utf-8")
+    _rewrite_json(run_dir / "analysis" / "phase1_status" / "phase1_status.json", phase1_status)
+    _rewrite_json(run_dir / "analysis" / "v_t_gap" / "v_t_gap_report.json", v_t_gap)
+    return run_dir
 
 
 def test_complete_lane_keep_run_passes_artifact_check(tmp_path: Path) -> None:
@@ -262,6 +313,101 @@ def test_artifact_completeness_report_writer_creates_json_and_markdown(tmp_path:
     assert payload["status"] == "pass"
     assert "# Run Artifact Completeness" in markdown
     assert "does not prove Apollo behavior correctness" in markdown
+
+
+def test_artifact_completeness_cli_writes_run_local_report(tmp_path: Path) -> None:
+    run_dir = _copy_run(tmp_path)
+
+    result = subprocess.run(
+        [
+            "python3",
+            "tools/analyze_run_artifact_completeness.py",
+            "--run-dir",
+            str(run_dir),
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "pass"
+    assert payload["artifact_complete"] is True
+    assert (
+        run_dir
+        / "analysis"
+        / "artifact_completeness"
+        / "artifact_completeness_report.json"
+    ).is_file()
+
+
+def test_phase1_profile_passes_minimal_route_only_run(tmp_path: Path) -> None:
+    run_dir = _write_minimal_phase1_run(tmp_path)
+
+    report = check_run_artifact_completeness(run_dir, profile="phase1")
+
+    assert report["profile"] == "phase1"
+    assert report["status"] == "pass"
+    assert report["artifact_complete"] is True
+    assert report["target_actor_required"] is False
+    assert report["missing_artifacts"] == []
+    assert report["missing_manifest_fields"] == []
+    assert "phase1_profile_checks_scenario_run_surface_not_natural_driving_claim_artifacts" in report[
+        "warnings"
+    ]
+
+
+def test_phase1_profile_requires_target_actor_artifacts_when_target_required(
+    tmp_path: Path,
+) -> None:
+    run_dir = _write_minimal_phase1_run(
+        tmp_path,
+        scenario_case="follow_stop_static",
+        backend_type="apollo_reference_backend",
+        target_required=True,
+    )
+
+    report = check_run_artifact_completeness(run_dir, profile="phase1")
+
+    assert report["status"] == "insufficient_data"
+    assert report["artifact_complete"] is False
+    assert report["target_actor_required"] is True
+    assert "artifacts/scenario_actor_trace.jsonl" in report["missing_artifacts"]
+    assert "analysis/scenario_actor_contract/scenario_actor_contract_report.json" in report[
+        "missing_artifacts"
+    ]
+    assert "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json" in report[
+        "missing_artifacts"
+    ]
+
+
+def test_artifact_completeness_cli_supports_phase1_profile(tmp_path: Path) -> None:
+    run_dir = _write_minimal_phase1_run(tmp_path)
+
+    result = subprocess.run(
+        [
+            "python3",
+            "tools/analyze_run_artifact_completeness.py",
+            "--profile",
+            "phase1",
+            "--run-dir",
+            str(run_dir),
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "pass"
+    assert payload["artifact_complete"] is True
+    written = run_dir / "analysis" / "artifact_completeness" / "artifact_completeness_report.json"
+    assert written.is_file()
+    assert json.loads(written.read_text(encoding="utf-8"))["profile"] == "phase1"
 
 
 def test_missing_required_artifacts_are_reported(tmp_path: Path) -> None:
