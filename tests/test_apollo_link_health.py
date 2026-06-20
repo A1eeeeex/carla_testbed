@@ -2865,7 +2865,7 @@ def test_control_health_existing_fail_report_is_not_overwritten(tmp_path: Path) 
     assert refreshed["metrics"]["sentinel"] == "keep_existing_failure"
 
 
-def test_route_establishment_uses_after_routing_materialization_without_claiming_overall_pass(
+def test_route_establishment_after_routing_materialization_supports_no_assist_claim_window(
     tmp_path: Path,
 ) -> None:
     run_dir = _base_run(tmp_path)
@@ -2920,10 +2920,15 @@ def test_route_establishment_uses_after_routing_materialization_without_claiming
     assert "reference_line_provider_not_ready_empty_planning" not in refreshed_consumption[
         "blocking_reasons"
     ]
-    assert no_assist["status"] == "fail"
-    assert "planning_nonempty_ratio_not_claim_grade" in no_assist["blocking_reasons"]
-    assert abs(no_assist["key_metrics"]["planning_nonempty_ratio"] - (4 / 12)) < 1e-12
-    assert report["primary_blocker"] == "no_assist_claim_boundary:planning_nonempty_ratio_not_claim_grade"
+    assert no_assist["status"] == "pass"
+    assert "planning_nonempty_ratio_not_claim_grade" not in no_assist["blocking_reasons"]
+    assert no_assist["key_metrics"]["planning_nonempty_ratio"] == 1.0
+    assert (
+        no_assist["key_metrics"]["planning_nonempty_ratio_source"]
+        == "planning_materialization.after_routing_success"
+    )
+    assert abs(no_assist["key_metrics"]["planning_nonempty_ratio_overall"] - (4 / 12)) < 1e-12
+    assert report["primary_blocker"] != "no_assist_claim_boundary:planning_nonempty_ratio_not_claim_grade"
 
 
 def test_route_contract_placeholder_regenerates_from_decoded_routing_response(tmp_path: Path) -> None:

@@ -4325,7 +4325,8 @@ def _planning_nonempty_claim_metric(
     planning_claim_source_text = str(planning_materialization_claim_source or "")
     claim_window_can_support_no_assist = (
         planning_materialization_claim_ratio is not None
-        and planning_claim_source_text == "after_first_nonempty_trajectory"
+        and planning_claim_source_text
+        in {"after_routing_success", "after_first_nonempty_trajectory"}
     )
     ratio = _first_num(
         planning_materialization_claim_ratio if claim_window_can_support_no_assist else None,

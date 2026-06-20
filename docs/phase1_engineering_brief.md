@@ -153,15 +153,20 @@ Interpretation:
   `artifacts/control_apply_trace.jsonl` evidence is available.
 - `apollo_link_health` now prefers an explicit
   `analysis/assist_ledger/assist_ledger.json` over stale embedded
-  `summary.json` / `manifest.json` assist ledgers. On the latest
-  representative Apollo cut-in run, the no-assist layer therefore no longer
-  reports `legacy_followstop` as an active blocker after the postprocessed
-  ledger proves `active_assists=[]`. The same refreshed report still blocks
-  claimability on
-  `no_assist_claim_boundary:planning_nonempty_ratio_not_claim_grade`
-  (`planning_nonempty_ratio≈0.494`), so the next behavior loop should inspect
-  Planning materialization / reference-line consumption rather than spending
-  another cycle on assist cleanup.
+  `summary.json` / `manifest.json` assist ledgers, and it uses
+  `planning_materialization.claim_window_nonempty_ratio` when that claim
+  window is explicitly sourced from `after_routing_success` or
+  `after_first_nonempty_trajectory`. On the latest representative Apollo
+  cut-in run, the no-assist layer therefore reports `active_assists=[]` and
+  `planning_nonempty_ratio≈0.987` for the after-routing claim window instead
+  of blocking on stale `legacy_followstop` metadata or startup empty
+  trajectories. The refreshed link-health primary blocker is now
+  `natural_driving_outcome:insufficient_data`; the Phase 1 behavior report
+  still records `failed/lane_invasion` with
+  `primary_behavior_blocker=lane_departure_with_source_steer_same_sign`.
+  The next behavior loop should inspect lateral/reference-line semantics and
+  raw/mapped/applied steer around the lane event, not assist cleanup or
+  startup planning warmup.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.
