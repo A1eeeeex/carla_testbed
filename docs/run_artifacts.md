@@ -341,8 +341,11 @@ Additional run-local artifacts:
     `carla_actor_id`; the report records
     `actor_role_source=obstacle_gt_contract_record_roles` and a warning so the
     provenance is visible.
+- `analysis/artifact_completeness/artifact_completeness_report.json`
+  - records the canonical Phase 1 or natural-driving artifact completeness
+    profile consumed by ScenarioComparison and acceptance gates.
 - `analysis/phase1_status/artifact_completeness.json`
-  - records whether the Phase 1 run-local artifact spine is present.
+  - legacy Phase 1 echo file kept for older postprocess consumers.
   - echoes `artifact_contract_version`, `target_actor_contract`, and
     `target_actor_contract_status` for auditability. This echo does not by
     itself make a run valid; `phase1_status.json` still classifies invalid,
@@ -350,9 +353,10 @@ Additional run-local artifacts:
 
 `carla_builtin` fixed-scene and route-only diagnostic runs invoke the Phase 1
 postprocess spine after runtime completion. The postprocess writes
-`analysis/v_t_gap/`, `analysis/phase1_status/`, and artifact completeness
-without changing control behavior. When postprocess is rerun, it refreshes the
-Phase 1 echo fields in an existing `summary.json`, such as
+`analysis/v_t_gap/`, `analysis/phase1_status/`, canonical
+`analysis/artifact_completeness/`, and the legacy Phase 1 artifact-completeness
+echo without changing control behavior. When postprocess is rerun, it refreshes
+the Phase 1 echo fields in an existing `summary.json`, such as
 `phase1_status`, `phase1_failure_reason`, `v_t_gap_status`, and
 `artifact_completeness_status`; the authoritative Phase 1 classification
 remains `analysis/phase1_status/phase1_status.json`. Route-only runs do not require

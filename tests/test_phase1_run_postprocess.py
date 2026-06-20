@@ -25,7 +25,20 @@ def test_phase1_postprocess_writes_v_t_gap_status_and_completeness(tmp_path) -> 
     completeness = json.loads(
         (run / "analysis" / "phase1_status" / "artifact_completeness.json").read_text(encoding="utf-8")
     )
+    canonical_completeness = json.loads(
+        (run / "analysis" / "artifact_completeness" / "artifact_completeness_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
     assert completeness["status"] == "pass"
+    assert canonical_completeness["profile"] == "phase1"
+    assert canonical_completeness["status"] == "pass"
+    assert report["outputs"]["artifact_completeness"]["artifact_completeness_report"].endswith(
+        "artifact_completeness_report.json"
+    )
+    assert report["outputs"]["legacy_phase1_artifact_completeness"].endswith(
+        "analysis/phase1_status/artifact_completeness.json"
+    )
 
 
 def test_phase1_postprocess_missing_timeseries_is_invalid_not_backend_loss(tmp_path) -> None:
@@ -82,12 +95,22 @@ def test_phase1_postprocess_route_only_completeness_does_not_require_fixed_scene
     completeness = json.loads(
         (run / "analysis" / "phase1_status" / "artifact_completeness.json").read_text(encoding="utf-8")
     )
+    canonical_completeness = json.loads(
+        (run / "analysis" / "artifact_completeness" / "artifact_completeness_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
     assert report["phase1_status"] == "success"
     assert report["artifact_completeness_status"] == "pass"
     assert completeness["status"] == "pass"
+    assert canonical_completeness["profile"] == "phase1"
+    assert canonical_completeness["status"] == "pass"
+    assert canonical_completeness["target_actor_required"] is False
     assert "fixed_scene_resolved" not in completeness["artifacts"]
     assert "scenario_actor_trace" not in completeness["artifacts"]
+    assert "artifacts/fixed_scene_resolved.json" not in canonical_completeness["missing_artifacts"]
+    assert "artifacts/scenario_actor_trace.jsonl" not in canonical_completeness["missing_artifacts"]
 
 
 def test_phase1_postprocess_restores_dynamic_identity_from_typed_runtime_config(tmp_path) -> None:

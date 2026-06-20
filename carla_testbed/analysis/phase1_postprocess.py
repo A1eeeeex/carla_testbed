@@ -24,6 +24,10 @@ from carla_testbed.analysis.apollo_route_contract import (
     analyze_apollo_route_contract_run_dir,
     write_apollo_route_contract_report,
 )
+from carla_testbed.analysis.artifact_completeness import (
+    check_run_artifact_completeness,
+    write_run_artifact_completeness_report,
+)
 from carla_testbed.analysis.baguang_lane_event_contract import (
     analyze_baguang_lane_event_contract,
     write_baguang_lane_event_contract_report,
@@ -117,6 +121,11 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     completeness_path = analysis / "phase1_status" / "artifact_completeness.json"
     completeness_path.parent.mkdir(parents=True, exist_ok=True)
     completeness_path.write_text(json.dumps(completeness, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    phase1_artifact_completeness = check_run_artifact_completeness(root, profile="phase1")
+    phase1_artifact_completeness_paths = write_run_artifact_completeness_report(
+        phase1_artifact_completeness,
+        analysis / "artifact_completeness",
+    )
     return {
         "schema_version": PHASE1_POSTPROCESS_SCHEMA_VERSION,
         "run_dir": str(root),
@@ -164,11 +173,12 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         "apollo_link_health_primary_blocker": (
             apollo_link_health_report.get("primary_blocker") if apollo_link_health_report else None
         ),
-        "artifact_completeness_status": completeness.get("status"),
+        "artifact_completeness_status": phase1_artifact_completeness.get("status"),
         "outputs": {
             "v_t_gap": v_t_gap_paths,
             "phase1_status": phase1_paths,
-            "artifact_completeness": str(completeness_path),
+            "artifact_completeness": phase1_artifact_completeness_paths,
+            "legacy_phase1_artifact_completeness": str(completeness_path),
             **({"baguang_lane_event_contract": baguang_lane_event_paths} if baguang_lane_event_paths else {}),
             **(
                 {
