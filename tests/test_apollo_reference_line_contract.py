@@ -630,6 +630,7 @@ def test_reference_line_debug_export_policy_marks_local_surrogates_not_claim_gra
 def test_existing_contract_rows_are_augmented_with_planning_trajectory_samples(tmp_path: Path) -> None:
     contract = tmp_path / "apollo_reference_line_contract.jsonl"
     planning = tmp_path / "planning_topic_debug.jsonl"
+    control = tmp_path / "bridge_control_decode.jsonl"
     _write_jsonl(
         contract,
         [
@@ -677,10 +678,23 @@ def test_existing_contract_rows_are_augmented_with_planning_trajectory_samples(t
             }
         ],
     )
+    _write_jsonl(
+        control,
+        [
+            {
+                "ts_sec": 1.0,
+                "debug_simple_lat_current_target_point_x": 1.5,
+                "debug_simple_lat_current_target_point_y": 0.0,
+                "debug_simple_lat_heading_error": 0.0,
+                "debug_simple_lat_lateral_error": 0.0,
+            }
+        ],
+    )
 
     report = analyze_apollo_reference_line_contract_files(
         contract_path=contract,
         planning_topic_debug_path=planning,
+        control_decode_debug_path=control,
     )
 
     surrogate = report["planning_trajectory_sample_surrogate"]
@@ -697,6 +711,16 @@ def test_existing_contract_rows_are_augmented_with_planning_trajectory_samples(t
     policy = report["reference_line_debug_export_policy"]
     assert policy["planning_trajectory_sample_surrogate_available"] is True
     assert policy["reference_line_debug_claim_grade_allowed"] is False
+
+    target_surrogate = report["control_target_point_vs_planning_trajectory_sample"]
+    assert target_surrogate["status"] == "available"
+    assert target_surrogate["classification"] == (
+        "control_target_point_on_planning_trajectory_sample_line_candidate"
+    )
+    assert target_surrogate["reference_line_claim_grade_allowed"] is False
+    assert target_surrogate["rows_with_control_target_point"] == 1
+    assert target_surrogate["sample_coverage_ratio"] == 1.0
+    assert target_surrogate["target_point_to_planning_sample_line_abs_p95_m"] == pytest.approx(0.0)
 
 
 def test_existing_contract_rows_are_augmented_with_control_decode_debug(tmp_path: Path) -> None:
@@ -765,6 +789,70 @@ def test_existing_contract_rows_are_augmented_with_control_decode_debug(tmp_path
     assert report["evidence"]["control_reference_available"] is True
     assert report["metrics"]["control_ref_heading_error_p95_rad"] == 0.0195
     assert report["evidence"]["nonempty_trajectory_ratio"] == 1.0
+
+
+def test_control_target_point_off_planning_sample_line_is_diagnostic_warn(tmp_path: Path) -> None:
+    contract = tmp_path / "apollo_reference_line_contract.jsonl"
+    planning = tmp_path / "planning_topic_debug.jsonl"
+    control = tmp_path / "bridge_control_decode.jsonl"
+    _write_jsonl(
+        contract,
+        [
+            {
+                "timestamp": 1.0,
+                "localization": {"heading": 0.0},
+                "planning": {
+                    "trajectory_point_count": 20,
+                    "first_trajectory_point_theta": 0.0,
+                    "reference_line_count": 0,
+                    "routing_segment_count": 1,
+                },
+                "computed": {
+                    "planning_reference_available": True,
+                    "control_reference_available": False,
+                    "localization_to_planning_first_heading_error_rad": 0.0,
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        planning,
+        [
+            {
+                "timestamp": 1.0,
+                "trajectory_point_count": 20,
+                "first_trajectory_point_theta": 0.0,
+                "trajectory_sample_points": [
+                    {"index": 0, "x": 0.0, "y": 0.0, "theta": 0.0},
+                    {"index": 1, "x": 2.0, "y": 0.0, "theta": 0.0},
+                ],
+            }
+        ],
+    )
+    _write_jsonl(
+        control,
+        [
+            {
+                "ts_sec": 1.0,
+                "debug_simple_lat_current_target_point_x": 1.0,
+                "debug_simple_lat_current_target_point_y": 2.0,
+            }
+        ],
+    )
+
+    report = analyze_apollo_reference_line_contract_files(
+        contract_path=contract,
+        planning_topic_debug_path=planning,
+        control_decode_debug_path=control,
+    )
+
+    target_surrogate = report["control_target_point_vs_planning_trajectory_sample"]
+    assert target_surrogate["status"] == "warn"
+    assert target_surrogate["classification"] == (
+        "control_target_point_off_planning_trajectory_sample_line_candidate"
+    )
+    assert target_surrogate["reference_line_claim_grade_allowed"] is False
+    assert target_surrogate["target_point_to_planning_sample_line_abs_p95_m"] == pytest.approx(2.0)
 
 
 def test_nested_apollo_control_raw_can_supply_control_reference(tmp_path: Path) -> None:

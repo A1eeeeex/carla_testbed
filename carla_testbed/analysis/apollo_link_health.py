@@ -317,6 +317,7 @@ def analyze_apollo_link_health(
                 "reference_debug_diagnostic",
                 "reference_line_debug_export_policy",
                 "planning_trajectory_sample_surrogate",
+                "control_target_point_vs_planning_trajectory_sample",
             ),
         ),
         "apollo_lateral_semantics": _apollo_lateral_semantics_layer(
@@ -455,6 +456,11 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
         if isinstance(reference_metrics.get("planning_trajectory_sample_surrogate"), Mapping)
         else {}
     )
+    control_target_surrogate = (
+        reference_metrics.get("control_target_point_vs_planning_trajectory_sample")
+        if isinstance(reference_metrics.get("control_target_point_vs_planning_trajectory_sample"), Mapping)
+        else {}
+    )
     reference_classification = diagnostic.get("classification")
     planning_projection_alignment = (
         diagnostic.get("planning_first_point_projection_alignment")
@@ -491,6 +497,16 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
             "reference_line_claim_grade_allowed"
         ),
         "planning_trajectory_sample_coverage_ratio": trajectory_sample_surrogate.get("sample_coverage_ratio"),
+        "control_target_point_vs_planning_sample_classification": control_target_surrogate.get("classification"),
+        "control_target_point_vs_planning_sample_reference_line_claim_grade_allowed": control_target_surrogate.get(
+            "reference_line_claim_grade_allowed"
+        ),
+        "control_target_point_vs_planning_sample_p95_m": control_target_surrogate.get(
+            "target_point_to_planning_sample_line_abs_p95_m"
+        ),
+        "control_target_point_vs_planning_sample_coverage_ratio": control_target_surrogate.get(
+            "sample_coverage_ratio"
+        ),
         "simple_lat_station_frame_classification": station_classification,
         "control_simple_lat_reference_available": diagnostic.get("control_simple_lat_reference_available"),
         "control_reference_join_coverage_ratio": diagnostic.get("control_reference_join_coverage_ratio"),

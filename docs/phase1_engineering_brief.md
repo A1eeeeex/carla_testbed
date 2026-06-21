@@ -442,6 +442,17 @@ Interpretation:
   but `reference_line_claim_grade_allowed=false`; the next evidence step is
   still to export/decode Planning reference-line debug and Control station
   semantics in one frame rather than tune actuation.
+- The latest analyzer refresh also compares Control `simple_lat` target point
+  coordinates against the same-row Planning sampled trajectory polyline. On the
+  same cut-in run,
+  `control_target_point_vs_planning_trajectory_sample.classification=control_target_point_on_planning_trajectory_sample_line_candidate`,
+  `sample_coverage_ratio≈0.741`, and
+  `target_point_to_planning_sample_line_abs_p95_m≈2.05e-8`. This is useful
+  same-frame diagnostic evidence that Control's local target point lies on the
+  sampled Planning trajectory when both fields are present. It remains
+  `reference_line_claim_grade_allowed=false` and cannot replace exported
+  Planning reference-line debug; Phase 1 therefore remains `PARTIAL`, with the
+  representative Apollo sample still `failed/lane_invasion`.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.

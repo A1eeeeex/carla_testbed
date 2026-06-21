@@ -27,6 +27,7 @@ MIN_NONEMPTY_TRAJECTORY_RATIO = 0.80
 MIN_PROVIDER_READY_RATIO = 0.80
 FALLBACK_JOIN_TOLERANCE_S = 0.05
 PLANNING_PROJECTION_JOIN_TOLERANCE_S = 0.25
+CONTROL_TARGET_TRAJECTORY_SAMPLE_WARN_M = 0.50
 
 
 def analyze_apollo_reference_line_contract_run_dir(run_dir: str | Path) -> dict[str, Any]:
@@ -410,6 +411,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     planning_projection_alignment = _mapping(report.get("planning_first_point_projection_alignment"))
     reference_debug_export_policy = _mapping(report.get("reference_line_debug_export_policy"))
     trajectory_sample_surrogate = _mapping(report.get("planning_trajectory_sample_surrogate"))
+    control_target_surrogate = _mapping(report.get("control_target_point_vs_planning_trajectory_sample"))
     return "\n".join(
         [
             "# Apollo Reference-Line Contract Summary",
@@ -431,6 +433,8 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Reference debug evidence policy: `{reference_debug_export_policy.get('recommended_evidence_policy')}`",
             f"- Planning trajectory sample surrogate: `{trajectory_sample_surrogate.get('classification')}`",
             f"- Planning trajectory sample claim-grade allowed: `{trajectory_sample_surrogate.get('reference_line_claim_grade_allowed')}`",
+            f"- Control target vs Planning sample: `{control_target_surrogate.get('classification')}`",
+            f"- Control target vs Planning sample p95 m: `{control_target_surrogate.get('target_point_to_planning_sample_line_abs_p95_m')}`",
             f"- Planning ref heading p95 rad: `{metrics.get('planning_ref_heading_error_p95_rad')}`",
             f"- Normal trajectory heading p95 rad: `{metrics.get('normal_trajectory_heading_error_p95_rad')}`",
             f"- PATH_FALLBACK trajectory ratio: `{metrics.get('path_fallback_trajectory_ratio')}`",
@@ -478,6 +482,7 @@ def _report(
         planning_projection_alignment=planning_projection_alignment,
     )
     trajectory_sample_surrogate = _planning_trajectory_sample_surrogate(rows)
+    control_target_surrogate = _control_target_point_vs_planning_trajectory_sample(rows)
     reference_debug_export_policy = _reference_line_debug_export_policy(
         reference_debug_diagnostic,
         trajectory_sample_surrogate=trajectory_sample_surrogate,
@@ -504,6 +509,7 @@ def _report(
         "reference_debug_diagnostic": reference_debug_diagnostic,
         "reference_line_debug_export_policy": reference_debug_export_policy,
         "planning_trajectory_sample_surrogate": trajectory_sample_surrogate,
+        "control_target_point_vs_planning_trajectory_sample": control_target_surrogate,
         "planning_first_point_projection_alignment": planning_projection_alignment,
         "contracts": report_contracts,
         "planning_trajectory_contract": report_contracts.get("planning_trajectory") or {},
@@ -1261,6 +1267,115 @@ def _planning_trajectory_sample_surrogate(rows: Sequence[Mapping[str, Any]]) -> 
     }
 
 
+def _control_target_point_vs_planning_trajectory_sample(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    rows_with_samples = [
+        row
+        for row in rows
+        if _planning_trajectory_nonempty(row)
+        and _sample_points(_nested(row, "planning.trajectory_sample_points"))
+    ]
+    rows_with_target = [
+        row
+        for row in rows_with_samples
+        if _num(_nested(row, "control.debug_simple_lat_current_target_point_x")) is not None
+        and _num(_nested(row, "control.debug_simple_lat_current_target_point_y")) is not None
+    ]
+    if not rows:
+        return {
+            "status": "insufficient_data",
+            "classification": "reference_rows_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": 0,
+            "rows_with_planning_samples": 0,
+            "rows_with_control_target_point": 0,
+            "target_point_to_planning_sample_line_abs_p95_m": None,
+            "interpretation": (
+                "No reference-line rows are available; Control target point cannot be compared "
+                "with Planning trajectory samples."
+            ),
+        }
+    if not rows_with_samples:
+        return {
+            "status": "insufficient_data",
+            "classification": "planning_trajectory_sample_points_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": len(rows),
+            "rows_with_planning_samples": 0,
+            "rows_with_control_target_point": 0,
+            "target_point_to_planning_sample_line_abs_p95_m": None,
+            "interpretation": (
+                "Planning trajectory samples are required before Control target point can be "
+                "checked against the local Planning trajectory shape."
+            ),
+        }
+    if not rows_with_target:
+        return {
+            "status": "insufficient_data",
+            "classification": "control_target_point_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": len(rows),
+            "rows_with_planning_samples": len(rows_with_samples),
+            "rows_with_control_target_point": 0,
+            "target_point_to_planning_sample_line_abs_p95_m": None,
+            "interpretation": (
+                "Control simple_lat target point coordinates are missing or not time-aligned "
+                "with Planning trajectory samples."
+            ),
+        }
+
+    distances: list[float] = []
+    sample_counts: list[float] = []
+    dropped_short_sample_rows = 0
+    for row in rows_with_target:
+        samples = _sample_points(_nested(row, "planning.trajectory_sample_points"))
+        sample_counts.append(float(len(samples)))
+        target_x = _num(_nested(row, "control.debug_simple_lat_current_target_point_x"))
+        target_y = _num(_nested(row, "control.debug_simple_lat_current_target_point_y"))
+        if target_x is None or target_y is None:
+            continue
+        distance = _point_to_polyline_distance((target_x, target_y), samples)
+        if distance is None:
+            dropped_short_sample_rows += 1
+            continue
+        distances.append(abs(distance))
+
+    p95 = _p95_abs(distances)
+    if p95 is None:
+        classification = "planning_trajectory_sample_line_too_short"
+        status = "insufficient_data"
+    elif p95 <= CONTROL_TARGET_TRAJECTORY_SAMPLE_WARN_M:
+        classification = "control_target_point_on_planning_trajectory_sample_line_candidate"
+        status = "available"
+    else:
+        classification = "control_target_point_off_planning_trajectory_sample_line_candidate"
+        status = "warn"
+    return {
+        "status": status,
+        "classification": classification,
+        "available": p95 is not None,
+        "reference_line_claim_grade_allowed": False,
+        "row_count": len(rows),
+        "rows_with_planning_samples": len(rows_with_samples),
+        "rows_with_control_target_point": len(rows_with_target),
+        "sample_coverage_ratio": len(rows_with_target) / len(rows_with_samples),
+        "target_point_to_planning_sample_line_abs_p95_m": p95,
+        "target_point_to_planning_sample_line_abs_max_m": max(distances) if distances else None,
+        "planning_sample_count_p95": _p95_abs(sample_counts),
+        "dropped_short_sample_rows": dropped_short_sample_rows,
+        "threshold_warn_m": CONTROL_TARGET_TRAJECTORY_SAMPLE_WARN_M,
+        "recommended_evidence_policy": "control_target_planning_sample_surrogate_only_until_reference_line_debug_exported",
+        "interpretation": (
+            "This compares Control simple_lat target point coordinates with the sampled Planning "
+            "trajectory polyline in the same artifacts. It narrows Planning/Control local geometry "
+            "alignment, but cannot replace exported Planning reference-line debug for claim-grade "
+            "reference-line correctness."
+        ),
+    }
+
+
 def _planning_first_point_projection_alignment(
     rows: Sequence[Mapping[str, Any]],
     hdmap_projection_rows: Sequence[Mapping[str, Any]],
@@ -1647,14 +1762,25 @@ def _augment_contract_rows_with_control_debug(
     rows = [dict(row) for row in contract_rows]
     if not rows or not control_rows:
         return rows
-    if any(_bool_value(_nested(row, "computed.control_reference_available")) or _control_reference_available(row) for row in rows):
+    if all(
+        (
+            _bool_value(_nested(row, "computed.control_reference_available"))
+            or _control_reference_available(row)
+        )
+        and _control_target_point_available(row)
+        for row in rows
+    ):
         return rows
 
     control_events = [
         _control_debug_contract_event(row)
         for row in control_rows
     ]
-    control_events = [event for event in control_events if _control_reference_available(event)]
+    control_events = [
+        event
+        for event in control_events
+        if _control_reference_available(event) or _control_target_point_available(event)
+    ]
     if not control_events:
         return rows
 
@@ -2012,6 +2138,13 @@ def _control_reference_available(row: Mapping[str, Any]) -> bool:
     )
 
 
+def _control_target_point_available(row: Mapping[str, Any]) -> bool:
+    return (
+        _num(_nested(row, "control.debug_simple_lat_current_target_point_x")) is not None
+        and _num(_nested(row, "control.debug_simple_lat_current_target_point_y")) is not None
+    )
+
+
 def _zero_ratio(rows: Sequence[Mapping[str, Any]], *paths: str) -> float | None:
     values = []
     for row in rows:
@@ -2156,6 +2289,44 @@ def _sample_path_length(samples: Sequence[Mapping[str, Any]]) -> float | None:
             segment_count += 1
         previous = (x, y)
     return total if segment_count > 0 else None
+
+
+def _point_to_polyline_distance(
+    point: tuple[float, float],
+    samples: Sequence[Mapping[str, Any]],
+) -> float | None:
+    previous: tuple[float, float] | None = None
+    best: float | None = None
+    for sample in samples:
+        x = _num(sample.get("x"))
+        y = _num(sample.get("y"))
+        if x is None or y is None:
+            previous = None
+            continue
+        current = (x, y)
+        if previous is not None:
+            distance = _point_to_segment_distance(point, previous, current)
+            best = distance if best is None else min(best, distance)
+        previous = current
+    return best
+
+
+def _point_to_segment_distance(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    px, py = point
+    sx, sy = start
+    ex, ey = end
+    dx = ex - sx
+    dy = ey - sy
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 0.0:
+        return math.hypot(px - sx, py - sy)
+    t = ((px - sx) * dx + (py - sy) * dy) / length_sq
+    t = max(0.0, min(1.0, t))
+    return math.hypot(px - (sx + t * dx), py - (sy + t * dy))
 
 
 def _sample_first_segment_heading(samples: Sequence[Mapping[str, Any]]) -> float | None:
