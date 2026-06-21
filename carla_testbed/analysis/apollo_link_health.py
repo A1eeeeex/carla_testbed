@@ -1454,6 +1454,53 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 report,
                 "lateral_sign_alignment.route_lateral_provenance.route_definition_declared_sample_count",
             ),
+            "projection_route_sample_sign_contract_status": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance."
+                "projection_route_sample_sign_contract.status",
+            ),
+            "projection_route_sample_sign_contract_classification": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance."
+                "projection_route_sample_sign_contract.classification",
+            ),
+            "projection_route_sample_count": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance."
+                "projection_route_sample_sign_contract.route_sample_count",
+            ),
+            "projection_route_sample_matched_sample_count": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance."
+                "projection_route_sample_sign_contract.matched_sample_count",
+            ),
+            "projection_route_sample_lateral_source_field": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance."
+                "projection_route_sample_sign_contract.route_lateral_source_field",
+            ),
+            "projection_route_sample_timeseries_opposite_sign_ratio": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance."
+                "projection_route_sample_sign_contract."
+                "timeseries_lateral_vs_projection_route_sample_signed_lateral.opposite_sign_ratio",
+            ),
+            "projection_route_sample_simple_lat_same_sign_ratio": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance."
+                "projection_route_sample_sign_contract."
+                "simple_lat_vs_projection_route_sample_signed_lateral.same_sign_ratio",
+            ),
+            "projection_route_sample_signed_lateral_abs_p95_m": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance."
+                "projection_route_sample_sign_contract.projection_route_sample_signed_lateral_abs_p95_m",
+            ),
+            "projection_route_sample_timeseries_lateral_abs_p95_m": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance."
+                "projection_route_sample_sign_contract.timeseries_lateral_abs_p95_m",
+            ),
             "official_hdmap_projection_matched_sample_count": _nested(
                 report,
                 "lateral_sign_alignment.official_hdmap_projection_alignment.matched_sample_count",

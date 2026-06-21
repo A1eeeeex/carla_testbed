@@ -1950,6 +1950,21 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
                     "route_geometry_sample_count": 0,
                     "route_geometry_recomputed_cte_abs_delta_p95_m": None,
                     "route_definition_geometry_status": "stub_or_insufficient",
+                    "projection_route_sample_sign_contract": {
+                        "status": "available",
+                        "classification": "timeseries_route_lateral_sign_inverted_vs_projection_route_samples",
+                        "route_sample_count": 61,
+                        "matched_sample_count": 13,
+                        "route_lateral_source_field": "e_y_m",
+                        "projection_route_sample_signed_lateral_abs_p95_m": 0.53,
+                        "timeseries_lateral_abs_p95_m": 0.53,
+                        "timeseries_lateral_vs_projection_route_sample_signed_lateral": {
+                            "opposite_sign_ratio": 1.0,
+                        },
+                        "simple_lat_vs_projection_route_sample_signed_lateral": {
+                            "same_sign_ratio": 1.0,
+                        },
+                    },
                 },
                 "route_simple_lat_magnitude_alignment": {
                     "magnitude_agreement_candidate": True,
@@ -2054,6 +2069,17 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert lateral["key_metrics"]["route_lateral_source_field"] == "cross_track_error"
     assert lateral["key_metrics"]["route_geometry_sample_count"] == 0
     assert lateral["key_metrics"]["route_definition_geometry_status"] == "stub_or_insufficient"
+    assert lateral["key_metrics"]["projection_route_sample_sign_contract_status"] == "available"
+    assert lateral["key_metrics"]["projection_route_sample_sign_contract_classification"] == (
+        "timeseries_route_lateral_sign_inverted_vs_projection_route_samples"
+    )
+    assert lateral["key_metrics"]["projection_route_sample_count"] == 61
+    assert lateral["key_metrics"]["projection_route_sample_matched_sample_count"] == 13
+    assert lateral["key_metrics"]["projection_route_sample_lateral_source_field"] == "e_y_m"
+    assert lateral["key_metrics"]["projection_route_sample_timeseries_opposite_sign_ratio"] == 1.0
+    assert lateral["key_metrics"]["projection_route_sample_simple_lat_same_sign_ratio"] == 1.0
+    assert lateral["key_metrics"]["projection_route_sample_signed_lateral_abs_p95_m"] == 0.53
+    assert lateral["key_metrics"]["projection_route_sample_timeseries_lateral_abs_p95_m"] == 0.53
     assert lateral["key_metrics"]["official_hdmap_projection_matched_sample_count"] == 13
     assert lateral["key_metrics"]["route_lateral_projection_lateral_opposite_sign_ratio"] == 1.0
     assert lateral["key_metrics"]["simple_lat_projection_lateral_same_sign_ratio"] == 1.0

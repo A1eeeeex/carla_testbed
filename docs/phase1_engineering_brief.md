@@ -60,7 +60,7 @@ fix, the Baguang lane-event hard-gate audit, a fresh Apollo sidecar cut-in
 online validation run, a `carla_builtin` safety-sensor attach-order fix
 validated with a new online cut-in run, and lateral/reference-line semantics
 postprocess refreshes that consume authoritative Apollo control-apply trace
-evidence.
+evidence plus projection-derived route-sample sign evidence.
 
 Layered progress status:
 
@@ -272,11 +272,19 @@ Interpretation:
   `frame=apollo_map`, `route_s=0..300m`, `projection_s≈7.006..307.006m`, and
   lane key `0:2`. The lateral report now records
   `route_definition_geometry_status=materialized_geometry_available` and
-  `route_definition_sample_count=61`. This is stronger route/projection
-  evidence, but it still does not let the analyzer recompute signed route CTE
-  from per-row `route_x` / `route_y` / `route_heading` in `timeseries.*`; the
-  sign convention remains a diagnostic candidate until that final route-frame
-  geometry or equivalent sign contract is present.
+  `route_definition_sample_count=61`. The lateral report now uses those
+  projection-derived Apollo-map samples as an explicit
+  `projection_route_sample_sign_contract`: it recomputes signed lateral from
+  same-row Apollo-map ego positions and nearest route samples without mixing in
+  CARLA-frame coordinates. On the same run, that contract is `available` with
+  `matched_sample_count=335`,
+  `timeseries_lateral_vs_projection_route_sample_signed_lateral.opposite_sign_ratio=1.0`,
+  and
+  `simple_lat_vs_projection_route_sample_signed_lateral.same_sign_ratio=1.0`.
+  This is stronger than a route-stub or alias-only sign suspicion, but it is
+  still diagnostic route/projection evidence: the samples are derived from
+  Apollo HDMap projection rows, not from canonical CARLA route geometry, and
+  they do not convert a failed lane-invasion run into a behavior pass.
 - The lateral-semantics analyzer now also consumes row-level
   `artifacts/apollo_hdmap_projection.jsonl` when present. On the same run, 80
   official Apollo HDMap projection rows are available and 13 high-lateral
@@ -356,10 +364,14 @@ Interpretation:
   magnitude (`opposite_sign_ratio=1.0`,
   `opposite_sign_abs_sum_p95_m≈0.028m`). This is a strong diagnostic that the
   current `cross_track_error` convention is inverted relative to Apollo
-  `projection_l` / Control `simple_lat` for this run. It is not a runtime fix,
-  not a route contract verification by itself, and not a reason to flip signs
-  in control; the next validation should materialize route-frame geometry or
-  an explicit route/projection sign contract, then rerun the same cut-in case.
+  `projection_l` / Control `simple_lat` for this run. The follow-up
+  projection-route sign contract now confirms the same direction using
+  `route_definition_claim.scenario_route_samples` and same-row Apollo-map ego
+  positions. It is not a runtime fix, not a route contract verification by
+  itself, and not a reason to flip signs in control; the next validation should
+  close the Planning reference-line debug/export gap and decide whether the
+  route-lateral field should be relabeled, converted, or excluded from
+  behavior gates until a canonical sign convention is declared.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The

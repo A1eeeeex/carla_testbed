@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from carla_testbed.analysis.apollo_lateral_semantics import (
     FIELD_ALIASES,
     analyze_apollo_lateral_semantics,
@@ -22,7 +24,10 @@ def _write_rows(path: Path, rows: list[dict[str, object]]) -> Path:
         "route_id",
         "backend",
         "sim_time",
+        "ts_sec",
         "route_s",
+        "map_x",
+        "map_y",
         "route_curvature",
         "reference_lane_curvature",
         "apollo_planning_first_kappa",
@@ -47,6 +52,7 @@ def _write_rows(path: Path, rows: list[dict[str, object]]) -> Path:
         "carla_steer_applied",
         "ego_yaw_rate",
         "cross_track_error",
+        "e_y_m",
         "apollo_debug_simple_lat_lateral_error_m",
         "heading_error",
         "apollo_matched_point_distance",
@@ -982,6 +988,84 @@ def test_official_hdmap_projection_station_frame_offset_candidate(
     assert station["current_station_minus_projection_s_abs_p95_m"] > 30.0
     assert station["target_s_minus_current_station_abs_p95_m"] < 0.1
     assert "local or stitching station frame" in station["interpretation"]
+
+
+def test_projection_route_samples_verify_timeseries_lateral_sign_contract(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    rows = _base_rows()
+    route_samples = []
+    for index, row in enumerate(rows):
+        sample_x = 100.0 - index * 5.0
+        sample_y = 5.0
+        row["ts_sec"] = 200.0 + index * 0.05
+        row["map_x"] = sample_x
+        row["map_y"] = sample_y + 0.4
+        row["e_y_m"] = 0.4
+        row["cross_track_error"] = ""
+        row["apollo_debug_simple_lat_lateral_error_m"] = -0.4
+        row["apollo_steer_raw"] = 0.3
+        row["bridge_steer_mapped"] = 0.075
+        row["carla_steer_applied"] = 0.075
+        route_samples.append(
+            {
+                "index": index,
+                "source": "apollo_hdmap_projection_route_samples",
+                "frame": "apollo_map",
+                "status": "ok",
+                "sample_type": "route",
+                "route_s": index * 5.0,
+                "projection_s": 7.0 + index * 5.0,
+                "projection_l": 0.0,
+                "lane_heading_at_s": -3.141592653589793,
+                "lane_id": "0_0_2",
+                "lane_key": "0:2",
+                "x": sample_x,
+                "x_apollo": sample_x,
+                "y": sample_y,
+                "y_apollo": sample_y,
+            }
+        )
+    _write_rows(artifacts / "debug_timeseries.csv", rows)
+    (artifacts / "route_definition_claim.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "route_definition_claim.v1",
+                "status": "warn",
+                "route_id": "projection_route_sample_fixture",
+                "scenario_route_sample_source": "apollo_hdmap_projection_route_samples",
+                "scenario_route_sample_count": len(route_samples),
+                "scenario_route_samples": route_samples,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+    contract = report["lateral_sign_alignment"]["route_lateral_provenance"][
+        "projection_route_sample_sign_contract"
+    ]
+
+    assert contract["status"] == "available"
+    assert contract["classification"] == (
+        "timeseries_route_lateral_sign_inverted_vs_projection_route_samples"
+    )
+    assert contract["route_sample_count"] == 4
+    assert contract["matched_sample_count"] == 4
+    assert contract["route_lateral_source_field"] == "e_y_m"
+    assert contract["map_position_source_fields"] == {"x": "map_x", "y": "map_y"}
+    assert contract["timeseries_lateral_vs_projection_route_sample_signed_lateral"][
+        "opposite_sign_ratio"
+    ] == 1.0
+    assert contract["simple_lat_vs_projection_route_sample_signed_lateral"][
+        "same_sign_ratio"
+    ] == 1.0
+    assert contract["projection_route_sample_signed_lateral_abs_p95_m"] == pytest.approx(0.4)
+    assert contract["timeseries_lateral_abs_p95_m"] == pytest.approx(0.4)
 
 
 def test_cli_run_dir_writes_report(tmp_path: Path) -> None:

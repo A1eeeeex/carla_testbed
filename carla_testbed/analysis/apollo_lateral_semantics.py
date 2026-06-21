@@ -1389,6 +1389,7 @@ def _lateral_sign_alignment_summary(
         rows,
         hdmap_route_lateral_consistency=hdmap_route_lateral_consistency or {},
         route_definition_payload=route_definition_payload or {},
+        thresholds=thresholds,
     )
     official_projection_alignment = _official_hdmap_projection_alignment(
         rows,
@@ -1445,6 +1446,19 @@ def _lateral_frame_convention_diagnostic(
     simple_projection = official_projection_alignment.get("simple_lat_vs_projection_lateral")
     if not isinstance(simple_projection, Mapping):
         simple_projection = {}
+    projection_route_contract = route_lateral_provenance.get("projection_route_sample_sign_contract")
+    if not isinstance(projection_route_contract, Mapping):
+        projection_route_contract = {}
+    projection_route_timeseries = projection_route_contract.get(
+        "timeseries_lateral_vs_projection_route_sample_signed_lateral"
+    )
+    if not isinstance(projection_route_timeseries, Mapping):
+        projection_route_timeseries = {}
+    projection_route_simple = projection_route_contract.get(
+        "simple_lat_vs_projection_route_sample_signed_lateral"
+    )
+    if not isinstance(projection_route_simple, Mapping):
+        projection_route_simple = {}
 
     min_samples = int(thresholds["sign_alignment_min_samples"])
     high_ratio = float(thresholds["sign_alignment_ratio_high"])
@@ -1554,6 +1568,14 @@ def _lateral_frame_convention_diagnostic(
         ),
         "route_lateral_provenance_evidence_level": route_lateral_provenance.get("evidence_level"),
         "route_lateral_source_field": route_lateral_provenance.get("route_lateral_source_field"),
+        "projection_route_sample_sign_contract_status": projection_route_contract.get("status"),
+        "projection_route_sample_sign_contract_classification": projection_route_contract.get("classification"),
+        "projection_route_sample_timeseries_opposite_sign_ratio": projection_route_timeseries.get(
+            "opposite_sign_ratio"
+        ),
+        "projection_route_sample_simple_lat_same_sign_ratio": projection_route_simple.get(
+            "same_sign_ratio"
+        ),
         "route_station_frame_classification": route_station_alignment.get("classification"),
         "interpretation": _lateral_frame_convention_interpretation(classification),
         "claim_boundary": (
@@ -1853,9 +1875,17 @@ def _route_lateral_provenance(
     *,
     hdmap_route_lateral_consistency: Mapping[str, Any],
     route_definition_payload: Mapping[str, Any],
+    thresholds: Mapping[str, float],
 ) -> dict[str, Any]:
     route_lateral_source = _resolved_field(rows, ROUTE_LATERAL_ERROR_ALIASES)
     route_definition = _route_definition_geometry_summary(route_definition_payload)
+    projection_route_contract = _projection_route_sample_sign_contract(
+        rows,
+        route_definition_payload,
+        lateral_min_abs=thresholds["lateral_sign_active_abs_m"],
+        high_ratio=thresholds["sign_alignment_ratio_high"],
+        min_samples=int(thresholds["sign_alignment_min_samples"]),
+    )
     route_geometry_count = 0
     route_geometry_cte_deltas: list[float] = []
     for row in rows:
@@ -1900,6 +1930,7 @@ def _route_lateral_provenance(
         "route_definition_sample_count": route_definition["sample_count"],
         "route_definition_declared_sample_count": route_definition["declared_sample_count"],
         "route_definition_reason": route_definition["reason"],
+        "projection_route_sample_sign_contract": projection_route_contract,
         "hdmap_route_lateral_consistency_status": hdmap_status,
         "hdmap_route_lateral_alignment_mode": hdmap_alignment,
         "hdmap_route_lateral_delta_p95_m": hdmap_delta,
@@ -1952,6 +1983,322 @@ def _route_definition_geometry_summary(payload: Mapping[str, Any]) -> dict[str, 
         "declared_sample_count": declared_sample_count,
         "reason": reason,
     }
+
+
+def _projection_route_sample_sign_contract(
+    rows: Sequence[Mapping[str, Any]],
+    route_definition_payload: Mapping[str, Any],
+    *,
+    lateral_min_abs: float,
+    high_ratio: float,
+    min_samples: int,
+) -> dict[str, Any]:
+    route_samples = _projection_route_sample_points(route_definition_payload)
+    route_lateral_aliases = [
+        "cross_track_error",
+        "route_cross_track_error",
+        "route_lateral_error",
+        "lateral_error",
+        "e_y_m",
+    ]
+    route_lateral_source = _resolved_field(rows, route_lateral_aliases)
+    map_x_source = _resolved_field(rows, ["map_x", "localization_x", "apollo_localization_x"])
+    map_y_source = _resolved_field(rows, ["map_y", "localization_y", "apollo_localization_y"])
+    simple_lat_source = _resolved_field(rows, FIELD_ALIASES["apollo_simple_lat_lateral_error"])
+    if not route_samples:
+        return {
+            "available": False,
+            "status": "insufficient_data",
+            "classification": "projection_route_sample_sign_contract_missing",
+            "reason": "route_definition_has_no_apollo_map_route_samples",
+            "route_sample_count": 0,
+            "matched_sample_count": 0,
+            "route_lateral_source_field": route_lateral_source,
+            "map_position_source_fields": {"x": map_x_source, "y": map_y_source},
+            "simple_lat_source_field": simple_lat_source,
+        }
+    if route_lateral_source is None or map_x_source is None or map_y_source is None:
+        missing = []
+        if route_lateral_source is None:
+            missing.append("timeseries_lateral")
+        if map_x_source is None or map_y_source is None:
+            missing.append("apollo_map_position")
+        return {
+            "available": False,
+            "status": "insufficient_data",
+            "classification": "projection_route_sample_sign_contract_missing_fields",
+            "reason": "same-row Apollo-map ego position and lateral field are required",
+            "missing_fields": missing,
+            "route_sample_count": len(route_samples),
+            "matched_sample_count": 0,
+            "route_sample_source": _route_sample_source_summary(route_samples),
+            "route_sample_frame": _route_sample_frame_summary(route_samples),
+            "route_lateral_source_field": route_lateral_source,
+            "map_position_source_fields": {"x": map_x_source, "y": map_y_source},
+            "simple_lat_source_field": simple_lat_source,
+        }
+
+    ts_same = 0
+    ts_opposite = 0
+    simple_same = 0
+    simple_opposite = 0
+    ignored_inactive = 0
+    signed_abs: list[float] = []
+    route_lateral_abs: list[float] = []
+    simple_lat_abs: list[float] = []
+    ts_abs_magnitude_delta: list[float] = []
+    ts_opposite_abs_sum: list[float] = []
+    simple_abs_magnitude_delta: list[float] = []
+    simple_opposite_abs_sum: list[float] = []
+    nearest_distances: list[float] = []
+    sample_preview: list[dict[str, Any]] = []
+
+    for row in rows:
+        x = _row_value(row, ["map_x", "localization_x", "apollo_localization_x"])
+        y = _row_value(row, ["map_y", "localization_y", "apollo_localization_y"])
+        route_lateral = _row_value(row, route_lateral_aliases)
+        if x is None or y is None or route_lateral is None:
+            continue
+        nearest = _nearest_projection_route_sample(float(x), float(y), route_samples)
+        if nearest is None:
+            continue
+        signed = _signed_lateral_from_route_sample(float(x), float(y), nearest)
+        distance = math.hypot(float(x) - nearest["x"], float(y) - nearest["y"])
+        nearest_distances.append(distance)
+        signed_abs.append(abs(signed))
+        route_lateral_abs.append(abs(float(route_lateral)))
+        simple_lat = _row_value(row, FIELD_ALIASES["apollo_simple_lat_lateral_error"])
+        if simple_lat is not None:
+            simple_lat_abs.append(abs(float(simple_lat)))
+        row_preview = {
+            "sim_time": _row_value(row, ["sim_time", "ts_sec", "timestamp", "time"]),
+            "map_x": float(x),
+            "map_y": float(y),
+            "nearest_route_sample_index": nearest.get("index"),
+            "nearest_route_s": nearest.get("route_s"),
+            "nearest_route_sample_distance_m": distance,
+            "projection_route_sample_signed_lateral_m": signed,
+            "timeseries_lateral_m": float(route_lateral),
+            "apollo_simple_lat_lateral_error_m": simple_lat,
+        }
+        ts_relation = _active_sign_relation(float(route_lateral), signed, lateral_min_abs)
+        if ts_relation == "same_sign":
+            ts_same += 1
+            ts_abs_magnitude_delta.append(abs(abs(float(route_lateral)) - abs(signed)))
+        elif ts_relation == "opposite_sign":
+            ts_opposite += 1
+            ts_opposite_abs_sum.append(abs(float(route_lateral) + signed))
+            ts_abs_magnitude_delta.append(abs(abs(float(route_lateral)) - abs(signed)))
+        else:
+            ignored_inactive += 1
+        row_preview["timeseries_lateral_vs_projection_route_sample_signed_lateral"] = ts_relation
+
+        simple_relation = "missing"
+        if simple_lat is not None:
+            simple_relation = _active_sign_relation(float(simple_lat), signed, lateral_min_abs)
+            if simple_relation == "same_sign":
+                simple_same += 1
+                simple_abs_magnitude_delta.append(abs(abs(float(simple_lat)) - abs(signed)))
+            elif simple_relation == "opposite_sign":
+                simple_opposite += 1
+                simple_opposite_abs_sum.append(abs(float(simple_lat) + signed))
+                simple_abs_magnitude_delta.append(abs(abs(float(simple_lat)) - abs(signed)))
+        row_preview["simple_lat_vs_projection_route_sample_signed_lateral"] = simple_relation
+        if len(sample_preview) < 20:
+            sample_preview.append(row_preview)
+
+    ts_count = ts_same + ts_opposite
+    simple_count = simple_same + simple_opposite
+    ts_same_ratio = (ts_same / ts_count) if ts_count else None
+    ts_opposite_ratio = (ts_opposite / ts_count) if ts_count else None
+    simple_same_ratio = (simple_same / simple_count) if simple_count else None
+    simple_opposite_ratio = (simple_opposite / simple_count) if simple_count else None
+
+    if ts_count < min_samples:
+        status = "insufficient_data"
+        classification = "projection_route_sample_sign_contract_too_sparse"
+        reason = "too_few_active_timeseries_lateral_samples_with_apollo_map_position"
+    elif (
+        ts_opposite_ratio is not None
+        and ts_opposite_ratio >= high_ratio
+        and simple_same_ratio is not None
+        and simple_same_ratio >= high_ratio
+    ):
+        status = "available"
+        classification = "timeseries_route_lateral_sign_inverted_vs_projection_route_samples"
+        reason = (
+            "Timeseries route-lateral field opposes projection-route signed lateral, while "
+            "Apollo simple_lat lateral matches it."
+        )
+    elif (
+        ts_same_ratio is not None
+        and ts_same_ratio >= high_ratio
+        and (simple_same_ratio is None or simple_same_ratio >= high_ratio)
+    ):
+        status = "available"
+        classification = "timeseries_route_lateral_matches_projection_route_samples"
+        reason = "Timeseries route-lateral field matches projection-route signed lateral."
+    elif simple_opposite_ratio is not None and simple_opposite_ratio >= high_ratio:
+        status = "warn"
+        classification = "simple_lat_sign_opposes_projection_route_samples"
+        reason = "Apollo simple_lat lateral opposes projection-route signed lateral."
+    elif ts_opposite_ratio is not None and ts_opposite_ratio >= high_ratio:
+        status = "warn"
+        classification = "timeseries_lateral_opposes_projection_route_samples_without_simple_lat_confirmation"
+        reason = (
+            "Timeseries route-lateral field opposes projection-route signed lateral, but "
+            "Apollo simple_lat evidence is missing or sparse."
+        )
+    else:
+        status = "warn"
+        classification = "projection_route_sample_sign_contract_ambiguous"
+        reason = "Projection-route sample sign ratios are mixed or below threshold."
+
+    return {
+        "available": ts_count >= min_samples,
+        "status": status,
+        "classification": classification,
+        "reason": reason,
+        "route_sample_count": len(route_samples),
+        "matched_sample_count": len(nearest_distances),
+        "route_sample_source": _route_sample_source_summary(route_samples),
+        "route_sample_frame": _route_sample_frame_summary(route_samples),
+        "route_lateral_source_field": route_lateral_source,
+        "map_position_source_fields": {"x": map_x_source, "y": map_y_source},
+        "simple_lat_source_field": simple_lat_source,
+        "nearest_route_sample_distance_p95_m": _percentile(nearest_distances, 0.95),
+        "projection_route_sample_signed_lateral_abs_p95_m": _percentile(signed_abs, 0.95),
+        "timeseries_lateral_abs_p95_m": _percentile(route_lateral_abs, 0.95),
+        "simple_lat_lateral_abs_p95_m": _percentile(simple_lat_abs, 0.95),
+        "timeseries_lateral_vs_projection_route_sample_signed_lateral": {
+            "sample_count": ts_count,
+            "same_sign_count": ts_same,
+            "opposite_sign_count": ts_opposite,
+            "same_sign_ratio": ts_same_ratio,
+            "opposite_sign_ratio": ts_opposite_ratio,
+            "ignored_inactive_count": ignored_inactive,
+            "opposite_sign_abs_sum_p95_m": _percentile(ts_opposite_abs_sum, 0.95),
+            "abs_magnitude_delta_p95_m": _percentile(ts_abs_magnitude_delta, 0.95),
+        },
+        "simple_lat_vs_projection_route_sample_signed_lateral": {
+            "sample_count": simple_count,
+            "same_sign_count": simple_same,
+            "opposite_sign_count": simple_opposite,
+            "same_sign_ratio": simple_same_ratio,
+            "opposite_sign_ratio": simple_opposite_ratio,
+            "opposite_sign_abs_sum_p95_m": _percentile(simple_opposite_abs_sum, 0.95),
+            "abs_magnitude_delta_p95_m": _percentile(simple_abs_magnitude_delta, 0.95),
+        },
+        "sample_preview": sample_preview,
+        "thresholds": {
+            "lateral_min_abs_m": lateral_min_abs,
+            "high_ratio": high_ratio,
+            "min_samples": min_samples,
+        },
+        "claim_boundary": (
+            "Projection-derived route samples can validate the sign convention between "
+            "same-row Apollo-map ego positions and route-lateral fields. They are still "
+            "diagnostic route/projection evidence and must not be used to rewrite runtime "
+            "control signs or claim behavior success without the full Phase 1 evidence chain."
+        ),
+    }
+
+
+def _projection_route_sample_points(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    samples = payload.get("scenario_route_samples") if isinstance(payload, Mapping) else None
+    if not isinstance(samples, list):
+        return []
+    points: list[dict[str, Any]] = []
+    for index, sample in enumerate(samples):
+        if not isinstance(sample, Mapping):
+            continue
+        x = _row_value(sample, ["x", "x_apollo", "localization_x"])
+        y = _row_value(sample, ["y", "y_apollo", "localization_y"])
+        if x is None or y is None:
+            continue
+        status = str(sample.get("status") or "ok")
+        if status not in {"ok", "pass", ""}:
+            continue
+        points.append(
+            {
+                "index": sample.get("index", index),
+                "x": float(x),
+                "y": float(y),
+                "heading": _row_value(sample, ["lane_heading_at_s", "route_heading", "heading"]),
+                "route_s": _row_value(sample, ["route_s", "expected_route_distance_m"]),
+                "projection_s": _row_value(sample, ["projection_s"]),
+                "projection_l": _row_value(sample, ["projection_l"]),
+                "source": sample.get("source"),
+                "frame": sample.get("frame"),
+                "lane_id": sample.get("lane_id"),
+                "lane_key": sample.get("lane_key"),
+                "sample_type": sample.get("sample_type"),
+            }
+        )
+    for index, point in enumerate(points):
+        if point.get("heading") is None:
+            point["heading"] = _infer_route_sample_heading(points, index)
+    return [point for point in points if point.get("heading") is not None]
+
+
+def _infer_route_sample_heading(points: Sequence[Mapping[str, Any]], index: int) -> float | None:
+    if not points:
+        return None
+    current = points[index]
+    prev_point = points[index - 1] if index > 0 else None
+    next_point = points[index + 1] if index + 1 < len(points) else None
+    if prev_point is not None and next_point is not None:
+        dx = float(next_point["x"]) - float(prev_point["x"])
+        dy = float(next_point["y"]) - float(prev_point["y"])
+    elif next_point is not None:
+        dx = float(next_point["x"]) - float(current["x"])
+        dy = float(next_point["y"]) - float(current["y"])
+    elif prev_point is not None:
+        dx = float(current["x"]) - float(prev_point["x"])
+        dy = float(current["y"]) - float(prev_point["y"])
+    else:
+        return None
+    if dx == 0.0 and dy == 0.0:
+        return None
+    return math.atan2(dy, dx)
+
+
+def _nearest_projection_route_sample(
+    x: float,
+    y: float,
+    samples: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    if not samples:
+        return None
+    return min(samples, key=lambda sample: math.hypot(x - float(sample["x"]), y - float(sample["y"])))
+
+
+def _signed_lateral_from_route_sample(x: float, y: float, sample: Mapping[str, Any]) -> float:
+    heading = float(sample["heading"])
+    dx = x - float(sample["x"])
+    dy = y - float(sample["y"])
+    return -math.sin(heading) * dx + math.cos(heading) * dy
+
+
+def _active_sign_relation(left: float, right: float, active_min_abs: float) -> str:
+    if abs(left) < active_min_abs or abs(right) < active_min_abs:
+        return "inactive"
+    product = left * right
+    if product > 0.0:
+        return "same_sign"
+    if product < 0.0:
+        return "opposite_sign"
+    return "zero"
+
+
+def _route_sample_source_summary(samples: Sequence[Mapping[str, Any]]) -> str | None:
+    values = sorted({str(sample.get("source")) for sample in samples if sample.get("source") not in {None, ""}})
+    return ",".join(values) if values else None
+
+
+def _route_sample_frame_summary(samples: Sequence[Mapping[str, Any]]) -> str | None:
+    values = sorted({str(sample.get("frame")) for sample in samples if sample.get("frame") not in {None, ""}})
+    return ",".join(values) if values else None
 
 
 def _route_definition_evidence_rank(payload: Mapping[str, Any]) -> int:
