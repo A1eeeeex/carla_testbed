@@ -261,13 +261,17 @@ Interpretation:
   `route_lateral_provenance.evidence_level=hdmap_projection_consistency`,
   because this run lacks `route_x` / `route_y` / `route_heading` samples that
   would let the analyzer recompute signed route CTE from route geometry alone.
-  Manual inspection confirms that the run-local `route.json` is a
-  `route_stub.v1` artifact with no route points, while
-  `route_definition_claim.json` declares sample count without materialized
-  route samples. The next validation should materialize `route_x` /
-  `route_y` / `route_heading` fields, materialized route samples, or an
-  equivalent official projection-to-route pairing before treating the sign
-  convention as verified.
+  The analyzer now avoids being misled by a root-level `route.json` stub by
+  selecting the best available route-definition evidence: materialized route
+  geometry first, declared route samples second, and stubs last. On this run it
+  selects `artifacts/route_definition_claim.json` instead of the root
+  `route_stub.v1`; provenance is therefore more accurately reported as
+  `route_definition_geometry_status=declared_only`,
+  `route_definition_declared_sample_count=61`, and
+  `route_definition_sample_count=0`. The next validation should materialize
+  `route_x` / `route_y` / `route_heading` fields, materialized route samples,
+  or an equivalent official projection-to-route pairing before treating the
+  sign convention as verified.
 - The lateral-semantics analyzer now also consumes row-level
   `artifacts/apollo_hdmap_projection.jsonl` when present. On the same run, 80
   official Apollo HDMap projection rows are available and 13 high-lateral

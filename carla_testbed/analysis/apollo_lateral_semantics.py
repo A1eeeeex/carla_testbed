@@ -265,7 +265,7 @@ def analyze_apollo_lateral_semantics_run_dir(
                 "apollo_reference_line_contract_report.json",
             ],
         ),
-        route_definition=_find_first(
+        route_definition=_find_best_route_definition(
             root,
             [
                 "route.json",
@@ -1954,6 +1954,20 @@ def _route_definition_geometry_summary(payload: Mapping[str, Any]) -> dict[str, 
     }
 
 
+def _route_definition_evidence_rank(payload: Mapping[str, Any]) -> int:
+    summary = _route_definition_geometry_summary(payload)
+    status = summary["status"]
+    if status == "materialized_geometry_available":
+        return 30
+    if status == "declared_only":
+        return 20
+    if status == "stub_or_insufficient":
+        return 10
+    if status == "no_materialized_geometry":
+        return 5
+    return 0
+
+
 def _official_hdmap_projection_alignment(
     rows: Sequence[Mapping[str, Any]],
     projection_rows: Sequence[Mapping[str, Any]],
@@ -2843,6 +2857,20 @@ def _find_first(root: Path, relative_paths: Sequence[str]) -> Path | None:
         if path.exists():
             return path
     return None
+
+
+def _find_best_route_definition(root: Path, relative_paths: Sequence[str]) -> Path | None:
+    best_path: Path | None = None
+    best_rank = -1
+    for relative in relative_paths:
+        path = root / relative
+        if not path.exists():
+            continue
+        rank = _route_definition_evidence_rank(_read_json(path))
+        if rank > best_rank:
+            best_path = path
+            best_rank = rank
+    return best_path
 
 
 def _path_repr(path: str | Path | Sequence[str | Path] | None) -> str | list[str] | None:
