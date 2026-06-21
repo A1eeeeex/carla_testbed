@@ -289,6 +289,10 @@ Interpretation:
   debug evidence. This classification only narrows the reference-line /
   simple_lat semantics investigation; it is not a pass/fail gate and does not
   justify changing steering scale, smoothing, or actuation mapping.
+  `apollo_link_health` now also echoes this as
+  `planning_control_station_bridge` when the Planning reference-line report is
+  classified as a debug/export gap, so operators can see the cross-layer
+  relation without treating it as reference-line correctness.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The

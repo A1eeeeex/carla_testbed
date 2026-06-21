@@ -1873,6 +1873,19 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
 ) -> None:
     run_dir = _base_run(tmp_path)
     (run_dir / "analysis/natural_driving/natural_driving_report.json").unlink()
+    reference_path = run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json"
+    reference_report = json.loads(reference_path.read_text(encoding="utf-8"))
+    reference_report["status"] = "warn"
+    reference_report["warnings"] = ["reference_line_count_zero_debug_counter_with_nonempty_trajectory"]
+    reference_report["reference_debug_diagnostic"] = {
+        "classification": "planning_reference_line_debug_export_gap",
+        "control_simple_lat_reference_available": True,
+        "control_reference_join_coverage_ratio": 0.37,
+        "reference_line_count_zero_ratio": 1.0,
+        "reference_line_provider_ready_ratio": 0.0,
+        "route_segment_available": True,
+    }
+    _write_json(reference_path, reference_report)
     _write_json(
         run_dir / "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
         {
@@ -1978,6 +1991,15 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
         "apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate"
     )
     assert "natural_driving_outcome:insufficient_data" in report["secondary_blockers"]
+    reference = report["layers"]["planning_reference_line"]
+    bridge = reference["key_metrics"]["planning_control_station_bridge"]
+    assert bridge["classification"] == "planning_debug_export_gap_with_control_local_station_frame"
+    assert bridge["reference_debug_classification"] == "planning_reference_line_debug_export_gap"
+    assert bridge["simple_lat_station_frame_classification"] == "local_station_frame_offset_candidate"
+    assert bridge["control_simple_lat_reference_available"] is True
+    assert bridge["control_reference_join_coverage_ratio"] == 0.37
+    assert "planning_debug_export_gap_with_control_local_station_frame" in reference["warnings"]
+    assert "before changing steer scale" in reference["next_action"]
     lateral = report["layers"]["apollo_lateral_semantics"]
     assert lateral["key_metrics"]["reference_debug_classification"] == "planning_reference_line_debug_export_gap"
     assert lateral["key_metrics"]["control_simple_lat_reference_available"] is True

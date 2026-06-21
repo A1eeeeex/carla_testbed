@@ -341,6 +341,12 @@ Additional run-local artifacts:
     `station_frame_inconsistent`, or insufficient coverage. This
     classification is diagnostic and must not be used alone as
     route/reference-line pass evidence.
+    `analysis/apollo_link_health/apollo_link_health_report.json` may also
+    surface a cross-layer `planning_control_station_bridge` entry when
+    reference-line debug export is missing while Control simple_lat station
+    evidence is available. This bridge entry is an operator triage aid: it
+    explains the relation between Planning debug counters and Control station
+    frames, but it is not a behavior success artifact.
     `run_phase1_postprocess()` refreshes the dependent reports in evidence
     order: Apollo HDMap projection, Apollo route contract, reference-line
     contract, module-consumption, then link-health. This prevents stale route

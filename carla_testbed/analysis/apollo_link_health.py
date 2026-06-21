@@ -310,7 +310,7 @@ def analyze_apollo_link_health(
             blocking_keys=("blocking_reasons",),
             warning_keys=("warnings",),
             next_action="Inspect Apollo reference-line, routing lane ids, and HDMap projection evidence.",
-            key_metric_fields=("metrics", "evidence", "apollo_hdmap_projection"),
+            key_metric_fields=("metrics", "evidence", "apollo_hdmap_projection", "reference_debug_diagnostic"),
         ),
         "apollo_lateral_semantics": _apollo_lateral_semantics_layer(
             payloads.get("apollo_lateral_semantics"),
@@ -386,6 +386,7 @@ def analyze_apollo_link_health(
         "apollo_reference_line_contract",
         "report",
     )
+    _annotate_planning_control_station_bridge(layers)
 
     primary, secondary = _blocker_summary(layers)
     can_claim = _can_claim_unassisted(layers)
@@ -423,6 +424,64 @@ def analyze_apollo_link_health(
             "or natural-driving gates."
         ),
     }
+
+
+def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]]) -> None:
+    reference = layers.get("planning_reference_line")
+    lateral = layers.get("apollo_lateral_semantics")
+    if not isinstance(reference, dict) or not isinstance(lateral, Mapping):
+        return
+    reference_metrics = reference.get("key_metrics") if isinstance(reference.get("key_metrics"), dict) else {}
+    lateral_metrics = lateral.get("key_metrics") if isinstance(lateral.get("key_metrics"), Mapping) else {}
+    diagnostic = (
+        reference_metrics.get("reference_debug_diagnostic")
+        if isinstance(reference_metrics.get("reference_debug_diagnostic"), Mapping)
+        else {}
+    )
+    reference_classification = diagnostic.get("classification")
+    station_classification = lateral_metrics.get("simple_lat_station_frame_classification")
+    if not reference_classification and not station_classification:
+        return
+    bridge_status = "available"
+    bridge_classification = "insufficient_data"
+    if (
+        reference_classification == "planning_reference_line_debug_export_gap"
+        and station_classification == "local_station_frame_offset_candidate"
+    ):
+        bridge_classification = "planning_debug_export_gap_with_control_local_station_frame"
+    elif reference_classification == "planning_reference_line_debug_export_gap":
+        bridge_classification = "planning_debug_export_gap"
+    elif station_classification == "local_station_frame_offset_candidate":
+        bridge_classification = "control_local_station_frame_without_planning_debug_gap"
+    else:
+        bridge_status = "insufficient_data"
+    reference_metrics["planning_control_station_bridge"] = {
+        "status": bridge_status,
+        "classification": bridge_classification,
+        "reference_debug_classification": reference_classification,
+        "simple_lat_station_frame_classification": station_classification,
+        "control_simple_lat_reference_available": diagnostic.get("control_simple_lat_reference_available"),
+        "control_reference_join_coverage_ratio": diagnostic.get("control_reference_join_coverage_ratio"),
+        "simple_lat_current_station_projection_s_delta_p95_m": lateral_metrics.get(
+            "simple_lat_current_station_projection_s_delta_p95_m"
+        ),
+        "simple_lat_target_s_current_station_delta_p95_m": lateral_metrics.get(
+            "simple_lat_target_s_current_station_delta_p95_m"
+        ),
+        "claim_boundary": (
+            "This bridges Planning reference-line debug/export evidence with Control simple_lat "
+            "station-frame diagnostics. It is attribution evidence only and does not prove "
+            "reference-line correctness or behavior success."
+        ),
+    }
+    if bridge_classification == "planning_debug_export_gap_with_control_local_station_frame":
+        warnings = set(reference.get("warnings") or [])
+        warnings.add("planning_debug_export_gap_with_control_local_station_frame")
+        reference["warnings"] = sorted(warnings)
+        reference["next_action"] = (
+            "Inspect Planning reference-line debug export and Control simple_lat local/stitching "
+            "station frame join before changing steer scale, smoothing, PID, or actuation mapping."
+        )
 
 
 def write_apollo_link_health_report(report: Mapping[str, Any], out_dir: str | Path) -> dict[str, str]:
