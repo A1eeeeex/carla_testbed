@@ -191,6 +191,8 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                 f"- classification: `{reference_line_policy.get('classification')}`",
                 f"- field_gap_classification: `{reference_line_policy.get('field_gap_classification')}`",
                 f"- reference_line_count_positive_count: `{reference_line_policy.get('reference_line_count_positive_count')}`",
+                f"- claim_window_source: `{reference_line_policy.get('claim_window_source')}`",
+                f"- claim_window_reference_line_count_positive_count: `{reference_line_policy.get('claim_window_reference_line_count_positive_count')}`",
                 f"- planning_route_segment_count_positive_count: `{reference_line_policy.get('planning_route_segment_count_positive_count')}`",
                 f"- routing_segment_count_positive_count: `{reference_line_policy.get('routing_segment_count_positive_count')}`",
                 f"- routing_road_count_positive_count: `{reference_line_policy.get('routing_road_count_positive_count')}`",
@@ -923,6 +925,13 @@ def _reference_line_debug_export_policy(
         "reference_line_count_positive_count": link_health.get(
             "reference_line_count_positive_count"
         ),
+        "claim_window_source": link_health.get("reference_line_claim_window_source"),
+        "claim_window_reference_line_count_positive_count": link_health.get(
+            "reference_line_claim_window_reference_line_count_positive_count"
+        ),
+        "claim_window_reference_line_provider_status_topk": link_health.get(
+            "reference_line_claim_window_provider_status_topk"
+        ),
         "planning_route_segment_count_positive_count": link_health.get(
             "planning_route_segment_count_positive_count"
         ),
@@ -1003,6 +1012,11 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         if isinstance(reference_debug_diagnostic.get("field_inventory"), Mapping)
         else {}
     )
+    reference_claim_window_inventory = (
+        reference_field_inventory.get("claim_window")
+        if isinstance(reference_field_inventory.get("claim_window"), Mapping)
+        else {}
+    )
     return {
         "available": bool(report),
         "path": str(path) if path.exists() else None,
@@ -1016,6 +1030,15 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         ),
         "reference_line_count_positive_count": reference_field_inventory.get(
             "reference_line_count_positive_count"
+        ),
+        "reference_line_claim_window_source": reference_field_inventory.get(
+            "claim_window_source"
+        ),
+        "reference_line_claim_window_reference_line_count_positive_count": reference_claim_window_inventory.get(
+            "reference_line_count_positive_count"
+        ),
+        "reference_line_claim_window_provider_status_topk": reference_claim_window_inventory.get(
+            "reference_line_provider_status_topk"
         ),
         "planning_route_segment_count_positive_count": reference_field_inventory.get(
             "planning_route_segment_count_positive_count"

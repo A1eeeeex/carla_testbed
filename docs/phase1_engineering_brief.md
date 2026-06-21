@@ -436,6 +436,14 @@ Interpretation:
   is not a total Planning/Control evidence absence; it is the missing exported
   Planning reference-line counter/debug evidence needed before claim-grade
   reference-line conclusions.
+- The same inventory is now split by claim window. In the
+  `after_routing_segment_available` window, the representative cut-in run has
+  `row_count=171`, `reference_line_count_positive_count=0`,
+  `trajectory_sample_rows=170`, and `control_target_point_rows=126`; provider
+  status is dominated by `trajectory_nonzero_debug_missing`. This removes the
+  ambiguity that startup `failed` rows alone caused the reference-line warning:
+  the exported reference-line counter remains unavailable after route and
+  trajectory evidence are materialized.
 - Manual artifact inspection of the same run confirms the next evidence gap:
   `apollo_reference_line_debug.jsonl`,
   `stage5_apollo_reference_line_debug.jsonl`, and

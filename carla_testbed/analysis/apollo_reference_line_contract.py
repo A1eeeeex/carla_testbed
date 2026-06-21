@@ -413,6 +413,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     trajectory_sample_surrogate = _mapping(report.get("planning_trajectory_sample_surrogate"))
     control_target_surrogate = _mapping(report.get("control_target_point_vs_planning_trajectory_sample"))
     field_inventory = _mapping(_mapping(report.get("reference_debug_diagnostic")).get("field_inventory"))
+    claim_window_inventory = _mapping(field_inventory.get("claim_window"))
     return "\n".join(
         [
             "# Apollo Reference-Line Contract Summary",
@@ -430,6 +431,9 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Reference debug classification: `{_mapping(report.get('reference_debug_diagnostic')).get('classification')}`",
             f"- Reference debug field inventory: `{field_inventory.get('field_gap_classification')}`",
             f"- Reference debug counter positive rows: `{field_inventory.get('reference_line_count_positive_count')}`",
+            f"- Reference debug claim-window source: `{field_inventory.get('claim_window_source')}`",
+            f"- Claim-window reference debug counter positive rows: `{claim_window_inventory.get('reference_line_count_positive_count')}`",
+            f"- Claim-window reference debug provider status: `{claim_window_inventory.get('reference_line_provider_status_topk')}`",
             f"- Planning route-segment positive rows: `{field_inventory.get('planning_route_segment_count_positive_count')}`",
             f"- Routing segment positive rows: `{field_inventory.get('routing_segment_count_positive_count')}`",
             f"- Control simple_lat reference available: `{_mapping(report.get('reference_debug_diagnostic')).get('control_simple_lat_reference_available')}`",
@@ -1043,6 +1047,26 @@ def _reference_debug_diagnostic(
 
 
 def _reference_debug_field_inventory(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    inventory = _reference_debug_field_inventory_counts(rows)
+    claim_window_source, claim_window_rows = _reference_debug_claim_window_rows(rows)
+    inventory["claim_window_source"] = claim_window_source
+    inventory["claim_window"] = _reference_debug_field_inventory_counts(claim_window_rows)
+    return inventory
+
+
+def _reference_debug_claim_window_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[str, Sequence[Mapping[str, Any]]]:
+    for index, row in enumerate(rows):
+        if _routing_segment_available(row):
+            return "after_routing_segment_available", rows[index:]
+    for index, row in enumerate(rows):
+        if _planning_trajectory_nonempty(row):
+            return "after_first_nonempty_trajectory", rows[index:]
+    return "overall", rows
+
+
+def _reference_debug_field_inventory_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     row_count = len(rows)
     reference_line_count_known = sum(
         1 for row in rows if _num(_nested(row, "planning.reference_line_count")) is not None

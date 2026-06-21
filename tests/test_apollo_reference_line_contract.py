@@ -534,6 +534,13 @@ def test_reference_debug_diagnostic_separates_export_gap_from_control_simple_lat
     assert inventory["planning_surrogate_available"] is True
     assert inventory["planning_route_surrogate_available"] is True
     assert inventory["control_surrogate_available"] is True
+    assert inventory["claim_window_source"] == "after_routing_segment_available"
+    claim_window = inventory["claim_window"]
+    assert claim_window["row_count"] == 1
+    assert claim_window["reference_line_count_positive_count"] == 0
+    assert claim_window["field_gap_classification"] == (
+        "reference_line_counter_missing_but_planning_control_surrogates_present"
+    )
     assert report["contracts"]["control_reference"]["status"] == "pass"
 
 
@@ -635,6 +642,8 @@ def test_reference_line_debug_export_policy_marks_local_surrogates_not_claim_gra
     assert inventory["field_gap_classification"] == (
         "reference_line_counter_missing_but_planning_control_surrogates_present"
     )
+    assert inventory["claim_window_source"] == "after_routing_segment_available"
+    assert inventory["claim_window"]["reference_line_count_positive_count"] == 0
     assert inventory["trajectory_nonempty_count"] == 1
     assert inventory["control_reference_rows"] == 1
     assert policy["status"] == "warn"
