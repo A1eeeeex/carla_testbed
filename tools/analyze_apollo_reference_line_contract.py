@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--contract", help="artifacts/apollo_reference_line_contract.jsonl")
     parser.add_argument("--planning-topic-debug", help="artifacts/planning_topic_debug.jsonl")
     parser.add_argument("--planning-route-segment-debug", help="artifacts/planning_route_segment_debug.jsonl")
+    parser.add_argument("--planning-info-log", help="artifacts/apollo_planning.INFO")
     parser.add_argument("--control-decode-debug", help="artifacts/control_decode_debug.jsonl or bridge_control_decode.jsonl")
     parser.add_argument("--debug-timeseries", help="artifacts/debug_timeseries.csv or timeseries.csv")
     parser.add_argument("--localization-contract", help="analysis/localization_contract/localization_contract_report.json")
@@ -40,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
             contract_path=args.contract,
             planning_topic_debug_path=args.planning_topic_debug,
             planning_route_segment_debug_path=args.planning_route_segment_debug,
+            planning_info_log_path=args.planning_info_log,
             control_decode_debug_path=args.control_decode_debug,
             debug_timeseries_path=args.debug_timeseries,
             localization_contract_path=args.localization_contract,

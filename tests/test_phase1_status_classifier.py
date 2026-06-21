@@ -1343,6 +1343,11 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
                     "control_target_point_rows": 126,
                 }
             },
+            "planning_info_log_reference_line_evidence": {
+                "classification": "planning_info_log_reference_line_text_prints_present",
+                "reference_line_text_prints_present": True,
+                "text_log_reference_line_claim_grade_allowed": False,
+            },
             "reference_line_debug_export_policy": {
                 "status": "warn",
                 "classification": (
@@ -1356,6 +1361,11 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
                 "reference_line_debug_field_state": (
                     "field_present_but_empty_after_lane_follow_materialization"
                 ),
+                "planning_info_log_reference_line_available": True,
+                "planning_info_log_reference_line_classification": (
+                    "planning_info_log_reference_line_text_prints_present"
+                ),
+                "planning_info_log_reference_line_claim_grade_allowed": False,
                 "recommended_evidence_policy": (
                     "local_surrogate_only_until_reference_line_debug_exported"
                 ),
@@ -1452,6 +1462,8 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert reference_policy["reference_line_debug_field_state"] == (
         "field_present_but_empty_after_lane_follow_materialization"
     )
+    assert reference_policy["planning_info_log_reference_line_available"] is True
+    assert reference_policy["planning_info_log_reference_line_claim_grade_allowed"] is False
     assert reference_policy["planning_first_point_local_alignment_available"] is True
     assert reference_policy["planning_trajectory_sample_surrogate_available"] is True
     assert reference_policy["control_simple_lat_reference_available"] is True
@@ -1469,6 +1481,8 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert "planning_debug_reference_line_nonempty_ratio: `0.0`" in summary_text
     assert "route_segments_ready_trajectory_nonzero_reference_line_empty" in summary_text
     assert "field_present_but_empty_after_lane_follow_materialization" in summary_text
+    assert "planning_info_log_reference_line_available: `True`" in summary_text
+    assert "planning_info_log_reference_line_claim_grade_allowed: `False`" in summary_text
     assert "reference_line_debug_claim_grade_allowed: `False`" in summary_text
 
 

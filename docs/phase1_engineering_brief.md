@@ -161,6 +161,15 @@ Interpretation:
   non-claim-grade and the next action is to inspect Planning
   ReferenceLineInfo/debug population for this route before changing steering,
   smoothing, PID, or actuation mapping.
+  The next analyzer refresh consumes `artifacts/apollo_planning.INFO` as
+  text-log diagnostic evidence. In the same run, the log contains internal
+  reference-line traces (`print_regular/self_ref_l`, `print_st_reference_line`,
+  `print_vt_reference_line`, and `print_trajxy`) plus reference-line ST-boundary
+  construction records, while `debug.planning_data.reference_line` in the
+  Planning message remains an empty list. This further narrows the question to
+  ADCTrajectory debug/reference-line population or export semantics. The text
+  log is explicitly `claim_grade_allowed=false`; it does not prove
+  reference-line correctness or behavior success.
 - The latest Pro audit found that the earlier `8/8 DONE` statement was still
   too optimistic because some review-pack surfaces were stale or could not be
   independently re-computed. The follow-up fix keeps accepted-bundle rows tied

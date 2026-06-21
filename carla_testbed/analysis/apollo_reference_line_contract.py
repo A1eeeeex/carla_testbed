@@ -42,6 +42,7 @@ def analyze_apollo_reference_line_contract_files(
     planning_topic_debug_path: str | Path | None = None,
     planning_topic_debug_summary_path: str | Path | None = None,
     planning_route_segment_debug_path: str | Path | None = None,
+    planning_info_log_path: str | Path | None = None,
     control_decode_debug_path: str | Path | None = None,
     debug_timeseries_path: str | Path | None = None,
     localization_contract_path: str | Path | None = None,
@@ -56,6 +57,7 @@ def analyze_apollo_reference_line_contract_files(
         "planning_topic_debug_path": _path_str(planning_topic_debug_path),
         "planning_topic_debug_summary_path": _path_str(planning_topic_debug_summary_path),
         "planning_route_segment_debug_path": _path_str(planning_route_segment_debug_path),
+        "planning_info_log_path": _path_str(planning_info_log_path),
         "control_decode_debug_path": _path_str(control_decode_debug_path),
         "debug_timeseries_path": _path_str(debug_timeseries_path),
         "localization_contract_path": _path_str(localization_contract_path),
@@ -67,6 +69,9 @@ def analyze_apollo_reference_line_contract_files(
     planning_rows = _read_jsonl(planning_topic_debug_path)
     planning_debug_summary = _read_json(planning_topic_debug_summary_path)
     route_segment_rows = _read_jsonl(planning_route_segment_debug_path)
+    planning_info_log_reference_line_evidence = _planning_info_log_reference_line_evidence(
+        planning_info_log_path
+    )
     control_rows = _read_jsonl(control_decode_debug_path)
     timeseries_rows = _read_csv(debug_timeseries_path)
     localization_contract = _read_json(localization_contract_path)
@@ -86,6 +91,7 @@ def analyze_apollo_reference_line_contract_files(
         localization_contract=localization_contract,
         planning_materialization=planning_materialization,
         planning_debug_summary=planning_debug_summary,
+        planning_info_log_reference_line_evidence=planning_info_log_reference_line_evidence,
         route_contract=route_contract,
         hdmap_projection_rows=hdmap_rows,
         source=source,
@@ -98,6 +104,7 @@ def analyze_apollo_reference_line_contract(
     localization_contract: Mapping[str, Any] | None = None,
     planning_materialization: Mapping[str, Any] | None = None,
     planning_debug_summary: Mapping[str, Any] | None = None,
+    planning_info_log_reference_line_evidence: Mapping[str, Any] | None = None,
     route_contract: Mapping[str, Any] | None = None,
     hdmap_projection_rows: Sequence[Mapping[str, Any]] | None = None,
     source: Mapping[str, Any] | None = None,
@@ -121,6 +128,7 @@ def analyze_apollo_reference_line_contract(
             localization_contract=localization_contract,
             planning_materialization=planning_materialization,
             planning_debug_summary=planning_debug_summary,
+            planning_info_log_reference_line_evidence=planning_info_log_reference_line_evidence,
             route_contract=route_contract,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
@@ -146,6 +154,7 @@ def analyze_apollo_reference_line_contract(
             localization_contract=localization_contract,
             planning_materialization=planning_materialization,
             planning_debug_summary=planning_debug_summary,
+            planning_info_log_reference_line_evidence=planning_info_log_reference_line_evidence,
             route_contract=route_contract,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
@@ -166,6 +175,7 @@ def analyze_apollo_reference_line_contract(
             localization_contract=localization_contract,
             planning_materialization=planning_materialization,
             planning_debug_summary=planning_debug_summary,
+            planning_info_log_reference_line_evidence=planning_info_log_reference_line_evidence,
             route_contract=route_contract,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
@@ -180,6 +190,7 @@ def analyze_apollo_reference_line_contract(
         localization_contract=localization_contract,
         planning_materialization=planning_materialization,
         planning_debug_summary=planning_debug_summary,
+        planning_info_log_reference_line_evidence=planning_info_log_reference_line_evidence,
         route_contract=route_contract,
         hdmap_projection_rows=hdmap_projection_rows,
         source=source,
@@ -260,6 +271,8 @@ def _has_reference_line_regeneration_inputs(root: Path) -> bool:
         "apollo_reference_line_contract.jsonl",
         "artifacts/planning_topic_debug.jsonl",
         "planning_topic_debug.jsonl",
+        "artifacts/apollo_planning.INFO",
+        "apollo_planning.INFO",
         "artifacts/planning_route_segment_debug.jsonl",
         "planning_route_segment_debug.jsonl",
         "artifacts/control_decode_debug.jsonl",
@@ -462,6 +475,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     materialization_claim_window = _mapping(materialization_summary.get("claim_window"))
     trajectory_sample_surrogate = _mapping(report.get("planning_trajectory_sample_surrogate"))
     control_target_surrogate = _mapping(report.get("control_target_point_vs_planning_trajectory_sample"))
+    planning_info_log_evidence = _mapping(report.get("planning_info_log_reference_line_evidence"))
     field_inventory = _mapping(_mapping(report.get("reference_debug_diagnostic")).get("field_inventory"))
     claim_window_inventory = _mapping(field_inventory.get("claim_window"))
     return "\n".join(
@@ -500,6 +514,9 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Reference debug export policy: `{reference_debug_export_policy.get('classification')}`",
             f"- Reference debug claim-grade allowed: `{reference_debug_export_policy.get('reference_line_debug_claim_grade_allowed')}`",
             f"- Reference debug evidence policy: `{reference_debug_export_policy.get('recommended_evidence_policy')}`",
+            f"- Planning INFO log reference-line evidence: `{planning_info_log_evidence.get('classification')}`",
+            f"- Planning INFO log reference-line prints present: `{planning_info_log_evidence.get('reference_line_text_prints_present')}`",
+            f"- Planning INFO log reference-line claim-grade allowed: `{planning_info_log_evidence.get('text_log_reference_line_claim_grade_allowed')}`",
             f"- Planning trajectory sample surrogate: `{trajectory_sample_surrogate.get('classification')}`",
             f"- Planning trajectory sample claim-grade allowed: `{trajectory_sample_surrogate.get('reference_line_claim_grade_allowed')}`",
             f"- Control target vs Planning sample: `{control_target_surrogate.get('classification')}`",
@@ -533,6 +550,7 @@ def _report(
     localization_contract: Mapping[str, Any] | None,
     planning_materialization: Mapping[str, Any] | None,
     planning_debug_summary: Mapping[str, Any] | None,
+    planning_info_log_reference_line_evidence: Mapping[str, Any] | None,
     route_contract: Mapping[str, Any] | None,
     hdmap_projection_rows: Sequence[Mapping[str, Any]] | None,
     source: Mapping[str, Any] | None,
@@ -560,6 +578,7 @@ def _report(
         reference_debug_diagnostic,
         trajectory_sample_surrogate=trajectory_sample_surrogate,
         planning_materialization_summary=planning_materialization_summary,
+        planning_info_log_reference_line_evidence=planning_info_log_reference_line_evidence,
     )
     report_contracts = dict(contracts or _contracts(rows=rows, evidence=evidence, metrics=metrics, hdmap_projection=hdmap_projection))
     status, warnings = _downgrade_for_planning_materialization(
@@ -590,6 +609,9 @@ def _report(
         "reference_debug_diagnostic": reference_debug_diagnostic,
         "planning_debug_presence": planning_debug_presence,
         "planning_materialization_summary": planning_materialization_summary,
+        "planning_info_log_reference_line_evidence": dict(
+            planning_info_log_reference_line_evidence or {}
+        ),
         "reference_line_debug_export_policy": reference_debug_export_policy,
         "planning_trajectory_sample_surrogate": trajectory_sample_surrogate,
         "control_target_point_vs_planning_trajectory_sample": control_target_surrogate,
@@ -1140,6 +1162,110 @@ def _planning_debug_presence_classification(presence: Mapping[str, Any]) -> str:
     return "reference_line_and_routing_empty"
 
 
+def _planning_info_log_reference_line_evidence(path: str | Path | None) -> dict[str, Any]:
+    if path is None:
+        return {
+            "available": False,
+            "source": "missing",
+            "classification": "planning_info_log_missing",
+            "reference_line_text_prints_present": False,
+            "text_log_reference_line_claim_grade_allowed": False,
+            "claim_boundary": (
+                "Apollo Planning INFO text logs are optional diagnostic evidence and "
+                "cannot replace exported Planning reference-line debug fields."
+            ),
+        }
+    log_path = Path(path).expanduser()
+    if not log_path.exists():
+        return {
+            "available": False,
+            "source": str(log_path),
+            "classification": "planning_info_log_missing",
+            "reference_line_text_prints_present": False,
+            "text_log_reference_line_claim_grade_allowed": False,
+            "claim_boundary": (
+                "Apollo Planning INFO text logs are optional diagnostic evidence and "
+                "cannot replace exported Planning reference-line debug fields."
+            ),
+        }
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return {
+            "available": False,
+            "source": str(log_path),
+            "classification": "planning_info_log_read_error",
+            "read_error": str(exc),
+            "reference_line_text_prints_present": False,
+            "text_log_reference_line_claim_grade_allowed": False,
+            "claim_boundary": (
+                "Apollo Planning INFO text logs are optional diagnostic evidence and "
+                "cannot replace exported Planning reference-line debug fields."
+            ),
+        }
+
+    print_counts: Counter[str] = Counter()
+    st_boundary_ids: list[str] = []
+    destination_warning_count = 0
+    for line in lines:
+        if "print_regular/self_ref_l:" in line:
+            print_counts["print_regular_self_ref_l"] += 1
+        if "print_regular/self_opt_l:" in line:
+            print_counts["print_regular_self_opt_l"] += 1
+        if "print_st_reference_line:" in line:
+            print_counts["print_st_reference_line"] += 1
+        if "print_vt_reference_line:" in line:
+            print_counts["print_vt_reference_line"] += 1
+        if "print_trajxy:" in line:
+            print_counts["print_trajxy"] += 1
+        if "lane_follow_path.cc" in line:
+            print_counts["lane_follow_path"] += 1
+        if "Planning Perf: task name [LANE_FOLLOW_PATH]" in line:
+            print_counts["lane_follow_path_task"] += 1
+        if "build reference line st boundary. id:" in line:
+            print_counts["build_reference_line_st_boundary"] += 1
+            st_boundary_ids.append(line.rsplit("id:", 1)[-1].strip())
+        if "dest_sl.s() + ego_front_to_center > reference_line->length()" in line:
+            destination_warning_count += 1
+
+    reference_line_text_prints_present = any(
+        print_counts.get(key, 0) > 0
+        for key in (
+            "print_regular_self_ref_l",
+            "print_st_reference_line",
+            "print_vt_reference_line",
+            "build_reference_line_st_boundary",
+        )
+    )
+    if reference_line_text_prints_present:
+        classification = "planning_info_log_reference_line_text_prints_present"
+    elif lines:
+        classification = "planning_info_log_present_reference_line_text_prints_missing"
+    else:
+        classification = "planning_info_log_empty"
+    return {
+        "available": True,
+        "source": str(log_path),
+        "classification": classification,
+        "line_count": len(lines),
+        "reference_line_text_prints_present": reference_line_text_prints_present,
+        "print_counts": dict(sorted(print_counts.items())),
+        "st_boundary_id_topk": _topk_counts(st_boundary_ids),
+        "destination_warning_count": destination_warning_count,
+        "text_log_reference_line_claim_grade_allowed": False,
+        "interpretation": (
+            "Planning INFO text traces can show that Apollo Planning internally printed "
+            "reference-line-related curves or ST boundaries. They are diagnostic only; "
+            "claim-grade evidence still requires exported Planning reference-line debug "
+            "or an explicit equivalent contract."
+        ),
+        "claim_boundary": (
+            "Text-log reference-line evidence cannot by itself prove reference-line "
+            "correctness, route equivalence, or behavior success."
+        ),
+    }
+
+
 def _presence_bool_ratio(rows: Sequence[Mapping[str, Any]], key: str) -> float | None:
     values = [row.get(key) for row in rows if row.get(key) is not None]
     if not values:
@@ -1514,11 +1640,15 @@ def _reference_line_debug_export_policy(
     *,
     trajectory_sample_surrogate: Mapping[str, Any] | None = None,
     planning_materialization_summary: Mapping[str, Any] | None = None,
+    planning_info_log_reference_line_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     classification = str(reference_debug_diagnostic.get("classification") or "")
     planning_alignment = _mapping(reference_debug_diagnostic.get("planning_first_point_projection_alignment"))
     trajectory_sample_surrogate = _mapping(trajectory_sample_surrogate)
     planning_materialization_summary = _mapping(planning_materialization_summary)
+    planning_info_log_reference_line_evidence = _mapping(
+        planning_info_log_reference_line_evidence
+    )
     planning_debug_presence = _mapping(reference_debug_diagnostic.get("planning_debug_presence"))
     presence_classification = str(
         reference_debug_diagnostic.get("planning_debug_presence_classification")
@@ -1547,6 +1677,10 @@ def _reference_line_debug_export_policy(
     control_reference_available = bool(reference_debug_diagnostic.get("control_simple_lat_reference_available"))
     route_segment_available = bool(reference_debug_diagnostic.get("route_segment_available"))
     reference_debug_available = bool(reference_debug_diagnostic.get("reference_line_debug_available"))
+    planning_info_log_reference_line_available = bool(
+        planning_info_log_reference_line_evidence.get("reference_line_text_prints_present")
+    )
+    planning_info_log_classification = planning_info_log_reference_line_evidence.get("classification")
 
     if classification == "reference_line_debug_available" or reference_debug_available:
         return {
@@ -1560,6 +1694,9 @@ def _reference_line_debug_export_policy(
             "planning_debug_presence_classification": presence_classification or None,
             "planning_materialization_classification": materialization_classification or None,
             "reference_line_debug_field_state": debug_field_state,
+            "planning_info_log_reference_line_available": planning_info_log_reference_line_available,
+            "planning_info_log_reference_line_classification": planning_info_log_classification,
+            "planning_info_log_reference_line_claim_grade_allowed": False,
             "recommended_evidence_policy": "reference_line_debug_can_support_claim_if_other_gates_pass",
             "recommended_next_action": (
                 "Use exported Planning reference-line debug together with route, projection, "
@@ -1577,7 +1714,18 @@ def _reference_line_debug_export_policy(
             export_classification = (
                 "reference_line_debug_export_gap_with_local_planning_and_control_reference_evidence"
             )
-            if debug_field_state == "field_present_but_empty_after_lane_follow_materialization":
+            if (
+                debug_field_state == "field_present_but_empty_after_lane_follow_materialization"
+                and planning_info_log_reference_line_available
+            ):
+                reason = (
+                    "Planning first trajectory points align locally with official HDMap projection, "
+                    "Control simple_lat reference evidence is visible, and Planning is in lane-follow "
+                    "with route segments ready and non-empty trajectories. "
+                    "debug.planning_data.reference_line is present with an empty list, while "
+                    "apollo_planning.INFO contains internal reference-line text traces."
+                )
+            elif debug_field_state == "field_present_but_empty_after_lane_follow_materialization":
                 reason = (
                     "Planning first trajectory points align locally with official HDMap projection, "
                     "Control simple_lat reference evidence is visible, and Planning is in lane-follow "
@@ -1627,13 +1775,26 @@ def _reference_line_debug_export_policy(
             "planning_debug_presence_classification": presence_classification or None,
             "planning_materialization_classification": materialization_classification or None,
             "reference_line_debug_field_state": debug_field_state,
+            "planning_info_log_reference_line_available": planning_info_log_reference_line_available,
+            "planning_info_log_reference_line_classification": planning_info_log_classification,
+            "planning_info_log_reference_line_claim_grade_allowed": False,
             "recommended_evidence_policy": "local_surrogate_only_until_reference_line_debug_exported",
             "recommended_next_action": (
                 (
-                    "Inspect why debug.planning_data.reference_line is empty after lane-follow "
-                    "route segments and non-empty trajectories materialize; compare Planning "
-                    "ReferenceLineInfo/debug population with Control simple_lat station before "
-                    "changing steer scale, smoothing, PID, or actuation mapping."
+                    (
+                        "Inspect why debug.planning_data.reference_line is empty after lane-follow "
+                        "route segments and non-empty trajectories materialize even though "
+                        "apollo_planning.INFO prints internal reference-line traces; compare Planning "
+                        "ReferenceLineInfo/debug population with Control simple_lat station before "
+                        "changing steer scale, smoothing, PID, or actuation mapping."
+                    )
+                    if planning_info_log_reference_line_available
+                    else (
+                        "Inspect why debug.planning_data.reference_line is empty after lane-follow "
+                        "route segments and non-empty trajectories materialize; compare Planning "
+                        "ReferenceLineInfo/debug population with Control simple_lat station before "
+                        "changing steer scale, smoothing, PID, or actuation mapping."
+                    )
                 )
                 if debug_field_state == "field_present_but_empty_after_lane_follow_materialization"
                 else (
@@ -1654,7 +1815,25 @@ def _reference_line_debug_export_policy(
             ),
         }
 
-    if debug_field_state == "field_present_but_empty_after_lane_follow_materialization":
+    if (
+        debug_field_state == "field_present_but_empty_after_lane_follow_materialization"
+        and planning_info_log_reference_line_available
+    ):
+        insufficient_reason = (
+            "debug.planning_data.reference_line is present with an empty list after "
+            "lane-follow route segments and non-empty trajectories materialize, while "
+            "apollo_planning.INFO contains internal reference-line text traces. "
+            f"Reference debug diagnostic classification `{classification or 'missing'}` "
+            "still lacks enough exported/same-frame surrogate evidence for claim-grade "
+            "reference-line correctness."
+        )
+        insufficient_next_action = (
+            "Inspect why ADCTrajectory debug.planning_data.reference_line remains empty "
+            "despite internal apollo_planning.INFO reference-line traces; add same-frame Planning "
+            "ReferenceLineInfo/control reference evidence before changing steer scale, smoothing, "
+            "PID, or actuation mapping."
+        )
+    elif debug_field_state == "field_present_but_empty_after_lane_follow_materialization":
         insufficient_reason = (
             "debug.planning_data.reference_line is present with an empty list after "
             "lane-follow route segments and non-empty trajectories materialize, but "
@@ -1698,6 +1877,9 @@ def _reference_line_debug_export_policy(
         "planning_debug_presence_classification": presence_classification or None,
         "planning_materialization_classification": materialization_classification or None,
         "reference_line_debug_field_state": debug_field_state,
+        "planning_info_log_reference_line_available": planning_info_log_reference_line_available,
+        "planning_info_log_reference_line_classification": planning_info_log_classification,
+        "planning_info_log_reference_line_claim_grade_allowed": False,
         "recommended_evidence_policy": "insufficient_reference_line_debug_evidence",
         "recommended_next_action": insufficient_next_action,
         "reason": insufficient_reason,
@@ -2622,6 +2804,7 @@ def _resolve_run_sources(root: Path) -> dict[str, Path | None]:
             ],
         ),
         "planning_route_segment_debug_path": _find_first(root, ["artifacts/planning_route_segment_debug.jsonl", "planning_route_segment_debug.jsonl"]),
+        "planning_info_log_path": _find_first(root, ["artifacts/apollo_planning.INFO", "apollo_planning.INFO"]),
         "control_decode_debug_path": _find_control_decode_source(
             root,
             [

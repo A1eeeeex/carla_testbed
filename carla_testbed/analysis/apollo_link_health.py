@@ -316,6 +316,7 @@ def analyze_apollo_link_health(
                 "apollo_hdmap_projection",
                 "reference_debug_diagnostic",
                 "planning_materialization_summary",
+                "planning_info_log_reference_line_evidence",
                 "reference_line_debug_export_policy",
                 "planning_trajectory_sample_surrogate",
                 "control_target_point_vs_planning_trajectory_sample",
@@ -545,12 +546,22 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
             planning_projection_alignment.get("classification")
             == "planning_first_point_on_hdmap_projection_line_candidate"
         ):
-            reference["next_action"] = (
-                "Planning first trajectory points align with official HDMap projection locally; "
-                "inspect Planning reference-line debug export and Control simple_lat local/stitching "
-                "station frame join before changing steer scale, smoothing, PID, or actuation mapping."
-                + evidence_policy_clause
-            )
+            if export_policy.get("planning_info_log_reference_line_available") is True:
+                reference["next_action"] = (
+                    "Planning first trajectory points align with official HDMap projection locally, "
+                    "and apollo_planning.INFO contains internal reference-line text traces; inspect "
+                    "why ADCTrajectory debug.planning_data.reference_line remains empty and join "
+                    "that with Control simple_lat local/stitching station evidence before changing "
+                    "steer scale, smoothing, PID, or actuation mapping."
+                    + evidence_policy_clause
+                )
+            else:
+                reference["next_action"] = (
+                    "Planning first trajectory points align with official HDMap projection locally; "
+                    "inspect Planning reference-line debug export and Control simple_lat local/stitching "
+                    "station frame join before changing steer scale, smoothing, PID, or actuation mapping."
+                    + evidence_policy_clause
+                )
         else:
             reference["next_action"] = (
                 "Inspect Planning reference-line debug export and Control simple_lat local/stitching "
@@ -2096,6 +2107,8 @@ def _apollo_reference_line_contract_raw_inputs_available(root: Path) -> bool:
             "apollo_reference_line_contract.jsonl",
             "artifacts/planning_topic_debug.jsonl",
             "planning_topic_debug.jsonl",
+            "artifacts/apollo_planning.INFO",
+            "apollo_planning.INFO",
             "artifacts/planning_route_segment_debug.jsonl",
             "planning_route_segment_debug.jsonl",
             "artifacts/control_decode_debug.jsonl",
@@ -2118,6 +2131,7 @@ def _apollo_reference_line_contract_has_runtime_evidence(report: Mapping[str, An
         for key in (
             "planning_topic_debug_path",
             "planning_route_segment_debug_path",
+            "planning_info_log_path",
             "control_decode_debug_path",
             "debug_timeseries_path",
         )

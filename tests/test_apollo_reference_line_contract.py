@@ -618,6 +618,58 @@ def test_planning_debug_presence_distinguishes_routing_present_reference_line_em
     assert "planning_materialization_route_segments_ready_reference_line_empty" in report["warnings"]
 
 
+def test_planning_info_log_reference_line_text_traces_are_diagnostic_only(
+    tmp_path: Path,
+) -> None:
+    planning = tmp_path / "planning_topic_debug.jsonl"
+    planning_info = tmp_path / "apollo_planning.INFO"
+    _write_jsonl(
+        planning,
+        [
+            {
+                "timestamp": 1.0,
+                "localization_heading": 0.0,
+                "trajectory_point_count": 20,
+                "first_trajectory_point_theta": 0.0,
+                "planning_debug_debug_present": True,
+                "planning_debug_planning_data_present": True,
+                "planning_debug_reference_line_field_present": True,
+                "planning_debug_reference_line_count": 0,
+                "planning_debug_routing_field_present": True,
+                "planning_debug_routing_segment_count": 1,
+                "planning_debug_diagnosis": "routing_present_reference_line_empty",
+            }
+        ],
+    )
+    planning_info.write_text(
+        "\n".join(
+            [
+                "I print_debug_info.cc:45] print_regular/self_ref_l:(0.0, 0.0);(0.5, 0.0)",
+                "I print_debug_info.cc:45] print_st_reference_line:(0.0, 0.0);(0.1, 0.5)",
+                "I reference_line_info.cc:428] build reference line st boundary. id:72_0",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_reference_line_contract_files(
+        planning_topic_debug_path=planning,
+        planning_info_log_path=planning_info,
+    )
+
+    info = report["planning_info_log_reference_line_evidence"]
+    assert info["classification"] == "planning_info_log_reference_line_text_prints_present"
+    assert info["reference_line_text_prints_present"] is True
+    assert info["text_log_reference_line_claim_grade_allowed"] is False
+    assert info["print_counts"]["print_regular_self_ref_l"] == 1
+    assert info["st_boundary_id_topk"] == [{"value": "72_0", "count": 1}]
+    policy = report["reference_line_debug_export_policy"]
+    assert policy["planning_info_log_reference_line_available"] is True
+    assert policy["planning_info_log_reference_line_claim_grade_allowed"] is False
+    assert "apollo_planning.INFO" in policy["recommended_next_action"]
+
+
 def test_route_segment_debug_augments_existing_contract_rows(tmp_path: Path) -> None:
     contract = tmp_path / "apollo_reference_line_debug.jsonl"
     route_debug = tmp_path / "planning_route_segment_debug.jsonl"
