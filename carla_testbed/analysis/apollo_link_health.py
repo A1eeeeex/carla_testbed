@@ -315,6 +315,7 @@ def analyze_apollo_link_health(
                 "evidence",
                 "apollo_hdmap_projection",
                 "reference_debug_diagnostic",
+                "planning_materialization_summary",
                 "reference_line_debug_export_policy",
                 "planning_trajectory_sample_surrogate",
                 "control_target_point_vs_planning_trajectory_sample",

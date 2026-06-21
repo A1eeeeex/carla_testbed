@@ -1314,6 +1314,15 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
             "planning_debug_presence_last_routing_path": "debug.planning_data.routing",
             "planning_debug_presence_reference_line_nonempty_ratio": 0.0,
             "planning_debug_presence_routing_segment_nonempty_ratio": 0.52,
+            "planning_materialization_summary": {
+                "classification": "route_segments_ready_trajectory_nonzero_reference_line_empty",
+                "claim_window_source": "after_routing_segment_available",
+                "claim_window": {
+                    "route_segments_ready_ratio": 1.0,
+                    "reference_line_empty_with_route_segments_ready_ratio": 1.0,
+                    "lane_follow_stage_ratio": 1.0,
+                },
+            },
             "reference_debug_diagnostic": {
                 "field_inventory": {
                     "field_gap_classification": (
@@ -1429,6 +1438,14 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert reference_policy["planning_debug_routing_path"] == "debug.planning_data.routing"
     assert reference_policy["planning_debug_reference_line_nonempty_ratio"] == 0.0
     assert reference_policy["planning_debug_routing_segment_nonempty_ratio"] == 0.52
+    assert reference_policy["planning_materialization_classification"] == (
+        "route_segments_ready_trajectory_nonzero_reference_line_empty"
+    )
+    assert reference_policy["planning_materialization_route_segments_ready_ratio"] == 1.0
+    assert (
+        reference_policy["planning_materialization_reference_line_empty_while_ready_ratio"]
+        == 1.0
+    )
     assert reference_policy["planning_first_point_local_alignment_available"] is True
     assert reference_policy["planning_trajectory_sample_surrogate_available"] is True
     assert reference_policy["control_simple_lat_reference_available"] is True
@@ -1444,6 +1461,7 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert "reference_line_counter_missing_but_planning_control_surrogates_present" in summary_text
     assert "routing_present_reference_line_empty" in summary_text
     assert "planning_debug_reference_line_nonempty_ratio: `0.0`" in summary_text
+    assert "route_segments_ready_trajectory_nonzero_reference_line_empty" in summary_text
     assert "reference_line_debug_claim_grade_allowed: `False`" in summary_text
 
 

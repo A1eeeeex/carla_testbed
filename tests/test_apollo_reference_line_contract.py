@@ -598,7 +598,77 @@ def test_planning_debug_presence_distinguishes_routing_present_reference_line_em
         "routing_present_reference_line_empty"
     )
     assert diagnostic["planning_debug_presence"]["reference_line_nonempty_ratio"] == 0.0
+    materialization = report["planning_materialization_summary"]
+    assert materialization["classification"] == (
+        "route_segments_ready_trajectory_nonzero_reference_line_empty"
+    )
+    assert materialization["claim_window_source"] == "after_routing_segment_available"
+    assert materialization["claim_window"]["route_segments_ready_ratio"] == 1.0
+    assert (
+        materialization["claim_window"]["reference_line_empty_with_route_segments_ready_ratio"]
+        == 1.0
+    )
     assert "planning_debug_presence_routing_present_reference_line_empty" in report["warnings"]
+    assert "planning_materialization_route_segments_ready_reference_line_empty" in report["warnings"]
+
+
+def test_route_segment_debug_augments_existing_contract_rows(tmp_path: Path) -> None:
+    contract = tmp_path / "apollo_reference_line_debug.jsonl"
+    route_debug = tmp_path / "planning_route_segment_debug.jsonl"
+    _write_jsonl(
+        contract,
+        [
+            {
+                "timestamp": 10.0,
+                "planning": {
+                    "trajectory_point_count": 12,
+                    "reference_line_count": 0,
+                    "routing_segment_count": 1,
+                    "first_trajectory_point_theta": 0.0,
+                    "trajectory_sample_points": [{"x": 0.0, "y": 0.0}, {"x": 1.0, "y": 0.0}],
+                },
+                "localization": {"heading": 0.0},
+                "computed": {"planning_reference_available": True},
+            }
+        ],
+    )
+    _write_jsonl(
+        route_debug,
+        [
+            {
+                "timestamp": 10.0,
+                "create_route_segments_status": "ready",
+                "lane_follow_map_status": "trajectory_nonzero_reference_line_debug_missing",
+                "planning_empty_reason_guess": "",
+                "reference_line_provider_status": "trajectory_nonzero_debug_missing",
+                "path_end_like_condition": False,
+                "planning_stage_name": "LANE_FOLLOW_STAGE",
+                "task_name": "LANE_FOLLOW",
+                "planning_debug_reference_line_count": 0,
+                "planning_debug_routing_segment_count": 1,
+                "routing_lane_window_signature": "0_0_2@5.0->300.0",
+            }
+        ],
+    )
+
+    report = analyze_apollo_reference_line_contract_files(
+        contract_path=contract,
+        planning_route_segment_debug_path=route_debug,
+    )
+
+    materialization = report["planning_materialization_summary"]
+    claim_window = materialization["claim_window"]
+    assert materialization["classification"] == (
+        "route_segments_ready_trajectory_nonzero_reference_line_empty"
+    )
+    assert claim_window["create_route_segments_status_topk"] == [
+        {"value": "ready", "count": 1}
+    ]
+    assert claim_window["planning_stage_name_topk"] == [
+        {"value": "LANE_FOLLOW_STAGE", "count": 1}
+    ]
+    assert claim_window["task_name_topk"] == [{"value": "LANE_FOLLOW", "count": 1}]
+    assert claim_window["lane_follow_stage_ratio"] == 1.0
 
 
 def test_planning_first_point_projection_alignment_uses_official_hdmap_projection() -> None:

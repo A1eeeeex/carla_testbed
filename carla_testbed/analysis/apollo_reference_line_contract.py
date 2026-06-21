@@ -396,6 +396,11 @@ def build_reference_line_contract_event(row: Mapping[str, Any], *, source_confid
             ),
             "lane_follow_map_status": _first(row, "lane_follow_map_status"),
             "reference_line_provider_status": _first(row, "reference_line_provider_status"),
+            "create_route_segments_status": _first(row, "create_route_segments_status"),
+            "planning_empty_reason_guess": _first(row, "planning_empty_reason_guess"),
+            "path_end_like_condition": _bool_value(_first(row, "path_end_like_condition")),
+            "planning_stage_name": _first(row, "planning_stage_name", "stage_plugin_type"),
+            "task_name": _first(row, "task_name", "scenario_plugin_type"),
         },
         "planning_debug_presence": {
             "debug_present": _first(row, "planning_debug_debug_present"),
@@ -447,6 +452,8 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     planning_projection_alignment = _mapping(report.get("planning_first_point_projection_alignment"))
     reference_debug_export_policy = _mapping(report.get("reference_line_debug_export_policy"))
     planning_debug_presence = _mapping(report.get("planning_debug_presence"))
+    materialization_summary = _mapping(report.get("planning_materialization_summary"))
+    materialization_claim_window = _mapping(materialization_summary.get("claim_window"))
     trajectory_sample_surrogate = _mapping(report.get("planning_trajectory_sample_surrogate"))
     control_target_surrogate = _mapping(report.get("control_target_point_vs_planning_trajectory_sample"))
     field_inventory = _mapping(_mapping(report.get("reference_debug_diagnostic")).get("field_inventory"))
@@ -469,6 +476,13 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Planning debug presence classification: `{planning_debug_presence.get('classification')}`",
             f"- Planning debug reference-line nonempty ratio: `{planning_debug_presence.get('reference_line_nonempty_ratio')}`",
             f"- Planning debug routing segment nonempty ratio: `{planning_debug_presence.get('routing_segment_nonempty_ratio')}`",
+            f"- Planning materialization classification: `{materialization_summary.get('classification')}`",
+            f"- Planning materialization claim-window source: `{materialization_summary.get('claim_window_source')}`",
+            f"- Planning materialization route-segments ready ratio: `{materialization_claim_window.get('route_segments_ready_ratio')}`",
+            f"- Planning materialization reference-line empty while ready ratio: `{materialization_claim_window.get('reference_line_empty_with_route_segments_ready_ratio')}`",
+            f"- Planning materialization lane-follow stage ratio: `{materialization_claim_window.get('lane_follow_stage_ratio')}`",
+            f"- Planning materialization stage topk: `{materialization_claim_window.get('planning_stage_name_topk')}`",
+            f"- Planning materialization task topk: `{materialization_claim_window.get('task_name_topk')}`",
             f"- Reference debug field inventory: `{field_inventory.get('field_gap_classification')}`",
             f"- Reference debug counter positive rows: `{field_inventory.get('reference_line_count_positive_count')}`",
             f"- Reference debug claim-window source: `{field_inventory.get('claim_window_source')}`",
@@ -526,6 +540,7 @@ def _report(
         hdmap_projection_rows or [],
     )
     planning_debug_presence = _planning_debug_presence_summary(rows, planning_debug_summary)
+    planning_materialization_summary = _planning_materialization_summary(rows)
     reference_debug_diagnostic = _reference_debug_diagnostic(
         rows,
         evidence,
@@ -553,6 +568,11 @@ def _report(
     )
     if planning_debug_presence.get("classification") == "routing_present_reference_line_empty":
         warnings.append("planning_debug_presence_routing_present_reference_line_empty")
+    if planning_materialization_summary.get("classification") in {
+        "route_segments_ready_reference_line_empty",
+        "route_segments_ready_trajectory_nonzero_reference_line_empty",
+    }:
+        warnings.append("planning_materialization_route_segments_ready_reference_line_empty")
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "status": status,
@@ -562,6 +582,7 @@ def _report(
         "metrics": metrics,
         "reference_debug_diagnostic": reference_debug_diagnostic,
         "planning_debug_presence": planning_debug_presence,
+        "planning_materialization_summary": planning_materialization_summary,
         "reference_line_debug_export_policy": reference_debug_export_policy,
         "planning_trajectory_sample_surrogate": trajectory_sample_surrogate,
         "control_target_point_vs_planning_trajectory_sample": control_target_surrogate,
@@ -1327,6 +1348,160 @@ def _reference_debug_field_inventory_counts(rows: Sequence[Mapping[str, Any]]) -
     }
 
 
+def _planning_materialization_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Summarize Planning route-segment/reference-line materialization fields.
+
+    This is an operator diagnostic layer. It tells whether Planning appears to
+    have entered lane-follow/route-segment-ready state while exported
+    reference-line debug remains empty. It is not behavior success evidence.
+    """
+
+    claim_window_source, claim_window_rows = _reference_debug_claim_window_rows(rows)
+    claim_window = _planning_materialization_counts(claim_window_rows)
+    classification = _planning_materialization_classification(claim_window)
+    return {
+        "classification": classification,
+        "claim_window_source": claim_window_source,
+        "overall": _planning_materialization_counts(rows),
+        "claim_window": claim_window,
+        "recommended_action": _planning_materialization_recommended_action(classification),
+        "claim_boundary": (
+            "Planning materialization summary narrows reference-line diagnosis. "
+            "It does not prove reference-line correctness or behavior success."
+        ),
+    }
+
+
+def _planning_materialization_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    row_count = len(rows)
+    route_segments_ready = [
+        row for row in rows if _planning_route_segments_ready(row)
+    ]
+    reference_line_positive = [
+        row
+        for row in rows
+        if (_num(_nested(row, "planning.reference_line_count")) or 0.0) > 0.0
+    ]
+    reference_line_known = [
+        row for row in rows if _num(_nested(row, "planning.reference_line_count")) is not None
+    ]
+    reference_line_empty_with_route_ready = [
+        row
+        for row in route_segments_ready
+        if (_num(_nested(row, "planning.reference_line_count")) or 0.0) == 0.0
+    ]
+    trajectory_nonempty = [row for row in rows if _planning_trajectory_nonempty(row)]
+    trajectory_nonempty_ready_ref_empty = [
+        row
+        for row in rows
+        if _planning_trajectory_nonempty(row)
+        and _planning_route_segments_ready(row)
+        and (_num(_nested(row, "planning.reference_line_count")) or 0.0) == 0.0
+    ]
+    path_end_like_true = [
+        row for row in rows if _bool_value(_nested(row, "planning.path_end_like_condition"))
+    ]
+    lane_follow_stage = [
+        row for row in rows if _nested(row, "planning.planning_stage_name") == "LANE_FOLLOW_STAGE"
+    ]
+    lane_follow_task = [
+        row for row in rows if _nested(row, "planning.task_name") == "LANE_FOLLOW"
+    ]
+    return {
+        "row_count": row_count,
+        "create_route_segments_status_topk": _topk_counts(
+            _nested(row, "planning.create_route_segments_status") for row in rows
+        ),
+        "lane_follow_map_status_topk": _topk_counts(
+            _nested(row, "planning.lane_follow_map_status") for row in rows
+        ),
+        "planning_empty_reason_guess_topk": _topk_counts(
+            _nested(row, "planning.planning_empty_reason_guess") for row in rows
+        ),
+        "reference_line_provider_status_topk": _topk_counts(
+            _nested(row, "planning.reference_line_provider_status") for row in rows
+        ),
+        "planning_stage_name_topk": _topk_counts(
+            _nested(row, "planning.planning_stage_name") for row in rows
+        ),
+        "task_name_topk": _topk_counts(_nested(row, "planning.task_name") for row in rows),
+        "routing_lane_window_signature_topk": _topk_counts(
+            _nested(row, "routing.routing_lane_window_signature") for row in rows
+        ),
+        "route_segments_ready_count": len(route_segments_ready),
+        "route_segments_ready_ratio": _ratio(len(route_segments_ready), row_count),
+        "reference_line_count_known_count": len(reference_line_known),
+        "reference_line_positive_count": len(reference_line_positive),
+        "reference_line_positive_ratio": _ratio(len(reference_line_positive), row_count),
+        "reference_line_empty_with_route_segments_ready_count": len(reference_line_empty_with_route_ready),
+        "reference_line_empty_with_route_segments_ready_ratio": _ratio(
+            len(reference_line_empty_with_route_ready),
+            len(route_segments_ready),
+        ),
+        "trajectory_nonempty_count": len(trajectory_nonempty),
+        "trajectory_nonempty_ratio": _ratio(len(trajectory_nonempty), row_count),
+        "trajectory_nonempty_route_segments_ready_reference_line_empty_count": len(
+            trajectory_nonempty_ready_ref_empty
+        ),
+        "trajectory_nonempty_route_segments_ready_reference_line_empty_ratio": _ratio(
+            len(trajectory_nonempty_ready_ref_empty),
+            len(trajectory_nonempty),
+        ),
+        "path_end_like_condition_true_count": len(path_end_like_true),
+        "path_end_like_condition_true_ratio": _ratio(len(path_end_like_true), row_count),
+        "lane_follow_stage_count": len(lane_follow_stage),
+        "lane_follow_stage_ratio": _ratio(len(lane_follow_stage), row_count),
+        "lane_follow_task_count": len(lane_follow_task),
+        "lane_follow_task_ratio": _ratio(len(lane_follow_task), row_count),
+    }
+
+
+def _planning_materialization_classification(counts: Mapping[str, Any]) -> str:
+    row_count = int(counts.get("row_count") or 0)
+    if row_count <= 0:
+        return "insufficient_data"
+    if int(counts.get("reference_line_positive_count") or 0) > 0:
+        return "reference_line_materialized"
+    ready_count = int(counts.get("route_segments_ready_count") or 0)
+    trajectory_ready_empty_count = int(
+        counts.get("trajectory_nonempty_route_segments_ready_reference_line_empty_count") or 0
+    )
+    if ready_count > 0 and trajectory_ready_empty_count > 0:
+        return "route_segments_ready_trajectory_nonzero_reference_line_empty"
+    if ready_count > 0:
+        return "route_segments_ready_reference_line_empty"
+    path_end_ratio = _num(counts.get("path_end_like_condition_true_ratio")) or 0.0
+    if path_end_ratio >= 0.50:
+        return "route_segments_failed_path_end_like"
+    return "route_segments_not_ready"
+
+
+def _planning_materialization_recommended_action(classification: str) -> str:
+    if classification == "reference_line_materialized":
+        return "Use exported reference-line debug with route, projection, localization, and control evidence."
+    if classification == "route_segments_ready_trajectory_nonzero_reference_line_empty":
+        return (
+            "Planning has route segments, lane-follow stage/task, and non-empty trajectories, "
+            "but exported reference-line debug remains empty. Inspect Planning reference-line "
+            "debug population/materialization for this route before changing control mapping."
+        )
+    if classification == "route_segments_ready_reference_line_empty":
+        return (
+            "Planning route segments are ready while exported reference-line debug remains empty. "
+            "Inspect Planning reference-line materialization/config/debug content for this route."
+        )
+    if classification == "route_segments_failed_path_end_like":
+        return "Inspect routing destination/path-end semantics before judging Planning reference-line behavior."
+    return "Collect Planning route-segment and reference-line debug rows before judging reference-line materialization."
+
+
+def _planning_route_segments_ready(row: Mapping[str, Any]) -> bool:
+    status = _nested(row, "planning.create_route_segments_status")
+    if status == "ready":
+        return True
+    return (_num(_nested(row, "planning.routing_segment_count")) or 0.0) > 0.0
+
+
 def _reference_line_debug_export_policy(
     reference_debug_diagnostic: Mapping[str, Any],
     *,
@@ -1976,6 +2151,7 @@ def _normalized_rows(
 ) -> list[dict[str, Any]]:
     if contract_rows:
         rows = _augment_contract_rows_with_planning_debug(contract_rows, planning_rows)
+        rows = _augment_contract_rows_with_route_segment_debug(rows, route_segment_rows)
         return _augment_contract_rows_with_control_debug(rows, control_rows)
     return _fallback_asof_join_rows(
         planning_rows=planning_rows,
@@ -2043,6 +2219,78 @@ def _augment_contract_rows_with_planning_debug(
             row_computed = dict(_mapping(row.get("computed")))
             row_computed["planning_sample_join_coverage_ratio"] = matched_rows / len(rows)
             row_computed["planning_sample_dropped_unaligned_rows"] = dropped_rows
+            row["computed"] = row_computed
+    return rows
+
+
+def _augment_contract_rows_with_route_segment_debug(
+    contract_rows: Sequence[Mapping[str, Any]],
+    route_segment_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = [dict(row) for row in contract_rows]
+    if not rows or not route_segment_rows:
+        return rows
+
+    route_events = [
+        build_reference_line_contract_event(row, source_confidence="planning_route_segment_debug")
+        for row in route_segment_rows
+    ]
+    route_events = [
+        event
+        for event in route_events
+        if _routing_segment_available(event)
+        or _nested(event, "planning.lane_follow_map_status") not in {None, ""}
+        or _nested(event, "planning.reference_line_provider_status") not in {None, ""}
+    ]
+    if not route_events:
+        return rows
+
+    matched_rows = 0
+    dropped_rows = 0
+    for row in rows:
+        row_ts = _event_timestamp(row)
+        route_event: Mapping[str, Any] | None = None
+        if row_ts is not None:
+            route_event = _nearest_asof_event(row_ts, route_events, tolerance_s=FALLBACK_JOIN_TOLERANCE_S)
+        row_computed = dict(_mapping(row.get("computed")))
+        if route_event is None:
+            dropped_rows += 1
+            row_computed["route_segment_debug_join_matched"] = False
+            row_computed["route_segment_debug_join_tolerance_ms"] = FALLBACK_JOIN_TOLERANCE_S * 1000.0
+            row["computed"] = row_computed
+            continue
+        matched_rows += 1
+        route_payload = _mapping(route_event.get("planning"))
+        row_planning = dict(_mapping(row.get("planning")))
+        for key in (
+            "create_route_segments_status",
+            "lane_follow_map_status",
+            "planning_empty_reason_guess",
+            "reference_line_provider_status",
+            "path_end_like_condition",
+            "planning_stage_name",
+            "task_name",
+            "routing_segment_count",
+            "route_segment_total_length",
+            "lane_ids",
+            "target_lane_ids",
+        ):
+            value = route_payload.get(key)
+            if _present_value(value) and not _present_value(row_planning.get(key)):
+                row_planning[key] = value
+        row_computed["route_segment_debug_join_matched"] = True
+        row_computed["route_segment_debug_join_tolerance_ms"] = FALLBACK_JOIN_TOLERANCE_S * 1000.0
+        row_computed["route_segment_debug_join_delta_ms"] = _join_delta_ms(
+            row_ts,
+            _event_timestamp(route_event),
+        )
+        row["planning"] = row_planning
+        row["computed"] = row_computed
+    if rows:
+        for row in rows:
+            row_computed = dict(_mapping(row.get("computed")))
+            row_computed["route_segment_debug_join_coverage_ratio"] = matched_rows / len(rows)
+            row_computed["route_segment_debug_dropped_unaligned_rows"] = dropped_rows
             row["computed"] = row_computed
     return rows
 
@@ -2471,6 +2719,18 @@ def _p95_abs(values: Iterable[float | None]) -> float | None:
 def _topk(values: Iterable[str], *, k: int = 5) -> list[str]:
     counter = Counter(value for value in values if str(value).strip())
     return [item for item, _ in counter.most_common(k)]
+
+
+def _topk_counts(values: Iterable[Any], *, k: int = 5) -> list[dict[str, Any]]:
+    cleaned = [str(value) for value in values if value not in {None, ""}]
+    counter = Counter(cleaned)
+    return [{"value": item, "count": count} for item, count in counter.most_common(k)]
+
+
+def _ratio(numerator: int, denominator: int) -> float | None:
+    if denominator <= 0:
+        return None
+    return numerator / float(denominator)
 
 
 def _first_number(row: Mapping[str, Any], *paths: str) -> float | None:

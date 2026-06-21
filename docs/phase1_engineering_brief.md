@@ -144,6 +144,15 @@ Interpretation:
   should not re-debug whether the bridge found the Planning debug path. The
   next question is why Apollo Planning has routing/debug content but an empty
   `debug.planning_data.reference_line` list for this route.
+  The refreshed reference-line contract now adds
+  `planning_materialization_summary`: in the claim window for this run,
+  `create_route_segments_status=ready`, `planning_stage_name=LANE_FOLLOW_STAGE`,
+  and `task_name=LANE_FOLLOW` for all route-ready rows, while the exported
+  reference-line list remains empty and trajectories are non-empty. This
+  narrows the blocker from "maybe Planning did not enter lane follow" to
+  "lane-follow route segments and trajectories are present, but exported
+  reference-line debug is empty." It is still attribution evidence only and
+  does not fix lane invasion or prove behavior success.
 - The latest Pro audit found that the earlier `8/8 DONE` statement was still
   too optimistic because some review-pack surfaces were stale or could not be
   independently re-computed. The follow-up fix keeps accepted-bundle rows tied
@@ -291,6 +300,11 @@ Interpretation:
   next highest-value cycle is therefore to inspect Apollo Planning
   reference-line materialization/config/debug content for this route, not to
   rediscover the debug path and not to tune control mapping.
+  The postprocess now reports the materialization window explicitly:
+  `route_segments_ready_ratio=1.0`,
+  `reference_line_empty_with_route_segments_ready_ratio=1.0`, and
+  `trajectory_nonempty_route_segments_ready_reference_line_empty_ratio=1.0`
+  for that sample's route-ready claim window.
 - The same lateral-semantics refresh now records a conservative
   `lateral_sign_alignment` diagnostic. For the first high-lateral sample in
   `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742`,

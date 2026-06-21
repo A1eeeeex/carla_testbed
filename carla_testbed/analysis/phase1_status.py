@@ -201,6 +201,9 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                 f"- planning_debug_presence_classification: `{reference_line_policy.get('planning_debug_presence_classification')}`",
                 f"- planning_debug_reference_line_nonempty_ratio: `{reference_line_policy.get('planning_debug_reference_line_nonempty_ratio')}`",
                 f"- planning_debug_routing_segment_nonempty_ratio: `{reference_line_policy.get('planning_debug_routing_segment_nonempty_ratio')}`",
+                f"- planning_materialization_classification: `{reference_line_policy.get('planning_materialization_classification')}`",
+                f"- planning_materialization_route_segments_ready_ratio: `{reference_line_policy.get('planning_materialization_route_segments_ready_ratio')}`",
+                f"- planning_materialization_reference_line_empty_while_ready_ratio: `{reference_line_policy.get('planning_materialization_reference_line_empty_while_ready_ratio')}`",
                 f"- reference_line_debug_claim_grade_allowed: `{reference_line_policy.get('reference_line_debug_claim_grade_allowed')}`",
                 f"- local_surrogate_available: `{reference_line_policy.get('local_surrogate_available')}`",
                 f"- recommended_action: `{reference_line_policy.get('recommended_action')}`",
@@ -976,6 +979,21 @@ def _reference_line_debug_export_policy(
         "planning_debug_routing_segment_nonempty_ratio": link_health.get(
             "planning_debug_presence_routing_segment_nonempty_ratio"
         ),
+        "planning_materialization_classification": link_health.get(
+            "planning_materialization_classification"
+        ),
+        "planning_materialization_claim_window_source": link_health.get(
+            "planning_materialization_claim_window_source"
+        ),
+        "planning_materialization_route_segments_ready_ratio": link_health.get(
+            "planning_materialization_route_segments_ready_ratio"
+        ),
+        "planning_materialization_reference_line_empty_while_ready_ratio": link_health.get(
+            "planning_materialization_reference_line_empty_while_ready_ratio"
+        ),
+        "planning_materialization_lane_follow_stage_ratio": link_health.get(
+            "planning_materialization_lane_follow_stage_ratio"
+        ),
         "reference_line_debug_claim_grade_allowed": claim_grade_allowed,
         "local_surrogate_available": local_surrogate_available,
         "planning_first_point_local_alignment_available": planning_local,
@@ -1038,6 +1056,16 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
     reference_debug_diagnostic = (
         reference_metrics.get("reference_debug_diagnostic")
         if isinstance(reference_metrics.get("reference_debug_diagnostic"), Mapping)
+        else {}
+    )
+    materialization_summary = (
+        reference_metrics.get("planning_materialization_summary")
+        if isinstance(reference_metrics.get("planning_materialization_summary"), Mapping)
+        else {}
+    )
+    materialization_claim_window = (
+        materialization_summary.get("claim_window")
+        if isinstance(materialization_summary.get("claim_window"), Mapping)
         else {}
     )
     reference_field_inventory = (
@@ -1121,6 +1149,19 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         ),
         "planning_debug_presence_routing_segment_nonempty_ratio": reference_metrics.get(
             "planning_debug_presence_routing_segment_nonempty_ratio"
+        ),
+        "planning_materialization_classification": materialization_summary.get("classification"),
+        "planning_materialization_claim_window_source": materialization_summary.get(
+            "claim_window_source"
+        ),
+        "planning_materialization_route_segments_ready_ratio": materialization_claim_window.get(
+            "route_segments_ready_ratio"
+        ),
+        "planning_materialization_reference_line_empty_while_ready_ratio": materialization_claim_window.get(
+            "reference_line_empty_with_route_segments_ready_ratio"
+        ),
+        "planning_materialization_lane_follow_stage_ratio": materialization_claim_window.get(
+            "lane_follow_stage_ratio"
         ),
         "route_simple_lat_sign_convention_candidate": lateral_metrics.get(
             "route_simple_lat_sign_convention_candidate"
