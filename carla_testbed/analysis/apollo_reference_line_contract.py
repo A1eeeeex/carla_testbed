@@ -28,6 +28,7 @@ MIN_PROVIDER_READY_RATIO = 0.80
 FALLBACK_JOIN_TOLERANCE_S = 0.05
 PLANNING_PROJECTION_JOIN_TOLERANCE_S = 0.25
 CONTROL_TARGET_TRAJECTORY_SAMPLE_WARN_M = 0.50
+CONTROL_TARGET_PATH_CANDIDATE_WARN_M = 0.50
 PLANNING_PATH_CANDIDATE_TRAJECTORY_WARN_M = 2.00
 PLANNING_PATH_CANDIDATE_TRAJECTORY_SUPPORT_MARGIN_M = 5.00
 
@@ -481,6 +482,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     path_candidate_hdmap_alignment = _mapping(report.get("planning_debug_path_candidate_hdmap_projection_alignment"))
     trajectory_sample_surrogate = _mapping(report.get("planning_trajectory_sample_surrogate"))
     control_target_surrogate = _mapping(report.get("control_target_point_vs_planning_trajectory_sample"))
+    control_target_path_candidate = _mapping(report.get("control_target_point_vs_planning_path_candidate_sample"))
     path_candidate_trajectory_surrogate = _mapping(report.get("planning_debug_path_candidate_vs_trajectory_sample"))
     planning_info_log_evidence = _mapping(report.get("planning_info_log_reference_line_evidence"))
     planning_debug_field_inventory = _mapping(planning_debug_presence.get("last_field_inventory"))
@@ -541,6 +543,9 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Planning trajectory sample claim-grade allowed: `{trajectory_sample_surrogate.get('reference_line_claim_grade_allowed')}`",
             f"- Control target vs Planning sample: `{control_target_surrogate.get('classification')}`",
             f"- Control target vs Planning sample p95 m: `{control_target_surrogate.get('target_point_to_planning_sample_line_abs_p95_m')}`",
+            f"- Control target vs Planning path candidate: `{control_target_path_candidate.get('classification')}`",
+            f"- Control target vs path candidate p95 m: `{control_target_path_candidate.get('target_point_to_path_candidate_line_abs_p95_m')}`",
+            f"- Control target lane-l p95 m: `{control_target_path_candidate.get('target_point_lane_l_abs_p95_m')}`",
             f"- Planning ref heading p95 rad: `{metrics.get('planning_ref_heading_error_p95_rad')}`",
             f"- Normal trajectory heading p95 rad: `{metrics.get('normal_trajectory_heading_error_p95_rad')}`",
             f"- PATH_FALLBACK trajectory ratio: `{metrics.get('path_fallback_trajectory_ratio')}`",
@@ -602,6 +607,10 @@ def _report(
     )
     trajectory_sample_surrogate = _planning_trajectory_sample_surrogate(rows)
     control_target_surrogate = _control_target_point_vs_planning_trajectory_sample(rows)
+    control_target_path_candidate = _control_target_point_vs_planning_path_candidate_sample(
+        rows,
+        hdmap_projection_rows or [],
+    )
     path_candidate_trajectory_surrogate = _planning_debug_path_candidate_vs_trajectory_sample(rows)
     reference_debug_export_policy = _reference_line_debug_export_policy(
         reference_debug_diagnostic,
@@ -646,6 +655,7 @@ def _report(
         "reference_line_debug_export_policy": reference_debug_export_policy,
         "planning_trajectory_sample_surrogate": trajectory_sample_surrogate,
         "control_target_point_vs_planning_trajectory_sample": control_target_surrogate,
+        "control_target_point_vs_planning_path_candidate_sample": control_target_path_candidate,
         "planning_debug_path_candidate_vs_trajectory_sample": path_candidate_trajectory_surrogate,
         "planning_first_point_projection_alignment": planning_projection_alignment,
         "contracts": report_contracts,
@@ -2305,6 +2315,234 @@ def _control_target_point_vs_planning_trajectory_sample(rows: Sequence[Mapping[s
     }
 
 
+def _control_target_point_vs_planning_path_candidate_sample(
+    rows: Sequence[Mapping[str, Any]],
+    hdmap_projection_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    projection_rows = [
+        row
+        for row in hdmap_projection_rows
+        if str(row.get("source") or "") == "apollo_hdmap_api"
+        and str(row.get("status") or row.get("projection_status") or "").lower() in {"ok", "pass"}
+        and _projection_timestamp(row) is not None
+        and _num(
+            row.get("localization_x")
+            if row.get("localization_x") is not None
+            else row.get("x_apollo")
+        )
+        is not None
+        and _num(
+            row.get("localization_y")
+            if row.get("localization_y") is not None
+            else row.get("y_apollo")
+        )
+        is not None
+        and _num(row.get("lane_heading_at_s")) is not None
+    ]
+    rows_with_path_points = [
+        row for row in rows if _planning_debug_path_candidate_sample_points(row)
+    ]
+    rows_with_target = [
+        row
+        for row in rows_with_path_points
+        if _num(_nested(row, "control.debug_simple_lat_current_target_point_x")) is not None
+        and _num(_nested(row, "control.debug_simple_lat_current_target_point_y")) is not None
+    ]
+    if not rows:
+        return {
+            "status": "insufficient_data",
+            "classification": "reference_rows_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": 0,
+            "rows_with_path_candidate_sample_points": 0,
+            "rows_with_control_target_point": 0,
+            "target_point_to_path_candidate_line_abs_p95_m": None,
+            "target_point_lane_l_abs_p95_m": None,
+            "interpretation": (
+                "No reference-line rows are available; Control target point cannot be "
+                "compared with Planning debug path candidates."
+            ),
+        }
+    if not rows_with_path_points:
+        return {
+            "status": "insufficient_data",
+            "classification": "planning_debug_path_candidate_sample_points_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": len(rows),
+            "rows_with_path_candidate_sample_points": 0,
+            "rows_with_control_target_point": 0,
+            "target_point_to_path_candidate_line_abs_p95_m": None,
+            "target_point_lane_l_abs_p95_m": None,
+            "interpretation": (
+                "Planning debug path candidate sample points are missing, so Control "
+                "simple_lat target point cannot be compared with candidate path geometry."
+            ),
+        }
+    if not rows_with_target:
+        return {
+            "status": "insufficient_data",
+            "classification": "control_target_point_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": len(rows),
+            "rows_with_path_candidate_sample_points": len(rows_with_path_points),
+            "rows_with_control_target_point": 0,
+            "target_point_to_path_candidate_line_abs_p95_m": None,
+            "target_point_lane_l_abs_p95_m": None,
+            "interpretation": (
+                "Control simple_lat target point coordinates are missing or not aligned "
+                "with sampled Planning debug path candidates."
+            ),
+        }
+
+    target_to_path_distances: list[float] = []
+    target_lane_l_values: list[float] = []
+    path_lane_l_values: list[float] = []
+    join_deltas_ms: list[float] = []
+    candidate_names: list[str] = []
+    candidate_paths: list[str] = []
+    rows_with_distance = 0
+    rows_with_projection = 0
+    rows_with_path_lane_l = 0
+    for row in rows_with_target:
+        target_x = _num(_nested(row, "control.debug_simple_lat_current_target_point_x"))
+        target_y = _num(_nested(row, "control.debug_simple_lat_current_target_point_y"))
+        if target_x is None or target_y is None:
+            continue
+        row_points = _planning_debug_path_candidate_sample_points(row)
+        samples = _sample_points(_nested(row, "planning.trajectory_sample_points"))
+        supported_points = (
+            _points_within_sample_support(
+                row_points,
+                samples,
+                margin_m=PLANNING_PATH_CANDIDATE_TRAJECTORY_SUPPORT_MARGIN_M,
+            )
+            if samples
+            else row_points
+        )
+        grouped_points = _group_path_candidate_points(supported_points or row_points)
+        distances = [
+            distance
+            for points in grouped_points.values()
+            if (distance := _point_to_polyline_distance((target_x, target_y), points)) is not None
+        ]
+        if distances:
+            target_to_path_distances.append(min(abs(distance) for distance in distances))
+            rows_with_distance += 1
+        row_ts = _row_sim_timestamp(row)
+        projection = (
+            _nearest_projection_row(
+                row_ts,
+                projection_rows,
+                tolerance_s=PLANNING_PROJECTION_JOIN_TOLERANCE_S,
+            )
+            if row_ts is not None
+            else None
+        )
+        if projection is None:
+            continue
+        rows_with_projection += 1
+        matched_ts = _projection_timestamp(projection)
+        if row_ts is not None and matched_ts is not None:
+            join_deltas_ms.append(abs(row_ts - matched_ts) * 1000.0)
+        target_lane_l = _point_lane_l_from_projection(target_x, target_y, projection)
+        if target_lane_l is not None:
+            target_lane_l_values.append(target_lane_l)
+        row_path_lane_l_count = 0
+        for point in supported_points or row_points:
+            x = _num(point.get("x"))
+            y = _num(point.get("y"))
+            if x is None or y is None:
+                continue
+            lane_l = _point_lane_l_from_projection(x, y, projection)
+            if lane_l is None:
+                continue
+            path_lane_l_values.append(lane_l)
+            row_path_lane_l_count += 1
+            candidate_names.append(str(point.get("candidate_name") or ""))
+            candidate_paths.append(str(point.get("candidate_path") or ""))
+        if row_path_lane_l_count:
+            rows_with_path_lane_l += 1
+
+    distance_p95 = _p95_abs(target_to_path_distances)
+    target_lane_l_p95 = _p95_abs(target_lane_l_values)
+    path_lane_l_p95 = _p95_abs(path_lane_l_values)
+    path_lane_l_min = min(path_lane_l_values) if path_lane_l_values else None
+    path_lane_l_max = max(path_lane_l_values) if path_lane_l_values else None
+    target_inside_path_lateral_envelope = (
+        path_lane_l_min is not None
+        and path_lane_l_max is not None
+        and bool(target_lane_l_values)
+        and min(target_lane_l_values) >= path_lane_l_min - PASS_LATERAL_M
+        and max(target_lane_l_values) <= path_lane_l_max + PASS_LATERAL_M
+    )
+    path_candidates_straddle_lane_center = (
+        path_lane_l_min is not None
+        and path_lane_l_max is not None
+        and path_lane_l_min < -PASS_LATERAL_M
+        and path_lane_l_max > PASS_LATERAL_M
+    )
+    if distance_p95 is None:
+        status = "insufficient_data"
+        classification = "control_target_path_candidate_join_no_distance"
+    elif distance_p95 <= CONTROL_TARGET_PATH_CANDIDATE_WARN_M:
+        status = "available"
+        classification = "control_target_on_planning_path_candidate_line"
+    elif (
+        target_lane_l_p95 is not None
+        and target_lane_l_p95 <= PASS_LATERAL_M
+        and target_inside_path_lateral_envelope
+        and path_candidates_straddle_lane_center
+    ):
+        status = "available"
+        classification = "control_target_between_planning_path_candidate_lateral_bounds"
+    elif target_lane_l_p95 is not None and target_lane_l_p95 > WARN_LATERAL_M:
+        status = "warn"
+        classification = "control_target_lateral_offset_from_hdmap_lane_center"
+    else:
+        status = "warn"
+        classification = "control_target_offset_from_planning_path_candidate_line"
+    return {
+        "status": status,
+        "classification": classification,
+        "available": distance_p95 is not None,
+        "reference_line_claim_grade_allowed": False,
+        "row_count": len(rows),
+        "rows_with_path_candidate_sample_points": len(rows_with_path_points),
+        "rows_with_control_target_point": len(rows_with_target),
+        "rows_with_path_candidate_distance": rows_with_distance,
+        "rows_with_projection": rows_with_projection,
+        "rows_with_path_lane_l": rows_with_path_lane_l,
+        "sample_coverage_ratio": len(rows_with_target) / len(rows_with_path_points),
+        "target_point_to_path_candidate_line_abs_p95_m": distance_p95,
+        "target_point_to_path_candidate_line_abs_max_m": (
+            max(target_to_path_distances) if target_to_path_distances else None
+        ),
+        "target_point_lane_l_abs_p95_m": target_lane_l_p95,
+        "path_candidate_lane_l_abs_p95_m": path_lane_l_p95,
+        "path_candidate_lane_l_min_m": path_lane_l_min,
+        "path_candidate_lane_l_max_m": path_lane_l_max,
+        "target_inside_path_lateral_envelope": target_inside_path_lateral_envelope,
+        "path_candidates_straddle_lane_center": path_candidates_straddle_lane_center,
+        "join_delta_p95_ms": _p95_abs(join_deltas_ms),
+        "join_tolerance_ms": PLANNING_PROJECTION_JOIN_TOLERANCE_S * 1000.0,
+        "threshold_warn_m": CONTROL_TARGET_PATH_CANDIDATE_WARN_M,
+        "candidate_path_topk": _topk(candidate_paths),
+        "candidate_name_topk": _topk(candidate_names),
+        "recommended_evidence_policy": "control_target_path_candidate_surrogate_only_until_reference_line_debug_exported",
+        "interpretation": (
+            "This compares Control simple_lat target point coordinates with sampled "
+            "debug.planning_data.path candidates and, when official HDMap projection rows "
+            "exist, reports whether the target point lies near the lane center while path "
+            "candidates span a lateral envelope. It is diagnostic-only because path "
+            "candidates may be optimizer or boundary debug paths, not exported Planning "
+            "reference-line centerlines."
+        ),
+    }
+
+
 def _planning_debug_path_candidate_hdmap_projection_alignment(
     rows: Sequence[Mapping[str, Any]],
     hdmap_projection_rows: Sequence[Mapping[str, Any]],
@@ -2757,6 +2995,19 @@ def _planning_debug_path_candidate_sample_points(row: Mapping[str, Any]) -> list
                     )
                     out.append(payload)
     return out
+
+
+def _group_path_candidate_points(points: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str, str, str], list[Mapping[str, Any]]]:
+    grouped: dict[tuple[str, str, str, str], list[Mapping[str, Any]]] = {}
+    for point in points:
+        key = (
+            str(point.get("candidate_path") or ""),
+            str(point.get("candidate_name") or ""),
+            str(point.get("candidate_item_index") or ""),
+            str(point.get("candidate_field") or ""),
+        )
+        grouped.setdefault(key, []).append(point)
+    return grouped
 
 
 def _planning_first_point_projection_alignment(

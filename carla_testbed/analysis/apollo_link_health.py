@@ -320,6 +320,7 @@ def analyze_apollo_link_health(
                 "reference_line_debug_export_policy",
                 "planning_trajectory_sample_surrogate",
                 "control_target_point_vs_planning_trajectory_sample",
+                "control_target_point_vs_planning_path_candidate_sample",
                 "planning_debug_path_candidate_vs_trajectory_sample",
                 "planning_debug_path_candidate_hdmap_projection_alignment",
             ),
@@ -466,6 +467,11 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
         if isinstance(reference_metrics.get("control_target_point_vs_planning_trajectory_sample"), Mapping)
         else {}
     )
+    control_target_path_candidate = (
+        reference_metrics.get("control_target_point_vs_planning_path_candidate_sample")
+        if isinstance(reference_metrics.get("control_target_point_vs_planning_path_candidate_sample"), Mapping)
+        else {}
+    )
     path_candidate_trajectory_surrogate = (
         reference_metrics.get("planning_debug_path_candidate_vs_trajectory_sample")
         if isinstance(reference_metrics.get("planning_debug_path_candidate_vs_trajectory_sample"), Mapping)
@@ -521,6 +527,21 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
         ),
         "control_target_point_vs_planning_sample_coverage_ratio": control_target_surrogate.get(
             "sample_coverage_ratio"
+        ),
+        "control_target_point_vs_path_candidate_classification": control_target_path_candidate.get(
+            "classification"
+        ),
+        "control_target_point_vs_path_candidate_reference_line_claim_grade_allowed": (
+            control_target_path_candidate.get("reference_line_claim_grade_allowed")
+        ),
+        "control_target_point_vs_path_candidate_p95_m": control_target_path_candidate.get(
+            "target_point_to_path_candidate_line_abs_p95_m"
+        ),
+        "control_target_point_vs_path_candidate_target_lane_l_abs_p95_m": (
+            control_target_path_candidate.get("target_point_lane_l_abs_p95_m")
+        ),
+        "control_target_point_inside_path_candidate_lateral_envelope": (
+            control_target_path_candidate.get("target_inside_path_lateral_envelope")
         ),
         "planning_debug_path_candidate_vs_trajectory_sample_classification": (
             path_candidate_trajectory_surrogate.get("classification")

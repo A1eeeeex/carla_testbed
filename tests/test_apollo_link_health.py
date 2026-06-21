@@ -1953,6 +1953,19 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
             "control_target_planning_sample_surrogate_only_until_reference_line_debug_exported"
         ),
     }
+    reference_report["control_target_point_vs_planning_path_candidate_sample"] = {
+        "status": "available",
+        "classification": "control_target_between_planning_path_candidate_lateral_bounds",
+        "available": True,
+        "reference_line_claim_grade_allowed": False,
+        "sample_coverage_ratio": 0.37,
+        "target_point_to_path_candidate_line_abs_p95_m": 0.82,
+        "target_point_lane_l_abs_p95_m": 0.000001,
+        "target_inside_path_lateral_envelope": True,
+        "recommended_evidence_policy": (
+            "control_target_path_candidate_surrogate_only_until_reference_line_debug_exported"
+        ),
+    }
     reference_report["planning_debug_path_candidate_vs_trajectory_sample"] = {
         "status": "available",
         "classification": "planning_debug_path_candidate_near_planning_trajectory_sample_support",
@@ -2155,6 +2168,15 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert bridge["control_target_point_vs_planning_sample_reference_line_claim_grade_allowed"] is False
     assert bridge["control_target_point_vs_planning_sample_p95_m"] == 0.02
     assert bridge["control_target_point_vs_planning_sample_coverage_ratio"] == 0.37
+    assert bridge["control_target_point_vs_path_candidate_classification"] == (
+        "control_target_between_planning_path_candidate_lateral_bounds"
+    )
+    assert bridge[
+        "control_target_point_vs_path_candidate_reference_line_claim_grade_allowed"
+    ] is False
+    assert bridge["control_target_point_vs_path_candidate_p95_m"] == 0.82
+    assert bridge["control_target_point_vs_path_candidate_target_lane_l_abs_p95_m"] == 0.000001
+    assert bridge["control_target_point_inside_path_candidate_lateral_envelope"] is True
     assert bridge["planning_debug_path_candidate_vs_trajectory_sample_classification"] == (
         "planning_debug_path_candidate_near_planning_trajectory_sample_support"
     )

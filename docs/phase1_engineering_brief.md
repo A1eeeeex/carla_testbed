@@ -233,6 +233,17 @@ Interpretation:
   expected Apollo lane window, but their lane-lateral distribution is
   boundary/optimizer-like rather than centerline-like. It is still
   diagnostic-only and cannot be promoted to claim-grade reference-line evidence.
+  The next refresh joins Control `simple_lat` target points against the sampled
+  path candidates and the same official HDMap projection rows. For the same
+  sample,
+  `control_target_point_vs_planning_path_candidate_sample.classification=control_target_between_planning_path_candidate_lateral_bounds`:
+  the Control target lane-l p95 is near zero
+  (`≈4.9e-7m`), while the path-candidate lateral envelope spans roughly
+  `[-1.255m, +0.82m]` and the target-to-candidate-line p95 is about `0.82m`.
+  This reinforces the diagnostic interpretation that `debug.planning_data.path`
+  entries are likely boundary/optimizer candidate paths around the local target
+  trajectory, not exported reference-line centerlines. It still does not change
+  behavior status or allow reference-line claim-grade evidence.
   The same cycle fixed a claim-boundary regression in `apollo_link_health`:
   a derived `analysis/assist_ledger/assist_ledger.json` with `source_artifact=config`
   can no longer clear a blocking assist declared in `manifest.json` or
