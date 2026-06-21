@@ -310,7 +310,13 @@ def analyze_apollo_link_health(
             blocking_keys=("blocking_reasons",),
             warning_keys=("warnings",),
             next_action="Inspect Apollo reference-line, routing lane ids, and HDMap projection evidence.",
-            key_metric_fields=("metrics", "evidence", "apollo_hdmap_projection", "reference_debug_diagnostic"),
+            key_metric_fields=(
+                "metrics",
+                "evidence",
+                "apollo_hdmap_projection",
+                "reference_debug_diagnostic",
+                "reference_line_debug_export_policy",
+            ),
         ),
         "apollo_lateral_semantics": _apollo_lateral_semantics_layer(
             payloads.get("apollo_lateral_semantics"),
@@ -438,6 +444,11 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
         if isinstance(reference_metrics.get("reference_debug_diagnostic"), Mapping)
         else {}
     )
+    export_policy = (
+        reference_metrics.get("reference_line_debug_export_policy")
+        if isinstance(reference_metrics.get("reference_line_debug_export_policy"), Mapping)
+        else {}
+    )
     reference_classification = diagnostic.get("classification")
     planning_projection_alignment = (
         diagnostic.get("planning_first_point_projection_alignment")
@@ -464,6 +475,11 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
         "status": bridge_status,
         "classification": bridge_classification,
         "reference_debug_classification": reference_classification,
+        "reference_line_debug_export_policy_classification": export_policy.get("classification"),
+        "reference_line_debug_claim_grade_allowed": export_policy.get(
+            "reference_line_debug_claim_grade_allowed"
+        ),
+        "reference_line_debug_recommended_evidence_policy": export_policy.get("recommended_evidence_policy"),
         "simple_lat_station_frame_classification": station_classification,
         "control_simple_lat_reference_available": diagnostic.get("control_simple_lat_reference_available"),
         "control_reference_join_coverage_ratio": diagnostic.get("control_reference_join_coverage_ratio"),
@@ -490,6 +506,12 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
         warnings = set(reference.get("warnings") or [])
         warnings.add("planning_debug_export_gap_with_control_local_station_frame")
         reference["warnings"] = sorted(warnings)
+        evidence_policy = export_policy.get("recommended_evidence_policy")
+        evidence_policy_clause = (
+            f" Current reference-line debug evidence policy is `{evidence_policy}`."
+            if evidence_policy
+            else ""
+        )
         if (
             planning_projection_alignment.get("classification")
             == "planning_first_point_on_hdmap_projection_line_candidate"
@@ -498,11 +520,13 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
                 "Planning first trajectory points align with official HDMap projection locally; "
                 "inspect Planning reference-line debug export and Control simple_lat local/stitching "
                 "station frame join before changing steer scale, smoothing, PID, or actuation mapping."
+                + evidence_policy_clause
             )
         else:
             reference["next_action"] = (
                 "Inspect Planning reference-line debug export and Control simple_lat local/stitching "
                 "station frame join before changing steer scale, smoothing, PID, or actuation mapping."
+                + evidence_policy_clause
             )
 
 

@@ -417,6 +417,20 @@ Interpretation:
   an evidence/export closure problem between Planning reference-line debug and
   Control simple_lat semantics, not a reason to change Apollo source,
   `steer_scale`, or CARLA actuation mapping.
+- After the latest Pro-audit progress update, this reference-line evidence is
+  now split into explicit policy as well as raw diagnostic. The refreshed
+  `apollo_reference_line_contract_report.json` for
+  `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742`
+  records
+  `reference_line_debug_export_policy.classification=reference_line_debug_export_gap_with_local_planning_and_control_reference_evidence`,
+  `reference_line_debug_claim_grade_allowed=false`, and
+  `recommended_evidence_policy=local_surrogate_only_until_reference_line_debug_exported`.
+  This means Planning first trajectory points and Control `simple_lat` local
+  evidence are useful attribution surrogates, but they do not prove
+  claim-grade reference-line correctness until Planning reference-line debug /
+  route-segment / Control station semantics are exported or decoded in one
+  frame. Phase 1 remains `PARTIAL`; the current Apollo sample remains
+  `failed/lane_invasion`.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.

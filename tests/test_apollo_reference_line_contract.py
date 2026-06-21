@@ -567,6 +567,66 @@ def test_planning_first_point_projection_alignment_uses_official_hdmap_projectio
     assert report["reference_debug_diagnostic"]["planning_first_point_projection_alignment"] == alignment
 
 
+def test_reference_line_debug_export_policy_marks_local_surrogates_not_claim_grade() -> None:
+    rows = [
+        {
+            "sim_time_sec": 1.0,
+            "planning": {
+                "trajectory_point_count": 20,
+                "first_trajectory_point_x": 10.0,
+                "first_trajectory_point_y": 2.0,
+                "first_trajectory_point_theta": 0.0,
+                "reference_line_count": 0,
+                "routing_segment_count": 1,
+            },
+            "routing": {"routing_segment_count": 1},
+            "control": {
+                "debug_simple_lat_heading": 0.0,
+                "debug_simple_lat_ref_heading": 0.0,
+                "debug_simple_lat_heading_error": 0.01,
+                "debug_simple_lat_lateral_error": 0.12,
+            },
+            "computed": {
+                "localization_to_planning_first_heading_error_rad": 0.0,
+                "localization_to_control_ref_heading_error_rad": 0.01,
+                "localization_to_control_lateral_error_m": 0.12,
+                "planning_reference_available": True,
+                "control_reference_available": True,
+            },
+        }
+    ]
+    hdmap_projection_rows = [
+        {
+            "timestamp": 1.0,
+            "localization_x": 10.0,
+            "localization_y": 2.0,
+            "projection_l": 0.0,
+            "lane_heading_at_s": 0.0,
+            "nearest_lane_id": "lane_097",
+            "source": "apollo_hdmap_api",
+            "status": "ok",
+        }
+    ]
+
+    report = analyze_apollo_reference_line_contract(
+        rows,
+        hdmap_projection_rows=hdmap_projection_rows,
+    )
+
+    policy = report["reference_line_debug_export_policy"]
+    assert policy["status"] == "warn"
+    assert policy["classification"] == (
+        "reference_line_debug_export_gap_with_local_planning_and_control_reference_evidence"
+    )
+    assert policy["reference_line_debug_claim_grade_allowed"] is False
+    assert policy["planning_first_point_local_alignment_available"] is True
+    assert policy["control_simple_lat_reference_available"] is True
+    assert policy["recommended_evidence_policy"] == (
+        "local_surrogate_only_until_reference_line_debug_exported"
+    )
+    assert "cannot by itself support claim-grade" in policy["claim_boundary"]
+
+
 def test_existing_contract_rows_are_augmented_with_control_decode_debug(tmp_path: Path) -> None:
     contract = tmp_path / "apollo_reference_line_contract.jsonl"
     control = tmp_path / "bridge_control_decode.jsonl"

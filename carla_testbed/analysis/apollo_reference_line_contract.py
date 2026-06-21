@@ -406,6 +406,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     control_contract = _mapping(contracts.get("control_reference"))
     projection_contract = _mapping(contracts.get("apollo_hdmap_projection"))
     planning_projection_alignment = _mapping(report.get("planning_first_point_projection_alignment"))
+    reference_debug_export_policy = _mapping(report.get("reference_line_debug_export_policy"))
     return "\n".join(
         [
             "# Apollo Reference-Line Contract Summary",
@@ -422,6 +423,9 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Reference-line provider ready ratio: `{evidence.get('reference_line_provider_ready_ratio')}`",
             f"- Reference debug classification: `{_mapping(report.get('reference_debug_diagnostic')).get('classification')}`",
             f"- Control simple_lat reference available: `{_mapping(report.get('reference_debug_diagnostic')).get('control_simple_lat_reference_available')}`",
+            f"- Reference debug export policy: `{reference_debug_export_policy.get('classification')}`",
+            f"- Reference debug claim-grade allowed: `{reference_debug_export_policy.get('reference_line_debug_claim_grade_allowed')}`",
+            f"- Reference debug evidence policy: `{reference_debug_export_policy.get('recommended_evidence_policy')}`",
             f"- Planning ref heading p95 rad: `{metrics.get('planning_ref_heading_error_p95_rad')}`",
             f"- Normal trajectory heading p95 rad: `{metrics.get('normal_trajectory_heading_error_p95_rad')}`",
             f"- PATH_FALLBACK trajectory ratio: `{metrics.get('path_fallback_trajectory_ratio')}`",
@@ -468,6 +472,7 @@ def _report(
         metrics,
         planning_projection_alignment=planning_projection_alignment,
     )
+    reference_debug_export_policy = _reference_line_debug_export_policy(reference_debug_diagnostic)
     report_contracts = dict(contracts or _contracts(rows=rows, evidence=evidence, metrics=metrics, hdmap_projection=hdmap_projection))
     status, warnings = _downgrade_for_planning_materialization(
         status,
@@ -488,6 +493,7 @@ def _report(
         "evidence": evidence,
         "metrics": metrics,
         "reference_debug_diagnostic": reference_debug_diagnostic,
+        "reference_line_debug_export_policy": reference_debug_export_policy,
         "planning_first_point_projection_alignment": planning_projection_alignment,
         "contracts": report_contracts,
         "planning_trajectory_contract": report_contracts.get("planning_trajectory") or {},
@@ -1009,6 +1015,107 @@ def _reference_debug_diagnostic(
             "classification separates Planning route/trajectory materialization from whether "
             "reference-line debug counters are exported and whether Control simple_lat reference "
             "semantics are visible."
+        ),
+    }
+
+
+def _reference_line_debug_export_policy(reference_debug_diagnostic: Mapping[str, Any]) -> dict[str, Any]:
+    classification = str(reference_debug_diagnostic.get("classification") or "")
+    planning_alignment = _mapping(reference_debug_diagnostic.get("planning_first_point_projection_alignment"))
+    planning_local_alignment = (
+        planning_alignment.get("classification") == "planning_first_point_on_hdmap_projection_line_candidate"
+        and planning_alignment.get("status") == "pass"
+    )
+    control_reference_available = bool(reference_debug_diagnostic.get("control_simple_lat_reference_available"))
+    route_segment_available = bool(reference_debug_diagnostic.get("route_segment_available"))
+    reference_debug_available = bool(reference_debug_diagnostic.get("reference_line_debug_available"))
+
+    if classification == "reference_line_debug_available" or reference_debug_available:
+        return {
+            "status": "available",
+            "classification": "reference_line_debug_available",
+            "reference_line_debug_claim_grade_allowed": True,
+            "planning_first_point_local_alignment_available": planning_local_alignment,
+            "control_simple_lat_reference_available": control_reference_available,
+            "route_segment_available": route_segment_available,
+            "recommended_evidence_policy": "reference_line_debug_can_support_claim_if_other_gates_pass",
+            "recommended_next_action": (
+                "Use exported Planning reference-line debug together with route, projection, "
+                "localization, and control-handoff contracts before making behavior claims."
+            ),
+            "reason": "Planning reference-line debug counters are available.",
+            "claim_boundary": (
+                "Reference-line debug availability is necessary but not sufficient for behavior "
+                "success or natural-driving claims."
+            ),
+        }
+
+    if classification == "planning_reference_line_debug_export_gap":
+        if planning_local_alignment and control_reference_available:
+            export_classification = (
+                "reference_line_debug_export_gap_with_local_planning_and_control_reference_evidence"
+            )
+            reason = (
+                "Planning first trajectory points align locally with official HDMap projection "
+                "and Control simple_lat reference evidence is visible, but Planning reference-line "
+                "debug counters are not exported."
+            )
+        elif planning_local_alignment:
+            export_classification = "reference_line_debug_export_gap_with_planning_local_alignment_only"
+            reason = (
+                "Planning first trajectory points align locally with official HDMap projection, "
+                "but Control simple_lat reference evidence is not available and Planning "
+                "reference-line debug counters are not exported."
+            )
+        elif control_reference_available:
+            export_classification = "reference_line_debug_export_gap_with_control_reference_only"
+            reason = (
+                "Control simple_lat reference evidence is visible, but Planning first-point "
+                "projection alignment is unavailable and Planning reference-line debug counters "
+                "are not exported."
+            )
+        else:
+            export_classification = "reference_line_debug_export_gap_without_local_surrogate_evidence"
+            reason = (
+                "Planning has route/trajectory evidence but neither Planning first-point "
+                "projection alignment nor Control simple_lat reference evidence is sufficient."
+            )
+        return {
+            "status": "warn",
+            "classification": export_classification,
+            "reference_line_debug_claim_grade_allowed": False,
+            "planning_first_point_local_alignment_available": planning_local_alignment,
+            "control_simple_lat_reference_available": control_reference_available,
+            "route_segment_available": route_segment_available,
+            "recommended_evidence_policy": "local_surrogate_only_until_reference_line_debug_exported",
+            "recommended_next_action": (
+                "Export or decode Planning reference-line debug, route segments, and Control "
+                "simple_lat station in one frame before changing steer scale, smoothing, PID, "
+                "or actuation mapping."
+            ),
+            "reason": reason,
+            "claim_boundary": (
+                "Local Planning first-point and Control simple_lat evidence can narrow diagnosis, "
+                "but cannot by itself support claim-grade reference-line correctness."
+            ),
+        }
+
+    return {
+        "status": "insufficient_data",
+        "classification": "reference_line_debug_export_policy_insufficient_data",
+        "reference_line_debug_claim_grade_allowed": False,
+        "planning_first_point_local_alignment_available": planning_local_alignment,
+        "control_simple_lat_reference_available": control_reference_available,
+        "route_segment_available": route_segment_available,
+        "recommended_evidence_policy": "insufficient_reference_line_debug_evidence",
+        "recommended_next_action": (
+            "Collect Planning reference-line debug/export evidence or local Planning/projection "
+            "and Control simple_lat surrogate evidence before drawing reference-line conclusions."
+        ),
+        "reason": f"Reference debug diagnostic classification `{classification or 'missing'}` is not claim-grade.",
+        "claim_boundary": (
+            "Missing reference-line debug/export evidence must remain insufficient_data or "
+            "diagnostic-only; it cannot be upgraded from field presence alone."
         ),
     }
 

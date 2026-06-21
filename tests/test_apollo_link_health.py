@@ -1890,6 +1890,16 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
             "planning_first_point_lane_heading_error_p95_rad": 0.000002,
         },
     }
+    reference_report["reference_line_debug_export_policy"] = {
+        "status": "warn",
+        "classification": "reference_line_debug_export_gap_with_local_planning_and_control_reference_evidence",
+        "reference_line_debug_claim_grade_allowed": False,
+        "planning_first_point_local_alignment_available": True,
+        "control_simple_lat_reference_available": True,
+        "route_segment_available": True,
+        "recommended_evidence_policy": "local_surrogate_only_until_reference_line_debug_exported",
+        "recommended_next_action": "Export or decode Planning reference-line debug before behavior claims.",
+    }
     _write_json(reference_path, reference_report)
     _write_json(
         run_dir / "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
@@ -2052,6 +2062,13 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     bridge = reference["key_metrics"]["planning_control_station_bridge"]
     assert bridge["classification"] == "planning_debug_export_gap_with_control_local_station_frame"
     assert bridge["reference_debug_classification"] == "planning_reference_line_debug_export_gap"
+    assert bridge["reference_line_debug_export_policy_classification"] == (
+        "reference_line_debug_export_gap_with_local_planning_and_control_reference_evidence"
+    )
+    assert bridge["reference_line_debug_claim_grade_allowed"] is False
+    assert bridge["reference_line_debug_recommended_evidence_policy"] == (
+        "local_surrogate_only_until_reference_line_debug_exported"
+    )
     assert bridge["simple_lat_station_frame_classification"] == "local_station_frame_offset_candidate"
     assert bridge["control_simple_lat_reference_available"] is True
     assert bridge["control_reference_join_coverage_ratio"] == 0.37
@@ -2062,6 +2079,7 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert bridge["planning_first_point_lane_heading_error_p95_rad"] == 0.000002
     assert "planning_debug_export_gap_with_control_local_station_frame" in reference["warnings"]
     assert "Planning first trajectory points align with official HDMap projection locally" in reference["next_action"]
+    assert "local_surrogate_only_until_reference_line_debug_exported" in reference["next_action"]
     assert "before changing steer scale" in reference["next_action"]
     lateral = report["layers"]["apollo_lateral_semantics"]
     assert lateral["key_metrics"]["reference_debug_classification"] == "planning_reference_line_debug_export_gap"
