@@ -177,6 +177,23 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                 f"- recommended_action: `{route_lateral_policy.get('recommended_action')}`",
             ]
         )
+    reference_line_policy = report.get("reference_line_debug_export_policy")
+    if (
+        isinstance(reference_line_policy, Mapping)
+        and reference_line_policy.get("status") not in {None, "not_applicable"}
+    ):
+        lines.extend(
+            [
+                "",
+                "## Reference-Line Debug Export Policy",
+                "",
+                f"- policy: `{reference_line_policy.get('policy')}`",
+                f"- classification: `{reference_line_policy.get('classification')}`",
+                f"- reference_line_debug_claim_grade_allowed: `{reference_line_policy.get('reference_line_debug_claim_grade_allowed')}`",
+                f"- local_surrogate_available: `{reference_line_policy.get('local_surrogate_available')}`",
+                f"- recommended_action: `{reference_line_policy.get('recommended_action')}`",
+            ]
+        )
     metrics = report.get("phase1_metrics") if isinstance(report.get("phase1_metrics"), Mapping) else {}
     lane_context = (
         metrics.get("lane_invasion_context")
@@ -263,6 +280,9 @@ def _status(
         derived_blocker_evidence=derived_blocker_evidence,
     )
     route_lateral_field_policy = _route_lateral_field_policy(derived_blocker_evidence)
+    reference_line_debug_export_policy = _reference_line_debug_export_policy(
+        derived_blocker_evidence
+    )
     return {
         "schema_version": PHASE1_STATUS_SCHEMA_VERSION,
         "run_dir": str(root),
@@ -282,6 +302,7 @@ def _status(
         "behavior_next_action": behavior_blocker["behavior_next_action"],
         "behavior_blocker_evidence": behavior_blocker["behavior_blocker_evidence"],
         "route_lateral_field_policy": route_lateral_field_policy,
+        "reference_line_debug_export_policy": reference_line_debug_export_policy,
         "original_failure_reason": original_reason,
         "evaluable": evaluability["run_evaluable"],
         "run_evaluable": evaluability["run_evaluable"],
@@ -851,6 +872,63 @@ def _route_lateral_field_policy(derived_blocker_evidence: Mapping[str, Any]) -> 
     }
 
 
+def _reference_line_debug_export_policy(
+    derived_blocker_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    link_health = (
+        derived_blocker_evidence.get("apollo_link_health")
+        if isinstance(derived_blocker_evidence.get("apollo_link_health"), Mapping)
+        else {}
+    )
+    status = link_health.get("reference_line_debug_export_policy_status")
+    classification = link_health.get("reference_line_debug_export_policy_classification")
+    if not status and not classification:
+        return {
+            "status": "not_applicable",
+            "policy": "reference_line_debug_export_policy_not_available",
+            "classification": None,
+            "reference_line_debug_claim_grade_allowed": None,
+            "local_surrogate_available": None,
+            "recommended_action": "generate_apollo_reference_line_contract_and_link_health_reports",
+            "claim_boundary": (
+                "Missing reference-line export policy must not be interpreted as "
+                "reference-line success or behavior success."
+            ),
+        }
+
+    claim_grade_allowed = link_health.get("reference_line_debug_claim_grade_allowed")
+    planning_local = link_health.get("planning_first_point_local_alignment_available")
+    trajectory_surrogate = link_health.get("planning_trajectory_sample_surrogate_available")
+    control_reference = link_health.get("control_simple_lat_reference_available")
+    local_surrogate_available = bool(planning_local or trajectory_surrogate or control_reference)
+    if claim_grade_allowed is True:
+        policy = "reference_line_debug_can_support_claim_if_other_gates_pass"
+    elif local_surrogate_available:
+        policy = "local_surrogate_only_until_reference_line_debug_exported"
+    else:
+        policy = "insufficient_reference_line_debug_evidence"
+
+    return {
+        "status": status or "unknown",
+        "policy": policy,
+        "classification": classification,
+        "reference_line_debug_claim_grade_allowed": claim_grade_allowed,
+        "local_surrogate_available": local_surrogate_available,
+        "planning_first_point_local_alignment_available": planning_local,
+        "planning_trajectory_sample_surrogate_available": trajectory_surrogate,
+        "control_simple_lat_reference_available": control_reference,
+        "route_segment_available": link_health.get("reference_line_route_segment_available"),
+        "recommended_evidence_policy": link_health.get("reference_line_recommended_evidence_policy"),
+        "recommended_action": link_health.get("reference_line_recommended_next_action"),
+        "reason": link_health.get("reference_line_debug_export_policy_reason"),
+        "claim_boundary": (
+            "This policy is Phase 1 reference-line attribution evidence. Local Planning/control "
+            "surrogates can narrow diagnosis, but they do not replace exported Planning "
+            "reference-line debug and do not prove behavior success."
+        ),
+    }
+
+
 def _control_health_blocker_summary(report: Mapping[str, Any], path: Path) -> dict[str, Any]:
     metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
     materialization = (
@@ -886,12 +964,39 @@ def _control_health_blocker_summary(report: Mapping[str, Any], path: Path) -> di
 def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -> dict[str, Any]:
     lateral_metrics = _lookup_path(report, ("layers", "apollo_lateral_semantics", "key_metrics"))
     lateral_metrics = lateral_metrics if isinstance(lateral_metrics, Mapping) else {}
+    reference_metrics = _lookup_path(report, ("layers", "planning_reference_line", "key_metrics"))
+    reference_metrics = reference_metrics if isinstance(reference_metrics, Mapping) else {}
+    export_policy = (
+        reference_metrics.get("reference_line_debug_export_policy")
+        if isinstance(reference_metrics.get("reference_line_debug_export_policy"), Mapping)
+        else {}
+    )
     return {
         "available": bool(report),
         "path": str(path) if path.exists() else None,
         "primary_blocker": report.get("primary_blocker"),
         "secondary_blockers": list(report.get("secondary_blockers") or []),
         "can_claim_unassisted_natural_driving": report.get("can_claim_unassisted_natural_driving"),
+        "reference_line_debug_export_policy_status": export_policy.get("status"),
+        "reference_line_debug_export_policy_classification": export_policy.get("classification"),
+        "reference_line_debug_claim_grade_allowed": export_policy.get(
+            "reference_line_debug_claim_grade_allowed"
+        ),
+        "planning_first_point_local_alignment_available": export_policy.get(
+            "planning_first_point_local_alignment_available"
+        ),
+        "planning_trajectory_sample_surrogate_available": export_policy.get(
+            "planning_trajectory_sample_surrogate_available"
+        ),
+        "control_simple_lat_reference_available": export_policy.get(
+            "control_simple_lat_reference_available"
+        ),
+        "reference_line_route_segment_available": export_policy.get("route_segment_available"),
+        "reference_line_recommended_evidence_policy": export_policy.get(
+            "recommended_evidence_policy"
+        ),
+        "reference_line_recommended_next_action": export_policy.get("recommended_next_action"),
+        "reference_line_debug_export_policy_reason": export_policy.get("reason"),
         "route_simple_lat_sign_convention_candidate": lateral_metrics.get(
             "route_simple_lat_sign_convention_candidate"
         ),

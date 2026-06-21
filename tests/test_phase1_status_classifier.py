@@ -1296,8 +1296,34 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
             "route_lateral_field_recommended_action": (
                 "relabel_or_explicitly_convert_before_sign_sensitive_gate"
             ),
+            }
+        )
+    link_report["layers"]["planning_reference_line"] = {
+        "key_metrics": {
+            "reference_line_debug_export_policy": {
+                "status": "warn",
+                "classification": (
+                    "reference_line_debug_export_gap_with_local_planning_and_control_reference_evidence"
+                ),
+                "reference_line_debug_claim_grade_allowed": False,
+                "planning_first_point_local_alignment_available": True,
+                "planning_trajectory_sample_surrogate_available": True,
+                "control_simple_lat_reference_available": True,
+                "route_segment_available": True,
+                "recommended_evidence_policy": (
+                    "local_surrogate_only_until_reference_line_debug_exported"
+                ),
+                "recommended_next_action": (
+                    "Export or decode Planning reference-line debug before changing control mapping."
+                ),
+                "reason": (
+                    "Planning first trajectory points align locally with official HDMap projection "
+                    "and Control simple_lat reference evidence is visible, but Planning reference-line "
+                    "debug counters are not exported."
+                ),
+            }
         }
-    )
+    }
     link_report_path.write_text(json.dumps(link_report), encoding="utf-8")
 
     refreshed = classify_phase1_run(run)
@@ -1338,12 +1364,26 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert policy["absolute_magnitude_gate_allowed"] is True
     assert policy["recommended_gate_policy"] == "absolute_magnitude_only_until_canonical_sign_declared"
     assert policy["recommended_action"] == "relabel_or_explicitly_convert_before_sign_sensitive_gate"
+    reference_policy = refreshed["reference_line_debug_export_policy"]
+    assert reference_policy["status"] == "warn"
+    assert reference_policy["policy"] == "local_surrogate_only_until_reference_line_debug_exported"
+    assert reference_policy["classification"] == (
+        "reference_line_debug_export_gap_with_local_planning_and_control_reference_evidence"
+    )
+    assert reference_policy["reference_line_debug_claim_grade_allowed"] is False
+    assert reference_policy["local_surrogate_available"] is True
+    assert reference_policy["planning_first_point_local_alignment_available"] is True
+    assert reference_policy["planning_trajectory_sample_surrogate_available"] is True
+    assert reference_policy["control_simple_lat_reference_available"] is True
 
     paths = write_phase1_status(refreshed, run / "analysis" / "phase1_status")
     summary_text = Path(paths["summary"]).read_text(encoding="utf-8")
     assert "## Route Lateral Field Policy" in summary_text
     assert "exclude_from_sign_sensitive_behavior_gates" in summary_text
     assert "sign_sensitive_gate_allowed: `False`" in summary_text
+    assert "## Reference-Line Debug Export Policy" in summary_text
+    assert "local_surrogate_only_until_reference_line_debug_exported" in summary_text
+    assert "reference_line_debug_claim_grade_allowed: `False`" in summary_text
 
 
 def test_legacy_apollo_route_id_normalizes_to_phase1_scenario_case(tmp_path) -> None:

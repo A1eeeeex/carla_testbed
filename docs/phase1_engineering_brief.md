@@ -413,6 +413,14 @@ Interpretation:
   `absolute_magnitude_gate_allowed=true`. This is a Phase 1 analysis/gating
   contract only: it does not change runtime control, does not flip steer signs,
   and does not convert the Apollo lane-invasion sample into a behavior pass.
+- `phase1_status.json` also now echoes
+  `reference_line_debug_export_policy`. For the same run the policy is
+  `local_surrogate_only_until_reference_line_debug_exported`: Planning first
+  trajectory points align locally with official HDMap projection and Control
+  `simple_lat` reference evidence is visible, but exported Planning
+  reference-line debug counters remain unavailable. The policy keeps
+  `reference_line_debug_claim_grade_allowed=false`, so these local surrogates
+  narrow attribution without becoming a claim-grade reference-line pass.
 - Manual artifact inspection of the same run confirms the next evidence gap:
   `apollo_reference_line_debug.jsonl`,
   `stage5_apollo_reference_line_debug.jsonl`, and
