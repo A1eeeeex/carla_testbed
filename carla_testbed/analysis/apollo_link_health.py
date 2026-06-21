@@ -321,6 +321,7 @@ def analyze_apollo_link_health(
                 "planning_trajectory_sample_surrogate",
                 "control_target_point_vs_planning_trajectory_sample",
                 "planning_debug_path_candidate_vs_trajectory_sample",
+                "planning_debug_path_candidate_hdmap_projection_alignment",
             ),
         ),
         "apollo_lateral_semantics": _apollo_lateral_semantics_layer(
@@ -470,6 +471,11 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
         if isinstance(reference_metrics.get("planning_debug_path_candidate_vs_trajectory_sample"), Mapping)
         else {}
     )
+    path_candidate_hdmap_alignment = (
+        reference_metrics.get("planning_debug_path_candidate_hdmap_projection_alignment")
+        if isinstance(reference_metrics.get("planning_debug_path_candidate_hdmap_projection_alignment"), Mapping)
+        else {}
+    )
     reference_classification = diagnostic.get("classification")
     planning_projection_alignment = (
         diagnostic.get("planning_first_point_projection_alignment")
@@ -529,6 +535,18 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
         ),
         "planning_debug_path_candidate_vs_trajectory_sample_coverage_ratio": (
             path_candidate_trajectory_surrogate.get("sample_coverage_ratio")
+        ),
+        "planning_debug_path_candidate_hdmap_projection_classification": (
+            path_candidate_hdmap_alignment.get("classification")
+        ),
+        "planning_debug_path_candidate_hdmap_projection_reference_line_claim_grade_allowed": (
+            path_candidate_hdmap_alignment.get("reference_line_claim_grade_allowed")
+        ),
+        "planning_debug_path_candidate_hdmap_projection_lane_l_abs_p95_m": (
+            path_candidate_hdmap_alignment.get("path_candidate_lane_l_abs_p95_m")
+        ),
+        "planning_debug_path_candidate_hdmap_projection_routing_lane_window_compatible": (
+            path_candidate_hdmap_alignment.get("routing_lane_window_compatible")
         ),
         "simple_lat_station_frame_classification": station_classification,
         "control_simple_lat_reference_available": diagnostic.get("control_simple_lat_reference_available"),

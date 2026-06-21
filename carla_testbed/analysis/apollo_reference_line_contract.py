@@ -478,6 +478,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     materialization_summary = _mapping(report.get("planning_materialization_summary"))
     materialization_claim_window = _mapping(materialization_summary.get("claim_window"))
     planning_debug_path_candidate = _mapping(report.get("planning_debug_path_candidate_evidence"))
+    path_candidate_hdmap_alignment = _mapping(report.get("planning_debug_path_candidate_hdmap_projection_alignment"))
     trajectory_sample_surrogate = _mapping(report.get("planning_trajectory_sample_surrogate"))
     control_target_surrogate = _mapping(report.get("control_target_point_vs_planning_trajectory_sample"))
     path_candidate_trajectory_surrogate = _mapping(report.get("planning_debug_path_candidate_vs_trajectory_sample"))
@@ -508,6 +509,10 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Planning debug path candidate max count: `{planning_debug_path_candidate.get('path_candidate_max_count')}`",
             f"- Planning debug path point-sequence candidates: `{planning_debug_path_candidate.get('point_sequence_candidate_count')}`",
             f"- Planning debug path candidate claim-grade allowed: `{planning_debug_path_candidate.get('reference_line_claim_grade_allowed')}`",
+            f"- Planning debug path HDMap projection alignment: `{path_candidate_hdmap_alignment.get('classification')}`",
+            f"- Planning debug path HDMap lane-l p95 m: `{path_candidate_hdmap_alignment.get('path_candidate_lane_l_abs_p95_m')}`",
+            f"- Planning debug path HDMap routing-lane compatible: `{path_candidate_hdmap_alignment.get('routing_lane_window_compatible')}`",
+            f"- Planning debug path HDMap claim-grade allowed: `{path_candidate_hdmap_alignment.get('reference_line_claim_grade_allowed')}`",
             f"- Planning debug path vs trajectory sample: `{path_candidate_trajectory_surrogate.get('classification')}`",
             f"- Planning debug path vs trajectory p95 m: `{path_candidate_trajectory_surrogate.get('path_candidate_to_planning_sample_line_abs_p95_m')}`",
             f"- Planning debug path vs trajectory claim-grade allowed: `{path_candidate_trajectory_surrogate.get('reference_line_claim_grade_allowed')}`",
@@ -583,6 +588,10 @@ def _report(
         rows,
         planning_debug_presence,
     )
+    path_candidate_hdmap_alignment = _planning_debug_path_candidate_hdmap_projection_alignment(
+        rows,
+        hdmap_projection_rows or [],
+    )
     planning_materialization_summary = _planning_materialization_summary(rows)
     reference_debug_diagnostic = _reference_debug_diagnostic(
         rows,
@@ -629,6 +638,7 @@ def _report(
         "reference_debug_diagnostic": reference_debug_diagnostic,
         "planning_debug_presence": planning_debug_presence,
         "planning_debug_path_candidate_evidence": planning_debug_path_candidate,
+        "planning_debug_path_candidate_hdmap_projection_alignment": path_candidate_hdmap_alignment,
         "planning_materialization_summary": planning_materialization_summary,
         "planning_info_log_reference_line_evidence": dict(
             planning_info_log_reference_line_evidence or {}
@@ -2293,6 +2303,236 @@ def _control_target_point_vs_planning_trajectory_sample(rows: Sequence[Mapping[s
             "reference-line correctness."
         ),
     }
+
+
+def _planning_debug_path_candidate_hdmap_projection_alignment(
+    rows: Sequence[Mapping[str, Any]],
+    hdmap_projection_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    projection_rows = [
+        row
+        for row in hdmap_projection_rows
+        if str(row.get("source") or "") == "apollo_hdmap_api"
+        and str(row.get("status") or row.get("projection_status") or "").lower() in {"ok", "pass"}
+        and _projection_timestamp(row) is not None
+        and _num(row.get("localization_x") if row.get("localization_x") is not None else row.get("x_apollo")) is not None
+        and _num(row.get("localization_y") if row.get("localization_y") is not None else row.get("y_apollo")) is not None
+        and _num(row.get("lane_heading_at_s")) is not None
+    ]
+    rows_with_path_points = [
+        row for row in rows if _planning_debug_path_candidate_sample_points(row)
+    ]
+    if not rows:
+        return {
+            "status": "insufficient_data",
+            "classification": "reference_rows_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": 0,
+            "rows_with_path_candidate_sample_points": 0,
+            "official_projection_rows": len(projection_rows),
+            "path_candidate_lane_l_abs_p95_m": None,
+            "interpretation": (
+                "No reference-line rows are available; Planning debug path candidates "
+                "cannot be joined to official Apollo HDMap projection rows."
+            ),
+        }
+    if not projection_rows:
+        return {
+            "status": "insufficient_data",
+            "classification": "official_projection_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": len(rows),
+            "rows_with_path_candidate_sample_points": len(rows_with_path_points),
+            "official_projection_rows": 0,
+            "path_candidate_lane_l_abs_p95_m": None,
+            "interpretation": (
+                "Official Apollo HDMap projection rows are required before debug path "
+                "candidates can be compared with lane heading/lateral semantics."
+            ),
+        }
+    if not rows_with_path_points:
+        return {
+            "status": "insufficient_data",
+            "classification": "planning_debug_path_candidate_sample_points_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": len(rows),
+            "rows_with_path_candidate_sample_points": 0,
+            "official_projection_rows": len(projection_rows),
+            "path_candidate_lane_l_abs_p95_m": None,
+            "interpretation": (
+                "Planning debug path candidate sample points are missing, so no official "
+                "HDMap projection alignment can be computed."
+            ),
+        }
+
+    lane_l_values: list[float] = []
+    heading_errors: list[float] = []
+    join_deltas_ms: list[float] = []
+    candidate_names: list[str] = []
+    candidate_paths: list[str] = []
+    projection_lanes: list[str] = []
+    route_lanes: list[str] = []
+    sample_sources: list[str] = []
+    support_point_counts: list[float] = []
+    unmatched_rows = 0
+    rows_with_projection = 0
+    rows_with_projected_points = 0
+    for row in rows_with_path_points:
+        row_ts = _row_sim_timestamp(row)
+        if row_ts is None:
+            unmatched_rows += 1
+            continue
+        projection = _nearest_projection_row(
+            row_ts,
+            projection_rows,
+            tolerance_s=PLANNING_PROJECTION_JOIN_TOLERANCE_S,
+        )
+        if projection is None:
+            unmatched_rows += 1
+            continue
+        rows_with_projection += 1
+        matched_ts = _projection_timestamp(projection)
+        if matched_ts is not None:
+            join_deltas_ms.append(abs(row_ts - matched_ts) * 1000.0)
+        lane_id = projection.get("nearest_lane_id")
+        if lane_id not in {None, ""}:
+            projection_lanes.append(str(lane_id))
+        route_lanes.extend(_route_lane_candidates(row))
+        row_points = _planning_debug_path_candidate_sample_points(row)
+        samples = _sample_points(_nested(row, "planning.trajectory_sample_points"))
+        supported_points = (
+            _points_within_sample_support(
+                row_points,
+                samples,
+                margin_m=PLANNING_PATH_CANDIDATE_TRAJECTORY_SUPPORT_MARGIN_M,
+            )
+            if samples
+            else row_points
+        )
+        support_point_counts.append(float(len(supported_points)))
+        row_projected = 0
+        for point in supported_points:
+            x = _num(point.get("x"))
+            y = _num(point.get("y"))
+            if x is None or y is None:
+                continue
+            lane_l = _point_lane_l_from_projection(x, y, projection)
+            if lane_l is None:
+                continue
+            lane_l_values.append(lane_l)
+            row_projected += 1
+            candidate_names.append(str(point.get("candidate_name") or ""))
+            candidate_paths.append(str(point.get("candidate_path") or ""))
+            sample_sources.append(str(point.get("sample_source") or "unknown"))
+            theta = _num(point.get("theta"))
+            lane_heading = _num(projection.get("lane_heading_at_s"))
+            if theta is not None and lane_heading is not None:
+                heading_errors.append(_angle_delta(theta, lane_heading) or 0.0)
+        if row_projected > 0:
+            rows_with_projected_points += 1
+
+    sample_count = len(lane_l_values)
+    lane_l_p95 = _p95_abs(lane_l_values)
+    heading_p95 = _p95_abs(heading_errors)
+    normalized_projection_lanes = {_normalize_lane_id(item) for item in projection_lanes if item}
+    normalized_route_lanes = {
+        _normalize_lane_id(item)
+        for item in route_lanes
+        if item and str(item).lower() != "none"
+    }
+    routing_lane_window_compatible = (
+        bool(normalized_projection_lanes & normalized_route_lanes)
+        if normalized_projection_lanes and normalized_route_lanes
+        else None
+    )
+    if sample_count <= 0:
+        status = "insufficient_data"
+        classification = "projection_join_missing"
+    elif routing_lane_window_compatible is False:
+        status = "warn"
+        classification = "planning_debug_path_candidate_projection_lane_window_mismatch"
+    elif (lane_l_p95 or 0.0) <= PASS_LATERAL_M and (
+        heading_p95 is None or heading_p95 <= PASS_HEADING_RAD
+    ):
+        status = "available"
+        classification = "planning_debug_path_candidate_near_hdmap_lane_center"
+    elif (lane_l_p95 or 0.0) <= 3.50 and (
+        heading_p95 is None or heading_p95 <= WARN_HEADING_RAD
+    ):
+        status = "available"
+        classification = "planning_debug_path_candidate_lateral_offset_from_hdmap_lane_center"
+    else:
+        status = "warn"
+        classification = "planning_debug_path_candidate_hdmap_projection_alignment_elevated"
+    return {
+        "status": status,
+        "classification": classification,
+        "available": sample_count > 0,
+        "reference_line_claim_grade_allowed": False,
+        "row_count": len(rows),
+        "rows_with_path_candidate_sample_points": len(rows_with_path_points),
+        "rows_with_projection": rows_with_projection,
+        "rows_with_projected_points": rows_with_projected_points,
+        "official_projection_rows": len(projection_rows),
+        "sample_count": sample_count,
+        "unmatched_rows": unmatched_rows,
+        "join_tolerance_ms": PLANNING_PROJECTION_JOIN_TOLERANCE_S * 1000.0,
+        "join_delta_p95_ms": _p95_abs(join_deltas_ms),
+        "path_candidate_support_sample_point_count_p95": _p95_abs(support_point_counts),
+        "path_candidate_lane_l_abs_p95_m": lane_l_p95,
+        "path_candidate_lane_l_min_m": min(lane_l_values) if lane_l_values else None,
+        "path_candidate_lane_l_max_m": max(lane_l_values) if lane_l_values else None,
+        "path_candidate_lane_heading_error_p95_rad": heading_p95,
+        "nearest_lane_id_topk": _topk(projection_lanes),
+        "route_lane_candidate_topk": _topk(route_lanes),
+        "routing_lane_window_compatible": routing_lane_window_compatible,
+        "candidate_path_topk": _topk(candidate_paths),
+        "candidate_name_topk": _topk(candidate_names),
+        "sample_source_topk": _topk(sample_sources),
+        "recommended_evidence_policy": "path_candidate_hdmap_projection_surrogate_only_until_reference_line_debug_exported",
+        "interpretation": (
+            "This joins sampled debug.planning_data.path candidates to official Apollo HDMap "
+            "projection rows and reports local lane-lateral distribution. It can distinguish "
+            "a centerline-like candidate from boundary/optimizer path candidates, but it is "
+            "still diagnostic-only and cannot replace exported Planning reference-line debug "
+            "or prove behavior success."
+        ),
+    }
+
+
+def _route_lane_candidates(row: Mapping[str, Any]) -> list[str]:
+    out: list[str] = []
+    out.extend(_list_value(_nested(row, "planning.lane_ids")))
+    out.extend(_list_value(_nested(row, "planning.target_lane_ids")))
+    signature = str(_nested(row, "routing.routing_unique_lane_signature") or "")
+    for item in signature.replace(";", ",").replace("|", ",").split(","):
+        item = item.strip()
+        if item and item.lower() != "none":
+            out.append(item)
+    return out
+
+
+def _point_lane_l_from_projection(x: float, y: float, projection: Mapping[str, Any]) -> float | None:
+    lane_heading = _num(projection.get("lane_heading_at_s"))
+    loc_x = _num(
+        projection.get("localization_x")
+        if projection.get("localization_x") is not None
+        else projection.get("x_apollo")
+    )
+    loc_y = _num(
+        projection.get("localization_y")
+        if projection.get("localization_y") is not None
+        else projection.get("y_apollo")
+    )
+    if lane_heading is None or loc_x is None or loc_y is None:
+        return None
+    projection_l = _num(projection.get("projection_l")) or 0.0
+    left_x = -math.sin(lane_heading)
+    left_y = math.cos(lane_heading)
+    return projection_l + (x - loc_x) * left_x + (y - loc_y) * left_y
 
 
 def _planning_debug_path_candidate_vs_trajectory_sample(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

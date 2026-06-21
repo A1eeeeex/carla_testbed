@@ -223,6 +223,16 @@ Interpretation:
   paths rather than the exported Planning reference-line centerline. It remains
   `reference_line_claim_grade_allowed=false`, and the new online run remains a
   `LANE_INVASION` ApolloBackend behavior failure.
+  The same report now joins sampled `debug.planning_data.path` points to
+  official Apollo HDMap projection rows. In the latest sample,
+  `planning_debug_path_candidate_hdmap_projection_alignment.classification=planning_debug_path_candidate_lateral_offset_from_hdmap_lane_center`,
+  `routing_lane_window_compatible=true`,
+  `nearest_lane_id_topk=["0_0_2"]`, and
+  `path_candidate_lane_l_abs_p95_m≈1.255m` with near-zero heading error. This
+  narrows the debug/export interpretation: the path candidates are on the
+  expected Apollo lane window, but their lane-lateral distribution is
+  boundary/optimizer-like rather than centerline-like. It is still
+  diagnostic-only and cannot be promoted to claim-grade reference-line evidence.
   The same cycle fixed a claim-boundary regression in `apollo_link_health`:
   a derived `analysis/assist_ledger/assist_ledger.json` with `source_artifact=config`
   can no longer clear a blocking assist declared in `manifest.json` or

@@ -1261,6 +1261,108 @@ def test_planning_debug_path_candidate_samples_join_planning_trajectory(tmp_path
     assert diagnostic["candidate_name_topk"][0] == "planning_path_boundary_1_regular/self"
 
 
+def test_planning_debug_path_candidate_samples_join_hdmap_projection(tmp_path: Path) -> None:
+    contract = tmp_path / "apollo_reference_line_contract.jsonl"
+    planning = tmp_path / "planning_topic_debug.jsonl"
+    projection = tmp_path / "apollo_hdmap_projection.jsonl"
+    _write_jsonl(
+        contract,
+        [
+            {
+                "timestamp": 1.0,
+                "localization": {"heading": 0.0},
+                "routing": {"routing_unique_lane_signature": "0_0_2"},
+                "planning": {
+                    "trajectory_point_count": 20,
+                    "first_trajectory_point_theta": 0.0,
+                    "reference_line_count": 0,
+                    "routing_segment_count": 1,
+                    "lane_ids": ["0_0_2"],
+                    "target_lane_ids": ["0_0_2"],
+                },
+                "computed": {
+                    "planning_reference_available": True,
+                    "control_reference_available": False,
+                    "localization_to_planning_first_heading_error_rad": 0.0,
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        planning,
+        [
+            {
+                "timestamp": 1.0,
+                "trajectory_point_count": 20,
+                "first_trajectory_point_theta": 0.0,
+                "trajectory_sample_points": [
+                    {"index": 0, "x": 0.0, "y": 0.0, "theta": 0.0},
+                    {"index": 1, "x": 10.0, "y": 0.0, "theta": 0.0},
+                ],
+                "planning_debug_path_candidate_summary": {
+                    "available": True,
+                    "candidates": [
+                        {
+                            "path": "debug.planning_data.path",
+                            "item_count": 1,
+                            "field_name_match": True,
+                            "item_summaries": [
+                                {
+                                    "index": 0,
+                                    "scalar_fields": {"name": "planning_path_boundary_1_regular/self"},
+                                    "point_sequence_candidates": [
+                                        {
+                                            "field": "path_point",
+                                            "sequence_count": 2,
+                                            "point_like_count": 2,
+                                            "sample_points": [
+                                                {"index": 0, "x": 0.0, "y": 1.2, "theta": 0.0},
+                                                {"index": 1, "x": 10.0, "y": 1.2, "theta": 0.0},
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        projection,
+        [
+            {
+                "timestamp": 1.0,
+                "source": "apollo_hdmap_api",
+                "status": "ok",
+                "localization_x": 0.0,
+                "localization_y": 0.0,
+                "projection_l": 0.0,
+                "lane_heading_at_s": 0.0,
+                "nearest_lane_id": "0_0_2",
+            }
+        ],
+    )
+
+    report = analyze_apollo_reference_line_contract_files(
+        contract_path=contract,
+        planning_topic_debug_path=planning,
+        hdmap_projection_path=projection,
+    )
+
+    diagnostic = report["planning_debug_path_candidate_hdmap_projection_alignment"]
+    assert diagnostic["status"] == "available"
+    assert diagnostic["classification"] == (
+        "planning_debug_path_candidate_lateral_offset_from_hdmap_lane_center"
+    )
+    assert diagnostic["reference_line_claim_grade_allowed"] is False
+    assert diagnostic["routing_lane_window_compatible"] is True
+    assert diagnostic["path_candidate_lane_l_abs_p95_m"] == pytest.approx(1.2)
+    assert diagnostic["nearest_lane_id_topk"] == ["0_0_2"]
+    assert diagnostic["route_lane_candidate_topk"] == ["0_0_2"]
+
+
 def test_nested_apollo_control_raw_can_supply_control_reference(tmp_path: Path) -> None:
     contract = tmp_path / "apollo_reference_line_contract.jsonl"
     control = tmp_path / "apollo_control_raw.jsonl"

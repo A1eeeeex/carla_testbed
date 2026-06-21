@@ -1964,6 +1964,17 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
             "path_candidate_trajectory_surrogate_only_until_reference_line_debug_exported"
         ),
     }
+    reference_report["planning_debug_path_candidate_hdmap_projection_alignment"] = {
+        "status": "available",
+        "classification": "planning_debug_path_candidate_lateral_offset_from_hdmap_lane_center",
+        "available": True,
+        "reference_line_claim_grade_allowed": False,
+        "path_candidate_lane_l_abs_p95_m": 1.2,
+        "routing_lane_window_compatible": True,
+        "recommended_evidence_policy": (
+            "path_candidate_hdmap_projection_surrogate_only_until_reference_line_debug_exported"
+        ),
+    }
     _write_json(reference_path, reference_report)
     _write_json(
         run_dir / "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
@@ -2152,6 +2163,16 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     ] is False
     assert bridge["planning_debug_path_candidate_vs_trajectory_sample_p95_m"] == 1.25
     assert bridge["planning_debug_path_candidate_vs_trajectory_sample_coverage_ratio"] == 0.88
+    assert bridge["planning_debug_path_candidate_hdmap_projection_classification"] == (
+        "planning_debug_path_candidate_lateral_offset_from_hdmap_lane_center"
+    )
+    assert bridge[
+        "planning_debug_path_candidate_hdmap_projection_reference_line_claim_grade_allowed"
+    ] is False
+    assert bridge["planning_debug_path_candidate_hdmap_projection_lane_l_abs_p95_m"] == 1.2
+    assert bridge[
+        "planning_debug_path_candidate_hdmap_projection_routing_lane_window_compatible"
+    ] is True
     assert bridge["simple_lat_station_frame_classification"] == "local_station_frame_offset_candidate"
     assert bridge["control_simple_lat_reference_available"] is True
     assert bridge["control_reference_join_coverage_ratio"] == 0.37
