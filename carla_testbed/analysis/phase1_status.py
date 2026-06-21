@@ -204,6 +204,7 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                 f"- planning_materialization_classification: `{reference_line_policy.get('planning_materialization_classification')}`",
                 f"- planning_materialization_route_segments_ready_ratio: `{reference_line_policy.get('planning_materialization_route_segments_ready_ratio')}`",
                 f"- planning_materialization_reference_line_empty_while_ready_ratio: `{reference_line_policy.get('planning_materialization_reference_line_empty_while_ready_ratio')}`",
+                f"- reference_line_debug_field_state: `{reference_line_policy.get('reference_line_debug_field_state')}`",
                 f"- reference_line_debug_claim_grade_allowed: `{reference_line_policy.get('reference_line_debug_claim_grade_allowed')}`",
                 f"- local_surrogate_available: `{reference_line_policy.get('local_surrogate_available')}`",
                 f"- recommended_action: `{reference_line_policy.get('recommended_action')}`",
@@ -994,6 +995,7 @@ def _reference_line_debug_export_policy(
         "planning_materialization_lane_follow_stage_ratio": link_health.get(
             "planning_materialization_lane_follow_stage_ratio"
         ),
+        "reference_line_debug_field_state": link_health.get("reference_line_debug_field_state"),
         "reference_line_debug_claim_grade_allowed": claim_grade_allowed,
         "local_surrogate_available": local_surrogate_available,
         "planning_first_point_local_alignment_available": planning_local,
@@ -1134,6 +1136,7 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         ),
         "reference_line_recommended_next_action": export_policy.get("recommended_next_action"),
         "reference_line_debug_export_policy_reason": export_policy.get("reason"),
+        "reference_line_debug_field_state": export_policy.get("reference_line_debug_field_state"),
         "planning_debug_presence_classification": (
             reference_metrics.get("planning_debug_presence_classification")
             or reference_metrics.get("planning_debug_presence_last_diagnosis")

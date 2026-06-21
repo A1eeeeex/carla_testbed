@@ -1353,6 +1353,9 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
                 "planning_trajectory_sample_surrogate_available": True,
                 "control_simple_lat_reference_available": True,
                 "route_segment_available": True,
+                "reference_line_debug_field_state": (
+                    "field_present_but_empty_after_lane_follow_materialization"
+                ),
                 "recommended_evidence_policy": (
                     "local_surrogate_only_until_reference_line_debug_exported"
                 ),
@@ -1446,6 +1449,9 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
         reference_policy["planning_materialization_reference_line_empty_while_ready_ratio"]
         == 1.0
     )
+    assert reference_policy["reference_line_debug_field_state"] == (
+        "field_present_but_empty_after_lane_follow_materialization"
+    )
     assert reference_policy["planning_first_point_local_alignment_available"] is True
     assert reference_policy["planning_trajectory_sample_surrogate_available"] is True
     assert reference_policy["control_simple_lat_reference_available"] is True
@@ -1462,6 +1468,7 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert "routing_present_reference_line_empty" in summary_text
     assert "planning_debug_reference_line_nonempty_ratio: `0.0`" in summary_text
     assert "route_segments_ready_trajectory_nonzero_reference_line_empty" in summary_text
+    assert "field_present_but_empty_after_lane_follow_materialization" in summary_text
     assert "reference_line_debug_claim_grade_allowed: `False`" in summary_text
 
 

@@ -335,6 +335,12 @@ def build_reference_line_contract_event(row: Mapping[str, Any], *, source_confid
     else:
         control_error = _angle_delta(loc_heading, control_ref if control_ref is not None else control_heading)
     first_segment_heading = _num(_first(row, "trajectory_first_segment_heading", "first_segment_heading"))
+    reference_line_field_present = _first(row, "planning_debug_reference_line_field_present")
+    if reference_line_field_present is None and "planning_debug_reference_line_count" in row:
+        reference_line_field_present = True
+    routing_field_present = _first(row, "planning_debug_routing_field_present")
+    if routing_field_present is None and "planning_debug_routing_segment_count" in row:
+        routing_field_present = True
     return {
         "timestamp": _first(row, "timestamp", "ts_sec", "sim_time"),
         "wall_time_sec": _first(row, "wall_time_sec"),
@@ -406,10 +412,10 @@ def build_reference_line_contract_event(row: Mapping[str, Any], *, source_confid
             "debug_present": _first(row, "planning_debug_debug_present"),
             "planning_data_present": _first(row, "planning_debug_planning_data_present"),
             "reference_line_path": _first(row, "planning_debug_reference_line_path"),
-            "reference_line_field_present": _first(row, "planning_debug_reference_line_field_present"),
+            "reference_line_field_present": reference_line_field_present,
             "reference_line_count": _num(_first(row, "planning_debug_reference_line_count")),
             "routing_path": _first(row, "planning_debug_routing_path"),
-            "routing_field_present": _first(row, "planning_debug_routing_field_present"),
+            "routing_field_present": routing_field_present,
             "routing_segment_count": _num(_first(row, "planning_debug_routing_segment_count")),
             "diagnosis": _first(row, "planning_debug_diagnosis"),
         },
@@ -553,6 +559,7 @@ def _report(
     reference_debug_export_policy = _reference_line_debug_export_policy(
         reference_debug_diagnostic,
         trajectory_sample_surrogate=trajectory_sample_surrogate,
+        planning_materialization_summary=planning_materialization_summary,
     )
     report_contracts = dict(contracts or _contracts(rows=rows, evidence=evidence, metrics=metrics, hdmap_projection=hdmap_projection))
     status, warnings = _downgrade_for_planning_materialization(
@@ -1506,10 +1513,32 @@ def _reference_line_debug_export_policy(
     reference_debug_diagnostic: Mapping[str, Any],
     *,
     trajectory_sample_surrogate: Mapping[str, Any] | None = None,
+    planning_materialization_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     classification = str(reference_debug_diagnostic.get("classification") or "")
     planning_alignment = _mapping(reference_debug_diagnostic.get("planning_first_point_projection_alignment"))
     trajectory_sample_surrogate = _mapping(trajectory_sample_surrogate)
+    planning_materialization_summary = _mapping(planning_materialization_summary)
+    planning_debug_presence = _mapping(reference_debug_diagnostic.get("planning_debug_presence"))
+    presence_classification = str(
+        reference_debug_diagnostic.get("planning_debug_presence_classification")
+        or planning_debug_presence.get("classification")
+        or ""
+    )
+    materialization_classification = str(planning_materialization_summary.get("classification") or "")
+    field_present_but_empty = presence_classification == "routing_present_reference_line_empty"
+    lane_follow_materialized_empty = materialization_classification in {
+        "route_segments_ready_reference_line_empty",
+        "route_segments_ready_trajectory_nonzero_reference_line_empty",
+    }
+    if field_present_but_empty and lane_follow_materialized_empty:
+        debug_field_state = "field_present_but_empty_after_lane_follow_materialization"
+    elif field_present_but_empty:
+        debug_field_state = "field_present_but_empty"
+    elif presence_classification:
+        debug_field_state = presence_classification
+    else:
+        debug_field_state = "unknown"
     planning_local_alignment = (
         planning_alignment.get("classification") == "planning_first_point_on_hdmap_projection_line_candidate"
         and planning_alignment.get("status") == "pass"
@@ -1528,6 +1557,9 @@ def _reference_line_debug_export_policy(
             "planning_trajectory_sample_surrogate_available": trajectory_sample_surrogate_available,
             "control_simple_lat_reference_available": control_reference_available,
             "route_segment_available": route_segment_available,
+            "planning_debug_presence_classification": presence_classification or None,
+            "planning_materialization_classification": materialization_classification or None,
+            "reference_line_debug_field_state": debug_field_state,
             "recommended_evidence_policy": "reference_line_debug_can_support_claim_if_other_gates_pass",
             "recommended_next_action": (
                 "Use exported Planning reference-line debug together with route, projection, "
@@ -1545,11 +1577,25 @@ def _reference_line_debug_export_policy(
             export_classification = (
                 "reference_line_debug_export_gap_with_local_planning_and_control_reference_evidence"
             )
-            reason = (
-                "Planning first trajectory points align locally with official HDMap projection "
-                "and Control simple_lat reference evidence is visible, but Planning reference-line "
-                "debug counters are not exported."
-            )
+            if debug_field_state == "field_present_but_empty_after_lane_follow_materialization":
+                reason = (
+                    "Planning first trajectory points align locally with official HDMap projection, "
+                    "Control simple_lat reference evidence is visible, and Planning is in lane-follow "
+                    "with route segments ready and non-empty trajectories, but "
+                    "debug.planning_data.reference_line is present with an empty list."
+                )
+            elif debug_field_state == "field_present_but_empty":
+                reason = (
+                    "Planning first trajectory points align locally with official HDMap projection "
+                    "and Control simple_lat reference evidence is visible, but "
+                    "debug.planning_data.reference_line is present with an empty list."
+                )
+            else:
+                reason = (
+                    "Planning first trajectory points align locally with official HDMap projection "
+                    "and Control simple_lat reference evidence is visible, but Planning reference-line "
+                    "debug counters are not exported."
+                )
         elif planning_local_alignment:
             export_classification = "reference_line_debug_export_gap_with_planning_local_alignment_only"
             reason = (
@@ -1578,11 +1624,28 @@ def _reference_line_debug_export_policy(
             "planning_trajectory_sample_surrogate_available": trajectory_sample_surrogate_available,
             "control_simple_lat_reference_available": control_reference_available,
             "route_segment_available": route_segment_available,
+            "planning_debug_presence_classification": presence_classification or None,
+            "planning_materialization_classification": materialization_classification or None,
+            "reference_line_debug_field_state": debug_field_state,
             "recommended_evidence_policy": "local_surrogate_only_until_reference_line_debug_exported",
             "recommended_next_action": (
-                "Export or decode Planning reference-line debug, route segments, and Control "
-                "simple_lat station in one frame before changing steer scale, smoothing, PID, "
-                "or actuation mapping."
+                (
+                    "Inspect why debug.planning_data.reference_line is empty after lane-follow "
+                    "route segments and non-empty trajectories materialize; compare Planning "
+                    "ReferenceLineInfo/debug population with Control simple_lat station before "
+                    "changing steer scale, smoothing, PID, or actuation mapping."
+                )
+                if debug_field_state == "field_present_but_empty_after_lane_follow_materialization"
+                else (
+                    "Inspect why debug.planning_data.reference_line is present but empty before "
+                    "changing steer scale, smoothing, PID, or actuation mapping."
+                )
+                if debug_field_state == "field_present_but_empty"
+                else (
+                    "Export or decode Planning reference-line debug, route segments, and Control "
+                    "simple_lat station in one frame before changing steer scale, smoothing, PID, "
+                    "or actuation mapping."
+                )
             ),
             "reason": reason,
             "claim_boundary": (
@@ -1590,6 +1653,39 @@ def _reference_line_debug_export_policy(
                 "but cannot by itself support claim-grade reference-line correctness."
             ),
         }
+
+    if debug_field_state == "field_present_but_empty_after_lane_follow_materialization":
+        insufficient_reason = (
+            "debug.planning_data.reference_line is present with an empty list after "
+            "lane-follow route segments and non-empty trajectories materialize, but "
+            f"reference debug diagnostic classification `{classification or 'missing'}` "
+            "still lacks enough local surrogate evidence for claim-grade reference-line correctness."
+        )
+        insufficient_next_action = (
+            "Inspect why debug.planning_data.reference_line remains empty after lane-follow "
+            "route segments and non-empty trajectories materialize; add same-frame Planning "
+            "ReferenceLineInfo/control reference evidence before changing steer scale, smoothing, "
+            "PID, or actuation mapping."
+        )
+    elif debug_field_state == "field_present_but_empty":
+        insufficient_reason = (
+            "debug.planning_data.reference_line is present with an empty list, but "
+            f"reference debug diagnostic classification `{classification or 'missing'}` "
+            "still lacks enough local surrogate evidence for claim-grade reference-line correctness."
+        )
+        insufficient_next_action = (
+            "Inspect why debug.planning_data.reference_line is present but empty; add same-frame "
+            "Planning ReferenceLineInfo/control reference evidence before changing steer scale, "
+            "smoothing, PID, or actuation mapping."
+        )
+    else:
+        insufficient_reason = (
+            f"Reference debug diagnostic classification `{classification or 'missing'}` is not claim-grade."
+        )
+        insufficient_next_action = (
+            "Collect Planning reference-line debug/export evidence or local Planning/projection "
+            "and Control simple_lat surrogate evidence before drawing reference-line conclusions."
+        )
 
     return {
         "status": "insufficient_data",
@@ -1599,12 +1695,12 @@ def _reference_line_debug_export_policy(
         "planning_trajectory_sample_surrogate_available": trajectory_sample_surrogate_available,
         "control_simple_lat_reference_available": control_reference_available,
         "route_segment_available": route_segment_available,
+        "planning_debug_presence_classification": presence_classification or None,
+        "planning_materialization_classification": materialization_classification or None,
+        "reference_line_debug_field_state": debug_field_state,
         "recommended_evidence_policy": "insufficient_reference_line_debug_evidence",
-        "recommended_next_action": (
-            "Collect Planning reference-line debug/export evidence or local Planning/projection "
-            "and Control simple_lat surrogate evidence before drawing reference-line conclusions."
-        ),
-        "reason": f"Reference debug diagnostic classification `{classification or 'missing'}` is not claim-grade.",
+        "recommended_next_action": insufficient_next_action,
+        "reason": insufficient_reason,
         "claim_boundary": (
             "Missing reference-line debug/export evidence must remain insufficient_data or "
             "diagnostic-only; it cannot be upgraded from field presence alone."
@@ -2267,6 +2363,7 @@ def _augment_contract_rows_with_route_segment_debug(
             "lane_follow_map_status",
             "planning_empty_reason_guess",
             "reference_line_provider_status",
+            "reference_line_count",
             "path_end_like_condition",
             "planning_stage_name",
             "task_name",
@@ -2278,6 +2375,9 @@ def _augment_contract_rows_with_route_segment_debug(
             value = route_payload.get(key)
             if _present_value(value) and not _present_value(row_planning.get(key)):
                 row_planning[key] = value
+        route_presence = _mapping(route_event.get("planning_debug_presence"))
+        if route_presence and not isinstance(row.get("planning_debug_presence"), Mapping):
+            row["planning_debug_presence"] = dict(route_presence)
         row_computed["route_segment_debug_join_matched"] = True
         row_computed["route_segment_debug_join_tolerance_ms"] = FALLBACK_JOIN_TOLERANCE_S * 1000.0
         row_computed["route_segment_debug_join_delta_ms"] = _join_delta_ms(

@@ -608,6 +608,12 @@ def test_planning_debug_presence_distinguishes_routing_present_reference_line_em
         materialization["claim_window"]["reference_line_empty_with_route_segments_ready_ratio"]
         == 1.0
     )
+    policy = report["reference_line_debug_export_policy"]
+    assert policy["reference_line_debug_field_state"] == (
+        "field_present_but_empty_after_lane_follow_materialization"
+    )
+    assert "debug.planning_data.reference_line is present with an empty list" in policy["reason"]
+    assert "after lane-follow route segments" in policy["recommended_next_action"]
     assert "planning_debug_presence_routing_present_reference_line_empty" in report["warnings"]
     assert "planning_materialization_route_segments_ready_reference_line_empty" in report["warnings"]
 
@@ -669,6 +675,9 @@ def test_route_segment_debug_augments_existing_contract_rows(tmp_path: Path) -> 
     ]
     assert claim_window["task_name_topk"] == [{"value": "LANE_FOLLOW", "count": 1}]
     assert claim_window["lane_follow_stage_ratio"] == 1.0
+    assert report["reference_line_debug_export_policy"]["reference_line_debug_field_state"] == (
+        "field_present_but_empty_after_lane_follow_materialization"
+    )
 
 
 def test_planning_first_point_projection_alignment_uses_official_hdmap_projection() -> None:

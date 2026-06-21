@@ -153,6 +153,14 @@ Interpretation:
   "lane-follow route segments and trajectories are present, but exported
   reference-line debug is empty." It is still attribution evidence only and
   does not fix lane invasion or prove behavior success.
+  The reference-line export policy now records this as
+  `reference_line_debug_field_state=field_present_but_empty_after_lane_follow_materialization`.
+  That wording is intentional: the Planning debug field is present, so
+  operators should not re-debug the parser path as missing; however, the list
+  is still empty after lane-follow materialization, so the evidence remains
+  non-claim-grade and the next action is to inspect Planning
+  ReferenceLineInfo/debug population for this route before changing steering,
+  smoothing, PID, or actuation mapping.
 - The latest Pro audit found that the earlier `8/8 DONE` statement was still
   too optimistic because some review-pack surfaces were stale or could not be
   independently re-computed. The follow-up fix keeps accepted-bundle rows tied
