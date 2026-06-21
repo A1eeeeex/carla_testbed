@@ -1953,6 +1953,17 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
             "control_target_planning_sample_surrogate_only_until_reference_line_debug_exported"
         ),
     }
+    reference_report["planning_debug_path_candidate_vs_trajectory_sample"] = {
+        "status": "available",
+        "classification": "planning_debug_path_candidate_near_planning_trajectory_sample_support",
+        "available": True,
+        "reference_line_claim_grade_allowed": False,
+        "sample_coverage_ratio": 0.88,
+        "path_candidate_to_planning_sample_line_abs_p95_m": 1.25,
+        "recommended_evidence_policy": (
+            "path_candidate_trajectory_surrogate_only_until_reference_line_debug_exported"
+        ),
+    }
     _write_json(reference_path, reference_report)
     _write_json(
         run_dir / "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
@@ -2133,6 +2144,14 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert bridge["control_target_point_vs_planning_sample_reference_line_claim_grade_allowed"] is False
     assert bridge["control_target_point_vs_planning_sample_p95_m"] == 0.02
     assert bridge["control_target_point_vs_planning_sample_coverage_ratio"] == 0.37
+    assert bridge["planning_debug_path_candidate_vs_trajectory_sample_classification"] == (
+        "planning_debug_path_candidate_near_planning_trajectory_sample_support"
+    )
+    assert bridge[
+        "planning_debug_path_candidate_vs_trajectory_sample_reference_line_claim_grade_allowed"
+    ] is False
+    assert bridge["planning_debug_path_candidate_vs_trajectory_sample_p95_m"] == 1.25
+    assert bridge["planning_debug_path_candidate_vs_trajectory_sample_coverage_ratio"] == 0.88
     assert bridge["simple_lat_station_frame_classification"] == "local_station_frame_offset_candidate"
     assert bridge["control_simple_lat_reference_available"] is True
     assert bridge["control_reference_join_coverage_ratio"] == 0.37

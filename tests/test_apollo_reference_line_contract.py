@@ -1177,6 +1177,90 @@ def test_control_target_point_off_planning_sample_line_is_diagnostic_warn(tmp_pa
     assert target_surrogate["target_point_to_planning_sample_line_abs_p95_m"] == pytest.approx(2.0)
 
 
+def test_planning_debug_path_candidate_samples_join_planning_trajectory(tmp_path: Path) -> None:
+    contract = tmp_path / "apollo_reference_line_contract.jsonl"
+    planning = tmp_path / "planning_topic_debug.jsonl"
+    _write_jsonl(
+        contract,
+        [
+            {
+                "timestamp": 1.0,
+                "localization": {"heading": 0.0},
+                "planning": {
+                    "trajectory_point_count": 20,
+                    "first_trajectory_point_theta": 0.0,
+                    "reference_line_count": 0,
+                    "routing_segment_count": 1,
+                },
+                "computed": {
+                    "planning_reference_available": True,
+                    "control_reference_available": False,
+                    "localization_to_planning_first_heading_error_rad": 0.0,
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        planning,
+        [
+            {
+                "timestamp": 1.0,
+                "trajectory_point_count": 20,
+                "first_trajectory_point_theta": 0.0,
+                "trajectory_sample_points": [
+                    {"index": 0, "x": 0.0, "y": 0.0, "theta": 0.0},
+                    {"index": 1, "x": 10.0, "y": 0.0, "theta": 0.0},
+                ],
+                "planning_debug_path_candidate_summary": {
+                    "available": True,
+                    "candidates": [
+                        {
+                            "path": "debug.planning_data.path",
+                            "item_count": 1,
+                            "field_name_match": True,
+                            "item_summaries": [
+                                {
+                                    "index": 0,
+                                    "scalar_fields": {"name": "planning_path_boundary_1_regular/self"},
+                                    "point_sequence_candidates": [
+                                        {
+                                            "field": "path_point",
+                                            "sequence_count": 2,
+                                            "point_like_count": 2,
+                                            "first_point": {"x": 0.0, "y": 0.2, "theta": 0.0},
+                                            "sample_points": [
+                                                {"index": 0, "x": 0.0, "y": 0.2, "theta": 0.0},
+                                                {"index": 1, "x": 10.0, "y": 0.2, "theta": 0.0},
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+
+    report = analyze_apollo_reference_line_contract_files(
+        contract_path=contract,
+        planning_topic_debug_path=planning,
+    )
+
+    diagnostic = report["planning_debug_path_candidate_vs_trajectory_sample"]
+    assert diagnostic["status"] == "available"
+    assert diagnostic["classification"] == (
+        "planning_debug_path_candidate_near_planning_trajectory_sample_support"
+    )
+    assert diagnostic["reference_line_claim_grade_allowed"] is False
+    assert diagnostic["rows_with_path_candidate_sample_points"] == 1
+    assert diagnostic["sample_coverage_ratio"] == 1.0
+    assert diagnostic["path_candidate_to_planning_sample_line_abs_p95_m"] == pytest.approx(0.2)
+    assert diagnostic["path_candidate_full_sample_to_planning_sample_line_abs_p95_m"] == pytest.approx(0.2)
+    assert diagnostic["candidate_name_topk"][0] == "planning_path_boundary_1_regular/self"
+
+
 def test_nested_apollo_control_raw_can_supply_control_reference(tmp_path: Path) -> None:
     contract = tmp_path / "apollo_reference_line_contract.jsonl"
     control = tmp_path / "apollo_control_raw.jsonl"

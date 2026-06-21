@@ -28,6 +28,8 @@ MIN_PROVIDER_READY_RATIO = 0.80
 FALLBACK_JOIN_TOLERANCE_S = 0.05
 PLANNING_PROJECTION_JOIN_TOLERANCE_S = 0.25
 CONTROL_TARGET_TRAJECTORY_SAMPLE_WARN_M = 0.50
+PLANNING_PATH_CANDIDATE_TRAJECTORY_WARN_M = 2.00
+PLANNING_PATH_CANDIDATE_TRAJECTORY_SUPPORT_MARGIN_M = 5.00
 
 
 def analyze_apollo_reference_line_contract_run_dir(run_dir: str | Path) -> dict[str, Any]:
@@ -478,6 +480,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     planning_debug_path_candidate = _mapping(report.get("planning_debug_path_candidate_evidence"))
     trajectory_sample_surrogate = _mapping(report.get("planning_trajectory_sample_surrogate"))
     control_target_surrogate = _mapping(report.get("control_target_point_vs_planning_trajectory_sample"))
+    path_candidate_trajectory_surrogate = _mapping(report.get("planning_debug_path_candidate_vs_trajectory_sample"))
     planning_info_log_evidence = _mapping(report.get("planning_info_log_reference_line_evidence"))
     planning_debug_field_inventory = _mapping(planning_debug_presence.get("last_field_inventory"))
     field_inventory = _mapping(_mapping(report.get("reference_debug_diagnostic")).get("field_inventory"))
@@ -505,6 +508,9 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Planning debug path candidate max count: `{planning_debug_path_candidate.get('path_candidate_max_count')}`",
             f"- Planning debug path point-sequence candidates: `{planning_debug_path_candidate.get('point_sequence_candidate_count')}`",
             f"- Planning debug path candidate claim-grade allowed: `{planning_debug_path_candidate.get('reference_line_claim_grade_allowed')}`",
+            f"- Planning debug path vs trajectory sample: `{path_candidate_trajectory_surrogate.get('classification')}`",
+            f"- Planning debug path vs trajectory p95 m: `{path_candidate_trajectory_surrogate.get('path_candidate_to_planning_sample_line_abs_p95_m')}`",
+            f"- Planning debug path vs trajectory claim-grade allowed: `{path_candidate_trajectory_surrogate.get('reference_line_claim_grade_allowed')}`",
             f"- Planning materialization classification: `{materialization_summary.get('classification')}`",
             f"- Planning materialization claim-window source: `{materialization_summary.get('claim_window_source')}`",
             f"- Planning materialization route-segments ready ratio: `{materialization_claim_window.get('route_segments_ready_ratio')}`",
@@ -587,6 +593,7 @@ def _report(
     )
     trajectory_sample_surrogate = _planning_trajectory_sample_surrogate(rows)
     control_target_surrogate = _control_target_point_vs_planning_trajectory_sample(rows)
+    path_candidate_trajectory_surrogate = _planning_debug_path_candidate_vs_trajectory_sample(rows)
     reference_debug_export_policy = _reference_line_debug_export_policy(
         reference_debug_diagnostic,
         trajectory_sample_surrogate=trajectory_sample_surrogate,
@@ -629,6 +636,7 @@ def _report(
         "reference_line_debug_export_policy": reference_debug_export_policy,
         "planning_trajectory_sample_surrogate": trajectory_sample_surrogate,
         "control_target_point_vs_planning_trajectory_sample": control_target_surrogate,
+        "planning_debug_path_candidate_vs_trajectory_sample": path_candidate_trajectory_surrogate,
         "planning_first_point_projection_alignment": planning_projection_alignment,
         "contracts": report_contracts,
         "planning_trajectory_contract": report_contracts.get("planning_trajectory") or {},
@@ -2287,6 +2295,230 @@ def _control_target_point_vs_planning_trajectory_sample(rows: Sequence[Mapping[s
     }
 
 
+def _planning_debug_path_candidate_vs_trajectory_sample(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    rows_with_samples = [
+        row
+        for row in rows
+        if _planning_trajectory_nonempty(row)
+        and _sample_points(_nested(row, "planning.trajectory_sample_points"))
+    ]
+    rows_with_path_points = [
+        row for row in rows_with_samples if _planning_debug_path_candidate_sample_points(row)
+    ]
+    if not rows:
+        return {
+            "status": "insufficient_data",
+            "classification": "reference_rows_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": 0,
+            "rows_with_planning_samples": 0,
+            "rows_with_path_candidate_sample_points": 0,
+            "path_candidate_to_planning_sample_line_abs_p95_m": None,
+            "interpretation": (
+                "No reference-line rows are available; Planning debug path candidates "
+                "cannot be compared with Planning trajectory samples."
+            ),
+        }
+    if not rows_with_samples:
+        return {
+            "status": "insufficient_data",
+            "classification": "planning_trajectory_sample_points_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": len(rows),
+            "rows_with_planning_samples": 0,
+            "rows_with_path_candidate_sample_points": 0,
+            "path_candidate_to_planning_sample_line_abs_p95_m": None,
+            "interpretation": (
+                "Planning trajectory sample points are required before debug path "
+                "candidates can be checked against the local trajectory shape."
+            ),
+        }
+    if not rows_with_path_points:
+        return {
+            "status": "insufficient_data",
+            "classification": "planning_debug_path_candidate_sample_points_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": len(rows),
+            "rows_with_planning_samples": len(rows_with_samples),
+            "rows_with_path_candidate_sample_points": 0,
+            "path_candidate_to_planning_sample_line_abs_p95_m": None,
+            "interpretation": (
+                "Planning debug path candidates are present only as counts or first-point "
+                "metadata, or are missing from the aligned rows. A sampled candidate "
+                "polyline is needed for this diagnostic join."
+            ),
+        }
+
+    support_distances: list[float] = []
+    full_sample_distances: list[float] = []
+    candidate_paths: list[str] = []
+    candidate_names: list[str] = []
+    sample_sources: list[str] = []
+    path_point_counts: list[float] = []
+    support_point_counts: list[float] = []
+    dropped_short_sample_rows = 0
+    rows_with_distance = 0
+    rows_with_support_distance = 0
+    for row in rows_with_path_points:
+        samples = _sample_points(_nested(row, "planning.trajectory_sample_points"))
+        row_points = _planning_debug_path_candidate_sample_points(row)
+        path_point_counts.append(float(len(row_points)))
+        supported_points = _points_within_sample_support(
+            row_points,
+            samples,
+            margin_m=PLANNING_PATH_CANDIDATE_TRAJECTORY_SUPPORT_MARGIN_M,
+        )
+        support_point_counts.append(float(len(supported_points)))
+        row_full_distances = []
+        row_support_distances = []
+        for point in row_points:
+            x = _num(point.get("x"))
+            y = _num(point.get("y"))
+            if x is None or y is None:
+                continue
+            distance = _point_to_polyline_distance((x, y), samples)
+            if distance is None:
+                continue
+            row_full_distances.append(abs(distance))
+            candidate_paths.append(str(point.get("candidate_path") or ""))
+            candidate_names.append(str(point.get("candidate_name") or ""))
+            sample_sources.append(str(point.get("sample_source") or "unknown"))
+        for point in supported_points:
+            x = _num(point.get("x"))
+            y = _num(point.get("y"))
+            if x is None or y is None:
+                continue
+            distance = _point_to_polyline_distance((x, y), samples)
+            if distance is not None:
+                row_support_distances.append(abs(distance))
+        if row_full_distances:
+            rows_with_distance += 1
+            full_sample_distances.extend(row_full_distances)
+        if row_support_distances:
+            rows_with_support_distance += 1
+            support_distances.extend(row_support_distances)
+        if not row_full_distances and not row_support_distances:
+            dropped_short_sample_rows += 1
+
+    p95 = _p95_abs(support_distances)
+    full_p95 = _p95_abs(full_sample_distances)
+    if p95 is None:
+        if full_p95 is not None:
+            classification = "planning_debug_path_candidate_samples_outside_planning_trajectory_sample_support"
+            status = "warn"
+        else:
+            classification = "planning_debug_path_candidate_join_no_distance"
+            status = "insufficient_data"
+    elif p95 <= PLANNING_PATH_CANDIDATE_TRAJECTORY_WARN_M:
+        classification = "planning_debug_path_candidate_near_planning_trajectory_sample_support"
+        status = "available"
+    else:
+        classification = "planning_debug_path_candidate_offset_from_planning_trajectory_sample_support"
+        status = "warn"
+    return {
+        "status": status,
+        "classification": classification,
+        "available": p95 is not None,
+        "reference_line_claim_grade_allowed": False,
+        "row_count": len(rows),
+        "rows_with_planning_samples": len(rows_with_samples),
+        "rows_with_path_candidate_sample_points": len(rows_with_path_points),
+        "rows_with_distance": rows_with_distance,
+        "rows_with_support_distance": rows_with_support_distance,
+        "sample_coverage_ratio": len(rows_with_path_points) / len(rows_with_samples),
+        "path_candidate_sample_point_count_p95": _p95_abs(path_point_counts),
+        "path_candidate_support_sample_point_count_p95": _p95_abs(support_point_counts),
+        "path_candidate_to_planning_sample_line_abs_p95_m": p95,
+        "path_candidate_to_planning_sample_line_abs_max_m": max(support_distances) if support_distances else None,
+        "path_candidate_full_sample_to_planning_sample_line_abs_p95_m": full_p95,
+        "path_candidate_full_sample_to_planning_sample_line_abs_max_m": (
+            max(full_sample_distances) if full_sample_distances else None
+        ),
+        "threshold_warn_m": PLANNING_PATH_CANDIDATE_TRAJECTORY_WARN_M,
+        "support_margin_m": PLANNING_PATH_CANDIDATE_TRAJECTORY_SUPPORT_MARGIN_M,
+        "dropped_short_sample_rows": dropped_short_sample_rows,
+        "candidate_path_topk": _topk(candidate_paths),
+        "candidate_name_topk": _topk(candidate_names),
+        "sample_source_topk": _topk(sample_sources),
+        "recommended_evidence_policy": "path_candidate_trajectory_surrogate_only_until_reference_line_debug_exported",
+        "interpretation": (
+            "This compares sampled debug.planning_data.path candidates with the same-row "
+            "sampled Planning trajectory polyline. The primary p95 is computed only over "
+            "path samples inside the trajectory sample support window; full-horizon distances "
+            "are reported separately because debug path candidates can extend far beyond the "
+            "small trajectory sample slice. Path candidates can be boundary or optimizer "
+            "debug paths rather than the reference-line centerline, so this narrows "
+            "Planning debug/export attribution but cannot replace exported Planning "
+            "reference-line debug for claim-grade reference-line correctness."
+        ),
+    }
+
+
+def _points_within_sample_support(
+    points: Sequence[Mapping[str, Any]],
+    samples: Sequence[Mapping[str, Any]],
+    *,
+    margin_m: float,
+) -> list[Mapping[str, Any]]:
+    sample_xy = [
+        (x, y)
+        for sample in samples
+        for x, y in [(_num(sample.get("x")), _num(sample.get("y")))]
+        if x is not None and y is not None
+    ]
+    if not sample_xy:
+        return []
+    min_x = min(item[0] for item in sample_xy) - margin_m
+    max_x = max(item[0] for item in sample_xy) + margin_m
+    min_y = min(item[1] for item in sample_xy) - margin_m
+    max_y = max(item[1] for item in sample_xy) + margin_m
+    out: list[Mapping[str, Any]] = []
+    for point in points:
+        x = _num(point.get("x"))
+        y = _num(point.get("y"))
+        if x is None or y is None:
+            continue
+        if min_x <= x <= max_x and min_y <= y <= max_y:
+            out.append(point)
+    return out
+
+
+def _planning_debug_path_candidate_sample_points(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    summary = _mapping(_nested(row, "planning_debug_presence.path_candidate_summary"))
+    out: list[dict[str, Any]] = []
+    for candidate in _sequence_of_mappings(summary.get("candidates")):
+        path = str(candidate.get("path") or "")
+        if "path" not in path.lower() and "trajectory" not in path.lower():
+            continue
+        for item in _sequence_of_mappings(candidate.get("item_summaries")):
+            scalar_fields = _mapping(item.get("scalar_fields"))
+            item_name = str(scalar_fields.get("name") or "")
+            item_index = item.get("index")
+            for point_sequence in _sequence_of_mappings(item.get("point_sequence_candidates")):
+                field = str(point_sequence.get("field") or "")
+                samples = _sample_points(point_sequence.get("sample_points"))
+                sample_source = "sample_points"
+                if not samples:
+                    samples = _sample_points([point_sequence.get("first_point")])
+                    sample_source = "first_point_only"
+                for point in samples:
+                    payload = dict(point)
+                    payload.update(
+                        {
+                            "candidate_path": path,
+                            "candidate_name": item_name,
+                            "candidate_item_index": item_index,
+                            "candidate_field": field,
+                            "sample_source": sample_source,
+                        }
+                    )
+                    out.append(payload)
+    return out
+
+
 def _planning_first_point_projection_alignment(
     rows: Sequence[Mapping[str, Any]],
     hdmap_projection_rows: Sequence[Mapping[str, Any]],
@@ -2649,6 +2881,9 @@ def _augment_contract_rows_with_planning_debug(
             value = planning_payload.get(key)
             if _present_value(value) and not _present_value(row_planning.get(key)):
                 row_planning[key] = value
+        presence_payload = _mapping(planning_event.get("planning_debug_presence"))
+        if presence_payload and not _mapping(row.get("planning_debug_presence")):
+            row["planning_debug_presence"] = presence_payload
         row_computed["planning_sample_source_confidence"] = "planning_topic_debug"
         row_computed["planning_sample_join_tolerance_ms"] = FALLBACK_JOIN_TOLERANCE_S * 1000.0
         row_computed["planning_sample_join_delta_ms"] = _join_delta_ms(

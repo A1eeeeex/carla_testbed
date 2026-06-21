@@ -197,13 +197,18 @@ def test_build_planning_debug_presence_summarizes_path_candidate_points() -> Non
     assert candidate["item_count"] == 1
     assert item["scalar_fields"]["name"] == "regular_path"
     assert item["sequence_counts"]["path_point"] == 2
-    assert item["point_sequence_candidates"] == [
-        {
-            "field": "path_point",
-            "sequence_count": 2,
-            "point_like_count": 2,
-            "first_point": {"x": 1.0, "y": 2.0, "theta": 0.1, "kappa": 0.01},
-        }
+    assert item["point_sequence_candidates"][0]["field"] == "path_point"
+    assert item["point_sequence_candidates"][0]["sequence_count"] == 2
+    assert item["point_sequence_candidates"][0]["point_like_count"] == 2
+    assert item["point_sequence_candidates"][0]["first_point"] == {
+        "x": 1.0,
+        "y": 2.0,
+        "theta": 0.1,
+        "kappa": 0.01,
+    }
+    assert item["point_sequence_candidates"][0]["sample_points"] == [
+        {"index": 0, "x": 1.0, "y": 2.0, "theta": 0.1, "kappa": 0.01},
+        {"index": 1, "x": 2.0, "y": 2.1, "theta": 0.1, "kappa": 0.01},
     ]
 
 

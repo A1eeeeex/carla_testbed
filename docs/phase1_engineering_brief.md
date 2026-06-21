@@ -206,6 +206,23 @@ Interpretation:
   `path_candidate_points_present_reference_line_empty` and still marks
   `reference_line_claim_grade_allowed=false`. The run itself remains a
   `LANE_INVASION_HARD` ApolloBackend behavior failure.
+  The next diagnostic increment samples those path candidate point sequences
+  and compares them with same-row Planning trajectory samples. A fresh online
+  run,
+  `runs/phase1_apollo_sidecar_cut_in_path_samples_online_20260621_223658`,
+  verifies that `sample_points` are now materialized in
+  `planning_debug_path_candidate_summary`. Its refreshed report exposes
+  `planning_debug_path_candidate_vs_trajectory_sample.classification=planning_debug_path_candidate_offset_from_planning_trajectory_sample_support`,
+  `sample_coverage_ratio=1.0`, and
+  `path_candidate_to_planning_sample_line_abs_p95_m≈3.08m` inside the
+  trajectory sample support window; the full-horizon path-to-trajectory p95 is
+  also reported separately because path candidates may extend far beyond the
+  short trajectory sample slice. This is a useful bridge/export attribution
+  check: it shows `debug.planning_data.path` is not just a count-only field,
+  but it also reinforces that `path` entries can be boundary or optimizer debug
+  paths rather than the exported Planning reference-line centerline. It remains
+  `reference_line_claim_grade_allowed=false`, and the new online run remains a
+  `LANE_INVASION` ApolloBackend behavior failure.
   The same cycle fixed a claim-boundary regression in `apollo_link_health`:
   a derived `analysis/assist_ledger/assist_ledger.json` with `source_artifact=config`
   can no longer clear a blocking assist declared in `manifest.json` or

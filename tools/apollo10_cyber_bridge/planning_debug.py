@@ -194,6 +194,7 @@ def _planning_debug_path_item_summary(item: Any, *, index: int) -> dict[str, Any
                     "sequence_count": count,
                     "point_like_count": point_count,
                     "first_point": first_point,
+                    "sample_points": _sample_point_like_sequence(seq, max_sample_points=8),
                 }
             )
     return {
@@ -216,6 +217,27 @@ def _point_like_sequence_summary(items: Sequence[Any]) -> tuple[int, dict[str, A
         if first is None:
             first = point
     return count, first
+
+
+def _sample_point_like_sequence(items: Sequence[Any], *, max_sample_points: int) -> list[dict[str, Any]]:
+    points = []
+    for index, item in enumerate(items):
+        point = _point_like_summary(item)
+        if point is None:
+            continue
+        payload = {"index": index, **point}
+        points.append(payload)
+    if max_sample_points <= 0 or len(points) <= max_sample_points:
+        return points
+    last = points[-1]
+    keep = max(1, max_sample_points - 1)
+    if keep == 1:
+        return [points[0], last]
+    stride = max(1, (len(points) - 1) // keep)
+    sampled = points[0:-1:stride][:keep]
+    if sampled[-1].get("index") != last.get("index"):
+        sampled.append(last)
+    return sampled[:max_sample_points]
 
 
 def _point_like_summary(item: Any) -> dict[str, Any] | None:
