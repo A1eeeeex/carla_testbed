@@ -1986,6 +1986,15 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
                         "target_s_minus_current_station_abs_p95_m": 0.043,
                     },
                 },
+                "route_station_frame_alignment": {
+                    "status": "available",
+                    "classification": "route_s_and_simple_lat_share_local_station_frame_candidate",
+                    "route_s_current_station_abs_delta": {"count": 925, "p95": 0.15},
+                    "route_s_target_point_s_abs_delta": {"count": 925, "p95": 0.14},
+                    "simple_lat_station_vs_projection_s_classification": "local_station_frame_offset_candidate",
+                    "simple_lat_current_station_projection_s_delta_p95_m": 25.08,
+                    "interpretation": "Run-local route_s and Apollo simple_lat station are close to each other while both are offset from official HDMap projection_s; treat route_s/simple_lat as a shared local or stitching station frame candidate.",
+                },
             },
         },
     )
@@ -2048,6 +2057,11 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert lateral["key_metrics"]["simple_lat_station_frame_classification"] == (
         "local_station_frame_offset_candidate"
     )
+    assert lateral["key_metrics"]["route_station_frame_classification"] == (
+        "route_s_and_simple_lat_share_local_station_frame_candidate"
+    )
+    assert lateral["key_metrics"]["route_s_current_station_abs_delta_p95_m"] == 0.15
+    assert "shared local or stitching station frame" in lateral["key_metrics"]["route_station_frame_interpretation"]
     assert lateral["key_metrics"]["simple_lat_missing_station_fields"] == []
     assert lateral["key_metrics"]["simple_lat_current_station_projection_s_delta_p95_m"] == 25.08
     assert lateral["key_metrics"]["simple_lat_matched_s_projection_s_delta_p95_m"] == 23.64

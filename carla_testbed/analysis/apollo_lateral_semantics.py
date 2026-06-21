@@ -1396,6 +1396,11 @@ def _lateral_sign_alignment_summary(
         lateral_min_abs=lateral_min,
         thresholds=thresholds,
     )
+    route_station_alignment = _route_station_frame_alignment(
+        rows,
+        official_projection_alignment,
+        thresholds=thresholds,
+    )
     sample_count = max((int(value["sample_count"]) for value in pairs.values()), default=0)
     return {
         "available": sample_count > 0,
@@ -1411,8 +1416,110 @@ def _lateral_sign_alignment_summary(
         "route_lateral_provenance": route_lateral_provenance,
         "route_simple_lat_magnitude_alignment": route_simple_magnitude,
         "official_hdmap_projection_alignment": official_projection_alignment,
+        "route_station_frame_alignment": route_station_alignment,
         **pairs,
     }
+
+
+def _route_station_frame_alignment(
+    rows: Sequence[Mapping[str, Any]],
+    official_projection_alignment: Mapping[str, Any],
+    *,
+    thresholds: Mapping[str, float],
+) -> dict[str, Any]:
+    route_current = _paired_abs_delta_stats(
+        rows,
+        DRIFT_WINDOW_FIELD_ALIASES["route_s"],
+        FIELD_ALIASES["apollo_simple_lon_current_station"],
+    )
+    route_target = _paired_abs_delta_stats(
+        rows,
+        DRIFT_WINDOW_FIELD_ALIASES["route_s"],
+        FIELD_ALIASES["apollo_simple_lat_target_point_s"],
+    )
+    station_vs_projection = {}
+    if isinstance(official_projection_alignment, Mapping):
+        station_vs_projection = official_projection_alignment.get("simple_lat_station_vs_projection_s") or {}
+        if not isinstance(station_vs_projection, Mapping):
+            station_vs_projection = {}
+    route_current_p95 = _num(route_current.get("p95"))
+    route_target_p95 = _num(route_target.get("p95"))
+    projection_classification = station_vs_projection.get("station_frame_classification")
+    current_projection_p95 = _num(station_vs_projection.get("current_station_minus_projection_s_abs_p95_m"))
+    route_aligned = (
+        route_current_p95 is not None
+        and route_current_p95 <= thresholds["station_lane_s_alignment_p95_m"]
+    )
+    target_aligned = (
+        route_target_p95 is None
+        or route_target_p95 <= thresholds["station_target_current_alignment_p95_m"]
+    )
+    if route_current.get("count", 0) <= 0:
+        status = "insufficient_data"
+        classification = "route_s_station_alignment_missing"
+    elif route_aligned and projection_classification == "local_station_frame_offset_candidate":
+        status = "available"
+        classification = "route_s_and_simple_lat_share_local_station_frame_candidate"
+    elif route_aligned and projection_classification == "lane_s_aligned":
+        status = "available"
+        classification = "route_s_and_simple_lat_lane_s_aligned_candidate"
+    elif route_aligned and target_aligned:
+        status = "available"
+        classification = "route_s_simple_lat_station_aligned_projection_unknown"
+    elif (
+        route_current_p95 is not None
+        and route_current_p95 >= thresholds["route_s_station_delta_high_p95_m"]
+    ):
+        status = "warn"
+        classification = "route_s_simple_lat_station_mismatch"
+    else:
+        status = "warn"
+        classification = "route_s_simple_lat_station_ambiguous"
+    return {
+        "status": status,
+        "classification": classification,
+        "route_s_current_station_abs_delta": route_current,
+        "route_s_target_point_s_abs_delta": route_target,
+        "simple_lat_station_vs_projection_s_classification": projection_classification,
+        "simple_lat_current_station_projection_s_delta_p95_m": current_projection_p95,
+        "thresholds": {
+            "station_lane_s_alignment_p95_m": thresholds["station_lane_s_alignment_p95_m"],
+            "station_target_current_alignment_p95_m": thresholds[
+                "station_target_current_alignment_p95_m"
+            ],
+            "route_s_station_delta_high_p95_m": thresholds["route_s_station_delta_high_p95_m"],
+        },
+        "interpretation": _route_station_frame_interpretation(classification),
+        "claim_boundary": (
+            "This compares run-local route_s with Apollo simple_lat station fields and, "
+            "when available, official HDMap projection_s. It is frame-origin diagnostics "
+            "only and does not prove reference-line validity or behavior success."
+        ),
+    }
+
+
+def _route_station_frame_interpretation(classification: str) -> str:
+    if classification == "route_s_and_simple_lat_share_local_station_frame_candidate":
+        return (
+            "Run-local route_s and Apollo simple_lat station are close to each other while "
+            "both are offset from official HDMap projection_s; treat route_s/simple_lat "
+            "as a shared local or stitching station frame candidate."
+        )
+    if classification == "route_s_and_simple_lat_lane_s_aligned_candidate":
+        return (
+            "Run-local route_s, Apollo simple_lat station, and official projection_s appear "
+            "compatible under current thresholds."
+        )
+    if classification == "route_s_simple_lat_station_aligned_projection_unknown":
+        return (
+            "Run-local route_s and Apollo simple_lat station align, but official projection_s "
+            "evidence is missing or ambiguous."
+        )
+    if classification == "route_s_simple_lat_station_mismatch":
+        return "Run-local route_s and Apollo simple_lat station differ materially."
+    if classification == "route_s_simple_lat_station_ambiguous":
+        return "Run-local route_s and Apollo simple_lat station are partially aligned or ambiguous."
+    return "Route/station frame alignment cannot be classified because route_s or station data is missing."
 
 
 def _first_high_lateral_sign_alignment(

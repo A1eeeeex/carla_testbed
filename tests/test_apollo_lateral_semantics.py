@@ -191,6 +191,46 @@ def test_simple_lat_near_zero_while_route_lateral_high_is_anomaly(tmp_path: Path
     assert report["correlation_summary"]["route_to_apollo_matched_point_xy_distance"]["p95"] > 0.8
 
 
+def test_route_s_and_simple_lat_share_local_station_frame_candidate(tmp_path: Path) -> None:
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["sim_time"] = float(index)
+        row["route_s"] = 1.0 + index * 0.1
+        row["cross_track_error"] = 0.30
+        row["apollo_debug_simple_lat_lateral_error_m"] = -0.30
+        row["apollo_debug_simple_lon_current_station_m"] = 1.02 + index * 0.1
+        row["apollo_debug_simple_lat_target_point_s"] = 1.05 + index * 0.1
+        row["apollo_debug_simple_lon_matched_point_s"] = 0.0
+    timeseries = _write_rows(tmp_path / "timeseries.csv", rows)
+    projection = tmp_path / "apollo_hdmap_projection.jsonl"
+    projection_rows = [
+        {
+            "timestamp": float(index),
+            "localization_x": 10.0 + index,
+            "localization_y": 2.0,
+            "nearest_lane_id": "lane_097",
+            "projection_s": 25.0 + index * 0.1,
+            "projection_l": -0.30,
+            "lane_heading_at_s": 0.0,
+            "source": "apollo_hdmap_api",
+            "status": "ok",
+        }
+        for index in range(4)
+    ]
+    projection.write_text(
+        "\n".join(json.dumps(row, sort_keys=True) for row in projection_rows) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics(timeseries=timeseries, hdmap_projection=projection)
+
+    alignment = report["lateral_sign_alignment"]["route_station_frame_alignment"]
+    assert alignment["classification"] == "route_s_and_simple_lat_share_local_station_frame_candidate"
+    assert abs(alignment["route_s_current_station_abs_delta"]["p95"] - 0.02) < 1e-9
+    assert alignment["simple_lat_station_vs_projection_s_classification"] == "local_station_frame_offset_candidate"
+    assert "shared local or stitching station frame candidate" in alignment["interpretation"]
+
+
 def test_reference_debug_missing_with_nonempty_planning_is_context_anomaly(tmp_path: Path) -> None:
     timeseries = _write_rows(tmp_path / "timeseries.csv", _base_rows())
     reference_contract = tmp_path / "apollo_reference_line_contract_report.json"

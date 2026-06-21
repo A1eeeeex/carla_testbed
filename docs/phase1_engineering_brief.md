@@ -323,6 +323,17 @@ Interpretation:
   Control simple_lat station appears to use a local/stitching station frame.
   The result is diagnostic-only and does not prove full reference-line
   validity, route equivalence, or behavior success.
+- The lateral-semantics report now makes that station-frame evidence explicit
+  with `route_station_frame_alignment`. On the same cut-in sample,
+  run-local `route_s` is close to Apollo Control `current_station` and
+  `target_point_s` (`route_s_current_station_abs_delta_p95≈0.150m`,
+  `route_s_target_point_s_abs_delta_p95≈0.140m`), while Control station remains
+  offset from official Apollo `projection_s` by about `25.08m`. The current
+  classification is
+  `route_s_and_simple_lat_share_local_station_frame_candidate`. This means the
+  remaining investigation should compare lateral sign conventions and route
+  frame definitions, not treat Control station as missing or immediately tune
+  steering/control.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The

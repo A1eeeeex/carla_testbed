@@ -1540,6 +1540,28 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 "lateral_sign_alignment.official_hdmap_projection_alignment."
                 "simple_lat_station_vs_projection_s.target_s_minus_current_station_abs_p95_m",
             ),
+            "route_station_frame_classification": _nested(
+                report,
+                "lateral_sign_alignment.route_station_frame_alignment.classification",
+            ),
+            "route_station_frame_status": _nested(
+                report,
+                "lateral_sign_alignment.route_station_frame_alignment.status",
+            ),
+            "route_s_current_station_abs_delta_p95_m": _nested(
+                report,
+                "lateral_sign_alignment.route_station_frame_alignment."
+                "route_s_current_station_abs_delta.p95",
+            ),
+            "route_s_target_point_s_abs_delta_p95_m": _nested(
+                report,
+                "lateral_sign_alignment.route_station_frame_alignment."
+                "route_s_target_point_s_abs_delta.p95",
+            ),
+            "route_station_frame_interpretation": _nested(
+                report,
+                "lateral_sign_alignment.route_station_frame_alignment.interpretation",
+            ),
             "route_simple_lat_sign_convention_candidate": _nested(
                 report,
                 "lateral_sign_alignment.route_simple_lat_magnitude_alignment.magnitude_agreement_candidate",
