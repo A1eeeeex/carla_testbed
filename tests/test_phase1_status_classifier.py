@@ -1300,6 +1300,16 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
         )
     link_report["layers"]["planning_reference_line"] = {
         "key_metrics": {
+            "reference_debug_diagnostic": {
+                "field_inventory": {
+                    "field_gap_classification": (
+                        "reference_line_counter_missing_but_planning_control_surrogates_present"
+                    ),
+                    "reference_line_count_positive_count": 0,
+                    "trajectory_sample_rows": 170,
+                    "control_target_point_rows": 126,
+                }
+            },
             "reference_line_debug_export_policy": {
                 "status": "warn",
                 "classification": (
@@ -1372,6 +1382,12 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     )
     assert reference_policy["reference_line_debug_claim_grade_allowed"] is False
     assert reference_policy["local_surrogate_available"] is True
+    assert reference_policy["field_gap_classification"] == (
+        "reference_line_counter_missing_but_planning_control_surrogates_present"
+    )
+    assert reference_policy["reference_line_count_positive_count"] == 0
+    assert reference_policy["trajectory_sample_rows"] == 170
+    assert reference_policy["control_target_point_rows"] == 126
     assert reference_policy["planning_first_point_local_alignment_available"] is True
     assert reference_policy["planning_trajectory_sample_surrogate_available"] is True
     assert reference_policy["control_simple_lat_reference_available"] is True
@@ -1383,6 +1399,7 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert "sign_sensitive_gate_allowed: `False`" in summary_text
     assert "## Reference-Line Debug Export Policy" in summary_text
     assert "local_surrogate_only_until_reference_line_debug_exported" in summary_text
+    assert "reference_line_counter_missing_but_planning_control_surrogates_present" in summary_text
     assert "reference_line_debug_claim_grade_allowed: `False`" in summary_text
 
 

@@ -421,6 +421,15 @@ Interpretation:
   reference-line debug counters remain unavailable. The policy keeps
   `reference_line_debug_claim_grade_allowed=false`, so these local surrogates
   narrow attribution without becoming a claim-grade reference-line pass.
+- The refreshed reference-line report now includes a field inventory for this
+  gap. On the same run it classifies the evidence as
+  `reference_line_counter_missing_but_planning_control_surrogates_present`:
+  `reference_line_count_positive_count=0`, while
+  `trajectory_sample_rows=170`, `route_segment_count_positive_count=171`, and
+  `control_target_point_rows=126`. This confirms the next blocker is not a
+  total Planning/Control evidence absence; it is the missing exported Planning
+  reference-line counter/debug evidence needed before claim-grade
+  reference-line conclusions.
 - Manual artifact inspection of the same run confirms the next evidence gap:
   `apollo_reference_line_debug.jsonl`,
   `stage5_apollo_reference_line_debug.jsonl`, and

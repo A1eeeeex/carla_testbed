@@ -412,6 +412,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     reference_debug_export_policy = _mapping(report.get("reference_line_debug_export_policy"))
     trajectory_sample_surrogate = _mapping(report.get("planning_trajectory_sample_surrogate"))
     control_target_surrogate = _mapping(report.get("control_target_point_vs_planning_trajectory_sample"))
+    field_inventory = _mapping(_mapping(report.get("reference_debug_diagnostic")).get("field_inventory"))
     return "\n".join(
         [
             "# Apollo Reference-Line Contract Summary",
@@ -427,6 +428,8 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Non-empty trajectory ratio: `{evidence.get('nonempty_trajectory_ratio')}`",
             f"- Reference-line provider ready ratio: `{evidence.get('reference_line_provider_ready_ratio')}`",
             f"- Reference debug classification: `{_mapping(report.get('reference_debug_diagnostic')).get('classification')}`",
+            f"- Reference debug field inventory: `{field_inventory.get('field_gap_classification')}`",
+            f"- Reference debug counter positive rows: `{field_inventory.get('reference_line_count_positive_count')}`",
             f"- Control simple_lat reference available: `{_mapping(report.get('reference_debug_diagnostic')).get('control_simple_lat_reference_available')}`",
             f"- Reference debug export policy: `{reference_debug_export_policy.get('classification')}`",
             f"- Reference debug claim-grade allowed: `{reference_debug_export_policy.get('reference_line_debug_claim_grade_allowed')}`",
@@ -1011,6 +1014,7 @@ def _reference_debug_diagnostic(
         classification = "planning_nonempty_route_segment_missing"
     else:
         classification = "planning_not_materialized"
+    field_inventory = _reference_debug_field_inventory(rows)
     return {
         "classification": classification,
         "row_count": row_count,
@@ -1027,10 +1031,96 @@ def _reference_debug_diagnostic(
         "control_simple_lat_reference_available": control_available,
         "control_reference_join_coverage_ratio": metrics.get("fallback_join_coverage_ratio"),
         "planning_first_point_projection_alignment": dict(planning_projection_alignment or {}),
+        "field_inventory": field_inventory,
         "interpretation": (
             "classification separates Planning route/trajectory materialization from whether "
             "reference-line debug counters are exported and whether Control simple_lat reference "
             "semantics are visible."
+        ),
+    }
+
+
+def _reference_debug_field_inventory(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    row_count = len(rows)
+    reference_line_count_known = sum(
+        1 for row in rows if _num(_nested(row, "planning.reference_line_count")) is not None
+    )
+    reference_line_count_positive = sum(
+        1 for row in rows if (_num(_nested(row, "planning.reference_line_count")) or 0.0) > 0.0
+    )
+    provider_statuses = [
+        str(_nested(row, "planning.reference_line_provider_status"))
+        for row in rows
+        if _nested(row, "planning.reference_line_provider_status") not in {None, ""}
+    ]
+    route_segment_count_positive = sum(1 for row in rows if _routing_segment_available(row))
+    route_segment_total_length_available = sum(
+        1
+        for row in rows
+        if _first_number(
+            row,
+            "planning.route_segment_total_length",
+            "routing.route_segment_total_length",
+        )
+        is not None
+    )
+    lane_id_available = sum(
+        1
+        for row in rows
+        if _present_value(_nested(row, "planning.lane_id_first"))
+        or _present_value(_nested(row, "planning.lane_ids"))
+        or _present_value(_nested(row, "planning.target_lane_id_first"))
+        or _present_value(_nested(row, "planning.target_lane_ids"))
+    )
+    trajectory_nonempty_count = sum(1 for row in rows if _planning_trajectory_nonempty(row))
+    trajectory_sample_rows = sum(
+        1 for row in rows if _sample_points(_nested(row, "planning.trajectory_sample_points"))
+    )
+    control_reference_rows = sum(1 for row in rows if _control_reference_available(row))
+    control_target_point_rows = sum(1 for row in rows if _control_target_point_available(row))
+    planning_surrogate_available = (
+        route_segment_count_positive > 0
+        or route_segment_total_length_available > 0
+        or lane_id_available > 0
+        or trajectory_sample_rows > 0
+    )
+    control_surrogate_available = control_reference_rows > 0 or control_target_point_rows > 0
+    if row_count <= 0:
+        classification = "insufficient_data"
+    elif reference_line_count_positive > 0:
+        classification = "reference_line_debug_counter_available"
+    elif planning_surrogate_available and control_surrogate_available:
+        classification = "reference_line_counter_missing_but_planning_control_surrogates_present"
+    elif planning_surrogate_available:
+        classification = "reference_line_counter_missing_but_planning_surrogates_present"
+    elif control_surrogate_available:
+        classification = "reference_line_counter_missing_but_control_surrogates_present"
+    else:
+        classification = "reference_line_debug_fields_missing"
+    return {
+        "field_gap_classification": classification,
+        "row_count": row_count,
+        "reference_line_count_known_count": reference_line_count_known,
+        "reference_line_count_positive_count": reference_line_count_positive,
+        "reference_line_count_zero_ratio": (
+            (reference_line_count_known - reference_line_count_positive) / reference_line_count_known
+            if reference_line_count_known
+            else None
+        ),
+        "reference_line_provider_status_topk": _topk(provider_statuses),
+        "route_segment_count_positive_count": route_segment_count_positive,
+        "route_segment_total_length_available_count": route_segment_total_length_available,
+        "planning_lane_id_available_count": lane_id_available,
+        "trajectory_nonempty_count": trajectory_nonempty_count,
+        "trajectory_sample_rows": trajectory_sample_rows,
+        "control_reference_rows": control_reference_rows,
+        "control_target_point_rows": control_target_point_rows,
+        "planning_surrogate_available": planning_surrogate_available,
+        "control_surrogate_available": control_surrogate_available,
+        "claim_boundary": (
+            "This inventory reports which debug fields are present in existing artifacts. "
+            "Surrogate Planning/control fields can narrow an export gap, but they cannot "
+            "replace exported Planning reference-line debug for claim-grade evidence."
         ),
     }
 

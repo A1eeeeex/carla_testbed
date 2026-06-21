@@ -189,6 +189,10 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                 "",
                 f"- policy: `{reference_line_policy.get('policy')}`",
                 f"- classification: `{reference_line_policy.get('classification')}`",
+                f"- field_gap_classification: `{reference_line_policy.get('field_gap_classification')}`",
+                f"- reference_line_count_positive_count: `{reference_line_policy.get('reference_line_count_positive_count')}`",
+                f"- trajectory_sample_rows: `{reference_line_policy.get('trajectory_sample_rows')}`",
+                f"- control_target_point_rows: `{reference_line_policy.get('control_target_point_rows')}`",
                 f"- reference_line_debug_claim_grade_allowed: `{reference_line_policy.get('reference_line_debug_claim_grade_allowed')}`",
                 f"- local_surrogate_available: `{reference_line_policy.get('local_surrogate_available')}`",
                 f"- recommended_action: `{reference_line_policy.get('recommended_action')}`",
@@ -912,6 +916,12 @@ def _reference_line_debug_export_policy(
         "status": status or "unknown",
         "policy": policy,
         "classification": classification,
+        "field_gap_classification": link_health.get("reference_line_field_gap_classification"),
+        "reference_line_count_positive_count": link_health.get(
+            "reference_line_count_positive_count"
+        ),
+        "trajectory_sample_rows": link_health.get("reference_line_trajectory_sample_rows"),
+        "control_target_point_rows": link_health.get("reference_line_control_target_point_rows"),
         "reference_line_debug_claim_grade_allowed": claim_grade_allowed,
         "local_surrogate_available": local_surrogate_available,
         "planning_first_point_local_alignment_available": planning_local,
@@ -971,6 +981,16 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         if isinstance(reference_metrics.get("reference_line_debug_export_policy"), Mapping)
         else {}
     )
+    reference_debug_diagnostic = (
+        reference_metrics.get("reference_debug_diagnostic")
+        if isinstance(reference_metrics.get("reference_debug_diagnostic"), Mapping)
+        else {}
+    )
+    reference_field_inventory = (
+        reference_debug_diagnostic.get("field_inventory")
+        if isinstance(reference_debug_diagnostic.get("field_inventory"), Mapping)
+        else {}
+    )
     return {
         "available": bool(report),
         "path": str(path) if path.exists() else None,
@@ -979,6 +999,18 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         "can_claim_unassisted_natural_driving": report.get("can_claim_unassisted_natural_driving"),
         "reference_line_debug_export_policy_status": export_policy.get("status"),
         "reference_line_debug_export_policy_classification": export_policy.get("classification"),
+        "reference_line_field_gap_classification": reference_field_inventory.get(
+            "field_gap_classification"
+        ),
+        "reference_line_count_positive_count": reference_field_inventory.get(
+            "reference_line_count_positive_count"
+        ),
+        "reference_line_trajectory_sample_rows": reference_field_inventory.get(
+            "trajectory_sample_rows"
+        ),
+        "reference_line_control_target_point_rows": reference_field_inventory.get(
+            "control_target_point_rows"
+        ),
         "reference_line_debug_claim_grade_allowed": export_policy.get(
             "reference_line_debug_claim_grade_allowed"
         ),
