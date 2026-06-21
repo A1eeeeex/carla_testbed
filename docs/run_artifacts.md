@@ -256,6 +256,22 @@ Additional run-local artifacts:
     this narrow symptom to `failed/planning_control_handoff_missing`. It is a
     next-debug-action hint for planning/control handoff, not a root-cause proof
     and not a CARLA apply-layer failure by itself.
+
+Phase 1 external review packaging has two levels:
+
+- `tools/phase1_acceptance.py --comparison-dir <comparison> --out <acceptance>`
+  writes one atomic `phase1_acceptance_report.json` and materializes that exact
+  comparison plus its participating run evidence under `acceptance/evidence/`.
+- `tools/package_phase1_review_pack.py --catalog <phase1_scenario_catalog.json>
+  --out <pack> --archive` copies the generated catalog and every exact accepted
+  bundle referenced by `accepted_bundle_path`, then writes
+  `phase1_review_pack_manifest.json` with SHA256 hashes and missing required
+  evidence.
+
+The review-pack manifest is package-level audit evidence. It does not prove
+Apollo natural driving, and it must not merge best evidence from unrelated
+runs. If a referenced accepted bundle is missing, partial, or not
+self-contained, the package-level status is `PARTIAL`.
   - `phase1_metrics.derived_blocker_evidence` is an explanation layer assembled
     from run-local reports such as
     `analysis/control_health/control_health_report.json`,

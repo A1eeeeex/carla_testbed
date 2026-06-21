@@ -68,7 +68,7 @@ Layered progress status:
 
 - Phase 1 overall: `PARTIAL`
 - Local accepted comparison-surface catalog: `DONE as local artifact surface`
-- External/package-level acceptance: `PARTIAL until independently recomputable`
+- Package-level acceptance surface: `LOCAL_PACK_DONE / pending external review`
 - Phase 1 completion gate: `PARTIAL`
 - Representative Apollo behavior capability: `PARTIAL / failing samples remain`
 - Apollo natural-driving or no-interference capability claim: `NOT_CLAIMED`
@@ -133,6 +133,15 @@ Interpretation:
   completion claim remain `PARTIAL` until the exact run pairs, raw traces,
   comparison artifacts, artifact-completeness reports, assist ledgers, and
   hashes are packaged so the result can be independently recomputed."
+- The latest local package-level surface has now been generated with
+  `tools/package_phase1_review_pack.py`:
+  `artifacts/phase1_completion_review_pack_current.tar.gz`
+  (`sha256=9b96e51d0e841acd79ff36eb8a2ff77b2374ade616dce733c65dd00c21c70ea2`).
+  Its `phase1_review_pack_manifest.json` reports `status=DONE`,
+  `scenario_count=8`, `done_scenario_count=8`, and zero missing required items.
+  This closes the local self-contained pack construction gap, but it remains a
+  package-level audit surface pending external review; it still does not prove
+  Apollo behavior success or Phase 1 overall completion.
 - A stricter Baguang lane-event contract audit temporarily demoted
   `cut_in_simple` from accepted `DONE` to `PARTIAL`. The refreshed Apollo run
   starts inside the cut-in activation window. The Apollo sidecar sample
@@ -711,6 +720,22 @@ Phase 1 accepted scenario status:
 - The accepted bundle must record participating run ids/dirs, comparison id,
   artifact hashes, validity gates, and blocking reasons. A missing or `PARTIAL`
   accepted bundle keeps the scenario catalog row `PARTIAL`.
+- External/package-level completion review must be built from the generated
+  catalog plus the exact accepted bundles referenced by `accepted_bundle_path`.
+  Use:
+
+```bash
+python tools/package_phase1_review_pack.py \
+  --catalog artifacts/phase1_scenario_catalog_current/phase1_scenario_catalog.json \
+  --out artifacts/phase1_completion_review_pack \
+  --archive
+```
+
+  The resulting `phase1_review_pack_manifest.json` is the package-level audit
+  surface. It records copied accepted bundles, exact Apollo/PlanningControl run
+  IDs, SHA256 hashes, missing required evidence, and scenario blockers. A
+  review pack with `status=PARTIAL` cannot support a Phase 1 completion claim,
+  even if the local repository catalog still shows `8 DONE / 0 PARTIAL`.
 
 ## Phase 1 Scenario Scope
 
