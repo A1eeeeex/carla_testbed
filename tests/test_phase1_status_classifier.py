@@ -1269,6 +1269,41 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert evidence["simple_lat_target_s_projection_s_delta_p95_m"] == 25.12
     assert evidence["simple_lat_target_s_current_station_delta_p95_m"] == 0.043
 
+    link_report_path = link_health / "apollo_link_health_report.json"
+    link_report = json.loads(link_report_path.read_text(encoding="utf-8"))
+    metrics = link_report["layers"]["apollo_lateral_semantics"]["key_metrics"]
+    metrics.update(
+        {
+            "projection_route_sample_sign_contract_status": "available",
+            "projection_route_sample_sign_contract_classification": (
+                "timeseries_route_lateral_sign_inverted_vs_projection_route_samples"
+            ),
+            "projection_route_sample_count": 61,
+            "projection_route_sample_matched_sample_count": 335,
+            "projection_route_sample_lateral_source_field": "cross_track_error",
+            "projection_route_sample_timeseries_opposite_sign_ratio": 1.0,
+            "projection_route_sample_simple_lat_same_sign_ratio": 1.0,
+        }
+    )
+    link_report_path.write_text(json.dumps(link_report), encoding="utf-8")
+
+    refreshed = classify_phase1_run(run)
+    refreshed_evidence = refreshed["behavior_blocker_evidence"]
+
+    assert "Projection-route sample evidence already confirms" in refreshed["behavior_next_action"]
+    assert "reference-line debug/export gap" in refreshed["behavior_next_action"]
+    assert "do not change steer scale" in refreshed["behavior_next_action"]
+    assert (
+        refreshed_evidence["projection_route_sample_sign_contract_classification"]
+        == "timeseries_route_lateral_sign_inverted_vs_projection_route_samples"
+    )
+    assert refreshed_evidence["projection_route_sample_sign_contract_confirmed"] is True
+    assert refreshed_evidence["projection_route_sample_count"] == 61
+    assert refreshed_evidence["projection_route_sample_matched_sample_count"] == 335
+    assert refreshed_evidence["projection_route_sample_lateral_source_field"] == "cross_track_error"
+    assert refreshed_evidence["projection_route_sample_timeseries_opposite_sign_ratio"] == 1.0
+    assert refreshed_evidence["projection_route_sample_simple_lat_same_sign_ratio"] == 1.0
+
 
 def test_legacy_apollo_route_id_normalizes_to_phase1_scenario_case(tmp_path) -> None:
     run = tmp_path / "apollo_lane"

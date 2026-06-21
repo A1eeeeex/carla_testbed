@@ -549,6 +549,12 @@ def _primary_behavior_blocker(
             ) or (
                 link_health.get("route_simple_lat_sign_convention_candidate") is True
             )
+            projection_route_sign_confirmed = (
+                link_health.get("projection_route_sample_sign_contract_classification")
+                == "timeseries_route_lateral_sign_inverted_vs_projection_route_samples"
+                and link_health.get("projection_route_sample_timeseries_opposite_sign_ratio") == 1.0
+                and link_health.get("projection_route_sample_simple_lat_same_sign_ratio") == 1.0
+            )
             blocker = (
                 "lane_departure_with_route_simple_lat_sign_convention_candidate"
                 if same_sign and route_simple_lat_sign_convention
@@ -558,9 +564,20 @@ def _primary_behavior_blocker(
                 else "lane_departure_evidence"
             )
             next_action = (
-                "Validate the sign convention between CARLA route cross-track error and "
-                "Apollo simple_lat lateral error before changing control mapping, steer "
-                "scale, smoothing, or controller gains."
+                (
+                    "Projection-route sample evidence already confirms the route-lateral "
+                    "sign inversion candidate for this run. Close the Planning reference-line "
+                    "debug/export gap and decide whether the route-lateral field should be "
+                    "renamed, explicitly converted, or excluded from behavior gates until a "
+                    "canonical sign convention is declared; do not change steer scale, "
+                    "control mapping, smoothing, or controller gains yet."
+                )
+                if projection_route_sign_confirmed
+                else (
+                    "Validate the sign convention between CARLA route cross-track error and "
+                    "Apollo simple_lat lateral error before changing control mapping, steer "
+                    "scale, smoothing, or controller gains."
+                )
                 if route_simple_lat_sign_convention
                 else (
                     "Inspect Apollo lateral/reference-line and raw->mapped->applied steer "
@@ -596,6 +613,28 @@ def _primary_behavior_blocker(
                     "route_definition_geometry_status": link_health.get(
                         "route_definition_geometry_status"
                     ),
+                    "projection_route_sample_sign_contract_status": link_health.get(
+                        "projection_route_sample_sign_contract_status"
+                    ),
+                    "projection_route_sample_sign_contract_classification": link_health.get(
+                        "projection_route_sample_sign_contract_classification"
+                    ),
+                    "projection_route_sample_count": link_health.get(
+                        "projection_route_sample_count"
+                    ),
+                    "projection_route_sample_matched_sample_count": link_health.get(
+                        "projection_route_sample_matched_sample_count"
+                    ),
+                    "projection_route_sample_lateral_source_field": link_health.get(
+                        "projection_route_sample_lateral_source_field"
+                    ),
+                    "projection_route_sample_timeseries_opposite_sign_ratio": link_health.get(
+                        "projection_route_sample_timeseries_opposite_sign_ratio"
+                    ),
+                    "projection_route_sample_simple_lat_same_sign_ratio": link_health.get(
+                        "projection_route_sample_simple_lat_same_sign_ratio"
+                    ),
+                    "projection_route_sample_sign_contract_confirmed": projection_route_sign_confirmed,
                     "official_hdmap_projection_matched_sample_count": link_health.get(
                         "official_hdmap_projection_matched_sample_count"
                     ),
@@ -766,6 +805,27 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         ),
         "route_definition_geometry_status": lateral_metrics.get(
             "route_definition_geometry_status"
+        ),
+        "projection_route_sample_sign_contract_status": lateral_metrics.get(
+            "projection_route_sample_sign_contract_status"
+        ),
+        "projection_route_sample_sign_contract_classification": lateral_metrics.get(
+            "projection_route_sample_sign_contract_classification"
+        ),
+        "projection_route_sample_count": lateral_metrics.get(
+            "projection_route_sample_count"
+        ),
+        "projection_route_sample_matched_sample_count": lateral_metrics.get(
+            "projection_route_sample_matched_sample_count"
+        ),
+        "projection_route_sample_lateral_source_field": lateral_metrics.get(
+            "projection_route_sample_lateral_source_field"
+        ),
+        "projection_route_sample_timeseries_opposite_sign_ratio": lateral_metrics.get(
+            "projection_route_sample_timeseries_opposite_sign_ratio"
+        ),
+        "projection_route_sample_simple_lat_same_sign_ratio": lateral_metrics.get(
+            "projection_route_sample_simple_lat_same_sign_ratio"
         ),
         "official_hdmap_projection_matched_sample_count": lateral_metrics.get(
             "official_hdmap_projection_matched_sample_count"

@@ -381,6 +381,16 @@ Interpretation:
   still prevents any unassisted natural-driving claim. The reference-line debug
   export gap remains important context, but it is no longer the latest primary
   blocker for this specific cut-in sample.
+- `phase1_status` now consumes the projection-route sign contract when
+  explaining that same cut-in lane invasion. Its refreshed
+  `behavior_next_action` no longer asks operators to re-validate the sign
+  convention from scratch; it records that projection-route sample evidence
+  already confirms the inversion candidate for this run and redirects the next
+  action to closing the Planning reference-line debug/export gap and deciding
+  whether the route-lateral field should be renamed, explicitly converted, or
+  excluded from behavior gates until the canonical sign convention is declared.
+  This keeps the run as `failed/lane_invasion`; it only makes the next
+  debugging step less stale.
 - Manual artifact inspection of the same run confirms the next evidence gap:
   `apollo_reference_line_debug.jsonl`,
   `stage5_apollo_reference_line_debug.jsonl`, and
