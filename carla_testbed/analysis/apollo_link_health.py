@@ -439,6 +439,11 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
         else {}
     )
     reference_classification = diagnostic.get("classification")
+    planning_projection_alignment = (
+        diagnostic.get("planning_first_point_projection_alignment")
+        if isinstance(diagnostic.get("planning_first_point_projection_alignment"), Mapping)
+        else {}
+    )
     station_classification = lateral_metrics.get("simple_lat_station_frame_classification")
     if not reference_classification and not station_classification:
         return
@@ -462,6 +467,13 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
         "simple_lat_station_frame_classification": station_classification,
         "control_simple_lat_reference_available": diagnostic.get("control_simple_lat_reference_available"),
         "control_reference_join_coverage_ratio": diagnostic.get("control_reference_join_coverage_ratio"),
+        "planning_first_point_projection_classification": planning_projection_alignment.get("classification"),
+        "planning_first_point_lane_l_abs_p95_m": planning_projection_alignment.get(
+            "planning_first_point_lane_l_abs_p95_m"
+        ),
+        "planning_first_point_lane_heading_error_p95_rad": planning_projection_alignment.get(
+            "planning_first_point_lane_heading_error_p95_rad"
+        ),
         "simple_lat_current_station_projection_s_delta_p95_m": lateral_metrics.get(
             "simple_lat_current_station_projection_s_delta_p95_m"
         ),
@@ -478,10 +490,20 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
         warnings = set(reference.get("warnings") or [])
         warnings.add("planning_debug_export_gap_with_control_local_station_frame")
         reference["warnings"] = sorted(warnings)
-        reference["next_action"] = (
-            "Inspect Planning reference-line debug export and Control simple_lat local/stitching "
-            "station frame join before changing steer scale, smoothing, PID, or actuation mapping."
-        )
+        if (
+            planning_projection_alignment.get("classification")
+            == "planning_first_point_on_hdmap_projection_line_candidate"
+        ):
+            reference["next_action"] = (
+                "Planning first trajectory points align with official HDMap projection locally; "
+                "inspect Planning reference-line debug export and Control simple_lat local/stitching "
+                "station frame join before changing steer scale, smoothing, PID, or actuation mapping."
+            )
+        else:
+            reference["next_action"] = (
+                "Inspect Planning reference-line debug export and Control simple_lat local/stitching "
+                "station frame join before changing steer scale, smoothing, PID, or actuation mapping."
+            )
 
 
 def write_apollo_link_health_report(report: Mapping[str, Any], out_dir: str | Path) -> dict[str, str]:

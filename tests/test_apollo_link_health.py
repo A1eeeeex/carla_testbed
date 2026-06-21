@@ -1884,6 +1884,11 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
         "reference_line_count_zero_ratio": 1.0,
         "reference_line_provider_ready_ratio": 0.0,
         "route_segment_available": True,
+        "planning_first_point_projection_alignment": {
+            "classification": "planning_first_point_on_hdmap_projection_line_candidate",
+            "planning_first_point_lane_l_abs_p95_m": 0.000001,
+            "planning_first_point_lane_heading_error_p95_rad": 0.000002,
+        },
     }
     _write_json(reference_path, reference_report)
     _write_json(
@@ -1998,7 +2003,13 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert bridge["simple_lat_station_frame_classification"] == "local_station_frame_offset_candidate"
     assert bridge["control_simple_lat_reference_available"] is True
     assert bridge["control_reference_join_coverage_ratio"] == 0.37
+    assert bridge["planning_first_point_projection_classification"] == (
+        "planning_first_point_on_hdmap_projection_line_candidate"
+    )
+    assert bridge["planning_first_point_lane_l_abs_p95_m"] == 0.000001
+    assert bridge["planning_first_point_lane_heading_error_p95_rad"] == 0.000002
     assert "planning_debug_export_gap_with_control_local_station_frame" in reference["warnings"]
+    assert "Planning first trajectory points align with official HDMap projection locally" in reference["next_action"]
     assert "before changing steer scale" in reference["next_action"]
     lateral = report["layers"]["apollo_lateral_semantics"]
     assert lateral["key_metrics"]["reference_debug_classification"] == "planning_reference_line_debug_export_gap"

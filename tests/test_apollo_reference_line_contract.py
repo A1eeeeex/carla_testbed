@@ -520,6 +520,53 @@ def test_reference_debug_diagnostic_separates_export_gap_from_control_simple_lat
     assert report["contracts"]["control_reference"]["status"] == "pass"
 
 
+def test_planning_first_point_projection_alignment_uses_official_hdmap_projection() -> None:
+    rows = [
+        {
+            "sim_time_sec": 1.0,
+            "planning": {
+                "trajectory_point_count": 20,
+                "first_trajectory_point_x": 10.0,
+                "first_trajectory_point_y": 2.05,
+                "first_trajectory_point_theta": 0.0,
+                "reference_line_count": 0,
+                "routing_segment_count": 1,
+            },
+            "routing": {"routing_segment_count": 1},
+            "computed": {
+                "localization_to_planning_first_heading_error_rad": 0.0,
+                "planning_reference_available": True,
+                "control_reference_available": False,
+            },
+        }
+    ]
+    hdmap_projection_rows = [
+        {
+            "timestamp": 1.0,
+            "localization_x": 10.0,
+            "localization_y": 2.0,
+            "projection_l": 0.0,
+            "lane_heading_at_s": 0.0,
+            "nearest_lane_id": "lane_097",
+            "source": "apollo_hdmap_api",
+            "status": "ok",
+        }
+    ]
+
+    report = analyze_apollo_reference_line_contract(
+        rows,
+        hdmap_projection_rows=hdmap_projection_rows,
+    )
+
+    alignment = report["planning_first_point_projection_alignment"]
+    assert alignment["status"] == "pass"
+    assert alignment["classification"] == "planning_first_point_on_hdmap_projection_line_candidate"
+    assert alignment["sample_count"] == 1
+    assert alignment["planning_first_point_lane_l_abs_p95_m"] == pytest.approx(0.05)
+    assert alignment["planning_first_point_lane_heading_error_p95_rad"] == pytest.approx(0.0)
+    assert report["reference_debug_diagnostic"]["planning_first_point_projection_alignment"] == alignment
+
+
 def test_existing_contract_rows_are_augmented_with_control_decode_debug(tmp_path: Path) -> None:
     contract = tmp_path / "apollo_reference_line_contract.jsonl"
     control = tmp_path / "bridge_control_decode.jsonl"

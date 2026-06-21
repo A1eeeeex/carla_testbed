@@ -1,6 +1,6 @@
 # Phase 1 Engineering Brief
 
-Last reviewed: 2026-06-20
+Last reviewed: 2026-06-21
 
 This brief freezes the Phase 1 engineering target for `carla_testbed`. It is a
 scope and status document, not a capability announcement. Status labels below
@@ -54,12 +54,13 @@ success means:
 
 ## Current Phase 1 Progress Snapshot
 
-Latest reviewed snapshot: `2026-06-20`, after the latest GPT Pro audit of the
-accepted-bundle evidence, the ScenarioComparison completeness resolver fix, the
-Baguang lane-event hard-gate audit, a fresh Apollo sidecar cut-in online
-validation run, a `carla_builtin` safety-sensor attach-order fix validated with
-a new online cut-in run, and a lateral-semantics postprocess refresh that
-consumes authoritative Apollo control-apply trace evidence.
+Latest reviewed snapshot: `2026-06-21`, after the latest GPT Pro audit of the
+Phase 1 accepted-bundle evidence, the ScenarioComparison completeness resolver
+fix, the Baguang lane-event hard-gate audit, a fresh Apollo sidecar cut-in
+online validation run, a `carla_builtin` safety-sensor attach-order fix
+validated with a new online cut-in run, and lateral/reference-line semantics
+postprocess refreshes that consume authoritative Apollo control-apply trace
+evidence.
 
 Layered progress status:
 
@@ -77,6 +78,24 @@ Current accepted comparison-surface catalog status using
 - `PARTIAL`: `0`
 - `NOT_YET`: `0`
 - `UNKNOWN`: `0`
+
+Pro-audit reconciliation:
+
+- The `8 DONE / 0 PARTIAL` number above is a local repository state computed
+  against the full `runs/` tree. It means each current row has a
+  `phase1_acceptance_report.json` that points at exact participating run IDs
+  and comparison evidence on this machine.
+- It is not automatically transferable to an external review package. If the
+  submitted package omits generated catalog JSON/MD, comparison directories,
+  exact participating run directories, raw `timeseries.*`, actor/phase/control
+  traces, `phase1_status.json`, artifact-completeness reports, assist ledgers,
+  and a SHA256 manifest, then the package-level audit status is `PARTIAL` even
+  when the local repository can recompute `8 DONE`.
+- Phase 1 progress must therefore be reported in three layers:
+  local accepted comparison-surface catalog = `DONE`; external review package
+  completeness = `PARTIAL` until the self-contained pack is present; Phase 1
+  overall = `PARTIAL` until representative Apollo online behavior blockers and
+  the external-backend runtime path are reduced.
 
 Interpretation:
 
@@ -293,6 +312,17 @@ Interpretation:
   `planning_control_station_bridge` when the Planning reference-line report is
   classified as a debug/export gap, so operators can see the cross-layer
   relation without treating it as reference-line correctness.
+- The reference-line contract now also compares Planning first trajectory
+  points against official Apollo HDMap projection rows when both are present.
+  On the same cut-in sample, 113 time-aligned Planning/projection pairs produce
+  `planning_first_point_on_hdmap_projection_line_candidate`,
+  `planning_first_point_lane_l_abs_p95≈1.1e-6m`, and
+  `planning_first_point_lane_heading_error_p95≈2.3e-7rad` on lane `0_0_2`.
+  This narrows the blocker: Planning trajectory first points are locally on the
+  official projected lane, while reference-line debug counters remain zero and
+  Control simple_lat station appears to use a local/stitching station frame.
+  The result is diagnostic-only and does not prove full reference-line
+  validity, route equivalence, or behavior success.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The

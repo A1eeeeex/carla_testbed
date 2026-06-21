@@ -26,6 +26,7 @@ WARN_LATERAL_M = 1.00
 MIN_NONEMPTY_TRAJECTORY_RATIO = 0.80
 MIN_PROVIDER_READY_RATIO = 0.80
 FALLBACK_JOIN_TOLERANCE_S = 0.05
+PLANNING_PROJECTION_JOIN_TOLERANCE_S = 0.25
 
 
 def analyze_apollo_reference_line_contract_run_dir(run_dir: str | Path) -> dict[str, Any]:
@@ -404,6 +405,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     planning_contract = _mapping(contracts.get("planning_trajectory"))
     control_contract = _mapping(contracts.get("control_reference"))
     projection_contract = _mapping(contracts.get("apollo_hdmap_projection"))
+    planning_projection_alignment = _mapping(report.get("planning_first_point_projection_alignment"))
     return "\n".join(
         [
             "# Apollo Reference-Line Contract Summary",
@@ -430,6 +432,9 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Apollo HDMap projection claim-grade: `{hdmap_projection.get('claim_grade')}`",
             f"- Apollo HDMap projection heading p95 rad: `{hdmap_projection.get('heading_error_p95_rad')}`",
             f"- Apollo HDMap projection lateral p95 m: `{hdmap_projection.get('lateral_error_p95_m')}`",
+            f"- Planning first point projection classification: `{planning_projection_alignment.get('classification')}`",
+            f"- Planning first point lane-l p95 m: `{planning_projection_alignment.get('planning_first_point_lane_l_abs_p95_m')}`",
+            f"- Planning first point lane-heading p95 rad: `{planning_projection_alignment.get('planning_first_point_lane_heading_error_p95_rad')}`",
             "",
             INTERPRETATION_BOUNDARY,
             "",
@@ -453,7 +458,16 @@ def _report(
     hdmap_projection = summarize_apollo_hdmap_projection(hdmap_projection_rows or [])
     evidence = _evidence(rows, hdmap_projection)
     metrics = _metrics(rows)
-    reference_debug_diagnostic = _reference_debug_diagnostic(rows, evidence, metrics)
+    planning_projection_alignment = _planning_first_point_projection_alignment(
+        rows,
+        hdmap_projection_rows or [],
+    )
+    reference_debug_diagnostic = _reference_debug_diagnostic(
+        rows,
+        evidence,
+        metrics,
+        planning_projection_alignment=planning_projection_alignment,
+    )
     report_contracts = dict(contracts or _contracts(rows=rows, evidence=evidence, metrics=metrics, hdmap_projection=hdmap_projection))
     status, warnings = _downgrade_for_planning_materialization(
         status,
@@ -474,6 +488,7 @@ def _report(
         "evidence": evidence,
         "metrics": metrics,
         "reference_debug_diagnostic": reference_debug_diagnostic,
+        "planning_first_point_projection_alignment": planning_projection_alignment,
         "contracts": report_contracts,
         "planning_trajectory_contract": report_contracts.get("planning_trajectory") or {},
         "control_reference_contract": report_contracts.get("control_reference") or {},
@@ -942,6 +957,8 @@ def _reference_debug_diagnostic(
     rows: Sequence[Mapping[str, Any]],
     evidence: Mapping[str, Any],
     metrics: Mapping[str, Any],
+    *,
+    planning_projection_alignment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     row_count = len(rows)
     route_segment_available_count = sum(1 for row in rows if _routing_segment_available(row))
@@ -987,12 +1004,165 @@ def _reference_debug_diagnostic(
         "reference_line_provider_ready_ratio": provider_ready_ratio,
         "control_simple_lat_reference_available": control_available,
         "control_reference_join_coverage_ratio": metrics.get("fallback_join_coverage_ratio"),
+        "planning_first_point_projection_alignment": dict(planning_projection_alignment or {}),
         "interpretation": (
             "classification separates Planning route/trajectory materialization from whether "
             "reference-line debug counters are exported and whether Control simple_lat reference "
             "semantics are visible."
         ),
     }
+
+
+def _planning_first_point_projection_alignment(
+    rows: Sequence[Mapping[str, Any]],
+    hdmap_projection_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    projection_rows = [
+        row
+        for row in hdmap_projection_rows
+        if str(row.get("source") or "") == "apollo_hdmap_api"
+        and str(row.get("status") or row.get("projection_status") or "").lower() in {"ok", "pass"}
+        and _projection_timestamp(row) is not None
+        and _num(row.get("localization_x") if row.get("localization_x") is not None else row.get("x_apollo")) is not None
+        and _num(row.get("localization_y") if row.get("localization_y") is not None else row.get("y_apollo")) is not None
+        and _num(row.get("lane_heading_at_s")) is not None
+    ]
+    rows_with_planning = [
+        row
+        for row in rows
+        if _planning_trajectory_nonempty(row)
+        and _num(_nested(row, "planning.first_trajectory_point_x")) is not None
+        and _num(_nested(row, "planning.first_trajectory_point_y")) is not None
+    ]
+    if not rows_with_planning:
+        return {
+            "status": "insufficient_data",
+            "classification": "planning_first_point_missing",
+            "sample_count": 0,
+            "planning_rows_with_first_point": 0,
+            "official_projection_rows": len(projection_rows),
+            "join_tolerance_ms": PLANNING_PROJECTION_JOIN_TOLERANCE_S * 1000.0,
+            "interpretation": (
+                "No non-empty Planning first trajectory point rows were available for "
+                "local HDMap projection alignment."
+            ),
+        }
+    if not projection_rows:
+        return {
+            "status": "insufficient_data",
+            "classification": "official_projection_missing",
+            "sample_count": 0,
+            "planning_rows_with_first_point": len(rows_with_planning),
+            "official_projection_rows": 0,
+            "join_tolerance_ms": PLANNING_PROJECTION_JOIN_TOLERANCE_S * 1000.0,
+            "interpretation": (
+                "Official Apollo HDMap projection rows are required; CARLA route or "
+                "Planning trajectory points cannot substitute for this diagnostic."
+            ),
+        }
+
+    lateral_offsets: list[float] = []
+    heading_errors: list[float] = []
+    join_deltas_ms: list[float] = []
+    lane_ids: list[str] = []
+    unmatched = 0
+    for row in rows_with_planning:
+        row_ts = _row_sim_timestamp(row)
+        if row_ts is None:
+            unmatched += 1
+            continue
+        projection = _nearest_projection_row(
+            row_ts,
+            projection_rows,
+            tolerance_s=PLANNING_PROJECTION_JOIN_TOLERANCE_S,
+        )
+        if projection is None:
+            unmatched += 1
+            continue
+        matched_ts = _projection_timestamp(projection)
+        if matched_ts is not None:
+            join_deltas_ms.append(abs(row_ts - matched_ts) * 1000.0)
+        lane_heading = _num(projection.get("lane_heading_at_s"))
+        planning_x = _num(_nested(row, "planning.first_trajectory_point_x"))
+        planning_y = _num(_nested(row, "planning.first_trajectory_point_y"))
+        loc_x = _num(projection.get("localization_x") if projection.get("localization_x") is not None else projection.get("x_apollo"))
+        loc_y = _num(projection.get("localization_y") if projection.get("localization_y") is not None else projection.get("y_apollo"))
+        if lane_heading is None or planning_x is None or planning_y is None or loc_x is None or loc_y is None:
+            unmatched += 1
+            continue
+        projection_l = _num(projection.get("projection_l"))
+        left_x = -math.sin(lane_heading)
+        left_y = math.cos(lane_heading)
+        planning_l = (projection_l or 0.0) + (planning_x - loc_x) * left_x + (planning_y - loc_y) * left_y
+        lateral_offsets.append(planning_l)
+        planning_theta = _num(_nested(row, "planning.first_trajectory_point_theta"))
+        if planning_theta is not None:
+            heading_errors.append(_angle_delta(planning_theta, lane_heading) or 0.0)
+        lane_id = projection.get("nearest_lane_id")
+        if lane_id not in {None, ""}:
+            lane_ids.append(str(lane_id))
+
+    sample_count = len(lateral_offsets)
+    lateral_p95 = _p95_abs(lateral_offsets)
+    heading_p95 = _p95_abs(heading_errors)
+    if sample_count <= 0:
+        status = "insufficient_data"
+        classification = "projection_join_missing"
+    elif (lateral_p95 or 0.0) <= PASS_LATERAL_M and (heading_p95 is None or heading_p95 <= PASS_HEADING_RAD):
+        status = "pass"
+        classification = "planning_first_point_on_hdmap_projection_line_candidate"
+    elif (lateral_p95 or 0.0) <= WARN_LATERAL_M and (heading_p95 is None or heading_p95 <= WARN_HEADING_RAD):
+        status = "warn"
+        classification = "planning_first_point_near_hdmap_projection_line_candidate"
+    else:
+        status = "warn"
+        classification = "planning_first_point_projection_alignment_elevated"
+    return {
+        "status": status,
+        "classification": classification,
+        "sample_count": sample_count,
+        "planning_rows_with_first_point": len(rows_with_planning),
+        "official_projection_rows": len(projection_rows),
+        "unmatched_planning_rows": unmatched,
+        "join_tolerance_ms": PLANNING_PROJECTION_JOIN_TOLERANCE_S * 1000.0,
+        "join_delta_p95_ms": _p95_abs(join_deltas_ms),
+        "planning_first_point_lane_l_abs_p95_m": lateral_p95,
+        "planning_first_point_lane_heading_error_p95_rad": heading_p95,
+        "nearest_lane_id_topk": _topk(lane_ids),
+        "claim_boundary": (
+            "This is a local time-aligned diagnostic comparing Planning first trajectory "
+            "points with official Apollo HDMap projection rows. It does not prove full "
+            "reference-line validity, route equivalence, or behavior success."
+        ),
+    }
+
+
+def _nearest_projection_row(
+    timestamp: float,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    tolerance_s: float,
+) -> Mapping[str, Any] | None:
+    candidates: list[tuple[float, Mapping[str, Any]]] = []
+    for row in rows:
+        row_ts = _projection_timestamp(row)
+        if row_ts is None:
+            continue
+        delta = abs(timestamp - row_ts)
+        if delta <= tolerance_s:
+            candidates.append((delta, row))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def _projection_timestamp(row: Mapping[str, Any]) -> float | None:
+    return _num(row.get("sim_time") if row.get("sim_time") is not None else row.get("timestamp"))
+
+
+def _row_sim_timestamp(row: Mapping[str, Any]) -> float | None:
+    return _num(_nested(row, "sim_time_sec") if _nested(row, "sim_time_sec") is not None else _nested(row, "timestamp"))
 
 
 def _fallback_join_coverage_ratio(rows: Sequence[Mapping[str, Any]]) -> float | None:
