@@ -432,6 +432,7 @@ def build_reference_line_contract_event(row: Mapping[str, Any], *, source_confid
             "routing_segment_count": _num(_first(row, "planning_debug_routing_segment_count")),
             "diagnosis": _first(row, "planning_debug_diagnosis"),
             "last_field_inventory": _mapping(_first(row, "planning_debug_field_inventory")),
+            "path_candidate_summary": _mapping(_first(row, "planning_debug_path_candidate_summary")),
         },
         "control": {
             "debug_simple_lat_lateral_error": _num(_first(row, "debug_simple_lat_lateral_error", "apollo_debug_simple_lat_lateral_error")),
@@ -502,6 +503,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Planning debug candidate paths: `{planning_debug_field_inventory.get('reference_line_candidate_paths')}`",
             f"- Planning debug path candidate classification: `{planning_debug_path_candidate.get('classification')}`",
             f"- Planning debug path candidate max count: `{planning_debug_path_candidate.get('path_candidate_max_count')}`",
+            f"- Planning debug path point-sequence candidates: `{planning_debug_path_candidate.get('point_sequence_candidate_count')}`",
             f"- Planning debug path candidate claim-grade allowed: `{planning_debug_path_candidate.get('reference_line_claim_grade_allowed')}`",
             f"- Planning materialization classification: `{materialization_summary.get('classification')}`",
             f"- Planning materialization claim-window source: `{materialization_summary.get('claim_window_source')}`",
@@ -1134,6 +1136,7 @@ def _planning_debug_presence_summary(
         "last_reference_line_count": last.get("reference_line_count"),
         "last_routing_segment_count": last.get("routing_segment_count"),
         "last_field_inventory": _mapping(last.get("last_field_inventory")),
+        "last_path_candidate_summary": _mapping(last.get("path_candidate_summary")),
         "planning_data_present_ratio": _presence_bool_ratio(row_presence, "planning_data_present"),
         "reference_line_field_present_ratio": _presence_bool_ratio(row_presence, "reference_line_field_present"),
         "reference_line_nonempty_ratio": _presence_nonzero_ratio(row_presence, "reference_line_count"),
@@ -1199,6 +1202,14 @@ def _planning_debug_path_candidate_evidence(
     path_counts: list[int] = []
     nonempty_paths: list[str] = []
     candidate_paths_by_path: dict[str, dict[str, Any]] = {}
+    path_summaries = [
+        _mapping(_mapping(row.get("planning_debug_presence")).get("path_candidate_summary"))
+        for row in rows
+        if isinstance(row.get("planning_debug_presence"), Mapping)
+    ]
+    summary_candidate = _mapping(planning_debug_presence.get("last_path_candidate_summary"))
+    if summary_candidate:
+        path_summaries.append(summary_candidate)
     for inventory in inventories:
         candidates = inventory.get("reference_line_candidate_paths")
         if isinstance(candidates, Sequence) and not isinstance(candidates, (str, bytes, bytearray)):
@@ -1228,6 +1239,30 @@ def _planning_debug_path_candidate_evidence(
         key=lambda item: (-int(item.get("repeated_count") or 0), str(item.get("path") or "")),
     )
 
+    point_sequence_by_path: dict[str, int] = {}
+    summarized_by_path: dict[str, dict[str, Any]] = {}
+    for summary in path_summaries:
+        for candidate in _sequence_of_mappings(summary.get("candidates")):
+            path = str(candidate.get("path") or "")
+            if not path:
+                continue
+            point_count = _point_sequence_candidate_count(candidate)
+            point_sequence_by_path[path] = max(point_sequence_by_path.get(path, 0), point_count)
+            current = summarized_by_path.get(path)
+            candidate_payload = {
+                "path": path,
+                "item_count": candidate.get("item_count"),
+                "field_name_match": candidate.get("field_name_match"),
+                "item_summaries": candidate.get("item_summaries"),
+            }
+            if current is None or point_count > _point_sequence_candidate_count(current):
+                summarized_by_path[path] = candidate_payload
+    point_sequence_count = sum(point_sequence_by_path.values())
+    summarized_candidates = sorted(
+        summarized_by_path.values(),
+        key=lambda item: (-_point_sequence_candidate_count(item), str(item.get("path") or "")),
+    )
+
     reference_nonempty_ratio = _num(planning_debug_presence.get("reference_line_nonempty_ratio"))
     path_max = max(path_counts) if path_counts else 0
     path_nonempty = path_max > 0
@@ -1235,6 +1270,9 @@ def _planning_debug_path_candidate_evidence(
     if not candidate_paths:
         classification = "not_available"
         status = "insufficient_data"
+    elif point_sequence_count > 0 and not reference_nonempty:
+        classification = "path_candidate_points_present_reference_line_empty"
+        status = "warn"
     elif path_nonempty and not reference_nonempty:
         classification = "path_candidate_present_reference_line_empty"
         status = "warn"
@@ -1251,7 +1289,9 @@ def _planning_debug_path_candidate_evidence(
         "available": path_nonempty,
         "path_candidate_max_count": path_max,
         "path_candidate_nonempty_paths": sorted(set(nonempty_paths)),
+        "point_sequence_candidate_count": point_sequence_count,
         "candidate_paths": candidate_paths[:20],
+        "candidate_summaries": summarized_candidates[:20],
         "reference_line_claim_grade_allowed": False,
         "recommended_next_action": (
             "Inspect debug.planning_data.path as diagnostic planning path evidence and "
@@ -1264,6 +1304,28 @@ def _planning_debug_path_candidate_evidence(
             "prove Apollo reference-line correctness or behavior success."
         ),
     }
+
+
+def _sequence_of_mappings(value: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
+def _point_sequence_candidate_count(candidate: Mapping[str, Any]) -> int:
+    count = 0
+    for item in _sequence_of_mappings(candidate.get("item_summaries")):
+        point_sequences = item.get("point_sequence_candidates")
+        if not isinstance(point_sequences, Sequence) or isinstance(
+            point_sequences, (str, bytes, bytearray)
+        ):
+            continue
+        for point_candidate in point_sequences:
+            if not isinstance(point_candidate, Mapping):
+                continue
+            if (_num(point_candidate.get("point_like_count")) or 0.0) > 0.0:
+                count += 1
+    return count
 
 
 def _planning_info_log_reference_line_evidence(path: str | Path | None) -> dict[str, Any]:

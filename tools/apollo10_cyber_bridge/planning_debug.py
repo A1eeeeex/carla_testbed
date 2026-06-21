@@ -63,6 +63,10 @@ def build_planning_debug_presence(msg: Any) -> dict[str, Any]:
         debug=debug,
         planning_data=planning_data,
     )
+    path_candidate_summary = _planning_debug_path_candidate_summary(
+        planning_data,
+        field_inventory=field_inventory,
+    )
     reference_line_lengths = []
     for item in reference_lines:
         length = _num(_nested(item, ("length",)))
@@ -89,6 +93,7 @@ def build_planning_debug_presence(msg: Any) -> dict[str, Any]:
         "planning_debug_routing_passage_count": routing_passage_count,
         "planning_debug_routing_segment_count": routing_segment_count,
         "planning_debug_field_inventory": field_inventory,
+        "planning_debug_path_candidate_summary": path_candidate_summary,
         "planning_debug_diagnosis": _planning_debug_diagnosis(
             debug_present=debug is not None,
             planning_data_present=planning_data is not None,
@@ -98,6 +103,140 @@ def build_planning_debug_presence(msg: Any) -> dict[str, Any]:
             routing_segment_count=routing_segment_count,
         ),
     }
+
+
+def _planning_debug_path_candidate_summary(
+    planning_data: Any,
+    *,
+    field_inventory: Mapping[str, Any],
+    max_candidates: int = 8,
+    max_items_per_candidate: int = 2,
+) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    candidate_paths = field_inventory.get("reference_line_candidate_paths")
+    if not isinstance(candidate_paths, Sequence) or isinstance(
+        candidate_paths, (str, bytes, bytearray)
+    ):
+        candidate_paths = []
+    for candidate in candidate_paths:
+        if not isinstance(candidate, Mapping):
+            continue
+        path = str(candidate.get("path") or "")
+        if not path.startswith("debug.planning_data."):
+            continue
+        field_name = path.rsplit(".", 1)[-1]
+        field_value = _nested(planning_data, (field_name,))
+        items = _as_sequence(field_value)
+        if not items:
+            candidates.append(
+                {
+                    "path": path,
+                    "item_count": 0,
+                    "field_name_match": bool(candidate.get("field_name_match")),
+                    "item_summaries": [],
+                }
+            )
+            continue
+        candidates.append(
+            {
+                "path": path,
+                "item_count": len(items),
+                "field_name_match": bool(candidate.get("field_name_match")),
+                "item_summaries": [
+                    _planning_debug_path_item_summary(item, index=index)
+                    for index, item in enumerate(items[:max_items_per_candidate])
+                ],
+            }
+        )
+        if len(candidates) >= max_candidates:
+            break
+    nonempty = [item for item in candidates if int(item.get("item_count") or 0) > 0]
+    path_like_nonempty = [
+        item
+        for item in nonempty
+        if "path" in str(item.get("path") or "").lower()
+        or "trajectory" in str(item.get("path") or "").lower()
+    ]
+    return {
+        "available": bool(nonempty),
+        "candidate_count": len(candidates),
+        "nonempty_candidate_count": len(nonempty),
+        "path_like_nonempty_candidate_count": len(path_like_nonempty),
+        "candidates": candidates,
+        "claim_boundary": (
+            "Planning debug path candidate summaries are diagnostic only. They "
+            "describe raw Planning debug structure and do not prove reference-line "
+            "correctness or behavior success."
+        ),
+    }
+
+
+def _planning_debug_path_item_summary(item: Any, *, index: int) -> dict[str, Any]:
+    field_names = _field_names(item)
+    sequence_counts = _field_sequence_counts(item, field_names)
+    scalar_fields = {}
+    for name in field_names:
+        if len(scalar_fields) >= 12:
+            break
+        value = _nested(item, (name,))
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            scalar_fields[name] = value
+    point_sequences = []
+    for name, count in sequence_counts.items():
+        if count <= 0:
+            continue
+        seq = _as_sequence(_nested(item, (name,)))
+        point_count, first_point = _point_like_sequence_summary(seq)
+        if point_count > 0:
+            point_sequences.append(
+                {
+                    "field": name,
+                    "sequence_count": count,
+                    "point_like_count": point_count,
+                    "first_point": first_point,
+                }
+            )
+    return {
+        "index": index,
+        "field_names": field_names,
+        "scalar_fields": scalar_fields,
+        "sequence_counts": sequence_counts,
+        "point_sequence_candidates": point_sequences,
+    }
+
+
+def _point_like_sequence_summary(items: Sequence[Any]) -> tuple[int, dict[str, Any] | None]:
+    count = 0
+    first: dict[str, Any] | None = None
+    for item in items:
+        point = _point_like_summary(item)
+        if point is None:
+            continue
+        count += 1
+        if first is None:
+            first = point
+    return count, first
+
+
+def _point_like_summary(item: Any) -> dict[str, Any] | None:
+    candidates = (
+        (),
+        ("path_point",),
+        ("point",),
+        ("map_path_point",),
+    )
+    for prefix in candidates:
+        x = _num(_nested(item, (*prefix, "x")))
+        y = _num(_nested(item, (*prefix, "y")))
+        if x is None or y is None:
+            continue
+        return {
+            "x": x,
+            "y": y,
+            "theta": _num(_nested(item, (*prefix, "theta"))),
+            "kappa": _num(_nested(item, (*prefix, "kappa"))),
+        }
+    return None
 
 
 def _planning_debug_field_inventory(

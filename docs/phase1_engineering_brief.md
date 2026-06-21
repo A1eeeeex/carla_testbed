@@ -188,6 +188,24 @@ Interpretation:
   evidence only (`reference_line_claim_grade_allowed=false`); it narrows the
   next parser/export question but does not replace claim-grade reference-line
   evidence or change the Phase 1 status.
+  The next bridge/parser increment now records
+  `planning_debug_path_candidate_summary` for those path-like debug fields:
+  candidate path, item count, shallow scalar fields, nested sequence counts,
+  and point-like sequence samples when present. This is explicitly
+  diagnostic-only. Its purpose is to decide whether `debug.planning_data.path`
+  can become an explicit equivalent diagnostic path contract in a later cycle;
+  it still cannot make `debug.planning_data.reference_line` pass or turn a
+  lane-invasion run into backend success.
+  Online validation in
+  `runs/phase1_apollo_sidecar_cut_in_path_candidate_online_20260621_221537`
+  confirmed this field is not just a fixture artifact: the Planning debug
+  summary reports `debug.planning_data.path` with four entries, including
+  `planning_path_boundary_1_regular/self` and
+  `planning_path_boundary_2_regular/self`, each with hundreds of `path_point`
+  samples. The refreshed reference-line report classifies this as
+  `path_candidate_points_present_reference_line_empty` and still marks
+  `reference_line_claim_grade_allowed=false`. The run itself remains a
+  `LANE_INVASION_HARD` ApolloBackend behavior failure.
   The same cycle fixed a claim-boundary regression in `apollo_link_health`:
   a derived `analysis/assist_ledger/assist_ledger.json` with `source_artifact=config`
   can no longer clear a blocking assist declared in `manifest.json` or

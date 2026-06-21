@@ -158,6 +158,53 @@ def test_build_planning_debug_presence_inventory_handles_namespace_messages() ->
         "repeated_count": 1,
         "field_name_match": True,
     } in inventory["reference_line_candidate_paths"]
+    path_summary = presence["planning_debug_path_candidate_summary"]
+    assert path_summary["available"] is True
+    assert path_summary["path_like_nonempty_candidate_count"] == 1
+    assert path_summary["candidates"][0]["path"] == "debug.planning_data.path"
+    assert path_summary["candidates"][0]["item_count"] == 1
+    assert path_summary["candidates"][0]["item_summaries"][0]["scalar_fields"]["length"] == 10.0
+    assert path_summary["candidates"][0]["item_summaries"][0]["point_sequence_candidates"] == []
+    assert "diagnostic only" in path_summary["claim_boundary"]
+
+
+def test_build_planning_debug_presence_summarizes_path_candidate_points() -> None:
+    msg = SimpleNamespace(
+        debug=SimpleNamespace(
+            planning_data=SimpleNamespace(
+                reference_line=[],
+                path=[
+                    SimpleNamespace(
+                        name="regular_path",
+                        path_point=[
+                            SimpleNamespace(x=1.0, y=2.0, theta=0.1, kappa=0.01),
+                            SimpleNamespace(x=2.0, y=2.1, theta=0.1, kappa=0.01),
+                        ],
+                    )
+                ],
+                routing=SimpleNamespace(road=[]),
+            )
+        )
+    )
+
+    presence = build_planning_debug_presence(msg)
+
+    summary = presence["planning_debug_path_candidate_summary"]
+    candidate = summary["candidates"][0]
+    item = candidate["item_summaries"][0]
+    assert summary["available"] is True
+    assert candidate["path"] == "debug.planning_data.path"
+    assert candidate["item_count"] == 1
+    assert item["scalar_fields"]["name"] == "regular_path"
+    assert item["sequence_counts"]["path_point"] == 2
+    assert item["point_sequence_candidates"] == [
+        {
+            "field": "path_point",
+            "sequence_count": 2,
+            "point_like_count": 2,
+            "first_point": {"x": 1.0, "y": 2.0, "theta": 0.1, "kappa": 0.01},
+        }
+    ]
 
 
 def test_build_planning_debug_presence_reports_missing_planning_data() -> None:

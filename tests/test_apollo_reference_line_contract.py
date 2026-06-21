@@ -689,9 +689,87 @@ def test_planning_info_log_reference_line_text_traces_are_diagnostic_only(
     path_candidate = report["planning_debug_path_candidate_evidence"]
     assert path_candidate["classification"] == "path_candidate_present_reference_line_empty"
     assert path_candidate["path_candidate_max_count"] == 1
+    assert path_candidate["point_sequence_candidate_count"] == 0
     assert path_candidate["path_candidate_nonempty_paths"] == ["debug.planning_data.path"]
     assert path_candidate["reference_line_claim_grade_allowed"] is False
     assert "diagnostic only" in path_candidate["claim_boundary"]
+
+
+def test_planning_debug_path_candidate_points_remain_diagnostic_only(tmp_path: Path) -> None:
+    planning = tmp_path / "planning_topic_debug.jsonl"
+    _write_jsonl(
+        planning,
+        [
+            {
+                "timestamp": 1.0,
+                "localization_heading": 0.0,
+                "trajectory_point_count": 20,
+                "first_trajectory_point_theta": 0.0,
+                "planning_debug_debug_present": True,
+                "planning_debug_planning_data_present": True,
+                "planning_debug_reference_line_field_present": True,
+                "planning_debug_reference_line_count": 0,
+                "planning_debug_field_inventory": {
+                    "reference_line_candidate_paths": [
+                        {
+                            "path": "debug.planning_data.path",
+                            "repeated_count": 1,
+                            "field_name_match": True,
+                        }
+                    ]
+                },
+                "planning_debug_path_candidate_summary": {
+                    "available": True,
+                    "candidate_count": 1,
+                    "nonempty_candidate_count": 1,
+                    "path_like_nonempty_candidate_count": 1,
+                    "candidates": [
+                        {
+                            "path": "debug.planning_data.path",
+                            "item_count": 1,
+                            "field_name_match": True,
+                            "item_summaries": [
+                                {
+                                    "index": 0,
+                                    "field_names": ["name", "path_point"],
+                                    "scalar_fields": {"name": "regular_path"},
+                                    "sequence_counts": {"path_point": 2},
+                                    "point_sequence_candidates": [
+                                        {
+                                            "field": "path_point",
+                                            "sequence_count": 2,
+                                            "point_like_count": 2,
+                                            "first_point": {
+                                                "x": 1.0,
+                                                "y": 2.0,
+                                                "theta": 0.1,
+                                                "kappa": 0.01,
+                                            },
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+                "planning_debug_routing_field_present": True,
+                "planning_debug_routing_segment_count": 1,
+                "planning_debug_diagnosis": "routing_present_reference_line_empty",
+            }
+        ],
+    )
+
+    report = analyze_apollo_reference_line_contract_files(planning_topic_debug_path=planning)
+
+    path_candidate = report["planning_debug_path_candidate_evidence"]
+    assert path_candidate["classification"] == "path_candidate_points_present_reference_line_empty"
+    assert path_candidate["point_sequence_candidate_count"] == 1
+    assert path_candidate["candidate_summaries"][0]["path"] == "debug.planning_data.path"
+    assert path_candidate["candidate_summaries"][0]["item_summaries"][0]["scalar_fields"] == {
+        "name": "regular_path"
+    }
+    assert path_candidate["reference_line_claim_grade_allowed"] is False
+    assert report["status"] == "insufficient_data"
 
 
 def test_route_segment_debug_augments_existing_contract_rows(tmp_path: Path) -> None:
