@@ -244,6 +244,20 @@ Interpretation:
   entries are likely boundary/optimizer candidate paths around the local target
   trajectory, not exported reference-line centerlines. It still does not change
   behavior status or allow reference-line claim-grade evidence.
+  The next link-health refresh joins the same lane-invasion event with the
+  lane-event contract, failure timeline, yaw-aware footprint check,
+  raw/mapped/applied steering, and Control-target/path-candidate context. For
+  `runs/phase1_apollo_sidecar_cut_in_path_samples_online_20260621_223658`, the
+  merged context is
+  `lane_invasion_context.classification=progressive_lane_departure_with_control_target_between_path_candidate_bounds`.
+  The event occurs about `22.55m` after start, footprint intersection with the
+  crossed marking is true, trigger clearance is about `-0.115m`, CTE grows by
+  about `0.474m`, mapped-to-applied steer error is `0.0`, and raw-to-mapped
+  steer gain is about `0.247`. The Control target remains inside the sampled
+  path-candidate lateral envelope while the reference-line contract still has
+  `reference_line_claim_grade_allowed=false`. This closes a diagnostic
+  evidence gap; it does not fix the lane invasion, does not make the run pass,
+  and does not make `debug.planning_data.path` a claim-grade reference line.
   The same cycle fixed a claim-boundary regression in `apollo_link_health`:
   a derived `analysis/assist_ledger/assist_ledger.json` with `source_artifact=config`
   can no longer clear a blocking assist declared in `manifest.json` or

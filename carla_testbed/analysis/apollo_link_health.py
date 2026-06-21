@@ -393,6 +393,9 @@ def analyze_apollo_link_health(
             payloads.get("natural_driving_report"),
             inputs.get("natural_driving_report"),
             summary=summary,
+            baguang_lane_event_contract=payloads.get("baguang_lane_event_contract", {}),
+            failure_timeline=payloads.get("failure_timeline", {}),
+            apollo_reference_line_contract=payloads.get("apollo_reference_line_contract", {}),
         ),
     }
     layers["planning_reference_line"]["artifact_paths"]["source_kind"] = source_kinds.get(
@@ -1101,6 +1104,20 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
             ],
         ),
         "natural_driving_report": _find_natural_driving_report(root),
+        "baguang_lane_event_contract": _find_first(
+            root,
+            [
+                "analysis/baguang_lane_event_contract/baguang_lane_event_contract_report.json",
+                "baguang_lane_event_contract_report.json",
+            ],
+        ),
+        "failure_timeline": _find_first(
+            root,
+            [
+                "analysis/failure_timeline/failure_timeline_report.json",
+                "failure_timeline_report.json",
+            ],
+        ),
         "followstop_child_stderr": _find_followstop_child_stderr(root),
     }
 
@@ -3583,13 +3600,25 @@ def _natural_driving_layer(
     path: Path | None,
     *,
     summary: Mapping[str, Any],
+    baguang_lane_event_contract: Mapping[str, Any] | None = None,
+    failure_timeline: Mapping[str, Any] | None = None,
+    apollo_reference_line_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    lane_context = _lane_invasion_context(
+        summary=summary,
+        baguang_lane_event_contract=baguang_lane_event_contract or {},
+        failure_timeline=failure_timeline or {},
+        apollo_reference_line_contract=apollo_reference_line_contract or {},
+    )
     if not report:
         return _layer(
             status="insufficient_data",
             blocking_reasons=[],
             warnings=["natural_driving_report_missing"],
-            key_metrics={"summary_metrics_present": bool(summary.get("metrics"))},
+            key_metrics={
+                "summary_metrics_present": bool(summary.get("metrics")),
+                "lane_invasion_context": lane_context,
+            },
             artifact_paths={"natural_driving_report": str(path) if path else None},
             next_action="Generate natural_driving_report.json; summary success alone is not an acceptance artifact.",
         )
@@ -3606,10 +3635,172 @@ def _natural_driving_layer(
             "verdict": verdict,
             "can_claim_unassisted_natural_driving": report.get("can_claim_unassisted_natural_driving"),
             "summary": report.get("summary"),
+            "lane_invasion_context": lane_context,
         },
         artifact_paths={"natural_driving_report": str(path) if path else None},
         next_action="Use natural_driving_report.json as the final behavior gate after link evidence is non-blocking.",
     )
+
+
+def _lane_invasion_context(
+    *,
+    summary: Mapping[str, Any],
+    baguang_lane_event_contract: Mapping[str, Any],
+    failure_timeline: Mapping[str, Any],
+    apollo_reference_line_contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    lane_count = _first_num(
+        summary.get("lane_invasion_count"),
+        _nested(summary, "metrics.lane_invasion_count"),
+    )
+    exit_reason = str(summary.get("exit_reason") or summary.get("fail_reason") or "").lower()
+    if not ((lane_count is not None and lane_count > 0.0) or "lane_invasion" in exit_reason):
+        return {
+            "available": False,
+            "reason": "lane_invasion_not_reported",
+            "lane_invasion_count": lane_count,
+        }
+    run_report = _first_baguang_lane_event_run_report(baguang_lane_event_contract)
+    departure = (
+        run_report.get("departure_diagnostics")
+        if isinstance(run_report.get("departure_diagnostics"), Mapping)
+        else {}
+    )
+    first_lane = (
+        run_report.get("first_lane_invasion")
+        if isinstance(run_report.get("first_lane_invasion"), Mapping)
+        else {}
+    )
+    static_crossing = (
+        run_report.get("static_crossing_check")
+        if isinstance(run_report.get("static_crossing_check"), Mapping)
+        else {}
+    )
+    control = departure.get("control") if isinstance(departure.get("control"), Mapping) else {}
+    timeline_anchor = (
+        failure_timeline.get("anchor_event")
+        if isinstance(failure_timeline.get("anchor_event"), Mapping)
+        else {}
+    )
+    timeline_row = (
+        timeline_anchor.get("row_context")
+        if isinstance(timeline_anchor.get("row_context"), Mapping)
+        else {}
+    )
+    target_path = (
+        apollo_reference_line_contract.get("control_target_point_vs_planning_path_candidate_sample")
+        if isinstance(
+            apollo_reference_line_contract.get("control_target_point_vs_planning_path_candidate_sample"),
+            Mapping,
+        )
+        else {}
+    )
+    path_hdmap = (
+        apollo_reference_line_contract.get("planning_debug_path_candidate_hdmap_projection_alignment")
+        if isinstance(
+            apollo_reference_line_contract.get("planning_debug_path_candidate_hdmap_projection_alignment"),
+            Mapping,
+        )
+        else {}
+    )
+    mapped_to_applied = (
+        control.get("mapped_to_applied_steer_abs_error")
+        if isinstance(control.get("mapped_to_applied_steer_abs_error"), Mapping)
+        else {}
+    )
+    interpretation = [
+        str(item)
+        for item in departure.get("interpretation") or []
+        if item not in {None, ""}
+    ]
+    classification = "lane_invasion_context_available"
+    if departure.get("classification") == "downstream_progressive_lane_departure":
+        classification = "downstream_progressive_lane_departure"
+    if (
+        classification == "downstream_progressive_lane_departure"
+        and target_path.get("classification")
+        == "control_target_between_planning_path_candidate_lateral_bounds"
+    ):
+        classification = "progressive_lane_departure_with_control_target_between_path_candidate_bounds"
+    return {
+        "available": bool(run_report),
+        "classification": classification,
+        "diagnostic_only": True,
+        "lane_invasion_count": lane_count,
+        "lane_event_contract_status": baguang_lane_event_contract.get("status"),
+        "lane_event_run_status": run_report.get("status") if run_report else None,
+        "lane_event_reason": run_report.get("reason") if run_report else None,
+        "lane_invasion_event_can_be_used_as_hard_gate": (
+            run_report.get("lane_invasion_event_can_be_used_as_hard_gate") if run_report else None
+        ),
+        "failure_timeline_status": failure_timeline.get("status"),
+        "failure_timeline_anchor_event": timeline_anchor.get("event_type"),
+        "failure_timeline_anchor_row_index": timeline_anchor.get("row_index"),
+        "failure_timeline_anchor_sim_time": (
+            timeline_anchor.get("timestamp_sec") or timeline_row.get("sim_time")
+        ),
+        "crossed_lane_marking_types": first_lane.get("crossed_lane_marking_types"),
+        "distance_from_start_m": departure.get("distance_from_start_m")
+        or first_lane.get("distance_from_start_x_m"),
+        "trigger_cross_track_error_m": first_lane.get("cross_track_error"),
+        "trigger_heading_error_rad": first_lane.get("heading_error"),
+        "trigger_footprint_intersects_marking": static_crossing.get(
+            "trigger_footprint_intersects_marking"
+        ),
+        "trigger_clearance_to_marking_m": static_crossing.get("trigger_clearance_to_marking_m"),
+        "departure_classification": departure.get("classification"),
+        "cross_track_error_abs_growth_m": _nested(departure, "cross_track_error.abs_growth_m"),
+        "cross_track_error_abs_increasing_ratio": _nested(
+            departure,
+            "cross_track_error.abs_increasing_ratio",
+        ),
+        "heading_error_abs_growth_rad": _nested(departure, "heading_error.abs_growth_rad"),
+        "control_source": control.get("source"),
+        "apollo_steer_raw_end": control.get("apollo_steer_raw_end"),
+        "bridge_steer_mapped_end": control.get("bridge_steer_mapped_end"),
+        "carla_steer_applied_end": control.get("carla_steer_applied_end"),
+        "mapped_to_applied_steer_max_abs_error": mapped_to_applied.get("max_abs_error"),
+        "raw_to_mapped_steer_gain_mean": _nested(control, "raw_to_mapped_steer_gain.mean"),
+        "raw_to_mapped_steer_gain_last": _nested(control, "raw_to_mapped_steer_gain.last"),
+        "raw_steer_same_sign_as_cross_track_error": control.get(
+            "apollo_steer_raw_same_sign_as_cross_track_error"
+        ),
+        "applied_steer_same_sign_as_cross_track_error": control.get(
+            "applied_steer_same_sign_as_cross_track_error"
+        ),
+        "control_target_path_candidate_classification": target_path.get("classification"),
+        "control_target_lane_l_abs_p95_m": target_path.get("target_point_lane_l_abs_p95_m"),
+        "control_target_to_path_candidate_line_abs_p95_m": target_path.get(
+            "target_point_to_path_candidate_line_abs_p95_m"
+        ),
+        "control_target_inside_path_lateral_envelope": target_path.get(
+            "target_inside_path_lateral_envelope"
+        ),
+        "path_candidate_lane_l_min_m": target_path.get("path_candidate_lane_l_min_m"),
+        "path_candidate_lane_l_max_m": target_path.get("path_candidate_lane_l_max_m"),
+        "path_candidate_hdmap_projection_classification": path_hdmap.get("classification"),
+        "path_candidate_routing_lane_window_compatible": path_hdmap.get(
+            "routing_lane_window_compatible"
+        ),
+        "reference_line_claim_grade_allowed": (
+            target_path.get("reference_line_claim_grade_allowed")
+            if target_path
+            else path_hdmap.get("reference_line_claim_grade_allowed")
+        ),
+        "interpretation": interpretation,
+        "claim_boundary": (
+            "This context aligns behavior failure, lane-event geometry, control apply trace, "
+            "and diagnostic Planning/Control path evidence. It is not a natural-driving pass "
+            "and cannot override assist, reference-line, or natural-driving gates."
+        ),
+    }
+
+
+def _first_baguang_lane_event_run_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
+    for item in report.get("run_reports") or []:
+        if isinstance(item, Mapping):
+            return item
+    return {}
 
 
 def _obstacle_gt_layer(

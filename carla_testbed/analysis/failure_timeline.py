@@ -157,7 +157,13 @@ def _safety_events(
             event_type=event_type,
             source=str(raw.get("source") or "events.jsonl"),
             row_index=row_index,
-            timestamp_sec=_num(raw.get("sim_time"), raw.get("timestamp_sec"), raw.get("at")),
+            timestamp_sec=_num(
+                raw.get("sim_time"),
+                raw.get("timestamp_sec"),
+                raw.get("at"),
+                raw.get("t"),
+                raw.get("timestamp"),
+            ),
             context_source=str(raw.get("context_source") or "events.jsonl"),
             details={key: value for key, value in raw.items() if key not in {"event", "event_type"}},
         )

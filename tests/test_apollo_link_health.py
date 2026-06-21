@@ -425,6 +425,114 @@ def test_planning_debug_presence_is_exposed_on_reference_line_layer(tmp_path: Pa
     assert metrics["planning_debug_presence_routing_segment_nonempty_ratio"] == 1.0
 
 
+def test_lane_invasion_context_merges_lane_event_control_and_path_candidate_evidence(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["lane_invasion_count"] = 1
+    summary["exit_reason"] = "LANE_INVASION"
+    summary.setdefault("metrics", {})["lane_invasion_count"] = 1
+    _write_json(summary_path, summary)
+    reference_path = run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json"
+    reference = json.loads(reference_path.read_text(encoding="utf-8"))
+    reference["control_target_point_vs_planning_path_candidate_sample"] = {
+        "status": "available",
+        "classification": "control_target_between_planning_path_candidate_lateral_bounds",
+        "reference_line_claim_grade_allowed": False,
+        "target_point_to_path_candidate_line_abs_p95_m": 0.82,
+        "target_point_lane_l_abs_p95_m": 0.000001,
+        "path_candidate_lane_l_min_m": -1.25,
+        "path_candidate_lane_l_max_m": 0.82,
+        "target_inside_path_lateral_envelope": True,
+    }
+    reference["planning_debug_path_candidate_hdmap_projection_alignment"] = {
+        "status": "available",
+        "classification": "planning_debug_path_candidate_lateral_offset_from_hdmap_lane_center",
+        "reference_line_claim_grade_allowed": False,
+        "routing_lane_window_compatible": True,
+    }
+    _write_json(reference_path, reference)
+    _write_json(
+        run_dir / "analysis/baguang_lane_event_contract/baguang_lane_event_contract_report.json",
+        {
+            "schema_version": "baguang_lane_event_contract.v1",
+            "status": "fail",
+            "run_reports": [
+                {
+                    "status": "fail",
+                    "reason": "possible_real_lane_departure_or_unclassified_lane_event",
+                    "lane_invasion_event_can_be_used_as_hard_gate": True,
+                    "first_lane_invasion": {
+                        "event_time_s": 12.34,
+                        "crossed_lane_marking_types": ["broken"],
+                        "cross_track_error": -0.65,
+                        "heading_error": -0.15,
+                        "distance_from_start_x_m": 22.5,
+                    },
+                    "static_crossing_check": {
+                        "trigger_footprint_intersects_marking": True,
+                        "trigger_clearance_to_marking_m": -0.11,
+                    },
+                    "departure_diagnostics": {
+                        "classification": "downstream_progressive_lane_departure",
+                        "distance_from_start_m": 22.5,
+                        "cross_track_error": {
+                            "abs_growth_m": 0.47,
+                            "abs_increasing_ratio": 1.0,
+                        },
+                        "heading_error": {"abs_growth_rad": 0.11},
+                        "control": {
+                            "source": "artifacts/control_apply_trace.jsonl",
+                            "apollo_steer_raw_end": -0.62,
+                            "bridge_steer_mapped_end": -0.15,
+                            "carla_steer_applied_end": -0.15,
+                            "apollo_steer_raw_same_sign_as_cross_track_error": True,
+                            "applied_steer_same_sign_as_cross_track_error": True,
+                            "mapped_to_applied_steer_abs_error": {"max_abs_error": 0.0},
+                            "raw_to_mapped_steer_gain": {"mean": 0.247, "last": 0.246},
+                        },
+                        "interpretation": [
+                            "cross_track_error_grew_before_event",
+                            "mapped_to_applied_steer_consistent_before_event",
+                        ],
+                    },
+                }
+            ],
+        },
+    )
+    _write_json(
+        run_dir / "analysis/failure_timeline/failure_timeline_report.json",
+        {
+            "schema_version": "town01_failure_timeline.v1",
+            "status": "pass",
+            "anchor_event": {
+                "event_type": "lane_invasion",
+                "row_index": 418,
+                "timestamp_sec": 12.34,
+                "row_context": {"sim_time": 12.34},
+            },
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    context = report["layers"]["natural_driving_outcome"]["key_metrics"]["lane_invasion_context"]
+
+    assert context["classification"] == (
+        "progressive_lane_departure_with_control_target_between_path_candidate_bounds"
+    )
+    assert context["failure_timeline_anchor_event"] == "lane_invasion"
+    assert context["trigger_footprint_intersects_marking"] is True
+    assert context["mapped_to_applied_steer_max_abs_error"] == 0.0
+    assert context["control_target_path_candidate_classification"] == (
+        "control_target_between_planning_path_candidate_lateral_bounds"
+    )
+    assert context["control_target_inside_path_lateral_envelope"] is True
+    assert context["reference_line_claim_grade_allowed"] is False
+    assert context["diagnostic_only"] is True
+
+
 def test_missing_prediction_evidence_blocks_claim(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     (run_dir / "analysis/prediction_evidence/prediction_evidence_report.json").unlink()

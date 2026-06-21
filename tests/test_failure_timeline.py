@@ -168,6 +168,27 @@ def test_failure_timeline_orders_key_events_and_writes_report(tmp_path: Path) ->
     assert Path(outputs["failure_timeline_summary"]).is_file()
 
 
+def test_failure_timeline_uses_event_t_timestamp(tmp_path: Path) -> None:
+    run_dir = _make_failed_run(tmp_path)
+    _write_jsonl(
+        run_dir / "events.jsonl",
+        [
+            {
+                "event_type": "lane_invasion",
+                "source": "events.jsonl",
+                "step": 2,
+                "t": 12.34,
+                "crossed_lane_marking_types": ["Broken"],
+            }
+        ],
+    )
+
+    report = analyze_failure_timeline_run_dir(run_dir, window_rows=1)
+
+    assert report["anchor_event"]["event_type"] == "lane_invasion"
+    assert report["anchor_event"]["timestamp_sec"] == 12.34
+
+
 def test_failure_timeline_missing_timeseries_graceful_degrades(tmp_path: Path) -> None:
     run_dir = _make_failed_run(tmp_path)
     (run_dir / "timeseries.csv").unlink()
