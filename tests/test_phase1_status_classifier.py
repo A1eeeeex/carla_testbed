@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from carla_testbed.analysis.phase1_status import classify_phase1_run, write_phase1_status
 
@@ -1328,6 +1329,21 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     )
     assert refreshed_evidence["route_lateral_field_sign_sensitive_gate_allowed"] is False
     assert refreshed_evidence["route_lateral_field_absolute_magnitude_gate_allowed"] is True
+    policy = refreshed["route_lateral_field_policy"]
+    assert policy["status"] == "available"
+    assert policy["policy"] == "exclude_from_sign_sensitive_behavior_gates"
+    assert policy["source_field"] == "cross_track_error"
+    assert policy["classification"] == "route_lateral_field_opposite_signed_to_apollo_projection"
+    assert policy["sign_sensitive_gate_allowed"] is False
+    assert policy["absolute_magnitude_gate_allowed"] is True
+    assert policy["recommended_gate_policy"] == "absolute_magnitude_only_until_canonical_sign_declared"
+    assert policy["recommended_action"] == "relabel_or_explicitly_convert_before_sign_sensitive_gate"
+
+    paths = write_phase1_status(refreshed, run / "analysis" / "phase1_status")
+    summary_text = Path(paths["summary"]).read_text(encoding="utf-8")
+    assert "## Route Lateral Field Policy" in summary_text
+    assert "exclude_from_sign_sensitive_behavior_gates" in summary_text
+    assert "sign_sensitive_gate_allowed: `False`" in summary_text
 
 
 def test_legacy_apollo_route_id_normalizes_to_phase1_scenario_case(tmp_path) -> None:

@@ -406,6 +406,13 @@ Interpretation:
   `recommended_gate_policy=absolute_magnitude_only_until_canonical_sign_declared`.
   This keeps the run as `failed/lane_invasion`; it only makes the next
   debugging step and gate semantics less stale.
+- `phase1_status.json` now echoes the same decision at top level as
+  `route_lateral_field_policy`. For the latest representative cut-in run the
+  policy is `exclude_from_sign_sensitive_behavior_gates`, with
+  `source_field=cross_track_error`, `sign_sensitive_gate_allowed=false`, and
+  `absolute_magnitude_gate_allowed=true`. This is a Phase 1 analysis/gating
+  contract only: it does not change runtime control, does not flip steer signs,
+  and does not convert the Apollo lane-invasion sample into a behavior pass.
 - Manual artifact inspection of the same run confirms the next evidence gap:
   `apollo_reference_line_debug.jsonl`,
   `stage5_apollo_reference_line_debug.jsonl`, and

@@ -159,6 +159,23 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                     "scenario failure; it is not natural-driving capability evidence.`"
                 ),
             ]
+    )
+    route_lateral_policy = report.get("route_lateral_field_policy")
+    if (
+        isinstance(route_lateral_policy, Mapping)
+        and route_lateral_policy.get("status") not in {None, "not_applicable"}
+    ):
+        lines.extend(
+            [
+                "",
+                "## Route Lateral Field Policy",
+                "",
+                f"- policy: `{route_lateral_policy.get('policy')}`",
+                f"- source_field: `{route_lateral_policy.get('source_field')}`",
+                f"- sign_sensitive_gate_allowed: `{route_lateral_policy.get('sign_sensitive_gate_allowed')}`",
+                f"- absolute_magnitude_gate_allowed: `{route_lateral_policy.get('absolute_magnitude_gate_allowed')}`",
+                f"- recommended_action: `{route_lateral_policy.get('recommended_action')}`",
+            ]
         )
     metrics = report.get("phase1_metrics") if isinstance(report.get("phase1_metrics"), Mapping) else {}
     lane_context = (
@@ -245,6 +262,7 @@ def _status(
         reason=reason,
         derived_blocker_evidence=derived_blocker_evidence,
     )
+    route_lateral_field_policy = _route_lateral_field_policy(derived_blocker_evidence)
     return {
         "schema_version": PHASE1_STATUS_SCHEMA_VERSION,
         "run_dir": str(root),
@@ -263,6 +281,7 @@ def _status(
         "behavior_blocker_layer": behavior_blocker["behavior_blocker_layer"],
         "behavior_next_action": behavior_blocker["behavior_next_action"],
         "behavior_blocker_evidence": behavior_blocker["behavior_blocker_evidence"],
+        "route_lateral_field_policy": route_lateral_field_policy,
         "original_failure_reason": original_reason,
         "evaluable": evaluability["run_evaluable"],
         "run_evaluable": evaluability["run_evaluable"],
@@ -770,6 +789,66 @@ def collect_derived_blocker_evidence(root: str | Path) -> dict[str, Any]:
     """Return current blocker evidence from optional Phase 1 analysis reports."""
 
     return _derived_blocker_evidence(Path(root))
+
+
+def _route_lateral_field_policy(derived_blocker_evidence: Mapping[str, Any]) -> dict[str, Any]:
+    link_health = (
+        derived_blocker_evidence.get("apollo_link_health")
+        if isinstance(derived_blocker_evidence.get("apollo_link_health"), Mapping)
+        else {}
+    )
+    semantics_status = link_health.get("route_lateral_field_semantics_status")
+    classification = link_health.get("route_lateral_field_semantics_classification")
+    if not semantics_status and not classification:
+        return {
+            "status": "not_applicable",
+            "policy": "route_lateral_field_policy_not_available",
+            "source_field": None,
+            "sign_sensitive_gate_allowed": None,
+            "absolute_magnitude_gate_allowed": None,
+            "recommended_action": "generate_apollo_lateral_semantics_and_link_health_reports",
+            "claim_boundary": (
+                "Route-lateral field policy is an analysis/gating contract only. "
+                "Missing policy must not be interpreted as behavior success."
+            ),
+        }
+
+    sign_sensitive_allowed = link_health.get("route_lateral_field_sign_sensitive_gate_allowed")
+    magnitude_allowed = link_health.get("route_lateral_field_absolute_magnitude_gate_allowed")
+    if sign_sensitive_allowed is False and magnitude_allowed is True:
+        policy = "exclude_from_sign_sensitive_behavior_gates"
+    elif sign_sensitive_allowed is True:
+        policy = "signed_and_absolute_route_lateral_allowed"
+    elif magnitude_allowed is True:
+        policy = "absolute_magnitude_only"
+    else:
+        policy = "do_not_use_route_lateral_field_for_behavior_gate"
+
+    return {
+        "status": semantics_status or "unknown",
+        "policy": policy,
+        "source_field": link_health.get("route_lateral_field_semantics_source_field")
+        or link_health.get("projection_route_sample_lateral_source_field"),
+        "classification": classification,
+        "sign_sensitive_gate_allowed": sign_sensitive_allowed,
+        "absolute_magnitude_gate_allowed": magnitude_allowed,
+        "recommended_gate_policy": link_health.get("route_lateral_field_recommended_gate_policy"),
+        "recommended_action": link_health.get("route_lateral_field_recommended_action"),
+        "projection_route_sample_sign_contract_classification": link_health.get(
+            "projection_route_sample_sign_contract_classification"
+        ),
+        "projection_route_sample_timeseries_opposite_sign_ratio": link_health.get(
+            "projection_route_sample_timeseries_opposite_sign_ratio"
+        ),
+        "projection_route_sample_simple_lat_same_sign_ratio": link_health.get(
+            "projection_route_sample_simple_lat_same_sign_ratio"
+        ),
+        "claim_boundary": (
+            "This policy applies only to Phase 1 analysis/gating semantics. It does not "
+            "change runtime control, does not prove Apollo behavior success, and must not "
+            "be used to flip control signs."
+        ),
+    }
 
 
 def _control_health_blocker_summary(report: Mapping[str, Any], path: Path) -> dict[str, Any]:
