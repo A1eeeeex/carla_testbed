@@ -1401,6 +1401,14 @@ def _lateral_sign_alignment_summary(
         official_projection_alignment,
         thresholds=thresholds,
     )
+    lateral_frame_convention = _lateral_frame_convention_diagnostic(
+        route_simple_pair=pairs["route_lateral_error_vs_simple_lat_lateral_error"],
+        route_simple_magnitude=route_simple_magnitude,
+        official_projection_alignment=official_projection_alignment,
+        route_lateral_provenance=route_lateral_provenance,
+        route_station_alignment=route_station_alignment,
+        thresholds=thresholds,
+    )
     sample_count = max((int(value["sample_count"]) for value in pairs.values()), default=0)
     return {
         "available": sample_count > 0,
@@ -1417,8 +1425,163 @@ def _lateral_sign_alignment_summary(
         "route_simple_lat_magnitude_alignment": route_simple_magnitude,
         "official_hdmap_projection_alignment": official_projection_alignment,
         "route_station_frame_alignment": route_station_alignment,
+        "lateral_frame_convention_diagnostic": lateral_frame_convention,
         **pairs,
     }
+
+
+def _lateral_frame_convention_diagnostic(
+    *,
+    route_simple_pair: Mapping[str, Any],
+    route_simple_magnitude: Mapping[str, Any],
+    official_projection_alignment: Mapping[str, Any],
+    route_lateral_provenance: Mapping[str, Any],
+    route_station_alignment: Mapping[str, Any],
+    thresholds: Mapping[str, float],
+) -> dict[str, Any]:
+    route_projection = official_projection_alignment.get("route_lateral_vs_projection_lateral")
+    if not isinstance(route_projection, Mapping):
+        route_projection = {}
+    simple_projection = official_projection_alignment.get("simple_lat_vs_projection_lateral")
+    if not isinstance(simple_projection, Mapping):
+        simple_projection = {}
+
+    min_samples = int(thresholds["sign_alignment_min_samples"])
+    high_ratio = float(thresholds["sign_alignment_ratio_high"])
+    route_projection_samples = int(route_projection.get("sample_count") or 0)
+    simple_projection_samples = int(simple_projection.get("sample_count") or 0)
+    route_simple_samples = int(route_simple_pair.get("sample_count") or 0)
+    route_projection_opposite = _num(route_projection.get("opposite_sign_ratio"))
+    route_projection_same = _num(route_projection.get("same_sign_ratio"))
+    simple_projection_same = _num(simple_projection.get("same_sign_ratio"))
+    simple_projection_opposite = _num(simple_projection.get("opposite_sign_ratio"))
+    route_simple_opposite = _num(route_simple_pair.get("opposite_sign_ratio"))
+    route_simple_same = _num(route_simple_pair.get("same_sign_ratio"))
+    magnitude_candidate = bool(route_simple_magnitude.get("magnitude_agreement_candidate"))
+
+    has_projection_evidence = (
+        route_projection_samples >= min_samples and simple_projection_samples >= min_samples
+    )
+    has_route_simple_evidence = route_simple_samples >= min_samples
+    if not has_projection_evidence:
+        status = "insufficient_data"
+        classification = "official_projection_lateral_sign_evidence_missing"
+        reason = "official_apollo_hdmap_projection_rows_missing_or_too_sparse"
+    elif (
+        route_projection_opposite is not None
+        and route_projection_opposite >= high_ratio
+        and simple_projection_same is not None
+        and simple_projection_same >= high_ratio
+        and route_simple_opposite is not None
+        and route_simple_opposite >= high_ratio
+        and magnitude_candidate
+    ):
+        status = "available"
+        classification = "route_lateral_sign_inverted_vs_apollo_projection_candidate"
+        reason = (
+            "CARLA route lateral error opposes official Apollo projection_l while Apollo "
+            "simple_lat lateral error matches projection_l; route/simple_lat magnitudes also agree."
+        )
+    elif (
+        route_projection_same is not None
+        and route_projection_same >= high_ratio
+        and simple_projection_same is not None
+        and simple_projection_same >= high_ratio
+    ):
+        status = "available"
+        classification = "route_lateral_matches_apollo_projection_candidate"
+        reason = "CARLA route lateral error and Apollo simple_lat both match official Apollo projection_l."
+    elif (
+        simple_projection_opposite is not None
+        and simple_projection_opposite >= high_ratio
+    ):
+        status = "warn"
+        classification = "simple_lat_sign_opposes_apollo_projection_candidate"
+        reason = "Apollo simple_lat lateral error opposes official Apollo projection_l."
+    elif (
+        route_projection_opposite is not None
+        and route_projection_opposite >= high_ratio
+        and not has_route_simple_evidence
+    ):
+        status = "warn"
+        classification = "route_lateral_opposes_projection_without_simple_lat_confirmation"
+        reason = "CARLA route lateral error opposes official Apollo projection_l, but simple_lat evidence is sparse."
+    elif (
+        route_simple_same is not None
+        and route_simple_same >= high_ratio
+        and route_projection_opposite is not None
+        and route_projection_opposite >= high_ratio
+    ):
+        status = "warn"
+        classification = "route_and_simple_lat_jointly_oppose_projection_candidate"
+        reason = "Route and simple_lat agree with each other but oppose official Apollo projection_l."
+    else:
+        status = "warn"
+        classification = "lateral_frame_convention_ambiguous"
+        reason = "Lateral sign ratios are mixed or below the diagnostic threshold."
+
+    return {
+        "status": status,
+        "classification": classification,
+        "reason": reason,
+        "thresholds": {
+            "min_samples": min_samples,
+            "high_ratio": high_ratio,
+        },
+        "route_lateral_vs_projection_lateral": {
+            "sample_count": route_projection_samples,
+            "same_sign_ratio": route_projection_same,
+            "opposite_sign_ratio": route_projection_opposite,
+            "abs_magnitude_delta_p95_m": route_projection.get("abs_magnitude_delta_p95_m"),
+            "opposite_sign_abs_sum_p95_m": route_projection.get("opposite_sign_abs_sum_p95_m"),
+        },
+        "simple_lat_vs_projection_lateral": {
+            "sample_count": simple_projection_samples,
+            "same_sign_ratio": simple_projection_same,
+            "opposite_sign_ratio": simple_projection_opposite,
+        },
+        "route_lateral_vs_simple_lat_lateral_error": {
+            "sample_count": route_simple_samples,
+            "same_sign_ratio": route_simple_same,
+            "opposite_sign_ratio": route_simple_opposite,
+        },
+        "route_simple_lat_magnitude_agreement_candidate": magnitude_candidate,
+        "route_simple_lat_abs_magnitude_delta_p95_m": route_simple_magnitude.get(
+            "abs_magnitude_delta_p95_m"
+        ),
+        "route_simple_lat_opposite_sign_abs_sum_p95_m": route_simple_magnitude.get(
+            "opposite_sign_abs_sum_p95_m"
+        ),
+        "route_lateral_provenance_evidence_level": route_lateral_provenance.get("evidence_level"),
+        "route_lateral_source_field": route_lateral_provenance.get("route_lateral_source_field"),
+        "route_station_frame_classification": route_station_alignment.get("classification"),
+        "interpretation": _lateral_frame_convention_interpretation(classification),
+        "claim_boundary": (
+            "This is a lateral frame/sign-convention diagnostic. It can explain why route-level "
+            "cross-track metrics disagree with Apollo simple_lat/projection metrics, but it does "
+            "not prove behavior success and must not flip signs in runtime without a separate "
+            "route-frame contract update."
+        ),
+    }
+
+
+def _lateral_frame_convention_interpretation(classification: str) -> str:
+    if classification == "route_lateral_sign_inverted_vs_apollo_projection_candidate":
+        return (
+            "The current evidence points to CARLA route cross-track using the opposite sign "
+            "from Apollo HDMap projection_l/simple_lat lateral error for this run."
+        )
+    if classification == "route_lateral_matches_apollo_projection_candidate":
+        return "Route cross-track, Apollo projection_l, and simple_lat lateral error share the same sign."
+    if classification == "simple_lat_sign_opposes_apollo_projection_candidate":
+        return "Apollo simple_lat lateral error appears sign-inverted relative to official projection_l."
+    if classification == "route_lateral_opposes_projection_without_simple_lat_confirmation":
+        return "Route cross-track opposes official projection_l, but simple_lat coverage is insufficient."
+    if classification == "route_and_simple_lat_jointly_oppose_projection_candidate":
+        return "Route cross-track and simple_lat agree with each other but oppose official projection_l."
+    if classification == "lateral_frame_convention_ambiguous":
+        return "The available lateral sign evidence is mixed or below the confidence threshold."
+    return "Official projection lateral sign evidence is missing or too sparse."
 
 
 def _route_station_frame_alignment(
@@ -2793,6 +2956,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
             f"- route_lateral_provenance: `{_nested(report, 'lateral_sign_alignment.route_lateral_provenance')}`",
             f"- route_simple_lat_magnitude_alignment: `{_nested(report, 'lateral_sign_alignment.route_simple_lat_magnitude_alignment')}`",
             f"- official_hdmap_projection_alignment: `{_nested(report, 'lateral_sign_alignment.official_hdmap_projection_alignment')}`",
+            f"- lateral_frame_convention_diagnostic: `{_nested(report, 'lateral_sign_alignment.lateral_frame_convention_diagnostic')}`",
             f"- first_high_lateral_sample: `{_nested(report, 'lateral_sign_alignment.first_high_lateral_sample')}`",
             "",
             "## Missing Fields",

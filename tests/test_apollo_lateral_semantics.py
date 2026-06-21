@@ -842,6 +842,13 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
     assert alignment["route_lateral_vs_projection_lateral"]["opposite_sign_ratio"] == 1.0
     assert alignment["simple_lat_vs_projection_lateral"]["same_sign_ratio"] == 1.0
     assert alignment["route_lateral_vs_projection_lateral"]["opposite_sign_abs_sum_p95_m"] == 0.0
+    convention = report["lateral_sign_alignment"]["lateral_frame_convention_diagnostic"]
+    assert convention["classification"] == "route_lateral_sign_inverted_vs_apollo_projection_candidate"
+    assert convention["status"] == "available"
+    assert convention["route_lateral_vs_projection_lateral"]["opposite_sign_ratio"] == 1.0
+    assert convention["simple_lat_vs_projection_lateral"]["same_sign_ratio"] == 1.0
+    assert convention["route_lateral_vs_simple_lat_lateral_error"]["opposite_sign_ratio"] == 1.0
+    assert convention["route_simple_lat_magnitude_agreement_candidate"] is True
     assert alignment["projection_centerline_geometry_sample_count"] == 4
     assert alignment["projection_l_recompute_delta_p95_m"] == 0.0
     point_alignment = alignment["simple_lat_points_vs_projection_line"]

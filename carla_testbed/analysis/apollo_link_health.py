@@ -1562,6 +1562,37 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 report,
                 "lateral_sign_alignment.route_station_frame_alignment.interpretation",
             ),
+            "lateral_frame_convention_classification": _nested(
+                report,
+                "lateral_sign_alignment.lateral_frame_convention_diagnostic.classification",
+            ),
+            "lateral_frame_convention_status": _nested(
+                report,
+                "lateral_sign_alignment.lateral_frame_convention_diagnostic.status",
+            ),
+            "lateral_frame_convention_reason": _nested(
+                report,
+                "lateral_sign_alignment.lateral_frame_convention_diagnostic.reason",
+            ),
+            "lateral_frame_convention_interpretation": _nested(
+                report,
+                "lateral_sign_alignment.lateral_frame_convention_diagnostic.interpretation",
+            ),
+            "lateral_frame_convention_route_projection_opposite_sign_ratio": _nested(
+                report,
+                "lateral_sign_alignment.lateral_frame_convention_diagnostic."
+                "route_lateral_vs_projection_lateral.opposite_sign_ratio",
+            ),
+            "lateral_frame_convention_simple_lat_projection_same_sign_ratio": _nested(
+                report,
+                "lateral_sign_alignment.lateral_frame_convention_diagnostic."
+                "simple_lat_vs_projection_lateral.same_sign_ratio",
+            ),
+            "lateral_frame_convention_route_simple_lat_opposite_sign_ratio": _nested(
+                report,
+                "lateral_sign_alignment.lateral_frame_convention_diagnostic."
+                "route_lateral_vs_simple_lat_lateral_error.opposite_sign_ratio",
+            ),
             "route_simple_lat_sign_convention_candidate": _nested(
                 report,
                 "lateral_sign_alignment.route_simple_lat_magnitude_alignment.magnitude_agreement_candidate",

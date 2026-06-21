@@ -1995,6 +1995,25 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
                     "simple_lat_current_station_projection_s_delta_p95_m": 25.08,
                     "interpretation": "Run-local route_s and Apollo simple_lat station are close to each other while both are offset from official HDMap projection_s; treat route_s/simple_lat as a shared local or stitching station frame candidate.",
                 },
+                "lateral_frame_convention_diagnostic": {
+                    "status": "available",
+                    "classification": "route_lateral_sign_inverted_vs_apollo_projection_candidate",
+                    "reason": "CARLA route lateral error opposes official Apollo projection_l while Apollo simple_lat lateral error matches projection_l; route/simple_lat magnitudes also agree.",
+                    "route_lateral_vs_projection_lateral": {
+                        "sample_count": 13,
+                        "opposite_sign_ratio": 1.0,
+                        "abs_magnitude_delta_p95_m": 0.195,
+                    },
+                    "simple_lat_vs_projection_lateral": {
+                        "sample_count": 13,
+                        "same_sign_ratio": 1.0,
+                    },
+                    "route_lateral_vs_simple_lat_lateral_error": {
+                        "sample_count": 13,
+                        "opposite_sign_ratio": 1.0,
+                    },
+                    "interpretation": "The current evidence points to CARLA route cross-track using the opposite sign from Apollo HDMap projection_l/simple_lat lateral error for this run.",
+                },
             },
         },
     )
@@ -2062,6 +2081,13 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     )
     assert lateral["key_metrics"]["route_s_current_station_abs_delta_p95_m"] == 0.15
     assert "shared local or stitching station frame" in lateral["key_metrics"]["route_station_frame_interpretation"]
+    assert lateral["key_metrics"]["lateral_frame_convention_classification"] == (
+        "route_lateral_sign_inverted_vs_apollo_projection_candidate"
+    )
+    assert lateral["key_metrics"]["lateral_frame_convention_status"] == "available"
+    assert lateral["key_metrics"]["lateral_frame_convention_route_projection_opposite_sign_ratio"] == 1.0
+    assert lateral["key_metrics"]["lateral_frame_convention_simple_lat_projection_same_sign_ratio"] == 1.0
+    assert lateral["key_metrics"]["lateral_frame_convention_route_simple_lat_opposite_sign_ratio"] == 1.0
     assert lateral["key_metrics"]["simple_lat_missing_station_fields"] == []
     assert lateral["key_metrics"]["simple_lat_current_station_projection_s_delta_p95_m"] == 25.08
     assert lateral["key_metrics"]["simple_lat_matched_s_projection_s_delta_p95_m"] == 23.64

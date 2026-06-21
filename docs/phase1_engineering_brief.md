@@ -334,6 +334,23 @@ Interpretation:
   remaining investigation should compare lateral sign conventions and route
   frame definitions, not treat Control station as missing or immediately tune
   steering/control.
+- After the latest Pro review, Phase 1 progress is now clearer but still not
+  accepted: the Apollo cut-in sample has enough official projection/simple_lat
+  evidence to classify the lateral convention gap, but it still fails behavior
+  status with lane invasion. The refreshed
+  `lateral_frame_convention_diagnostic` classifies the sample as
+  `route_lateral_sign_inverted_vs_apollo_projection_candidate`: 13 official
+  projection-matched samples show
+  `route_lateral_vs_projection_lateral.opposite_sign_ratio=1.0`,
+  `simple_lat_vs_projection_lateral.same_sign_ratio=1.0`, and the
+  route/simple_lat lateral-error pairing remains opposite-sign with matching
+  magnitude (`opposite_sign_ratio=1.0`,
+  `opposite_sign_abs_sum_p95_m≈0.028m`). This is a strong diagnostic that the
+  current `cross_track_error` convention is inverted relative to Apollo
+  `projection_l` / Control `simple_lat` for this run. It is not a runtime fix,
+  not a route contract verification by itself, and not a reason to flip signs
+  in control; the next validation should materialize route-frame geometry or
+  an explicit route/projection sign contract, then rerun the same cut-in case.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The
