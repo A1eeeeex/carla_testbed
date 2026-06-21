@@ -394,6 +394,7 @@ def analyze_apollo_link_health(
         "apollo_reference_line_contract",
         "report",
     )
+    _attach_planning_debug_presence(layers, payloads.get("planning_topic_debug_summary", {}))
     _annotate_planning_control_station_bridge(layers)
 
     primary, secondary = _blocker_summary(layers)
@@ -555,6 +556,37 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
                 "station frame join before changing steer scale, smoothing, PID, or actuation mapping."
                 + evidence_policy_clause
             )
+
+
+def _attach_planning_debug_presence(
+    layers: dict[str, dict[str, Any]],
+    planning_topic_debug_summary: Mapping[str, Any],
+) -> None:
+    reference = layers.get("planning_reference_line")
+    if not isinstance(reference, dict):
+        return
+    metrics = reference.setdefault("key_metrics", {})
+    if not isinstance(metrics, dict):
+        return
+    presence = (
+        planning_topic_debug_summary.get("planning_debug_presence")
+        if isinstance(planning_topic_debug_summary, Mapping)
+        else None
+    )
+    if not isinstance(presence, Mapping):
+        return
+    metrics["planning_debug_presence"] = dict(presence)
+    for key in (
+        "last_diagnosis",
+        "last_reference_line_path",
+        "last_routing_path",
+        "planning_data_present_ratio",
+        "reference_line_field_present_ratio",
+        "reference_line_nonempty_ratio",
+        "routing_field_present_ratio",
+        "routing_segment_nonempty_ratio",
+    ):
+        metrics[f"planning_debug_presence_{key}"] = presence.get(key)
 
 
 def write_apollo_link_health_report(report: Mapping[str, Any], out_dir: str | Path) -> dict[str, str]:

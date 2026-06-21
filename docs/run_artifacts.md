@@ -1536,6 +1536,27 @@ If `reference_debug_summary.reference_line_provider_ready_ratio` is low or
 non-empty, keep the run in reference/target semantics diagnosis. Non-empty
 trajectory points are useful runtime evidence, but they do not replace a
 claim-grade `apollo_reference_line_contract_report.json`.
+New Apollo bridge runs also write
+`planning_topic_debug_summary.json.planning_debug_presence` and matching
+per-row fields in `planning_topic_debug.jsonl` /
+`planning_route_segment_debug.jsonl`. These fields distinguish
+`debug.planning_data` missing, `debug.planning_data.reference_line` absent,
+reference-line present-but-empty, and routing-present/reference-line-empty
+cases. They are instrumentation for the Planning reference-line debug export
+gap; they do not fix behavior and must not be used as a substitute for
+claim-grade reference-line evidence.
+
+Example online validation:
+`runs/phase1_apollo_sidecar_cut_in_planning_debug_presence_online_20260621_194107`
+reports
+`planning_debug_presence.last_diagnosis=routing_present_reference_line_empty`,
+`planning_data_present_ratio=1.0`,
+`reference_line_field_present_ratio=1.0`,
+`reference_line_nonempty_ratio=0.0`, and
+`routing_segment_nonempty_ratio=0.5167`. This means the bridge found Apollo
+Planning's debug path and observed routing segments, but Apollo's Planning debug
+reference-line list was empty in that sample. Treat this as reference-line
+diagnostic evidence, not as route-following success or control evidence.
 
 `manifest.metadata.control_source=external_stack` is a harness-level label, not
 claim-grade proof of Apollo control. `control_attribution_report.json` may

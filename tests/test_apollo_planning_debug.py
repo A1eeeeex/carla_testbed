@@ -3,7 +3,10 @@ from __future__ import annotations
 import math
 from types import SimpleNamespace
 
-from tools.apollo10_cyber_bridge.planning_debug import build_trajectory_shape_debug
+from tools.apollo10_cyber_bridge.planning_debug import (
+    build_planning_debug_presence,
+    build_trajectory_shape_debug,
+)
 
 
 def _point(x: float, y: float, theta: float, kappa: float, v: float, t: float) -> SimpleNamespace:
@@ -54,3 +57,82 @@ def test_build_trajectory_shape_debug_empty_points() -> None:
     assert debug["trajectory_sample_points"] == []
     assert debug["trajectory_kappa"]["count"] == 0
     assert debug["trajectory_first_segment_heading"] is None
+
+
+def test_build_planning_debug_presence_with_reference_line_and_routing() -> None:
+    msg = SimpleNamespace(
+        debug=SimpleNamespace(
+            planning_data=SimpleNamespace(
+                reference_line=[SimpleNamespace(length=120.0), SimpleNamespace(length=80.0)],
+                routing=SimpleNamespace(
+                    road=[
+                        SimpleNamespace(
+                            passage=[
+                                SimpleNamespace(
+                                    segment=[
+                                        SimpleNamespace(id="lane_a", start_s=0.0, end_s=60.0),
+                                        SimpleNamespace(id="lane_b", start_s=60.0, end_s=120.0),
+                                    ]
+                                )
+                            ]
+                        )
+                    ]
+                ),
+            )
+        )
+    )
+
+    presence = build_planning_debug_presence(msg)
+
+    assert presence["planning_debug_debug_present"] is True
+    assert presence["planning_debug_planning_data_present"] is True
+    assert presence["planning_debug_reference_line_path"] == "debug.planning_data.reference_line"
+    assert presence["planning_debug_reference_line_field_present"] is True
+    assert presence["planning_debug_reference_line_count"] == 2
+    assert presence["planning_debug_reference_line_lengths"] == [120.0, 80.0]
+    assert presence["planning_debug_routing_path"] == "debug.planning_data.routing"
+    assert presence["planning_debug_routing_field_present"] is True
+    assert presence["planning_debug_routing_road_count"] == 1
+    assert presence["planning_debug_routing_passage_count"] == 1
+    assert presence["planning_debug_routing_segment_count"] == 2
+    assert presence["planning_debug_diagnosis"] == "reference_line_and_routing_present"
+
+
+def test_build_planning_debug_presence_separates_empty_reference_line_from_missing_path() -> None:
+    msg = {
+        "debug": {
+            "planning_data": {
+                "reference_line": [],
+                "routing": {
+                    "road": [
+                        {
+                            "passage": [
+                                {"segment": [{"id": "lane_a", "start_s": 0.0, "end_s": 100.0}]}
+                            ]
+                        }
+                    ]
+                },
+            }
+        }
+    }
+
+    presence = build_planning_debug_presence(msg)
+
+    assert presence["planning_debug_planning_data_present"] is True
+    assert presence["planning_debug_reference_line_field_present"] is True
+    assert presence["planning_debug_reference_line_count"] == 0
+    assert presence["planning_debug_routing_segment_count"] == 1
+    assert presence["planning_debug_diagnosis"] == "routing_present_reference_line_empty"
+
+
+def test_build_planning_debug_presence_reports_missing_planning_data() -> None:
+    msg = SimpleNamespace(debug=SimpleNamespace())
+
+    presence = build_planning_debug_presence(msg)
+
+    assert presence["planning_debug_debug_present"] is True
+    assert presence["planning_debug_planning_data_present"] is False
+    assert presence["planning_debug_reference_line_path"] is None
+    assert presence["planning_debug_reference_line_field_present"] is False
+    assert presence["planning_debug_routing_field_present"] is False
+    assert presence["planning_debug_diagnosis"] == "planning_data_missing"

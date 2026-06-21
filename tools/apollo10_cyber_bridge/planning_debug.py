@@ -32,6 +32,68 @@ def build_trajectory_shape_debug(points: Any, *, max_sample_points: int = 8) -> 
     }
 
 
+def build_planning_debug_presence(msg: Any) -> dict[str, Any]:
+    """Describe which Apollo Planning debug fields were actually present.
+
+    This is intentionally protobuf-agnostic so tests can use light fake message
+    objects. The bridge writes this alongside the existing parsed route/reference
+    counters to distinguish "Apollo did not populate debug fields" from "bridge
+    parsed the wrong path".
+    """
+
+    debug = _nested(msg, ("debug",))
+    planning_data = _nested(msg, ("debug", "planning_data"))
+    reference_line, reference_line_path = _first_nested_with_path(
+        msg,
+        (
+            ("debug", "planning_data", "reference_line"),
+            ("debug", "reference_line"),
+        ),
+    )
+    routing, routing_path = _first_nested_with_path(
+        msg,
+        (
+            ("debug", "planning_data", "routing"),
+            ("routing",),
+        ),
+    )
+    reference_lines = _as_sequence(reference_line)
+    reference_line_lengths = []
+    for item in reference_lines:
+        length = _num(_nested(item, ("length",)))
+        if length is not None:
+            reference_line_lengths.append(length)
+    routing_roads = _as_sequence(_nested(routing, ("road",))) if routing is not None else []
+    routing_passage_count = 0
+    routing_segment_count = 0
+    for road in routing_roads:
+        passages = _as_sequence(_nested(road, ("passage",)))
+        routing_passage_count += len(passages)
+        for passage in passages:
+            routing_segment_count += len(_as_sequence(_nested(passage, ("segment",))))
+    return {
+        "planning_debug_debug_present": debug is not None,
+        "planning_debug_planning_data_present": planning_data is not None,
+        "planning_debug_reference_line_path": reference_line_path,
+        "planning_debug_reference_line_field_present": reference_line is not None,
+        "planning_debug_reference_line_count": len(reference_lines),
+        "planning_debug_reference_line_lengths": reference_line_lengths,
+        "planning_debug_routing_path": routing_path,
+        "planning_debug_routing_field_present": routing is not None,
+        "planning_debug_routing_road_count": len(routing_roads),
+        "planning_debug_routing_passage_count": routing_passage_count,
+        "planning_debug_routing_segment_count": routing_segment_count,
+        "planning_debug_diagnosis": _planning_debug_diagnosis(
+            debug_present=debug is not None,
+            planning_data_present=planning_data is not None,
+            reference_line_field_present=reference_line is not None,
+            reference_line_count=len(reference_lines),
+            routing_field_present=routing is not None,
+            routing_segment_count=routing_segment_count,
+        ),
+    }
+
+
 def _sample_points(points: Sequence[Any], *, max_sample_points: int) -> list[dict[str, Any]]:
     if not points or max_sample_points <= 0:
         return []
@@ -126,6 +188,31 @@ def _nested(value: Any, path: Sequence[str]) -> Any:
     return current
 
 
+def _first_nested_with_path(value: Any, paths: Sequence[Sequence[str]]) -> tuple[Any, str | None]:
+    for path in paths:
+        marker = object()
+        found = _nested_with_default(value, path, marker)
+        if found is not marker:
+            return found, ".".join(path)
+    return None, None
+
+
+def _nested_with_default(value: Any, path: Sequence[str], default: Any) -> Any:
+    current = value
+    for item in path:
+        if isinstance(current, Mapping):
+            if item not in current:
+                return default
+            current = current.get(item)
+        else:
+            if not hasattr(current, item):
+                return default
+            current = getattr(current, item)
+        if current is None:
+            return default
+    return current
+
+
 def _num(value: Any) -> float | None:
     try:
         parsed = float(value)
@@ -140,3 +227,31 @@ def _wrap_to_pi(angle: float) -> float:
     while angle < -math.pi:
         angle += 2.0 * math.pi
     return angle
+
+
+def _planning_debug_diagnosis(
+    *,
+    debug_present: bool,
+    planning_data_present: bool,
+    reference_line_field_present: bool,
+    reference_line_count: int,
+    routing_field_present: bool,
+    routing_segment_count: int,
+) -> str:
+    if not debug_present:
+        return "debug_field_missing"
+    if not planning_data_present:
+        return "planning_data_missing"
+    if reference_line_count > 0 and routing_segment_count > 0:
+        return "reference_line_and_routing_present"
+    if reference_line_count > 0:
+        return "reference_line_present_routing_missing_or_empty"
+    if routing_segment_count > 0:
+        return "routing_present_reference_line_empty"
+    if reference_line_field_present and routing_field_present:
+        return "reference_line_and_routing_empty"
+    if reference_line_field_present:
+        return "reference_line_empty_routing_missing"
+    if routing_field_present:
+        return "reference_line_missing_routing_empty"
+    return "reference_line_and_routing_missing"

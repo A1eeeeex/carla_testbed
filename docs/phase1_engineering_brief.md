@@ -121,6 +121,19 @@ Interpretation:
   the same scenario cases. In practical terms, the next cycle should optimize
   the current highest-value Apollo behavior blocker, not create more generic
   validation surfaces unless a missing artifact blocks that diagnosis.
+- The newest online validation sample,
+  `runs/phase1_apollo_sidecar_cut_in_planning_debug_presence_online_20260621_194107`,
+  keeps that same boundary: it is an evaluable ApolloBackend behavior failure
+  (`LANE_INVASION_HARD`), not a Phase 1 success. Its value is narrower but
+  important: the updated bridge proves `debug.planning_data` and
+  `debug.planning_data.reference_line` are present in Apollo Planning messages,
+  while the reference-line list is empty
+  (`planning_debug_presence.last_diagnosis=routing_present_reference_line_empty`,
+  `reference_line_nonempty_ratio=0.0`,
+  `routing_segment_nonempty_ratio=0.5167`). This reduces the old reference-line
+  debug/export uncertainty from "maybe parsed the wrong path" to "Planning
+  debug/content reports routing segments but no reference-line entries for this
+  run." It does not change Planning, Control, actuation, or the Phase 1 status.
 - The latest Pro audit found that the earlier `8/8 DONE` statement was still
   too optimistic because some review-pack surfaces were stale or could not be
   independently re-computed. The follow-up fix keeps accepted-bundle rows tied
@@ -253,6 +266,20 @@ Interpretation:
   debug remains missing/zero (`reference_line_count_zero_ratio=1.0` and
   `reference_line_provider_ready_ratio=0.0`). This is attribution evidence, not
   a behavior fix or an Apollo natural-driving claim.
+  Future bridge runs now record `planning_debug_presence` in
+  `planning_topic_debug_summary.json`, `planning_topic_debug.jsonl`, and
+  `planning_route_segment_debug.jsonl`. This distinguishes
+  `debug.planning_data` missing, reference-line field absent, reference-line
+  field present-but-empty, and routing-present/reference-line-empty cases. It
+  closes an observability gap around the current primary blocker; it does not
+  change Planning, Control, or actuation behavior.
+  Online validation in
+  `runs/phase1_apollo_sidecar_cut_in_planning_debug_presence_online_20260621_194107`
+  produced `routing_present_reference_line_empty`: Planning debug had
+  `debug.planning_data.reference_line` present, but no reference-line entries,
+  while routing segments were present in roughly half the recent messages. The
+  next highest-value cycle is therefore to inspect Apollo Planning debug/config
+  or exported reference-line content, not to tune control mapping.
 - The same lateral-semantics refresh now records a conservative
   `lateral_sign_alignment` diagnostic. For the first high-lateral sample in
   `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742`,

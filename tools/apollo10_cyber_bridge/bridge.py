@@ -190,9 +190,13 @@ except Exception:
     )
 
 try:
-    from planning_debug import build_trajectory_shape_debug as build_trajectory_shape_debug_impl
+    from planning_debug import (
+        build_planning_debug_presence as build_planning_debug_presence_impl,
+        build_trajectory_shape_debug as build_trajectory_shape_debug_impl,
+    )
 except Exception:
     from tools.apollo10_cyber_bridge.planning_debug import (  # type: ignore
+        build_planning_debug_presence as build_planning_debug_presence_impl,
         build_trajectory_shape_debug as build_trajectory_shape_debug_impl,
     )
 
@@ -5056,6 +5060,30 @@ class ApolloGtBridge:
             for reason, count in self._planning_parse_fail_reasons.most_common(5)
         ]
         last_event = self._planning_last_event or {}
+        recent_events = list(self._planning_recent_events)
+
+        def _recent_bool_ratio(key: str) -> Optional[float]:
+            values = [event.get(key) for event in recent_events if event.get(key) is not None]
+            if not values:
+                return None
+            return sum(1 for value in values if bool(value)) / float(len(values))
+
+        def _recent_nonzero_ratio(key: str) -> Optional[float]:
+            values: List[float] = []
+            for event in recent_events:
+                value = event.get(key)
+                if value is None:
+                    continue
+                try:
+                    number = float(value)
+                except Exception:
+                    continue
+                if math.isfinite(number):
+                    values.append(number)
+            if not values:
+                return None
+            return sum(1 for value in values if value > 0.0) / float(len(values))
+
         timing_summary = self._planning_timing_summary()
         return {
             "generated_at_unix_sec": time.time(),
@@ -5086,6 +5114,36 @@ class ApolloGtBridge:
             "last_routing_unique_lane_signature": str(
                 last_event.get("routing_unique_lane_signature") or "none"
             ),
+            "planning_debug_presence": {
+                "last_diagnosis": last_event.get("planning_debug_diagnosis"),
+                "last_reference_line_path": last_event.get("planning_debug_reference_line_path"),
+                "last_routing_path": last_event.get("planning_debug_routing_path"),
+                "last_planning_data_present": last_event.get(
+                    "planning_debug_planning_data_present"
+                ),
+                "last_reference_line_field_present": last_event.get(
+                    "planning_debug_reference_line_field_present"
+                ),
+                "last_reference_line_count": last_event.get("planning_debug_reference_line_count"),
+                "last_routing_segment_count": last_event.get(
+                    "planning_debug_routing_segment_count"
+                ),
+                "planning_data_present_ratio": _recent_bool_ratio(
+                    "planning_debug_planning_data_present"
+                ),
+                "reference_line_field_present_ratio": _recent_bool_ratio(
+                    "planning_debug_reference_line_field_present"
+                ),
+                "reference_line_nonempty_ratio": _recent_nonzero_ratio(
+                    "planning_debug_reference_line_count"
+                ),
+                "routing_field_present_ratio": _recent_bool_ratio(
+                    "planning_debug_routing_field_present"
+                ),
+                "routing_segment_nonempty_ratio": _recent_nonzero_ratio(
+                    "planning_debug_routing_segment_count"
+                ),
+            },
             "last_planning_header_sequence_num": (
                 int(last_event.get("planning_header_sequence_num"))
                 if last_event.get("planning_header_sequence_num") is not None
@@ -5875,6 +5933,18 @@ class ApolloGtBridge:
             "scenario_plugin_type": None,
             "stage_plugin_type": None,
             "distance_to_destination": None,
+            "planning_debug_debug_present": None,
+            "planning_debug_planning_data_present": None,
+            "planning_debug_reference_line_path": None,
+            "planning_debug_reference_line_field_present": None,
+            "planning_debug_reference_line_count": None,
+            "planning_debug_reference_line_lengths": [],
+            "planning_debug_routing_path": None,
+            "planning_debug_routing_field_present": None,
+            "planning_debug_routing_road_count": None,
+            "planning_debug_routing_passage_count": None,
+            "planning_debug_routing_segment_count": None,
+            "planning_debug_diagnosis": None,
         }
         route_debug_row: Dict[str, Any] = {
             "timestamp": now_sec,
@@ -5930,8 +6000,23 @@ class ApolloGtBridge:
             "planning_stage_name": None,
             "task_name": None,
             "planning_empty_reason_guess": "",
+            "planning_debug_debug_present": None,
+            "planning_debug_planning_data_present": None,
+            "planning_debug_reference_line_path": None,
+            "planning_debug_reference_line_field_present": None,
+            "planning_debug_reference_line_count": None,
+            "planning_debug_reference_line_lengths": [],
+            "planning_debug_routing_path": None,
+            "planning_debug_routing_field_present": None,
+            "planning_debug_routing_road_count": None,
+            "planning_debug_routing_passage_count": None,
+            "planning_debug_routing_segment_count": None,
+            "planning_debug_diagnosis": None,
         }
         try:
+            planning_debug_presence = build_planning_debug_presence_impl(msg)
+            debug_row.update(planning_debug_presence)
+            route_debug_row.update(planning_debug_presence)
             pts = getattr(msg, "trajectory_point", None)
             pt_count = len(pts) if pts is not None else 0
             self._planning_last_points = int(pt_count)

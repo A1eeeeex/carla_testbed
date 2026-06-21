@@ -391,6 +391,40 @@ def test_all_green_link_health_is_claimable(tmp_path: Path) -> None:
     assert report["layers"]["prediction_evidence"]["status"] == "pass"
 
 
+def test_planning_debug_presence_is_exposed_on_reference_line_layer(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/planning_topic_debug_summary.json",
+        {
+            "status": "pass",
+            "total_messages_received": 100,
+            "messages_with_nonzero_trajectory_points": 100,
+            "planning_debug_presence": {
+                "last_diagnosis": "routing_present_reference_line_empty",
+                "last_reference_line_path": "debug.planning_data.reference_line",
+                "last_routing_path": "debug.planning_data.routing",
+                "planning_data_present_ratio": 1.0,
+                "reference_line_field_present_ratio": 1.0,
+                "reference_line_nonempty_ratio": 0.0,
+                "routing_field_present_ratio": 1.0,
+                "routing_segment_nonempty_ratio": 1.0,
+            },
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    metrics = report["layers"]["planning_reference_line"]["key_metrics"]
+    assert metrics["planning_debug_presence"]["last_diagnosis"] == (
+        "routing_present_reference_line_empty"
+    )
+    assert metrics["planning_debug_presence_last_diagnosis"] == (
+        "routing_present_reference_line_empty"
+    )
+    assert metrics["planning_debug_presence_reference_line_nonempty_ratio"] == 0.0
+    assert metrics["planning_debug_presence_routing_segment_nonempty_ratio"] == 1.0
+
+
 def test_missing_prediction_evidence_blocks_claim(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     (run_dir / "analysis/prediction_evidence/prediction_evidence_report.json").unlink()
