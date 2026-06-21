@@ -431,6 +431,7 @@ def build_reference_line_contract_event(row: Mapping[str, Any], *, source_confid
             "routing_field_present": routing_field_present,
             "routing_segment_count": _num(_first(row, "planning_debug_routing_segment_count")),
             "diagnosis": _first(row, "planning_debug_diagnosis"),
+            "last_field_inventory": _mapping(_first(row, "planning_debug_field_inventory")),
         },
         "control": {
             "debug_simple_lat_lateral_error": _num(_first(row, "debug_simple_lat_lateral_error", "apollo_debug_simple_lat_lateral_error")),
@@ -476,6 +477,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     trajectory_sample_surrogate = _mapping(report.get("planning_trajectory_sample_surrogate"))
     control_target_surrogate = _mapping(report.get("control_target_point_vs_planning_trajectory_sample"))
     planning_info_log_evidence = _mapping(report.get("planning_info_log_reference_line_evidence"))
+    planning_debug_field_inventory = _mapping(planning_debug_presence.get("last_field_inventory"))
     field_inventory = _mapping(_mapping(report.get("reference_debug_diagnostic")).get("field_inventory"))
     claim_window_inventory = _mapping(field_inventory.get("claim_window"))
     return "\n".join(
@@ -496,6 +498,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Planning debug presence classification: `{planning_debug_presence.get('classification')}`",
             f"- Planning debug reference-line nonempty ratio: `{planning_debug_presence.get('reference_line_nonempty_ratio')}`",
             f"- Planning debug routing segment nonempty ratio: `{planning_debug_presence.get('routing_segment_nonempty_ratio')}`",
+            f"- Planning debug candidate paths: `{planning_debug_field_inventory.get('reference_line_candidate_paths')}`",
             f"- Planning materialization classification: `{materialization_summary.get('classification')}`",
             f"- Planning materialization claim-window source: `{materialization_summary.get('claim_window_source')}`",
             f"- Planning materialization route-segments ready ratio: `{materialization_claim_window.get('route_segments_ready_ratio')}`",
@@ -1121,6 +1124,7 @@ def _planning_debug_presence_summary(
         "last_reference_line_field_present": last.get("reference_line_field_present"),
         "last_reference_line_count": last.get("reference_line_count"),
         "last_routing_segment_count": last.get("routing_segment_count"),
+        "last_field_inventory": _mapping(last.get("last_field_inventory")),
         "planning_data_present_ratio": _presence_bool_ratio(row_presence, "planning_data_present"),
         "reference_line_field_present_ratio": _presence_bool_ratio(row_presence, "reference_line_field_present"),
         "reference_line_nonempty_ratio": _presence_nonzero_ratio(row_presence, "reference_line_count"),

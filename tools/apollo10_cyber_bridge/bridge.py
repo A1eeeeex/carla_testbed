@@ -5128,6 +5128,7 @@ class ApolloGtBridge:
                 "last_routing_segment_count": last_event.get(
                     "planning_debug_routing_segment_count"
                 ),
+                "last_field_inventory": last_event.get("planning_debug_field_inventory"),
                 "planning_data_present_ratio": _recent_bool_ratio(
                     "planning_debug_planning_data_present"
                 ),

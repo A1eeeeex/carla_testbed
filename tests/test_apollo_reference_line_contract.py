@@ -635,6 +635,15 @@ def test_planning_info_log_reference_line_text_traces_are_diagnostic_only(
                 "planning_debug_planning_data_present": True,
                 "planning_debug_reference_line_field_present": True,
                 "planning_debug_reference_line_count": 0,
+                "planning_debug_field_inventory": {
+                    "reference_line_candidate_paths": [
+                        {
+                            "path": "debug.planning_data.path",
+                            "repeated_count": 1,
+                            "field_name_match": True,
+                        }
+                    ]
+                },
                 "planning_debug_routing_field_present": True,
                 "planning_debug_routing_segment_count": 1,
                 "planning_debug_diagnosis": "routing_present_reference_line_empty",
@@ -664,6 +673,15 @@ def test_planning_info_log_reference_line_text_traces_are_diagnostic_only(
     assert info["text_log_reference_line_claim_grade_allowed"] is False
     assert info["print_counts"]["print_regular_self_ref_l"] == 1
     assert info["st_boundary_id_topk"] == [{"value": "72_0", "count": 1}]
+    assert report["planning_debug_presence"]["last_field_inventory"][
+        "reference_line_candidate_paths"
+    ] == [
+        {
+            "path": "debug.planning_data.path",
+            "repeated_count": 1,
+            "field_name_match": True,
+        }
+    ]
     policy = report["reference_line_debug_export_policy"]
     assert policy["planning_info_log_reference_line_available"] is True
     assert policy["planning_info_log_reference_line_claim_grade_allowed"] is False

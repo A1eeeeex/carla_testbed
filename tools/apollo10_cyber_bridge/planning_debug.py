@@ -58,6 +58,11 @@ def build_planning_debug_presence(msg: Any) -> dict[str, Any]:
         ),
     )
     reference_lines = _as_sequence(reference_line)
+    field_inventory = _planning_debug_field_inventory(
+        msg,
+        debug=debug,
+        planning_data=planning_data,
+    )
     reference_line_lengths = []
     for item in reference_lines:
         length = _num(_nested(item, ("length",)))
@@ -83,6 +88,7 @@ def build_planning_debug_presence(msg: Any) -> dict[str, Any]:
         "planning_debug_routing_road_count": len(routing_roads),
         "planning_debug_routing_passage_count": routing_passage_count,
         "planning_debug_routing_segment_count": routing_segment_count,
+        "planning_debug_field_inventory": field_inventory,
         "planning_debug_diagnosis": _planning_debug_diagnosis(
             debug_present=debug is not None,
             planning_data_present=planning_data is not None,
@@ -92,6 +98,126 @@ def build_planning_debug_presence(msg: Any) -> dict[str, Any]:
             routing_segment_count=routing_segment_count,
         ),
     }
+
+
+def _planning_debug_field_inventory(
+    msg: Any,
+    *,
+    debug: Any,
+    planning_data: Any,
+) -> dict[str, Any]:
+    """Return a compact, JSON-safe field inventory for Planning debug diagnosis.
+
+    The online bridge should not need Apollo protobuf descriptors at import time,
+    but real protobuf messages expose enough runtime metadata to distinguish
+    "the known reference_line field is empty" from "there may be another
+    reference/path-like field we are not inspecting yet".
+    """
+
+    planning_data_fields = _field_names(planning_data)
+    repeated_counts = _field_sequence_counts(planning_data, planning_data_fields)
+    candidate_paths = []
+    for name in planning_data_fields:
+        lowered = name.lower()
+        count = repeated_counts.get(name)
+        if (
+            "reference" in lowered
+            or "line" in lowered
+            or "path" in lowered
+            or "trajectory" in lowered
+        ):
+            candidate_paths.append(
+                {
+                    "path": f"debug.planning_data.{name}",
+                    "repeated_count": count,
+                    "field_name_match": True,
+                }
+            )
+    for name, count in repeated_counts.items():
+        if count <= 0:
+            continue
+        path = f"debug.planning_data.{name}"
+        if not any(item.get("path") == path for item in candidate_paths):
+            candidate_paths.append(
+                {
+                    "path": path,
+                    "repeated_count": count,
+                    "field_name_match": False,
+                }
+            )
+    return {
+        "top_level_fields": _field_names(msg),
+        "debug_fields": _field_names(debug),
+        "planning_data_fields": planning_data_fields,
+        "planning_data_present_fields": _present_field_names(planning_data),
+        "planning_data_repeated_field_counts": repeated_counts,
+        "reference_line_candidate_paths": candidate_paths[:20],
+        "claim_boundary": (
+            "Field inventory is diagnostic only. It helps decide whether the "
+            "bridge is reading the right Planning debug field, but it does not "
+            "prove reference-line correctness or behavior success."
+        ),
+    }
+
+
+def _field_names(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, Mapping):
+        return sorted(str(key) for key in value.keys())
+    descriptor = getattr(value, "DESCRIPTOR", None)
+    fields = getattr(descriptor, "fields", None)
+    if fields is not None:
+        out = []
+        for field in fields:
+            name = getattr(field, "name", None)
+            if name:
+                out.append(str(name))
+        return sorted(out)
+    if hasattr(value, "__dict__"):
+        return sorted(str(key) for key in vars(value).keys() if not str(key).startswith("_"))
+    return []
+
+
+def _present_field_names(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, Mapping):
+        return sorted(str(key) for key, item in value.items() if item is not None)
+    list_fields = getattr(value, "ListFields", None)
+    if callable(list_fields):
+        out = []
+        try:
+            for field, _item in list_fields():
+                name = getattr(field, "name", None)
+                if name:
+                    out.append(str(name))
+        except Exception:
+            return []
+        return sorted(out)
+    if hasattr(value, "__dict__"):
+        return sorted(
+            str(key)
+            for key, item in vars(value).items()
+            if not str(key).startswith("_") and item is not None
+        )
+    return []
+
+
+def _field_sequence_counts(value: Any, field_names: Sequence[str]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for name in field_names:
+        item = _nested(value, (name,))
+        if item is None or isinstance(item, (str, bytes, bytearray, Mapping)):
+            continue
+        try:
+            count = len(item)
+        except TypeError:
+            continue
+        except Exception:
+            continue
+        out[str(name)] = int(count)
+    return out
 
 
 def _sample_points(points: Sequence[Any], *, max_sample_points: int) -> list[dict[str, Any]]:

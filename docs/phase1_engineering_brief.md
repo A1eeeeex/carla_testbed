@@ -170,6 +170,13 @@ Interpretation:
   ADCTrajectory debug/reference-line population or export semantics. The text
   log is explicitly `claim_grade_allowed=false`; it does not prove
   reference-line correctness or behavior success.
+  The next bridge/analyzer cycle also records a compact Planning debug field
+  inventory and candidate reference/path-like repeated fields. This is intended
+  to distinguish "Apollo 10 really exports an empty
+  `debug.planning_data.reference_line` list" from "the bridge is still looking
+  at a narrower debug field than Apollo actually populated." The inventory is
+  diagnostic-only and remains below claim-grade evidence until it is joined with
+  exported reference-line semantics or an explicit equivalent contract.
 - The latest Pro audit found that the earlier `8/8 DONE` statement was still
   too optimistic because some review-pack surfaces were stale or could not be
   independently re-computed. The follow-up fix keeps accepted-bundle rows tied

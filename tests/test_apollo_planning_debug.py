@@ -103,6 +103,7 @@ def test_build_planning_debug_presence_separates_empty_reference_line_from_missi
         "debug": {
             "planning_data": {
                 "reference_line": [],
+                "reference_path": [{"length": 42.0}],
                 "routing": {
                     "road": [
                         {
@@ -123,6 +124,40 @@ def test_build_planning_debug_presence_separates_empty_reference_line_from_missi
     assert presence["planning_debug_reference_line_count"] == 0
     assert presence["planning_debug_routing_segment_count"] == 1
     assert presence["planning_debug_diagnosis"] == "routing_present_reference_line_empty"
+    inventory = presence["planning_debug_field_inventory"]
+    assert "reference_line" in inventory["planning_data_fields"]
+    assert inventory["planning_data_repeated_field_counts"]["reference_line"] == 0
+    assert inventory["planning_data_repeated_field_counts"]["reference_path"] == 1
+    assert {
+        "path": "debug.planning_data.reference_path",
+        "repeated_count": 1,
+        "field_name_match": True,
+    } in inventory["reference_line_candidate_paths"]
+
+
+def test_build_planning_debug_presence_inventory_handles_namespace_messages() -> None:
+    msg = SimpleNamespace(
+        debug=SimpleNamespace(
+            planning_data=SimpleNamespace(
+                reference_line=[],
+                path=[SimpleNamespace(length=10.0)],
+                routing=SimpleNamespace(road=[]),
+            )
+        )
+    )
+
+    presence = build_planning_debug_presence(msg)
+
+    inventory = presence["planning_debug_field_inventory"]
+    assert "debug" in inventory["top_level_fields"]
+    assert "planning_data" in inventory["debug_fields"]
+    assert "path" in inventory["planning_data_fields"]
+    assert inventory["planning_data_repeated_field_counts"]["path"] == 1
+    assert {
+        "path": "debug.planning_data.path",
+        "repeated_count": 1,
+        "field_name_match": True,
+    } in inventory["reference_line_candidate_paths"]
 
 
 def test_build_planning_debug_presence_reports_missing_planning_data() -> None:
