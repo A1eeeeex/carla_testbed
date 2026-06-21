@@ -360,6 +360,8 @@ def build_reference_line_contract_event(row: Mapping[str, Any], *, source_confid
             "first_trajectory_point_theta": planning_theta,
             "first_trajectory_point_kappa": _num(_first(row, "first_trajectory_point_kappa")),
             "first_trajectory_point_v": _num(_first(row, "first_trajectory_point_v")),
+            "trajectory_sample_points": _sample_points(_first(row, "trajectory_sample_points")),
+            "trajectory_total_path_length": _num(_first(row, "trajectory_total_path_length")),
             "trajectory_first_segment_heading": first_segment_heading,
             "lane_ids": _list_value(_first(row, "lane_ids", "lane_id_first")),
             "target_lane_ids": _list_value(_first(row, "target_lane_ids", "target_lane_id_first")),
@@ -407,6 +409,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     projection_contract = _mapping(contracts.get("apollo_hdmap_projection"))
     planning_projection_alignment = _mapping(report.get("planning_first_point_projection_alignment"))
     reference_debug_export_policy = _mapping(report.get("reference_line_debug_export_policy"))
+    trajectory_sample_surrogate = _mapping(report.get("planning_trajectory_sample_surrogate"))
     return "\n".join(
         [
             "# Apollo Reference-Line Contract Summary",
@@ -426,6 +429,8 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Reference debug export policy: `{reference_debug_export_policy.get('classification')}`",
             f"- Reference debug claim-grade allowed: `{reference_debug_export_policy.get('reference_line_debug_claim_grade_allowed')}`",
             f"- Reference debug evidence policy: `{reference_debug_export_policy.get('recommended_evidence_policy')}`",
+            f"- Planning trajectory sample surrogate: `{trajectory_sample_surrogate.get('classification')}`",
+            f"- Planning trajectory sample claim-grade allowed: `{trajectory_sample_surrogate.get('reference_line_claim_grade_allowed')}`",
             f"- Planning ref heading p95 rad: `{metrics.get('planning_ref_heading_error_p95_rad')}`",
             f"- Normal trajectory heading p95 rad: `{metrics.get('normal_trajectory_heading_error_p95_rad')}`",
             f"- PATH_FALLBACK trajectory ratio: `{metrics.get('path_fallback_trajectory_ratio')}`",
@@ -472,7 +477,11 @@ def _report(
         metrics,
         planning_projection_alignment=planning_projection_alignment,
     )
-    reference_debug_export_policy = _reference_line_debug_export_policy(reference_debug_diagnostic)
+    trajectory_sample_surrogate = _planning_trajectory_sample_surrogate(rows)
+    reference_debug_export_policy = _reference_line_debug_export_policy(
+        reference_debug_diagnostic,
+        trajectory_sample_surrogate=trajectory_sample_surrogate,
+    )
     report_contracts = dict(contracts or _contracts(rows=rows, evidence=evidence, metrics=metrics, hdmap_projection=hdmap_projection))
     status, warnings = _downgrade_for_planning_materialization(
         status,
@@ -494,6 +503,7 @@ def _report(
         "metrics": metrics,
         "reference_debug_diagnostic": reference_debug_diagnostic,
         "reference_line_debug_export_policy": reference_debug_export_policy,
+        "planning_trajectory_sample_surrogate": trajectory_sample_surrogate,
         "planning_first_point_projection_alignment": planning_projection_alignment,
         "contracts": report_contracts,
         "planning_trajectory_contract": report_contracts.get("planning_trajectory") or {},
@@ -1019,13 +1029,19 @@ def _reference_debug_diagnostic(
     }
 
 
-def _reference_line_debug_export_policy(reference_debug_diagnostic: Mapping[str, Any]) -> dict[str, Any]:
+def _reference_line_debug_export_policy(
+    reference_debug_diagnostic: Mapping[str, Any],
+    *,
+    trajectory_sample_surrogate: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     classification = str(reference_debug_diagnostic.get("classification") or "")
     planning_alignment = _mapping(reference_debug_diagnostic.get("planning_first_point_projection_alignment"))
+    trajectory_sample_surrogate = _mapping(trajectory_sample_surrogate)
     planning_local_alignment = (
         planning_alignment.get("classification") == "planning_first_point_on_hdmap_projection_line_candidate"
         and planning_alignment.get("status") == "pass"
     )
+    trajectory_sample_surrogate_available = bool(trajectory_sample_surrogate.get("available"))
     control_reference_available = bool(reference_debug_diagnostic.get("control_simple_lat_reference_available"))
     route_segment_available = bool(reference_debug_diagnostic.get("route_segment_available"))
     reference_debug_available = bool(reference_debug_diagnostic.get("reference_line_debug_available"))
@@ -1036,6 +1052,7 @@ def _reference_line_debug_export_policy(reference_debug_diagnostic: Mapping[str,
             "classification": "reference_line_debug_available",
             "reference_line_debug_claim_grade_allowed": True,
             "planning_first_point_local_alignment_available": planning_local_alignment,
+            "planning_trajectory_sample_surrogate_available": trajectory_sample_surrogate_available,
             "control_simple_lat_reference_available": control_reference_available,
             "route_segment_available": route_segment_available,
             "recommended_evidence_policy": "reference_line_debug_can_support_claim_if_other_gates_pass",
@@ -1085,6 +1102,7 @@ def _reference_line_debug_export_policy(reference_debug_diagnostic: Mapping[str,
             "classification": export_classification,
             "reference_line_debug_claim_grade_allowed": False,
             "planning_first_point_local_alignment_available": planning_local_alignment,
+            "planning_trajectory_sample_surrogate_available": trajectory_sample_surrogate_available,
             "control_simple_lat_reference_available": control_reference_available,
             "route_segment_available": route_segment_available,
             "recommended_evidence_policy": "local_surrogate_only_until_reference_line_debug_exported",
@@ -1105,6 +1123,7 @@ def _reference_line_debug_export_policy(reference_debug_diagnostic: Mapping[str,
         "classification": "reference_line_debug_export_policy_insufficient_data",
         "reference_line_debug_claim_grade_allowed": False,
         "planning_first_point_local_alignment_available": planning_local_alignment,
+        "planning_trajectory_sample_surrogate_available": trajectory_sample_surrogate_available,
         "control_simple_lat_reference_available": control_reference_available,
         "route_segment_available": route_segment_available,
         "recommended_evidence_policy": "insufficient_reference_line_debug_evidence",
@@ -1116,6 +1135,128 @@ def _reference_line_debug_export_policy(reference_debug_diagnostic: Mapping[str,
         "claim_boundary": (
             "Missing reference-line debug/export evidence must remain insufficient_data or "
             "diagnostic-only; it cannot be upgraded from field presence alone."
+        ),
+    }
+
+
+def _planning_trajectory_sample_surrogate(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    nonempty_rows = [row for row in rows if _planning_trajectory_nonempty(row)]
+    rows_with_samples = [
+        row
+        for row in nonempty_rows
+        if _sample_points(_nested(row, "planning.trajectory_sample_points"))
+    ]
+    if not rows:
+        return {
+            "status": "insufficient_data",
+            "classification": "planning_trajectory_rows_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": 0,
+            "nonempty_trajectory_row_count": 0,
+            "rows_with_sample_points": 0,
+            "sample_coverage_ratio": None,
+            "interpretation": (
+                "No Planning rows are available; trajectory samples cannot support even a "
+                "local reference-line surrogate diagnostic."
+            ),
+        }
+    if not nonempty_rows:
+        return {
+            "status": "insufficient_data",
+            "classification": "planning_trajectory_nonempty_rows_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": len(rows),
+            "nonempty_trajectory_row_count": 0,
+            "rows_with_sample_points": 0,
+            "sample_coverage_ratio": None,
+            "interpretation": (
+                "Planning trajectory samples require non-empty Planning trajectories; this "
+                "cannot substitute for reference-line debug."
+            ),
+        }
+    if not rows_with_samples:
+        return {
+            "status": "insufficient_data",
+            "classification": "planning_trajectory_sample_points_missing",
+            "available": False,
+            "reference_line_claim_grade_allowed": False,
+            "row_count": len(rows),
+            "nonempty_trajectory_row_count": len(nonempty_rows),
+            "rows_with_sample_points": 0,
+            "sample_coverage_ratio": 0.0,
+            "interpretation": (
+                "Planning trajectories are non-empty, but sampled trajectory points are not "
+                "present in the artifacts. Reference-line debug remains required for claims."
+            ),
+        }
+
+    heading_errors: list[float] = []
+    path_lengths: list[float] = []
+    sample_counts: list[float] = []
+    lane_ids: list[str] = []
+    target_lane_ids: list[str] = []
+    routing_signatures: list[str] = []
+    for row in rows_with_samples:
+        samples = _sample_points(_nested(row, "planning.trajectory_sample_points"))
+        sample_counts.append(float(len(samples)))
+        lane_ids.extend(_list_value(_nested(row, "planning.lane_ids")))
+        target_lane_ids.extend(_list_value(_nested(row, "planning.target_lane_ids")))
+        routing_signature = str(_nested(row, "routing.routing_unique_lane_signature") or "").strip()
+        if routing_signature:
+            routing_signatures.append(routing_signature)
+        path_length = _num(_nested(row, "planning.trajectory_total_path_length"))
+        if path_length is None:
+            path_length = _sample_path_length(samples)
+        if path_length is not None:
+            path_lengths.append(path_length)
+        first_theta = _num(_nested(row, "planning.first_trajectory_point_theta"))
+        sample_heading = _sample_first_segment_heading(samples)
+        heading_error = _angle_delta(first_theta, sample_heading)
+        if heading_error is not None:
+            heading_errors.append(abs(heading_error))
+
+    sample_coverage_ratio = len(rows_with_samples) / len(nonempty_rows)
+    normalized_planning_lanes = {_normalize_lane_id(item) for item in lane_ids + target_lane_ids}
+    normalized_routing_lanes = {
+        _normalize_lane_id(item)
+        for signature in routing_signatures
+        for item in signature.replace(";", ",").replace("|", ",").split(",")
+        if item.strip()
+    }
+    lane_window_compatible = (
+        bool(normalized_planning_lanes & normalized_routing_lanes)
+        if normalized_planning_lanes and normalized_routing_lanes
+        else None
+    )
+    if lane_window_compatible is True:
+        classification = "planning_trajectory_sample_surrogate_same_route_lane_window"
+    elif lane_window_compatible is False:
+        classification = "planning_trajectory_sample_surrogate_lane_window_mismatch"
+    else:
+        classification = "planning_trajectory_sample_surrogate_available_lane_window_unknown"
+    return {
+        "status": "available" if lane_window_compatible is not False else "warn",
+        "classification": classification,
+        "available": True,
+        "reference_line_claim_grade_allowed": False,
+        "row_count": len(rows),
+        "nonempty_trajectory_row_count": len(nonempty_rows),
+        "rows_with_sample_points": len(rows_with_samples),
+        "sample_coverage_ratio": sample_coverage_ratio,
+        "sample_count_p95": _p95_abs(sample_counts),
+        "trajectory_path_length_p95_m": _p95_abs(path_lengths),
+        "first_theta_vs_sample_segment_heading_p95_rad": _p95_abs(heading_errors),
+        "planning_lane_id_topk": _topk(lane_ids),
+        "planning_target_lane_id_topk": _topk(target_lane_ids),
+        "routing_unique_lane_signature_topk": _topk(routing_signatures),
+        "lane_window_compatible": lane_window_compatible,
+        "recommended_evidence_policy": "trajectory_shape_surrogate_only_until_reference_line_debug_exported",
+        "interpretation": (
+            "Planning trajectory samples show local trajectory shape and lane-window consistency. "
+            "They are diagnostic surrogate evidence only and cannot replace exported Planning "
+            "reference-line debug for claim-grade reference-line correctness."
         ),
     }
 
@@ -1427,13 +1568,76 @@ def _normalized_rows(
     timeseries_rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     if contract_rows:
-        return _augment_contract_rows_with_control_debug(contract_rows, control_rows)
+        rows = _augment_contract_rows_with_planning_debug(contract_rows, planning_rows)
+        return _augment_contract_rows_with_control_debug(rows, control_rows)
     return _fallback_asof_join_rows(
         planning_rows=planning_rows,
         route_segment_rows=route_segment_rows,
         control_rows=control_rows,
         timeseries_rows=timeseries_rows,
     )
+
+
+def _augment_contract_rows_with_planning_debug(
+    contract_rows: Sequence[Mapping[str, Any]],
+    planning_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = [dict(row) for row in contract_rows]
+    if not rows or not planning_rows:
+        return rows
+    planning_events = [
+        build_reference_line_contract_event(row, source_confidence="planning_topic_debug")
+        for row in planning_rows
+    ]
+    planning_events = [
+        event
+        for event in planning_events
+        if _planning_trajectory_nonempty(event) and _sample_points(_nested(event, "planning.trajectory_sample_points"))
+    ]
+    if not planning_events:
+        return rows
+
+    matched_rows = 0
+    dropped_rows = 0
+    for row in rows:
+        row_ts = _event_timestamp(row)
+        planning_event: Mapping[str, Any] | None = None
+        if row_ts is not None:
+            planning_event = _nearest_asof_event(row_ts, planning_events, tolerance_s=FALLBACK_JOIN_TOLERANCE_S)
+        row_computed = dict(_mapping(row.get("computed")))
+        if planning_event is None:
+            dropped_rows += 1
+            row_computed["planning_sample_source_confidence"] = "planning_topic_debug_unaligned"
+            row_computed["planning_sample_join_tolerance_ms"] = FALLBACK_JOIN_TOLERANCE_S * 1000.0
+            row["computed"] = row_computed
+            continue
+        matched_rows += 1
+        planning_payload = _mapping(planning_event.get("planning"))
+        row_planning = dict(_mapping(row.get("planning")))
+        for key in (
+            "trajectory_sample_points",
+            "trajectory_total_path_length",
+            "trajectory_first_segment_heading",
+        ):
+            value = planning_payload.get(key)
+            if _present_value(value) and not _present_value(row_planning.get(key)):
+                row_planning[key] = value
+        row_computed["planning_sample_source_confidence"] = "planning_topic_debug"
+        row_computed["planning_sample_join_tolerance_ms"] = FALLBACK_JOIN_TOLERANCE_S * 1000.0
+        row_computed["planning_sample_join_delta_ms"] = _join_delta_ms(
+            row_ts,
+            _event_timestamp(planning_event),
+        )
+        row_computed["planning_sample_join_matched"] = True
+        row["planning"] = row_planning
+        row["computed"] = row_computed
+    if rows:
+        for row in rows:
+            row_computed = dict(_mapping(row.get("computed")))
+            row_computed["planning_sample_join_coverage_ratio"] = matched_rows / len(rows)
+            row_computed["planning_sample_dropped_unaligned_rows"] = dropped_rows
+            row["computed"] = row_computed
+    return rows
 
 
 def _augment_contract_rows_with_control_debug(
@@ -1857,7 +2061,7 @@ def _nested(row: Mapping[str, Any], path: str) -> Any:
 def _first(row: Mapping[str, Any], *keys: str) -> Any:
     for key in keys:
         value = row.get(key)
-        if value not in {None, ""}:
+        if _present_value(value):
             return value
     return None
 
@@ -1870,6 +2074,14 @@ def _num(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _present_value(value: Any) -> bool:
+    if value is None or value == "":
+        return False
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return True
 
 
 def _bool_value(value: Any) -> bool:
@@ -1896,6 +2108,71 @@ def _list_value(value: Any) -> list[str]:
         except json.JSONDecodeError:
             pass
     return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def _sample_points(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+        value = parsed
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            continue
+        point = {
+            "index": item.get("index", index),
+            "x": _num(item.get("x")),
+            "y": _num(item.get("y")),
+            "theta": _num(item.get("theta")),
+            "kappa": _num(item.get("kappa")),
+            "v": _num(item.get("v")),
+            "relative_time": _num(item.get("relative_time")),
+        }
+        if point["x"] is None or point["y"] is None:
+            continue
+        out.append(point)
+    return out
+
+
+def _sample_path_length(samples: Sequence[Mapping[str, Any]]) -> float | None:
+    total = 0.0
+    previous: tuple[float, float] | None = None
+    segment_count = 0
+    for sample in samples:
+        x = _num(sample.get("x"))
+        y = _num(sample.get("y"))
+        if x is None or y is None:
+            previous = None
+            continue
+        if previous is not None:
+            total += math.hypot(x - previous[0], y - previous[1])
+            segment_count += 1
+        previous = (x, y)
+    return total if segment_count > 0 else None
+
+
+def _sample_first_segment_heading(samples: Sequence[Mapping[str, Any]]) -> float | None:
+    first: tuple[float, float] | None = None
+    for sample in samples:
+        x = _num(sample.get("x"))
+        y = _num(sample.get("y"))
+        if x is None or y is None:
+            continue
+        if first is None:
+            first = (x, y)
+            continue
+        dx = x - first[0]
+        dy = y - first[1]
+        if abs(dx) > 1e-9 or abs(dy) > 1e-9:
+            return math.atan2(dy, dx)
+    return None
 
 
 def _angle_delta(lhs: float | None, rhs: float | None) -> float | None:

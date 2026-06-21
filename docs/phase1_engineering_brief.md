@@ -431,6 +431,17 @@ Interpretation:
   route-segment / Control station semantics are exported or decoded in one
   frame. Phase 1 remains `PARTIAL`; the current Apollo sample remains
   `failed/lane_invasion`.
+- The reference-line analyzer now also preserves Planning
+  `trajectory_sample_points` from `planning_topic_debug.jsonl` when an existing
+  `apollo_reference_line_contract.jsonl` is present. On the same refreshed run,
+  `planning_trajectory_sample_surrogate.classification=planning_trajectory_sample_surrogate_same_route_lane_window`,
+  `sample_coverage_ratio=1.0`, `planning_lane_id_topk=["0_0_2"]`,
+  `routing_unique_lane_signature_topk=["0_0_2"]`, and
+  `trajectory_path_length_p95_m≈29.67`. This narrows the export gap further:
+  Planning's sampled trajectory shape is visible and same-lane-window locally,
+  but `reference_line_claim_grade_allowed=false`; the next evidence step is
+  still to export/decode Planning reference-line debug and Control station
+  semantics in one frame rather than tune actuation.
 - Existing comparable failures remain useful blocker evidence. They must not be
   rewritten as Apollo natural-driving success; Phase 1 completion requires
   accepted comparison-surface evidence, not backend behavior success.

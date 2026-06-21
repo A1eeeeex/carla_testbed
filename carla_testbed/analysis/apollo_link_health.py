@@ -316,6 +316,7 @@ def analyze_apollo_link_health(
                 "apollo_hdmap_projection",
                 "reference_debug_diagnostic",
                 "reference_line_debug_export_policy",
+                "planning_trajectory_sample_surrogate",
             ),
         ),
         "apollo_lateral_semantics": _apollo_lateral_semantics_layer(
@@ -449,6 +450,11 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
         if isinstance(reference_metrics.get("reference_line_debug_export_policy"), Mapping)
         else {}
     )
+    trajectory_sample_surrogate = (
+        reference_metrics.get("planning_trajectory_sample_surrogate")
+        if isinstance(reference_metrics.get("planning_trajectory_sample_surrogate"), Mapping)
+        else {}
+    )
     reference_classification = diagnostic.get("classification")
     planning_projection_alignment = (
         diagnostic.get("planning_first_point_projection_alignment")
@@ -480,6 +486,11 @@ def _annotate_planning_control_station_bridge(layers: dict[str, dict[str, Any]])
             "reference_line_debug_claim_grade_allowed"
         ),
         "reference_line_debug_recommended_evidence_policy": export_policy.get("recommended_evidence_policy"),
+        "planning_trajectory_sample_surrogate_classification": trajectory_sample_surrogate.get("classification"),
+        "planning_trajectory_sample_reference_line_claim_grade_allowed": trajectory_sample_surrogate.get(
+            "reference_line_claim_grade_allowed"
+        ),
+        "planning_trajectory_sample_coverage_ratio": trajectory_sample_surrogate.get("sample_coverage_ratio"),
         "simple_lat_station_frame_classification": station_classification,
         "control_simple_lat_reference_available": diagnostic.get("control_simple_lat_reference_available"),
         "control_reference_join_coverage_ratio": diagnostic.get("control_reference_join_coverage_ratio"),

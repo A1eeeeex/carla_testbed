@@ -627,6 +627,78 @@ def test_reference_line_debug_export_policy_marks_local_surrogates_not_claim_gra
     assert "cannot by itself support claim-grade" in policy["claim_boundary"]
 
 
+def test_existing_contract_rows_are_augmented_with_planning_trajectory_samples(tmp_path: Path) -> None:
+    contract = tmp_path / "apollo_reference_line_contract.jsonl"
+    planning = tmp_path / "planning_topic_debug.jsonl"
+    _write_jsonl(
+        contract,
+        [
+            {
+                "timestamp": 1.0,
+                "localization": {"heading": 0.0},
+                "planning": {
+                    "trajectory_point_count": 20,
+                    "first_trajectory_point_theta": 0.0,
+                    "reference_line_count": 0,
+                    "routing_segment_count": 1,
+                    "lane_ids": ["0_0_2"],
+                    "target_lane_ids": ["0_0_2"],
+                },
+                "routing": {
+                    "routing_unique_lane_signature": "0_0_2",
+                    "routing_segment_count": 1,
+                },
+                "computed": {
+                    "planning_reference_available": True,
+                    "control_reference_available": False,
+                    "localization_to_planning_first_heading_error_rad": 0.0,
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        planning,
+        [
+            {
+                "timestamp": 1.0,
+                "trajectory_point_count": 20,
+                "first_trajectory_point_theta": 0.0,
+                "reference_line_count": 0,
+                "routing_segment_count": 1,
+                "lane_id_first": "0_0_2",
+                "target_lane_id_first": "0_0_2",
+                "routing_unique_lane_signature": "0_0_2",
+                "trajectory_total_path_length": 8.0,
+                "trajectory_sample_points": [
+                    {"index": 0, "x": 0.0, "y": 0.0, "theta": 0.0},
+                    {"index": 1, "x": 1.0, "y": 0.0, "theta": 0.0},
+                    {"index": 2, "x": 2.0, "y": 0.0, "theta": 0.0},
+                ],
+            }
+        ],
+    )
+
+    report = analyze_apollo_reference_line_contract_files(
+        contract_path=contract,
+        planning_topic_debug_path=planning,
+    )
+
+    surrogate = report["planning_trajectory_sample_surrogate"]
+    assert surrogate["status"] == "available"
+    assert surrogate["classification"] == "planning_trajectory_sample_surrogate_same_route_lane_window"
+    assert surrogate["reference_line_claim_grade_allowed"] is False
+    assert surrogate["rows_with_sample_points"] == 1
+    assert surrogate["sample_coverage_ratio"] == 1.0
+    assert surrogate["lane_window_compatible"] is True
+    assert surrogate["trajectory_path_length_p95_m"] == 8.0
+    assert surrogate["recommended_evidence_policy"] == (
+        "trajectory_shape_surrogate_only_until_reference_line_debug_exported"
+    )
+    policy = report["reference_line_debug_export_policy"]
+    assert policy["planning_trajectory_sample_surrogate_available"] is True
+    assert policy["reference_line_debug_claim_grade_allowed"] is False
+
+
 def test_existing_contract_rows_are_augmented_with_control_decode_debug(tmp_path: Path) -> None:
     contract = tmp_path / "apollo_reference_line_contract.jsonl"
     control = tmp_path / "bridge_control_decode.jsonl"
