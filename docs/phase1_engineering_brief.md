@@ -285,8 +285,10 @@ Interpretation:
   `target_s_minus_current_station_abs_p95≈0.043m`, while
   `current_station_minus_projection_s_abs_p95≈25.08m` and
   `target_s_minus_projection_s_abs_p95≈25.12m`; that pattern points toward a
-  local/stitching station frame offset rather than missing Control station
-  debug evidence.
+  `local_station_frame_offset_candidate` rather than missing Control station
+  debug evidence. This classification only narrows the reference-line /
+  simple_lat semantics investigation; it is not a pass/fail gate and does not
+  justify changing steering scale, smoothing, or actuation mapping.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The

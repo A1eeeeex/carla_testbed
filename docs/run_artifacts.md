@@ -336,7 +336,10 @@ Additional run-local artifacts:
     station deltas such as `current_station_minus_projection_s_m`,
     `target_s_minus_current_station_m`, and station coverage status. These
     values help decide whether Control debug uses lane-s, route-s, or a local
-    stitching station frame; they are diagnostic and must not be used alone as
+    stitching station frame. The JSON report also classifies the station frame
+    as `lane_s_aligned`, `local_station_frame_offset_candidate`,
+    `station_frame_inconsistent`, or insufficient coverage. This
+    classification is diagnostic and must not be used alone as
     route/reference-line pass evidence.
     `run_phase1_postprocess()` refreshes the dependent reports in evidence
     order: Apollo HDMap projection, Apollo route contract, reference-line

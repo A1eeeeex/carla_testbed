@@ -635,6 +635,9 @@ def _primary_behavior_blocker(
                     "simple_lat_station_coverage_status": link_health.get(
                         "simple_lat_station_coverage_status"
                     ),
+                    "simple_lat_station_frame_classification": link_health.get(
+                        "simple_lat_station_frame_classification"
+                    ),
                     "simple_lat_missing_station_fields": link_health.get(
                         "simple_lat_missing_station_fields"
                     ),
@@ -802,6 +805,9 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         ),
         "simple_lat_station_coverage_status": lateral_metrics.get(
             "simple_lat_station_coverage_status"
+        ),
+        "simple_lat_station_frame_classification": lateral_metrics.get(
+            "simple_lat_station_frame_classification"
         ),
         "simple_lat_missing_station_fields": lateral_metrics.get(
             "simple_lat_missing_station_fields"

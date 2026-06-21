@@ -1200,6 +1200,9 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
                             "simple_lat_station_coverage_status": (
                                 "projection_current_matched_target_s_available"
                             ),
+                            "simple_lat_station_frame_classification": (
+                                "local_station_frame_offset_candidate"
+                            ),
                             "simple_lat_missing_station_fields": [],
                             "simple_lat_current_station_projection_s_delta_p95_m": 25.08,
                             "simple_lat_matched_s_projection_s_delta_p95_m": 23.64,
@@ -1256,6 +1259,9 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert evidence["route_simple_lat_opposite_sign_abs_sum_p95_m"] == 0.028
     assert evidence["simple_lat_station_coverage_status"] == (
         "projection_current_matched_target_s_available"
+    )
+    assert evidence["simple_lat_station_frame_classification"] == (
+        "local_station_frame_offset_candidate"
     )
     assert evidence["simple_lat_missing_station_fields"] == []
     assert evidence["simple_lat_current_station_projection_s_delta_p95_m"] == 25.08

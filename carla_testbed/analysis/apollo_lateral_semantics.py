@@ -183,6 +183,9 @@ DEFAULT_THRESHOLDS = {
     "sign_alignment_ratio_high": 0.80,
     "sign_alignment_min_samples": 3,
     "route_simple_lat_sign_convention_abs_delta_p95_m": 0.10,
+    "station_lane_s_alignment_p95_m": 2.0,
+    "station_local_frame_offset_min_p95_m": 5.0,
+    "station_target_current_alignment_p95_m": 2.0,
 }
 
 DRIFT_WINDOW_FIELD_ALIASES = {
@@ -1391,6 +1394,7 @@ def _lateral_sign_alignment_summary(
         rows,
         hdmap_projection_rows or [],
         lateral_min_abs=lateral_min,
+        thresholds=thresholds,
     )
     sample_count = max((int(value["sample_count"]) for value in pairs.values()), default=0)
     return {
@@ -1685,6 +1689,7 @@ def _official_hdmap_projection_alignment(
     projection_rows: Sequence[Mapping[str, Any]],
     *,
     lateral_min_abs: float,
+    thresholds: Mapping[str, float],
     max_dt_s: float = 0.25,
 ) -> dict[str, Any]:
     candidates: list[tuple[float, float, Mapping[str, Any]]] = []
@@ -1865,6 +1870,19 @@ def _official_hdmap_projection_alignment(
     target_s_count = sum(
         1 for sample in matched_samples if sample.get("apollo_simple_lat_target_point_s_m") is not None
     )
+    station_summary = _simple_lat_station_vs_projection_s_summary(
+        projection_s_count=projection_s_count,
+        current_station_count=current_station_count,
+        matched_s_count=matched_s_count,
+        target_s_count=target_s_count,
+        current_station_projection_delta=current_station_projection_delta,
+        matched_s_projection_delta=matched_s_projection_delta,
+        target_s_projection_delta=target_s_projection_delta,
+        matched_s_current_delta=matched_s_current_delta,
+        target_s_current_delta=target_s_current_delta,
+        target_s_matched_delta=target_s_matched_delta,
+        thresholds=thresholds,
+    )
     return {
         "available": official_count > 0,
         "status": "available" if route_sample_count else ("insufficient_data" if official_count else "missing"),
@@ -1903,38 +1921,7 @@ def _official_hdmap_projection_alignment(
                 "geometry."
             ),
         },
-        "simple_lat_station_vs_projection_s": {
-            "projection_s_sample_count": projection_s_count,
-            "current_station_sample_count": current_station_count,
-            "matched_point_s_sample_count": matched_s_count,
-            "target_point_s_sample_count": target_s_count,
-            "current_station_minus_projection_s_abs_p95_m": _percentile(
-                current_station_projection_delta,
-                0.95,
-            ),
-            "matched_s_minus_projection_s_abs_p95_m": _percentile(matched_s_projection_delta, 0.95),
-            "target_s_minus_projection_s_abs_p95_m": _percentile(target_s_projection_delta, 0.95),
-            "matched_s_minus_current_station_abs_p95_m": _percentile(matched_s_current_delta, 0.95),
-            "target_s_minus_current_station_abs_p95_m": _percentile(target_s_current_delta, 0.95),
-            "target_s_minus_matched_s_abs_p95_m": _percentile(target_s_matched_delta, 0.95),
-            "station_coverage_status": _simple_lat_station_coverage_status(
-                projection_s_count=projection_s_count,
-                current_station_count=current_station_count,
-                matched_s_count=matched_s_count,
-                target_s_count=target_s_count,
-            ),
-            "missing_station_fields": _simple_lat_missing_station_fields(
-                projection_s_count=projection_s_count,
-                current_station_count=current_station_count,
-                matched_s_count=matched_s_count,
-                target_s_count=target_s_count,
-            ),
-            "interpretation": (
-                "Station deltas compare Apollo Control simple_lon/simple_lat debug s values with "
-                "the nearest official HDMap projection_s sample. They are diagnostic only because "
-                "Control may use a local/stitching station frame rather than raw lane s."
-            ),
-        },
+        "simple_lat_station_vs_projection_s": station_summary,
         "matched_samples": matched_samples,
         "route_lateral_vs_projection_lateral": {
             "sample_count": route_sample_count,
@@ -1972,6 +1959,114 @@ def _delta(left: float | None, right: float | None) -> float | None:
     if left is None or right is None:
         return None
     return float(left) - float(right)
+
+
+def _simple_lat_station_vs_projection_s_summary(
+    *,
+    projection_s_count: int,
+    current_station_count: int,
+    matched_s_count: int,
+    target_s_count: int,
+    current_station_projection_delta: Sequence[float],
+    matched_s_projection_delta: Sequence[float],
+    target_s_projection_delta: Sequence[float],
+    matched_s_current_delta: Sequence[float],
+    target_s_current_delta: Sequence[float],
+    target_s_matched_delta: Sequence[float],
+    thresholds: Mapping[str, float],
+) -> dict[str, Any]:
+    current_projection_p95 = _percentile(current_station_projection_delta, 0.95)
+    matched_projection_p95 = _percentile(matched_s_projection_delta, 0.95)
+    target_projection_p95 = _percentile(target_s_projection_delta, 0.95)
+    matched_current_p95 = _percentile(matched_s_current_delta, 0.95)
+    target_current_p95 = _percentile(target_s_current_delta, 0.95)
+    target_matched_p95 = _percentile(target_s_matched_delta, 0.95)
+    coverage_status = _simple_lat_station_coverage_status(
+        projection_s_count=projection_s_count,
+        current_station_count=current_station_count,
+        matched_s_count=matched_s_count,
+        target_s_count=target_s_count,
+    )
+    classification = _simple_lat_station_frame_classification(
+        coverage_status=coverage_status,
+        current_projection_p95=current_projection_p95,
+        target_current_p95=target_current_p95,
+        thresholds=thresholds,
+    )
+    return {
+        "projection_s_sample_count": projection_s_count,
+        "current_station_sample_count": current_station_count,
+        "matched_point_s_sample_count": matched_s_count,
+        "target_point_s_sample_count": target_s_count,
+        "current_station_minus_projection_s_abs_p95_m": current_projection_p95,
+        "matched_s_minus_projection_s_abs_p95_m": matched_projection_p95,
+        "target_s_minus_projection_s_abs_p95_m": target_projection_p95,
+        "matched_s_minus_current_station_abs_p95_m": matched_current_p95,
+        "target_s_minus_current_station_abs_p95_m": target_current_p95,
+        "target_s_minus_matched_s_abs_p95_m": target_matched_p95,
+        "station_coverage_status": coverage_status,
+        "station_frame_classification": classification,
+        "missing_station_fields": _simple_lat_missing_station_fields(
+            projection_s_count=projection_s_count,
+            current_station_count=current_station_count,
+            matched_s_count=matched_s_count,
+            target_s_count=target_s_count,
+        ),
+        "thresholds": {
+            "station_lane_s_alignment_p95_m": thresholds["station_lane_s_alignment_p95_m"],
+            "station_local_frame_offset_min_p95_m": thresholds["station_local_frame_offset_min_p95_m"],
+            "station_target_current_alignment_p95_m": thresholds[
+                "station_target_current_alignment_p95_m"
+            ],
+        },
+        "interpretation": _simple_lat_station_frame_interpretation(classification),
+    }
+
+
+def _simple_lat_station_frame_classification(
+    *,
+    coverage_status: str,
+    current_projection_p95: float | None,
+    target_current_p95: float | None,
+    thresholds: Mapping[str, float],
+) -> str:
+    if coverage_status == "missing_station_coverage":
+        return "missing_station_data"
+    if coverage_status != "projection_current_matched_target_s_available":
+        return "partial_station_data"
+    if current_projection_p95 is None:
+        return "missing_station_data"
+    if current_projection_p95 <= thresholds["station_lane_s_alignment_p95_m"]:
+        return "lane_s_aligned"
+    if (
+        current_projection_p95 >= thresholds["station_local_frame_offset_min_p95_m"]
+        and target_current_p95 is not None
+        and target_current_p95 <= thresholds["station_target_current_alignment_p95_m"]
+    ):
+        return "local_station_frame_offset_candidate"
+    return "station_frame_inconsistent"
+
+
+def _simple_lat_station_frame_interpretation(classification: str) -> str:
+    if classification == "lane_s_aligned":
+        return (
+            "Apollo Control station values are close to official HDMap projection_s. "
+            "This supports a lane-s-aligned debug interpretation for the matched samples."
+        )
+    if classification == "local_station_frame_offset_candidate":
+        return (
+            "Apollo Control current/target station values are internally aligned but offset "
+            "from official HDMap projection_s, consistent with a local or stitching station "
+            "frame. This is diagnostic and not a reference-line pass/fail by itself."
+        )
+    if classification == "station_frame_inconsistent":
+        return (
+            "Apollo Control station values are available but neither align with projection_s "
+            "nor form a compact local station frame under the configured thresholds."
+        )
+    if classification == "partial_station_data":
+        return "Only partial Apollo Control station evidence is available for projection pairing."
+    return "Station deltas cannot be classified because station evidence is missing."
 
 
 def _simple_lat_station_coverage_status(

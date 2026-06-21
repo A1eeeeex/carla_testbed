@@ -1429,6 +1429,11 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 "lateral_sign_alignment.official_hdmap_projection_alignment."
                 "simple_lat_station_vs_projection_s.station_coverage_status",
             ),
+            "simple_lat_station_frame_classification": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_station_vs_projection_s.station_frame_classification",
+            ),
             "simple_lat_missing_station_fields": _nested(
                 report,
                 "lateral_sign_alignment.official_hdmap_projection_alignment."

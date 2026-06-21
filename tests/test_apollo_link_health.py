@@ -1960,6 +1960,7 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
                     },
                     "simple_lat_station_vs_projection_s": {
                         "station_coverage_status": "projection_current_matched_target_s_available",
+                        "station_frame_classification": "local_station_frame_offset_candidate",
                         "missing_station_fields": [],
                         "current_station_minus_projection_s_abs_p95_m": 25.08,
                         "matched_s_minus_projection_s_abs_p95_m": 23.64,
@@ -2010,6 +2011,9 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     ]
     assert lateral["key_metrics"]["simple_lat_station_coverage_status"] == (
         "projection_current_matched_target_s_available"
+    )
+    assert lateral["key_metrics"]["simple_lat_station_frame_classification"] == (
+        "local_station_frame_offset_candidate"
     )
     assert lateral["key_metrics"]["simple_lat_missing_station_fields"] == []
     assert lateral["key_metrics"]["simple_lat_current_station_projection_s_delta_p95_m"] == 25.08

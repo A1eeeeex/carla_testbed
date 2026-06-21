@@ -812,6 +812,7 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
     assert point_alignment["missing_point_fields"] == []
     station_alignment = alignment["simple_lat_station_vs_projection_s"]
     assert station_alignment["station_coverage_status"] == "projection_current_matched_target_s_available"
+    assert station_alignment["station_frame_classification"] == "lane_s_aligned"
     assert station_alignment["missing_station_fields"] == []
     assert station_alignment["current_station_minus_projection_s_abs_p95_m"] == 0.0
     assert station_alignment["matched_s_minus_projection_s_abs_p95_m"] == 0.5
@@ -839,6 +840,55 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
     assert float(pairing_rows[0]["target_s_minus_current_station_m"]) == 5.0
     assert float(pairing_rows[0]["apollo_matched_point_hdmap_line_lateral_m"]) == 0.0
     assert float(pairing_rows[0]["apollo_target_point_hdmap_line_lateral_m"]) == 0.0
+
+
+def test_official_hdmap_projection_station_frame_offset_candidate(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["sim_time"] = 120.0 + index * 0.05
+        row["cross_track_error"] = 0.6
+        row["apollo_debug_simple_lat_lateral_error_m"] = -0.6
+        row["apollo_steer_raw"] = 0.3
+        row["apollo_debug_simple_lon_current_station_m"] = -1.0 + index * 0.01
+        row["apollo_debug_simple_lon_matched_point_s"] = 0.0
+        row["apollo_debug_simple_lat_target_point_s"] = -1.02 + index * 0.01
+    _write_rows(artifacts / "debug_timeseries.csv", rows)
+    (artifacts / "apollo_hdmap_projection.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "source": "apollo_hdmap_api",
+                    "status": "ok",
+                    "sim_time": 120.0 + index * 0.05,
+                    "projection_s": 30.0 + index,
+                    "projection_l": -0.6,
+                    "localization_x": float(index),
+                    "localization_y": 0.6,
+                    "lane_heading_at_s": 0.0,
+                    "nearest_lane_id": "0_0_2",
+                }
+            )
+            for index in range(len(rows))
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+    station = report["lateral_sign_alignment"]["official_hdmap_projection_alignment"][
+        "simple_lat_station_vs_projection_s"
+    ]
+
+    assert station["station_coverage_status"] == "projection_current_matched_target_s_available"
+    assert station["station_frame_classification"] == "local_station_frame_offset_candidate"
+    assert station["current_station_minus_projection_s_abs_p95_m"] > 30.0
+    assert station["target_s_minus_current_station_abs_p95_m"] < 0.1
+    assert "local or stitching station frame" in station["interpretation"]
 
 
 def test_cli_run_dir_writes_report(tmp_path: Path) -> None:
