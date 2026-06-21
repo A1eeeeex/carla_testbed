@@ -191,6 +191,9 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                 f"- classification: `{reference_line_policy.get('classification')}`",
                 f"- field_gap_classification: `{reference_line_policy.get('field_gap_classification')}`",
                 f"- reference_line_count_positive_count: `{reference_line_policy.get('reference_line_count_positive_count')}`",
+                f"- planning_route_segment_count_positive_count: `{reference_line_policy.get('planning_route_segment_count_positive_count')}`",
+                f"- routing_segment_count_positive_count: `{reference_line_policy.get('routing_segment_count_positive_count')}`",
+                f"- routing_road_count_positive_count: `{reference_line_policy.get('routing_road_count_positive_count')}`",
                 f"- trajectory_sample_rows: `{reference_line_policy.get('trajectory_sample_rows')}`",
                 f"- control_target_point_rows: `{reference_line_policy.get('control_target_point_rows')}`",
                 f"- reference_line_debug_claim_grade_allowed: `{reference_line_policy.get('reference_line_debug_claim_grade_allowed')}`",
@@ -920,6 +923,15 @@ def _reference_line_debug_export_policy(
         "reference_line_count_positive_count": link_health.get(
             "reference_line_count_positive_count"
         ),
+        "planning_route_segment_count_positive_count": link_health.get(
+            "planning_route_segment_count_positive_count"
+        ),
+        "routing_segment_count_positive_count": link_health.get(
+            "routing_segment_count_positive_count"
+        ),
+        "routing_road_count_positive_count": link_health.get(
+            "routing_road_count_positive_count"
+        ),
         "trajectory_sample_rows": link_health.get("reference_line_trajectory_sample_rows"),
         "control_target_point_rows": link_health.get("reference_line_control_target_point_rows"),
         "reference_line_debug_claim_grade_allowed": claim_grade_allowed,
@@ -1004,6 +1016,15 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         ),
         "reference_line_count_positive_count": reference_field_inventory.get(
             "reference_line_count_positive_count"
+        ),
+        "planning_route_segment_count_positive_count": reference_field_inventory.get(
+            "planning_route_segment_count_positive_count"
+        ),
+        "routing_segment_count_positive_count": reference_field_inventory.get(
+            "routing_segment_count_positive_count"
+        ),
+        "routing_road_count_positive_count": reference_field_inventory.get(
+            "routing_road_count_positive_count"
         ),
         "reference_line_trajectory_sample_rows": reference_field_inventory.get(
             "trajectory_sample_rows"

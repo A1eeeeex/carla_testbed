@@ -430,6 +430,8 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Reference debug classification: `{_mapping(report.get('reference_debug_diagnostic')).get('classification')}`",
             f"- Reference debug field inventory: `{field_inventory.get('field_gap_classification')}`",
             f"- Reference debug counter positive rows: `{field_inventory.get('reference_line_count_positive_count')}`",
+            f"- Planning route-segment positive rows: `{field_inventory.get('planning_route_segment_count_positive_count')}`",
+            f"- Routing segment positive rows: `{field_inventory.get('routing_segment_count_positive_count')}`",
             f"- Control simple_lat reference available: `{_mapping(report.get('reference_debug_diagnostic')).get('control_simple_lat_reference_available')}`",
             f"- Reference debug export policy: `{reference_debug_export_policy.get('classification')}`",
             f"- Reference debug claim-grade allowed: `{reference_debug_export_policy.get('reference_line_debug_claim_grade_allowed')}`",
@@ -1053,7 +1055,22 @@ def _reference_debug_field_inventory(rows: Sequence[Mapping[str, Any]]) -> dict[
         for row in rows
         if _nested(row, "planning.reference_line_provider_status") not in {None, ""}
     ]
-    route_segment_count_positive = sum(1 for row in rows if _routing_segment_available(row))
+    planning_route_segment_count_positive = sum(
+        1
+        for row in rows
+        if (_num(_nested(row, "planning.routing_segment_count")) or 0.0) > 0.0
+    )
+    routing_segment_count_positive = sum(
+        1
+        for row in rows
+        if (_num(_nested(row, "routing.routing_segment_count")) or 0.0) > 0.0
+    )
+    routing_road_count_positive = sum(
+        1
+        for row in rows
+        if (_num(_nested(row, "routing.routing_road_count")) or 0.0) > 0.0
+    )
+    route_segment_available_broad = sum(1 for row in rows if _routing_segment_available(row))
     route_segment_total_length_available = sum(
         1
         for row in rows
@@ -1079,12 +1096,19 @@ def _reference_debug_field_inventory(rows: Sequence[Mapping[str, Any]]) -> dict[
     control_reference_rows = sum(1 for row in rows if _control_reference_available(row))
     control_target_point_rows = sum(1 for row in rows if _control_target_point_available(row))
     planning_surrogate_available = (
-        route_segment_count_positive > 0
+        route_segment_available_broad > 0
         or route_segment_total_length_available > 0
         or lane_id_available > 0
         or trajectory_sample_rows > 0
     )
     control_surrogate_available = control_reference_rows > 0 or control_target_point_rows > 0
+    planning_route_surrogate_available = (
+        planning_route_segment_count_positive > 0
+        or routing_segment_count_positive > 0
+        or routing_road_count_positive > 0
+        or route_segment_total_length_available > 0
+        or lane_id_available > 0
+    )
     if row_count <= 0:
         classification = "insufficient_data"
     elif reference_line_count_positive > 0:
@@ -1108,7 +1132,13 @@ def _reference_debug_field_inventory(rows: Sequence[Mapping[str, Any]]) -> dict[
             else None
         ),
         "reference_line_provider_status_topk": _topk(provider_statuses),
-        "route_segment_count_positive_count": route_segment_count_positive,
+        "route_segment_count_positive_count": route_segment_available_broad,
+        "route_segment_count_positive_count_semantics": (
+            "deprecated_broad_route_or_routing_segment_availability"
+        ),
+        "planning_route_segment_count_positive_count": planning_route_segment_count_positive,
+        "routing_segment_count_positive_count": routing_segment_count_positive,
+        "routing_road_count_positive_count": routing_road_count_positive,
         "route_segment_total_length_available_count": route_segment_total_length_available,
         "planning_lane_id_available_count": lane_id_available,
         "trajectory_nonempty_count": trajectory_nonempty_count,
@@ -1116,6 +1146,7 @@ def _reference_debug_field_inventory(rows: Sequence[Mapping[str, Any]]) -> dict[
         "control_reference_rows": control_reference_rows,
         "control_target_point_rows": control_target_point_rows,
         "planning_surrogate_available": planning_surrogate_available,
+        "planning_route_surrogate_available": planning_route_surrogate_available,
         "control_surrogate_available": control_surrogate_available,
         "claim_boundary": (
             "This inventory reports which debug fields are present in existing artifacts. "

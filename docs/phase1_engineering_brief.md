@@ -425,10 +425,16 @@ Interpretation:
   gap. On the same run it classifies the evidence as
   `reference_line_counter_missing_but_planning_control_surrogates_present`:
   `reference_line_count_positive_count=0`, while
-  `trajectory_sample_rows=170`, `route_segment_count_positive_count=171`, and
-  `control_target_point_rows=126`. This confirms the next blocker is not a
-  total Planning/Control evidence absence; it is the missing exported Planning
-  reference-line counter/debug evidence needed before claim-grade
+  `trajectory_sample_rows=170`,
+  `planning_route_segment_count_positive_count=171`,
+  `routing_segment_count_positive_count=171`,
+  `routing_road_count_positive_count=171`, and
+  `control_target_point_rows=126`. The older broad
+  `route_segment_count_positive_count` field is retained only as a compatibility
+  alias for broad route/routing availability and must not be read as
+  claim-grade reference-line segment evidence. This confirms the next blocker
+  is not a total Planning/Control evidence absence; it is the missing exported
+  Planning reference-line counter/debug evidence needed before claim-grade
   reference-line conclusions.
 - Manual artifact inspection of the same run confirms the next evidence gap:
   `apollo_reference_line_debug.jsonl`,

@@ -1306,6 +1306,9 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
                         "reference_line_counter_missing_but_planning_control_surrogates_present"
                     ),
                     "reference_line_count_positive_count": 0,
+                    "planning_route_segment_count_positive_count": 171,
+                    "routing_segment_count_positive_count": 171,
+                    "routing_road_count_positive_count": 171,
                     "trajectory_sample_rows": 170,
                     "control_target_point_rows": 126,
                 }
@@ -1386,6 +1389,9 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
         "reference_line_counter_missing_but_planning_control_surrogates_present"
     )
     assert reference_policy["reference_line_count_positive_count"] == 0
+    assert reference_policy["planning_route_segment_count_positive_count"] == 171
+    assert reference_policy["routing_segment_count_positive_count"] == 171
+    assert reference_policy["routing_road_count_positive_count"] == 171
     assert reference_policy["trajectory_sample_rows"] == 170
     assert reference_policy["control_target_point_rows"] == 126
     assert reference_policy["planning_first_point_local_alignment_available"] is True

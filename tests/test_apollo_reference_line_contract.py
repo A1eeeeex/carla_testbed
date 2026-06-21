@@ -523,9 +523,16 @@ def test_reference_debug_diagnostic_separates_export_gap_from_control_simple_lat
     )
     assert inventory["reference_line_count_positive_count"] == 0
     assert inventory["route_segment_count_positive_count"] == 1
+    assert inventory["route_segment_count_positive_count_semantics"] == (
+        "deprecated_broad_route_or_routing_segment_availability"
+    )
+    assert inventory["planning_route_segment_count_positive_count"] == 1
+    assert inventory["routing_segment_count_positive_count"] == 1
+    assert inventory["routing_road_count_positive_count"] == 0
     assert inventory["trajectory_nonempty_count"] == 1
     assert inventory["control_reference_rows"] == 1
     assert inventory["planning_surrogate_available"] is True
+    assert inventory["planning_route_surrogate_available"] is True
     assert inventory["control_surrogate_available"] is True
     assert report["contracts"]["control_reference"]["status"] == "pass"
 
