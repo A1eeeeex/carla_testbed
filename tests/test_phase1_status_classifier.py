@@ -1300,6 +1300,20 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
         )
     link_report["layers"]["planning_reference_line"] = {
         "key_metrics": {
+            "planning_debug_presence": {
+                "classification": "routing_present_reference_line_empty",
+                "last_diagnosis": "routing_present_reference_line_empty",
+                "last_reference_line_path": "debug.planning_data.reference_line",
+                "last_routing_path": "debug.planning_data.routing",
+                "reference_line_nonempty_ratio": 0.0,
+                "routing_segment_nonempty_ratio": 0.52,
+            },
+            "planning_debug_presence_classification": "routing_present_reference_line_empty",
+            "planning_debug_presence_last_diagnosis": "routing_present_reference_line_empty",
+            "planning_debug_presence_last_reference_line_path": "debug.planning_data.reference_line",
+            "planning_debug_presence_last_routing_path": "debug.planning_data.routing",
+            "planning_debug_presence_reference_line_nonempty_ratio": 0.0,
+            "planning_debug_presence_routing_segment_nonempty_ratio": 0.52,
             "reference_debug_diagnostic": {
                 "field_inventory": {
                     "field_gap_classification": (
@@ -1350,7 +1364,7 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     refreshed_evidence = refreshed["behavior_blocker_evidence"]
 
     assert "Projection-route sample evidence already confirms" in refreshed["behavior_next_action"]
-    assert "reference-line debug/export gap" in refreshed["behavior_next_action"]
+    assert "debug.planning_data.reference_line is empty" in refreshed["behavior_next_action"]
     assert "absolute_magnitude_only_until_canonical_sign_declared" in refreshed["behavior_next_action"]
     assert "relabel_or_explicitly_convert_before_sign_sensitive_gate" in refreshed["behavior_next_action"]
     assert "Do not change steer scale" in refreshed["behavior_next_action"]
@@ -1406,9 +1420,19 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert reference_policy["routing_road_count_positive_count"] == 171
     assert reference_policy["trajectory_sample_rows"] == 170
     assert reference_policy["control_target_point_rows"] == 126
+    assert reference_policy["planning_debug_presence_classification"] == (
+        "routing_present_reference_line_empty"
+    )
+    assert reference_policy["planning_debug_reference_line_path"] == (
+        "debug.planning_data.reference_line"
+    )
+    assert reference_policy["planning_debug_routing_path"] == "debug.planning_data.routing"
+    assert reference_policy["planning_debug_reference_line_nonempty_ratio"] == 0.0
+    assert reference_policy["planning_debug_routing_segment_nonempty_ratio"] == 0.52
     assert reference_policy["planning_first_point_local_alignment_available"] is True
     assert reference_policy["planning_trajectory_sample_surrogate_available"] is True
     assert reference_policy["control_simple_lat_reference_available"] is True
+    assert "debug.planning_data.reference_line is empty" in reference_policy["recommended_action"]
 
     paths = write_phase1_status(refreshed, run / "analysis" / "phase1_status")
     summary_text = Path(paths["summary"]).read_text(encoding="utf-8")
@@ -1418,6 +1442,8 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert "## Reference-Line Debug Export Policy" in summary_text
     assert "local_surrogate_only_until_reference_line_debug_exported" in summary_text
     assert "reference_line_counter_missing_but_planning_control_surrogates_present" in summary_text
+    assert "routing_present_reference_line_empty" in summary_text
+    assert "planning_debug_reference_line_nonempty_ratio: `0.0`" in summary_text
     assert "reference_line_debug_claim_grade_allowed: `False`" in summary_text
 
 

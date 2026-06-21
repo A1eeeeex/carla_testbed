@@ -139,6 +139,11 @@ Interpretation:
   debug/export uncertainty from "maybe parsed the wrong path" to "Planning
   debug/content reports routing segments but no reference-line entries for this
   run." It does not change Planning, Control, actuation, or the Phase 1 status.
+  The Phase 1 status report now carries that exact classification into
+  `reference_line_debug_export_policy` and `behavior_next_action`, so operators
+  should not re-debug whether the bridge found the Planning debug path. The
+  next question is why Apollo Planning has routing/debug content but an empty
+  `debug.planning_data.reference_line` list for this route.
 - The latest Pro audit found that the earlier `8/8 DONE` statement was still
   too optimistic because some review-pack surfaces were stale or could not be
   independently re-computed. The follow-up fix keeps accepted-bundle rows tied
@@ -283,8 +288,9 @@ Interpretation:
   produced `routing_present_reference_line_empty`: Planning debug had
   `debug.planning_data.reference_line` present, but no reference-line entries,
   while routing segments were present in roughly half the recent messages. The
-  next highest-value cycle is therefore to inspect Apollo Planning debug/config
-  or exported reference-line content, not to tune control mapping.
+  next highest-value cycle is therefore to inspect Apollo Planning
+  reference-line materialization/config/debug content for this route, not to
+  rediscover the debug path and not to tune control mapping.
 - The same lateral-semantics refresh now records a conservative
   `lateral_sign_alignment` diagnostic. For the first high-lateral sample in
   `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742`,

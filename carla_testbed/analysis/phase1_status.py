@@ -198,6 +198,9 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                 f"- routing_road_count_positive_count: `{reference_line_policy.get('routing_road_count_positive_count')}`",
                 f"- trajectory_sample_rows: `{reference_line_policy.get('trajectory_sample_rows')}`",
                 f"- control_target_point_rows: `{reference_line_policy.get('control_target_point_rows')}`",
+                f"- planning_debug_presence_classification: `{reference_line_policy.get('planning_debug_presence_classification')}`",
+                f"- planning_debug_reference_line_nonempty_ratio: `{reference_line_policy.get('planning_debug_reference_line_nonempty_ratio')}`",
+                f"- planning_debug_routing_segment_nonempty_ratio: `{reference_line_policy.get('planning_debug_routing_segment_nonempty_ratio')}`",
                 f"- reference_line_debug_claim_grade_allowed: `{reference_line_policy.get('reference_line_debug_claim_grade_allowed')}`",
                 f"- local_surrogate_available: `{reference_line_policy.get('local_surrogate_available')}`",
                 f"- recommended_action: `{reference_line_policy.get('recommended_action')}`",
@@ -606,6 +609,14 @@ def _primary_behavior_blocker(
             )
             route_lateral_gate_policy = link_health.get("route_lateral_field_recommended_gate_policy")
             route_lateral_field_action = link_health.get("route_lateral_field_recommended_action")
+            if link_health.get("planning_debug_presence_classification") == "routing_present_reference_line_empty":
+                reference_line_next_action = (
+                    "Planning debug path is present and routing segments are present, but "
+                    "debug.planning_data.reference_line is empty; inspect Apollo Planning "
+                    "reference-line materialization/config/debug content for this route"
+                )
+            else:
+                reference_line_next_action = "Close the Planning reference-line debug/export gap"
             blocker = (
                 "lane_departure_with_route_simple_lat_sign_convention_candidate"
                 if same_sign and route_simple_lat_sign_convention
@@ -617,9 +628,9 @@ def _primary_behavior_blocker(
             next_action = (
                 (
                     "Projection-route sample evidence already confirms the route-lateral "
-                    "sign inversion candidate for this run. Close the Planning reference-line "
-                    "debug/export gap and decide whether the route-lateral field should be "
-                    "renamed, explicitly converted, or excluded from behavior gates until a "
+                    f"sign inversion candidate for this run. {reference_line_next_action} and "
+                    "decide whether the route-lateral field should be renamed, explicitly "
+                    "converted, or excluded from behavior gates until a "
                     "canonical sign convention is declared. Current route-lateral gate policy: "
                     f"{route_lateral_gate_policy or 'not_declared'}; recommended field action: "
                     f"{route_lateral_field_action or 'not_declared'}. Do not change steer scale, "
@@ -910,6 +921,17 @@ def _reference_line_debug_export_policy(
     trajectory_surrogate = link_health.get("planning_trajectory_sample_surrogate_available")
     control_reference = link_health.get("control_simple_lat_reference_available")
     local_surrogate_available = bool(planning_local or trajectory_surrogate or control_reference)
+    presence_classification = link_health.get("planning_debug_presence_classification")
+    default_recommended_action = link_health.get("reference_line_recommended_next_action")
+    if presence_classification == "routing_present_reference_line_empty":
+        recommended_action = (
+            "Planning debug path is present and routing segments are present, but "
+            "debug.planning_data.reference_line is empty. Inspect Apollo Planning "
+            "reference-line materialization/config/debug content for this route before "
+            "changing steer scale, control mapping, smoothing, PID, or actuation mapping."
+        )
+    else:
+        recommended_action = default_recommended_action
     if claim_grade_allowed is True:
         policy = "reference_line_debug_can_support_claim_if_other_gates_pass"
     elif local_surrogate_available:
@@ -943,6 +965,17 @@ def _reference_line_debug_export_policy(
         ),
         "trajectory_sample_rows": link_health.get("reference_line_trajectory_sample_rows"),
         "control_target_point_rows": link_health.get("reference_line_control_target_point_rows"),
+        "planning_debug_presence_classification": presence_classification,
+        "planning_debug_reference_line_path": link_health.get(
+            "planning_debug_presence_last_reference_line_path"
+        ),
+        "planning_debug_routing_path": link_health.get("planning_debug_presence_last_routing_path"),
+        "planning_debug_reference_line_nonempty_ratio": link_health.get(
+            "planning_debug_presence_reference_line_nonempty_ratio"
+        ),
+        "planning_debug_routing_segment_nonempty_ratio": link_health.get(
+            "planning_debug_presence_routing_segment_nonempty_ratio"
+        ),
         "reference_line_debug_claim_grade_allowed": claim_grade_allowed,
         "local_surrogate_available": local_surrogate_available,
         "planning_first_point_local_alignment_available": planning_local,
@@ -950,7 +983,7 @@ def _reference_line_debug_export_policy(
         "control_simple_lat_reference_available": control_reference,
         "route_segment_available": link_health.get("reference_line_route_segment_available"),
         "recommended_evidence_policy": link_health.get("reference_line_recommended_evidence_policy"),
-        "recommended_action": link_health.get("reference_line_recommended_next_action"),
+        "recommended_action": recommended_action,
         "reason": link_health.get("reference_line_debug_export_policy_reason"),
         "claim_boundary": (
             "This policy is Phase 1 reference-line attribution evidence. Local Planning/control "
@@ -1073,6 +1106,22 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         ),
         "reference_line_recommended_next_action": export_policy.get("recommended_next_action"),
         "reference_line_debug_export_policy_reason": export_policy.get("reason"),
+        "planning_debug_presence_classification": (
+            reference_metrics.get("planning_debug_presence_classification")
+            or reference_metrics.get("planning_debug_presence_last_diagnosis")
+        ),
+        "planning_debug_presence_last_reference_line_path": reference_metrics.get(
+            "planning_debug_presence_last_reference_line_path"
+        ),
+        "planning_debug_presence_last_routing_path": reference_metrics.get(
+            "planning_debug_presence_last_routing_path"
+        ),
+        "planning_debug_presence_reference_line_nonempty_ratio": reference_metrics.get(
+            "planning_debug_presence_reference_line_nonempty_ratio"
+        ),
+        "planning_debug_presence_routing_segment_nonempty_ratio": reference_metrics.get(
+            "planning_debug_presence_routing_segment_nonempty_ratio"
+        ),
         "route_simple_lat_sign_convention_candidate": lateral_metrics.get(
             "route_simple_lat_sign_convention_candidate"
         ),
