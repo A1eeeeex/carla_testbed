@@ -381,6 +381,15 @@ Interpretation:
   still prevents any unassisted natural-driving claim. The reference-line debug
   export gap remains important context, but it is no longer the latest primary
   blocker for this specific cut-in sample.
+- After the latest link-health refresh, `next_highest_value_validation` no
+  longer asks operators to re-verify a sign convention already supported by
+  projection-route samples. For the same representative cut-in run it now says
+  to close the Planning reference-line debug/export gap and decide whether the
+  route-lateral field should be relabeled, explicitly converted, or excluded
+  from sign-sensitive behavior gates before changing control mapping,
+  `steer_scale`, smoothing, or controller gains. This is a triage-quality
+  next-action update only; it does not change the run's `failed/lane_invasion`
+  status or make the reference-line evidence claim-grade.
 - `phase1_status` now consumes the projection-route sign contract when
   explaining that same cut-in lane invasion. Its refreshed
   `behavior_next_action` no longer asks operators to re-validate the sign

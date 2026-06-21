@@ -2184,6 +2184,12 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert lateral["key_metrics"]["route_lateral_field_recommended_action"] == (
         "relabel_or_explicitly_convert_before_sign_sensitive_gate"
     )
+    assert "Projection-route sample evidence already confirms" in lateral["next_action"]
+    assert "reference-line debug/export gap" in lateral["next_action"]
+    assert "relabeled, explicitly converted, or excluded" in lateral["next_action"]
+    assert "Projection-route sample evidence already confirms" in report["next_highest_value_validation"]
+    assert "reference-line debug/export gap" in report["next_highest_value_validation"]
+    assert "changing control mapping, steer scale" in report["next_highest_value_validation"]
     assert lateral["key_metrics"]["simple_lat_missing_station_fields"] == []
     assert lateral["key_metrics"]["simple_lat_current_station_projection_s_delta_p95_m"] == 25.08
     assert lateral["key_metrics"]["simple_lat_matched_s_projection_s_delta_p95_m"] == 23.64

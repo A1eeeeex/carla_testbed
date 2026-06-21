@@ -1367,10 +1367,28 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
             "where HDMap projection and CARLA cross-track both show drift."
         )
     elif "route_simple_lat_sign_convention_mismatch_candidate" in anomaly_types:
-        next_action = (
-            "Verify and document the sign convention between CARLA route cross-track error and "
-            "Apollo simple_lat lateral error before changing control mapping, steer scale, or smoothing."
-        )
+        field_semantics = (
+            report.get("lateral_sign_alignment", {})
+            if isinstance(report.get("lateral_sign_alignment"), Mapping)
+            else {}
+        ).get("route_lateral_field_semantics")
+        if (
+            isinstance(field_semantics, Mapping)
+            and field_semantics.get("status") == "available"
+            and field_semantics.get("sign_sensitive_gate_allowed") is False
+        ):
+            next_action = (
+                "Projection-route sample evidence already confirms this run's route-lateral sign "
+                "convention mismatch candidate. Close the Planning reference-line debug/export gap "
+                "and decide whether the route-lateral field should be relabeled, explicitly "
+                "converted, or excluded from sign-sensitive behavior gates before changing control "
+                "mapping, steer scale, smoothing, or controller gains."
+            )
+        else:
+            next_action = (
+                "Verify and document the sign convention between CARLA route cross-track error and "
+                "Apollo simple_lat lateral error before changing control mapping, steer scale, or smoothing."
+            )
     elif suspected_layer == "reference_line_semantics":
         next_action = "Inspect reference-line curvature/heading and Apollo routing lane ids before changing control mapping."
     elif suspected_layer == "control_mapping":
