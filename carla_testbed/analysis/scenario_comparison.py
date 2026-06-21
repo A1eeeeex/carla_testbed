@@ -293,11 +293,11 @@ def _comparison_artifact_completeness(
         }
 
     return {
-        "status": None,
-        "artifact_complete": None,
+        "status": "insufficient_data",
+        "artifact_complete": False,
         "source": "missing_artifact_completeness_report",
         "missing_artifacts": [],
-        "warnings": [],
+        "warnings": ["missing_phase1_artifact_completeness_report"],
     }
 
 
@@ -586,8 +586,10 @@ def _run_target_metric_evaluable(run: Mapping[str, Any]) -> bool:
 
 
 def _run_artifact_complete_for_comparison(run: Mapping[str, Any]) -> bool:
-    artifact_complete = run.get("artifact_complete")
-    if artifact_complete is False:
+    if run.get("artifact_complete") is not True:
+        return False
+    status = str(run.get("artifact_completeness_status") or "")
+    if status in {"fail", "insufficient_data", "missing", "unknown"}:
         return False
     return True
 

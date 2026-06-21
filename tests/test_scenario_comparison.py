@@ -414,6 +414,7 @@ def test_generic_artifact_completeness_still_blocks_without_phase1_profile(tmp_p
         "apollo_reference_backend",
         "failed",
         "lane_invasion",
+        phase1_artifact_status=None,
     )
     run_b = _write_run(tmp_path, "builtin", "carla_builtin", "planning_control_backend", "success")
     _write_generic_artifact_completeness(
@@ -434,6 +435,33 @@ def test_generic_artifact_completeness_still_blocks_without_phase1_profile(tmp_p
     rows = {row["backend"]: row for row in report["backend_results"]}
     assert rows["apollo_cyberrt"]["artifact_complete"] is False
     assert rows["apollo_cyberrt"]["artifact_completeness_source"] == "run_artifact_completeness_generic_profile"
+    assert all(item["counts_as_backend_loss"] is False for item in report["backend_results"])
+
+
+def test_missing_artifact_completeness_report_blocks_reference_comparison(tmp_path) -> None:
+    run_a = _write_run(
+        tmp_path,
+        "apollo",
+        "apollo_cyberrt",
+        "apollo_reference_backend",
+        "failed",
+        "lane_invasion",
+        phase1_artifact_status=None,
+    )
+    run_b = _write_run(tmp_path, "builtin", "carla_builtin", "planning_control_backend", "success")
+
+    report = compare_scenario_runs([run_a, run_b])
+
+    assert report["comparison_status"] == "partially_evaluable"
+    assert report["comparison_target_status"] == "artifact_completeness_failed"
+    assert report["validity_gates"]["artifact_complete"] is False
+    rows = {row["backend"]: row for row in report["backend_results"]}
+    assert rows["apollo_cyberrt"]["artifact_complete"] is False
+    assert rows["apollo_cyberrt"]["artifact_completeness_status"] == "insufficient_data"
+    assert rows["apollo_cyberrt"]["artifact_completeness_source"] == "missing_artifact_completeness_report"
+    assert rows["apollo_cyberrt"]["artifact_completeness_warnings"] == [
+        "missing_phase1_artifact_completeness_report"
+    ]
     assert all(item["counts_as_backend_loss"] is False for item in report["backend_results"])
 
 
@@ -635,6 +663,7 @@ def _write_run(
     target_metric_evaluable=None,
     target_metric_status=None,
     target_metric_reason=None,
+    phase1_artifact_status="pass",
 ):
     run = tmp_path / name
     analysis = run / "analysis" / "phase1_status"
@@ -749,6 +778,8 @@ def _write_run(
     v_t_gap_dir = run / "analysis" / "v_t_gap"
     v_t_gap_dir.mkdir(parents=True)
     (v_t_gap_dir / "v_t_gap_report.json").write_text(json.dumps({"status": "pass", "rows": []}), encoding="utf-8")
+    if phase1_artifact_status is not None:
+        _write_phase1_artifact_completeness(run, status=phase1_artifact_status)
     with (v_t_gap_dir / "v_t_gap.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
