@@ -389,8 +389,14 @@ Interpretation:
   action to closing the Planning reference-line debug/export gap and deciding
   whether the route-lateral field should be renamed, explicitly converted, or
   excluded from behavior gates until the canonical sign convention is declared.
+  The lateral analyzer now makes that policy explicit as
+  `route_lateral_field_semantics`: for the latest cut-in sample,
+  `classification=route_lateral_field_opposite_signed_to_apollo_projection`,
+  `sign_sensitive_gate_allowed=false`,
+  `absolute_magnitude_gate_allowed=true`, and
+  `recommended_gate_policy=absolute_magnitude_only_until_canonical_sign_declared`.
   This keeps the run as `failed/lane_invasion`; it only makes the next
-  debugging step less stale.
+  debugging step and gate semantics less stale.
 - Manual artifact inspection of the same run confirms the next evidence gap:
   `apollo_reference_line_debug.jsonl`,
   `stage5_apollo_reference_line_debug.jsonl`, and

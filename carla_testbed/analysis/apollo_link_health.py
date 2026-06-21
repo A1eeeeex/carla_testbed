@@ -1648,6 +1648,34 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 "lateral_sign_alignment.lateral_frame_convention_diagnostic."
                 "route_lateral_vs_simple_lat_lateral_error.opposite_sign_ratio",
             ),
+            "route_lateral_field_semantics_status": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_field_semantics.status",
+            ),
+            "route_lateral_field_semantics_classification": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_field_semantics.classification",
+            ),
+            "route_lateral_field_semantics_source_field": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_field_semantics.source_field",
+            ),
+            "route_lateral_field_sign_sensitive_gate_allowed": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_field_semantics.sign_sensitive_gate_allowed",
+            ),
+            "route_lateral_field_absolute_magnitude_gate_allowed": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_field_semantics.absolute_magnitude_gate_allowed",
+            ),
+            "route_lateral_field_recommended_gate_policy": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_field_semantics.recommended_gate_policy",
+            ),
+            "route_lateral_field_recommended_action": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_field_semantics.recommended_field_action",
+            ),
             "route_simple_lat_sign_convention_candidate": _nested(
                 report,
                 "lateral_sign_alignment.route_simple_lat_magnitude_alignment.magnitude_agreement_candidate",

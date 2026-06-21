@@ -2029,6 +2029,15 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
                     },
                     "interpretation": "The current evidence points to CARLA route cross-track using the opposite sign from Apollo HDMap projection_l/simple_lat lateral error for this run.",
                 },
+                "route_lateral_field_semantics": {
+                    "status": "available",
+                    "classification": "route_lateral_field_opposite_signed_to_apollo_projection",
+                    "source_field": "cross_track_error",
+                    "sign_sensitive_gate_allowed": False,
+                    "absolute_magnitude_gate_allowed": True,
+                    "recommended_gate_policy": "absolute_magnitude_only_until_canonical_sign_declared",
+                    "recommended_field_action": "relabel_or_explicitly_convert_before_sign_sensitive_gate",
+                },
             },
         },
     )
@@ -2114,6 +2123,19 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert lateral["key_metrics"]["lateral_frame_convention_route_projection_opposite_sign_ratio"] == 1.0
     assert lateral["key_metrics"]["lateral_frame_convention_simple_lat_projection_same_sign_ratio"] == 1.0
     assert lateral["key_metrics"]["lateral_frame_convention_route_simple_lat_opposite_sign_ratio"] == 1.0
+    assert lateral["key_metrics"]["route_lateral_field_semantics_status"] == "available"
+    assert lateral["key_metrics"]["route_lateral_field_semantics_classification"] == (
+        "route_lateral_field_opposite_signed_to_apollo_projection"
+    )
+    assert lateral["key_metrics"]["route_lateral_field_semantics_source_field"] == "cross_track_error"
+    assert lateral["key_metrics"]["route_lateral_field_sign_sensitive_gate_allowed"] is False
+    assert lateral["key_metrics"]["route_lateral_field_absolute_magnitude_gate_allowed"] is True
+    assert lateral["key_metrics"]["route_lateral_field_recommended_gate_policy"] == (
+        "absolute_magnitude_only_until_canonical_sign_declared"
+    )
+    assert lateral["key_metrics"]["route_lateral_field_recommended_action"] == (
+        "relabel_or_explicitly_convert_before_sign_sensitive_gate"
+    )
     assert lateral["key_metrics"]["simple_lat_missing_station_fields"] == []
     assert lateral["key_metrics"]["simple_lat_current_station_projection_s_delta_p95_m"] == 25.08
     assert lateral["key_metrics"]["simple_lat_matched_s_projection_s_delta_p95_m"] == 23.64

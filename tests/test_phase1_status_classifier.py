@@ -1283,6 +1283,18 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
             "projection_route_sample_lateral_source_field": "cross_track_error",
             "projection_route_sample_timeseries_opposite_sign_ratio": 1.0,
             "projection_route_sample_simple_lat_same_sign_ratio": 1.0,
+            "route_lateral_field_semantics_status": "available",
+            "route_lateral_field_semantics_classification": (
+                "route_lateral_field_opposite_signed_to_apollo_projection"
+            ),
+            "route_lateral_field_sign_sensitive_gate_allowed": False,
+            "route_lateral_field_absolute_magnitude_gate_allowed": True,
+            "route_lateral_field_recommended_gate_policy": (
+                "absolute_magnitude_only_until_canonical_sign_declared"
+            ),
+            "route_lateral_field_recommended_action": (
+                "relabel_or_explicitly_convert_before_sign_sensitive_gate"
+            ),
         }
     )
     link_report_path.write_text(json.dumps(link_report), encoding="utf-8")
@@ -1292,7 +1304,9 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
 
     assert "Projection-route sample evidence already confirms" in refreshed["behavior_next_action"]
     assert "reference-line debug/export gap" in refreshed["behavior_next_action"]
-    assert "do not change steer scale" in refreshed["behavior_next_action"]
+    assert "absolute_magnitude_only_until_canonical_sign_declared" in refreshed["behavior_next_action"]
+    assert "relabel_or_explicitly_convert_before_sign_sensitive_gate" in refreshed["behavior_next_action"]
+    assert "Do not change steer scale" in refreshed["behavior_next_action"]
     assert (
         refreshed_evidence["projection_route_sample_sign_contract_classification"]
         == "timeseries_route_lateral_sign_inverted_vs_projection_route_samples"
@@ -1303,6 +1317,17 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert refreshed_evidence["projection_route_sample_lateral_source_field"] == "cross_track_error"
     assert refreshed_evidence["projection_route_sample_timeseries_opposite_sign_ratio"] == 1.0
     assert refreshed_evidence["projection_route_sample_simple_lat_same_sign_ratio"] == 1.0
+    assert refreshed_evidence["route_lateral_field_semantics_classification"] == (
+        "route_lateral_field_opposite_signed_to_apollo_projection"
+    )
+    assert refreshed_evidence["route_lateral_field_recommended_gate_policy"] == (
+        "absolute_magnitude_only_until_canonical_sign_declared"
+    )
+    assert refreshed_evidence["route_lateral_field_recommended_action"] == (
+        "relabel_or_explicitly_convert_before_sign_sensitive_gate"
+    )
+    assert refreshed_evidence["route_lateral_field_sign_sensitive_gate_allowed"] is False
+    assert refreshed_evidence["route_lateral_field_absolute_magnitude_gate_allowed"] is True
 
 
 def test_legacy_apollo_route_id_normalizes_to_phase1_scenario_case(tmp_path) -> None:

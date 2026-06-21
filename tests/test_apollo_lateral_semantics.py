@@ -1066,6 +1066,20 @@ def test_projection_route_samples_verify_timeseries_lateral_sign_contract(
     ] == 1.0
     assert contract["projection_route_sample_signed_lateral_abs_p95_m"] == pytest.approx(0.4)
     assert contract["timeseries_lateral_abs_p95_m"] == pytest.approx(0.4)
+    field_semantics = report["lateral_sign_alignment"]["route_lateral_field_semantics"]
+    assert field_semantics["status"] == "available"
+    assert field_semantics["classification"] == (
+        "route_lateral_field_opposite_signed_to_apollo_projection"
+    )
+    assert field_semantics["source_field"] == "e_y_m"
+    assert field_semantics["sign_sensitive_gate_allowed"] is False
+    assert field_semantics["absolute_magnitude_gate_allowed"] is True
+    assert field_semantics["recommended_gate_policy"] == (
+        "absolute_magnitude_only_until_canonical_sign_declared"
+    )
+    assert field_semantics["recommended_field_action"] == (
+        "relabel_or_explicitly_convert_before_sign_sensitive_gate"
+    )
 
 
 def test_cli_run_dir_writes_report(tmp_path: Path) -> None:

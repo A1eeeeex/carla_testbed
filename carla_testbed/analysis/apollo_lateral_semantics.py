@@ -1410,6 +1410,10 @@ def _lateral_sign_alignment_summary(
         route_station_alignment=route_station_alignment,
         thresholds=thresholds,
     )
+    route_lateral_field_semantics = _route_lateral_field_semantics_recommendation(
+        route_lateral_provenance=route_lateral_provenance,
+        lateral_frame_convention=lateral_frame_convention,
+    )
     sample_count = max((int(value["sample_count"]) for value in pairs.values()), default=0)
     return {
         "available": sample_count > 0,
@@ -1427,6 +1431,7 @@ def _lateral_sign_alignment_summary(
         "official_hdmap_projection_alignment": official_projection_alignment,
         "route_station_frame_alignment": route_station_alignment,
         "lateral_frame_convention_diagnostic": lateral_frame_convention,
+        "route_lateral_field_semantics": route_lateral_field_semantics,
         **pairs,
     }
 
@@ -1604,6 +1609,89 @@ def _lateral_frame_convention_interpretation(classification: str) -> str:
     if classification == "lateral_frame_convention_ambiguous":
         return "The available lateral sign evidence is mixed or below the confidence threshold."
     return "Official projection lateral sign evidence is missing or too sparse."
+
+
+def _route_lateral_field_semantics_recommendation(
+    *,
+    route_lateral_provenance: Mapping[str, Any],
+    lateral_frame_convention: Mapping[str, Any],
+) -> dict[str, Any]:
+    projection_contract = route_lateral_provenance.get("projection_route_sample_sign_contract")
+    if not isinstance(projection_contract, Mapping):
+        projection_contract = {}
+    contract_classification = str(projection_contract.get("classification") or "")
+    convention_classification = str(lateral_frame_convention.get("classification") or "")
+    source_field = route_lateral_provenance.get(
+        "route_lateral_source_field"
+    ) or projection_contract.get("route_lateral_source_field")
+    projection_confirmed = (
+        contract_classification
+        == "timeseries_route_lateral_sign_inverted_vs_projection_route_samples"
+    )
+    projection_same = (
+        contract_classification
+        == "timeseries_route_lateral_matches_projection_route_samples"
+    )
+    if projection_confirmed:
+        status = "available"
+        classification = "route_lateral_field_opposite_signed_to_apollo_projection"
+        sign_sensitive_gate_allowed = False
+        absolute_magnitude_gate_allowed = True
+        recommended_gate_policy = "absolute_magnitude_only_until_canonical_sign_declared"
+        recommended_field_action = "relabel_or_explicitly_convert_before_sign_sensitive_gate"
+        reason = (
+            "Projection-route samples confirm this run's route-lateral field has the opposite "
+            "sign from Apollo projection/simple_lat lateral semantics."
+        )
+    elif projection_same:
+        status = "available"
+        classification = "route_lateral_field_matches_apollo_projection"
+        sign_sensitive_gate_allowed = True
+        absolute_magnitude_gate_allowed = True
+        recommended_gate_policy = "signed_and_absolute_metrics_allowed_for_this_contract"
+        recommended_field_action = "document_canonical_sign_convention_before_hard_gate"
+        reason = "Projection-route samples confirm this run's route-lateral field matches Apollo projection semantics."
+    elif convention_classification == "route_lateral_sign_inverted_vs_apollo_projection_candidate":
+        status = "warn"
+        classification = "route_lateral_field_sign_inversion_candidate_unconfirmed_by_route_samples"
+        sign_sensitive_gate_allowed = False
+        absolute_magnitude_gate_allowed = True
+        recommended_gate_policy = "absolute_magnitude_only_pending_projection_route_contract"
+        recommended_field_action = "materialize_projection_route_samples_or_route_geometry"
+        reason = "Official projection pairing suggests sign inversion, but projection-route sample contract is not yet available."
+    elif source_field:
+        status = "warn"
+        classification = "route_lateral_field_semantics_ambiguous"
+        sign_sensitive_gate_allowed = False
+        absolute_magnitude_gate_allowed = True
+        recommended_gate_policy = "absolute_magnitude_only_pending_semantics_contract"
+        recommended_field_action = "declare_route_lateral_frame_and_sign_convention"
+        reason = "A route-lateral field is present, but its signed semantics are not contract-grade."
+    else:
+        status = "insufficient_data"
+        classification = "route_lateral_field_missing"
+        sign_sensitive_gate_allowed = False
+        absolute_magnitude_gate_allowed = False
+        recommended_gate_policy = "do_not_use_route_lateral_field"
+        recommended_field_action = "record_route_lateral_field_with_declared_frame_and_sign"
+        reason = "No route-lateral field is available."
+    return {
+        "status": status,
+        "classification": classification,
+        "source_field": source_field,
+        "projection_route_sample_sign_contract_classification": contract_classification or None,
+        "lateral_frame_convention_classification": convention_classification or None,
+        "sign_sensitive_gate_allowed": sign_sensitive_gate_allowed,
+        "absolute_magnitude_gate_allowed": absolute_magnitude_gate_allowed,
+        "recommended_gate_policy": recommended_gate_policy,
+        "recommended_field_action": recommended_field_action,
+        "reason": reason,
+        "claim_boundary": (
+            "This is a field-semantics recommendation for analysis/gating. It does not change "
+            "runtime control, does not prove behavior success, and must not be used to flip "
+            "control signs without a separate runtime contract."
+        ),
+    }
 
 
 def _route_station_frame_alignment(

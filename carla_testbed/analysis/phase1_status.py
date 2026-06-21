@@ -555,6 +555,8 @@ def _primary_behavior_blocker(
                 and link_health.get("projection_route_sample_timeseries_opposite_sign_ratio") == 1.0
                 and link_health.get("projection_route_sample_simple_lat_same_sign_ratio") == 1.0
             )
+            route_lateral_gate_policy = link_health.get("route_lateral_field_recommended_gate_policy")
+            route_lateral_field_action = link_health.get("route_lateral_field_recommended_action")
             blocker = (
                 "lane_departure_with_route_simple_lat_sign_convention_candidate"
                 if same_sign and route_simple_lat_sign_convention
@@ -569,7 +571,9 @@ def _primary_behavior_blocker(
                     "sign inversion candidate for this run. Close the Planning reference-line "
                     "debug/export gap and decide whether the route-lateral field should be "
                     "renamed, explicitly converted, or excluded from behavior gates until a "
-                    "canonical sign convention is declared; do not change steer scale, "
+                    "canonical sign convention is declared. Current route-lateral gate policy: "
+                    f"{route_lateral_gate_policy or 'not_declared'}; recommended field action: "
+                    f"{route_lateral_field_action or 'not_declared'}. Do not change steer scale, "
                     "control mapping, smoothing, or controller gains yet."
                 )
                 if projection_route_sign_confirmed
@@ -635,6 +639,21 @@ def _primary_behavior_blocker(
                         "projection_route_sample_simple_lat_same_sign_ratio"
                     ),
                     "projection_route_sample_sign_contract_confirmed": projection_route_sign_confirmed,
+                    "route_lateral_field_semantics_classification": link_health.get(
+                        "route_lateral_field_semantics_classification"
+                    ),
+                    "route_lateral_field_recommended_gate_policy": link_health.get(
+                        "route_lateral_field_recommended_gate_policy"
+                    ),
+                    "route_lateral_field_recommended_action": link_health.get(
+                        "route_lateral_field_recommended_action"
+                    ),
+                    "route_lateral_field_sign_sensitive_gate_allowed": link_health.get(
+                        "route_lateral_field_sign_sensitive_gate_allowed"
+                    ),
+                    "route_lateral_field_absolute_magnitude_gate_allowed": link_health.get(
+                        "route_lateral_field_absolute_magnitude_gate_allowed"
+                    ),
                     "official_hdmap_projection_matched_sample_count": link_health.get(
                         "official_hdmap_projection_matched_sample_count"
                     ),
@@ -826,6 +845,27 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         ),
         "projection_route_sample_simple_lat_same_sign_ratio": lateral_metrics.get(
             "projection_route_sample_simple_lat_same_sign_ratio"
+        ),
+        "route_lateral_field_semantics_status": lateral_metrics.get(
+            "route_lateral_field_semantics_status"
+        ),
+        "route_lateral_field_semantics_classification": lateral_metrics.get(
+            "route_lateral_field_semantics_classification"
+        ),
+        "route_lateral_field_semantics_source_field": lateral_metrics.get(
+            "route_lateral_field_semantics_source_field"
+        ),
+        "route_lateral_field_sign_sensitive_gate_allowed": lateral_metrics.get(
+            "route_lateral_field_sign_sensitive_gate_allowed"
+        ),
+        "route_lateral_field_absolute_magnitude_gate_allowed": lateral_metrics.get(
+            "route_lateral_field_absolute_magnitude_gate_allowed"
+        ),
+        "route_lateral_field_recommended_gate_policy": lateral_metrics.get(
+            "route_lateral_field_recommended_gate_policy"
+        ),
+        "route_lateral_field_recommended_action": lateral_metrics.get(
+            "route_lateral_field_recommended_action"
         ),
         "official_hdmap_projection_matched_sample_count": lateral_metrics.get(
             "official_hdmap_projection_matched_sample_count"
