@@ -686,6 +686,12 @@ def test_planning_info_log_reference_line_text_traces_are_diagnostic_only(
     assert policy["planning_info_log_reference_line_available"] is True
     assert policy["planning_info_log_reference_line_claim_grade_allowed"] is False
     assert "apollo_planning.INFO" in policy["recommended_next_action"]
+    path_candidate = report["planning_debug_path_candidate_evidence"]
+    assert path_candidate["classification"] == "path_candidate_present_reference_line_empty"
+    assert path_candidate["path_candidate_max_count"] == 1
+    assert path_candidate["path_candidate_nonempty_paths"] == ["debug.planning_data.path"]
+    assert path_candidate["reference_line_claim_grade_allowed"] is False
+    assert "diagnostic only" in path_candidate["claim_boundary"]
 
 
 def test_route_segment_debug_augments_existing_contract_rows(tmp_path: Path) -> None:

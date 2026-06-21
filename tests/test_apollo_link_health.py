@@ -2623,6 +2623,47 @@ def test_explicit_assist_ledger_report_overrides_stale_runtime_ledger(
     assert report["can_claim_unassisted_natural_driving"] is True
 
 
+def test_config_assist_ledger_report_cannot_clear_manifest_blocking_assist(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    stale_ledger = {
+        "schema_version": "assist_ledger.v1",
+        "active_assists": ["legacy_followstop"],
+        "blocking_assists": ["legacy_followstop"],
+        "non_blocking_assists": [],
+        "assist_confidence": "explicit",
+        "source_artifact": "config",
+        "can_claim_unassisted_natural_driving": False,
+    }
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["assist_ledger"] = stale_ledger
+    _write_json(manifest_path, manifest)
+    config_clean_ledger = {
+        "schema_version": "assist_ledger.v1",
+        "active_assists": [],
+        "blocking_assists": [],
+        "non_blocking_assists": [],
+        "assist_sources": {},
+        "assist_confidence": "explicit",
+        "source_artifact": "config",
+        "can_claim_unassisted_natural_driving": True,
+        "warnings": [],
+    }
+    _write_json(run_dir / "analysis/assist_ledger/assist_ledger.json", config_clean_ledger)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    layer = report["layers"]["no_assist_claim_boundary"]
+    assert layer["status"] == "fail"
+    assert layer["key_metrics"]["active_assists"] == ["legacy_followstop"]
+    assert layer["key_metrics"]["blocking_assists"] == ["legacy_followstop"]
+    assert "assist_ledger_report_merged_with_runtime_evidence" in layer["warnings"]
+    assert "blocking_assists_active" in layer["blocking_reasons"]
+    assert report["can_claim_unassisted_natural_driving"] is False
+
+
 def test_stale_runtime_ledger_still_blocks_when_explicit_report_missing(
     tmp_path: Path,
 ) -> None:

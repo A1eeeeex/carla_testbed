@@ -177,6 +177,24 @@ Interpretation:
   at a narrower debug field than Apollo actually populated." The inventory is
   diagnostic-only and remains below claim-grade evidence until it is joined with
   exported reference-line semantics or an explicit equivalent contract.
+  A fresh online validation,
+  `runs/phase1_apollo_sidecar_cut_in_field_inventory_online_20260621_215906`,
+  keeps the same behavior boundary (`LANE_INVASION_HARD`) and confirms the
+  inventory is materialized in real artifacts. In that run,
+  `debug.planning_data.reference_line` remains present-but-empty, while
+  `debug.planning_data.path` is a non-empty candidate
+  (`planning_debug_path_candidate_evidence.classification=path_candidate_present_reference_line_empty`,
+  max repeated count `4`). The analyzer exposes this as diagnostic path
+  evidence only (`reference_line_claim_grade_allowed=false`); it narrows the
+  next parser/export question but does not replace claim-grade reference-line
+  evidence or change the Phase 1 status.
+  The same cycle fixed a claim-boundary regression in `apollo_link_health`:
+  a derived `analysis/assist_ledger/assist_ledger.json` with `source_artifact=config`
+  can no longer clear a blocking assist declared in `manifest.json` or
+  `summary.json`. The refreshed link-health report for that run correctly
+  reports `primary_blocker=no_assist_claim_boundary:blocking_assists_active`
+  with `active_assists=["legacy_followstop"]`. This prevents diagnostic
+  compatibility runs from being misread as no-interference Apollo runs.
 - The latest Pro audit found that the earlier `8/8 DONE` statement was still
   too optimistic because some review-pack surfaces were stale or could not be
   independently re-computed. The follow-up fix keeps accepted-bundle rows tied

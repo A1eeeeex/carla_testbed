@@ -474,6 +474,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     planning_debug_presence = _mapping(report.get("planning_debug_presence"))
     materialization_summary = _mapping(report.get("planning_materialization_summary"))
     materialization_claim_window = _mapping(materialization_summary.get("claim_window"))
+    planning_debug_path_candidate = _mapping(report.get("planning_debug_path_candidate_evidence"))
     trajectory_sample_surrogate = _mapping(report.get("planning_trajectory_sample_surrogate"))
     control_target_surrogate = _mapping(report.get("control_target_point_vs_planning_trajectory_sample"))
     planning_info_log_evidence = _mapping(report.get("planning_info_log_reference_line_evidence"))
@@ -499,6 +500,9 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Planning debug reference-line nonempty ratio: `{planning_debug_presence.get('reference_line_nonempty_ratio')}`",
             f"- Planning debug routing segment nonempty ratio: `{planning_debug_presence.get('routing_segment_nonempty_ratio')}`",
             f"- Planning debug candidate paths: `{planning_debug_field_inventory.get('reference_line_candidate_paths')}`",
+            f"- Planning debug path candidate classification: `{planning_debug_path_candidate.get('classification')}`",
+            f"- Planning debug path candidate max count: `{planning_debug_path_candidate.get('path_candidate_max_count')}`",
+            f"- Planning debug path candidate claim-grade allowed: `{planning_debug_path_candidate.get('reference_line_claim_grade_allowed')}`",
             f"- Planning materialization classification: `{materialization_summary.get('classification')}`",
             f"- Planning materialization claim-window source: `{materialization_summary.get('claim_window_source')}`",
             f"- Planning materialization route-segments ready ratio: `{materialization_claim_window.get('route_segments_ready_ratio')}`",
@@ -567,6 +571,10 @@ def _report(
         hdmap_projection_rows or [],
     )
     planning_debug_presence = _planning_debug_presence_summary(rows, planning_debug_summary)
+    planning_debug_path_candidate = _planning_debug_path_candidate_evidence(
+        rows,
+        planning_debug_presence,
+    )
     planning_materialization_summary = _planning_materialization_summary(rows)
     reference_debug_diagnostic = _reference_debug_diagnostic(
         rows,
@@ -611,6 +619,7 @@ def _report(
         "metrics": metrics,
         "reference_debug_diagnostic": reference_debug_diagnostic,
         "planning_debug_presence": planning_debug_presence,
+        "planning_debug_path_candidate_evidence": planning_debug_path_candidate,
         "planning_materialization_summary": planning_materialization_summary,
         "planning_info_log_reference_line_evidence": dict(
             planning_info_log_reference_line_evidence or {}
@@ -1164,6 +1173,97 @@ def _planning_debug_presence_classification(presence: Mapping[str, Any]) -> str:
     if reference_field_ratio is None and routing_nonempty_ratio is None:
         return "not_available"
     return "reference_line_and_routing_empty"
+
+
+def _planning_debug_path_candidate_evidence(
+    rows: Sequence[Mapping[str, Any]],
+    planning_debug_presence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Summarize Planning debug path-like candidates without upgrading claims.
+
+    Apollo 10 can populate ``debug.planning_data.path`` even when
+    ``debug.planning_data.reference_line`` is an empty repeated field. The path
+    entries are useful to steer the next parser/bridge iteration, but they are
+    not equivalent to claim-grade reference-line evidence.
+    """
+
+    inventories = [
+        _mapping(_mapping(row.get("planning_debug_presence")).get("last_field_inventory"))
+        for row in rows
+        if isinstance(row.get("planning_debug_presence"), Mapping)
+    ]
+    last_inventory = _mapping(planning_debug_presence.get("last_field_inventory"))
+    if last_inventory:
+        inventories.append(last_inventory)
+
+    path_counts: list[int] = []
+    nonempty_paths: list[str] = []
+    candidate_paths_by_path: dict[str, dict[str, Any]] = {}
+    for inventory in inventories:
+        candidates = inventory.get("reference_line_candidate_paths")
+        if isinstance(candidates, Sequence) and not isinstance(candidates, (str, bytes, bytearray)):
+            for candidate in candidates:
+                item = _mapping(candidate)
+                path = str(item.get("path") or "")
+                if not path:
+                    continue
+                count = int(_num(item.get("repeated_count")) or 0)
+                if "path" in path.lower() or "trajectory" in path.lower():
+                    path_counts.append(count)
+                    if count > 0:
+                        nonempty_paths.append(path)
+                existing = candidate_paths_by_path.get(path)
+                field_name_match = bool(item.get("field_name_match"))
+                if existing is None or count > int(existing.get("repeated_count") or 0):
+                    candidate_paths_by_path[path] = {
+                        "path": path,
+                        "repeated_count": count,
+                        "field_name_match": field_name_match,
+                    }
+                elif field_name_match and not bool(existing.get("field_name_match")):
+                    existing["field_name_match"] = True
+
+    candidate_paths = sorted(
+        candidate_paths_by_path.values(),
+        key=lambda item: (-int(item.get("repeated_count") or 0), str(item.get("path") or "")),
+    )
+
+    reference_nonempty_ratio = _num(planning_debug_presence.get("reference_line_nonempty_ratio"))
+    path_max = max(path_counts) if path_counts else 0
+    path_nonempty = path_max > 0
+    reference_nonempty = reference_nonempty_ratio is not None and reference_nonempty_ratio > 0.0
+    if not candidate_paths:
+        classification = "not_available"
+        status = "insufficient_data"
+    elif path_nonempty and not reference_nonempty:
+        classification = "path_candidate_present_reference_line_empty"
+        status = "warn"
+    elif path_nonempty and reference_nonempty:
+        classification = "path_candidate_present_with_reference_line"
+        status = "warn"
+    else:
+        classification = "path_candidate_missing_or_empty"
+        status = "insufficient_data"
+
+    return {
+        "status": status,
+        "classification": classification,
+        "available": path_nonempty,
+        "path_candidate_max_count": path_max,
+        "path_candidate_nonempty_paths": sorted(set(nonempty_paths)),
+        "candidate_paths": candidate_paths[:20],
+        "reference_line_claim_grade_allowed": False,
+        "recommended_next_action": (
+            "Inspect debug.planning_data.path as diagnostic planning path evidence and "
+            "compare it with HDMap projection, route windows, and control target points. "
+            "Do not treat it as a substitute for exported reference-line debug evidence."
+        ),
+        "claim_boundary": (
+            "Planning debug path candidates are diagnostic only. They can show Apollo "
+            "materialized path-like Planning debug data, but they do not by themselves "
+            "prove Apollo reference-line correctness or behavior success."
+        ),
+    }
 
 
 def _planning_info_log_reference_line_evidence(path: str | Path | None) -> dict[str, Any]:

@@ -3451,13 +3451,72 @@ def _select_assist_ledger(
     manifest: Mapping[str, Any],
     bridge_stats: Mapping[str, Any],
 ) -> dict[str, Any]:
-    if isinstance(assist_ledger, Mapping) and assist_ledger.get("schema_version") == "assist_ledger.v1":
-        return dict(assist_ledger)
-    return build_runtime_assist_ledger(
+    runtime_ledger = build_runtime_assist_ledger(
         summary=summary,
         manifest=manifest,
         bridge_stats=bridge_stats,
     )
+    if isinstance(assist_ledger, Mapping) and assist_ledger.get("schema_version") == "assist_ledger.v1":
+        if str(assist_ledger.get("source_artifact") or "").strip().lower() == "analysis":
+            return dict(assist_ledger)
+        return _merge_assist_ledgers_conservative(runtime_ledger, assist_ledger)
+    return runtime_ledger
+
+
+def _merge_assist_ledgers_conservative(
+    runtime_ledger: Mapping[str, Any],
+    report_ledger: Mapping[str, Any],
+) -> dict[str, Any]:
+    active = _sorted_union(runtime_ledger.get("active_assists"), report_ledger.get("active_assists"))
+    blocking = _sorted_union(runtime_ledger.get("blocking_assists"), report_ledger.get("blocking_assists"))
+    non_blocking = [
+        item
+        for item in _sorted_union(
+            runtime_ledger.get("non_blocking_assists"),
+            report_ledger.get("non_blocking_assists"),
+        )
+        if item not in blocking
+    ]
+    warnings = _sorted_union(runtime_ledger.get("warnings"), report_ledger.get("warnings"))
+    runtime_active = set(str(item) for item in runtime_ledger.get("active_assists") or [])
+    report_active = set(str(item) for item in report_ledger.get("active_assists") or [])
+    if runtime_active != report_active:
+        warnings.append("assist_ledger_report_merged_with_runtime_evidence")
+    confidence_values = {
+        str(runtime_ledger.get("assist_confidence") or ""),
+        str(report_ledger.get("assist_confidence") or ""),
+    }
+    confidence = "unknown" if "unknown" in confidence_values else (report_ledger.get("assist_confidence") or runtime_ledger.get("assist_confidence"))
+    return {
+        "schema_version": "assist_ledger.v1",
+        "active_assists": active,
+        "blocking_assists": blocking,
+        "non_blocking_assists": non_blocking,
+        "assist_confidence": confidence,
+        "source_artifact": "runtime_plus_report",
+        "can_claim_unassisted_natural_driving": (
+            bool(runtime_ledger.get("can_claim_unassisted_natural_driving"))
+            and bool(report_ledger.get("can_claim_unassisted_natural_driving"))
+            and not blocking
+        ),
+        "warnings": sorted(set(warnings)),
+        "notes": _sorted_union(runtime_ledger.get("notes"), report_ledger.get("notes")),
+    }
+
+
+def _sorted_union(*values: Any) -> list[str]:
+    out: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if value:
+                out.add(value)
+            continue
+        if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+            out.update(str(item) for item in value if item)
+            continue
+    return sorted(out)
 
 
 def _natural_driving_layer(
