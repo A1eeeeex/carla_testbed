@@ -1424,6 +1424,36 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 "lateral_sign_alignment.official_hdmap_projection_alignment."
                 "simple_lat_points_vs_projection_line.missing_point_fields",
             ),
+            "simple_lat_station_coverage_status": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_station_vs_projection_s.station_coverage_status",
+            ),
+            "simple_lat_missing_station_fields": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_station_vs_projection_s.missing_station_fields",
+            ),
+            "simple_lat_current_station_projection_s_delta_p95_m": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_station_vs_projection_s.current_station_minus_projection_s_abs_p95_m",
+            ),
+            "simple_lat_matched_s_projection_s_delta_p95_m": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_station_vs_projection_s.matched_s_minus_projection_s_abs_p95_m",
+            ),
+            "simple_lat_target_s_projection_s_delta_p95_m": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_station_vs_projection_s.target_s_minus_projection_s_abs_p95_m",
+            ),
+            "simple_lat_target_s_current_station_delta_p95_m": _nested(
+                report,
+                "lateral_sign_alignment.official_hdmap_projection_alignment."
+                "simple_lat_station_vs_projection_s.target_s_minus_current_station_abs_p95_m",
+            ),
             "route_simple_lat_sign_convention_candidate": _nested(
                 report,
                 "lateral_sign_alignment.route_simple_lat_magnitude_alignment.magnitude_agreement_candidate",

@@ -1197,6 +1197,14 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
                             "route_simple_lat_alignment_interpretation": (
                                 "opposite_sign_matching_magnitude_suggests_route_simple_lat_sign_convention_mismatch"
                             ),
+                            "simple_lat_station_coverage_status": (
+                                "projection_current_matched_target_s_available"
+                            ),
+                            "simple_lat_missing_station_fields": [],
+                            "simple_lat_current_station_projection_s_delta_p95_m": 25.08,
+                            "simple_lat_matched_s_projection_s_delta_p95_m": 23.64,
+                            "simple_lat_target_s_projection_s_delta_p95_m": 25.12,
+                            "simple_lat_target_s_current_station_delta_p95_m": 0.043,
                         }
                     }
                 },
@@ -1246,6 +1254,14 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
         "route_lateral_sign_supported_by_hdmap_projection_consistency"
     )
     assert evidence["route_simple_lat_opposite_sign_abs_sum_p95_m"] == 0.028
+    assert evidence["simple_lat_station_coverage_status"] == (
+        "projection_current_matched_target_s_available"
+    )
+    assert evidence["simple_lat_missing_station_fields"] == []
+    assert evidence["simple_lat_current_station_projection_s_delta_p95_m"] == 25.08
+    assert evidence["simple_lat_matched_s_projection_s_delta_p95_m"] == 23.64
+    assert evidence["simple_lat_target_s_projection_s_delta_p95_m"] == 25.12
+    assert evidence["simple_lat_target_s_current_station_delta_p95_m"] == 0.043
 
 
 def test_legacy_apollo_route_id_normalizes_to_phase1_scenario_case(tmp_path) -> None:

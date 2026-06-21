@@ -1958,6 +1958,14 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
                         "point_coverage_status": "matched_and_target_available_current_reference_missing",
                         "missing_point_fields": ["apollo_current_reference_point_x_y"],
                     },
+                    "simple_lat_station_vs_projection_s": {
+                        "station_coverage_status": "projection_current_matched_target_s_available",
+                        "missing_station_fields": [],
+                        "current_station_minus_projection_s_abs_p95_m": 25.08,
+                        "matched_s_minus_projection_s_abs_p95_m": 23.64,
+                        "target_s_minus_projection_s_abs_p95_m": 25.12,
+                        "target_s_minus_current_station_abs_p95_m": 0.043,
+                    },
                 },
             },
         },
@@ -2000,6 +2008,14 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert lateral["key_metrics"]["simple_lat_missing_point_fields"] == [
         "apollo_current_reference_point_x_y"
     ]
+    assert lateral["key_metrics"]["simple_lat_station_coverage_status"] == (
+        "projection_current_matched_target_s_available"
+    )
+    assert lateral["key_metrics"]["simple_lat_missing_station_fields"] == []
+    assert lateral["key_metrics"]["simple_lat_current_station_projection_s_delta_p95_m"] == 25.08
+    assert lateral["key_metrics"]["simple_lat_matched_s_projection_s_delta_p95_m"] == 23.64
+    assert lateral["key_metrics"]["simple_lat_target_s_projection_s_delta_p95_m"] == 25.12
+    assert lateral["key_metrics"]["simple_lat_target_s_current_station_delta_p95_m"] == 0.043
     assert lateral["key_metrics"]["route_simple_lat_sign_convention_candidate"] is True
     assert lateral["key_metrics"]["route_simple_lat_opposite_sign_abs_sum_p95_m"] == 0.02
     assert lateral["key_metrics"]["route_simple_lat_abs_magnitude_delta_p95_m"] == 0.02

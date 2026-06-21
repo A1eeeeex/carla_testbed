@@ -632,6 +632,24 @@ def _primary_behavior_blocker(
                     "simple_lat_missing_point_fields": link_health.get(
                         "simple_lat_missing_point_fields"
                     ),
+                    "simple_lat_station_coverage_status": link_health.get(
+                        "simple_lat_station_coverage_status"
+                    ),
+                    "simple_lat_missing_station_fields": link_health.get(
+                        "simple_lat_missing_station_fields"
+                    ),
+                    "simple_lat_current_station_projection_s_delta_p95_m": link_health.get(
+                        "simple_lat_current_station_projection_s_delta_p95_m"
+                    ),
+                    "simple_lat_matched_s_projection_s_delta_p95_m": link_health.get(
+                        "simple_lat_matched_s_projection_s_delta_p95_m"
+                    ),
+                    "simple_lat_target_s_projection_s_delta_p95_m": link_health.get(
+                        "simple_lat_target_s_projection_s_delta_p95_m"
+                    ),
+                    "simple_lat_target_s_current_station_delta_p95_m": link_health.get(
+                        "simple_lat_target_s_current_station_delta_p95_m"
+                    ),
                     "route_simple_lat_opposite_sign_abs_sum_p95_m": link_health.get(
                         "route_simple_lat_opposite_sign_abs_sum_p95_m"
                     ),
@@ -781,6 +799,24 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         ),
         "simple_lat_missing_point_fields": lateral_metrics.get(
             "simple_lat_missing_point_fields"
+        ),
+        "simple_lat_station_coverage_status": lateral_metrics.get(
+            "simple_lat_station_coverage_status"
+        ),
+        "simple_lat_missing_station_fields": lateral_metrics.get(
+            "simple_lat_missing_station_fields"
+        ),
+        "simple_lat_current_station_projection_s_delta_p95_m": lateral_metrics.get(
+            "simple_lat_current_station_projection_s_delta_p95_m"
+        ),
+        "simple_lat_matched_s_projection_s_delta_p95_m": lateral_metrics.get(
+            "simple_lat_matched_s_projection_s_delta_p95_m"
+        ),
+        "simple_lat_target_s_projection_s_delta_p95_m": lateral_metrics.get(
+            "simple_lat_target_s_projection_s_delta_p95_m"
+        ),
+        "simple_lat_target_s_current_station_delta_p95_m": lateral_metrics.get(
+            "simple_lat_target_s_current_station_delta_p95_m"
         ),
         "route_simple_lat_opposite_sign_abs_sum_p95_m": lateral_metrics.get(
             "route_simple_lat_opposite_sign_abs_sum_p95_m"

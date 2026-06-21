@@ -767,6 +767,9 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
         row["apollo_debug_simple_lat_current_reference_point_y"] = 1.2
         row["apollo_debug_simple_lat_target_point_x"] = float(index) + 5.0
         row["apollo_debug_simple_lat_target_point_y"] = 1.2
+        row["apollo_debug_simple_lon_current_station_m"] = 10.0 + index
+        row["apollo_debug_simple_lon_matched_point_s"] = 9.5 + index
+        row["apollo_debug_simple_lat_target_point_s"] = 15.0 + index
     _write_rows(artifacts / "debug_timeseries.csv", rows)
     (artifacts / "apollo_hdmap_projection.jsonl").write_text(
         "\n".join(
@@ -775,6 +778,7 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
                     "source": "apollo_hdmap_api",
                     "status": "ok",
                     "sim_time": 100.0 + index * 0.05,
+                    "projection_s": 10.0 + index,
                     "projection_l": -0.6,
                     "localization_x": float(index),
                     "localization_y": 0.6,
@@ -806,8 +810,19 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
     assert point_alignment["target_point_lateral_abs_p95_m"] == 0.0
     assert point_alignment["point_coverage_status"] == "matched_current_reference_target_available"
     assert point_alignment["missing_point_fields"] == []
+    station_alignment = alignment["simple_lat_station_vs_projection_s"]
+    assert station_alignment["station_coverage_status"] == "projection_current_matched_target_s_available"
+    assert station_alignment["missing_station_fields"] == []
+    assert station_alignment["current_station_minus_projection_s_abs_p95_m"] == 0.0
+    assert station_alignment["matched_s_minus_projection_s_abs_p95_m"] == 0.5
+    assert station_alignment["target_s_minus_projection_s_abs_p95_m"] == 5.0
+    assert station_alignment["target_s_minus_current_station_abs_p95_m"] == 5.0
+    assert station_alignment["target_s_minus_matched_s_abs_p95_m"] == 5.5
     assert len(alignment["matched_samples"]) == 4
     assert alignment["matched_samples"][0]["projection_centerline_geometry_available"] is True
+    assert alignment["matched_samples"][0]["hdmap_projection_s_m"] == 10.0
+    assert alignment["matched_samples"][0]["apollo_simple_lon_current_station_m"] == 10.0
+    assert alignment["matched_samples"][0]["target_s_minus_projection_s_m"] == 5.0
 
     outputs = write_apollo_lateral_semantics_report(report, tmp_path / "out")
     pairing_path = Path(outputs["apollo_lateral_projection_pairing_csv"])
@@ -819,6 +834,9 @@ def test_run_dir_uses_official_hdmap_projection_rows_for_lateral_sign_alignment(
     assert float(pairing_rows[0]["route_projection_abs_sum_m"]) == 0.0
     assert pairing_rows[0]["projection_centerline_geometry_available"] == "True"
     assert float(pairing_rows[0]["projection_l_recompute_delta_m"]) == 0.0
+    assert float(pairing_rows[0]["hdmap_projection_s_m"]) == 10.0
+    assert float(pairing_rows[0]["current_station_minus_projection_s_m"]) == 0.0
+    assert float(pairing_rows[0]["target_s_minus_current_station_m"]) == 5.0
     assert float(pairing_rows[0]["apollo_matched_point_hdmap_line_lateral_m"]) == 0.0
     assert float(pairing_rows[0]["apollo_target_point_hdmap_line_lateral_m"]) == 0.0
 

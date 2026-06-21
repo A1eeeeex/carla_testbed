@@ -275,7 +275,18 @@ Interpretation:
   rather than leaving this as an implicit `null`. This narrows the suspected
   gap away from raw matched/target point coordinates being off-lane and toward
   the route/simple_lat sign convention plus reference-line debug/export
-  semantics.
+  semantics. The same report now also records
+  `simple_lat_station_vs_projection_s`, comparing official Apollo
+  `projection_s` rows with Control debug `current_station`, `matched_point_s`,
+  and `target_point_s`. These station deltas are diagnostic because Control may
+  use a local/stitching station frame rather than raw lane-s, but they are the
+  next narrow evidence needed before changing steering scale, smoothing, or
+  actuation mapping. On the same cut-in sample, station coverage is complete,
+  `target_s_minus_current_station_abs_p95≈0.043m`, while
+  `current_station_minus_projection_s_abs_p95≈25.08m` and
+  `target_s_minus_projection_s_abs_p95≈25.12m`; that pattern points toward a
+  local/stitching station frame offset rather than missing Control station
+  debug evidence.
 - `apollo_link_health` now uses that lateral-semantics warning as the
   representative Apollo cut-in primary blocker when all upstream link layers
   are non-blocking and `natural_driving_report.json` is merely absent. The

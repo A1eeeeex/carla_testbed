@@ -331,7 +331,13 @@ Additional run-local artifacts:
     line, and the JSON report records point-coordinate coverage status plus
     missing point fields. Those point offsets are local-tangent diagnostics
     only; they do not prove full reference-line geometry or ego behavior
-    success.
+    success. When official `projection_s` and Apollo Control `simple_lon` /
+    `simple_lat` station fields are available, the same CSV/report also record
+    station deltas such as `current_station_minus_projection_s_m`,
+    `target_s_minus_current_station_m`, and station coverage status. These
+    values help decide whether Control debug uses lane-s, route-s, or a local
+    stitching station frame; they are diagnostic and must not be used alone as
+    route/reference-line pass evidence.
     `run_phase1_postprocess()` refreshes the dependent reports in evidence
     order: Apollo HDMap projection, Apollo route contract, reference-line
     contract, module-consumption, then link-health. This prevents stale route

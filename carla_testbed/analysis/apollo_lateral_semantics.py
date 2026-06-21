@@ -525,12 +525,22 @@ def _write_projection_pairing_csv(report: Mapping[str, Any], path: Path) -> bool
         "route_lateral_error_m",
         "apollo_simple_lat_lateral_error_m",
         "hdmap_projection_l_m",
+        "hdmap_projection_s_m",
         "hdmap_projection_center_x",
         "hdmap_projection_center_y",
         "hdmap_projection_lane_heading_rad",
         "hdmap_projection_l_recomputed_m",
         "projection_l_recompute_delta_m",
         "projection_centerline_geometry_available",
+        "apollo_simple_lon_current_station_m",
+        "apollo_simple_lon_matched_point_s_m",
+        "apollo_simple_lat_target_point_s_m",
+        "current_station_minus_projection_s_m",
+        "matched_s_minus_projection_s_m",
+        "target_s_minus_projection_s_m",
+        "matched_s_minus_current_station_m",
+        "target_s_minus_current_station_m",
+        "target_s_minus_matched_s_m",
         "apollo_matched_point_hdmap_line_lateral_m",
         "apollo_matched_point_hdmap_line_longitudinal_m",
         "apollo_current_reference_point_hdmap_line_lateral_m",
@@ -1704,6 +1714,12 @@ def _official_hdmap_projection_alignment(
     matched_point_lateral_offsets: list[float] = []
     current_reference_point_lateral_offsets: list[float] = []
     target_point_lateral_offsets: list[float] = []
+    current_station_projection_delta: list[float] = []
+    matched_s_projection_delta: list[float] = []
+    target_s_projection_delta: list[float] = []
+    matched_s_current_delta: list[float] = []
+    target_s_current_delta: list[float] = []
+    target_s_matched_delta: list[float] = []
     matched_dt: list[float] = []
     matched_lanes: set[str] = set()
     matched_samples: list[dict[str, Any]] = []
@@ -1781,6 +1797,28 @@ def _official_hdmap_projection_alignment(
             current_reference_point_lateral_offsets.append(abs(float(current_reference_point["lateral_m"])))
         if target_point.get("lateral_m") is not None:
             target_point_lateral_offsets.append(abs(float(target_point["lateral_m"])))
+        projection_s = _row_value(projection, ["projection_s", "s"])
+        current_station = _row_value(row, FIELD_ALIASES["apollo_simple_lon_current_station"])
+        matched_s = _row_value(row, FIELD_ALIASES["apollo_simple_lon_matched_point_s"])
+        target_s = _row_value(row, FIELD_ALIASES["apollo_simple_lat_target_point_s"])
+        current_station_minus_projection = _delta(current_station, projection_s)
+        matched_s_minus_projection = _delta(matched_s, projection_s)
+        target_s_minus_projection = _delta(target_s, projection_s)
+        matched_s_minus_current = _delta(matched_s, current_station)
+        target_s_minus_current = _delta(target_s, current_station)
+        target_s_minus_matched = _delta(target_s, matched_s)
+        if current_station_minus_projection is not None:
+            current_station_projection_delta.append(abs(current_station_minus_projection))
+        if matched_s_minus_projection is not None:
+            matched_s_projection_delta.append(abs(matched_s_minus_projection))
+        if target_s_minus_projection is not None:
+            target_s_projection_delta.append(abs(target_s_minus_projection))
+        if matched_s_minus_current is not None:
+            matched_s_current_delta.append(abs(matched_s_minus_current))
+        if target_s_minus_current is not None:
+            target_s_current_delta.append(abs(target_s_minus_current))
+        if target_s_minus_matched is not None:
+            target_s_matched_delta.append(abs(target_s_minus_matched))
         matched_samples.append(
             {
                 "sim_time": float(row_time),
@@ -1789,6 +1827,16 @@ def _official_hdmap_projection_alignment(
                 "route_lateral_error_m": float(route_lateral),
                 "apollo_simple_lat_lateral_error_m": simple_lat,
                 "hdmap_projection_l_m": projection_lateral,
+                "hdmap_projection_s_m": projection_s,
+                "apollo_simple_lon_current_station_m": current_station,
+                "apollo_simple_lon_matched_point_s_m": matched_s,
+                "apollo_simple_lat_target_point_s_m": target_s,
+                "current_station_minus_projection_s_m": current_station_minus_projection,
+                "matched_s_minus_projection_s_m": matched_s_minus_projection,
+                "target_s_minus_projection_s_m": target_s_minus_projection,
+                "matched_s_minus_current_station_m": matched_s_minus_current,
+                "target_s_minus_current_station_m": target_s_minus_current,
+                "target_s_minus_matched_s_m": target_s_minus_matched,
                 "nearest_lane_id": lane_id,
                 "route_lateral_vs_projection_lateral": route_projection_relation,
                 "simple_lat_vs_projection_lateral": simple_projection_relation,
@@ -1805,6 +1853,18 @@ def _official_hdmap_projection_alignment(
         )
     route_sample_count = route_projection_same + route_projection_opposite
     simple_sample_count = simple_projection_same + simple_projection_opposite
+    projection_s_count = sum(
+        1 for sample in matched_samples if sample.get("hdmap_projection_s_m") is not None
+    )
+    current_station_count = sum(
+        1 for sample in matched_samples if sample.get("apollo_simple_lon_current_station_m") is not None
+    )
+    matched_s_count = sum(
+        1 for sample in matched_samples if sample.get("apollo_simple_lon_matched_point_s_m") is not None
+    )
+    target_s_count = sum(
+        1 for sample in matched_samples if sample.get("apollo_simple_lat_target_point_s_m") is not None
+    )
     return {
         "available": official_count > 0,
         "status": "available" if route_sample_count else ("insufficient_data" if official_count else "missing"),
@@ -1843,6 +1903,38 @@ def _official_hdmap_projection_alignment(
                 "geometry."
             ),
         },
+        "simple_lat_station_vs_projection_s": {
+            "projection_s_sample_count": projection_s_count,
+            "current_station_sample_count": current_station_count,
+            "matched_point_s_sample_count": matched_s_count,
+            "target_point_s_sample_count": target_s_count,
+            "current_station_minus_projection_s_abs_p95_m": _percentile(
+                current_station_projection_delta,
+                0.95,
+            ),
+            "matched_s_minus_projection_s_abs_p95_m": _percentile(matched_s_projection_delta, 0.95),
+            "target_s_minus_projection_s_abs_p95_m": _percentile(target_s_projection_delta, 0.95),
+            "matched_s_minus_current_station_abs_p95_m": _percentile(matched_s_current_delta, 0.95),
+            "target_s_minus_current_station_abs_p95_m": _percentile(target_s_current_delta, 0.95),
+            "target_s_minus_matched_s_abs_p95_m": _percentile(target_s_matched_delta, 0.95),
+            "station_coverage_status": _simple_lat_station_coverage_status(
+                projection_s_count=projection_s_count,
+                current_station_count=current_station_count,
+                matched_s_count=matched_s_count,
+                target_s_count=target_s_count,
+            ),
+            "missing_station_fields": _simple_lat_missing_station_fields(
+                projection_s_count=projection_s_count,
+                current_station_count=current_station_count,
+                matched_s_count=matched_s_count,
+                target_s_count=target_s_count,
+            ),
+            "interpretation": (
+                "Station deltas compare Apollo Control simple_lon/simple_lat debug s values with "
+                "the nearest official HDMap projection_s sample. They are diagnostic only because "
+                "Control may use a local/stitching station frame rather than raw lane s."
+            ),
+        },
         "matched_samples": matched_samples,
         "route_lateral_vs_projection_lateral": {
             "sample_count": route_sample_count,
@@ -1874,6 +1966,47 @@ def _official_hdmap_projection_alignment(
             "behavior success."
         ),
     }
+
+
+def _delta(left: float | None, right: float | None) -> float | None:
+    if left is None or right is None:
+        return None
+    return float(left) - float(right)
+
+
+def _simple_lat_station_coverage_status(
+    *,
+    projection_s_count: int,
+    current_station_count: int,
+    matched_s_count: int,
+    target_s_count: int,
+) -> str:
+    if projection_s_count > 0 and current_station_count > 0 and matched_s_count > 0 and target_s_count > 0:
+        return "projection_current_matched_target_s_available"
+    if projection_s_count > 0 and current_station_count > 0 and target_s_count > 0:
+        return "projection_current_target_s_available_matched_s_missing"
+    if projection_s_count > 0 and (current_station_count > 0 or matched_s_count > 0 or target_s_count > 0):
+        return "partial_station_coverage"
+    return "missing_station_coverage"
+
+
+def _simple_lat_missing_station_fields(
+    *,
+    projection_s_count: int,
+    current_station_count: int,
+    matched_s_count: int,
+    target_s_count: int,
+) -> list[str]:
+    missing: list[str] = []
+    if projection_s_count == 0:
+        missing.append("hdmap_projection_s")
+    if current_station_count == 0:
+        missing.append("apollo_simple_lon_current_station")
+    if matched_s_count == 0:
+        missing.append("apollo_simple_lon_matched_point_s")
+    if target_s_count == 0:
+        missing.append("apollo_simple_lat_target_point_s")
+    return missing
 
 
 def _simple_lat_point_coverage_status(
