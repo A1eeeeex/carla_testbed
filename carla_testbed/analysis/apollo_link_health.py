@@ -1446,6 +1446,14 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 report,
                 "lateral_sign_alignment.route_lateral_provenance.route_definition_geometry_status",
             ),
+            "route_definition_sample_count": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance.route_definition_sample_count",
+            ),
+            "route_definition_declared_sample_count": _nested(
+                report,
+                "lateral_sign_alignment.route_lateral_provenance.route_definition_declared_sample_count",
+            ),
             "official_hdmap_projection_matched_sample_count": _nested(
                 report,
                 "lateral_sign_alignment.official_hdmap_projection_alignment.matched_sample_count",

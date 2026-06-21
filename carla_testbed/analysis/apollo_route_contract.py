@@ -1258,6 +1258,7 @@ def build_route_definition_claim(report: Mapping[str, Any]) -> dict[str, Any]:
         "route_length_consistency_reason": report.get("scenario_route_length_consistency_reason"),
         "scenario_route_samples": list(configured.get("route_trace_samples") or []),
         "scenario_route_sample_count": configured.get("route_trace_point_count"),
+        "scenario_route_sample_source": configured.get("route_trace_source"),
         "scenario_lane_namespace": report.get("scenario_lane_namespace"),
         "namespace": {
             "scenario": report.get("scenario_lane_namespace"),
@@ -1595,6 +1596,7 @@ def _configured_scenario_route_report(
         "route_trace_length_m": scenario.get("route_trace_length_m"),
         "route_trace_length_source": scenario.get("route_trace_length_source"),
         "route_trace_point_count": scenario.get("route_trace_point_count"),
+        "route_trace_source": scenario.get("route_trace_source"),
         "route_trace_samples": list(scenario.get("route_trace_samples") or []),
         "route_length_consistency_status": scenario.get("route_length_consistency_status"),
         "route_length_consistency_reason": scenario.get("route_length_consistency_reason"),
@@ -2061,7 +2063,7 @@ def _scenario_route(
         "route_trace_length_source": trace_length_source,
         "route_trace_point_count": len(route_trace) or projection.get("route_sample_count"),
         "route_trace_source": _text_or_none(scenario.get("route_trace_source")) or projection.get("route_source"),
-        "route_trace_samples": _route_trace_samples(route_trace),
+        "route_trace_samples": _route_trace_samples(route_trace) or list(projection.get("route_samples") or []),
         "route_projection_sample_count": projection.get("route_sample_count"),
         "route_projection_source": projection.get("source"),
         **consistency,
@@ -2307,15 +2309,48 @@ def _projection_route(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if length is not None and length > 0.0
     ]
     route_length = max(expected_lengths) if expected_lengths else None
+    route_samples = _projection_route_samples(ordered_route_rows)
     return {
         "available": bool(official),
         "lane_keys": lanes,
         "route_lane_sequence": route_lane_sequence,
         "route_length_m": route_length,
         "route_sample_count": len(route_rows) or None,
+        "route_samples": route_samples,
         "route_source": "apollo_hdmap_projection_route_samples" if route_rows else None,
         "source": "apollo_hdmap_api" if official else None,
     }
+
+
+def _projection_route_samples(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        lane_id = _text_or_none(row.get("nearest_lane_id"))
+        x_apollo = _first_num(row.get("x_apollo"), row.get("localization_x"))
+        y_apollo = _first_num(row.get("y_apollo"), row.get("localization_y"))
+        samples.append(
+            {
+                "index": index,
+                "source_index": _first_int(row.get("source_index")),
+                "sample_type": _text_or_none(row.get("sample_type")),
+                "source": "apollo_hdmap_projection_route_samples",
+                "frame": "apollo_map",
+                "x": x_apollo,
+                "y": y_apollo,
+                "x_apollo": x_apollo,
+                "y_apollo": y_apollo,
+                "route_s": _num(row.get("route_s")),
+                "projection_s": _num(row.get("projection_s")),
+                "projection_l": _num(row.get("projection_l")),
+                "expected_route_distance_m": _num(row.get("expected_route_distance_m")),
+                "lane_id": lane_id,
+                "lane_key": _lane_key(lane_id),
+                "lane_heading_at_s": _num(row.get("lane_heading_at_s")),
+                "heading_error_rad": _num(row.get("heading_error_rad")),
+                "status": _text_or_none(row.get("status") or row.get("projection_status")),
+            }
+        )
+    return samples
 
 
 def _lane_equivalence_report(

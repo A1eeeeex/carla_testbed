@@ -1237,19 +1237,35 @@ def test_baguang_goal_projection_rows_can_support_fixed_scene_route_contract(tmp
                 "route_s": float(index * 5),
                 "expected_route_distance_m": 300.0,
                 "nearest_lane_id": "0_0_2",
+                "x_apollo": 297.697 - float(index * 5),
+                "y_apollo": 5.254,
+                "projection_s": 7.0059 + float(index * 5),
                 "projection_l": 0.0,
                 "lateral_error_m": 0.0,
                 "heading_error_rad": 0.0,
+                "lane_heading_at_s": -3.141067,
             }
             for index in range(61)
         ],
     )
 
     report = analyze_apollo_route_contract_run_dir(run_dir, frame_transform=FRAME_TRANSFORM)
+    outputs = write_apollo_route_contract_report(report, run_dir / "analysis/apollo_route_contract")
+    claim = json.loads(Path(outputs["route_definition_claim_artifact"]).read_text(encoding="utf-8"))
 
     assert report["status"] == "warn"
     assert report["scenario_route_length_m"] == 300.0
     assert report["scenario_route_length_source"] == "apollo_hdmap_projection_expected_route_distance"
+    assert report["configured_scenario_route"]["route_trace_source"] == "apollo_hdmap_projection_route_samples"
+    assert report["configured_scenario_route"]["route_trace_point_count"] == 61
+    assert len(report["configured_scenario_route"]["route_trace_samples"]) == 61
+    assert report["configured_scenario_route"]["route_trace_samples"][0]["source"] == (
+        "apollo_hdmap_projection_route_samples"
+    )
+    assert report["configured_scenario_route"]["route_trace_samples"][0]["frame"] == "apollo_map"
+    assert report["configured_scenario_route"]["route_trace_samples"][0]["lane_key"] == "0:2"
+    assert report["configured_scenario_route"]["route_trace_samples"][0]["route_s"] == 0.0
+    assert report["configured_scenario_route"]["route_trace_samples"][0]["projection_s"] == 7.0059
     assert report["scenario_lane_namespace"] == "apollo_hdmap"
     assert report["scenario_route_lane_sequence"] == ["0:2"]
     assert report["lane_equivalence_status"] == "direct_match"
@@ -1257,6 +1273,10 @@ def test_baguang_goal_projection_rows_can_support_fixed_scene_route_contract(tmp
     assert report["route_identity_status"] == "consistent"
     assert "apollo_routing_goal_snap_distance_high" in report["warnings"]
     assert report["blocking_reasons"] == []
+    assert claim["scenario_route_sample_count"] == 61
+    assert claim["scenario_route_sample_source"] == "apollo_hdmap_projection_route_samples"
+    assert len(claim["scenario_route_samples"]) == 61
+    assert claim["scenario_route_samples"][0]["frame"] == "apollo_map"
 
 
 def test_unaccepted_untrusted_goal_projection_applied_blocks_claim_route(tmp_path: Path) -> None:

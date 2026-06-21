@@ -261,17 +261,22 @@ Interpretation:
   `route_lateral_provenance.evidence_level=hdmap_projection_consistency`,
   because this run lacks `route_x` / `route_y` / `route_heading` samples that
   would let the analyzer recompute signed route CTE from route geometry alone.
-  The analyzer now avoids being misled by a root-level `route.json` stub by
+  The analyzer avoids being misled by a root-level `route.json` stub by
   selecting the best available route-definition evidence: materialized route
-  geometry first, declared route samples second, and stubs last. On this run it
-  selects `artifacts/route_definition_claim.json` instead of the root
-  `route_stub.v1`; provenance is therefore more accurately reported as
-  `route_definition_geometry_status=declared_only`,
-  `route_definition_declared_sample_count=61`, and
-  `route_definition_sample_count=0`. The next validation should materialize
-  `route_x` / `route_y` / `route_heading` fields, materialized route samples,
-  or an equivalent official projection-to-route pairing before treating the
-  sign convention as verified.
+  geometry first, declared route samples second, and stubs last. The route
+  contract now also materializes projection-derived route samples into
+  `artifacts/route_definition_claim.json` when `apollo_hdmap_projection.jsonl`
+  contains `sample_type=start|route|goal` rows. On this run the refreshed claim
+  contains `61` samples with
+  `scenario_route_sample_source=apollo_hdmap_projection_route_samples`,
+  `frame=apollo_map`, `route_s=0..300m`, `projection_s≈7.006..307.006m`, and
+  lane key `0:2`. The lateral report now records
+  `route_definition_geometry_status=materialized_geometry_available` and
+  `route_definition_sample_count=61`. This is stronger route/projection
+  evidence, but it still does not let the analyzer recompute signed route CTE
+  from per-row `route_x` / `route_y` / `route_heading` in `timeseries.*`; the
+  sign convention remains a diagnostic candidate until that final route-frame
+  geometry or equivalent sign contract is present.
 - The lateral-semantics analyzer now also consumes row-level
   `artifacts/apollo_hdmap_projection.jsonl` when present. On the same run, 80
   official Apollo HDMap projection rows are available and 13 high-lateral
