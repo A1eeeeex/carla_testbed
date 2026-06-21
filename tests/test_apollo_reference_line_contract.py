@@ -544,6 +544,63 @@ def test_reference_debug_diagnostic_separates_export_gap_from_control_simple_lat
     assert report["contracts"]["control_reference"]["status"] == "pass"
 
 
+def test_planning_debug_presence_distinguishes_routing_present_reference_line_empty(
+    tmp_path: Path,
+) -> None:
+    planning = tmp_path / "planning_topic_debug.jsonl"
+    summary = tmp_path / "planning_topic_debug_summary.json"
+    _write_jsonl(
+        planning,
+        [
+            {
+                "timestamp": 1.0,
+                "localization_heading": 0.0,
+                "trajectory_point_count": 20,
+                "first_trajectory_point_theta": 0.0,
+                "planning_debug_debug_present": True,
+                "planning_debug_planning_data_present": True,
+                "planning_debug_reference_line_path": "debug.planning_data.reference_line",
+                "planning_debug_reference_line_field_present": True,
+                "planning_debug_reference_line_count": 0,
+                "planning_debug_routing_path": "debug.planning_data.routing",
+                "planning_debug_routing_field_present": True,
+                "planning_debug_routing_segment_count": 1,
+                "planning_debug_diagnosis": "routing_present_reference_line_empty",
+            }
+        ],
+    )
+    _write_json(
+        summary,
+        {
+            "planning_debug_presence": {
+                "last_diagnosis": "routing_present_reference_line_empty",
+                "last_reference_line_path": "debug.planning_data.reference_line",
+                "last_routing_path": "debug.planning_data.routing",
+                "planning_data_present_ratio": 1.0,
+                "reference_line_field_present_ratio": 1.0,
+                "reference_line_nonempty_ratio": 0.0,
+                "routing_field_present_ratio": 1.0,
+                "routing_segment_nonempty_ratio": 1.0,
+            }
+        },
+    )
+
+    report = analyze_apollo_reference_line_contract_files(
+        planning_topic_debug_path=planning,
+        planning_topic_debug_summary_path=summary,
+    )
+
+    presence = report["planning_debug_presence"]
+    diagnostic = report["reference_debug_diagnostic"]
+    assert presence["classification"] == "routing_present_reference_line_empty"
+    assert presence["source"] == "planning_topic_debug_summary"
+    assert diagnostic["planning_debug_presence_classification"] == (
+        "routing_present_reference_line_empty"
+    )
+    assert diagnostic["planning_debug_presence"]["reference_line_nonempty_ratio"] == 0.0
+    assert "planning_debug_presence_routing_present_reference_line_empty" in report["warnings"]
+
+
 def test_planning_first_point_projection_alignment_uses_official_hdmap_projection() -> None:
     rows = [
         {

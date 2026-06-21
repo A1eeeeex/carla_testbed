@@ -40,6 +40,7 @@ def analyze_apollo_reference_line_contract_files(
     *,
     contract_path: str | Path | None = None,
     planning_topic_debug_path: str | Path | None = None,
+    planning_topic_debug_summary_path: str | Path | None = None,
     planning_route_segment_debug_path: str | Path | None = None,
     control_decode_debug_path: str | Path | None = None,
     debug_timeseries_path: str | Path | None = None,
@@ -53,6 +54,7 @@ def analyze_apollo_reference_line_contract_files(
         "run_dir": str(run_dir) if run_dir else None,
         "contract_path": _path_str(contract_path),
         "planning_topic_debug_path": _path_str(planning_topic_debug_path),
+        "planning_topic_debug_summary_path": _path_str(planning_topic_debug_summary_path),
         "planning_route_segment_debug_path": _path_str(planning_route_segment_debug_path),
         "control_decode_debug_path": _path_str(control_decode_debug_path),
         "debug_timeseries_path": _path_str(debug_timeseries_path),
@@ -63,6 +65,7 @@ def analyze_apollo_reference_line_contract_files(
     }
     contract_rows = _read_jsonl(contract_path)
     planning_rows = _read_jsonl(planning_topic_debug_path)
+    planning_debug_summary = _read_json(planning_topic_debug_summary_path)
     route_segment_rows = _read_jsonl(planning_route_segment_debug_path)
     control_rows = _read_jsonl(control_decode_debug_path)
     timeseries_rows = _read_csv(debug_timeseries_path)
@@ -82,6 +85,7 @@ def analyze_apollo_reference_line_contract_files(
         rows,
         localization_contract=localization_contract,
         planning_materialization=planning_materialization,
+        planning_debug_summary=planning_debug_summary,
         route_contract=route_contract,
         hdmap_projection_rows=hdmap_rows,
         source=source,
@@ -93,6 +97,7 @@ def analyze_apollo_reference_line_contract(
     *,
     localization_contract: Mapping[str, Any] | None = None,
     planning_materialization: Mapping[str, Any] | None = None,
+    planning_debug_summary: Mapping[str, Any] | None = None,
     route_contract: Mapping[str, Any] | None = None,
     hdmap_projection_rows: Sequence[Mapping[str, Any]] | None = None,
     source: Mapping[str, Any] | None = None,
@@ -115,6 +120,7 @@ def analyze_apollo_reference_line_contract(
             rows=[],
             localization_contract=localization_contract,
             planning_materialization=planning_materialization,
+            planning_debug_summary=planning_debug_summary,
             route_contract=route_contract,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
@@ -139,6 +145,7 @@ def analyze_apollo_reference_line_contract(
             rows=normalized,
             localization_contract=localization_contract,
             planning_materialization=planning_materialization,
+            planning_debug_summary=planning_debug_summary,
             route_contract=route_contract,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
@@ -158,6 +165,7 @@ def analyze_apollo_reference_line_contract(
             rows=normalized,
             localization_contract=localization_contract,
             planning_materialization=planning_materialization,
+            planning_debug_summary=planning_debug_summary,
             route_contract=route_contract,
             hdmap_projection_rows=hdmap_projection_rows,
             source=source,
@@ -171,6 +179,7 @@ def analyze_apollo_reference_line_contract(
         rows=normalized,
         localization_contract=localization_contract,
         planning_materialization=planning_materialization,
+        planning_debug_summary=planning_debug_summary,
         route_contract=route_contract,
         hdmap_projection_rows=hdmap_projection_rows,
         source=source,
@@ -347,7 +356,14 @@ def build_reference_line_contract_event(row: Mapping[str, Any], *, source_confid
             "routing_response_status": _first(row, "routing_response_status", "routing_status"),
             "routing_road_count": _num(_first(row, "routing_road_count", "routing_last_road_count")),
             "routing_passage_count": _num(_first(row, "routing_passage_count")),
-            "routing_segment_count": _num(_first(row, "routing_segment_count", "route_segment_count")),
+            "routing_segment_count": _num(
+                _first(
+                    row,
+                    "routing_segment_count",
+                    "route_segment_count",
+                    "planning_debug_routing_segment_count",
+                )
+            ),
             "routing_lane_window_signature": _first(row, "routing_lane_window_signature"),
             "routing_unique_lane_signature": _first(row, "routing_unique_lane_signature"),
         },
@@ -366,11 +382,31 @@ def build_reference_line_contract_event(row: Mapping[str, Any], *, source_confid
             "trajectory_first_segment_heading": first_segment_heading,
             "lane_ids": _list_value(_first(row, "lane_ids", "lane_id_first")),
             "target_lane_ids": _list_value(_first(row, "target_lane_ids", "target_lane_id_first")),
-            "reference_line_count": _num(_first(row, "reference_line_count")),
+            "reference_line_count": _num(
+                _first(row, "reference_line_count", "planning_debug_reference_line_count")
+            ),
             "reference_line_length_max": _num(_first(row, "reference_line_length_max", "reference_line_length")),
-            "routing_segment_count": _num(_first(row, "routing_segment_count", "route_segment_count")),
+            "routing_segment_count": _num(
+                _first(
+                    row,
+                    "routing_segment_count",
+                    "route_segment_count",
+                    "planning_debug_routing_segment_count",
+                )
+            ),
             "lane_follow_map_status": _first(row, "lane_follow_map_status"),
             "reference_line_provider_status": _first(row, "reference_line_provider_status"),
+        },
+        "planning_debug_presence": {
+            "debug_present": _first(row, "planning_debug_debug_present"),
+            "planning_data_present": _first(row, "planning_debug_planning_data_present"),
+            "reference_line_path": _first(row, "planning_debug_reference_line_path"),
+            "reference_line_field_present": _first(row, "planning_debug_reference_line_field_present"),
+            "reference_line_count": _num(_first(row, "planning_debug_reference_line_count")),
+            "routing_path": _first(row, "planning_debug_routing_path"),
+            "routing_field_present": _first(row, "planning_debug_routing_field_present"),
+            "routing_segment_count": _num(_first(row, "planning_debug_routing_segment_count")),
+            "diagnosis": _first(row, "planning_debug_diagnosis"),
         },
         "control": {
             "debug_simple_lat_lateral_error": _num(_first(row, "debug_simple_lat_lateral_error", "apollo_debug_simple_lat_lateral_error")),
@@ -410,6 +446,7 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
     projection_contract = _mapping(contracts.get("apollo_hdmap_projection"))
     planning_projection_alignment = _mapping(report.get("planning_first_point_projection_alignment"))
     reference_debug_export_policy = _mapping(report.get("reference_line_debug_export_policy"))
+    planning_debug_presence = _mapping(report.get("planning_debug_presence"))
     trajectory_sample_surrogate = _mapping(report.get("planning_trajectory_sample_surrogate"))
     control_target_surrogate = _mapping(report.get("control_target_point_vs_planning_trajectory_sample"))
     field_inventory = _mapping(_mapping(report.get("reference_debug_diagnostic")).get("field_inventory"))
@@ -429,6 +466,9 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Non-empty trajectory ratio: `{evidence.get('nonempty_trajectory_ratio')}`",
             f"- Reference-line provider ready ratio: `{evidence.get('reference_line_provider_ready_ratio')}`",
             f"- Reference debug classification: `{_mapping(report.get('reference_debug_diagnostic')).get('classification')}`",
+            f"- Planning debug presence classification: `{planning_debug_presence.get('classification')}`",
+            f"- Planning debug reference-line nonempty ratio: `{planning_debug_presence.get('reference_line_nonempty_ratio')}`",
+            f"- Planning debug routing segment nonempty ratio: `{planning_debug_presence.get('routing_segment_nonempty_ratio')}`",
             f"- Reference debug field inventory: `{field_inventory.get('field_gap_classification')}`",
             f"- Reference debug counter positive rows: `{field_inventory.get('reference_line_count_positive_count')}`",
             f"- Reference debug claim-window source: `{field_inventory.get('claim_window_source')}`",
@@ -472,6 +512,7 @@ def _report(
     rows: Sequence[Mapping[str, Any]],
     localization_contract: Mapping[str, Any] | None,
     planning_materialization: Mapping[str, Any] | None,
+    planning_debug_summary: Mapping[str, Any] | None,
     route_contract: Mapping[str, Any] | None,
     hdmap_projection_rows: Sequence[Mapping[str, Any]] | None,
     source: Mapping[str, Any] | None,
@@ -484,10 +525,12 @@ def _report(
         rows,
         hdmap_projection_rows or [],
     )
+    planning_debug_presence = _planning_debug_presence_summary(rows, planning_debug_summary)
     reference_debug_diagnostic = _reference_debug_diagnostic(
         rows,
         evidence,
         metrics,
+        planning_debug_presence=planning_debug_presence,
         planning_projection_alignment=planning_projection_alignment,
     )
     trajectory_sample_surrogate = _planning_trajectory_sample_surrogate(rows)
@@ -508,6 +551,8 @@ def _report(
         blocking_reasons=list(blocking_reasons),
         route_contract=route_contract,
     )
+    if planning_debug_presence.get("classification") == "routing_present_reference_line_empty":
+        warnings.append("planning_debug_presence_routing_present_reference_line_empty")
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "status": status,
@@ -516,6 +561,7 @@ def _report(
         "evidence": evidence,
         "metrics": metrics,
         "reference_debug_diagnostic": reference_debug_diagnostic,
+        "planning_debug_presence": planning_debug_presence,
         "reference_line_debug_export_policy": reference_debug_export_policy,
         "planning_trajectory_sample_surrogate": trajectory_sample_surrogate,
         "control_target_point_vs_planning_trajectory_sample": control_target_surrogate,
@@ -984,11 +1030,109 @@ def _metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:
     }
 
 
+def _planning_debug_presence_summary(
+    rows: Sequence[Mapping[str, Any]],
+    planning_debug_summary: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    summary_presence = _mapping(_mapping(planning_debug_summary).get("planning_debug_presence"))
+    if summary_presence:
+        out = dict(summary_presence)
+        out["available"] = True
+        out["source"] = "planning_topic_debug_summary"
+        out["classification"] = _planning_debug_presence_classification(out)
+        out["claim_boundary"] = (
+            "Planning debug presence narrows reference-line diagnosis. It does not "
+            "make reference-line evidence claim-grade and does not prove behavior success."
+        )
+        return out
+
+    row_presence = [
+        _mapping(row.get("planning_debug_presence"))
+        for row in rows
+        if isinstance(row.get("planning_debug_presence"), Mapping)
+    ]
+    if not row_presence:
+        return {
+            "available": False,
+            "source": "missing",
+            "classification": "not_available",
+            "claim_boundary": (
+                "No planning_debug_presence summary or row-level fields were found."
+            ),
+        }
+    last = row_presence[-1]
+    out = {
+        "available": True,
+        "source": "row_level_planning_debug_presence",
+        "last_diagnosis": last.get("diagnosis"),
+        "last_reference_line_path": last.get("reference_line_path"),
+        "last_routing_path": last.get("routing_path"),
+        "last_planning_data_present": last.get("planning_data_present"),
+        "last_reference_line_field_present": last.get("reference_line_field_present"),
+        "last_reference_line_count": last.get("reference_line_count"),
+        "last_routing_segment_count": last.get("routing_segment_count"),
+        "planning_data_present_ratio": _presence_bool_ratio(row_presence, "planning_data_present"),
+        "reference_line_field_present_ratio": _presence_bool_ratio(row_presence, "reference_line_field_present"),
+        "reference_line_nonempty_ratio": _presence_nonzero_ratio(row_presence, "reference_line_count"),
+        "routing_field_present_ratio": _presence_bool_ratio(row_presence, "routing_field_present"),
+        "routing_segment_nonempty_ratio": _presence_nonzero_ratio(row_presence, "routing_segment_count"),
+    }
+    out["classification"] = _planning_debug_presence_classification(out)
+    out["claim_boundary"] = (
+        "Planning debug presence narrows reference-line diagnosis. It does not "
+        "make reference-line evidence claim-grade and does not prove behavior success."
+    )
+    return out
+
+
+def _planning_debug_presence_classification(presence: Mapping[str, Any]) -> str:
+    explicit = str(presence.get("last_diagnosis") or "").strip()
+    if explicit:
+        return explicit
+    planning_ratio = _num(presence.get("planning_data_present_ratio"))
+    reference_field_ratio = _num(presence.get("reference_line_field_present_ratio"))
+    reference_nonempty_ratio = _num(presence.get("reference_line_nonempty_ratio"))
+    routing_nonempty_ratio = _num(presence.get("routing_segment_nonempty_ratio"))
+    if planning_ratio == 0.0 or presence.get("last_planning_data_present") is False:
+        return "planning_data_missing"
+    if (
+        (reference_field_ratio or 0.0) > 0.0
+        and (reference_nonempty_ratio or 0.0) == 0.0
+        and (routing_nonempty_ratio or 0.0) > 0.0
+    ):
+        return "routing_present_reference_line_empty"
+    if (reference_nonempty_ratio or 0.0) > 0.0 and (routing_nonempty_ratio or 0.0) > 0.0:
+        return "reference_line_and_routing_present"
+    if (routing_nonempty_ratio or 0.0) > 0.0:
+        return "routing_present_reference_line_field_missing_or_empty"
+    if (reference_nonempty_ratio or 0.0) > 0.0:
+        return "reference_line_present_routing_missing_or_empty"
+    if reference_field_ratio is None and routing_nonempty_ratio is None:
+        return "not_available"
+    return "reference_line_and_routing_empty"
+
+
+def _presence_bool_ratio(rows: Sequence[Mapping[str, Any]], key: str) -> float | None:
+    values = [row.get(key) for row in rows if row.get(key) is not None]
+    if not values:
+        return None
+    return sum(1 for value in values if bool(value)) / float(len(values))
+
+
+def _presence_nonzero_ratio(rows: Sequence[Mapping[str, Any]], key: str) -> float | None:
+    values = [_num(row.get(key)) for row in rows if row.get(key) is not None]
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    return sum(1 for value in values if value > 0.0) / float(len(values))
+
+
 def _reference_debug_diagnostic(
     rows: Sequence[Mapping[str, Any]],
     evidence: Mapping[str, Any],
     metrics: Mapping[str, Any],
     *,
+    planning_debug_presence: Mapping[str, Any] | None = None,
     planning_projection_alignment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     row_count = len(rows)
@@ -1021,8 +1165,11 @@ def _reference_debug_diagnostic(
     else:
         classification = "planning_not_materialized"
     field_inventory = _reference_debug_field_inventory(rows)
+    planning_debug_presence = dict(planning_debug_presence or {})
     return {
         "classification": classification,
+        "planning_debug_presence_classification": planning_debug_presence.get("classification"),
+        "planning_debug_presence": planning_debug_presence,
         "row_count": row_count,
         "trajectory_nonempty_count": trajectory_nonempty_count,
         "trajectory_nonempty_ratio": evidence.get("nonempty_trajectory_ratio"),
@@ -2119,6 +2266,13 @@ def _resolve_run_sources(root: Path) -> dict[str, Path | None]:
     return {
         "contract_path": _find_first(root, ["artifacts/apollo_reference_line_contract.jsonl", "apollo_reference_line_contract.jsonl"]),
         "planning_topic_debug_path": _find_first(root, ["artifacts/planning_topic_debug.jsonl", "planning_topic_debug.jsonl"]),
+        "planning_topic_debug_summary_path": _find_first(
+            root,
+            [
+                "artifacts/planning_topic_debug_summary.json",
+                "planning_topic_debug_summary.json",
+            ],
+        ),
         "planning_route_segment_debug_path": _find_first(root, ["artifacts/planning_route_segment_debug.jsonl", "planning_route_segment_debug.jsonl"]),
         "control_decode_debug_path": _find_control_decode_source(
             root,

@@ -633,19 +633,33 @@ def _anomalies(
         )
     reference_debug_summary = reference_debug_summary if isinstance(reference_debug_summary, Mapping) else {}
     if reference_debug_summary.get("nonempty_planning_with_reference_debug_missing"):
+        presence_classification = str(
+            reference_debug_summary.get("planning_debug_presence_classification") or ""
+        )
+        if presence_classification == "routing_present_reference_line_empty":
+            anomaly_type = "planning_routing_present_but_reference_line_empty"
+            reason = (
+                "Planning debug contains planning_data and routing segments, but "
+                "debug.planning_data.reference_line is present with an empty reference-line list"
+            )
+        else:
+            anomaly_type = "planning_nonempty_but_reference_line_debug_missing"
+            reason = (
+                "Planning trajectories are non-empty while reference-line debug reports zero "
+                "reference lines or provider-not-ready state"
+            )
         anomalies.append(
             _anomaly(
-                "planning_nonempty_but_reference_line_debug_missing",
-                (
-                    "Planning trajectories are non-empty while reference-line debug reports zero "
-                    "reference lines or provider-not-ready state"
-                ),
+                anomaly_type,
+                reason,
                 "reference_line_semantics",
                 nonempty_trajectory_ratio=reference_debug_summary.get("nonempty_trajectory_ratio"),
                 reference_line_provider_ready_ratio=reference_debug_summary.get("reference_line_provider_ready_ratio"),
                 reference_line_count_zero_ratio=reference_debug_summary.get("reference_line_count_zero_ratio"),
                 routing_segment_count_zero_ratio=reference_debug_summary.get("routing_segment_count_zero_ratio"),
                 debug_gap_classification=reference_debug_summary.get("debug_gap_classification"),
+                planning_debug_presence_classification=presence_classification or None,
+                planning_debug_presence=reference_debug_summary.get("planning_debug_presence"),
                 route_segment_available=reference_debug_summary.get("route_segment_available"),
                 control_simple_lat_reference_available=reference_debug_summary.get("control_simple_lat_reference_available"),
                 control_reference_join_coverage_ratio=reference_debug_summary.get("control_reference_join_coverage_ratio"),
@@ -2941,6 +2955,18 @@ def _reference_debug_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
     evidence = payload.get("evidence") if isinstance(payload.get("evidence"), Mapping) else {}
     metrics = payload.get("metrics") if isinstance(payload.get("metrics"), Mapping) else {}
     diagnostic = payload.get("reference_debug_diagnostic") if isinstance(payload.get("reference_debug_diagnostic"), Mapping) else {}
+    planning_debug_presence = (
+        diagnostic.get("planning_debug_presence")
+        if isinstance(diagnostic.get("planning_debug_presence"), Mapping)
+        else payload.get("planning_debug_presence")
+        if isinstance(payload.get("planning_debug_presence"), Mapping)
+        else {}
+    )
+    planning_debug_presence_classification = str(
+        diagnostic.get("planning_debug_presence_classification")
+        or planning_debug_presence.get("classification")
+        or ""
+    )
     warnings = [str(item) for item in payload.get("warnings", []) if item not in {None, ""}]
     nonempty_ratio = _num(evidence.get("nonempty_trajectory_ratio"))
     ready_ratio = _num(evidence.get("reference_line_provider_ready_ratio"))
@@ -2948,6 +2974,7 @@ def _reference_debug_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
     routing_segment_zero_ratio = _num(metrics.get("routing_segment_count_zero_ratio"))
     debug_missing = (
         "reference_line_count_zero_debug_counter_with_nonempty_trajectory" in warnings
+        or planning_debug_presence_classification == "routing_present_reference_line_empty"
         or (nonempty_ratio is not None and nonempty_ratio > 0.0 and count_zero_ratio == 1.0)
         or (nonempty_ratio is not None and nonempty_ratio > 0.0 and ready_ratio == 0.0)
     )
@@ -2961,6 +2988,8 @@ def _reference_debug_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "reference_line_count_zero_ratio": count_zero_ratio,
         "routing_segment_count_zero_ratio": routing_segment_zero_ratio,
         "debug_gap_classification": diagnostic.get("classification"),
+        "planning_debug_presence_classification": planning_debug_presence_classification or None,
+        "planning_debug_presence": planning_debug_presence,
         "route_segment_available": diagnostic.get("route_segment_available"),
         "control_simple_lat_reference_available": diagnostic.get("control_simple_lat_reference_available"),
         "control_reference_join_coverage_ratio": diagnostic.get("control_reference_join_coverage_ratio"),

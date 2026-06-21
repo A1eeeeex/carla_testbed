@@ -68,7 +68,8 @@ Layered progress status:
 
 - Phase 1 overall: `PARTIAL`
 - Local accepted comparison-surface catalog: `DONE as local artifact surface`
-- Package-level acceptance surface: `LOCAL_PACK_DONE / pending external review`
+- Package-level acceptance surface: `LOCAL_PACK_CANDIDATE / not external-accepted`
+- Latest external Pro-audit completion verdict: `PARTIAL / Phase 1 done claim rejected`
 - Phase 1 completion gate: `PARTIAL`
 - Representative Apollo behavior capability: `PARTIAL / failing samples remain`
 - Apollo natural-driving or no-interference capability claim: `NOT_CLAIMED`
@@ -95,10 +96,14 @@ Pro-audit reconciliation:
   traces, `phase1_status.json`, artifact-completeness reports, assist ledgers,
   and a SHA256 manifest, then the package-level audit status is `PARTIAL` even
   when the local repository can recompute `8 DONE`.
+- The latest Pro audit explicitly rejected the stronger "Phase 1 complete" /
+  "8 scenarios externally DONE" reading. Treat the local pack as a candidate
+  evidence surface until an external reviewer can independently recompute the
+  exact accepted bundles from the packaged raw artifacts and hashes.
 - Phase 1 progress must therefore be reported in three layers:
   local accepted comparison-surface catalog = `local artifact-surface DONE`;
-  external review package completeness = `PARTIAL` until the self-contained
-  pack is present and independently recomputable; Phase 1 overall = `PARTIAL`
+  package-level review surface = `candidate / not external-accepted` until the
+  self-contained pack is independently recomputed; Phase 1 overall = `PARTIAL`
   until representative Apollo online behavior blockers and the external-backend
   runtime path are reduced.
 

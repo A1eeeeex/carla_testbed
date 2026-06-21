@@ -282,6 +282,69 @@ def test_reference_debug_missing_with_nonempty_planning_is_context_anomaly(tmp_p
     assert report["anomalies"][0]["evidence"]["control_reference_join_coverage_ratio"] == 0.95
 
 
+def test_reference_debug_presence_empty_reference_line_gets_specific_anomaly(tmp_path: Path) -> None:
+    timeseries = _write_rows(tmp_path / "timeseries.csv", _base_rows())
+    reference_contract = tmp_path / "apollo_reference_line_contract_report.json"
+    reference_contract.write_text(
+        json.dumps(
+            {
+                "status": "warn",
+                "warnings": [
+                    "planning_debug_presence_routing_present_reference_line_empty",
+                ],
+                "evidence": {
+                    "nonempty_trajectory_ratio": 0.91,
+                    "reference_line_provider_ready_ratio": 0.0,
+                },
+                "metrics": {
+                    "reference_line_count_zero_ratio": 1.0,
+                    "routing_segment_count_zero_ratio": 0.48,
+                },
+                "planning_debug_presence": {
+                    "classification": "routing_present_reference_line_empty",
+                    "planning_data_present_ratio": 1.0,
+                    "reference_line_field_present_ratio": 1.0,
+                    "reference_line_nonempty_ratio": 0.0,
+                    "routing_segment_nonempty_ratio": 0.52,
+                },
+                "reference_debug_diagnostic": {
+                    "classification": "planning_reference_line_debug_export_gap",
+                    "planning_debug_presence_classification": "routing_present_reference_line_empty",
+                    "planning_debug_presence": {
+                        "classification": "routing_present_reference_line_empty",
+                        "planning_data_present_ratio": 1.0,
+                        "reference_line_field_present_ratio": 1.0,
+                        "reference_line_nonempty_ratio": 0.0,
+                        "routing_segment_nonempty_ratio": 0.52,
+                    },
+                    "route_segment_available": True,
+                    "control_simple_lat_reference_available": True,
+                    "control_reference_join_coverage_ratio": 0.95,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics(
+        timeseries=timeseries,
+        reference_line_contract=reference_contract,
+    )
+
+    assert "planning_routing_present_but_reference_line_empty" in _types(report)
+    assert "planning_nonempty_but_reference_line_debug_missing" not in _types(report)
+    summary = report["reference_debug_summary"]
+    assert summary["planning_debug_presence_classification"] == (
+        "routing_present_reference_line_empty"
+    )
+    anomaly = next(
+        item
+        for item in report["anomalies"]
+        if item["type"] == "planning_routing_present_but_reference_line_empty"
+    )
+    assert anomaly["evidence"]["planning_debug_presence"]["reference_line_nonempty_ratio"] == 0.0
+
+
 def test_lateral_drift_window_records_route_s_and_target_context(tmp_path: Path) -> None:
     rows = _base_rows()
     for index, row in enumerate(rows):
