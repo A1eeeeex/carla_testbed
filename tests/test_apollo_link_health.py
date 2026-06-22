@@ -498,6 +498,40 @@ def test_lane_invasion_context_merges_lane_event_control_and_path_candidate_evid
                             "mapped_to_applied_steer_consistent_before_event",
                         ],
                     },
+                    "vehicle_response_context": {
+                        "available": True,
+                        "classification": "applied_steer_yaw_response_tracks_progressive_lateral_departure",
+                        "vehicle_response_rows_available": True,
+                        "vehicle_response_sample_count": 16,
+                    },
+                    "path_control_context": {
+                        "available": True,
+                        "control_target_vs_path_candidate_classification": (
+                            "control_target_between_planning_path_candidate_lateral_bounds"
+                        ),
+                        "reference_line_claim_grade_allowed": False,
+                        "target_inside_path_lateral_envelope": True,
+                        "target_point_lane_l_abs_p95_m": 0.000001,
+                        "target_point_to_path_candidate_line_abs_p95_m": 0.82,
+                        "path_candidate_lane_l_min_m": -1.25,
+                        "path_candidate_lane_l_max_m": 0.82,
+                        "path_candidate_hdmap_classification": (
+                            "planning_debug_path_candidate_lateral_offset_from_hdmap_lane_center"
+                        ),
+                        "routing_lane_window_compatible": True,
+                    },
+                    "lane_event_attribution": {
+                        "available": True,
+                        "classification": (
+                            "progressive_lane_departure_with_vehicle_response_and_control_target_between_path_candidate_bounds"
+                        ),
+                        "reasons": [
+                            "departure_diagnostics_progressive",
+                            "vehicle_response_tracks_applied_steer_yaw_and_lateral_departure",
+                            "control_target_between_path_candidate_lateral_bounds",
+                        ],
+                        "reference_line_claim_grade_allowed": False,
+                    },
                 }
             ],
         },
@@ -520,8 +554,14 @@ def test_lane_invasion_context_merges_lane_event_control_and_path_candidate_evid
     context = report["layers"]["natural_driving_outcome"]["key_metrics"]["lane_invasion_context"]
 
     assert context["classification"] == (
-        "progressive_lane_departure_with_control_target_between_path_candidate_bounds"
+        "progressive_lane_departure_with_vehicle_response_and_control_target_between_path_candidate_bounds"
     )
+    assert context["lane_event_attribution_classification"] == context["classification"]
+    assert context["vehicle_response_classification"] == (
+        "applied_steer_yaw_response_tracks_progressive_lateral_departure"
+    )
+    assert context["vehicle_response_tracks_progressive_departure"] is True
+    assert context["vehicle_response_rows_available"] is True
     assert context["failure_timeline_anchor_event"] == "lane_invasion"
     assert context["trigger_footprint_intersects_marking"] is True
     assert context["mapped_to_applied_steer_max_abs_error"] == 0.0

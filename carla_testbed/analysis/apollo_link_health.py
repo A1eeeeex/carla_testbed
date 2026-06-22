@@ -3680,6 +3680,21 @@ def _lane_invasion_context(
         if isinstance(run_report.get("static_crossing_check"), Mapping)
         else {}
     )
+    lane_event_attribution = (
+        run_report.get("lane_event_attribution")
+        if isinstance(run_report.get("lane_event_attribution"), Mapping)
+        else {}
+    )
+    vehicle_response_context = (
+        run_report.get("vehicle_response_context")
+        if isinstance(run_report.get("vehicle_response_context"), Mapping)
+        else {}
+    )
+    path_control_context = (
+        run_report.get("path_control_context")
+        if isinstance(run_report.get("path_control_context"), Mapping)
+        else {}
+    )
     control = departure.get("control") if isinstance(departure.get("control"), Mapping) else {}
     timeline_anchor = (
         failure_timeline.get("anchor_event")
@@ -3726,10 +3741,25 @@ def _lane_invasion_context(
         == "control_target_between_planning_path_candidate_lateral_bounds"
     ):
         classification = "progressive_lane_departure_with_control_target_between_path_candidate_bounds"
+    if lane_event_attribution.get("available") and lane_event_attribution.get("classification"):
+        classification = str(lane_event_attribution.get("classification"))
     return {
         "available": bool(run_report),
         "classification": classification,
         "diagnostic_only": True,
+        "lane_event_attribution_classification": lane_event_attribution.get("classification"),
+        "lane_event_attribution_reasons": lane_event_attribution.get("reasons"),
+        "vehicle_response_classification": vehicle_response_context.get("classification"),
+        "vehicle_response_tracks_progressive_departure": (
+            vehicle_response_context.get("classification")
+            == "applied_steer_yaw_response_tracks_progressive_lateral_departure"
+        ),
+        "vehicle_response_rows_available": vehicle_response_context.get(
+            "vehicle_response_rows_available"
+        ),
+        "vehicle_response_sample_count": vehicle_response_context.get(
+            "vehicle_response_sample_count"
+        ),
         "lane_invasion_count": lane_count,
         "lane_event_contract_status": baguang_lane_event_contract.get("status"),
         "lane_event_run_status": run_report.get("status") if run_report else None,
@@ -3772,24 +3802,48 @@ def _lane_invasion_context(
         "applied_steer_same_sign_as_cross_track_error": control.get(
             "applied_steer_same_sign_as_cross_track_error"
         ),
-        "control_target_path_candidate_classification": target_path.get("classification"),
-        "control_target_lane_l_abs_p95_m": target_path.get("target_point_lane_l_abs_p95_m"),
+        "control_target_path_candidate_classification": (
+            path_control_context.get("control_target_vs_path_candidate_classification")
+            or target_path.get("classification")
+        ),
+        "control_target_lane_l_abs_p95_m": (
+            path_control_context.get("target_point_lane_l_abs_p95_m")
+            if path_control_context
+            else target_path.get("target_point_lane_l_abs_p95_m")
+        ),
         "control_target_to_path_candidate_line_abs_p95_m": target_path.get(
             "target_point_to_path_candidate_line_abs_p95_m"
-        ),
+        )
+        if target_path
+        else path_control_context.get("target_point_to_path_candidate_line_abs_p95_m"),
         "control_target_inside_path_lateral_envelope": target_path.get(
             "target_inside_path_lateral_envelope"
+        )
+        if target_path
+        else path_control_context.get("target_inside_path_lateral_envelope"),
+        "path_candidate_lane_l_min_m": target_path.get("path_candidate_lane_l_min_m")
+        if target_path
+        else path_control_context.get("path_candidate_lane_l_min_m"),
+        "path_candidate_lane_l_max_m": target_path.get("path_candidate_lane_l_max_m")
+        if target_path
+        else path_control_context.get("path_candidate_lane_l_max_m"),
+        "path_candidate_hdmap_projection_classification": (
+            path_control_context.get("path_candidate_hdmap_classification")
+            or path_hdmap.get("classification")
         ),
-        "path_candidate_lane_l_min_m": target_path.get("path_candidate_lane_l_min_m"),
-        "path_candidate_lane_l_max_m": target_path.get("path_candidate_lane_l_max_m"),
-        "path_candidate_hdmap_projection_classification": path_hdmap.get("classification"),
         "path_candidate_routing_lane_window_compatible": path_hdmap.get(
             "routing_lane_window_compatible"
-        ),
+        )
+        if path_hdmap
+        else path_control_context.get("routing_lane_window_compatible"),
         "reference_line_claim_grade_allowed": (
-            target_path.get("reference_line_claim_grade_allowed")
-            if target_path
-            else path_hdmap.get("reference_line_claim_grade_allowed")
+            path_control_context.get("reference_line_claim_grade_allowed")
+            if path_control_context
+            else (
+                target_path.get("reference_line_claim_grade_allowed")
+                if target_path
+                else path_hdmap.get("reference_line_claim_grade_allowed")
+            )
         ),
         "interpretation": interpretation,
         "claim_boundary": (

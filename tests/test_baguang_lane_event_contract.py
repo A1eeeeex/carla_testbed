@@ -143,6 +143,72 @@ def _write_run(
         )
 
 
+def _write_lane_event_attribution_inputs(run: Path) -> None:
+    control_health = run / "analysis" / "control_health" / "control_health_report.json"
+    control_health.parent.mkdir(parents=True, exist_ok=True)
+    control_health.write_text(
+        json.dumps(
+            {
+                "status": "warn",
+                "metrics": {
+                    "lane_event_response_context": {
+                        "classification": "applied_steer_yaw_response_tracks_progressive_lateral_departure",
+                        "cross_track_error_abs_growth_m": 0.47,
+                        "heading_error_abs_growth_rad": 0.11,
+                        "applied_steer_mean": -0.07,
+                        "applied_steer_end": -0.13,
+                        "yaw_rate_mean_rad_s": -0.12,
+                        "yaw_rate_end_rad_s": -0.20,
+                        "vehicle_response_rows_available": True,
+                        "vehicle_response_sample_count": 16,
+                        "applied_steer_yaw_rate_same_sign": True,
+                        "cte_growth_yaw_rate_same_sign": True,
+                        "heading_growth_yaw_rate_same_sign": True,
+                        "cte_growth_applied_steer_same_sign": True,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    reference_line = (
+        run
+        / "analysis"
+        / "apollo_reference_line_contract"
+        / "apollo_reference_line_contract_report.json"
+    )
+    reference_line.parent.mkdir(parents=True, exist_ok=True)
+    reference_line.write_text(
+        json.dumps(
+            {
+                "status": "warn",
+                "control_target_point_vs_planning_path_candidate_sample": {
+                    "classification": "control_target_between_planning_path_candidate_lateral_bounds",
+                    "target_inside_path_lateral_envelope": True,
+                    "target_point_lane_l_abs_p95_m": 0.0,
+                    "target_point_to_path_candidate_line_abs_p95_m": 0.82,
+                    "path_candidate_lane_l_min_m": -1.25,
+                    "path_candidate_lane_l_max_m": 0.82,
+                    "path_candidate_lane_l_abs_p95_m": 1.25,
+                    "reference_line_claim_grade_allowed": False,
+                },
+                "planning_debug_path_candidate_hdmap_projection_alignment": {
+                    "classification": "planning_debug_path_candidate_lateral_offset_from_hdmap_lane_center",
+                    "routing_lane_window_compatible": True,
+                    "path_candidate_lane_l_abs_p95_m": 1.25,
+                    "reference_line_claim_grade_allowed": False,
+                },
+                "planning_debug_path_candidate_vs_trajectory_sample": {
+                    "classification": "planning_debug_path_candidate_offset_from_planning_trajectory_sample_support",
+                    "path_candidate_to_planning_sample_line_abs_p95_m": 3.08,
+                    "reference_line_claim_grade_allowed": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_parse_xodr_lane_contracts(tmp_path: Path) -> None:
     xodr = tmp_path / "straight_road_for_baguang.xodr"
     _write_xodr(xodr)
@@ -191,6 +257,36 @@ def test_high_cte_lane_invasion_is_not_quarantined(tmp_path: Path) -> None:
     assert diagnostics["control"]["raw_mapped_applied_steer_available"] is True
     assert diagnostics["control"]["carla_steer_applied_end"] == 0.12
     assert diagnostics["control"]["mapped_to_applied_steer_abs_error"]["max_abs_error"] == 0.0
+
+
+def test_lane_event_contract_carries_vehicle_response_and_path_control_attribution(
+    tmp_path: Path,
+) -> None:
+    xodr = tmp_path / "straight_road_for_baguang.xodr"
+    run = tmp_path / "run"
+    _write_xodr(xodr)
+    _write_run(run, cross_track_error=1.2, distance_x=40.0)
+    _write_lane_event_attribution_inputs(run)
+
+    report = analyze_baguang_lane_event_contract(xodr_path=xodr, run_dirs=[run])
+    run_report = report["run_reports"][0]
+
+    assert report["status"] == "fail"
+    assert run_report["departure_diagnostics"]["classification"] == "downstream_progressive_lane_departure"
+    assert run_report["vehicle_response_context"]["classification"] == (
+        "applied_steer_yaw_response_tracks_progressive_lateral_departure"
+    )
+    assert run_report["path_control_context"]["control_target_vs_path_candidate_classification"] == (
+        "control_target_between_planning_path_candidate_lateral_bounds"
+    )
+    assert run_report["path_control_context"]["reference_line_claim_grade_allowed"] is False
+    attribution = run_report["lane_event_attribution"]
+    assert attribution["classification"] == (
+        "progressive_lane_departure_with_vehicle_response_and_control_target_between_path_candidate_bounds"
+    )
+    assert attribution["reference_line_claim_grade_allowed"] is False
+    assert "control_target_between_path_candidate_lateral_bounds" in attribution["reasons"]
+    assert "does not alter the lane-event hard gate" in attribution["claim_boundary"]
 
 
 def test_downstream_lane_invasion_before_footprint_crossing_is_quarantined(tmp_path: Path) -> None:

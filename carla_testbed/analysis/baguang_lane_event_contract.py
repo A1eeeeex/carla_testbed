@@ -193,6 +193,13 @@ def analyze_lane_event_run_dir(
         early_event_distance_m=float(early_event_distance_m),
         control_apply_rows=_read_jsonl_rows(root / "artifacts" / "control_apply_trace.jsonl"),
     )
+    vehicle_response_context = _lane_event_vehicle_response_context(root)
+    path_control_context = _lane_event_path_control_context(root)
+    lane_event_attribution = _lane_event_attribution(
+        departure_diagnostics,
+        vehicle_response_context=vehicle_response_context,
+        path_control_context=path_control_context,
+    )
     initial_cte = _first_number_aliases(rows, ("cross_track_error", "cross_track_error_m"))
     initial_footprint = _footprint_crossing_check(initial_cte, initial_crossing_offset)
     trigger_footprint = _footprint_crossing_check(trigger_cte, trigger_crossing_offset)
@@ -273,6 +280,9 @@ def analyze_lane_event_run_dir(
             "trigger_marking_type_reason": marking_match.get("reason"),
         },
         "departure_diagnostics": departure_diagnostics,
+        "vehicle_response_context": vehicle_response_context,
+        "path_control_context": path_control_context,
+        "lane_event_attribution": lane_event_attribution,
         "crossed_marking_check": marking_match,
         "vehicle_footprint": footprint,
         "offset_sweep": offset_sweep,
@@ -702,6 +712,167 @@ def _departure_diagnostics(
     }
 
 
+def _lane_event_vehicle_response_context(root: Path) -> dict[str, Any]:
+    report = _read_json(root / "analysis" / "control_health" / "control_health_report.json")
+    metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+    context = (
+        metrics.get("lane_event_response_context")
+        if isinstance(metrics.get("lane_event_response_context"), Mapping)
+        else {}
+    )
+    if not context:
+        return {
+            "available": False,
+            "reason": "control_health_lane_event_response_context_missing",
+            "source": "analysis/control_health/control_health_report.json",
+        }
+    return {
+        "available": True,
+        "source": "analysis/control_health/control_health_report.json",
+        "control_health_status": report.get("status"),
+        "classification": context.get("classification"),
+        "cross_track_error_abs_growth_m": context.get("cross_track_error_abs_growth_m"),
+        "heading_error_abs_growth_rad": context.get("heading_error_abs_growth_rad"),
+        "applied_steer_mean": context.get("applied_steer_mean"),
+        "applied_steer_end": context.get("applied_steer_end"),
+        "yaw_rate_mean_rad_s": context.get("yaw_rate_mean_rad_s"),
+        "yaw_rate_end_rad_s": context.get("yaw_rate_end_rad_s"),
+        "vehicle_response_rows_available": context.get("vehicle_response_rows_available"),
+        "vehicle_response_sample_count": context.get("vehicle_response_sample_count"),
+        "applied_steer_yaw_rate_same_sign": context.get("applied_steer_yaw_rate_same_sign"),
+        "cte_growth_yaw_rate_same_sign": context.get("cte_growth_yaw_rate_same_sign"),
+        "heading_growth_yaw_rate_same_sign": context.get("heading_growth_yaw_rate_same_sign"),
+        "cte_growth_applied_steer_same_sign": context.get("cte_growth_applied_steer_same_sign"),
+    }
+
+
+def _lane_event_path_control_context(root: Path) -> dict[str, Any]:
+    report = _read_json(
+        root / "analysis" / "apollo_reference_line_contract" / "apollo_reference_line_contract_report.json"
+    )
+    target_vs_path = (
+        report.get("control_target_point_vs_planning_path_candidate_sample")
+        if isinstance(report.get("control_target_point_vs_planning_path_candidate_sample"), Mapping)
+        else {}
+    )
+    path_hdmap = (
+        report.get("planning_debug_path_candidate_hdmap_projection_alignment")
+        if isinstance(report.get("planning_debug_path_candidate_hdmap_projection_alignment"), Mapping)
+        else {}
+    )
+    path_vs_traj = (
+        report.get("planning_debug_path_candidate_vs_trajectory_sample")
+        if isinstance(report.get("planning_debug_path_candidate_vs_trajectory_sample"), Mapping)
+        else {}
+    )
+    if not target_vs_path and not path_hdmap and not path_vs_traj:
+        return {
+            "available": False,
+            "reason": "reference_line_path_candidate_context_missing",
+            "source": "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
+        }
+    return {
+        "available": True,
+        "source": "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",
+        "reference_line_status": report.get("status"),
+        "reference_line_claim_grade_allowed": _first_non_none(
+            target_vs_path.get("reference_line_claim_grade_allowed"),
+            path_hdmap.get("reference_line_claim_grade_allowed"),
+            path_vs_traj.get("reference_line_claim_grade_allowed"),
+        ),
+        "control_target_vs_path_candidate_classification": target_vs_path.get("classification"),
+        "target_inside_path_lateral_envelope": target_vs_path.get(
+            "target_inside_path_lateral_envelope"
+        ),
+        "target_point_lane_l_abs_p95_m": target_vs_path.get("target_point_lane_l_abs_p95_m"),
+        "target_point_to_path_candidate_line_abs_p95_m": target_vs_path.get(
+            "target_point_to_path_candidate_line_abs_p95_m"
+        ),
+        "path_candidate_lane_l_min_m": _first_non_none(
+            target_vs_path.get("path_candidate_lane_l_min_m"),
+            path_hdmap.get("path_candidate_lane_l_min_m"),
+        ),
+        "path_candidate_lane_l_max_m": _first_non_none(
+            target_vs_path.get("path_candidate_lane_l_max_m"),
+            path_hdmap.get("path_candidate_lane_l_max_m"),
+        ),
+        "path_candidate_lane_l_abs_p95_m": _first_non_none(
+            target_vs_path.get("path_candidate_lane_l_abs_p95_m"),
+            path_hdmap.get("path_candidate_lane_l_abs_p95_m"),
+        ),
+        "path_candidate_hdmap_classification": path_hdmap.get("classification"),
+        "routing_lane_window_compatible": path_hdmap.get("routing_lane_window_compatible"),
+        "path_candidate_vs_trajectory_classification": path_vs_traj.get("classification"),
+        "path_candidate_to_planning_sample_line_abs_p95_m": path_vs_traj.get(
+            "path_candidate_to_planning_sample_line_abs_p95_m"
+        ),
+        "claim_boundary": (
+            "Path candidate and Control target context is diagnostic only. It cannot replace "
+            "claim-grade Planning reference-line evidence or make a lane-invasion run pass."
+        ),
+    }
+
+
+def _lane_event_attribution(
+    departure: Mapping[str, Any],
+    *,
+    vehicle_response_context: Mapping[str, Any],
+    path_control_context: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not departure.get("available"):
+        return {
+            "available": False,
+            "classification": "insufficient_data",
+            "reason": "departure_diagnostics_missing",
+            "claim_boundary": "No behavior claim can be made from missing lane-event diagnostics.",
+        }
+    classification = "lane_event_attribution_available"
+    reasons: list[str] = []
+    if departure.get("classification") == "downstream_progressive_lane_departure":
+        classification = "downstream_progressive_lane_departure"
+        reasons.append("departure_diagnostics_progressive")
+    vehicle_tracks = (
+        vehicle_response_context.get("classification")
+        == "applied_steer_yaw_response_tracks_progressive_lateral_departure"
+    )
+    if vehicle_tracks:
+        reasons.append("vehicle_response_tracks_applied_steer_yaw_and_lateral_departure")
+    target_between = (
+        path_control_context.get("control_target_vs_path_candidate_classification")
+        == "control_target_between_planning_path_candidate_lateral_bounds"
+        or path_control_context.get("target_inside_path_lateral_envelope") is True
+    )
+    if target_between:
+        reasons.append("control_target_between_path_candidate_lateral_bounds")
+    if (
+        departure.get("classification") == "downstream_progressive_lane_departure"
+        and vehicle_tracks
+        and target_between
+    ):
+        classification = (
+            "progressive_lane_departure_with_vehicle_response_and_control_target_between_path_candidate_bounds"
+        )
+    elif departure.get("classification") == "downstream_progressive_lane_departure" and vehicle_tracks:
+        classification = "progressive_lane_departure_with_vehicle_response"
+    elif departure.get("classification") == "downstream_progressive_lane_departure" and target_between:
+        classification = "progressive_lane_departure_with_control_target_between_path_candidate_bounds"
+    return {
+        "available": True,
+        "classification": classification,
+        "reasons": reasons,
+        "vehicle_response_context_available": bool(vehicle_response_context.get("available")),
+        "path_control_context_available": bool(path_control_context.get("available")),
+        "reference_line_claim_grade_allowed": path_control_context.get(
+            "reference_line_claim_grade_allowed"
+        ),
+        "claim_boundary": (
+            "This is lane-event attribution evidence only. It does not alter the lane-event "
+            "hard gate, does not prove Apollo natural driving, and must not be used to bypass "
+            "reference-line or no-assist claim gates."
+        ),
+    }
+
+
 def _trigger_row_index(rows: list[dict[str, str]], trigger: Mapping[str, Any]) -> int | None:
     row_frame = _number(trigger.get("row_frame"), trigger.get("event_frame"))
     row_frame_id = _number(trigger.get("row_frame_id"), trigger.get("event_frame"))
@@ -942,6 +1113,13 @@ def _bool_or_none(value: Any) -> bool | None:
     return None
 
 
+def _first_non_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
 def _target_lane_marking_types(target_lane: LaneContract | None) -> list[str]:
     if target_lane is None:
         return []
@@ -1064,6 +1242,9 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
         marking = item.get("crossed_marking_check") if isinstance(item.get("crossed_marking_check"), Mapping) else {}
         offset_sweep = item.get("offset_sweep") if isinstance(item.get("offset_sweep"), Mapping) else {}
         departure = item.get("departure_diagnostics") if isinstance(item.get("departure_diagnostics"), Mapping) else {}
+        attribution = item.get("lane_event_attribution") if isinstance(item.get("lane_event_attribution"), Mapping) else {}
+        vehicle_response = item.get("vehicle_response_context") if isinstance(item.get("vehicle_response_context"), Mapping) else {}
+        path_control = item.get("path_control_context") if isinstance(item.get("path_control_context"), Mapping) else {}
         control = departure.get("control") if isinstance(departure.get("control"), Mapping) else {}
         mapped_to_applied = (
             control.get("mapped_to_applied_steer_abs_error")
@@ -1097,6 +1278,11 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
                 f"- trigger_clearance_to_marking_m: `{(item.get('static_crossing_check') or {}).get('trigger_clearance_to_marking_m')}`",
                 f"- trigger_footprint_intersects_marking: `{(item.get('static_crossing_check') or {}).get('trigger_footprint_intersects_marking')}`",
                 f"- departure_classification: `{departure.get('classification')}`",
+                f"- lane_event_attribution: `{attribution.get('classification')}`",
+                f"- lane_event_attribution_reasons: `{attribution.get('reasons')}`",
+                f"- vehicle_response_classification: `{vehicle_response.get('classification')}`",
+                f"- path_control_classification: `{path_control.get('control_target_vs_path_candidate_classification')}`",
+                f"- path_control_reference_line_claim_grade_allowed: `{path_control.get('reference_line_claim_grade_allowed')}`",
                 f"- departure_interpretation: `{departure.get('interpretation')}`",
                 f"- departure_control_source: `{control.get('source')}`",
                 f"- control_apply_trace_rows_used: `{control.get('control_apply_trace_rows_used')}`",

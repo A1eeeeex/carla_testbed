@@ -278,6 +278,15 @@ Interpretation:
   progressive departure, so the next highest-value analysis is
   path-boundary/reference-line semantics versus downstream control target
   choice.
+  The newest lane-event contract refresh folds both pieces into the lane-event
+  hard-gate audit itself:
+  `lane_event_attribution.classification=progressive_lane_departure_with_vehicle_response_and_control_target_between_path_candidate_bounds`.
+  The refreshed link-health report now carries the same classification in
+  `natural_driving_outcome.key_metrics.lane_invasion_context`. This is a
+  cleaner attribution surface for audit packages, but it deliberately does not
+  change the run status: the report remains a lane-invasion failure,
+  reference-line claim-grade remains false, and no-assist/natural-driving
+  claims remain blocked.
   The same cycle fixed a claim-boundary regression in `apollo_link_health`:
   a derived `analysis/assist_ledger/assist_ledger.json` with `source_artifact=config`
   can no longer clear a blocking assist declared in `manifest.json` or
