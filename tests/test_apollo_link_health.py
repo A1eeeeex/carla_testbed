@@ -541,6 +541,16 @@ def test_lane_invasion_context_merges_lane_event_control_and_path_candidate_evid
                         "absolute_magnitude_gate_allowed": True,
                         "recommended_action": "relabel_or_explicitly_convert_before_sign_sensitive_gate",
                     },
+                    "projection_lateral_context": {
+                        "available": True,
+                        "source": "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
+                        "classification": "route_lateral_sign_inverted_vs_apollo_projection_candidate",
+                        "projection_route_sample_contract_classification": (
+                            "timeseries_route_lateral_sign_inverted_vs_projection_route_samples"
+                        ),
+                        "timeseries_lateral_vs_projection_route_sample_opposite_sign_ratio": 1.0,
+                        "simple_lat_vs_projection_route_sample_same_sign_ratio": 1.0,
+                    },
                 }
             ],
         },
@@ -577,6 +587,14 @@ def test_lane_invasion_context_merges_lane_event_control_and_path_candidate_evid
     assert context["route_lateral_recommended_action"] == (
         "relabel_or_explicitly_convert_before_sign_sensitive_gate"
     )
+    assert context["projection_lateral_context_classification"] == (
+        "route_lateral_sign_inverted_vs_apollo_projection_candidate"
+    )
+    assert context["projection_route_sample_contract_classification"] == (
+        "timeseries_route_lateral_sign_inverted_vs_projection_route_samples"
+    )
+    assert context["timeseries_lateral_vs_projection_route_sample_opposite_sign_ratio"] == 1.0
+    assert context["simple_lat_vs_projection_route_sample_same_sign_ratio"] == 1.0
     assert context["failure_timeline_anchor_event"] == "lane_invasion"
     assert context["trigger_footprint_intersects_marking"] is True
     assert context["mapped_to_applied_steer_max_abs_error"] == 0.0

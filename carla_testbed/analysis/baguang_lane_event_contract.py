@@ -79,7 +79,7 @@ def analyze_baguang_lane_event_contract(
         ),
         "lane_invasion_trigger_inconsistent_with_centerline_evidence",
     )
-    return {
+    report = {
         "schema_version": BAGUANG_LANE_EVENT_CONTRACT_SCHEMA_VERSION,
         "status": status,
         "map_name": "straight_road_for_baguang",
@@ -97,6 +97,8 @@ def analyze_baguang_lane_event_contract(
             "early_event_distance_m": float(early_event_distance_m),
         },
     }
+    report["representative_run_context"] = _representative_run_context(run_reports)
+    return report
 
 
 def parse_xodr_lane_contracts(xodr_path: str | Path) -> list[LaneContract]:
@@ -196,6 +198,10 @@ def analyze_lane_event_run_dir(
     vehicle_response_context = _lane_event_vehicle_response_context(root)
     path_control_context = _lane_event_path_control_context(root)
     route_lateral_sign_policy = _lane_event_route_lateral_sign_policy(root)
+    projection_lateral_context = _lane_event_projection_lateral_context(
+        root,
+        route_lateral_sign_policy=route_lateral_sign_policy,
+    )
     lane_event_attribution = _lane_event_attribution(
         departure_diagnostics,
         vehicle_response_context=vehicle_response_context,
@@ -285,6 +291,7 @@ def analyze_lane_event_run_dir(
         "vehicle_response_context": vehicle_response_context,
         "path_control_context": path_control_context,
         "route_lateral_sign_policy": route_lateral_sign_policy,
+        "projection_lateral_context": projection_lateral_context,
         "lane_event_attribution": lane_event_attribution,
         "crossed_marking_check": marking_match,
         "vehicle_footprint": footprint,
@@ -901,6 +908,158 @@ def _lane_event_route_lateral_sign_policy(root: Path) -> dict[str, Any]:
     }
 
 
+def _lane_event_projection_lateral_context(
+    root: Path,
+    *,
+    route_lateral_sign_policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    lateral = _read_json(
+        root / "analysis" / "apollo_lateral_semantics" / "apollo_lateral_semantics_report.json"
+    )
+    alignment = (
+        lateral.get("lateral_sign_alignment")
+        if isinstance(lateral.get("lateral_sign_alignment"), Mapping)
+        else {}
+    )
+    if alignment:
+        frame = (
+            alignment.get("lateral_frame_convention_diagnostic")
+            if isinstance(alignment.get("lateral_frame_convention_diagnostic"), Mapping)
+            else {}
+        )
+        official = (
+            alignment.get("official_hdmap_projection_alignment")
+            if isinstance(alignment.get("official_hdmap_projection_alignment"), Mapping)
+            else {}
+        )
+        provenance = (
+            alignment.get("route_lateral_provenance")
+            if isinstance(alignment.get("route_lateral_provenance"), Mapping)
+            else {}
+        )
+        projection_contract = (
+            provenance.get("projection_route_sample_sign_contract")
+            if isinstance(provenance.get("projection_route_sample_sign_contract"), Mapping)
+            else {}
+        )
+        timeseries_vs_projection = (
+            projection_contract.get("timeseries_lateral_vs_projection_route_sample_signed_lateral")
+            if isinstance(
+                projection_contract.get("timeseries_lateral_vs_projection_route_sample_signed_lateral"),
+                Mapping,
+            )
+            else {}
+        )
+        simple_lat_vs_projection = (
+            projection_contract.get("simple_lat_vs_projection_route_sample_signed_lateral")
+            if isinstance(
+                projection_contract.get("simple_lat_vs_projection_route_sample_signed_lateral"),
+                Mapping,
+            )
+            else {}
+        )
+        semantics = (
+            alignment.get("route_lateral_field_semantics")
+            if isinstance(alignment.get("route_lateral_field_semantics"), Mapping)
+            else {}
+        )
+        magnitude = (
+            alignment.get("route_simple_lat_magnitude_alignment")
+            if isinstance(alignment.get("route_simple_lat_magnitude_alignment"), Mapping)
+            else {}
+        )
+        station = (
+            alignment.get("route_station_frame_alignment")
+            if isinstance(alignment.get("route_station_frame_alignment"), Mapping)
+            else {}
+        )
+        return {
+            "available": True,
+            "source": "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
+            "classification": _first_non_none(
+                frame.get("classification"),
+                semantics.get("classification"),
+                projection_contract.get("classification"),
+            ),
+            "route_lateral_source_field": _first_non_none(
+                semantics.get("source_field"),
+                projection_contract.get("route_lateral_source_field"),
+                route_lateral_sign_policy.get("source_field"),
+            ),
+            "sign_sensitive_gate_allowed": _first_non_none(
+                semantics.get("sign_sensitive_gate_allowed"),
+                route_lateral_sign_policy.get("sign_sensitive_gate_allowed"),
+            ),
+            "recommended_gate_policy": _first_non_none(
+                semantics.get("recommended_gate_policy"),
+                route_lateral_sign_policy.get("recommended_gate_policy"),
+            ),
+            "recommended_action": _first_non_none(
+                semantics.get("recommended_field_action"),
+                route_lateral_sign_policy.get("recommended_action"),
+            ),
+            "official_hdmap_projection_available": bool(official.get("available")),
+            "official_hdmap_projection_matched_sample_count": official.get("matched_sample_count"),
+            "projection_route_sample_contract_available": bool(projection_contract.get("available")),
+            "projection_route_sample_contract_classification": projection_contract.get("classification"),
+            "projection_route_sample_matched_sample_count": projection_contract.get("matched_sample_count"),
+            "projection_route_sample_count": projection_contract.get("route_sample_count"),
+            "timeseries_lateral_vs_projection_route_sample_opposite_sign_ratio": (
+                timeseries_vs_projection.get("opposite_sign_ratio")
+            ),
+            "timeseries_lateral_vs_projection_route_sample_sample_count": (
+                timeseries_vs_projection.get("sample_count")
+            ),
+            "simple_lat_vs_projection_route_sample_same_sign_ratio": (
+                simple_lat_vs_projection.get("same_sign_ratio")
+            ),
+            "simple_lat_vs_projection_route_sample_sample_count": (
+                simple_lat_vs_projection.get("sample_count")
+            ),
+            "route_simple_lat_magnitude_agreement_candidate": magnitude.get(
+                "magnitude_agreement_candidate"
+            ),
+            "route_simple_lat_opposite_sign_ratio": magnitude.get("opposite_sign_ratio"),
+            "route_simple_lat_abs_magnitude_delta_p95_m": magnitude.get("abs_magnitude_delta_p95_m"),
+            "route_station_frame_classification": station.get("classification"),
+            "claim_boundary": (
+                "Projection/simple_lat lateral context is diagnostic evidence for analysis-field "
+                "semantics. It does not change runtime control, does not prove behavior success, "
+                "and does not replace claim-grade Planning reference-line evidence."
+            ),
+        }
+    if route_lateral_sign_policy.get("available"):
+        return {
+            "available": True,
+            "source": str(route_lateral_sign_policy.get("source") or "route_lateral_sign_policy"),
+            "classification": route_lateral_sign_policy.get("classification"),
+            "route_lateral_source_field": route_lateral_sign_policy.get("source_field"),
+            "sign_sensitive_gate_allowed": route_lateral_sign_policy.get(
+                "sign_sensitive_gate_allowed"
+            ),
+            "recommended_gate_policy": route_lateral_sign_policy.get("recommended_gate_policy"),
+            "recommended_action": route_lateral_sign_policy.get("recommended_action"),
+            "projection_route_sample_contract_classification": route_lateral_sign_policy.get(
+                "projection_route_sample_sign_contract_classification"
+            ),
+            "timeseries_lateral_vs_projection_route_sample_opposite_sign_ratio": (
+                route_lateral_sign_policy.get("projection_route_sample_timeseries_opposite_sign_ratio")
+            ),
+            "simple_lat_vs_projection_route_sample_same_sign_ratio": (
+                route_lateral_sign_policy.get("projection_route_sample_simple_lat_same_sign_ratio")
+            ),
+            "claim_boundary": (
+                "Projection/simple_lat lateral context fell back to the route-lateral sign policy. "
+                "It remains diagnostic-only and cannot prove behavior success."
+            ),
+        }
+    return {
+        "available": False,
+        "reason": "projection_lateral_context_missing",
+        "source": "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
+    }
+
+
 def _lane_event_attribution(
     departure: Mapping[str, Any],
     *,
@@ -1319,14 +1478,113 @@ def _overall_status(xodr_report: Mapping[str, Any], run_reports: list[Mapping[st
     return "pass"
 
 
+def _representative_run_context(run_reports: list[Mapping[str, Any]]) -> dict[str, Any]:
+    if not run_reports:
+        return {
+            "available": False,
+            "reason": "no_run_reports",
+            "claim_boundary": "No lane-event attribution can be summarized without run reports.",
+        }
+    selected = next(
+        (
+            report
+            for report in run_reports
+            if report.get("status") == "fail" or (report.get("lane_event_count") or 0) > 0
+        ),
+        run_reports[0],
+    )
+    attribution = (
+        selected.get("lane_event_attribution")
+        if isinstance(selected.get("lane_event_attribution"), Mapping)
+        else {}
+    )
+    sign_policy = (
+        selected.get("route_lateral_sign_policy")
+        if isinstance(selected.get("route_lateral_sign_policy"), Mapping)
+        else {}
+    )
+    projection_context = (
+        selected.get("projection_lateral_context")
+        if isinstance(selected.get("projection_lateral_context"), Mapping)
+        else {}
+    )
+    path_control = (
+        selected.get("path_control_context")
+        if isinstance(selected.get("path_control_context"), Mapping)
+        else {}
+    )
+    vehicle_response = (
+        selected.get("vehicle_response_context")
+        if isinstance(selected.get("vehicle_response_context"), Mapping)
+        else {}
+    )
+    return {
+        "available": True,
+        "run_dir": selected.get("run_dir"),
+        "status": selected.get("status"),
+        "reason": selected.get("reason"),
+        "lane_event_count": selected.get("lane_event_count"),
+        "lane_invasion_event_can_be_used_as_hard_gate": selected.get(
+            "lane_invasion_event_can_be_used_as_hard_gate"
+        ),
+        "lane_event_attribution_classification": attribution.get("classification"),
+        "lane_event_attribution_reasons": attribution.get("reasons"),
+        "vehicle_response_classification": vehicle_response.get("classification"),
+        "path_control_classification": path_control.get(
+            "control_target_vs_path_candidate_classification"
+        ),
+        "reference_line_claim_grade_allowed": path_control.get("reference_line_claim_grade_allowed"),
+        "route_lateral_sign_policy": sign_policy.get("policy"),
+        "route_lateral_sign_sensitive_gate_allowed": sign_policy.get(
+            "sign_sensitive_gate_allowed"
+        ),
+        "route_lateral_source_field": sign_policy.get("source_field"),
+        "route_lateral_field_classification": sign_policy.get("classification"),
+        "route_lateral_recommended_action": sign_policy.get("recommended_action"),
+        "projection_lateral_context_classification": projection_context.get("classification"),
+        "projection_lateral_context_source": projection_context.get("source"),
+        "projection_route_sample_contract_classification": projection_context.get(
+            "projection_route_sample_contract_classification"
+        ),
+        "timeseries_lateral_vs_projection_route_sample_opposite_sign_ratio": (
+            projection_context.get(
+                "timeseries_lateral_vs_projection_route_sample_opposite_sign_ratio"
+            )
+        ),
+        "simple_lat_vs_projection_route_sample_same_sign_ratio": projection_context.get(
+            "simple_lat_vs_projection_route_sample_same_sign_ratio"
+        ),
+        "route_simple_lat_magnitude_agreement_candidate": projection_context.get(
+            "route_simple_lat_magnitude_agreement_candidate"
+        ),
+        "route_station_frame_classification": projection_context.get(
+            "route_station_frame_classification"
+        ),
+        "claim_boundary": (
+            "Representative context is an audit-friendly summary of one run report. It is "
+            "diagnostic-only and does not change lane-event status, reference-line claim-grade, "
+            "or no-assist natural-driving gates."
+        ),
+    }
+
+
 def _summary_markdown(report: Mapping[str, Any]) -> str:
     xodr = report.get("xodr") if isinstance(report.get("xodr"), Mapping) else {}
+    representative = (
+        report.get("representative_run_context")
+        if isinstance(report.get("representative_run_context"), Mapping)
+        else {}
+    )
     lines = [
         "# Baguang Lane Event Contract",
         "",
         f"- schema_version: `{report.get('schema_version')}`",
         f"- status: `{report.get('status')}`",
         f"- quarantine_recommended: `{report.get('quarantine_recommended')}`",
+        f"- representative_lane_event_attribution: `{representative.get('lane_event_attribution_classification')}`",
+        f"- representative_route_lateral_sign_policy: `{representative.get('route_lateral_sign_policy')}`",
+        f"- representative_route_lateral_sign_sensitive_gate_allowed: `{representative.get('route_lateral_sign_sensitive_gate_allowed')}`",
+        f"- representative_projection_lateral_context: `{representative.get('projection_lateral_context_classification')}`",
         f"- xodr: `{xodr.get('path')}`",
         f"- driving_lane_ids: `{xodr.get('driving_lane_ids')}`",
         f"- target_lane_center_crossing_margin_m: `{xodr.get('target_lane_center_crossing_margin_m')}`",
@@ -1344,6 +1602,11 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
         vehicle_response = item.get("vehicle_response_context") if isinstance(item.get("vehicle_response_context"), Mapping) else {}
         path_control = item.get("path_control_context") if isinstance(item.get("path_control_context"), Mapping) else {}
         sign_policy = item.get("route_lateral_sign_policy") if isinstance(item.get("route_lateral_sign_policy"), Mapping) else {}
+        projection_context = (
+            item.get("projection_lateral_context")
+            if isinstance(item.get("projection_lateral_context"), Mapping)
+            else {}
+        )
         control = departure.get("control") if isinstance(departure.get("control"), Mapping) else {}
         mapped_to_applied = (
             control.get("mapped_to_applied_steer_abs_error")
@@ -1385,6 +1648,10 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
                 f"- route_lateral_sign_policy: `{sign_policy.get('policy')}`",
                 f"- route_lateral_sign_sensitive_gate_allowed: `{sign_policy.get('sign_sensitive_gate_allowed')}`",
                 f"- route_lateral_recommended_action: `{sign_policy.get('recommended_action')}`",
+                f"- projection_lateral_context: `{projection_context.get('classification')}`",
+                f"- projection_route_sample_contract: `{projection_context.get('projection_route_sample_contract_classification')}`",
+                f"- timeseries_lateral_vs_projection_route_sample_opposite_sign_ratio: `{projection_context.get('timeseries_lateral_vs_projection_route_sample_opposite_sign_ratio')}`",
+                f"- simple_lat_vs_projection_route_sample_same_sign_ratio: `{projection_context.get('simple_lat_vs_projection_route_sample_same_sign_ratio')}`",
                 f"- departure_interpretation: `{departure.get('interpretation')}`",
                 f"- departure_control_source: `{control.get('source')}`",
                 f"- control_apply_trace_rows_used: `{control.get('control_apply_trace_rows_used')}`",

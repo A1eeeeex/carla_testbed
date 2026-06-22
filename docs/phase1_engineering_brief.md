@@ -295,6 +295,13 @@ Interpretation:
   sign or control-direction root cause. Until the route-lateral field is
   relabeled or explicitly converted against Apollo projection/simple_lat
   convention, only absolute-magnitude lane-event evidence is claim-relevant.
+  The lane-event report now also surfaces this in a top-level
+  `representative_run_context`, including the representative attribution,
+  route-lateral sign policy, and projection/simple_lat context. This is an
+  audit-readability improvement only: it does not change the underlying
+  `run_reports[]`, does not make the lane-invasion run pass, and does not
+  promote diagnostic path/projection evidence to claim-grade reference-line
+  evidence.
   The same cycle fixed a claim-boundary regression in `apollo_link_health`:
   a derived `analysis/assist_ledger/assist_ledger.json` with `source_artifact=config`
   can no longer clear a blocking assist declared in `manifest.json` or

@@ -232,6 +232,67 @@ def _write_lane_event_attribution_inputs(run: Path) -> None:
         ),
         encoding="utf-8",
     )
+    lateral_semantics = (
+        run
+        / "analysis"
+        / "apollo_lateral_semantics"
+        / "apollo_lateral_semantics_report.json"
+    )
+    lateral_semantics.parent.mkdir(parents=True, exist_ok=True)
+    lateral_semantics.write_text(
+        json.dumps(
+            {
+                "verdict": {"status": "warn"},
+                "lateral_sign_alignment": {
+                    "available": True,
+                    "lateral_frame_convention_diagnostic": {
+                        "status": "available",
+                        "classification": "route_lateral_sign_inverted_vs_apollo_projection_candidate",
+                    },
+                    "route_lateral_field_semantics": {
+                        "status": "available",
+                        "classification": "route_lateral_field_opposite_signed_to_apollo_projection",
+                        "source_field": "cross_track_error",
+                        "sign_sensitive_gate_allowed": False,
+                        "absolute_magnitude_gate_allowed": True,
+                        "recommended_gate_policy": "absolute_magnitude_only_until_canonical_sign_declared",
+                        "recommended_field_action": "relabel_or_explicitly_convert_before_sign_sensitive_gate",
+                    },
+                    "route_lateral_provenance": {
+                        "projection_route_sample_sign_contract": {
+                            "available": True,
+                            "status": "available",
+                            "classification": "timeseries_route_lateral_sign_inverted_vs_projection_route_samples",
+                            "matched_sample_count": 12,
+                            "route_sample_count": 6,
+                            "route_lateral_source_field": "cross_track_error",
+                            "timeseries_lateral_vs_projection_route_sample_signed_lateral": {
+                                "opposite_sign_ratio": 1.0,
+                                "sample_count": 6,
+                            },
+                            "simple_lat_vs_projection_route_sample_signed_lateral": {
+                                "same_sign_ratio": 1.0,
+                                "sample_count": 6,
+                            },
+                        }
+                    },
+                    "official_hdmap_projection_alignment": {
+                        "available": True,
+                        "matched_sample_count": 6,
+                    },
+                    "route_simple_lat_magnitude_alignment": {
+                        "magnitude_agreement_candidate": True,
+                        "opposite_sign_ratio": 1.0,
+                        "abs_magnitude_delta_p95_m": 0.02,
+                    },
+                    "route_station_frame_alignment": {
+                        "classification": "route_s_and_simple_lat_share_local_station_frame_candidate",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_parse_xodr_lane_contracts(tmp_path: Path) -> None:
@@ -318,6 +379,29 @@ def test_lane_event_contract_carries_vehicle_response_and_path_control_attributi
     assert run_report["route_lateral_sign_policy"]["source"] == (
         "analysis/phase1_status/phase1_status.json"
     )
+    projection_context = run_report["projection_lateral_context"]
+    assert projection_context["source"] == (
+        "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json"
+    )
+    assert projection_context["classification"] == (
+        "route_lateral_sign_inverted_vs_apollo_projection_candidate"
+    )
+    assert projection_context["projection_route_sample_contract_classification"] == (
+        "timeseries_route_lateral_sign_inverted_vs_projection_route_samples"
+    )
+    assert projection_context["timeseries_lateral_vs_projection_route_sample_opposite_sign_ratio"] == 1.0
+    assert projection_context["simple_lat_vs_projection_route_sample_same_sign_ratio"] == 1.0
+    assert projection_context["route_simple_lat_magnitude_agreement_candidate"] is True
+    assert projection_context["route_station_frame_classification"] == (
+        "route_s_and_simple_lat_share_local_station_frame_candidate"
+    )
+    representative = report["representative_run_context"]
+    assert representative["lane_event_attribution_classification"] == attribution["classification"]
+    assert representative["route_lateral_sign_sensitive_gate_allowed"] is False
+    assert representative["projection_lateral_context_classification"] == (
+        "route_lateral_sign_inverted_vs_apollo_projection_candidate"
+    )
+    assert representative["timeseries_lateral_vs_projection_route_sample_opposite_sign_ratio"] == 1.0
     assert "control_target_between_path_candidate_lateral_bounds" in attribution["reasons"]
     assert "route_lateral_sign_sensitive_gate_blocked" in attribution["reasons"]
     assert "does not alter the lane-event hard gate" in attribution["claim_boundary"]
