@@ -207,6 +207,31 @@ def _write_lane_event_attribution_inputs(run: Path) -> None:
         ),
         encoding="utf-8",
     )
+    phase1_status = run / "analysis" / "phase1_status" / "phase1_status.json"
+    phase1_status.parent.mkdir(parents=True, exist_ok=True)
+    phase1_status.write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "route_lateral_field_policy": {
+                    "status": "available",
+                    "policy": "exclude_from_sign_sensitive_behavior_gates",
+                    "source_field": "cross_track_error",
+                    "classification": "route_lateral_field_opposite_signed_to_apollo_projection",
+                    "sign_sensitive_gate_allowed": False,
+                    "absolute_magnitude_gate_allowed": True,
+                    "recommended_gate_policy": "absolute_magnitude_only_until_canonical_sign_declared",
+                    "recommended_action": "relabel_or_explicitly_convert_before_sign_sensitive_gate",
+                    "projection_route_sample_sign_contract_classification": (
+                        "timeseries_route_lateral_sign_inverted_vs_projection_route_samples"
+                    ),
+                    "projection_route_sample_timeseries_opposite_sign_ratio": 1.0,
+                    "projection_route_sample_simple_lat_same_sign_ratio": 1.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_parse_xodr_lane_contracts(tmp_path: Path) -> None:
@@ -285,7 +310,16 @@ def test_lane_event_contract_carries_vehicle_response_and_path_control_attributi
         "progressive_lane_departure_with_vehicle_response_and_control_target_between_path_candidate_bounds"
     )
     assert attribution["reference_line_claim_grade_allowed"] is False
+    assert attribution["route_lateral_sign_sensitive_gate_allowed"] is False
+    assert attribution["route_lateral_field_policy"] == "exclude_from_sign_sensitive_behavior_gates"
+    assert attribution["route_lateral_recommended_action"] == (
+        "relabel_or_explicitly_convert_before_sign_sensitive_gate"
+    )
+    assert run_report["route_lateral_sign_policy"]["source"] == (
+        "analysis/phase1_status/phase1_status.json"
+    )
     assert "control_target_between_path_candidate_lateral_bounds" in attribution["reasons"]
+    assert "route_lateral_sign_sensitive_gate_blocked" in attribution["reasons"]
     assert "does not alter the lane-event hard gate" in attribution["claim_boundary"]
 
 

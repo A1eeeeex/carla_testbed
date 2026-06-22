@@ -287,6 +287,14 @@ Interpretation:
   change the run status: the report remains a lane-invasion failure,
   reference-line claim-grade remains false, and no-assist/natural-driving
   claims remain blocked.
+  The same attribution now also carries the route-lateral sign policy from
+  `phase1_status`: `route_lateral_sign_policy=exclude_from_sign_sensitive_behavior_gates`,
+  `source_field=cross_track_error`, and
+  `route_lateral_sign_sensitive_gate_allowed=false`. This prevents the
+  `same_sign_as_cross_track_error` diagnostics from being read as a steering
+  sign or control-direction root cause. Until the route-lateral field is
+  relabeled or explicitly converted against Apollo projection/simple_lat
+  convention, only absolute-magnitude lane-event evidence is claim-relevant.
   The same cycle fixed a claim-boundary regression in `apollo_link_health`:
   a derived `analysis/assist_ledger/assist_ledger.json` with `source_artifact=config`
   can no longer clear a blocking assist declared in `manifest.json` or

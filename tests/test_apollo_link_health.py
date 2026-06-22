@@ -532,6 +532,15 @@ def test_lane_invasion_context_merges_lane_event_control_and_path_candidate_evid
                         ],
                         "reference_line_claim_grade_allowed": False,
                     },
+                    "route_lateral_sign_policy": {
+                        "available": True,
+                        "policy": "exclude_from_sign_sensitive_behavior_gates",
+                        "source_field": "cross_track_error",
+                        "classification": "route_lateral_field_opposite_signed_to_apollo_projection",
+                        "sign_sensitive_gate_allowed": False,
+                        "absolute_magnitude_gate_allowed": True,
+                        "recommended_action": "relabel_or_explicitly_convert_before_sign_sensitive_gate",
+                    },
                 }
             ],
         },
@@ -562,6 +571,12 @@ def test_lane_invasion_context_merges_lane_event_control_and_path_candidate_evid
     )
     assert context["vehicle_response_tracks_progressive_departure"] is True
     assert context["vehicle_response_rows_available"] is True
+    assert context["route_lateral_sign_policy"] == "exclude_from_sign_sensitive_behavior_gates"
+    assert context["route_lateral_sign_sensitive_gate_allowed"] is False
+    assert context["route_lateral_source_field"] == "cross_track_error"
+    assert context["route_lateral_recommended_action"] == (
+        "relabel_or_explicitly_convert_before_sign_sensitive_gate"
+    )
     assert context["failure_timeline_anchor_event"] == "lane_invasion"
     assert context["trigger_footprint_intersects_marking"] is True
     assert context["mapped_to_applied_steer_max_abs_error"] == 0.0

@@ -195,10 +195,12 @@ def analyze_lane_event_run_dir(
     )
     vehicle_response_context = _lane_event_vehicle_response_context(root)
     path_control_context = _lane_event_path_control_context(root)
+    route_lateral_sign_policy = _lane_event_route_lateral_sign_policy(root)
     lane_event_attribution = _lane_event_attribution(
         departure_diagnostics,
         vehicle_response_context=vehicle_response_context,
         path_control_context=path_control_context,
+        route_lateral_sign_policy=route_lateral_sign_policy,
     )
     initial_cte = _first_number_aliases(rows, ("cross_track_error", "cross_track_error_m"))
     initial_footprint = _footprint_crossing_check(initial_cte, initial_crossing_offset)
@@ -282,6 +284,7 @@ def analyze_lane_event_run_dir(
         "departure_diagnostics": departure_diagnostics,
         "vehicle_response_context": vehicle_response_context,
         "path_control_context": path_control_context,
+        "route_lateral_sign_policy": route_lateral_sign_policy,
         "lane_event_attribution": lane_event_attribution,
         "crossed_marking_check": marking_match,
         "vehicle_footprint": footprint,
@@ -813,11 +816,97 @@ def _lane_event_path_control_context(root: Path) -> dict[str, Any]:
     }
 
 
+def _lane_event_route_lateral_sign_policy(root: Path) -> dict[str, Any]:
+    phase1 = _read_json(root / "analysis" / "phase1_status" / "phase1_status.json")
+    policy = (
+        phase1.get("route_lateral_field_policy")
+        if isinstance(phase1.get("route_lateral_field_policy"), Mapping)
+        else {}
+    )
+    if policy:
+        return {
+            "available": True,
+            "source": "analysis/phase1_status/phase1_status.json",
+            "status": policy.get("status"),
+            "policy": policy.get("policy"),
+            "source_field": policy.get("source_field"),
+            "classification": policy.get("classification"),
+            "sign_sensitive_gate_allowed": policy.get("sign_sensitive_gate_allowed"),
+            "absolute_magnitude_gate_allowed": policy.get("absolute_magnitude_gate_allowed"),
+            "recommended_gate_policy": policy.get("recommended_gate_policy"),
+            "recommended_action": policy.get("recommended_action"),
+            "projection_route_sample_sign_contract_classification": policy.get(
+                "projection_route_sample_sign_contract_classification"
+            ),
+            "projection_route_sample_timeseries_opposite_sign_ratio": policy.get(
+                "projection_route_sample_timeseries_opposite_sign_ratio"
+            ),
+            "projection_route_sample_simple_lat_same_sign_ratio": policy.get(
+                "projection_route_sample_simple_lat_same_sign_ratio"
+            ),
+            "claim_boundary": (
+                "Route-lateral sign policy governs whether cross_track_error-like fields can be "
+                "used for sign-sensitive behavior conclusions. If sign-sensitive gates are blocked, "
+                "same-sign steer/CTE diagnostics remain attribution hints only."
+            ),
+        }
+    lateral = _read_json(
+        root / "analysis" / "apollo_lateral_semantics" / "apollo_lateral_semantics_report.json"
+    )
+    alignment = (
+        lateral.get("lateral_sign_alignment")
+        if isinstance(lateral.get("lateral_sign_alignment"), Mapping)
+        else {}
+    )
+    semantics = (
+        alignment.get("route_lateral_field_semantics")
+        if isinstance(alignment.get("route_lateral_field_semantics"), Mapping)
+        else {}
+    )
+    if semantics:
+        return {
+            "available": True,
+            "source": "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
+            "status": semantics.get("status"),
+            "policy": (
+                "exclude_from_sign_sensitive_behavior_gates"
+                if semantics.get("sign_sensitive_gate_allowed") is False
+                else None
+            ),
+            "source_field": semantics.get("source_field"),
+            "classification": semantics.get("classification"),
+            "sign_sensitive_gate_allowed": semantics.get("sign_sensitive_gate_allowed"),
+            "absolute_magnitude_gate_allowed": semantics.get("absolute_magnitude_gate_allowed"),
+            "recommended_gate_policy": semantics.get("recommended_gate_policy"),
+            "recommended_action": semantics.get("recommended_field_action"),
+            "projection_route_sample_sign_contract_classification": semantics.get(
+                "projection_route_sample_sign_contract_classification"
+            ),
+            "projection_route_sample_timeseries_opposite_sign_ratio": semantics.get(
+                "projection_route_sample_timeseries_opposite_sign_ratio"
+            ),
+            "projection_route_sample_simple_lat_same_sign_ratio": semantics.get(
+                "projection_route_sample_simple_lat_same_sign_ratio"
+            ),
+            "claim_boundary": (
+                "Route-lateral sign policy governs whether cross_track_error-like fields can be "
+                "used for sign-sensitive behavior conclusions. If sign-sensitive gates are blocked, "
+                "same-sign steer/CTE diagnostics remain attribution hints only."
+            ),
+        }
+    return {
+        "available": False,
+        "reason": "route_lateral_sign_policy_missing",
+        "source": "analysis/phase1_status/phase1_status.json",
+    }
+
+
 def _lane_event_attribution(
     departure: Mapping[str, Any],
     *,
     vehicle_response_context: Mapping[str, Any],
     path_control_context: Mapping[str, Any],
+    route_lateral_sign_policy: Mapping[str, Any],
 ) -> dict[str, Any]:
     if not departure.get("available"):
         return {
@@ -844,6 +933,9 @@ def _lane_event_attribution(
     )
     if target_between:
         reasons.append("control_target_between_path_candidate_lateral_bounds")
+    sign_sensitive_allowed = route_lateral_sign_policy.get("sign_sensitive_gate_allowed")
+    if sign_sensitive_allowed is False:
+        reasons.append("route_lateral_sign_sensitive_gate_blocked")
     if (
         departure.get("classification") == "downstream_progressive_lane_departure"
         and vehicle_tracks
@@ -862,6 +954,12 @@ def _lane_event_attribution(
         "reasons": reasons,
         "vehicle_response_context_available": bool(vehicle_response_context.get("available")),
         "path_control_context_available": bool(path_control_context.get("available")),
+        "route_lateral_sign_policy_available": bool(route_lateral_sign_policy.get("available")),
+        "route_lateral_sign_sensitive_gate_allowed": sign_sensitive_allowed,
+        "route_lateral_field_policy": route_lateral_sign_policy.get("policy"),
+        "route_lateral_source_field": route_lateral_sign_policy.get("source_field"),
+        "route_lateral_field_classification": route_lateral_sign_policy.get("classification"),
+        "route_lateral_recommended_action": route_lateral_sign_policy.get("recommended_action"),
         "reference_line_claim_grade_allowed": path_control_context.get(
             "reference_line_claim_grade_allowed"
         ),
@@ -1245,6 +1343,7 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
         attribution = item.get("lane_event_attribution") if isinstance(item.get("lane_event_attribution"), Mapping) else {}
         vehicle_response = item.get("vehicle_response_context") if isinstance(item.get("vehicle_response_context"), Mapping) else {}
         path_control = item.get("path_control_context") if isinstance(item.get("path_control_context"), Mapping) else {}
+        sign_policy = item.get("route_lateral_sign_policy") if isinstance(item.get("route_lateral_sign_policy"), Mapping) else {}
         control = departure.get("control") if isinstance(departure.get("control"), Mapping) else {}
         mapped_to_applied = (
             control.get("mapped_to_applied_steer_abs_error")
@@ -1283,6 +1382,9 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
                 f"- vehicle_response_classification: `{vehicle_response.get('classification')}`",
                 f"- path_control_classification: `{path_control.get('control_target_vs_path_candidate_classification')}`",
                 f"- path_control_reference_line_claim_grade_allowed: `{path_control.get('reference_line_claim_grade_allowed')}`",
+                f"- route_lateral_sign_policy: `{sign_policy.get('policy')}`",
+                f"- route_lateral_sign_sensitive_gate_allowed: `{sign_policy.get('sign_sensitive_gate_allowed')}`",
+                f"- route_lateral_recommended_action: `{sign_policy.get('recommended_action')}`",
                 f"- departure_interpretation: `{departure.get('interpretation')}`",
                 f"- departure_control_source: `{control.get('source')}`",
                 f"- control_apply_trace_rows_used: `{control.get('control_apply_trace_rows_used')}`",

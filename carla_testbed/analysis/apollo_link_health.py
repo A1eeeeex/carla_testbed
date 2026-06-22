@@ -3695,6 +3695,11 @@ def _lane_invasion_context(
         if isinstance(run_report.get("path_control_context"), Mapping)
         else {}
     )
+    route_lateral_sign_policy = (
+        run_report.get("route_lateral_sign_policy")
+        if isinstance(run_report.get("route_lateral_sign_policy"), Mapping)
+        else {}
+    )
     control = departure.get("control") if isinstance(departure.get("control"), Mapping) else {}
     timeline_anchor = (
         failure_timeline.get("anchor_event")
@@ -3759,6 +3764,15 @@ def _lane_invasion_context(
         ),
         "vehicle_response_sample_count": vehicle_response_context.get(
             "vehicle_response_sample_count"
+        ),
+        "route_lateral_sign_policy": route_lateral_sign_policy.get("policy"),
+        "route_lateral_sign_sensitive_gate_allowed": route_lateral_sign_policy.get(
+            "sign_sensitive_gate_allowed"
+        ),
+        "route_lateral_source_field": route_lateral_sign_policy.get("source_field"),
+        "route_lateral_field_classification": route_lateral_sign_policy.get("classification"),
+        "route_lateral_recommended_action": route_lateral_sign_policy.get(
+            "recommended_action"
         ),
         "lane_invasion_count": lane_count,
         "lane_event_contract_status": baguang_lane_event_contract.get("status"),
