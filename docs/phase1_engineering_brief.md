@@ -1,6 +1,6 @@
 # Phase 1 Engineering Brief
 
-Last reviewed: 2026-06-21
+Last reviewed: 2026-06-22
 
 This brief freezes the Phase 1 engineering target for `carla_testbed`. It is a
 scope and status document, not a capability announcement. Status labels below
@@ -68,7 +68,7 @@ Layered progress status:
 
 - Phase 1 overall: `PARTIAL`
 - Local accepted comparison-surface catalog: `DONE as local artifact surface`
-- Package-level acceptance surface: `LOCAL_PACK_CANDIDATE / not external-accepted`
+- Package-level acceptance surface: `LOCAL_RECOMPUTED_PACK_DONE / not external-accepted`
 - Latest external Pro-audit completion verdict: `PARTIAL / Phase 1 done claim rejected`
 - Phase 1 completion gate: `PARTIAL`
 - Representative Apollo behavior capability: `PARTIAL / failing samples remain`
@@ -96,16 +96,25 @@ Pro-audit reconciliation:
   traces, `phase1_status.json`, artifact-completeness reports, assist ledgers,
   and a SHA256 manifest, then the package-level audit status is `PARTIAL` even
   when the local repository can recompute `8 DONE`.
+- The current repository can now materialize a self-contained local
+  `Phase1ReviewPack` from the catalog:
+  `artifacts/phase1_review_pack_current_20260622_102808.tar.gz`
+  (`sha256=a8b878bcdd90997f3924168838414b935a52fdfcfa88f3e6b9a0bdf1347d196d`).
+  Its manifest reports `status=DONE`, `done_scenario_count=8`,
+  `partial_scenario_count=0`, and `copied_files=202`. This upgrades the
+  package-level local surface from candidate to locally recomputed DONE, but it
+  still is not an external reviewer acceptance result and it still does not
+  claim Apollo behavior success.
 - The latest Pro audit explicitly rejected the stronger "Phase 1 complete" /
   "8 scenarios externally DONE" reading. Treat the local pack as a candidate
   evidence surface until an external reviewer can independently recompute the
   exact accepted bundles from the packaged raw artifacts and hashes.
 - Phase 1 progress must therefore be reported in three layers:
   local accepted comparison-surface catalog = `local artifact-surface DONE`;
-  package-level review surface = `candidate / not external-accepted` until the
-  self-contained pack is independently recomputed; Phase 1 overall = `PARTIAL`
-  until representative Apollo online behavior blockers and the external-backend
-  runtime path are reduced.
+  package-level review surface = `local recomputed pack DONE / not
+  external-accepted` until the self-contained pack is independently audited;
+  Phase 1 overall = `PARTIAL` until representative Apollo online behavior
+  blockers and the external-backend runtime path are reduced.
 
 Interpretation:
 
