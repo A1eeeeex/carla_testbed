@@ -58,6 +58,59 @@ def test_control_health_passes_and_writes_report(tmp_path: Path) -> None:
     assert Path(outputs["control_health_summary"]).is_file()
 
 
+def test_control_health_reports_lane_event_vehicle_response_context(tmp_path: Path) -> None:
+    run_dir = _copy_run(tmp_path)
+    timeseries_rows = []
+    for index in range(6):
+        timeseries_rows.append(
+            {
+                "t": f"{10.0 + index * 0.1:.1f}",
+                "lane_invasion_count": "1" if index == 5 else "0",
+                "cross_track_error": str(-0.10 - index * 0.10),
+                "heading_error": str(-0.02 - index * 0.02),
+                "ego_yaw_rate": str(-0.02 - index * 0.01),
+                "apollo_steer_raw": str(-0.20 - index * 0.05),
+                "bridge_steer_mapped": str(-0.05 - index * 0.01),
+                "carla_steer_applied": str(-0.05 - index * 0.01),
+                "throttle_raw": "0.2",
+                "throttle_mapped": "0.2",
+                "throttle_applied": "0.2",
+                "brake_raw": "0.0",
+                "brake_mapped": "0.0",
+                "brake_applied": "0.0",
+                "control_latency_ms": "1.0",
+            }
+        )
+    _write_csv(run_dir / "timeseries.csv", timeseries_rows)
+    vehicle_rows = []
+    for index in range(6):
+        vehicle_rows.append(
+            {
+                "ts_sec": f"{10.0 + index * 0.1:.1f}",
+                "yaw_rate_rps": str(-0.02 - index * 0.01),
+                "measured_steer": str(-0.04 - index * 0.01),
+                "commanded_steer": str(-0.05 - index * 0.01),
+                "lateral_accel_mps2": str(-0.1 - index * 0.1),
+            }
+        )
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    _write_csv(artifact_dir / "carla_vehicle_response.csv", vehicle_rows)
+
+    report = analyze_control_health_run_dir(run_dir)
+
+    context = report["metrics"]["lane_event_response_context"]
+    assert context["available"] is True
+    assert (
+        context["classification"]
+        == "applied_steer_yaw_response_tracks_progressive_lateral_departure"
+    )
+    assert context["cross_track_error_abs_growth_m"] == pytest.approx(0.5)
+    assert context["applied_steer_yaw_rate_same_sign"] is True
+    assert context["cte_growth_yaw_rate_same_sign"] is True
+    assert context["vehicle_response_rows_available"] is True
+
+
 def test_control_health_bad_handoff_fails(tmp_path: Path) -> None:
     run_dir = _copy_run(tmp_path)
     summary_path = run_dir / "summary.json"

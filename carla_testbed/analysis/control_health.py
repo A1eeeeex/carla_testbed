@@ -131,6 +131,13 @@ def analyze_control_health_run_dir(
             "direct_bridge_control_apply.jsonl",
         ],
     )
+    carla_vehicle_response_path = _find_first(
+        root,
+        [
+            "artifacts/carla_vehicle_response.csv",
+            "carla_vehicle_response.csv",
+        ],
+    )
     control_handoff_path = _find_first(
         root,
         [
@@ -300,6 +307,7 @@ def analyze_control_health_run_dir(
             auxiliary_control_decode_debug,
         )
     direct_control_apply = _analyze_direct_control_apply_log(direct_control_apply_path)
+    carla_vehicle_response_rows = _read_rows(carla_vehicle_response_path)
     control_application_timeseries = _control_application_metrics(rows)
     control_apply_delay = _control_apply_delay_metrics(
         control_application=control_application_timeseries,
@@ -386,6 +394,10 @@ def analyze_control_health_run_dir(
             apollo_planning_log_path
         ),
         "direct_control_apply_log": direct_control_apply,
+        "lane_event_response_context": _lane_event_response_context(
+            timeseries_rows=rows,
+            vehicle_response_rows=carla_vehicle_response_rows,
+        ),
         "control_attribution": _control_attribution_summary(control_attribution, control_attribution_path),
         "upstream_contract_preconditions": _upstream_contract_preconditions(
             localization_contract=localization_contract,
@@ -482,6 +494,9 @@ def analyze_control_health_run_dir(
                 str(control_row_level_trace_path) if control_row_level_trace_path else None
             ),
             "direct_control_apply_path": str(direct_control_apply_path) if direct_control_apply_path else None,
+            "carla_vehicle_response_path": (
+                str(carla_vehicle_response_path) if carla_vehicle_response_path else None
+            ),
             "control_handoff_path": str(control_handoff_path) if control_handoff_path else None,
             "planning_summary_path": str(planning_summary_path) if planning_summary_path else None,
             "planning_topic_debug_path": (
@@ -1167,6 +1182,238 @@ def _vehicle_response_oscillation_layer(
         "yaw_rate_sign_switch_count": yaw_switches if yaw_values else None,
         "forward_accel_sign_switch_count": accel_switches if accel_values else None,
     }
+
+
+def _lane_event_response_context(
+    *,
+    timeseries_rows: Sequence[Mapping[str, Any]],
+    vehicle_response_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    anchor_index = _first_lane_invasion_index(timeseries_rows)
+    if anchor_index is None:
+        return {"available": False, "reason": "lane_invasion_not_reported"}
+    anchor_row = timeseries_rows[anchor_index]
+    anchor_time = _row_time_s(anchor_row)
+    window_rows = _pre_event_window_rows(
+        timeseries_rows,
+        anchor_index=anchor_index,
+        anchor_time=anchor_time,
+        lookback_s=1.0,
+        fallback_rows=20,
+    )
+    vehicle_window_rows = _pre_event_window_rows_by_time(
+        vehicle_response_rows,
+        anchor_time=anchor_time,
+        lookback_s=1.0,
+    )
+    cte_values = _series_first_present(
+        window_rows,
+        ("cross_track_error", "route_lateral_error", "lateral_error"),
+    )
+    heading_values = _series_first_present(
+        window_rows,
+        ("heading_error", "route_heading_error"),
+    )
+    applied_steer_values = _series_first_present(
+        window_rows,
+        ("carla_steer_applied", "applied_steer", "steer", "cmd_steer"),
+    )
+    raw_steer_values = _series_first_present(
+        window_rows,
+        ("apollo_steer_raw", "steering_target", "source_steer"),
+    )
+    yaw_rate_values = _series_first_present(
+        window_rows,
+        ("ego_yaw_rate", "ego_yaw_rate_rad_s", "yaw_rate_rps"),
+    )
+    measured_steer_values = _series_first_present(
+        vehicle_window_rows,
+        ("measured_steer", "commanded_steer"),
+    )
+    vehicle_yaw_rate_values = _series_first_present(
+        vehicle_window_rows,
+        ("yaw_rate_rps", "measured_yaw_rate_rps"),
+    )
+    lateral_accel_values = _series_first_present(
+        vehicle_window_rows,
+        ("lateral_accel_mps2",),
+    )
+    cte_delta = _series_delta(cte_values)
+    heading_delta = _series_delta(heading_values)
+    cte_abs_growth = _abs_growth(cte_values)
+    heading_abs_growth = _abs_growth(heading_values)
+    applied_steer_mean = _mean(applied_steer_values)
+    raw_steer_mean = _mean(raw_steer_values)
+    yaw_rate_mean = _mean(yaw_rate_values) if yaw_rate_values else _mean(vehicle_yaw_rate_values)
+    measured_steer_mean = _mean(measured_steer_values)
+    lateral_accel_mean = _mean(lateral_accel_values)
+    applied_yaw_same_sign = _same_sign(applied_steer_mean, yaw_rate_mean, deadband=0.005)
+    cte_growth_yaw_same_sign = _same_sign(cte_delta, yaw_rate_mean, deadband=0.005)
+    heading_growth_yaw_same_sign = _same_sign(heading_delta, yaw_rate_mean, deadband=0.005)
+    cte_growth_applied_steer_same_sign = _same_sign(cte_delta, applied_steer_mean, deadband=0.005)
+    vehicle_rows_available = bool(vehicle_window_rows)
+    if cte_values and applied_steer_values and (yaw_rate_values or vehicle_yaw_rate_values):
+        if (
+            cte_abs_growth is not None
+            and cte_abs_growth > 0.1
+            and applied_yaw_same_sign is True
+            and cte_growth_yaw_same_sign is True
+        ):
+            classification = "applied_steer_yaw_response_tracks_progressive_lateral_departure"
+        elif applied_yaw_same_sign is False:
+            classification = "applied_steer_yaw_response_sign_mismatch"
+        else:
+            classification = "lane_event_vehicle_response_context_available"
+    else:
+        classification = "insufficient_vehicle_response_context"
+    return {
+        "available": classification != "insufficient_vehicle_response_context",
+        "classification": classification,
+        "diagnostic_only": True,
+        "anchor_index": anchor_index,
+        "anchor_time_s": anchor_time,
+        "window_sample_count": len(window_rows),
+        "window_duration_s": _window_duration_s(window_rows),
+        "vehicle_response_sample_count": len(vehicle_window_rows),
+        "vehicle_response_rows_available": vehicle_rows_available,
+        "cross_track_error_start_m": cte_values[0] if cte_values else None,
+        "cross_track_error_end_m": cte_values[-1] if cte_values else None,
+        "cross_track_error_delta_m": cte_delta,
+        "cross_track_error_abs_growth_m": cte_abs_growth,
+        "cross_track_error_abs_increasing_ratio": _abs_increasing_ratio(cte_values),
+        "heading_error_start_rad": heading_values[0] if heading_values else None,
+        "heading_error_end_rad": heading_values[-1] if heading_values else None,
+        "heading_error_delta_rad": heading_delta,
+        "heading_error_abs_growth_rad": heading_abs_growth,
+        "applied_steer_mean": applied_steer_mean,
+        "applied_steer_end": applied_steer_values[-1] if applied_steer_values else None,
+        "raw_steer_mean": raw_steer_mean,
+        "raw_steer_end": raw_steer_values[-1] if raw_steer_values else None,
+        "yaw_rate_mean_rad_s": yaw_rate_mean,
+        "yaw_rate_end_rad_s": (
+            yaw_rate_values[-1]
+            if yaw_rate_values
+            else (vehicle_yaw_rate_values[-1] if vehicle_yaw_rate_values else None)
+        ),
+        "measured_steer_mean": measured_steer_mean,
+        "measured_steer_end": measured_steer_values[-1] if measured_steer_values else None,
+        "lateral_accel_mean_mps2": lateral_accel_mean,
+        "lateral_accel_end_mps2": lateral_accel_values[-1] if lateral_accel_values else None,
+        "applied_steer_yaw_rate_same_sign": applied_yaw_same_sign,
+        "cte_growth_yaw_rate_same_sign": cte_growth_yaw_same_sign,
+        "heading_growth_yaw_rate_same_sign": heading_growth_yaw_same_sign,
+        "cte_growth_applied_steer_same_sign": cte_growth_applied_steer_same_sign,
+        "interpretation": (
+            "Lane-event response context is diagnostic only. A consistent applied-steer "
+            "to yaw-rate response narrows attribution away from CARLA apply drop, but it "
+            "does not prove Apollo route/reference-line correctness or make the run pass."
+        ),
+    }
+
+
+def _first_lane_invasion_index(rows: Sequence[Mapping[str, Any]]) -> int | None:
+    previous = 0.0
+    for index, row in enumerate(rows):
+        value = _num(row.get("lane_invasion_count"))
+        if value is None:
+            continue
+        if value > 0.0 and previous <= 0.0:
+            return index
+        previous = value
+    return None
+
+
+def _pre_event_window_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    anchor_index: int,
+    anchor_time: float | None,
+    lookback_s: float,
+    fallback_rows: int,
+) -> list[Mapping[str, Any]]:
+    if anchor_time is not None:
+        selected = [
+            row
+            for row in rows[: anchor_index + 1]
+            if (time_s := _row_time_s(row)) is not None
+            and anchor_time - lookback_s <= time_s <= anchor_time
+        ]
+        if selected:
+            return selected
+    return list(rows[max(0, anchor_index - fallback_rows + 1) : anchor_index + 1])
+
+
+def _pre_event_window_rows_by_time(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    anchor_time: float | None,
+    lookback_s: float,
+) -> list[Mapping[str, Any]]:
+    if anchor_time is None:
+        return []
+    return [
+        row
+        for row in rows
+        if (time_s := _row_time_s(row)) is not None
+        and anchor_time - lookback_s <= time_s <= anchor_time
+    ]
+
+
+def _series_first_present(
+    rows: Sequence[Mapping[str, Any]],
+    fields: Sequence[str],
+) -> list[float]:
+    values: list[float] = []
+    for row in rows:
+        for field in fields:
+            value = _num(row.get(field))
+            if value is not None:
+                values.append(value)
+                break
+    return values
+
+
+def _series_delta(values: Sequence[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    return values[-1] - values[0]
+
+
+def _abs_growth(values: Sequence[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    return abs(values[-1]) - abs(values[0])
+
+
+def _abs_increasing_ratio(values: Sequence[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    comparisons = [
+        1.0 if abs(cur) >= abs(prev) else 0.0
+        for prev, cur in zip(values, values[1:])
+    ]
+    return sum(comparisons) / len(comparisons) if comparisons else None
+
+
+def _same_sign(left: float | None, right: float | None, *, deadband: float) -> bool | None:
+    left_sign = _sign(left, deadband=deadband)
+    right_sign = _sign(right, deadband=deadband)
+    if left_sign is None or right_sign is None:
+        return None
+    return left_sign == right_sign
+
+
+def _sign(value: float | None, *, deadband: float) -> int | None:
+    if value is None or abs(value) <= deadband:
+        return None
+    return 1 if value > 0.0 else -1
+
+
+def _window_duration_s(rows: Sequence[Mapping[str, Any]]) -> float | None:
+    times = [value for row in rows if (value := _row_time_s(row)) is not None]
+    if len(times) < 2:
+        return None
+    return times[-1] - times[0]
 
 
 def _bridge_apply_cadence_layer(
@@ -4654,7 +4901,7 @@ def _row_has_nonzero_control(
 
 
 def _row_time_s(row: Mapping[str, Any]) -> float | None:
-    for field in ("sim_time", "time_s", "wall_time_s"):
+    for field in ("sim_time", "t", "ts_sec", "timestamp", "time_s", "wall_time_s"):
         value = _num(row.get(field))
         if value is not None:
             return value
@@ -4902,6 +5149,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
         f"- mapped_applied_brake_abs_error_p95: `{metrics.get('mapped_applied_brake_abs_error_p95')}`",
         f"- upstream_contract_preconditions: `{_markdown_upstream_contract_preconditions(metrics)}`",
         f"- oscillation_decomposition: `{_markdown_oscillation_decomposition(metrics)}`",
+        f"- lane_event_response_context: `{_markdown_lane_event_response_context(metrics)}`",
         f"- steering_mapping_saturation: `{_markdown_steering_mapping_saturation(metrics)}`",
         f"- control_mapping_claim_boundary: `{metrics.get('control_mapping_claim_boundary')}`",
         f"- control_bridge_log: `{_markdown_control_bridge_log(metrics)}`",
@@ -4975,6 +5223,23 @@ def _markdown_oscillation_decomposition(metrics: Mapping[str, Any]) -> dict[str,
         "bridge_apply_cadence": (layers.get("bridge_apply_cadence") or {}).get("status")
         if isinstance(layers.get("bridge_apply_cadence"), Mapping)
         else None,
+    }
+
+
+def _markdown_lane_event_response_context(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    context = metrics.get("lane_event_response_context")
+    if not isinstance(context, Mapping):
+        return {"available": False}
+    return {
+        "available": context.get("available"),
+        "classification": context.get("classification"),
+        "anchor_time_s": context.get("anchor_time_s"),
+        "cross_track_error_abs_growth_m": context.get("cross_track_error_abs_growth_m"),
+        "heading_error_abs_growth_rad": context.get("heading_error_abs_growth_rad"),
+        "applied_steer_yaw_rate_same_sign": context.get(
+            "applied_steer_yaw_rate_same_sign"
+        ),
+        "cte_growth_yaw_rate_same_sign": context.get("cte_growth_yaw_rate_same_sign"),
     }
 
 

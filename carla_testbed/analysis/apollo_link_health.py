@@ -2753,6 +2753,10 @@ def _control_health_layer(
             "control_handoff_status": report.get("control_handoff_status"),
             "control_process_health": _nested(report, "metrics.control_process_health"),
             "oscillation_decomposition": _nested(report, "metrics.oscillation_decomposition"),
+            "lane_event_response_context": _nested(
+                report,
+                "metrics.lane_event_response_context",
+            ),
             "longitudinal_oscillation_attribution": _nested(
                 report,
                 "metrics.control_decode_debug.longitudinal_oscillation_attribution",

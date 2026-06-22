@@ -54,7 +54,7 @@ success means:
 
 ## Current Phase 1 Progress Snapshot
 
-Latest reviewed snapshot: `2026-06-21`, after the GPT Pro audit that rejected
+Latest reviewed snapshot: `2026-06-22`, after the GPT Pro audit that rejected
 the earlier "Phase 1 done / 8 DONE" wording as too optimistic, plus the local
 follow-up fixes that add stricter ScenarioComparison validity gates,
 artifact-completeness gating, Baguang lane-event hard-gate audit, a fresh Apollo
@@ -258,6 +258,17 @@ Interpretation:
   `reference_line_claim_grade_allowed=false`. This closes a diagnostic
   evidence gap; it does not fix the lane invasion, does not make the run pass,
   and does not make `debug.planning_data.path` a claim-grade reference line.
+  The latest control-health refresh adds `lane_event_response_context` for the
+  same event. It classifies the 0.95s pre-event window as
+  `applied_steer_yaw_response_tracks_progressive_lateral_departure`: CTE grows
+  by about `0.474m`, heading error grows by about `0.111rad`, applied steer and
+  yaw-rate have the same sign, and CARLA vehicle-response rows are available.
+  This narrows the next step away from CARLA apply-drop or missing yaw
+  response. It does not prove Apollo Control is correct; it says the applied
+  command was physically materialized and the vehicle response tracked the
+  progressive departure, so the next highest-value analysis is
+  path-boundary/reference-line semantics versus downstream control target
+  choice.
   The same cycle fixed a claim-boundary regression in `apollo_link_health`:
   a derived `analysis/assist_ledger/assist_ledger.json` with `source_artifact=config`
   can no longer clear a blocking assist declared in `manifest.json` or
