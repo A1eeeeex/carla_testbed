@@ -55,20 +55,19 @@ success means:
 ## Current Phase 1 Progress Snapshot
 
 Latest reviewed snapshot: `2026-06-22`, after the GPT Pro audit that rejected
-the earlier "Phase 1 done / 8 DONE" wording as too optimistic, plus the local
-follow-up fixes that add stricter ScenarioComparison validity gates,
-artifact-completeness gating, Baguang lane-event hard-gate audit, a fresh Apollo
-sidecar cut-in online validation run, a `carla_builtin` safety-sensor
-attach-order fix validated with a new online cut-in run, and
-lateral/reference-line semantics postprocess refreshes that consume
-authoritative Apollo control-apply trace evidence plus projection-derived
-route-sample sign evidence.
+the earlier "Phase 1 done / 8 DONE" wording and identified P0 trust-chain
+issues in Phase 1 acceptance, review-pack materialization, catalog ingestion,
+and Phase 1 artifact-completeness semantics. The local follow-up fixes add an
+independent acceptance verifier, review-pack internal bundle verification,
+catalog gating on verifier-passed acceptance reports, and real Phase 1 checks
+for `events.jsonl` plus executable control trace surfaces. These are
+evidence-chain fixes, not driving-behavior fixes.
 
 Layered progress status:
 
 - Phase 1 overall: `PARTIAL`
-- Local accepted comparison-surface catalog: `DONE as local artifact surface`
-- Package-level acceptance surface: `LOCAL_RECOMPUTED_PACK_DONE / not external-accepted`
+- Local accepted comparison-surface catalog: `PARTIAL after verifier hardening`
+- Package-level acceptance surface: `PARTIAL until rebuilt from verifier-passed bundles`
 - Latest external Pro-audit completion verdict: `PARTIAL / Phase 1 done claim rejected`
 - Phase 1 completion gate: `PARTIAL`
 - Representative Apollo behavior capability: `PARTIAL / failing samples remain`
@@ -78,49 +77,47 @@ Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:
 
 - Total scenarios tracked: `8`
-- Accepted `DONE`: `8`
-- `PARTIAL`: `0`
+- Accepted `DONE`: `0`
+- `PARTIAL`: `8`
 - `NOT_YET`: `0`
 - `UNKNOWN`: `0`
 
 Pro-audit reconciliation:
 
-- The `8 DONE / 0 PARTIAL` number above is only a local repository artifact
-  surface computed against the full `runs/` tree. It means each current row has
-  a `phase1_acceptance_report.json` on this machine, not that Phase 1 is
-  complete and not that the latest external review package can independently
-  recompute the same result.
+- Earlier local `8 DONE / 0 PARTIAL` readings are now intentionally invalidated
+  by the verifier hardening. Existing acceptance bundles in `runs/` were
+  generated before `acceptance_verification.verification_status=passed` became
+  mandatory, so the refreshed catalog correctly reports `0 DONE / 8 PARTIAL`.
+- This regression in the DONE count is a trust-chain improvement. It means
+  `comparison_summary.json`, `phase1_acceptance_report.json`, and review-pack
+  manifests can no longer self-certify completion without being checked against
+  actual run artifacts.
 - It is not automatically transferable to an external review package. If the
   submitted package omits generated catalog JSON/MD, comparison directories,
   exact participating run directories, raw `timeseries.*`, actor/phase/control
   traces, `phase1_status.json`, artifact-completeness reports, assist ledgers,
-  and a SHA256 manifest, then the package-level audit status is `PARTIAL` even
-  when the local repository can recompute `8 DONE`.
-- The current repository can now materialize a self-contained local
-  `Phase1ReviewPack` from the catalog:
-  `artifacts/phase1_review_pack_current_20260622_102808.tar.gz`
-  (`sha256=a8b878bcdd90997f3924168838414b935a52fdfcfa88f3e6b9a0bdf1347d196d`).
-  Its manifest reports `status=DONE`, `done_scenario_count=8`,
-  `partial_scenario_count=0`, and `copied_files=202`. This upgrades the
-  package-level local surface from candidate to locally recomputed DONE, but it
-  still is not an external reviewer acceptance result and it still does not
-  claim Apollo behavior success.
+  verifier output, and a SHA256 manifest, then the package-level audit status
+  is `PARTIAL`.
+- The previous local `Phase1ReviewPack` archive should be treated as stale for
+  completion claims because it predates the independent acceptance and
+  review-pack verification checks. A new review pack must be rebuilt only after
+  regenerating verifier-passed acceptance bundles.
 - The latest Pro audit explicitly rejected the stronger "Phase 1 complete" /
-  "8 scenarios externally DONE" reading. Treat the local pack as a candidate
-  evidence surface until an external reviewer can independently recompute the
-  exact accepted bundles from the packaged raw artifacts and hashes.
+  "8 scenarios externally DONE" reading. Treat all current rows as `PARTIAL`
+  until the exact accepted bundles are regenerated under the verifier and can
+  be independently recomputed from packaged raw artifacts and hashes.
 - Phase 1 progress must therefore be reported in three layers:
-  local accepted comparison-surface catalog = `local artifact-surface DONE`;
-  package-level review surface = `local recomputed pack DONE / not
-  external-accepted` until the self-contained pack is independently audited;
-  Phase 1 overall = `PARTIAL` until representative Apollo online behavior
-  blockers and the external-backend runtime path are reduced.
+  local accepted comparison-surface catalog = `PARTIAL`;
+  package-level review surface = `PARTIAL until rebuilt with verifier-passed
+  bundles`; Phase 1 overall = `PARTIAL` until representative Apollo online
+  behavior blockers and the external-backend runtime path are reduced.
 
 Interpretation:
 
 - The Phase 1 platform skeleton is substantially built: scenario definitions,
   target actor contracts, `v-t-gap`, status classification, ScenarioComparison,
-  and Apollo sidecar evidence all exist.
+  acceptance verification, review-pack materialization checks, and Apollo
+  sidecar evidence all exist.
 - The latest Pro audit conclusion should be read literally: Phase 1 is not
   complete yet. The accepted-bundle surface is a useful mechanism and current
   catalog milestone, but it is not the same thing as a Phase 1 completion
@@ -130,11 +127,12 @@ Interpretation:
   without mixing best evidence across unrelated runs.
 - The latest Pro-review progress reading is: Phase 1 has moved from artifact
   scaffolding to evidence-backed blocker reduction. The accepted
-  comparison-surface catalog is auditable, but Phase 1 is not complete until
-  representative online runs demonstrate stable external-backend behavior on
-  the same scenario cases. In practical terms, the next cycle should optimize
-  the current highest-value Apollo behavior blocker, not create more generic
-  validation surfaces unless a missing artifact blocks that diagnosis.
+  comparison-surface catalog is now conservatively blocked until acceptance
+  bundles are regenerated through the verifier, and Phase 1 is not complete
+  until representative online runs demonstrate stable external-backend behavior
+  on the same scenario cases. In practical terms, the next cycle should rebuild
+  verifier-passed bundles from actual run artifacts, then optimize the current
+  highest-value Apollo behavior blocker.
 - The newest online validation sample,
   `runs/phase1_apollo_sidecar_cut_in_planning_debug_presence_online_20260621_194107`,
   keeps that same boundary: it is an evaluable ApolloBackend behavior failure

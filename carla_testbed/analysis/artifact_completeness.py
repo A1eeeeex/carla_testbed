@@ -366,7 +366,17 @@ def _check_phase1_artifact_completeness(
     artifacts = {
         "manifest": str(root / "manifest.json") if (root / "manifest.json").exists() else None,
         "summary": str(root / "summary.json") if (root / "summary.json").exists() else None,
+        "events": str(root / "events.jsonl") if (root / "events.jsonl").exists() else None,
         "timeseries": str(_find_first(root, ["timeseries.csv", "timeseries.jsonl"]) or ""),
+        "control_apply_trace": str(root / "artifacts" / "control_apply_trace.jsonl")
+        if (root / "artifacts" / "control_apply_trace.jsonl").exists()
+        else None,
+        "ego_control_trace": str(root / "artifacts" / "ego_control_trace.jsonl")
+        if (root / "artifacts" / "ego_control_trace.jsonl").exists()
+        else None,
+        "apollo_control_raw": str(root / "artifacts" / "apollo_control_raw.jsonl")
+        if (root / "artifacts" / "apollo_control_raw.jsonl").exists()
+        else None,
         "phase1_status": str(root / "analysis" / "phase1_status" / "phase1_status.json")
         if (root / "analysis" / "phase1_status" / "phase1_status.json").exists()
         else None,
@@ -398,7 +408,10 @@ def _check_phase1_artifact_completeness(
         if (root / "analysis" / "obstacle_gt_contract" / "obstacle_gt_contract_report.json").exists()
         else None,
     }
-    required = ["manifest", "summary", "timeseries", "phase1_status", "v_t_gap"]
+    required = ["manifest", "summary", "events", "timeseries", "phase1_status", "v_t_gap"]
+    control_trace_available = _phase1_control_trace_available(artifacts)
+    if not control_trace_available:
+        required.append("control_trace_surface")
     if target_required:
         required.extend(
             [
@@ -411,7 +424,11 @@ def _check_phase1_artifact_completeness(
         )
         if backend_type == "apollo_reference_backend":
             required.append("obstacle_gt_contract")
-    missing_artifacts = [_phase1_artifact_label(key) for key in required if not artifacts.get(key)]
+    missing_artifacts = [
+        _phase1_artifact_label(key)
+        for key in required
+        if key == "control_trace_surface" or not artifacts.get(key)
+    ]
     missing_manifest_fields = [
         key
         for key in ("scenario_id", "backend", "backend_type")
@@ -419,7 +436,17 @@ def _check_phase1_artifact_completeness(
         and not (key == "scenario_id" and manifest.get("scenario_case"))
         and not phase1_status.get(key)
     ]
-    artifact_complete = not missing_artifacts and not missing_manifest_fields
+    physical_artifacts = _physical_artifact_statuses(artifacts)
+    empty_artifacts = _empty_present_artifacts(physical_artifacts)
+    raw_required = ["events", "timeseries"]
+    if target_required:
+        raw_required.extend(["scenario_actor_trace", "scenario_phase_events"])
+    missing_raw_evidence = [
+        _phase1_artifact_label(key) for key in raw_required if not artifacts.get(key)
+    ]
+    if not control_trace_available:
+        missing_raw_evidence.append(_phase1_artifact_label("control_trace_surface"))
+    artifact_complete = not missing_artifacts and not missing_manifest_fields and not empty_artifacts
     return {
         "schema_version": RUN_ARTIFACT_COMPLETENESS_SCHEMA_VERSION,
         "profile": "phase1",
@@ -433,19 +460,19 @@ def _check_phase1_artifact_completeness(
         "declared_complete": not missing_artifacts,
         "physical_complete": artifact_complete,
         "summary_complete": not missing_artifacts,
-        "raw_evidence_complete": True,
+        "raw_evidence_complete": not missing_raw_evidence,
         "target_actor_required": target_required,
         "backend_type": backend_type or None,
         "artifacts": artifacts,
-        "physical_artifacts": _physical_artifact_statuses(artifacts),
+        "physical_artifacts": physical_artifacts,
         "missing_artifacts": missing_artifacts,
-        "missing_raw_evidence_artifacts": [],
-        "empty_artifacts": [],
+        "missing_raw_evidence_artifacts": missing_raw_evidence,
+        "empty_artifacts": empty_artifacts,
         "missing_manifest_fields": missing_manifest_fields,
         "invalid_manifest_source_fields": [],
         "invalid_report_source_fields": [],
-        "control_trace_available": True,
-        "missing_control_trace_fields": [],
+        "control_trace_available": control_trace_available,
+        "missing_control_trace_fields": [] if control_trace_available else ["control_trace_surface"],
         "warnings": [
             "phase1_profile_checks_scenario_run_surface_not_natural_driving_claim_artifacts"
         ],
@@ -483,11 +510,21 @@ def _phase1_target_required(
     )
 
 
+def _phase1_control_trace_available(artifacts: Mapping[str, Any]) -> bool:
+    for key in ("control_apply_trace", "ego_control_trace", "apollo_control_raw"):
+        raw = artifacts.get(key)
+        if raw and _artifact_file_non_empty(Path(str(raw))):
+            return True
+    return False
+
+
 def _phase1_artifact_label(key: str) -> str:
     return {
         "manifest": "manifest.json",
         "summary": "summary.json",
+        "events": "events.jsonl",
         "timeseries": "timeseries.csv/jsonl",
+        "control_trace_surface": "artifacts/control_apply_trace.jsonl|artifacts/ego_control_trace.jsonl|artifacts/apollo_control_raw.jsonl",
         "phase1_status": "analysis/phase1_status/phase1_status.json",
         "v_t_gap": "analysis/v_t_gap/v_t_gap_report.json",
         "fixed_scene_resolved": "artifacts/fixed_scene_resolved.json",

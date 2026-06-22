@@ -262,16 +262,23 @@ Phase 1 external review packaging has two levels:
 - `tools/phase1_acceptance.py --comparison-dir <comparison> --out <acceptance>`
   writes one atomic `phase1_acceptance_report.json` and materializes that exact
   comparison plus its participating run evidence under `acceptance/evidence/`.
+  The report must include
+  `acceptance_verification.verification_status=passed` before it can be used
+  as a Phase 1 DONE input; `comparison_summary.json` is a declaration, not a
+  trust root.
 - `tools/package_phase1_review_pack.py --catalog <phase1_scenario_catalog.json>
   --out <pack> --archive` copies the generated catalog and every exact accepted
   bundle referenced by `accepted_bundle_path`, then writes
   `phase1_review_pack_manifest.json` with SHA256 hashes and missing required
-  evidence.
+  evidence. The pack also verifies the copied bundle from files inside the
+  pack, so an acceptance report that merely claims `DONE` /
+  `bundle_self_contained=true` is not enough.
 
 The review-pack manifest is package-level audit evidence. It does not prove
 Apollo natural driving, and it must not merge best evidence from unrelated
-runs. If a referenced accepted bundle is missing, partial, or not
-self-contained, the package-level status is `PARTIAL`.
+runs. If a referenced accepted bundle is missing, partial, not self-contained,
+or lacks verifier-passed acceptance evidence, the package-level status is
+`PARTIAL`.
   - `phase1_metrics.derived_blocker_evidence` is an explanation layer assembled
     from run-local reports such as
     `analysis/control_health/control_health_report.json`,
@@ -1010,6 +1017,15 @@ decoded lane segments, and `route.json` must contain concrete route points. A
 stale `routing_response_decoded.jsonl` row such as `message_count=0` or
 `status=insufficient_data` is not complete raw evidence, even if a later summary
 file exists.
+
+For the Phase 1 profile, `raw_evidence_complete` and
+`control_trace_available` are also file-derived. A minimal Phase 1 run must
+provide `events.jsonl`, `timeseries.csv` or `timeseries.jsonl`, and one
+executable control trace surface such as
+`artifacts/control_apply_trace.jsonl`, `artifacts/ego_control_trace.jsonl`, or
+`artifacts/apollo_control_raw.jsonl`. Target-actor cases additionally require
+actor/phase traces and fixed-scene contracts; missing these keeps the run
+`insufficient_data` for Phase 1 comparison.
 
 For transition runs, claim/runtime manifests should use
 `transport_mode=apollo_cyberrt_gt_over_ros2_transition` as the canonical

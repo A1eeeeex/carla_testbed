@@ -6,6 +6,8 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
+from carla_testbed.analysis.phase1_acceptance_verifier import verify_phase1_acceptance
+
 PHASE1_ACCEPTANCE_SCHEMA_VERSION = "phase1_acceptance.v1"
 STATUS_DONE = "DONE"
 STATUS_PARTIAL = "PARTIAL"
@@ -31,8 +33,15 @@ def analyze_phase1_acceptance(comparison_dir: str | Path) -> dict[str, Any]:
     manifest_path = root / "comparison_manifest.json"
     summary = _read_json(summary_path)
     manifest = _read_json(manifest_path)
+    verification = verify_phase1_acceptance(
+        root,
+        declared_summary=summary,
+        declared_manifest=manifest,
+    )
     participating_runs = [
-        dict(item) for item in summary.get("participating_runs") or [] if isinstance(item, Mapping)
+        dict(item)
+        for item in verification.get("recomputed_participating_runs") or []
+        if isinstance(item, Mapping)
     ]
     backend_types = {str(run.get("backend_type") or "") for run in participating_runs}
     apollo_runs = [run for run in participating_runs if run.get("backend_type") == "apollo_reference_backend"]
@@ -44,26 +53,8 @@ def analyze_phase1_acceptance(comparison_dir: str | Path) -> dict[str, Any]:
     if comparison_case:
         scenario_cases.add(comparison_case)
 
-    gates = {
-        "same_scenario_case": len(scenario_cases) == 1 and bool(scenario_cases),
-        "backend_coverage": len(apollo_runs) == 1 and len(planning_runs) == 1,
-        "comparison_valid": (
-            summary.get("comparison_status") == "comparable"
-            and summary.get("comparison_target_status") == "apollo_vs_planning_control_evaluable"
-        ),
-        "blocking_assists_absent": all(not run.get("blocking_assists") for run in participating_runs),
-        "scenario_interaction_evaluable": all(
-            run.get("scenario_interaction_evaluable") is True for run in participating_runs
-        ),
-        "target_metric_evaluable": all(
-            run.get("target_metric_evaluable") is True for run in participating_runs
-        ),
-        "artifact_complete": all(_artifact_complete(run) for run in participating_runs),
-        "comparison_curves_present": (
-            not _comparison_curves_required(participating_runs)
-            or (root / "comparison_curves" / "v_t_gap_combined.csv").exists()
-        ),
-    }
+    gates = dict(verification.get("recomputed_gates") or {})
+    gates["acceptance_verification"] = verification.get("verification_status") == "passed"
     blocking_reasons = [name for name, passed in gates.items() if not passed]
     status = STATUS_DONE if not blocking_reasons else STATUS_PARTIAL
     artifact_hashes = _artifact_hashes(root, summary_path, manifest_path, participating_runs)
@@ -76,8 +67,11 @@ def analyze_phase1_acceptance(comparison_dir: str | Path) -> dict[str, Any]:
         "scenario_case": next(iter(scenario_cases)) if len(scenario_cases) == 1 else comparison_case or None,
         "comparison_id": summary.get("comparison_id") or manifest.get("comparison_id") or root.name,
         "comparison_dir": str(root),
-        "comparison_status": summary.get("comparison_status"),
-        "comparison_target_status": summary.get("comparison_target_status"),
+        "comparison_status": verification.get("recomputed_comparison_status") or summary.get("comparison_status"),
+        "comparison_target_status": verification.get("recomputed_comparison_target_status")
+        or summary.get("comparison_target_status"),
+        "declared_comparison_status": summary.get("comparison_status"),
+        "declared_comparison_target_status": summary.get("comparison_target_status"),
         "apollo_run_id": apollo_run.get("run_id"),
         "apollo_run_dir": apollo_run.get("run_dir"),
         "planning_control_run_id": planning_run.get("run_id"),
@@ -86,6 +80,7 @@ def analyze_phase1_acceptance(comparison_dir: str | Path) -> dict[str, Any]:
         "run_inputs": run_inputs,
         "gates": gates,
         "blocking_reasons": blocking_reasons,
+        "acceptance_verification": verification,
         "artifact_hashes": artifact_hashes,
         "claim_boundary": (
             "Phase1AcceptanceBundle proves an atomic Phase 1 scenario/backend comparison surface. "

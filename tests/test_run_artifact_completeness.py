@@ -69,6 +69,17 @@ def _write_minimal_phase1_run(
     _rewrite_json(run_dir / "manifest.json", manifest)
     _rewrite_json(run_dir / "summary.json", summary)
     (run_dir / "timeseries.csv").write_text("sim_time,ego_speed\n0.0,0.0\n", encoding="utf-8")
+    (run_dir / "events.jsonl").write_text(json.dumps({"event": "start"}) + "\n", encoding="utf-8")
+    (run_dir / "artifacts").mkdir(parents=True)
+    control_trace = (
+        "ego_control_trace.jsonl"
+        if backend_type == "planning_control_backend"
+        else "control_apply_trace.jsonl"
+    )
+    (run_dir / "artifacts" / control_trace).write_text(
+        json.dumps({"sim_time": 0.0, "throttle": 0.0, "brake": 0.0, "steer": 0.0}) + "\n",
+        encoding="utf-8",
+    )
     _rewrite_json(run_dir / "analysis" / "phase1_status" / "phase1_status.json", phase1_status)
     _rewrite_json(run_dir / "analysis" / "v_t_gap" / "v_t_gap_report.json", v_t_gap)
     return run_dir
@@ -351,12 +362,35 @@ def test_phase1_profile_passes_minimal_route_only_run(tmp_path: Path) -> None:
     assert report["profile"] == "phase1"
     assert report["status"] == "pass"
     assert report["artifact_complete"] is True
+    assert report["raw_evidence_complete"] is True
+    assert report["control_trace_available"] is True
     assert report["target_actor_required"] is False
     assert report["missing_artifacts"] == []
+    assert report["missing_raw_evidence_artifacts"] == []
     assert report["missing_manifest_fields"] == []
     assert "phase1_profile_checks_scenario_run_surface_not_natural_driving_claim_artifacts" in report[
         "warnings"
     ]
+
+
+def test_phase1_profile_requires_real_control_trace_surface(tmp_path: Path) -> None:
+    run_dir = _write_minimal_phase1_run(tmp_path)
+    (run_dir / "artifacts" / "ego_control_trace.jsonl").unlink()
+
+    report = check_run_artifact_completeness(run_dir, profile="phase1")
+
+    assert report["status"] == "insufficient_data"
+    assert report["artifact_complete"] is False
+    assert report["raw_evidence_complete"] is False
+    assert report["control_trace_available"] is False
+    assert (
+        "artifacts/control_apply_trace.jsonl|artifacts/ego_control_trace.jsonl|artifacts/apollo_control_raw.jsonl"
+        in report["missing_artifacts"]
+    )
+    assert (
+        "artifacts/control_apply_trace.jsonl|artifacts/ego_control_trace.jsonl|artifacts/apollo_control_raw.jsonl"
+        in report["missing_raw_evidence_artifacts"]
+    )
 
 
 def test_phase1_profile_requires_target_actor_artifacts_when_target_required(

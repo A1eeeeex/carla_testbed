@@ -1114,10 +1114,12 @@ def _comparison_evidence_details(summary: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _phase1_acceptance_evidence_note(report: Mapping[str, Any]) -> str:
+    verification = _phase1_acceptance_verification(report)
     parts = [
         f"status={report.get('status') or 'missing'}",
         f"comparison={report.get('comparison_id') or 'missing'}",
         f"bundle_self_contained={_phase1_acceptance_bundle_self_contained(report)}",
+        f"verification={verification.get('verification_status') or 'missing'}",
     ]
     blockers = _short_list(report.get("blocking_reasons"))
     if blockers:
@@ -1140,12 +1142,16 @@ def _phase1_acceptance_evidence_details(report: Mapping[str, Any]) -> dict[str, 
         "blocking_reasons",
         "gates",
         "bundle_materialization",
+        "acceptance_verification",
         "claim_boundary",
     ):
         value = report.get(key)
         if value not in (None, [], {}):
             details[key] = value
     details["bundle_self_contained"] = _phase1_acceptance_bundle_self_contained(report)
+    details["acceptance_verification_status"] = _phase1_acceptance_verification(report).get(
+        "verification_status"
+    )
     return details
 
 
@@ -1153,7 +1159,15 @@ def _phase1_acceptance_readiness(report: Mapping[str, Any]) -> str:
     raw_status = str(report.get("status") or STATUS_UNKNOWN)
     if raw_status != STATUS_DONE:
         return _phase1_readiness_from_status(raw_status)
-    return STATUS_DONE if _phase1_acceptance_bundle_self_contained(report) else STATUS_PARTIAL
+    if not _phase1_acceptance_bundle_self_contained(report):
+        return STATUS_PARTIAL
+    verification = _phase1_acceptance_verification(report)
+    return STATUS_DONE if verification.get("verification_status") == "passed" else STATUS_PARTIAL
+
+
+def _phase1_acceptance_verification(report: Mapping[str, Any]) -> Mapping[str, Any]:
+    verification = report.get("acceptance_verification")
+    return verification if isinstance(verification, Mapping) else {}
 
 
 def _phase1_acceptance_bundle_self_contained(report: Mapping[str, Any]) -> bool:

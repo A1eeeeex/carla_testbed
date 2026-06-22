@@ -1013,6 +1013,10 @@ def test_route_only_lane_keep_done_with_self_contained_accepted_bundle(tmp_path)
                     "self_contained": True,
                     "missing_required_files": [],
                 },
+                "acceptance_verification": {
+                    "schema_version": "phase1_acceptance_verification.v1",
+                    "verification_status": "passed",
+                },
             }
         ),
         encoding="utf-8",
@@ -1026,6 +1030,57 @@ def test_route_only_lane_keep_done_with_self_contained_accepted_bundle(tmp_path)
     assert "accepted_phase1_comparison_bundle" not in lane["missing_items"]
     assert lane["representative_evidence"]["phase1_acceptance"]["status"] == "DONE"
     assert lane["representative_evidence"]["phase1_acceptance"]["bundle_self_contained"] is True
+    assert (
+        lane["representative_evidence"]["phase1_acceptance"]["acceptance_verification_status"]
+        == "passed"
+    )
+
+
+def test_phase1_catalog_does_not_accept_self_contained_bundle_without_verification(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    _write_catalog_run(
+        evidence_root / "apollo_lane_keep",
+        backend="apollo_cyberrt",
+        backend_type="apollo_reference_backend",
+        scenario_case="town01_lane_keep_097",
+        status="failed",
+    )
+    _write_catalog_run(
+        evidence_root / "builtin_lane_keep",
+        backend="carla_builtin",
+        backend_type="planning_control_backend",
+        scenario_case="town01_lane_keep_097",
+        status="success",
+    )
+    acceptance = evidence_root / "comparisons" / "lane_keep" / "acceptance"
+    acceptance.mkdir(parents=True)
+    (acceptance / "phase1_acceptance_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_acceptance.v1",
+                "status": "DONE",
+                "scenario_case": "town01_lane_keep_097",
+                "comparison_id": "lane_keep",
+                "apollo_run_id": "apollo_lane_keep",
+                "planning_control_run_id": "builtin_lane_keep",
+                "blocking_reasons": [],
+                "gates": {"bundle_self_contained": True},
+                "bundle_materialization": {"self_contained": True, "missing_required_files": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_phase1_scenario_catalog(".", evidence_root=evidence_root)
+    lane = {item["scenario"]: item for item in report["scenarios"]}["lane_keep_straight"]
+
+    assert lane["accepted_bundle_status"] == "PARTIAL"
+    assert lane["overall_status"] == "PARTIAL"
+    assert "accepted_phase1_comparison_bundle" in lane["missing_items"]
+    representative = lane["representative_evidence"]["phase1_acceptance"]
+    assert representative["bundle_self_contained"] is True
+    assert representative["acceptance_verification_status"] is None
+    assert "verification=missing" in representative["note"]
 
 
 def test_phase1_catalog_uses_latest_accepted_bundle_not_best_stale_done(tmp_path) -> None:
