@@ -105,6 +105,12 @@ def test_degraded_negative_gap_is_not_backend_unsafe_gap(tmp_path) -> None:
         ),
         encoding="utf-8",
     )
+    obstacle_out = run / "analysis" / "obstacle_gt_contract"
+    obstacle_out.mkdir(parents=True)
+    (obstacle_out / "obstacle_gt_contract_report.json").write_text(
+        json.dumps({"schema_version": "obstacle_gt_contract.v1", "status": "pass"}),
+        encoding="utf-8",
+    )
 
     report = classify_phase1_run(run)
 
@@ -833,6 +839,104 @@ def test_phase1_status_prefers_precise_apollo_handoff_failure_reason(tmp_path) -
     handoff_context = control["source_control_context"]["apollo_control_handoff"]
     assert handoff_context["failure_reasons"] == ["control_stream_ended_before_first_nonzero_planning"]
     assert handoff_context["control_rows_after_first_nonzero_planning"] == 0
+
+
+def test_phase1_status_prefers_stale_planning_handoff_reason(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    _write_manifest(
+        run,
+        {
+            "backend": "apollo_cyberrt",
+            "backend_type": "apollo_reference_backend",
+        },
+    )
+    (run / "summary.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "status": "fail",
+                "fail_reason": "NO_SENSOR_DATA",
+                "acceptance": {"failure_codes": ["NO_SENSOR_DATA", "EGO_NOT_MOVING"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text(
+        "sim_time,ego_speed_mps,throttle_applied,brake_applied\n"
+        "0.0,0.0,0.0,0.15\n",
+        encoding="utf-8",
+    )
+    artifacts = run / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "bridge_control_decode.jsonl").write_text(
+        json.dumps({"commanded_throttle": 0.0, "commanded_brake": 0.15}) + "\n",
+        encoding="utf-8",
+    )
+    (artifacts / "apollo_control_raw.jsonl").write_text(
+        json.dumps(
+            {
+                "apollo_control_raw": {
+                    "throttle": 0.0,
+                    "brake": 15.0,
+                    "debug_input_trajectory_header_sequence_num": 0,
+                    "debug_input_latest_replan_trajectory_header_sequence_num": 0,
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifacts / "planning_topic_debug.jsonl").write_text(
+        json.dumps({"trajectory_point_count": 1, "reference_line_count": 0}) + "\n",
+        encoding="utf-8",
+    )
+    handoff_out = run / "analysis" / "apollo_control_handoff"
+    handoff_out.mkdir(parents=True)
+    (handoff_out / "apollo_control_handoff_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_control_handoff.v1",
+                "verdict": "fail",
+                "failure_stage": "planning_control_handoff",
+                "planning_control_handoff": {
+                    "failure_reasons": ["planning_nonzero_stale_before_control_consume"],
+                    "first_nonzero_planning_timestamp_sec": 11.0,
+                    "last_control_raw_timestamp_sec": 13.0,
+                    "last_control_consume_timestamp_sec": 13.0,
+                    "control_rows_after_first_nonzero_planning": 1,
+                    "planning_nonzero_to_first_control_gap_ms": 2000.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "pass",
+                "rows": [{"gap_m": 20.0, "ego_speed_mps": 0.0, "target_speed_mps": 0.0}],
+                "target_actor_contract": {"status": "resolved"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    obstacle_out = run / "analysis" / "obstacle_gt_contract"
+    obstacle_out.mkdir(parents=True)
+    (obstacle_out / "obstacle_gt_contract_report.json").write_text(
+        json.dumps({"schema_version": "obstacle_gt_contract.v1", "status": "pass"}),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "planning_control_handoff_missing"
+    control = report["phase1_metrics"]["control_motion"]
+    assert control["source_brake_interpretation"] == "planning_nonzero_stale_before_control_consume"
+    handoff_context = control["source_control_context"]["apollo_control_handoff"]
+    assert handoff_context["failure_reasons"] == ["planning_nonzero_stale_before_control_consume"]
 
 
 def test_phase1_status_reports_apollo_control_process_failed_from_handoff(tmp_path) -> None:

@@ -199,9 +199,13 @@ Delivery-first update, 2026-06-23:
   succeeds, while Apollo fails with `collision` at about `16m` bumper gap. This
   is a real Phase 1 behavior blocker, not a natural-driving claim and not
   evidence that Apollo lead-deceleration works. The next high-value Apollo
-  investigation is longitudinal planning/control handoff for this dynamic
-  target case, including why control raw carries constant brake with zero
-  input trajectory while Planning has non-empty messages.
+  investigation has narrowed to longitudinal planning/control handoff for this
+  dynamic target case: Planning produced one non-empty trajectory message, but
+  the first observed control consume happened about `2.27s` later, when the
+  non-empty Planning evidence was stale and control still reported zero input
+  trajectory points. The refreshed handoff report now classifies this as
+  `planning_nonzero_stale_before_control_consume`, which is more precise than
+  the older generic "Planning non-empty but control input zero" diagnosis.
 
 Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:

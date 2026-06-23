@@ -2149,6 +2149,8 @@ def _source_brake_interpretation(metrics: Mapping[str, Any]) -> str | None:
     }
     if "control_stream_ended_before_first_nonzero_planning" in handoff_failure_reasons:
         return "control_stream_ended_before_first_nonzero_planning"
+    if "planning_nonzero_stale_before_control_consume" in handoff_failure_reasons:
+        return "planning_nonzero_stale_before_control_consume"
     apollo_context = context.get("apollo_control_raw") if isinstance(context.get("apollo_control_raw"), Mapping) else {}
     planning_context = (
         context.get("planning_topic_debug") if isinstance(context.get("planning_topic_debug"), Mapping) else {}

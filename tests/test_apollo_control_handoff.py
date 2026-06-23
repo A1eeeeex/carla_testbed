@@ -493,6 +493,76 @@ def test_planning_topic_nonzero_but_control_input_trajectory_zero_fails_handoff(
     }
 
 
+def test_planning_nonzero_stale_before_control_gets_specific_handoff_reason(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_case(tmp_path)
+    (run_dir / "artifacts" / "planning_topic_debug.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": 10.0,
+                "planning_header_timestamp_sec": 10.0,
+                "trajectory_point_count": 0,
+                "reference_line_count": 0,
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "timestamp": 11.0,
+                "planning_header_timestamp_sec": 11.0,
+                "trajectory_point_count": 1,
+                "reference_line_count": 0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "artifacts" / "apollo_control_raw.jsonl").write_text(
+        json.dumps(
+            {
+                "ts_sec": 13.0,
+                "apollo_control_raw": {
+                    "throttle": 0.0,
+                    "brake": 15.0,
+                    "debug_input_trajectory_header_sequence_num": 0,
+                    "debug_input_latest_replan_trajectory_header_sequence_num": 0,
+                    "debug_input_trajectory_header_timestamp_sec": 0.0,
+                    "debug_input_latest_replan_trajectory_header_timestamp_sec": 0.0,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "artifacts" / "control_trajectory_consume_debug.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": 13.0,
+                "control_rx_timestamp": 13.0,
+                "latest_planning_msg_sequence_num": 1,
+                "latest_planning_trajectory_point_count": 1,
+                "control_input_candidate_source": "missing",
+                "effective_planning_source": "latest_known_fallback",
+                "control_used_planning_trajectory": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_control_handoff(run_dir=run_dir)
+    handoff = report["planning_control_handoff"]
+
+    assert report["verdict"] == "fail"
+    assert report["failure_stage"] == "planning_control_handoff"
+    assert handoff["failure_reasons"] == ["planning_nonzero_stale_before_control_consume"]
+    assert handoff["planning_nonzero_to_first_control_gap_ms"] == 2000.0
+    assert handoff["planning_nonzero_stale_before_control_consume"] is True
+    assert handoff["control_input_trajectory_nonzero_rows"] == 0
+    assert handoff["control_consume_latest_planning_trajectory_point_count"]["nonzero_count"] == 1
+
+
 def test_control_stream_ended_before_first_nonzero_planning_gets_specific_handoff_reason(
     tmp_path: Path,
 ) -> None:

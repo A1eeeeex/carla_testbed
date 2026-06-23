@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 APOLLO_CONTROL_HANDOFF_SCHEMA_VERSION = "apollo_control_handoff.v1"
+PLANNING_NONZERO_STALE_BEFORE_CONTROL_THRESHOLD_MS = 500.0
 
 FAILURE_STAGE_PRIORITY = (
     "process_health",
@@ -887,6 +888,17 @@ def _planning_control_handoff(
         if control_stream_ended_before_first_nonzero and last_control_timestamp is not None
         else None
     )
+    planning_nonzero_to_first_control_gap_ms = (
+        (first_control_timestamp - last_nonzero_planning_timestamp) * 1000.0
+        if first_control_timestamp is not None
+        and last_nonzero_planning_timestamp is not None
+        and first_control_timestamp > last_nonzero_planning_timestamp
+        else None
+    )
+    planning_nonzero_stale_before_control = (
+        planning_nonzero_to_first_control_gap_ms is not None
+        and planning_nonzero_to_first_control_gap_ms > PLANNING_NONZERO_STALE_BEFORE_CONTROL_THRESHOLD_MS
+    )
     consume_latest_planning_points = _nested_series(
         control_consume_rows,
         ("latest_planning_trajectory_point_count",),
@@ -916,6 +928,14 @@ def _planning_control_handoff(
     elif planning_nonzero > 0 and control_stream_ended_before_first_nonzero:
         status = "fail"
         failure_reasons.append("control_stream_ended_before_first_nonzero_planning")
+    elif (
+        planning_nonzero > 0
+        and planning_nonzero_stale_before_control
+        and control_input_nonzero == 0
+        and latest_replan_nonzero == 0
+    ):
+        status = "fail"
+        failure_reasons.append("planning_nonzero_stale_before_control_consume")
     elif planning_nonzero > 0 and control_input_nonzero == 0 and latest_replan_nonzero == 0:
         status = "fail"
         failure_reasons.append("planning_topic_nonzero_but_control_input_trajectory_zero")
@@ -984,6 +1004,8 @@ def _planning_control_handoff(
         "control_stream_end_before_first_nonzero_planning_delta_ms": (
             control_stream_end_before_first_nonzero_delta_ms
         ),
+        "planning_nonzero_to_first_control_gap_ms": planning_nonzero_to_first_control_gap_ms,
+        "planning_nonzero_stale_before_control_consume": planning_nonzero_stale_before_control,
         "failure_reasons": failure_reasons,
         "warnings": warnings,
         "missing_fields": missing_fields,
