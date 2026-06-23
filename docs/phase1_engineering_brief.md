@@ -137,7 +137,12 @@ Delivery-first update, 2026-06-23:
   evidence, so it is not counted as a backend behavior loss. The next useful
   fix is to repair or explain the Baguang lane-event/spawn/OpenDRIVE
   road-marking contract, not total bridge breakage or a proven Apollo
-  control-process crash.
+  control-process crash. The next follow-stop online sample should use the
+  unified pair entry with the diagnostic spawn mitigation:
+  `python3 -m carla_testbed phase1 run-pair --scenario
+  baguang/follow_stop_static_300m_spawn2m --out <out> --timeout-s <sec>`.
+  Dry-run coverage now verifies that this path compiles both backend plans and
+  selects the Apollo spawn2m paced overlay profile.
 
 Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:
