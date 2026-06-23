@@ -1649,7 +1649,8 @@ def main():
             (args.run_dir / "RUN_DIR_REDIRECT.txt").write_text(str(out_run_dir))
         except Exception:
             pass
-    if args.run_dir and out_run_dir.exists():
+    allow_preseeded_run_dir = os.environ.get("CARLA_TESTBED_TYPED_TRANSITION_ALLOW_PRESEEDED_RUN_DIR") == "1"
+    if args.run_dir and out_run_dir.exists() and not allow_preseeded_run_dir:
         # Avoid mixing artifacts from different attempts in the same run dir.
         try:
             if any(out_run_dir.iterdir()):

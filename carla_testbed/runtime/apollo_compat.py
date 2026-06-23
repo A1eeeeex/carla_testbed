@@ -201,7 +201,8 @@ def _run_typed_transition_backend(
 ) -> ApolloCompatRuntimeResult:
     root = Path(run_dir).expanduser()
     start_wall = time.time()
-    if _run_dir_has_content(root):
+    unexpected_preexisting = _unexpected_transition_preseeded_paths(root)
+    if unexpected_preexisting:
         return _write_transition_preflight_failure(
             root,
             cfg=cfg,
@@ -581,6 +582,7 @@ def _invoke_tbio_transition_backend(legacy_effective_path: Path, run_dir: Path) 
                 "current_python_executable": sys.executable,
                 "transition_entrypoint": "examples.run_followstop",
                 "command": command,
+                "allow_preseeded_run_dir_env": "CARLA_TESTBED_TYPED_TRANSITION_ALLOW_PRESEEDED_RUN_DIR",
             },
             indent=2,
             sort_keys=True,
@@ -589,6 +591,7 @@ def _invoke_tbio_transition_backend(legacy_effective_path: Path, run_dir: Path) 
     )
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env["CARLA_TESTBED_TYPED_TRANSITION_ALLOW_PRESEEDED_RUN_DIR"] = "1"
     proc = subprocess.run(
         command,
         cwd=repo_root,
@@ -784,13 +787,60 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _run_dir_has_content(path: Path) -> bool:
+_ALLOWED_TRANSITION_PRESEEDED_ROOT_FILES = {
+    "launch_plan.json",
+    "manifest.json",
+    "plan.resolved.yaml",
+    "summary.json",
+}
+
+_ALLOWED_TRANSITION_PRESEEDED_EXECUTION_FILES = {
+    "runtime.pid",
+    "runtime_adapter_state.json",
+    "runtime_stderr.log",
+    "runtime_stdout.log",
+}
+
+
+def _unexpected_transition_preseeded_paths(path: Path) -> list[str]:
+    """Return pre-existing run-dir entries that would risk stale evidence.
+
+    Phase 1 platform execution writes neutral lifecycle artifacts before
+    handing off to this typed Apollo transition backend. Those files are safe
+    to preserve and later merge. Anything else may be a stale run artifact and
+    must keep blocking transition execution.
+    """
+
     if not path.exists():
-        return False
+        return []
+    unexpected: list[str] = []
     try:
-        return any(path.iterdir())
+        children = list(path.iterdir())
     except OSError:
-        return True
+        return [str(path)]
+    for child in children:
+        rel = child.relative_to(path).as_posix()
+        if child.is_file() and child.name in _ALLOWED_TRANSITION_PRESEEDED_ROOT_FILES:
+            continue
+        if child.is_dir() and child.name == "execution":
+            unexpected.extend(_unexpected_execution_preseeded_paths(child, root=path))
+            continue
+        unexpected.append(rel)
+    return unexpected
+
+
+def _unexpected_execution_preseeded_paths(path: Path, *, root: Path) -> list[str]:
+    try:
+        children = list(path.iterdir())
+    except OSError:
+        return [path.relative_to(root).as_posix()]
+    unexpected: list[str] = []
+    for child in children:
+        rel = child.relative_to(root).as_posix()
+        if child.is_file() and child.name in _ALLOWED_TRANSITION_PRESEEDED_EXECUTION_FILES:
+            continue
+        unexpected.append(rel)
+    return unexpected
 
 
 def _system_exit_code(exc: SystemExit) -> int:

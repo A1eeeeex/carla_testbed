@@ -1703,6 +1703,57 @@ def test_bridge_runtime_uses_raw_materialization_when_summary_flags_are_stale(tm
     assert report["primary_blocker"] != "bridge_runtime:bridge_materialization_missing"
 
 
+def test_bridge_runtime_accepts_nested_control_stats(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    stats_path = run_dir / "artifacts/cyber_bridge_stats.json"
+    stats = json.loads(stats_path.read_text(encoding="utf-8"))
+    stats.pop("control_rx_count", None)
+    stats["control"] = {"rx_count": 37}
+    _write_json(stats_path, stats)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    bridge = report["layers"]["bridge_runtime"]
+    assert bridge["key_metrics"]["control_rx_count"] == 37
+
+
+def test_link_health_cli_reports_blockers_without_failing_by_default(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "summary.json",
+        {
+            "run_id": "run",
+            "scenario_id": "lane_keep_097",
+            "scenario_class": "lane_keep",
+            "route_id": "lane097",
+            "backend": "apollo_cyberrt",
+        },
+    )
+    _write_json(
+        run_dir / "manifest.json",
+        {
+            "run_id": "run",
+            "scenario_id": "lane_keep_097",
+            "scenario_class": "lane_keep",
+            "route_id": "lane097",
+            "backend": "apollo_cyberrt",
+        },
+    )
+
+    command = [sys.executable, "tools/analyze_apollo_link_health.py", "--run-dir", str(run_dir)]
+    default_result = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
+    strict_result = subprocess.run(
+        [*command, "--fail-on-blocker"],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        capture_output=True,
+    )
+
+    assert default_result.returncode == 0
+    assert json.loads(default_result.stdout)["primary_blocker"]
+    assert strict_result.returncode == 1
+
+
 def test_raw_handoff_artifact_prioritizes_routing_before_no_assist_claim(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     (run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json").unlink()

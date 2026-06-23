@@ -23,6 +23,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         help="Output directory. Defaults to <run-dir>/analysis/apollo_link_health.",
     )
+    parser.add_argument(
+        "--fail-on-blocker",
+        action="store_true",
+        help="Exit 1 when the report has a primary blocker. Default only reports evidence and exits 0.",
+    )
     return parser
 
 
@@ -46,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
             sort_keys=True,
         )
     )
-    return 1 if report.get("primary_blocker") else 0
+    return 1 if args.fail_on_blocker and report.get("primary_blocker") else 0
 
 
 if __name__ == "__main__":

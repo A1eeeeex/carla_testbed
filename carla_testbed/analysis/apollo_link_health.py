@@ -1263,7 +1263,11 @@ def _bridge_runtime_layer(
             "routing_raw_materialized": routing_raw_materialized,
             "planning_raw_materialized": planning_raw_materialized,
             "routing_success_count": _first_raw(summary, "routing_success_count", cyber_stats, "routing_success_count"),
-            "control_rx_count": _first_raw(cyber_stats, "control_rx_count", cyber_stats, "control", "rx_count"),
+            "control_rx_count": _first_raw(
+                cyber_stats,
+                "control_rx_count",
+                _nested(cyber_stats, "control.rx_count"),
+            ),
             "transport_status": transport.get("status") or transport.get("verdict"),
         },
         artifact_paths=_paths(inputs, "summary", "cyber_bridge_stats", "bridge_health_summary", "bridge_transport_summary"),
@@ -5056,14 +5060,14 @@ def _nested(payload: Mapping[str, Any], path: str) -> Any:
 
 def _first_text(*args: Any, default: str | None = None) -> str | None:
     for value in _first_values(*args):
-        if value not in {None, ""}:
+        if _is_present(value):
             return str(value)
     return default
 
 
 def _first_raw(*args: Any) -> Any:
     for value in _first_values(*args):
-        if value not in {None, ""}:
+        if _is_present(value):
             return value
     return None
 
@@ -5091,7 +5095,7 @@ def _first_values(*args: Any) -> list[Any]:
 def _bool_or_none(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
-    if value in {None, ""}:
+    if not _is_present(value):
         return None
     text = str(value).strip().lower()
     if text in {"1", "true", "yes", "y", "on", "pass", "aligned"}:
@@ -5102,12 +5106,16 @@ def _bool_or_none(value: Any) -> bool | None:
 
 
 def _num(value: Any) -> float | None:
-    if value in {None, ""}:
+    if not _is_present(value):
         return None
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _is_present(value: Any) -> bool:
+    return value is not None and value != ""
 
 
 def _first_num(*values: Any) -> float | None:

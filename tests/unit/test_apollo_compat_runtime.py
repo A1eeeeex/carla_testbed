@@ -204,6 +204,68 @@ def test_typed_transition_backend_uses_resolved_config_and_preserves_reports(
     assert routing["lane_segment_count"] == 1
 
 
+def test_typed_transition_backend_allows_platform_lifecycle_preseed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_transition_config(tmp_path)
+    cfg = load_config(config_path)
+    run_dir = tmp_path / "claim_transition"
+    run_dir.mkdir()
+    for name in ("launch_plan.json", "manifest.json", "plan.resolved.yaml", "summary.json"):
+        (run_dir / name).write_text("{}\n", encoding="utf-8")
+    execution = run_dir / "execution"
+    execution.mkdir()
+    for name in ("runtime.pid", "runtime_adapter_state.json", "runtime_stdout.log", "runtime_stderr.log"):
+        (execution / name).write_text("" if name.endswith(".log") else "{}\n", encoding="utf-8")
+    invoked: dict[str, bool] = {}
+
+    def fake_invoke(_effective_path: Path, root: Path) -> int:
+        invoked["called"] = True
+        assert root == run_dir
+        return 0
+
+    monkeypatch.setattr(apollo_compat, "_invoke_tbio_transition_backend", fake_invoke)
+
+    result = apollo_compat.run_compat_apollo_cyber_gt_runtime(
+        cfg,
+        config_path=config_path,
+        run_dir=run_dir,
+        resolved_config=dataclasses.asdict(cfg),
+    )
+
+    assert result.exit_code == 0
+    assert invoked["called"] is True
+
+
+def test_typed_transition_backend_rejects_stale_runtime_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_transition_config(tmp_path)
+    cfg = load_config(config_path)
+    run_dir = tmp_path / "claim_transition"
+    stale_artifacts = run_dir / "artifacts"
+    stale_artifacts.mkdir(parents=True)
+    (stale_artifacts / "cyber_bridge_stats.json").write_text("{}\n", encoding="utf-8")
+
+    def fake_invoke(_effective_path: Path, _root: Path) -> int:
+        raise AssertionError("transition backend must not run with stale evidence")
+
+    monkeypatch.setattr(apollo_compat, "_invoke_tbio_transition_backend", fake_invoke)
+
+    result = apollo_compat.run_compat_apollo_cyber_gt_runtime(
+        cfg,
+        config_path=config_path,
+        run_dir=run_dir,
+        resolved_config=dataclasses.asdict(cfg),
+    )
+
+    assert result.exit_code == 2
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["exit_reason"] == "run_dir_not_empty_before_transition_backend"
+
+
 def test_transition_events_append_without_erasing_backend_events(tmp_path: Path) -> None:
     run_dir = tmp_path / "claim_transition"
     run_dir.mkdir()
@@ -721,6 +783,9 @@ def test_transition_backend_invocation_does_not_prewrite_target_run_dir(
 
     def fake_run(command, **_kwargs):
         captured["command"] = list(command)
+        captured["allow_preseeded"] = str(
+            dict(_kwargs.get("env") or {}).get("CARLA_TESTBED_TYPED_TRANSITION_ALLOW_PRESEEDED_RUN_DIR")
+        )
         assert not run_dir.exists()
         return _Completed()
 
@@ -733,5 +798,7 @@ def test_transition_backend_invocation_does_not_prewrite_target_run_dir(
     assert not run_dir.exists()
     assert "examples.run_followstop" in captured["command"]
     assert "tbio.scripts.run" not in captured["command"]
+    assert captured["allow_preseeded"] == "1"
     runtime = yaml.safe_load((effective.parent / "typed_transition_runtime.json").read_text(encoding="utf-8"))
     assert runtime["transition_entrypoint"] == "examples.run_followstop"
+    assert runtime["allow_preseeded_run_dir_env"] == "CARLA_TESTBED_TYPED_TRANSITION_ALLOW_PRESEEDED_RUN_DIR"
