@@ -163,6 +163,65 @@ def test_non_refresh_regenerates_stale_handoff_when_raw_inputs_exist(tmp_path: P
     assert regenerated["control_channel"]["message_count"] == 10
 
 
+def test_non_refresh_regenerates_stale_process_lifetime_report_when_boundary_inputs_exist(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_case(tmp_path)
+    (run_dir / "events.jsonl").write_text(
+        json.dumps({"event_type": "run_end", "wall_time_s": 110.0}) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "artifacts" / "apollo_control_deferred_survival.json").write_text(
+        json.dumps(
+            {
+                "probe_completed_at_sec": 116.0,
+                "control_started_pid_seen": True,
+                "control_survived_5s": True,
+                "control_present_after_first_nonzero_planning": True,
+                "control_present_at_end": False,
+                "samples": [
+                    {"ts_sec": 111.0, "target_offset_sec": 5.0, "control_present": True},
+                    {"ts_sec": 115.0, "target_offset_sec": 10.0, "control_present": False},
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    existing_path = run_dir / "analysis" / "apollo_control_handoff" / "apollo_control_handoff_report.json"
+    existing_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_path.write_text(
+        json.dumps(
+            {
+                "schema_version": APOLLO_CONTROL_HANDOFF_SCHEMA_VERSION,
+                "verdict": "fail",
+                "failure_stage": "process_health",
+                "process_health": {
+                    "status": "fail",
+                    "alive_after_5s": True,
+                    "alive_at_end": False,
+                    "crash_reason": "module_exited",
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = ensure_apollo_control_handoff_report(run_dir, refresh=False)
+    regenerated = _json(existing_path)
+
+    assert result["status"] == "generated"
+    assert result["report_status"] == "warn"
+    assert result["failure_stage"] == "none"
+    assert regenerated["process_health"]["control_lifetime_after_run_end_not_evaluable"] is True
+    assert regenerated["process_health"]["crash_reason"] is None
+
+
 def test_process_crash_tcmalloc_is_process_health_failure(tmp_path: Path) -> None:
     run_dir = _copy_case(tmp_path)
     (run_dir / "artifacts" / "control.err.log").write_text(
@@ -242,6 +301,90 @@ def test_deferred_survival_artifact_satisfies_process_health(tmp_path: Path) -> 
     assert report["process_health"]["alive_after_5s"] is True
     assert report["process_health"]["alive_at_end"] is True
     assert report["process_health"]["survival_probe_available"] is True
+
+
+def test_post_run_survival_probe_end_does_not_fail_process_health(tmp_path: Path) -> None:
+    run_dir = _copy_case(tmp_path)
+    (run_dir / "events.jsonl").write_text(
+        json.dumps({"event_type": "run_start", "wall_time_s": 100.0}) + "\n"
+        + json.dumps({"event_type": "run_end", "wall_time_s": 110.0}) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "artifacts" / "apollo_control_deferred_survival.json").write_text(
+        json.dumps(
+            {
+                "started_at_sec": 105.0,
+                "probe_completed_at_sec": 116.0,
+                "probe_window_sec": 10.0,
+                "control_started_pid_seen": True,
+                "control_survived_5s": True,
+                "control_survived_10s": False,
+                "control_present_after_first_nonzero_planning": True,
+                "control_present_at_end": False,
+                "samples": [
+                    {"ts_sec": 105.0, "target_offset_sec": 0.0, "control_present": True},
+                    {"ts_sec": 111.0, "target_offset_sec": 5.0, "control_present": True},
+                    {"ts_sec": 115.0, "target_offset_sec": 10.0, "control_present": False},
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_control_handoff(run_dir=run_dir)
+
+    assert report["failure_stage"] == "none"
+    assert report["verdict"] == "warn"
+    process = report["process_health"]
+    assert process["status"] == "warn"
+    assert process["alive_after_5s"] is True
+    assert process["alive_at_end"] is False
+    assert process["run_end_wall_time_s"] == 110.0
+    assert process["survival_probe_completed_at_sec"] == 116.0
+    assert process["last_survival_sample_ts_sec"] == 115.0
+    assert process["control_lifetime_after_run_end_not_evaluable"] is True
+    assert process["crash_reason"] is None
+    assert "control_lifetime_after_run_end_not_evaluable" in report["warnings"]
+
+
+def test_survival_probe_control_absent_without_run_end_boundary_remains_failure(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_case(tmp_path)
+    (run_dir / "artifacts" / "apollo_control_deferred_survival.json").write_text(
+        json.dumps(
+            {
+                "started_at_sec": 105.0,
+                "probe_completed_at_sec": 116.0,
+                "probe_window_sec": 10.0,
+                "control_started_pid_seen": True,
+                "control_survived_5s": True,
+                "control_survived_10s": False,
+                "control_present_after_first_nonzero_planning": True,
+                "control_present_at_end": False,
+                "samples": [
+                    {"ts_sec": 105.0, "target_offset_sec": 0.0, "control_present": True},
+                    {"ts_sec": 111.0, "target_offset_sec": 5.0, "control_present": True},
+                    {"ts_sec": 115.0, "target_offset_sec": 10.0, "control_present": False},
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_control_handoff(run_dir=run_dir)
+
+    assert report["verdict"] == "fail"
+    assert report["failure_stage"] == "process_health"
+    assert report["process_health"]["status"] == "fail"
+    assert report["process_health"]["crash_reason"] == "module_exited"
+    assert report["process_health"]["control_lifetime_after_run_end_not_evaluable"] is False
 
 
 def test_planning_ready_control_missing_fails_control_channel(tmp_path: Path) -> None:

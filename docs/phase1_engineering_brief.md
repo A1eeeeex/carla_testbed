@@ -122,12 +122,17 @@ Delivery-first update, 2026-06-23:
   `runs/phase1_online_pairs/follow_stop_static_20260623_2230_overlay_survival_fix`
   confirms that boundary moved again: Apollo control starts after routing,
   survives the 5s deferred probe, and produces `/apollo/control`,
-  bridge-receive, and CARLA apply evidence before the process exits by the 10s
-  probe. The refreshed control/link-health analyzers therefore classify the
-  blocker as `control_process_exited_after_partial_control_output`, not
-  `control_process_crash_before_control_output`. The run still fails Phase 1
-  (`lane_invasion`; comparison `partially_evaluable`) and remains diagnostic
-  only because `legacy_followstop` is a blocking assist.
+  bridge-receive, and CARLA apply evidence during the active run window. A
+  later 10s deferred survival sample observed control absent only after
+  `events.jsonl` had already recorded `run_end`, so the refreshed handoff
+  analyzer now treats that lifetime sample as
+  `control_lifetime_after_run_end_not_evaluable` instead of an in-run Apollo
+  control crash. The refreshed control-health report is `warn`, not a handoff
+  hard fail. The run still fails Phase 1 (`lane_invasion`; comparison
+  `partially_evaluable`) and remains diagnostic only because `legacy_followstop`
+  is a blocking assist. The current highest blocker for this sample is the
+  shared near-start lane-event contract, not total bridge breakage or a proven
+  Apollo control-process crash.
 
 Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:

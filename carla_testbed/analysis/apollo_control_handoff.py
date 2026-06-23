@@ -88,6 +88,7 @@ def analyze_apollo_control_handoff(
     control_attribution_payload = _read_json(paths["control_attribution"])
     control_handoff_debug = _read_json(paths["control_handoff_summary"])
     control_survival = _read_json(paths["control_survival"])
+    event_rows = _read_jsonl(paths["events"])
     rows = _read_rows(paths["timeseries"])
     decode_rows = _read_jsonl(paths["control_decode_debug"])
     control_raw_rows = _read_jsonl(paths["apollo_control_raw"])
@@ -105,6 +106,7 @@ def analyze_apollo_control_handoff(
         summary=summary_payload,
         control_handoff_debug=control_handoff_debug,
         control_survival=control_survival,
+        events=event_rows,
         logs=logs,
         log_paths=paths["control_logs"],
     )
@@ -368,9 +370,16 @@ def _control_handoff_report_needs_regeneration(root: Path, report: Mapping[str, 
         and "control_stream_ended_before_first_nonzero_planning" not in handoff
         and _has_planning_control_handoff_row_inputs(root)
     )
+    process_health = report.get("process_health")
+    process_health_needs_lifetime_refresh = (
+        isinstance(process_health, Mapping)
+        and "control_lifetime_after_run_end_not_evaluable" not in process_health
+        and _has_post_run_lifetime_boundary_inputs(root)
+    )
     if (
         ("planning_control_handoff" not in report and _has_planning_control_handoff_row_inputs(root))
         or handoff_needs_temporal_refresh
+        or process_health_needs_lifetime_refresh
     ):
         return True
     status = str(report.get("verdict") or report.get("status") or "").strip().lower()
@@ -408,6 +417,16 @@ def _has_planning_control_handoff_row_inputs(root: Path) -> bool:
     return any((root / pattern).exists() for pattern in row_patterns)
 
 
+def _has_post_run_lifetime_boundary_inputs(root: Path) -> bool:
+    return (root / "events.jsonl").exists() and any(
+        (root / pattern).exists()
+        for pattern in (
+            "artifacts/apollo_control_deferred_survival.json",
+            "apollo_control_deferred_survival.json",
+        )
+    )
+
+
 def _resolve_inputs(
     *,
     root: Path | None,
@@ -424,6 +443,7 @@ def _resolve_inputs(
     return {
         "summary": _given_or_find(root, summary, ["summary.json"]),
         "manifest": _given_or_find(root, manifest, ["manifest.json"]),
+        "events": _given_or_find(root, None, ["events.jsonl"]),
         "timeseries": _given_or_find(root, timeseries, ["timeseries.csv", "timeseries.jsonl"]),
         "cyber_bridge_stats": _given_or_find(
             root,
@@ -508,6 +528,7 @@ def _process_health(
     summary: Mapping[str, Any],
     control_handoff_debug: Mapping[str, Any],
     control_survival: Mapping[str, Any],
+    events: Sequence[Mapping[str, Any]],
     logs: Sequence[str],
     log_paths: Sequence[Path],
 ) -> dict[str, Any]:
@@ -542,6 +563,27 @@ def _process_health(
         control_survival.get("control_present_at_end"),
         summary.get("control_alive_at_end"),
     )
+    run_end_wall_time_s = _run_end_wall_time(events, summary)
+    survival_probe_completed_at_sec = _first_number(
+        control_survival.get("probe_completed_at_sec"),
+        control_survival.get("completed_at_sec"),
+    )
+    last_survival_sample_ts_sec = _last_survival_sample_ts(control_survival)
+    survival_end_ts = _max_optional(survival_probe_completed_at_sec, last_survival_sample_ts_sec)
+    control_present_after_first_nonzero_planning = _first_bool(
+        control_survival.get("control_present_after_first_nonzero_planning"),
+        control_handoff_debug.get("control_present_after_first_nonzero_planning"),
+    )
+    control_lifetime_after_run_end_not_evaluable = (
+        run_end_wall_time_s is not None
+        and survival_end_ts is not None
+        and run_end_wall_time_s < survival_end_ts
+        and alive_at_end is False
+        and (
+            alive_after_5s is True
+            or control_present_after_first_nonzero_planning is True
+        )
+    )
     exit_code = _first_number(
         control_handoff_debug.get("exit_code"),
         control_handoff_debug.get("control_exit_code"),
@@ -557,6 +599,7 @@ def _process_health(
         summary.get("core_dump_detected"),
     ) is True
     missing_fields: list[str] = []
+    warnings: list[str] = []
     if not evidence_available:
         status = "insufficient_data"
         missing_fields.append("process_health.evidence")
@@ -567,6 +610,9 @@ def _process_health(
     elif exit_code is not None and exit_code != 0:
         status = "fail"
         crash_reason = crash_reason or "module_exited"
+    elif control_lifetime_after_run_end_not_evaluable:
+        status = "warn"
+        warnings.append("control_lifetime_after_run_end_not_evaluable")
     elif alive_after_5s is False or alive_at_end is False:
         status = "fail"
         crash_reason = crash_reason or "module_exited"
@@ -581,6 +627,7 @@ def _process_health(
         "pid": int(pid) if pid is not None else None,
         "alive_after_5s": alive_after_5s,
         "alive_at_end": alive_at_end,
+        "control_present_after_first_nonzero_planning": control_present_after_first_nonzero_planning,
         "exit_code": int(exit_code) if exit_code is not None else None,
         "crash_detected": crash_detected,
         "crash_reason": crash_reason,
@@ -588,8 +635,15 @@ def _process_health(
         "core_dump_detected": core_dump_detected,
         "survival_probe_available": bool(control_survival),
         "survival_probe_window_sec": _num(control_survival.get("probe_window_sec")),
+        "survival_probe_completed_at_sec": survival_probe_completed_at_sec,
+        "last_survival_sample_ts_sec": last_survival_sample_ts_sec,
+        "run_end_wall_time_s": run_end_wall_time_s,
+        "control_lifetime_after_run_end_not_evaluable": (
+            control_lifetime_after_run_end_not_evaluable
+        ),
         "log_paths": [str(path) for path in log_paths],
         "log_tail": _tail_lines(logs),
+        "warnings": warnings,
         "missing_fields": missing_fields,
         "status": status,
     }
@@ -1337,6 +1391,50 @@ def _read_logs(paths: Sequence[Path]) -> list[str]:
         except OSError:
             continue
     return logs
+
+
+def _run_end_wall_time(
+    events: Sequence[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+) -> float | None:
+    candidates: list[float] = []
+    for event in events:
+        event_type = str(
+            event.get("event_type")
+            or event.get("type")
+            or event.get("name")
+            or ""
+        ).strip()
+        if event_type != "run_end":
+            continue
+        value = _first_number(
+            event.get("wall_time_s"),
+            event.get("timestamp_wall_s"),
+            event.get("timestamp_sec"),
+        )
+        if value is not None:
+            candidates.append(value)
+    summary_value = _first_number(
+        summary.get("end_time_wall_s"),
+        summary.get("run_end_wall_time_s"),
+        summary.get("wall_end_time_s"),
+    )
+    if summary_value is not None:
+        candidates.append(summary_value)
+    return min(candidates) if candidates else None
+
+
+def _last_survival_sample_ts(control_survival: Mapping[str, Any]) -> float | None:
+    samples = control_survival.get("samples")
+    if not isinstance(samples, list):
+        return None
+    values = [
+        value
+        for sample in samples
+        if isinstance(sample, Mapping)
+        if (value := _first_number(sample.get("ts_sec"), sample.get("timestamp_sec"))) is not None
+    ]
+    return max(values) if values else None
 
 
 def _detect_crash(log_text: str) -> tuple[str | None, str | None]:
