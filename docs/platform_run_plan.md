@@ -199,16 +199,24 @@ Do not add new one-off runtime logic to `tools/run_*.py` when the same choice
 can be represented as a platform, algorithm, scenario, recording, or gate
 profile.
 
-`RunPlan` dispatch is intentionally conservative today:
+`RunPlan` dispatch now goes through the package-level
+`BackendRuntimeAdapter` / `ScenarioRunExecutor` surface:
 
-- `python -m carla_testbed run --plan ... --plan-only` only previews the
+- `python3 -m carla_testbed run --plan ... --plan-only` only previews the
   backend contract.
-- `python -m carla_testbed run --plan ... --dry-run` writes runtime context
+- `python3 -m carla_testbed run --plan ... --dry-run` writes runtime context
   artifacts without starting runtime.
-- Real online execution still uses guarded compatibility commands until a
-  backend wrapper fully owns that runtime path.
-- Legacy fallback is compatibility behavior; it is not evidence that the new
-  platform dispatch layer is complete.
+- `python3 -m carla_testbed run --plan ... --run-dir runs/<id>` executes the
+  resolved backend launch command, records PID/stdout/stderr/timeout under
+  `execution/`, writes `platform_execution_result.json`, and runs declared
+  postprocess commands after a successful runtime command.
+- `python3 -m carla_testbed phase1 run-pair --scenario <case> --out <dir>`
+  compiles a PlanningControlBackend plan and an ApolloBackend plan, executes
+  them sequentially, and writes a generic ScenarioComparison.
+
+This is a delivery-surface milestone, not a behavior claim. A backend command
+can still fail, timeout, or produce an invalid Phase 1 run. Invalid runs remain
+setup/evidence failures and must not be counted as backend losses.
 
 Phase 1 currently has a deliberately narrow Apollo fixed-scene compatibility
 exception for Baguang static follow-stop variants:
@@ -218,11 +226,11 @@ commands through the `apollo_cyberrt` LaunchPlan. The canonical case uses
 `configs/io/examples/phase1_baguang_apollo_followstop_static_compat.yaml`; the
 2m shifted-start diagnostic mitigation uses
 `configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml`.
-Both must still be executed explicitly through the legacy-dispatch guard. This
+Both are wrapped as compatibility commands by the Apollo backend facade. This
 is a static follow-stop compatibility path only; dynamic lead accel/decel,
-cut-in/cut-out, and other fixed-scene cases remain `runtime migration required`
-until they produce fixed-scene actor trace, obstacle GT linkage, v-t-gap,
-phase1_status, and comparison artifacts from a real online run.
+cut-in/cut-out, and other fixed-scene cases still need real online evidence
+with fixed-scene actor trace, obstacle GT linkage, v-t-gap, phase1_status, and
+comparison artifacts before they can count as evaluable ApolloBackend runs.
 
 Use `tools/analyze_phase1_apollo_fixed_scene_dispatch.py` to inspect this
 LaunchPlan boundary before online work. A dispatch report with
@@ -230,3 +238,19 @@ LaunchPlan boundary before online work. A dispatch report with
 not produced behavior evidence. A dispatch report with
 `runtime_migration_required` is a setup/evidence blocker and must not be counted
 as an Apollo backend behavior loss.
+
+Town01 route-only Phase 1 plans are intentionally dispatched as a single
+capability step, not the whole historical capability chain. For example,
+`town01/lane_keep_097` resolves to:
+
+```bash
+python3 tools/run_town01_capability_online_chain.py \
+  --step lane_keep:town01_rh_spawn097_goal046 \
+  --batch-root-parent <run_dir> \
+  --comparison-label-suffix <run_id>
+```
+
+`town01/curve217_diagnostic` resolves to
+`--step curve_lane_follow:town01_rh_spawn217_goal048`. This keeps the unified
+executor aligned with the selected `ScenarioCase`; it still does not prove that
+the nested legacy online runner will produce an evaluable Apollo run.

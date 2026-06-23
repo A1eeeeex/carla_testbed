@@ -95,7 +95,7 @@ class ApolloCyberRTBackend:
         }
 
     def build_launch_plan(self, plan: RunPlan) -> LaunchPlan:
-        run_dir = f"runs/{plan.identity.run_id}"
+        run_dir = str(Path(str(plan.compatibility.get("output_root") or "runs")) / plan.identity.run_id)
         fixed_scene_enabled = (
             bool((plan.scenario.fixed_scene or {}).get("enabled", True))
             if plan.scenario.fixed_scene
@@ -126,10 +126,7 @@ class ApolloCyberRTBackend:
             if fixed_scene_compat or dynamic_sidecar_config is not None
             else []
             if fixed_scene_enabled
-            else [
-                "python",
-                "tools/run_town01_capability_online_chain.py",
-            ]
+            else _town01_route_only_command(plan, run_dir=run_dir)
         )
         expected_topics = [
             "/apollo/localization/pose",
@@ -341,6 +338,54 @@ def _dynamic_fixed_scene_sidecar_command(
     for key, value in overrides.items():
         command.extend(["--override", f"{key}={_override_value(value)}"])
     return command
+
+
+_TOWN01_ROUTE_REF_OVERRIDES = {
+    "town01_curve217": "town01_rh_spawn217_goal048",
+    "curve217": "town01_rh_spawn217_goal048",
+}
+
+
+def _town01_route_only_command(plan: RunPlan, *, run_dir: str) -> list[str]:
+    step = _town01_capability_step(plan)
+    if step is None:
+        return ["python3", "tools/run_town01_capability_online_chain.py"]
+    capability_profile, route_id = step
+    return [
+        "python3",
+        "tools/run_town01_capability_online_chain.py",
+        "--step",
+        f"{capability_profile}:{route_id}",
+        "--batch-root-parent",
+        run_dir,
+        "--comparison-label-suffix",
+        plan.identity.run_id,
+        "--continue-on-failure",
+    ]
+
+
+def _town01_capability_step(plan: RunPlan) -> tuple[str, str] | None:
+    if str(plan.scenario.map or "").strip() != "Town01":
+        return None
+    scenario_class = str(plan.scenario.scenario_class or "").strip()
+    if scenario_class == "lane_keep":
+        capability = "lane_keep"
+    elif scenario_class in {"curve_diagnostic", "curve_lane_follow"}:
+        capability = "curve_lane_follow"
+    elif scenario_class in {"junction", "junction_turn", "junction_traverse"}:
+        capability = "junction_traverse"
+    elif scenario_class in {"traffic_light", "traffic_light_red_stop", "traffic_light_green_go"}:
+        capability = "traffic_light_actual"
+    else:
+        return None
+    route_id = (
+        plan.scenario.route_ref
+        or plan.scenario.route_id
+        or plan.scenario.goal_ref
+        or plan.scenario.scenario_id
+    )
+    route_id = _TOWN01_ROUTE_REF_OVERRIDES.get(str(route_id), str(route_id))
+    return capability, route_id
 
 
 def _override_value(value: object) -> str:

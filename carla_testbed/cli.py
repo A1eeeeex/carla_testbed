@@ -31,6 +31,7 @@ from carla_testbed.platform.compiler import (
     write_run_plan,
 )
 from carla_testbed.platform.executor import execute_run_plan
+from carla_testbed.platform.phase1_pair_runner import run_phase1_pair
 from carla_testbed.platform.plan import RunPlan
 from carla_testbed.platform.registry import PlatformRegistry, PlatformRegistryError
 from carla_testbed.record import RunArtifactStore, build_manifest, build_summary
@@ -88,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--no-healthcheck", action="store_true")
     run_p.add_argument("--follow-logs", action="store_true")
     run_p.add_argument("--compose-clean", action="store_true")
+    run_p.add_argument("--timeout-s", type=float, default=None)
 
     smoke_p = sub.add_parser("smoke", help="CI-friendly config smoke; does not start CARLA/Apollo")
     smoke_p.add_argument("--config", required=True, type=Path)
@@ -150,6 +152,21 @@ def build_parser() -> argparse.ArgumentParser:
     pack_p.add_argument("--out", required=True, type=Path)
     pack_p.add_argument("--profile", default="claim", choices=("metrics", "debug", "demo", "claim"))
     pack_p.add_argument("--include-large-artifacts", action="store_true")
+
+    phase1_p = sub.add_parser("phase1", help="Phase 1 scenario-platform helpers")
+    phase1_sub = phase1_p.add_subparsers(dest="phase1_cmd", required=True)
+    pair_p = phase1_sub.add_parser("run-pair", help="run PlanningControlBackend and ApolloBackend for one scenario")
+    pair_p.add_argument("--scenario", required=True, help="scenario registry name or YAML path")
+    pair_p.add_argument("--out", required=True, type=Path)
+    pair_p.add_argument("--pair-id", default=None)
+    pair_p.add_argument("--apollo-profile", default="apollo/apollo10_carla_gt")
+    pair_p.add_argument("--planning-profile", default="builtin/simple_acc_route_follower")
+    pair_p.add_argument("--apollo-platform", default="apollo_cyberrt")
+    pair_p.add_argument("--planning-platform", default="carla_builtin")
+    pair_p.add_argument("--record", "--recording", dest="recording", default="metrics")
+    pair_p.add_argument("--gate", default="scenario_validation")
+    pair_p.add_argument("--dry-run", action="store_true")
+    pair_p.add_argument("--timeout-s", type=float, default=None)
     return ap
 
 
@@ -566,21 +583,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         if args.plan_only:
             return 0
-        if args.dry_run or args.legacy_dispatch:
-            result = execute_run_plan(
-                plan,
-                run_dir=args.run_dir,
-                dry_run=bool(args.dry_run),
-                legacy_dispatch=bool(args.legacy_dispatch),
-            )
-            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-            return result.exit_code
-        print(
-            "[run] RunPlan runtime dispatch is not implemented yet. "
-            "Use --plan-only/--dry-run or legacy configs/io commands.",
-            file=sys.stderr,
+        result = execute_run_plan(
+            plan,
+            run_dir=args.run_dir,
+            dry_run=bool(args.dry_run),
+            legacy_dispatch=bool(args.legacy_dispatch),
+            timeout_s=args.timeout_s,
         )
-        return 2
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        return result.exit_code
 
     if not args.config:
         print("[run] either --config or --plan is required", file=sys.stderr)
@@ -847,6 +858,27 @@ def _cmd_pack(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_phase1(args: argparse.Namespace) -> int:
+    if args.phase1_cmd == "run-pair":
+        result = run_phase1_pair(
+            scenario=args.scenario,
+            out_dir=args.out,
+            pair_id=args.pair_id,
+            apollo_profile=args.apollo_profile,
+            planning_profile=args.planning_profile,
+            apollo_platform=args.apollo_platform,
+            planning_platform=args.planning_platform,
+            recording=args.recording,
+            gate=args.gate,
+            dry_run=bool(args.dry_run),
+            timeout_s=args.timeout_s,
+            registry=PlatformRegistry(repo_root=resolve_repo_root()),
+        )
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        return max((item.exit_code for item in result.execution_results), default=0)
+    return 2
+
+
 def _read_run_plan(path: Path | None) -> RunPlan:
     import yaml
 
@@ -901,6 +933,8 @@ def main(argv=None) -> int:
         return _cmd_analyze(args)
     elif args.cmd == "pack":
         return _cmd_pack(args)
+    elif args.cmd == "phase1":
+        return _cmd_phase1(args)
     else:
         ap.print_help()
         return 2

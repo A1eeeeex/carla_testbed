@@ -77,7 +77,7 @@ class CarlaBuiltinBackend:
         }
 
     def build_launch_plan(self, plan: RunPlan) -> LaunchPlan:
-        run_dir = f"runs/{plan.identity.run_id}"
+        run_dir = str(Path(str(plan.compatibility.get("output_root") or "runs")) / plan.identity.run_id)
         scenario_path = plan.source_profiles.get("scenario") or plan.scenario.scenario_id
         command = [
             "python3",

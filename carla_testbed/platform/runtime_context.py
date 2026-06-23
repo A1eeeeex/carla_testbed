@@ -43,6 +43,7 @@ def write_runtime_context_artifacts(
     status: str,
     compatibility_source: str | None,
     summary: Mapping[str, Any] | None = None,
+    preserve_existing: bool = False,
 ) -> dict[str, str]:
     run_dir = context.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +80,17 @@ def write_runtime_context_artifacts(
         "launch_plan_path": str(launch_path),
         "created_wall_time_s": time.time(),
     }
+    manifest = _merge_existing_json(
+        manifest_path,
+        manifest,
+        preserve_existing=preserve_existing,
+        final_updates={
+            "runtime_dispatch_status": status,
+            "platform_execution_status": status,
+            "dry_run": context.dry_run,
+            "legacy_dispatch": context.legacy_dispatch,
+        },
+    )
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     summary_path = run_dir / "summary.json"
     summary_payload = {
@@ -96,6 +108,17 @@ def write_runtime_context_artifacts(
         "legacy_dispatch": context.legacy_dispatch,
         **dict(summary or {}),
     }
+    summary_payload = _merge_existing_json(
+        summary_path,
+        summary_payload,
+        preserve_existing=preserve_existing,
+        final_updates={
+            "platform_runtime_status": status,
+            "platform_runtime_exit_reason": f"platform_{status}",
+            "dry_run": context.dry_run,
+            "legacy_dispatch": context.legacy_dispatch,
+        },
+    )
     summary_path.write_text(json.dumps(summary_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return {
         "plan": str(plan_path),
@@ -113,6 +136,30 @@ def _ego_control_source(plan: RunPlan) -> str:
     if plan.platform.name == "carla_builtin" or plan.algorithm.stack == "builtin":
         return "carla_builtin"
     return plan.platform.name
+
+
+def _merge_existing_json(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    preserve_existing: bool,
+    final_updates: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not preserve_existing or not path.exists():
+        return {**payload, **dict(final_updates)}
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        existing = {}
+    if not isinstance(existing, Mapping):
+        existing = {}
+    existing_schema = str(existing.get("schema_version") or "")
+    platform_interim = existing_schema in {"run_manifest.platform.v1", "run_summary.platform.v1"}
+    if platform_interim:
+        return {**dict(existing), **payload, **dict(final_updates)}
+    # Runtime-owned fields such as behavior metrics stay intact; platform
+    # lifecycle fields are refreshed after dispatch.
+    return {**payload, **dict(existing), **dict(final_updates)}
 
 
 def _traffic_flow_manifest_payload(plan: RunPlan, *, spawned_count: int | None) -> dict[str, Any]:

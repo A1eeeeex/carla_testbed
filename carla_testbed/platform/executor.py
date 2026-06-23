@@ -8,8 +8,8 @@ from typing import Any
 from carla_testbed.backends.registry import default_backend_registry
 from carla_testbed.platform.plan import RunPlan
 
-from .legacy_dispatch import LegacyDispatchResult, dispatch_legacy_launch_plan
 from .runtime_context import RuntimeContext, write_runtime_context_artifacts
+from .runtime_adapter import BackendRuntimeAdapter, RuntimeAdapterResult
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,7 @@ def execute_run_plan(
     run_dir: str | Path | None = None,
     dry_run: bool = True,
     legacy_dispatch: bool = False,
+    timeout_s: float | None = None,
 ) -> ExecutionResult:
     context = RuntimeContext.from_plan(
         plan,
@@ -48,23 +49,66 @@ def execute_run_plan(
     )
     backend = default_backend_registry().for_plan(plan)
     launch_plan = backend.build_launch_plan(plan).to_dict()
-    dispatch_result: LegacyDispatchResult = dispatch_legacy_launch_plan(context, launch_plan)
-    status = dispatch_result.status
+    launch_plan = _rewrite_launch_plan_run_dir(launch_plan, plan=plan, run_dir=context.run_dir)
+    write_runtime_context_artifacts(
+        context,
+        launch_plan=launch_plan,
+        status="running" if not dry_run else "dry_run",
+        compatibility_source=launch_plan.get("compatibility_source"),
+        summary={"dispatch": {"status": "starting" if not dry_run else "dry_run"}},
+        preserve_existing=False,
+    )
+    adapter_result: RuntimeAdapterResult = BackendRuntimeAdapter().execute(
+        context,
+        launch_plan,
+        timeout_s=timeout_s if timeout_s is not None else plan.world.timeout_s,
+    )
+    status = adapter_result.status
     artifacts = write_runtime_context_artifacts(
         context,
         launch_plan=launch_plan,
         status=status,
         compatibility_source=launch_plan.get("compatibility_source"),
-        summary={"dispatch": dispatch_result.to_dict()},
+        summary={"dispatch": adapter_result.to_dict()},
+        preserve_existing=not dry_run,
     )
     result = ExecutionResult(
         status=status,
-        exit_code=dispatch_result.exit_code,
+        exit_code=adapter_result.exit_code,
         run_dir=context.run_dir,
         launch_plan=launch_plan,
         artifacts=artifacts,
-        dispatch=dispatch_result.to_dict(),
+        dispatch=adapter_result.to_dict(),
     )
     result_path = context.run_dir / "platform_execution_result.json"
     result_path.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
+
+
+def _rewrite_launch_plan_run_dir(
+    launch_plan: dict[str, Any],
+    *,
+    plan: RunPlan,
+    run_dir: Path,
+) -> dict[str, Any]:
+    default_run_dir = str(Path(str(plan.compatibility.get("output_root") or "runs")) / plan.identity.run_id)
+    actual_run_dir = str(run_dir)
+    if default_run_dir == actual_run_dir:
+        return launch_plan
+
+    def rewrite_command(command: list[Any]) -> list[str]:
+        return [actual_run_dir if str(part) == default_run_dir else str(part) for part in command]
+
+    rewritten = dict(launch_plan)
+    rewritten["commands"] = [
+        rewrite_command(command) for command in launch_plan.get("commands", []) if isinstance(command, list)
+    ]
+    rewritten["postprocess_commands"] = [
+        rewrite_command(command)
+        for command in launch_plan.get("postprocess_commands", [])
+        if isinstance(command, list)
+    ]
+    warnings = list(launch_plan.get("warnings") or [])
+    warnings.append(f"launch_plan_run_dir_rewritten:{default_run_dir}->{actual_run_dir}")
+    rewritten["warnings"] = warnings
+    return rewritten

@@ -129,3 +129,44 @@ def test_cli_plan_carla_builtin_baguang_scenario_shows_launch() -> None:
     assert '"backend_type": "planning_control_backend"' in result.stdout
     assert '"phase1_manifest_contract"' in result.stdout
     assert '"target_actor_role": "lead_vehicle"' in result.stdout
+
+
+def test_apollo_town01_launch_plan_uses_python3_for_online_runner() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="town01/lane_keep_097",
+        recording="none",
+        gate="diagnostic",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+
+    assert launch.commands
+    assert launch.commands[0][0] == "python3"
+    assert launch.commands[0][1] == "tools/run_town01_capability_online_chain.py"
+    assert "--step" in launch.commands[0]
+    assert "lane_keep:town01_rh_spawn097_goal046" in launch.commands[0]
+    assert "--batch-root-parent" in launch.commands[0]
+
+
+def test_apollo_curve_launch_plan_maps_curve_ref_to_capability_route_id() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="town01/curve217_diagnostic",
+        recording="none",
+        gate="diagnostic",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+
+    assert launch.commands
+    assert "--step" in launch.commands[0]
+    assert "curve_lane_follow:town01_rh_spawn217_goal048" in launch.commands[0]
