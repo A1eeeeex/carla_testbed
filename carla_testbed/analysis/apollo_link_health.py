@@ -2292,9 +2292,9 @@ def _should_regenerate_control_health(report: Mapping[str, Any] | None) -> bool:
     if report.get("schema_version") != "control_health_report.v1":
         return True
     status = _normalize_status(report.get("status"))
-    if status == "fail":
-        return False
     failure_reason = str(report.get("failure_reason") or "").strip()
+    if status == "fail":
+        return failure_reason == "control_handoff_not_consuming"
     missing_fields = {str(item) for item in report.get("missing_fields") or [] if item}
     metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
     control_decode = (

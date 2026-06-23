@@ -3631,6 +3631,79 @@ def test_control_health_existing_fail_report_is_not_overwritten(tmp_path: Path) 
     assert refreshed["metrics"]["sentinel"] == "keep_existing_failure"
 
 
+def test_control_health_stale_handoff_fail_report_can_be_regenerated(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    summary["routing_materialized"] = False
+    summary["planning_materialized"] = False
+    summary["control_handoff_status"] = "planning_not_materialized"
+    _write_json(run_dir / "summary.json", summary)
+    _write_json(
+        run_dir / "analysis/control_health/control_health_report.json",
+        {
+            "schema_version": "control_health_report.v1",
+            "status": "fail",
+            "failure_reason": "control_handoff_not_consuming",
+            "raw_mapped_applied_control_available": True,
+            "metrics": {"sentinel": "stale_handoff_failure"},
+            "warnings": [],
+        },
+    )
+    _write_json(
+        run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
+        {
+            "schema_version": "apollo_control_handoff.v1",
+            "verdict": "warn",
+            "status": "warn",
+            "failure_stage": "none",
+            "blocking_reasons": [],
+            "control_channel": {"message_count": 10},
+            "bridge_receive": {"control_rx_count": 10},
+            "mapping_and_apply": {"apply_control_count": 10},
+            "vehicle_response": {"status": "pass"},
+        },
+    )
+    _write_jsonl(
+        run_dir / "artifacts/control_decode_debug.jsonl",
+        [
+            {
+                "parsed_control": {
+                    "control_latency_ms": 1.0,
+                    "throttle": 0.2,
+                    "brake": 0.0,
+                    "steer": 0.0,
+                },
+                "output_to_carla": {
+                    "mapped_throttle_cmd": 0.2,
+                    "mapped_brake_cmd": 0.0,
+                    "mapped_carla_steer_cmd": 0.0,
+                    "throttle": 0.2,
+                    "brake": 0.0,
+                    "steer": 0.0,
+                },
+            }
+        ],
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    layer = report["layers"]["control_mapping_apply"]
+
+    assert layer["artifact_paths"]["source_kind"] == "regenerated_from_run_artifacts"
+    refreshed = json.loads(
+        (run_dir / "analysis/control_health/control_health_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert refreshed["metrics"].get("sentinel") != "stale_handoff_failure"
+    assert refreshed["failure_reason"] != "control_handoff_not_consuming"
+    materialization = refreshed["metrics"]["materialization_evidence"]
+    assert materialization["control_handoff_artifact_value"] == (
+        "control_consuming_with_nonzero_planning"
+    )
+
+
 def test_route_establishment_after_routing_materialization_supports_no_assist_claim_window(
     tmp_path: Path,
 ) -> None:
