@@ -1762,6 +1762,19 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert policy["absolute_magnitude_gate_allowed"] is True
     assert policy["recommended_gate_policy"] == "absolute_magnitude_only_until_canonical_sign_declared"
     assert policy["recommended_action"] == "relabel_or_explicitly_convert_before_sign_sensitive_gate"
+    lane_context = refreshed["phase1_metrics"]["lane_invasion_context"]
+    assert lane_context["route_lateral_source_field"] == "cross_track_error"
+    assert lane_context["route_lateral_sign_sensitive_gate_allowed"] is False
+    assert lane_context["route_lateral_absolute_magnitude_gate_allowed"] is True
+    assert lane_context["route_lateral_recommended_gate_policy"] == (
+        "absolute_magnitude_only_until_canonical_sign_declared"
+    )
+    assert lane_context["route_lateral_recommended_action"] == (
+        "relabel_or_explicitly_convert_before_sign_sensitive_gate"
+    )
+    assert lane_context["route_lateral_field_policy"]["policy"] == (
+        "exclude_from_sign_sensitive_behavior_gates"
+    )
     reference_policy = refreshed["reference_line_debug_export_policy"]
     assert reference_policy["status"] == "warn"
     assert reference_policy["policy"] == "local_surrogate_only_until_reference_line_debug_exported"

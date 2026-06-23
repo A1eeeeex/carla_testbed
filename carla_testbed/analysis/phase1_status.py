@@ -388,7 +388,11 @@ def _status(
             "initial_condition_materialization": _initial_condition_materialization(root, v_t_gap),
             "safety_event_evidence": _safety_event_evidence(root, summary),
             "control_motion": _control_motion_metrics(root),
-            "lane_invasion_context": _lane_invasion_context(root, summary),
+            "lane_invasion_context": _lane_invasion_context(
+                root,
+                summary,
+                route_lateral_field_policy=route_lateral_field_policy,
+            ),
             "derived_blocker_evidence": derived_blocker_evidence,
         },
         "evidence_files": _evidence_files(root),
@@ -1715,7 +1719,12 @@ def _control_motion_metrics(root: Path) -> dict[str, Any]:
     return metrics
 
 
-def _lane_invasion_context(root: Path, summary: Mapping[str, Any]) -> dict[str, Any]:
+def _lane_invasion_context(
+    root: Path,
+    summary: Mapping[str, Any],
+    *,
+    route_lateral_field_policy: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     rows = _read_timeseries_rows(root)
     summary_count = _to_float(summary.get("lane_invasion_count"))
     context: dict[str, Any] = {
@@ -1790,6 +1799,21 @@ def _lane_invasion_context(root: Path, summary: Mapping[str, Any]) -> dict[str, 
             "near_start": bool((first_index <= 200) or (displacement is not None and displacement <= 5.0)),
         }
     )
+    if route_lateral_field_policy:
+        context["route_lateral_field_policy"] = dict(route_lateral_field_policy)
+        context["route_lateral_source_field"] = route_lateral_field_policy.get("source_field")
+        context["route_lateral_sign_sensitive_gate_allowed"] = route_lateral_field_policy.get(
+            "sign_sensitive_gate_allowed"
+        )
+        context["route_lateral_absolute_magnitude_gate_allowed"] = route_lateral_field_policy.get(
+            "absolute_magnitude_gate_allowed"
+        )
+        context["route_lateral_recommended_gate_policy"] = route_lateral_field_policy.get(
+            "recommended_gate_policy"
+        )
+        context["route_lateral_recommended_action"] = route_lateral_field_policy.get(
+            "recommended_action"
+        )
     return context
 
 

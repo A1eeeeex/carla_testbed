@@ -218,7 +218,12 @@ Additional run-local artifacts:
     the trigger was near the scenario start. This makes near-start
     lane-marking/spawn-footprint failures distinguishable from downstream
     behavior failures without changing the `failed/lane_invasion`
-    classification.
+    classification. When lateral-semantics reports declare a route-lateral
+    sign policy, this context also echoes the source field and whether
+    sign-sensitive gates are allowed. For example, a Baguang Apollo run may
+    report `source_field=cross_track_error` with
+    `sign_sensitive_gate_allowed=false`; in that case the field can still be
+    used for magnitude diagnostics, but not as steering-sign proof.
   - if the run is otherwise evaluable and the runtime summary records
     `EGO_NOT_MOVING`, Phase 1 status maps it to `failed/stuck` before falling
     back to a generic `degraded/large_final_gap` classification. More specific
