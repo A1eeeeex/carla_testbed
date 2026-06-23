@@ -1383,7 +1383,30 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
                     "and Control simple_lat reference evidence is visible, but Planning reference-line "
                     "debug counters are not exported."
                 ),
-            }
+            },
+            "control_target_point_vs_planning_path_candidate_sample": {
+                "classification": "control_target_between_planning_path_candidate_lateral_bounds",
+                "reference_line_claim_grade_allowed": False,
+                "target_inside_path_lateral_envelope": True,
+                "target_point_to_path_candidate_line_abs_p95_m": 0.82,
+                "target_point_lane_l_abs_p95_m": 0.000001,
+                "path_candidate_lane_l_min_m": -1.25,
+                "path_candidate_lane_l_max_m": 0.82,
+            },
+            "planning_debug_path_candidate_vs_trajectory_sample": {
+                "classification": "planning_debug_path_candidate_offset_from_planning_trajectory_sample_support",
+                "reference_line_claim_grade_allowed": False,
+                "path_candidate_to_planning_sample_line_abs_p95_m": 3.25,
+                "sample_coverage_ratio": 1.0,
+            },
+            "planning_debug_path_candidate_hdmap_projection_alignment": {
+                "classification": "planning_debug_path_candidate_lateral_offset_from_hdmap_lane_center",
+                "reference_line_claim_grade_allowed": False,
+                "path_candidate_lane_l_abs_p95_m": 1.25,
+                "path_candidate_lane_l_min_m": -1.25,
+                "path_candidate_lane_l_max_m": 0.82,
+                "routing_lane_window_compatible": True,
+            },
         }
     }
     link_report_path.write_text(json.dumps(link_report), encoding="utf-8")
@@ -1474,6 +1497,29 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert reference_policy["planning_trajectory_sample_surrogate_available"] is True
     assert reference_policy["control_simple_lat_reference_available"] is True
     assert "debug.planning_data.reference_line is empty" in reference_policy["recommended_action"]
+    path_context = refreshed["path_candidate_control_context"]
+    assert path_context["status"] == "diagnostic_only"
+    assert path_context["control_target_vs_path_candidate_classification"] == (
+        "control_target_between_planning_path_candidate_lateral_bounds"
+    )
+    assert path_context["target_inside_path_lateral_envelope"] is True
+    assert path_context["target_point_to_path_candidate_line_abs_p95_m"] == 0.82
+    assert path_context["target_point_lane_l_abs_p95_m"] == 0.000001
+    assert path_context["path_candidate_lane_l_abs_p95_m"] == 1.25
+    assert path_context["path_candidate_lane_l_min_m"] == -1.25
+    assert path_context["path_candidate_lane_l_max_m"] == 0.82
+    assert path_context["planning_debug_path_candidate_vs_trajectory_sample_classification"] == (
+        "planning_debug_path_candidate_offset_from_planning_trajectory_sample_support"
+    )
+    assert path_context["path_candidate_to_planning_sample_line_abs_p95_m"] == 3.25
+    assert path_context["planning_debug_path_candidate_hdmap_projection_classification"] == (
+        "planning_debug_path_candidate_lateral_offset_from_hdmap_lane_center"
+    )
+    assert path_context["path_candidate_routing_lane_window_compatible"] is True
+    assert path_context["reference_line_claim_grade_allowed"] is False
+    assert path_context["recommended_evidence_policy"] == (
+        "path_candidate_surrogate_only_until_reference_line_debug_exported"
+    )
 
     paths = write_phase1_status(refreshed, run / "analysis" / "phase1_status")
     summary_text = Path(paths["summary"]).read_text(encoding="utf-8")
@@ -1490,6 +1536,10 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert "planning_info_log_reference_line_available: `True`" in summary_text
     assert "planning_info_log_reference_line_claim_grade_allowed: `False`" in summary_text
     assert "reference_line_debug_claim_grade_allowed: `False`" in summary_text
+    assert "## Path Candidate / Control Target Context" in summary_text
+    assert "control_target_between_planning_path_candidate_lateral_bounds" in summary_text
+    assert "planning_debug_path_candidate_lateral_offset_from_hdmap_lane_center" in summary_text
+    assert "path_candidate_surrogate_only_until_reference_line_debug_exported" in summary_text
 
 
 def test_legacy_apollo_route_id_normalizes_to_phase1_scenario_case(tmp_path) -> None:

@@ -212,6 +212,31 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                 f"- recommended_action: `{reference_line_policy.get('recommended_action')}`",
             ]
         )
+    path_context = report.get("path_candidate_control_context")
+    if (
+        isinstance(path_context, Mapping)
+        and path_context.get("status") not in {None, "not_applicable"}
+    ):
+        lines.extend(
+            [
+                "",
+                "## Path Candidate / Control Target Context",
+                "",
+                f"- status: `{path_context.get('status')}`",
+                f"- control_target_vs_path_candidate: `{path_context.get('control_target_vs_path_candidate_classification')}`",
+                f"- target_inside_path_lateral_envelope: `{path_context.get('target_inside_path_lateral_envelope')}`",
+                f"- target_point_to_path_candidate_line_abs_p95_m: `{path_context.get('target_point_to_path_candidate_line_abs_p95_m')}`",
+                f"- target_point_lane_l_abs_p95_m: `{path_context.get('target_point_lane_l_abs_p95_m')}`",
+                f"- path_candidate_lane_l_abs_p95_m: `{path_context.get('path_candidate_lane_l_abs_p95_m')}`",
+                f"- path_candidate_vs_trajectory: `{path_context.get('planning_debug_path_candidate_vs_trajectory_sample_classification')}`",
+                f"- path_candidate_to_planning_sample_line_abs_p95_m: `{path_context.get('path_candidate_to_planning_sample_line_abs_p95_m')}`",
+                f"- path_candidate_hdmap_projection: `{path_context.get('planning_debug_path_candidate_hdmap_projection_classification')}`",
+                f"- path_candidate_routing_lane_window_compatible: `{path_context.get('path_candidate_routing_lane_window_compatible')}`",
+                f"- reference_line_claim_grade_allowed: `{path_context.get('reference_line_claim_grade_allowed')}`",
+                f"- recommended_evidence_policy: `{path_context.get('recommended_evidence_policy')}`",
+                f"- claim_boundary: `{path_context.get('claim_boundary')}`",
+            ]
+        )
     metrics = report.get("phase1_metrics") if isinstance(report.get("phase1_metrics"), Mapping) else {}
     lane_context = (
         metrics.get("lane_invasion_context")
@@ -301,6 +326,7 @@ def _status(
     reference_line_debug_export_policy = _reference_line_debug_export_policy(
         derived_blocker_evidence
     )
+    path_candidate_control_context = _path_candidate_control_context(derived_blocker_evidence)
     return {
         "schema_version": PHASE1_STATUS_SCHEMA_VERSION,
         "run_dir": str(root),
@@ -321,6 +347,7 @@ def _status(
         "behavior_blocker_evidence": behavior_blocker["behavior_blocker_evidence"],
         "route_lateral_field_policy": route_lateral_field_policy,
         "reference_line_debug_export_policy": reference_line_debug_export_policy,
+        "path_candidate_control_context": path_candidate_control_context,
         "original_failure_reason": original_reason,
         "evaluable": evaluability["run_evaluable"],
         "run_evaluable": evaluability["run_evaluable"],
@@ -1054,6 +1081,95 @@ def _reference_line_debug_export_policy(
     }
 
 
+def _path_candidate_control_context(
+    derived_blocker_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    link_health = (
+        derived_blocker_evidence.get("apollo_link_health")
+        if isinstance(derived_blocker_evidence.get("apollo_link_health"), Mapping)
+        else {}
+    )
+    target_classification = link_health.get("control_target_point_vs_path_candidate_classification")
+    trajectory_classification = link_health.get(
+        "planning_debug_path_candidate_vs_trajectory_sample_classification"
+    )
+    hdmap_classification = link_health.get(
+        "planning_debug_path_candidate_hdmap_projection_classification"
+    )
+    if not any((target_classification, trajectory_classification, hdmap_classification)):
+        return {
+            "status": "not_applicable",
+            "recommended_action": "generate_apollo_reference_line_contract_and_link_health_reports",
+            "claim_boundary": (
+                "Missing path-candidate context must not be interpreted as Planning "
+                "path/reference-line success."
+            ),
+        }
+
+    claim_flags = [
+        link_health.get("control_target_point_vs_path_candidate_reference_line_claim_grade_allowed"),
+        link_health.get("planning_debug_path_candidate_vs_trajectory_sample_reference_line_claim_grade_allowed"),
+        link_health.get("planning_debug_path_candidate_hdmap_projection_reference_line_claim_grade_allowed"),
+    ]
+    explicit_false = any(item is False for item in claim_flags)
+    explicit_true = any(item is True for item in claim_flags)
+    if explicit_false:
+        claim_grade_allowed = False
+    elif explicit_true:
+        claim_grade_allowed = True
+    else:
+        claim_grade_allowed = None
+
+    status = "diagnostic_only" if claim_grade_allowed is False else "available"
+    recommended_policy = (
+        "path_candidate_surrogate_only_until_reference_line_debug_exported"
+        if claim_grade_allowed is False
+        else "path_candidate_context_available"
+    )
+    return {
+        "status": status,
+        "control_target_vs_path_candidate_classification": target_classification,
+        "target_point_to_path_candidate_line_abs_p95_m": link_health.get(
+            "control_target_point_vs_path_candidate_p95_m"
+        ),
+        "target_point_lane_l_abs_p95_m": link_health.get(
+            "control_target_point_vs_path_candidate_target_lane_l_abs_p95_m"
+        ),
+        "target_inside_path_lateral_envelope": link_health.get(
+            "control_target_point_inside_path_candidate_lateral_envelope"
+        ),
+        "path_candidate_lane_l_abs_p95_m": link_health.get(
+            "planning_debug_path_candidate_hdmap_projection_lane_l_abs_p95_m"
+        ),
+        "path_candidate_lane_l_min_m": link_health.get("path_candidate_lane_l_min_m"),
+        "path_candidate_lane_l_max_m": link_health.get("path_candidate_lane_l_max_m"),
+        "planning_debug_path_candidate_vs_trajectory_sample_classification": (
+            trajectory_classification
+        ),
+        "path_candidate_to_planning_sample_line_abs_p95_m": link_health.get(
+            "planning_debug_path_candidate_vs_trajectory_sample_p95_m"
+        ),
+        "path_candidate_vs_trajectory_sample_coverage_ratio": link_health.get(
+            "planning_debug_path_candidate_vs_trajectory_sample_coverage_ratio"
+        ),
+        "planning_debug_path_candidate_hdmap_projection_classification": hdmap_classification,
+        "path_candidate_routing_lane_window_compatible": link_health.get(
+            "planning_debug_path_candidate_hdmap_projection_routing_lane_window_compatible"
+        ),
+        "reference_line_claim_grade_allowed": claim_grade_allowed,
+        "recommended_evidence_policy": recommended_policy,
+        "recommended_action": (
+            "Use this context to decide whether Planning path candidates and Control target "
+            "points are locally consistent. It is not a substitute for exported Planning "
+            "reference-line debug."
+        ),
+        "claim_boundary": (
+            "Phase 1 path-candidate context is diagnostic-only unless exported Planning "
+            "reference-line debug is present and claim-grade."
+        ),
+    }
+
+
 def _control_health_blocker_summary(report: Mapping[str, Any], path: Path) -> dict[str, Any]:
     metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
     materialization = (
@@ -1124,6 +1240,21 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
     reference_claim_window_inventory = (
         reference_field_inventory.get("claim_window")
         if isinstance(reference_field_inventory.get("claim_window"), Mapping)
+        else {}
+    )
+    control_target_path_candidate = (
+        reference_metrics.get("control_target_point_vs_planning_path_candidate_sample")
+        if isinstance(reference_metrics.get("control_target_point_vs_planning_path_candidate_sample"), Mapping)
+        else {}
+    )
+    path_candidate_trajectory_surrogate = (
+        reference_metrics.get("planning_debug_path_candidate_vs_trajectory_sample")
+        if isinstance(reference_metrics.get("planning_debug_path_candidate_vs_trajectory_sample"), Mapping)
+        else {}
+    )
+    path_candidate_hdmap_alignment = (
+        reference_metrics.get("planning_debug_path_candidate_hdmap_projection_alignment")
+        if isinstance(reference_metrics.get("planning_debug_path_candidate_hdmap_projection_alignment"), Mapping)
         else {}
     )
     return {
@@ -1220,6 +1351,57 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         ),
         "planning_materialization_lane_follow_stage_ratio": materialization_claim_window.get(
             "lane_follow_stage_ratio"
+        ),
+        "control_target_point_vs_path_candidate_classification": control_target_path_candidate.get(
+            "classification"
+        ),
+        "control_target_point_vs_path_candidate_reference_line_claim_grade_allowed": (
+            control_target_path_candidate.get("reference_line_claim_grade_allowed")
+        ),
+        "control_target_point_vs_path_candidate_p95_m": control_target_path_candidate.get(
+            "target_point_to_path_candidate_line_abs_p95_m"
+        ),
+        "control_target_point_vs_path_candidate_target_lane_l_abs_p95_m": (
+            control_target_path_candidate.get("target_point_lane_l_abs_p95_m")
+        ),
+        "control_target_point_inside_path_candidate_lateral_envelope": (
+            control_target_path_candidate.get("target_inside_path_lateral_envelope")
+        ),
+        "path_candidate_lane_l_min_m": (
+            control_target_path_candidate.get("path_candidate_lane_l_min_m")
+            if control_target_path_candidate.get("path_candidate_lane_l_min_m") is not None
+            else path_candidate_hdmap_alignment.get("path_candidate_lane_l_min_m")
+        ),
+        "path_candidate_lane_l_max_m": (
+            control_target_path_candidate.get("path_candidate_lane_l_max_m")
+            if control_target_path_candidate.get("path_candidate_lane_l_max_m") is not None
+            else path_candidate_hdmap_alignment.get("path_candidate_lane_l_max_m")
+        ),
+        "planning_debug_path_candidate_vs_trajectory_sample_classification": (
+            path_candidate_trajectory_surrogate.get("classification")
+        ),
+        "planning_debug_path_candidate_vs_trajectory_sample_reference_line_claim_grade_allowed": (
+            path_candidate_trajectory_surrogate.get("reference_line_claim_grade_allowed")
+        ),
+        "planning_debug_path_candidate_vs_trajectory_sample_p95_m": (
+            path_candidate_trajectory_surrogate.get(
+                "path_candidate_to_planning_sample_line_abs_p95_m"
+            )
+        ),
+        "planning_debug_path_candidate_vs_trajectory_sample_coverage_ratio": (
+            path_candidate_trajectory_surrogate.get("sample_coverage_ratio")
+        ),
+        "planning_debug_path_candidate_hdmap_projection_classification": (
+            path_candidate_hdmap_alignment.get("classification")
+        ),
+        "planning_debug_path_candidate_hdmap_projection_reference_line_claim_grade_allowed": (
+            path_candidate_hdmap_alignment.get("reference_line_claim_grade_allowed")
+        ),
+        "planning_debug_path_candidate_hdmap_projection_lane_l_abs_p95_m": (
+            path_candidate_hdmap_alignment.get("path_candidate_lane_l_abs_p95_m")
+        ),
+        "planning_debug_path_candidate_hdmap_projection_routing_lane_window_compatible": (
+            path_candidate_hdmap_alignment.get("routing_lane_window_compatible")
         ),
         "route_simple_lat_sign_convention_candidate": lateral_metrics.get(
             "route_simple_lat_sign_convention_candidate"

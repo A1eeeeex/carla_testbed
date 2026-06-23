@@ -162,7 +162,14 @@ Delivery-first update, 2026-06-23:
   `comparison_target_status=apollo_vs_planning_control_evaluable`: builtin
   succeeded, Apollo is an evaluable lane-invasion behavior failure. This is
   stronger Phase 1 comparison evidence, not Apollo follow-stop success and not
-  no-interference natural-driving evidence.
+  no-interference natural-driving evidence. The refreshed Phase 1 status now
+  also surfaces `path_candidate_control_context` directly: Control target
+  points lie inside the diagnostic Planning path-candidate lateral envelope and
+  near lane center, while path candidates span about `1.25m` lateral offset
+  from the HDMap lane center. This narrows the next Apollo investigation to
+  Planning reference-line/debug export and lateral semantics, but remains
+  diagnostic-only until exported Planning reference-line evidence is
+  claim-grade.
 
 Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:
