@@ -1,0 +1,22 @@
+extends: phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_sidecar_eager_control_steer_sign_inverted_diagnostic
+  profile_name: phase1_baguang_apollo_dynamic_sidecar_eager_control_steer_sign_inverted_diagnostic
+  capability_profile: phase1_fixed_scene_compatibility_diagnostic_steer_sign_ab
+
+algo:
+  apollo:
+    control_mapping:
+      # Diagnostic A/B only. The latest dynamic lead-decel sample shows Apollo
+      # raw steer, mapped steer, CARLA applied steer, yaw-rate, and lateral
+      # departure increasing together before lane invasion. This profile tests
+      # steering sign semantics without changing steer_scale, control mode, or
+      # the default Phase 1 Apollo compatibility profile.
+      steer_sign: -1.0
+
+assist_ledger:
+  notes:
+    - Phase 1 Apollo dynamic fixed-scene sidecar eager-control profile with steer_sign inverted for one-off diagnostic A/B.
+    - This is not a default backend profile, not a natural-driving or no-interference claim, and not permission to change steer_scale or physical mapping.
+    - Use only to test whether the latest lane-invasion blocker is caused by steering sign/control-semantics mismatch after route/reference-line evidence is inspected.

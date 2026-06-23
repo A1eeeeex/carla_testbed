@@ -131,6 +131,7 @@ def legacy_map_base_controls(
         "steer_pre_clamp": steer_pre,
         "steer_clamped": abs(steer_pre) > 1.0,
         "steer_sign": config.steer_sign,
+        "steer_scale": config.steer_scale,
         "throttle_source": "legacy_scale",
         "brake_source": "legacy_scale",
         "steer_source": "legacy_scale",

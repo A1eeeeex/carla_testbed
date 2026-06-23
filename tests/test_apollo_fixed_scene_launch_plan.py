@@ -319,6 +319,25 @@ def test_apollo_dynamic_sidecar_default_profile_starts_control_eagerly() -> None
     assert "dynamic_sidecar_eager_control" in payload["run"]["profile_name"]
 
 
+def test_apollo_dynamic_sidecar_steer_sign_inverted_profile_is_diagnostic_only() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_sidecar_eager_control_steer_sign_inverted_diagnostic.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert (
+        payload["extends"]
+        == "phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml"
+    )
+    assert "steer_sign_inverted_diagnostic" in payload["run"]["profile_name"]
+    assert payload["run"]["capability_profile"] == "phase1_fixed_scene_compatibility_diagnostic_steer_sign_ab"
+    assert payload["algo"]["apollo"]["control_mapping"]["steer_sign"] == -1.0
+    assert any("diagnostic A/B" in note for note in payload["assist_ledger"]["notes"])
+    assert any("not a default backend profile" in note for note in payload["assist_ledger"]["notes"])
+
+
 def test_apollo_static_follow_stop_default_overlay_profile_declares_runtime_overlay() -> None:
     payload = yaml.safe_load(
         Path("configs/io/examples/phase1_baguang_apollo_followstop_static_control_overlay_paced_compat.yaml").read_text(

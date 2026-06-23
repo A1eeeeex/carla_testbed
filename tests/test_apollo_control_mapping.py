@@ -3,6 +3,7 @@ from __future__ import annotations
 from tools.apollo10_cyber_bridge.control_mapping import (
     ControlMappingConfig,
     apply_throttle_brake_mutual_exclusion,
+    legacy_map_base_controls,
 )
 
 
@@ -44,6 +45,22 @@ def test_mutual_exclusion_resolves_overlap_after_mapping() -> None:
     assert result["policy_reason"] == "mutual_exclusion_overlap"
     assert result["policy_state"] == "brake"
     assert result["desired_state"] == "brake"
+
+
+def test_legacy_mapping_records_steer_scale_and_sign_for_audit_trace() -> None:
+    result = legacy_map_base_controls(
+        raw_throttle=0.2,
+        raw_brake=0.0,
+        raw_steer=0.4,
+        now_sec=1.0,
+        config=_config(steer_scale=0.25, steer_sign=-1.0),
+        apply_zero_hold=lambda throttle, _brake, _now: throttle,
+    )
+
+    assert abs(result["steer"] + 0.1) < 1e-9
+    assert result["steer_scale"] == 0.25
+    assert result["steer_sign"] == -1.0
+    assert result["steer_source"] == "legacy_scale"
 
 
 def test_mutual_exclusion_can_be_disabled_for_diagnostic_replay() -> None:

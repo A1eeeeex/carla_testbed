@@ -1952,6 +1952,8 @@ class ApolloGtBridge:
         )
         self.stats["actuator_mapping"] = {
             "mode": self.actuator_mapping_mode,
+            "steer_scale": self.steer_scale,
+            "steer_sign": self.steer_sign,
             "allow_legacy_fallback": self.physical_allow_legacy_fallback,
             "apollo_max_steer_angle_deg": self.physical_apollo_max_steer_angle_deg,
             "apollo_max_accel_mps2": self.physical_apollo_max_accel_mps2,
@@ -8631,6 +8633,7 @@ class ApolloGtBridge:
             "steer_pre_clamp": steer_pre,
             "steer_clamped": bool(base_mapping.get("steer_clamped", abs(steer_pre) > 1.0)),
             "steer_sign": base_mapping.get("steer_sign", self.steer_sign),
+            "steer_scale": base_mapping.get("steer_scale", self.steer_scale),
             "throttle_before_boost": throttle_cmd,
             "throttle_after_boost": throttle_after_boost,
             "startup_boost_applied": throttle_before_mutual_exclusion > throttle_cmd,
@@ -12035,6 +12038,18 @@ class ApolloGtBridge:
                         ),
                         "commanded_steer_pre_clamp": self._coerce_float(desired_out.get("steer_pre_clamp"), float("nan"), "desired_out.steer_pre_clamp", "publish_row"),
                         "commanded_steer_clamped": desired_out.get("steer_clamped", False),
+                        "steer_scale": self._coerce_float(
+                            desired_out.get("steer_scale", self.steer_scale),
+                            float("nan"),
+                            "desired_out.steer_scale",
+                            "publish_row",
+                        ),
+                        "steering_sign": self._coerce_float(
+                            desired_out.get("steer_sign", self.steer_sign),
+                            float("nan"),
+                            "desired_out.steer_sign",
+                            "publish_row",
+                        ),
                         "throttle_mapping_source": desired_out.get("throttle_mapping_source", ""),
                         "brake_mapping_source": desired_out.get("brake_mapping_source", ""),
                         "steer_mapping_source": desired_out.get("steer_mapping_source", ""),

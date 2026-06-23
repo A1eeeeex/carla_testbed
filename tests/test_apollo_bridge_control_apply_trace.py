@@ -136,6 +136,8 @@ def test_control_apply_trace_falls_back_to_latest_control_cache() -> None:
     assert payload["control_message_age_ms"] == 4.0
     assert payload["planning_message_age_ms"] == 5.0
     assert payload["actuator_mapping_mode"] == "legacy"
+    assert payload["steer_scale"] == 0.25
+    assert payload["steering_sign"] == 1.0
     assert payload["gt_state"]["sim_time_sec"] == 1.0
     assert payload["gt_state"]["world_frame"] == 123.0
     assert payload["gt_state"]["sample_reason"] == "fresh_sample"

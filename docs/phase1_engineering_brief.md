@@ -233,6 +233,23 @@ Delivery-first update, 2026-06-23:
   status therefore also exposes `phase1_relevant_apollo_link_blocker`, which
   filters those claim-only blockers and points this sample back to
   `apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate`.
+  A new diagnostic-only profile,
+  `configs/io/examples/phase1_baguang_apollo_dynamic_sidecar_eager_control_steer_sign_inverted_diagnostic.yaml`,
+  keeps the same eager-control / low-capture / pacing stack but sets
+  `control_mapping.steer_sign=-1.0` for the next online A/B. This is a
+  steering-sign semantics probe only: it is not a default profile, not a
+  steer-scale or physical-mapping change, and not behavior success evidence
+  without fresh paired artifacts. The first online single-run sample,
+  `runs/phase1_online_pairs/lead_decel_70_to_40_20m_steer_sign_inverted_20260624_014350`,
+  completed with
+  `summary.success=true`, `collision_count=0`, `lane_invasion_count=0`,
+  `phase1_status.status=success`, and `v_t_gap.status=pass`. This is strong
+  diagnostic evidence that the previous lane-invasion blocker is sensitive to
+  steering sign/control semantics, but it is not yet a paired backend
+  comparison and not a default-profile promotion. A follow-up online rerun
+  after adding explicit `steer_scale` trace fields was blocked by local CARLA
+  startup failure (`未检测到运行中的 CARLA`), so the new trace-field materialization
+  is currently unit-tested but not yet online-verified.
   The next highest-value Apollo investigation is lateral semantics /
   reference-line / lane-event context for the dynamic Baguang case, not stale
   control handoff.
