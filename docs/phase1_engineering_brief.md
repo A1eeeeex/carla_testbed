@@ -98,6 +98,17 @@ Delivery-first update, 2026-06-23:
   scenarios, the target interaction must actually happen, and the paired
   backend results must enter comparison from one command. The new executor
   makes this path explicit but does not by itself remove those blockers.
+- Latest Baguang `follow_stop_static` online pair,
+  `runs/phase1_online_pairs/follow_stop_static_20260623_215028`, reduces one
+  Apollo handoff ambiguity. The Phase 1 Apollo compat config now requires
+  routing success before `planning_ready` may start control, and the gate
+  consumes bridge-health aliases such as `routing_first_success_response_ts_sec`.
+  In that run `apollo_control_planning_ready_wait.log` reached `status=ready`
+  with `route_established=True`, then Apollo control mainboard crashed with
+  `tcmalloc.cc:333] Attempt to free invalid pointer`. The run remains an
+  evaluable Apollo failure (`phase1_status.failure_reason=control_process_failed`)
+  and the comparison remains `partially_evaluable`; this is blocker reduction,
+  not Apollo behavior success.
 
 Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:

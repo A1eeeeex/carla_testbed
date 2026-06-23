@@ -3388,6 +3388,15 @@ PY"""
             value = 0
         return max(0, value)
 
+    def _docker_control_planning_ready_require_routing_success(self) -> bool:
+        cfg = self._docker_cfg()
+        if "control_planning_ready_require_routing_success" in cfg:
+            value = cfg.get("control_planning_ready_require_routing_success")
+            if isinstance(value, str):
+                return value.strip().lower() not in {"0", "false", "no", "off"}
+            return bool(value)
+        return True
+
     def _docker_control_planning_ready_timeout_sec(self) -> float:
         cfg = self._docker_cfg()
         try:
@@ -4177,11 +4186,25 @@ PY"""
         return payload
 
     def _docker_probe_planning_ready_before_control(self, artifacts: Path) -> tuple[str, Optional[str]]:
+        def _has_positive_numeric(value: Any) -> bool:
+            try:
+                return float(value) > 0.0
+            except Exception:
+                return False
+
+        def _has_present_value(value: Any) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, str):
+                return value.strip().lower() not in {"", "none", "null", "nan"}
+            return True
+
         control_start_gate = self._docker_control_start_gate()
         timeout_sec = self._docker_control_planning_ready_timeout_sec()
         poll_sec = self._docker_control_planning_ready_poll_sec()
         min_nonempty = self._docker_control_planning_ready_min_nonempty_count()
         min_sequence_num = self._docker_control_planning_ready_min_sequence_num()
+        require_routing_success = self._docker_control_planning_ready_require_routing_success()
         require_chassis_ready = self._docker_control_require_chassis_ready()
         min_chassis_count = self._docker_control_chassis_ready_min_count()
         if control_start_gate == "route_seen":
@@ -4238,6 +4261,8 @@ PY"""
                 summary_last_points = planning_summary.get("last_trajectory_point_count")
                 if summary_last_points is not None:
                     last_trajectory_point_count = int(summary_last_points)
+                if _has_present_value(planning_summary.get("routing_first_success_response_ts_sec")):
+                    routing_success_count = max(routing_success_count, 1)
             except Exception as exc:
                 parse_error = parse_error or f"planning_summary_parse_error:{exc}"
         if planning_debug_exists and last_sequence_num is None:
@@ -4277,6 +4302,10 @@ PY"""
                     routing_success_count,
                     int(bridge_health.get("routing_success_count", 0) or 0),
                 )
+                if _has_present_value(bridge_health.get("routing_first_success_response_ts_sec")):
+                    routing_success_count = max(routing_success_count, 1)
+                if _has_positive_numeric(bridge_health.get("routing_response_count")):
+                    routing_success_count = max(routing_success_count, 1)
                 chassis_count = max(
                     chassis_count,
                     int(bridge_health.get("chassis_count", 0) or bridge_health.get("chassis_msg_count", 0) or 0),
@@ -4311,6 +4340,7 @@ PY"""
                     "chassis_count": chassis_count,
                     "route_seen_at": self._deferred_control_route_seen_sec,
                     "route_established_at": self._deferred_control_route_established_sec,
+                    "require_routing_success": require_routing_success,
                     "planning_messages_received": total,
                     "planning_nonempty_trajectory_count": count,
                     "last_planning_header_sequence_num": last_sequence_num,
@@ -4324,6 +4354,7 @@ PY"""
         )
         route_seen = self._deferred_control_route_seen_sec is not None
         route_established = self._deferred_control_route_established_sec is not None
+        route_ready_for_planning_control = route_established if require_routing_success else route_seen
         latest_nonzero = (last_trajectory_point_count or 0) > 0
         enough_nonempty_history = count >= min_nonempty
         sequence_ready = (
@@ -4403,13 +4434,15 @@ PY"""
                 + "\n"
             )
             return "waiting", None
-        if route_seen and latest_nonzero and enough_nonempty_history and sequence_ready:
+        if route_ready_for_planning_control and latest_nonzero and enough_nonempty_history and sequence_ready:
             if require_chassis_ready and not chassis_ready:
                 report_path.write_text(
                     "status=waiting_for_chassis_ready\n"
                     "control_start_gate=planning_ready\n"
                     f"min_nonempty={min_nonempty}\n"
                     f"min_sequence_num={min_sequence_num}\n"
+                    f"require_routing_success={require_routing_success}\n"
+                    f"route_established={route_established}\n"
                     f"require_chassis_ready={require_chassis_ready}\n"
                     f"control_chassis_ready_min_count={min_chassis_count}\n"
                     f"current_chassis_count={chassis_count}\n"
@@ -4425,6 +4458,8 @@ PY"""
                 "control_start_gate=planning_ready\n"
                 f"min_nonempty={min_nonempty}\n"
                 f"min_sequence_num={min_sequence_num}\n"
+                f"require_routing_success={require_routing_success}\n"
+                f"route_established={route_established}\n"
                 f"require_chassis_ready={require_chassis_ready}\n"
                 f"control_chassis_ready_min_count={min_chassis_count}\n"
                 f"current_chassis_count={chassis_count}\n"
@@ -4443,6 +4478,8 @@ PY"""
                 "control_start_gate=planning_ready\n"
                 f"min_nonempty={min_nonempty}\n"
                 f"min_sequence_num={min_sequence_num}\n"
+                f"require_routing_success={require_routing_success}\n"
+                f"route_established={route_established}\n"
                 f"require_chassis_ready={require_chassis_ready}\n"
                 f"control_chassis_ready_min_count={min_chassis_count}\n"
                 f"current_chassis_count={chassis_count}\n"
@@ -4462,6 +4499,8 @@ PY"""
                 "control_start_gate=planning_ready\n"
                 f"min_nonempty={min_nonempty}\n"
                 f"min_sequence_num={min_sequence_num}\n"
+                f"require_routing_success={require_routing_success}\n"
+                f"route_established={route_established}\n"
                 f"timeout_sec={timeout_sec}\n"
                 f"hard_timeout_sec={hard_timeout_sec}\n"
                 f"poll_sec={poll_sec}\n"
@@ -4477,6 +4516,8 @@ PY"""
             "control_start_gate=planning_ready\n"
             f"min_nonempty={min_nonempty}\n"
             f"min_sequence_num={min_sequence_num}\n"
+            f"require_routing_success={require_routing_success}\n"
+            f"route_established={route_established}\n"
             f"require_chassis_ready={require_chassis_ready}\n"
             f"control_chassis_ready_min_count={min_chassis_count}\n"
             f"current_chassis_count={chassis_count}\n"

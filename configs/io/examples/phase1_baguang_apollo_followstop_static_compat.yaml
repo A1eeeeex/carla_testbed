@@ -76,6 +76,7 @@ algo:
       start_modules: true
       defer_control_until_planning_ready: true
       control_start_gate: planning_ready
+      control_planning_ready_require_routing_success: true
       deferred_control_start_mode: dag
       deferred_control_start_async: true
       deferred_control_disable_bvar_dump: true

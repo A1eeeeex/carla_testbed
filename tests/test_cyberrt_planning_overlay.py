@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shlex
 import subprocess
 
@@ -10,6 +11,114 @@ def _extract_python_overlay_script(shell: str) -> str:
     marker = "python3 -c "
     assert marker in shell
     return shlex.split(shell)[2]
+
+
+def _planning_ready_backend(*, require_routing_success: bool | str | None = None) -> CyberRTBackend:
+    docker_cfg: dict[str, object] = {
+        "control_start_gate": "planning_ready",
+        "control_planning_ready_min_nonempty_count": 1,
+        "control_planning_ready_min_sequence_num": 5,
+    }
+    if require_routing_success is not None:
+        docker_cfg["control_planning_ready_require_routing_success"] = require_routing_success
+    return CyberRTBackend({"algo": {"apollo": {"docker": docker_cfg}}})
+
+
+def _planning_ready_stats(*, routing_success_count: int) -> dict:
+    return {
+        "routing_request_count": 1,
+        "routing_success_count": routing_success_count,
+        "chassis_count": 10,
+        "planning": {
+            "msg_count": 8,
+            "nonempty_trajectory_count": 2,
+            "last_planning_header_sequence_num": 7,
+            "last_trajectory_point_count": 111,
+        },
+    }
+
+
+def test_planning_ready_gate_defaults_to_waiting_for_routing_success(tmp_path, monkeypatch) -> None:
+    backend = _planning_ready_backend()
+    monkeypatch.setattr(
+        backend,
+        "_read_stats",
+        lambda: (True, 0.0, _planning_ready_stats(routing_success_count=0)),
+    )
+
+    status, error = backend._docker_probe_planning_ready_before_control(tmp_path)
+
+    wait_log = (tmp_path / "apollo_control_planning_ready_wait.log").read_text(encoding="utf-8")
+    assert status == "waiting"
+    assert error is None
+    assert "require_routing_success=True" in wait_log
+    assert "route_established=False" in wait_log
+    assert "planning_nonempty_trajectory_count\": 2" in wait_log
+
+
+def test_planning_ready_gate_can_opt_out_of_routing_success_requirement(tmp_path, monkeypatch) -> None:
+    backend = _planning_ready_backend(require_routing_success=False)
+    monkeypatch.setattr(
+        backend,
+        "_read_stats",
+        lambda: (True, 0.0, _planning_ready_stats(routing_success_count=0)),
+    )
+
+    status, error = backend._docker_probe_planning_ready_before_control(tmp_path)
+
+    wait_log = (tmp_path / "apollo_control_planning_ready_wait.log").read_text(encoding="utf-8")
+    assert status == "ready"
+    assert error is None
+    assert "require_routing_success=False" in wait_log
+    assert "route_established=False" in wait_log
+
+
+def test_planning_ready_gate_starts_after_routing_success_and_nonempty_planning(tmp_path, monkeypatch) -> None:
+    backend = _planning_ready_backend()
+    monkeypatch.setattr(
+        backend,
+        "_read_stats",
+        lambda: (True, 0.0, _planning_ready_stats(routing_success_count=1)),
+    )
+
+    status, error = backend._docker_probe_planning_ready_before_control(tmp_path)
+
+    wait_log = (tmp_path / "apollo_control_planning_ready_wait.log").read_text(encoding="utf-8")
+    assert status == "ready"
+    assert error is None
+    assert "require_routing_success=True" in wait_log
+    assert "route_established=True" in wait_log
+
+
+def test_planning_ready_gate_uses_bridge_health_routing_success_aliases(tmp_path, monkeypatch) -> None:
+    backend = _planning_ready_backend()
+    monkeypatch.setattr(
+        backend,
+        "_read_stats",
+        lambda: (True, 0.0, _planning_ready_stats(routing_success_count=0)),
+    )
+    (tmp_path / "bridge_health_summary.json").write_text(
+        json.dumps(
+            {
+                "routing_request_count": 1,
+                "routing_response_count": 1,
+                "routing_first_success_response_ts_sec": 123.45,
+                "planning_nonempty_trajectory_count": 2,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    status, error = backend._docker_probe_planning_ready_before_control(tmp_path)
+
+    wait_log = (tmp_path / "apollo_control_planning_ready_wait.log").read_text(encoding="utf-8")
+    assert status == "ready"
+    assert error is None
+    assert "routing_success_count\": 1" in wait_log
+    assert "route_established=True" in wait_log
 
 
 def test_planning_overlay_can_disable_control_interactive_replan() -> None:
