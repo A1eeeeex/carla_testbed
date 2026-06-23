@@ -538,7 +538,7 @@ def _comparison_validity_gates(
     )
     reason = None
     if not interaction_complete:
-        reason = "target_interaction_not_exercised"
+        reason = _interaction_incomplete_reason(runs)
     elif not target_metric_valid:
         reason = "target_metric_not_evaluable"
     elif not artifact_complete:
@@ -573,6 +573,27 @@ def _comparison_validity_gates(
             for run in runs
         ],
     }
+
+
+def _interaction_incomplete_reason(runs: Sequence[Mapping[str, Any]]) -> str:
+    reasons = {
+        str(run.get("scenario_interaction_reason") or "")
+        for run in runs
+        if run.get("scenario_interaction_evaluable") is False
+    }
+    metrics = [
+        run.get("phase1_metrics")
+        for run in runs
+        if isinstance(run.get("phase1_metrics"), Mapping)
+    ]
+    initial_fail = any(
+        isinstance(metric.get("initial_condition_materialization"), Mapping)
+        and metric["initial_condition_materialization"].get("status") == "fail"
+        for metric in metrics
+    )
+    if "ego_initial_speed_not_materialized" in reasons or initial_fail:
+        return "initial_conditions_not_materialized"
+    return "target_interaction_not_exercised"
 
 
 def _run_interaction_evaluable(run: Mapping[str, Any]) -> bool:

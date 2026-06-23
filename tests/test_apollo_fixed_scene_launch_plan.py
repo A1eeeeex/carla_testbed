@@ -226,11 +226,13 @@ def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -
     assert "run.capability_profile=phase1_fixed_scene_sidecar" in command
     assert "scenario.spawn_legacy_front=false" in command
     assert "runtime.fixed_scene_player.enabled=true" in command
+    assert "runtime.fixed_scene_player.materialize_ego_initial_speed=true" in command
     assert (
         "runtime.fixed_scene_player.scenario_path=configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml"
         in command
     )
     assert "artifacts/fixed_scene_runtime_hook.json" in launch.expected_artifacts
+    assert "artifacts/ego_initial_state_materialization.json" in launch.expected_artifacts
     assert "artifacts/apollo_control_deferred_survival.json" in launch.expected_artifacts
     assert "artifacts/apollo_control_runtime_overlay_manifest.json" in launch.expected_artifacts
     assert "analysis/apollo_control_handoff/apollo_control_handoff_report.json" in launch.expected_artifacts

@@ -393,6 +393,138 @@ def test_duration_policy_not_reached_after_target_interaction_is_evaluable_failu
     assert report["counts_as_backend_loss_for_target_scenario"] is True
 
 
+def test_duration_and_phase_completion_blockers_after_actor_contract_pass_are_evaluable_failure(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    (run / "summary.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "exit_reason": "COLLISION",
+                "lane_invasion_count": 0,
+                "collision_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "pass",
+                "rows": [{"gap_m": 16.0, "ego_speed_mps": 19.4, "target_speed_mps": 19.4}],
+                "target_actor_contract": {"status": "resolved", "target_actor_role": "lead_vehicle"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    fixed_out = run / "analysis" / "fixed_scene_contract"
+    fixed_out.mkdir(parents=True)
+    (fixed_out / "fixed_scene_contract_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "fixed_scene_contract.v1",
+                "status": "fail",
+                "blocking_reasons": [
+                    "fixed_scene_required_phase_not_completed",
+                    "duration_policy_route_end_not_reached",
+                ],
+                "spawn_feasibility": {"lead_vehicle": {"status": "pass", "blocking_reasons": []}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    actor_out = run / "analysis" / "scenario_actor_contract"
+    actor_out.mkdir(parents=True)
+    (actor_out / "scenario_actor_contract_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "scenario_actor_contract.v1",
+                "status": "pass",
+                "blocking_reasons": [],
+                "metrics": {
+                    "phase_completion_ratio": 1.0,
+                    "speed_profile_error_p95_mps": 0.15,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "collision"
+    assert report["run_evaluable"] is True
+    assert report["scenario_interaction_evaluable"] is True
+    assert report["target_metric_evaluable"] is True
+    assert report["counts_as_backend_loss_for_target_scenario"] is True
+
+
+def test_ego_initial_speed_not_materialized_blocks_target_interaction_loss_claim(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    (run / "summary.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "exit_reason": "LANE_INVASION",
+                "lane_invasion_count": 1,
+                "collision_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    artifacts = run / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "fixed_scene_resolved.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "fixed_scene_storyboard.v1",
+                "roles": {"ego": {"initial_speed_mps": 19.44}},
+                "params": {"ego_initial_speed_mps": 19.44},
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "warn",
+                "rows": [
+                    {"gap_m": 20.0, "ego_speed_mps": 2.4, "target_speed_mps": 19.4},
+                    {"gap_m": 40.0, "ego_speed_mps": 2.6, "target_speed_mps": 19.3},
+                ],
+                "target_actor_contract": {"status": "resolved"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "lane_invasion"
+    assert report["run_evaluable"] is True
+    assert report["scenario_interaction_evaluable"] is False
+    assert report["scenario_interaction_reason"] == "ego_initial_speed_not_materialized"
+    assert report["target_metric_evaluable"] is True
+    assert report["counts_as_backend_loss_for_target_scenario"] is False
+    initial = report["phase1_metrics"]["initial_condition_materialization"]
+    assert initial["status"] == "fail"
+    assert initial["expected_ego_initial_speed_mps"] == 19.44
+    assert initial["observed_ego_initial_speed_mps"] == 2.5
+    assert initial["delta_mps"] > initial["tolerance_mps"]
+
+    write_phase1_status(report, run / "analysis" / "phase1_status")
+    summary_text = (run / "analysis" / "phase1_status" / "phase1_status_summary.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Initial Condition Materialization" in summary_text
+    assert "ego_initial_speed_not_materialized" in summary_text
+
+
 def test_large_final_gap_is_degraded(tmp_path) -> None:
     run = _base_run(tmp_path)
     out = run / "analysis" / "v_t_gap"

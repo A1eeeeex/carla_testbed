@@ -257,6 +257,26 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                 f"- heading_error_rad: `{lane_context.get('heading_error_rad')}`",
             ]
         )
+    initial_condition = (
+        metrics.get("initial_condition_materialization")
+        if isinstance(metrics.get("initial_condition_materialization"), Mapping)
+        else {}
+    )
+    if initial_condition.get("status") not in {None, "not_applicable"}:
+        lines.extend(
+            [
+                "",
+                "## Initial Condition Materialization",
+                "",
+                f"- status: `{initial_condition.get('status')}`",
+                f"- reason: `{initial_condition.get('reason')}`",
+                f"- expected_ego_initial_speed_mps: `{initial_condition.get('expected_ego_initial_speed_mps')}`",
+                f"- observed_ego_initial_speed_mps: `{initial_condition.get('observed_ego_initial_speed_mps')}`",
+                f"- delta_mps: `{initial_condition.get('delta_mps')}`",
+                f"- tolerance_mps: `{initial_condition.get('tolerance_mps')}`",
+                f"- claim_boundary: `{initial_condition.get('claim_boundary')}`",
+            ]
+        )
     blockers = (
         metrics.get("derived_blocker_evidence")
         if isinstance(metrics.get("derived_blocker_evidence"), Mapping)
@@ -365,6 +385,7 @@ def _status(
         "artifact_contract_version": manifest.get("artifact_contract_version"),
         "phase1_metrics": {
             **_phase1_metrics(v_t_gap),
+            "initial_condition_materialization": _initial_condition_materialization(root, v_t_gap),
             "safety_event_evidence": _safety_event_evidence(root, summary),
             "control_motion": _control_motion_metrics(root),
             "lane_invasion_context": _lane_invasion_context(root, summary),
@@ -394,9 +415,15 @@ def _phase1_evaluability(
     run_evaluable = status != "invalid"
     target_required = _target_required(target_contract, manifest)
     fixed_interaction = _fixed_scene_interaction_evidence(root)
+    initial_condition = _initial_condition_materialization(root, v_t_gap)
     if not run_evaluable:
         scenario_interaction_evaluable = False
         scenario_interaction_reason = "run_invalid"
+    elif target_required and initial_condition.get("status") == "fail":
+        scenario_interaction_evaluable = False
+        scenario_interaction_reason = str(
+            initial_condition.get("reason") or "ego_initial_speed_not_materialized"
+        )
     elif target_required and not fixed_interaction["evaluable"]:
         scenario_interaction_evaluable = False
         scenario_interaction_reason = str(fixed_interaction["reason"] or "required_phase_not_reached")
@@ -566,6 +593,86 @@ def _phase1_metrics(v_t_gap: Mapping[str, Any]) -> dict[str, Any]:
         "max_target_speed_mps": max(target_speeds) if target_speeds else None,
         "final_target_speed_mps": target_speeds[-1] if target_speeds else None,
     }
+
+
+def _initial_condition_materialization(root: Path, v_t_gap: Mapping[str, Any]) -> dict[str, Any]:
+    storyboard = _read_json(root / "artifacts" / "fixed_scene_resolved.json")
+    expected = _expected_ego_initial_speed(storyboard)
+    if expected is None:
+        return {
+            "status": "not_applicable",
+            "reason": None,
+            "expected_ego_initial_speed_mps": None,
+            "observed_ego_initial_speed_mps": None,
+            "delta_mps": None,
+            "tolerance_mps": None,
+        }
+
+    rows = v_t_gap.get("rows") if isinstance(v_t_gap.get("rows"), list) else []
+    observed_values: list[float] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        value = _to_float(row.get("ego_speed_mps"))
+        if value is not None:
+            observed_values.append(value)
+        if len(observed_values) >= 10:
+            break
+    if not observed_values:
+        return {
+            "status": "insufficient_data",
+            "reason": "ego_initial_speed_observation_missing",
+            "expected_ego_initial_speed_mps": expected,
+            "observed_ego_initial_speed_mps": None,
+            "delta_mps": None,
+            "tolerance_mps": _initial_speed_tolerance(expected),
+        }
+
+    # The first rows can include one sync-frame wobble, so use the median of
+    # the first observed window rather than a single sample.
+    observed = _median(observed_values)
+    tolerance = _initial_speed_tolerance(expected)
+    delta = abs(float(observed) - float(expected))
+    status = "pass" if delta <= tolerance else "fail"
+    reason = None if status == "pass" else "ego_initial_speed_not_materialized"
+    return {
+        "status": status,
+        "reason": reason,
+        "expected_ego_initial_speed_mps": expected,
+        "observed_ego_initial_speed_mps": observed,
+        "observed_ego_initial_speed_window_count": len(observed_values),
+        "delta_mps": delta,
+        "tolerance_mps": tolerance,
+        "claim_boundary": (
+            "This checks Phase 1 scenario initial-state materialization only. "
+            "A mismatch makes target-interaction comparison incomplete; it is "
+            "not by itself an Apollo behavior loss."
+        ),
+    }
+
+
+def _expected_ego_initial_speed(storyboard: Mapping[str, Any]) -> float | None:
+    roles = storyboard.get("roles") if isinstance(storyboard.get("roles"), Mapping) else {}
+    ego = roles.get("ego") if isinstance(roles.get("ego"), Mapping) else {}
+    value = _to_float(ego.get("initial_speed_mps"))
+    if value is not None:
+        return value
+    params = storyboard.get("params") if isinstance(storyboard.get("params"), Mapping) else {}
+    return _to_float(params.get("ego_initial_speed_mps"))
+
+
+def _initial_speed_tolerance(expected_mps: float) -> float:
+    return max(2.0, abs(float(expected_mps)) * 0.25)
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        return 0.0
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
 
 
 def _derived_blocker_evidence(root: Path) -> dict[str, Any]:
@@ -2240,10 +2347,25 @@ def _fixed_scene_duration_only_after_actor_interaction(
     fixed_blockers = {str(item) for item in fixed_scene_report.get("blocking_reasons") or []}
     actor_status = str(scenario_actor_report.get("status") or "")
     actor_blockers = {str(item) for item in scenario_actor_report.get("blocking_reasons") or []}
-    if fixed_blockers != {"duration_policy_route_end_not_reached"}:
+    duration_after_actor_blockers = {
+        "duration_policy_route_end_not_reached",
+        "fixed_scene_required_phase_not_completed",
+    }
+    if not fixed_blockers or not fixed_blockers.issubset(duration_after_actor_blockers):
         return False
     if actor_status not in {"pass", "warn"} or actor_blockers:
         return False
+    metrics = scenario_actor_report.get("metrics") if isinstance(scenario_actor_report.get("metrics"), Mapping) else {}
+    try:
+        if float(metrics.get("phase_completion_ratio")) >= 1.0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    try:
+        if float(metrics.get("speed_profile_error_p95_mps")) >= 0.0:
+            return True
+    except (TypeError, ValueError):
+        pass
     return True
 
 

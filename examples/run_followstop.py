@@ -74,6 +74,7 @@ from carla_testbed.scenarios import (
     Town01RouteHealthScenario,
 )
 from carla_testbed.scenarios.apollo_semantic_suite import SemanticLeadProfile
+from carla_testbed.scenario_player.initial_state import materialize_ego_initial_speed
 from carla_testbed.scenario_player.runtime_hook import setup_fixed_scene_runtime_hook
 from carla_testbed.sim import configure_synchronous_mode, connect_world_with_retry, restore_settings
 from carla_testbed.utils.env import resolve_carla_root, resolve_repo_root
@@ -280,6 +281,7 @@ def _phase1_fixed_scene_runtime_settings(effective_cfg: Dict[str, Any]) -> Dict[
         "scenario_path": scenario_path,
         "require_setup_success": bool(runtime_cfg.get("require_setup_success", True)),
         "replace_legacy_front": bool(runtime_cfg.get("replace_legacy_front", enabled)),
+        "materialize_ego_initial_speed": bool(runtime_cfg.get("materialize_ego_initial_speed", False)),
         "source": "runtime.fixed_scene_player" if runtime_cfg else "phase1_scenario_path",
     }
 
@@ -2703,6 +2705,12 @@ def main():
                 scenario_path=scenario_path,
             )
             cleanup_state["fixed_scene_runtime_hook"] = fixed_scene_runtime_hook
+            ego_initial_state_materialization = materialize_ego_initial_speed(
+                ego_actor=ego,
+                storyboard=fixed_scene_runtime_hook.storyboard,
+                artifact_dir=out_run_dir / "artifacts",
+                enabled=bool(fixed_scene_runtime_settings["materialize_ego_initial_speed"]),
+            )
             try:
                 (out_run_dir / "artifacts" / "fixed_scene_runtime_hook.json").write_text(
                     json.dumps(fixed_scene_runtime_hook.to_dict(), indent=2, sort_keys=True, default=str),
@@ -2718,6 +2726,7 @@ def main():
                 scenario_path=scenario_path,
                 active_roles=fixed_scene_runtime_hook.runtime.active_roles(),
                 errors=setup_errors,
+                ego_initial_state_materialization=ego_initial_state_materialization,
             )
             if setup_errors and bool(fixed_scene_runtime_settings["require_setup_success"]):
                 raise RuntimeError("fixed_scene_runtime_setup_failed:" + ",".join(setup_errors))

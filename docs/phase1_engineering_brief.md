@@ -1,6 +1,6 @@
 # Phase 1 Engineering Brief
 
-Last reviewed: 2026-06-23
+Last reviewed: 2026-06-24
 
 This brief freezes the Phase 1 engineering target for `carla_testbed`. It is a
 scope and status document, not a capability announcement. Status labels below
@@ -170,6 +170,38 @@ Delivery-first update, 2026-06-23:
   Planning reference-line/debug export and lateral semantics, but remains
   diagnostic-only until exported Planning reference-line evidence is
   claim-grade.
+- Dynamic lead-deceleration online pair
+  `runs/phase1_online_pairs/lead_decel_70_to_40_20m_20260624_001954`
+  validates that the unified `phase1 run-pair` entry can execute a non-static
+  Baguang fixed-scene sidecar for both PlanningControlBackend and ApolloBackend.
+  PlanningControlBackend completed successfully with target actor and
+  `v-t-gap` evidence. ApolloBackend completed the runtime command and produced
+  routing/planning/control, obstacle GT, scenario actor trace, and `v-t-gap`,
+  but the comparison is `partially_evaluable` with
+  `comparison_target_status=initial_conditions_not_materialized`. The scenario
+  declares `ego_initial_speed_mps=19.44`; the refreshed Phase 1 status observes
+  Apollo's initial ego speed window near `0.19m/s`, so the lead vehicle moves
+  away and the target interaction is not exercised before the Apollo lane
+  invasion. This is a Phase 1 setup/runtime materialization blocker, not an
+  Apollo lead-deceleration behavior loss. The next high-value runtime fix is
+  to decide how external backends materialize nonzero initial ego speed for
+  dynamic fixed scenes, or to mark such scenarios incompatible with the current
+  Apollo sidecar until that capability exists.
+- Follow-up dynamic lead-deceleration online pair
+  `runs/phase1_online_pairs/lead_decel_70_to_40_20m_initial_speed_20260624_003219`
+  clears that setup blocker. The Apollo fixed-scene sidecar now writes
+  `artifacts/ego_initial_state_materialization.json` and applies the scenario
+  `ego_initial_speed_mps=19.44` as a one-shot setup action before the backend
+  owns ego control. The refreshed Phase 1 status observes Apollo's initial ego
+  speed window at about `18.96m/s`, so target interaction is now evaluable.
+  The comparison refreshes to `comparison_status=comparable` and
+  `comparison_target_status=apollo_vs_planning_control_evaluable`: builtin
+  succeeds, while Apollo fails with `collision` at about `16m` bumper gap. This
+  is a real Phase 1 behavior blocker, not a natural-driving claim and not
+  evidence that Apollo lead-deceleration works. The next high-value Apollo
+  investigation is longitudinal planning/control handoff for this dynamic
+  target case, including why control raw carries constant brake with zero
+  input trajectory while Planning has non-empty messages.
 
 Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:

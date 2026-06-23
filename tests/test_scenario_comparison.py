@@ -326,6 +326,55 @@ def test_target_interaction_not_exercised_blocks_comparable_cut_in(tmp_path) -> 
     assert all(item["counts_as_backend_loss"] is False for item in report["backend_results"])
 
 
+def test_initial_conditions_not_materialized_gets_specific_comparison_reason(tmp_path) -> None:
+    run_a = _write_run(
+        tmp_path,
+        "apollo",
+        "apollo_cyberrt",
+        "apollo_reference_backend",
+        "failed",
+        "lane_invasion",
+        scenario_id="baguang_lead_decel_70_to_40_20m",
+        scenario_case="baguang_lead_decel_70_to_40_20m",
+        scenario_interaction_evaluable=False,
+        scenario_interaction_reason="ego_initial_speed_not_materialized",
+        target_metric_evaluable=True,
+        target_metric_status="warn",
+    )
+    run_b = _write_run(
+        tmp_path,
+        "builtin",
+        "carla_builtin",
+        "planning_control_backend",
+        "success",
+        scenario_id="baguang_lead_decel_70_to_40_20m",
+        scenario_case="baguang_lead_decel_70_to_40_20m",
+        scenario_interaction_evaluable=True,
+        target_metric_evaluable=True,
+        target_metric_status="pass",
+    )
+    phase1_path = run_a / "analysis" / "phase1_status" / "phase1_status.json"
+    phase1 = json.loads(phase1_path.read_text(encoding="utf-8"))
+    phase1["phase1_metrics"]["initial_condition_materialization"] = {
+        "status": "fail",
+        "reason": "ego_initial_speed_not_materialized",
+        "expected_ego_initial_speed_mps": 19.44,
+        "observed_ego_initial_speed_mps": 2.5,
+        "delta_mps": 16.94,
+        "tolerance_mps": 4.86,
+    }
+    phase1_path.write_text(json.dumps(phase1), encoding="utf-8")
+
+    report = compare_scenario_runs([run_a, run_b])
+
+    assert report["comparison_status"] == "partially_evaluable"
+    assert report["comparison_target_status"] == "initial_conditions_not_materialized"
+    assert report["reason"] == "initial_conditions_not_materialized"
+    assert report["validity_gates"]["interaction_complete"] is False
+    assert report["validity_gates"]["target_metric_valid"] is True
+    assert all(item["counts_as_backend_loss"] is False for item in report["backend_results"])
+
+
 def test_comparison_backfills_legacy_phase1_status_evaluability_fields(tmp_path) -> None:
     run_a = _write_run(
         tmp_path,

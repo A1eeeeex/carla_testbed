@@ -174,6 +174,7 @@ class ApolloCyberRTBackend:
             expected_artifacts.extend(
                 [
                     "artifacts/fixed_scene_runtime_hook.json",
+                    "artifacts/ego_initial_state_materialization.json",
                     "artifacts/apollo_control_deferred_start.log",
                     "artifacts/apollo_control_deferred_survival.json",
                     "artifacts/apollo_control_runtime_overlay_manifest.json",
@@ -320,6 +321,7 @@ def _dynamic_fixed_scene_sidecar_command(
         "runtime.fixed_scene_player.scenario_path": scenario_path,
         "runtime.fixed_scene_player.replace_legacy_front": True,
         "runtime.fixed_scene_player.require_setup_success": True,
+        "runtime.fixed_scene_player.materialize_ego_initial_speed": True,
         "runtime.postprocess.phase1_scenario_path": scenario_path,
         "recording.artifacts.phase1_scenario_path": scenario_path,
         "backend.params.legacy_run.scenario_id": plan.scenario.scenario_id,

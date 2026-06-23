@@ -69,6 +69,7 @@ def test_dynamic_lead_dispatch_contract_exposes_sidecar_runtime_command_without_
     assert "run.capability_profile=phase1_fixed_scene_sidecar" in command
     assert "scenario.spawn_legacy_front=false" in command
     assert "runtime.fixed_scene_player.enabled=true" in command
+    assert "runtime.fixed_scene_player.materialize_ego_initial_speed=true" in command
     assert (
         "runtime.fixed_scene_player.scenario_path=configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml"
         in command
