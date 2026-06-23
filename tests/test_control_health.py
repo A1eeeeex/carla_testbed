@@ -228,6 +228,47 @@ def test_control_health_reports_control_process_crash_before_actuation(tmp_path:
     assert process["crash_reason"] == "tcmalloc_invalid_free"
 
 
+def test_control_health_distinguishes_process_exit_after_control_output(tmp_path: Path) -> None:
+    run_dir = _copy_run(tmp_path)
+    handoff_path = run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json"
+    handoff_path.parent.mkdir(parents=True, exist_ok=True)
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_control_handoff.v1",
+                "verdict": "fail",
+                "failure_stage": "process_health",
+                "blocking_reasons": ["process_health_failed"],
+                "process_health": {
+                    "status": "fail",
+                    "crash_detected": False,
+                    "crash_reason": "module_exited",
+                },
+                "control_channel": {"message_count": 259},
+                "bridge_receive": {"control_rx_count": 258},
+                "mapping_and_apply": {
+                    "apply_control_count": 258,
+                    "nonzero_mapped_frames": 259,
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+
+    assert report["status"] == "fail"
+    assert report["failure_reason"] == "control_process_exited_after_partial_control_output"
+    process = report["metrics"]["control_process_health"]
+    assert process["crash_detected"] is False
+    assert process["control_output_observed"] is True
+    assert process["control_message_count"] == 259
+    assert process["control_rx_count"] == 258
+    assert process["apply_control_count"] == 258
+
+
 def test_control_health_missing_control_trace_is_insufficient_data(tmp_path: Path) -> None:
     run_dir = _copy_run(tmp_path)
     csv_path = run_dir / "timeseries.csv"

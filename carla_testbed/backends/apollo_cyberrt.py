@@ -12,10 +12,10 @@ class ApolloCyberRTBackend:
     name = "apollo_cyberrt"
     _STATIC_FOLLOW_STOP_COMPAT_CONFIGS = {
         "baguang_follow_stop_static_300m": (
-            "configs/io/examples/phase1_baguang_apollo_followstop_static_compat.yaml"
+            "configs/io/examples/phase1_baguang_apollo_followstop_static_control_overlay_paced_compat.yaml"
         ),
         "baguang_follow_stop_static_300m_spawn2m": (
-            "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml"
+            "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
         ),
     }
     _BAGUANG_FIXED_SCENE_SIDECAR_BASE_CONFIG = (
@@ -164,6 +164,8 @@ class ApolloCyberRTBackend:
                 [
                     "artifacts/apollo_control_deferred_start.log",
                     "artifacts/apollo_control_deferred_survival.json",
+                    "artifacts/apollo_control_runtime_overlay_manifest.json",
+                    "artifacts/apollo_control_runtime_overlay_restore.json",
                     "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
                     "analysis/phase1_apollo_fixed_scene_readiness/phase1_apollo_fixed_scene_readiness_report.json",
                 ]
@@ -226,6 +228,7 @@ class ApolloCyberRTBackend:
                 *(
                     [
                         "Apollo static follow-stop fixed-scene compatibility uses a guarded legacy transition config; this is not generic fixed-scene runtime migration.",
+                        "The default Phase 1 static follow-stop compatibility profile uses the diagnostic control-runtime overlay because the non-overlay Apollo control process crashes with tcmalloc_invalid_free before producing /apollo/control on current Baguang runs.",
                         "The transition remains diagnostic Phase 1 compatibility evidence until obstacle GT, v-t-gap, phase1_status, and comparison artifacts make the run evaluable.",
                     ]
                     if fixed_scene_compat

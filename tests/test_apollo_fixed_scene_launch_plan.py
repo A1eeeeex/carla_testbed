@@ -136,12 +136,17 @@ def test_apollo_static_follow_stop_launch_plan_exposes_guarded_compat_command() 
     assert launch.commands
     command = launch.commands[0]
     assert command[:3] == ["python3", "-m", "carla_testbed"]
-    assert "configs/io/examples/phase1_baguang_apollo_followstop_static_compat.yaml" in command
+    assert (
+        "configs/io/examples/phase1_baguang_apollo_followstop_static_control_overlay_paced_compat.yaml"
+        in command
+    )
     assert "--legacy-dispatch" in command
     assert "artifacts/obstacle_gt_contract.jsonl" in launch.expected_artifacts
     assert "artifacts/scenario_phase_events.jsonl" in launch.expected_artifacts
     assert "artifacts/apollo_control_deferred_start.log" in launch.expected_artifacts
     assert "artifacts/apollo_control_deferred_survival.json" in launch.expected_artifacts
+    assert "artifacts/apollo_control_runtime_overlay_manifest.json" in launch.expected_artifacts
+    assert "artifacts/apollo_control_runtime_overlay_restore.json" in launch.expected_artifacts
     assert "analysis/apollo_control_handoff/apollo_control_handoff_report.json" in launch.expected_artifacts
     assert (
         "analysis/phase1_apollo_fixed_scene_readiness/phase1_apollo_fixed_scene_readiness_report.json"
@@ -150,8 +155,9 @@ def test_apollo_static_follow_stop_launch_plan_exposes_guarded_compat_command() 
     assert hint["fixed_scene_compatibility"] is True
     assert (
         hint["fixed_scene_compatibility_config"]
-        == "configs/io/examples/phase1_baguang_apollo_followstop_static_compat.yaml"
+        == "configs/io/examples/phase1_baguang_apollo_followstop_static_control_overlay_paced_compat.yaml"
     )
+    assert any("diagnostic control-runtime overlay" in warning for warning in launch.warnings)
     assert any("not generic fixed-scene runtime migration" in warning for warning in launch.warnings)
 
 
@@ -176,12 +182,15 @@ def test_apollo_static_follow_stop_spawn2m_launch_plan_uses_shifted_compat_confi
     assert launch.starts_runtime is True
     assert launch.commands
     command = launch.commands[0]
-    assert "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml" in command
+    assert (
+        "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
+        in command
+    )
     assert "configs/io/examples/phase1_baguang_apollo_followstop_static_compat.yaml" not in command
     assert hint["fixed_scene_compatibility"] is True
     assert (
         hint["fixed_scene_compatibility_config"]
-        == "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml"
+        == "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
     )
 
 
@@ -274,6 +283,21 @@ def test_apollo_static_follow_stop_compat_config_defers_control_until_planning_r
     assert docker_cfg["deferred_control_start_mode"] == "dag"
     assert docker_cfg["deferred_control_start_async"] is True
     assert docker_cfg["deferred_control_disable_bvar_dump"] is True
+
+
+def test_apollo_static_follow_stop_default_overlay_profile_declares_runtime_overlay() -> None:
+    payload = yaml.safe_load(
+        Path("configs/io/examples/phase1_baguang_apollo_followstop_static_control_overlay_paced_compat.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    docker_cfg = payload["algo"]["apollo"]["docker"]
+    assert len(docker_cfg["control_runtime_overlay_source_dirs"]) == 4
+    assert payload["run"]["wall_time_pacing"]["enabled"] is True
+    assert "apollo_control_runtime_overlay" in payload["assist_ledger"]["active_assists"]
+    assert "apollo_control_runtime_overlay" in payload["assist_ledger"]["non_blocking_assists"]
+    assert payload["assist_ledger"]["blocking_assists"] == ["legacy_followstop"]
 
 
 def test_apollo_static_follow_stop_spawn2m_compat_config_declares_shifted_scenario() -> None:

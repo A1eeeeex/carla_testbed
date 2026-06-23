@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+from types import SimpleNamespace
 
 from tbio.backends.cyberrt import CyberRTBackend
 
@@ -277,3 +278,47 @@ def test_control_runtime_overlays_default_do_not_touch_control_runtime_files() -
     assert "control_interval_ms" not in backend._control_dag_overlay_shell()
     assert "interval:" not in backend._control_dag_overlay_shell()
     assert "--control_period=" not in backend._control_flags_overlay_shell()
+
+
+def test_deferred_control_survival_keeps_5s_sample_when_control_exits_by_10s(tmp_path, monkeypatch) -> None:
+    backend = _planning_ready_backend()
+    status_rows = iter(
+        [
+            "1 mainboard -d modules/control/control_component/dag/control.dag -p control -s CYBER_DEFAULT\n",
+            "1 mainboard -d modules/control/control_component/dag/control.dag -p control -s CYBER_DEFAULT\n",
+            "",
+        ]
+    )
+    monkeypatch.setattr("tbio.backends.cyberrt.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        backend,
+        "_docker_exec",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=next(status_rows),
+            stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_read_stats",
+        lambda: (
+            True,
+            0.1,
+            {
+                "planning_nonempty_trajectory_count": 4,
+                "planning_messages_received": 5,
+                "routing_success_count": 1,
+            },
+        ),
+    )
+
+    survival = backend._docker_probe_deferred_control_survival(
+        tmp_path,
+        initial_control_running=True,
+    )
+
+    assert survival["control_survived_5s"] is True
+    assert survival["control_survived_10s"] is False
+    assert survival["control_present_at_end"] is False
+    assert [sample["control_present"] for sample in survival["samples"]] == [True, True, False]

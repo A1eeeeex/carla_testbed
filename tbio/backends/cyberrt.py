@@ -4145,9 +4145,9 @@ PY"""
                 first_nonzero_planning_seen_at = sample_ts
             if planning_nonempty_count > 0 and control_present_after_first_nonzero_planning is None:
                 control_present_after_first_nonzero_planning = control_present
-            if target_offset_sec >= 5.0:
+            if math.isclose(target_offset_sec, 5.0, rel_tol=0.0, abs_tol=1e-6):
                 control_survived_5s = control_present
-            if target_offset_sec >= 10.0:
+            if math.isclose(target_offset_sec, 10.0, rel_tol=0.0, abs_tol=1e-6):
                 control_survived_10s = control_present
             samples.append(
                 {

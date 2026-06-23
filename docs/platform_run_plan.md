@@ -223,11 +223,19 @@ exception for Baguang static follow-stop variants:
 `baguang/follow_stop_static_300m` and
 `baguang/follow_stop_static_300m_spawn2m` can expose guarded legacy transition
 commands through the `apollo_cyberrt` LaunchPlan. The canonical case uses
-`configs/io/examples/phase1_baguang_apollo_followstop_static_compat.yaml`; the
-2m shifted-start diagnostic mitigation uses
-`configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_compat.yaml`.
-Both are wrapped as compatibility commands by the Apollo backend facade. This
-is a static follow-stop compatibility path only; dynamic lead accel/decel,
+`configs/io/examples/phase1_baguang_apollo_followstop_static_control_overlay_paced_compat.yaml`;
+the 2m shifted-start diagnostic mitigation uses
+`configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml`.
+Both default transition profiles include the full diagnostic control-runtime
+overlay because current no-overlay Baguang runs expose the known
+`tcmalloc_invalid_free` Apollo control process crash before `/apollo/control`
+materializes. The no-overlay profiles remain in `configs/io/examples/` as
+reproduction controls for that runtime blocker. The overlay is runtime
+compatibility evidence only: it is recorded in the assist ledger as
+non-blocking diagnostic context, while `legacy_followstop` remains a blocking
+assist for any natural-driving claim.
+
+This is a static follow-stop compatibility path only; dynamic lead accel/decel,
 cut-in/cut-out, and other fixed-scene cases still need real online evidence
 with fixed-scene actor trace, obstacle GT linkage, v-t-gap, phase1_status, and
 comparison artifacts before they can count as evaluable ApolloBackend runs.

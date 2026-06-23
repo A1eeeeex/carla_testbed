@@ -2535,6 +2535,15 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
 
 def test_control_process_crash_is_explicit_handoff_blocker(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/cyber_bridge_stats.json",
+        {
+            "routing_success_count": 1,
+            "control_rx_count": 0,
+            "control_tx_count": 0,
+            "apply_control_count": 0,
+        },
+    )
     handoff_path = run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json"
     handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
     handoff["verdict"] = "fail"
@@ -2544,6 +2553,12 @@ def test_control_process_crash_is_explicit_handoff_blocker(tmp_path: Path) -> No
         "status": "fail",
         "crash_detected": True,
         "crash_reason": "tcmalloc_invalid_free",
+    }
+    handoff["control_channel"] = {"message_count": 0}
+    handoff["bridge_receive"] = {"control_rx_count": 0}
+    handoff["mapping_and_apply"] = {
+        "apply_control_count": 0,
+        "nonzero_mapped_frames": 0,
     }
     _write_json(handoff_path, handoff)
 
@@ -2558,8 +2573,49 @@ def test_control_process_crash_is_explicit_handoff_blocker(tmp_path: Path) -> No
     )
 
 
+def test_control_process_exit_after_output_is_explicit_handoff_blocker(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    handoff_path = run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json"
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    handoff["verdict"] = "fail"
+    handoff["failure_stage"] = "process_health"
+    handoff["blocking_reasons"] = ["process_health_failed"]
+    handoff["process_health"] = {
+        "status": "fail",
+        "crash_detected": False,
+        "crash_reason": "module_exited",
+    }
+    handoff["control_channel"] = {"message_count": 259}
+    handoff["bridge_receive"] = {"control_rx_count": 258}
+    handoff["mapping_and_apply"] = {
+        "apply_control_count": 258,
+        "nonzero_mapped_frames": 259,
+    }
+    _write_json(handoff_path, handoff)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    layer = report["layers"]["routing_planning_control_handoff"]
+
+    assert "control_process_exited_after_partial_control_output" in layer["blocking_reasons"]
+    assert (
+        report["primary_blocker"]
+        == "routing_planning_control_handoff:control_process_exited_after_partial_control_output"
+    )
+    assert layer["key_metrics"]["control_rx_count"] == 100
+    assert layer["key_metrics"]["apply_control_count"] == 100
+
+
 def test_control_process_failure_outranks_control_reference_gap(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts/cyber_bridge_stats.json",
+        {
+            "routing_success_count": 1,
+            "control_rx_count": 0,
+            "control_tx_count": 0,
+            "apply_control_count": 0,
+        },
+    )
     ref_path = run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json"
     ref = json.loads(ref_path.read_text(encoding="utf-8"))
     ref["status"] = "insufficient_data"
@@ -2588,6 +2644,10 @@ def test_control_process_failure_outranks_control_reference_gap(tmp_path: Path) 
     }
     handoff["bridge_receive"] = {"control_rx_count": 0}
     handoff["control_channel"] = {"message_count": 0}
+    handoff["mapping_and_apply"] = {
+        "apply_control_count": 0,
+        "nonzero_mapped_frames": 0,
+    }
     _write_json(handoff_path, handoff)
 
     report = analyze_apollo_link_health_run_dir(run_dir)

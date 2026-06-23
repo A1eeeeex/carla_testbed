@@ -1827,6 +1827,37 @@ def write_control_health_report(report: Mapping[str, Any], out_dir: str | Path) 
     }
 
 
+def _handoff_control_output_evidence(apollo_control_handoff: Mapping[str, Any]) -> dict[str, Any]:
+    control_message_count = _first_number(
+        _nested(apollo_control_handoff, "control_channel.message_count"),
+        _nested(apollo_control_handoff, "control_channel.nonzero_message_count"),
+    )
+    control_rx_count = _first_number(
+        _nested(apollo_control_handoff, "bridge_receive.control_rx_count"),
+        _nested(apollo_control_handoff, "bridge_receive.rx_count"),
+    )
+    apply_control_count = _first_number(
+        _nested(apollo_control_handoff, "mapping_and_apply.apply_control_count"),
+        _nested(apollo_control_handoff, "mapping_and_apply.applied_control_count"),
+    )
+    nonzero_mapped_frames = _first_number(
+        _nested(apollo_control_handoff, "mapping_and_apply.nonzero_mapped_frames"),
+        _nested(apollo_control_handoff, "mapping_and_apply.nonzero_mapped_control_frames"),
+    )
+    counts = {
+        "control_message_count": control_message_count,
+        "control_rx_count": control_rx_count,
+        "apply_control_count": apply_control_count,
+        "nonzero_mapped_frames": nonzero_mapped_frames,
+    }
+    return {
+        **counts,
+        "control_output_observed": any(
+            value is not None and value > 0 for value in counts.values()
+        ),
+    }
+
+
 def _control_process_health(apollo_control_handoff: Mapping[str, Any]) -> dict[str, Any]:
     if not apollo_control_handoff:
         return {"status": "insufficient_data", "available": False}
@@ -1839,11 +1870,37 @@ def _control_process_health(apollo_control_handoff: Mapping[str, Any]) -> dict[s
         or process_map.get("failure_reason")
         or ""
     ).strip()
+    crash_signature = str(process_map.get("crash_signature") or "").strip()
+    explicit_crash = _parse_bool(process_map.get("crash_detected")) is True
+    non_crash_exit_reasons = {"module_exited", "process_exited", "component_exited"}
+    crash_reason_lower = crash_reason.lower()
     crash_detected = (
-        _parse_bool(process_map.get("crash_detected")) is True
-        or bool(crash_reason)
+        explicit_crash
+        or bool(crash_signature)
         or "crash" in failure_stage
+        or bool(
+            crash_reason
+            and crash_reason_lower not in non_crash_exit_reasons
+            and "exited" not in crash_reason_lower
+        )
     )
+    output_evidence = _handoff_control_output_evidence(apollo_control_handoff)
+    if failure_stage == "process_health" and output_evidence["control_output_observed"]:
+        reason = (
+            "control_process_crashed_after_partial_control_output"
+            if crash_detected
+            else "control_process_exited_after_partial_control_output"
+        )
+        return {
+            "status": "fail",
+            "available": True,
+            "failure_reason": reason,
+            "failure_stage": failure_stage,
+            "crash_detected": crash_detected,
+            "crash_reason": crash_reason or None,
+            "crash_signature": crash_signature or None,
+            **output_evidence,
+        }
     if failure_stage == "process_health" and crash_detected:
         return {
             "status": "fail",
@@ -1852,6 +1909,8 @@ def _control_process_health(apollo_control_handoff: Mapping[str, Any]) -> dict[s
             "failure_stage": failure_stage,
             "crash_detected": True,
             "crash_reason": crash_reason or None,
+            "crash_signature": crash_signature or None,
+            **output_evidence,
         }
     if failure_stage == "process_health":
         return {
@@ -1861,6 +1920,8 @@ def _control_process_health(apollo_control_handoff: Mapping[str, Any]) -> dict[s
             "failure_stage": failure_stage,
             "crash_detected": crash_detected,
             "crash_reason": crash_reason or None,
+            "crash_signature": crash_signature or None,
+            **output_evidence,
         }
     return {
         "status": "pass",
@@ -1868,6 +1929,8 @@ def _control_process_health(apollo_control_handoff: Mapping[str, Any]) -> dict[s
         "failure_stage": failure_stage or None,
         "crash_detected": crash_detected,
         "crash_reason": crash_reason or None,
+        "crash_signature": crash_signature or None,
+        **output_evidence,
     }
 
 

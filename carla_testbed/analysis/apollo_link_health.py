@@ -2661,7 +2661,14 @@ def _control_handoff_layer(
             or ""
         ).strip()
         if _bool_or_none(process_health.get("crash_detected")) is True or crash_reason:
-            blocking.append("control_process_crash_before_control_output")
+            blocking.append(
+                _control_process_failure_blocker(
+                    report=report,
+                    control_rx_count=control_rx_count,
+                    control_apply_count=control_apply_count,
+                    process_health=process_health,
+                )
+            )
     if planning_nonzero is not None and planning_nonzero > 0 and control_rx_count is not None and control_rx_count < 1:
         blocking.append("control_rx_missing")
     if control_rx_count is not None and control_rx_count > 0 and control_apply_count is not None and control_apply_count < 1:
@@ -4207,6 +4214,44 @@ def _is_planning_gap_only_channel_failure(channel_layer: Mapping[str, Any]) -> b
     return bool(issues) and issues.issubset({"message_gap_too_large"})
 
 
+def _control_process_failure_blocker(
+    *,
+    report: Mapping[str, Any],
+    control_rx_count: float | None,
+    control_apply_count: float | None,
+    process_health: Mapping[str, Any],
+) -> str:
+    explicit_reason = _first_text(process_health, "failure_reason")
+    if explicit_reason in {
+        "control_process_crash_before_control_output",
+        "control_process_failed_before_control_output",
+        "control_process_crashed_after_partial_control_output",
+        "control_process_exited_after_partial_control_output",
+    }:
+        return explicit_reason
+    output_counts = (
+        control_rx_count,
+        control_apply_count,
+        _first_num(_nested(report, "control_channel.message_count")),
+        _first_num(_nested(report, "mapping_and_apply.nonzero_mapped_frames")),
+    )
+    output_observed = any(value is not None and value > 0 for value in output_counts)
+    if output_observed:
+        if _bool_or_none(process_health.get("crash_detected")) is True:
+            return "control_process_crashed_after_partial_control_output"
+        return "control_process_exited_after_partial_control_output"
+    if _bool_or_none(process_health.get("crash_detected")) is True:
+        return "control_process_crash_before_control_output"
+    crash_reason = str(
+        process_health.get("crash_reason")
+        or process_health.get("fatal_signal")
+        or ""
+    ).strip()
+    if crash_reason and crash_reason.lower() not in {"module_exited", "process_exited", "component_exited"}:
+        return "control_process_crash_before_control_output"
+    return "control_process_failed_before_control_output"
+
+
 def _control_process_primary_for_control_reference_gap(
     layers: Mapping[str, Mapping[str, Any]],
 ) -> str | None:
@@ -4236,6 +4281,8 @@ def _control_process_primary_for_control_reference_gap(
         "process_health_failed",
         "control_process_missing",
         "control_process_crash_before_control_output",
+        "control_process_crashed_after_partial_control_output",
+        "control_process_exited_after_partial_control_output",
         "control_process_crashed",
         "control_rx_missing",
     }
@@ -4432,6 +4479,8 @@ def _layer_blocker_name(name: str, layer: Mapping[str, Any]) -> str:
             "planning_ready_control_not_consuming",
             "control_process_missing",
             "control_process_crash_before_control_output",
+            "control_process_crashed_after_partial_control_output",
+            "control_process_exited_after_partial_control_output",
             "control_rx_missing",
             "control_apply_missing",
             "control_process_crashed",

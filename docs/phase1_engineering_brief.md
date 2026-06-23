@@ -109,6 +109,25 @@ Delivery-first update, 2026-06-23:
   evaluable Apollo failure (`phase1_status.failure_reason=control_process_failed`)
   and the comparison remains `partially_evaluable`; this is blocker reduction,
   not Apollo behavior success.
+- The next launcher-side reduction is now encoded in the Phase 1 ApolloBackend
+  facade: static Baguang follow-stop LaunchPlans default to the diagnostic full
+  control-runtime overlay profiles
+  (`phase1_baguang_apollo_followstop_static_control_overlay_paced_compat.yaml`
+  and the spawn2m low-capture paced equivalent). This follows the 6/18 online
+  bisection evidence that no-overlay runs expose `tcmalloc_invalid_free`, while
+  full-overlay runs can move past control process survival into behavior-level
+  failures. The no-overlay profiles remain available as reproduction controls;
+  the overlay is not a natural-driving or unassisted Apollo claim.
+- Follow-up online pair
+  `runs/phase1_online_pairs/follow_stop_static_20260623_2230_overlay_survival_fix`
+  confirms that boundary moved again: Apollo control starts after routing,
+  survives the 5s deferred probe, and produces `/apollo/control`,
+  bridge-receive, and CARLA apply evidence before the process exits by the 10s
+  probe. The refreshed control/link-health analyzers therefore classify the
+  blocker as `control_process_exited_after_partial_control_output`, not
+  `control_process_crash_before_control_output`. The run still fails Phase 1
+  (`lane_invasion`; comparison `partially_evaluable`) and remains diagnostic
+  only because `legacy_followstop` is a blocking assist.
 
 Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:
