@@ -1,0 +1,21 @@
+extends: phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat
+  profile_name: phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat
+
+algo:
+  apollo:
+    docker:
+      # Dynamic fixed-scene samples observed a one-frame non-empty Planning
+      # window. Starting Control after that window is too late, and even
+      # route-established gating can be late when routing success and non-empty
+      # Planning arrive together. Keep Control warm from module startup.
+      defer_control_until_planning_ready: false
+      control_start_gate: none
+
+assist_ledger:
+  notes:
+    - Phase 1 Apollo dynamic fixed-scene sidecar eager-control profile; diagnostic only.
+    - Control starts with the Apollo module set so it can subscribe before short dynamic-scene Planning windows.
+    - This remains a legacy follow-stop sidecar transition with control-runtime overlay and cannot support natural-driving or no-interference capability claims.

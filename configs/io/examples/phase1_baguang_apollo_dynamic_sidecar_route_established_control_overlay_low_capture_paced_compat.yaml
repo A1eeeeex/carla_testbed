@@ -1,0 +1,21 @@
+extends: phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_sidecar_route_established_control_overlay_low_capture_paced_compat
+  profile_name: phase1_baguang_apollo_dynamic_sidecar_route_established_control_overlay_low_capture_paced_compat
+
+algo:
+  apollo:
+    docker:
+      # Dynamic fixed-scene samples can emit only a short non-empty Planning
+      # window. Start Control once Routing is established so the module is warm
+      # before the first non-empty trajectory, instead of launching after it.
+      defer_control_until_planning_ready: false
+      control_start_gate: route_established
+      control_planning_ready_require_routing_success: true
+
+assist_ledger:
+  notes:
+    - Phase 1 Apollo dynamic fixed-scene sidecar profile; diagnostic only.
+    - Control starts after routing is established, not after the first non-empty Planning trajectory, to avoid missing short dynamic-scene Planning windows.
+    - This remains a legacy follow-stop sidecar transition with control-runtime overlay and cannot support natural-driving or no-interference capability claims.

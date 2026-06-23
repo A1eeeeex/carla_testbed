@@ -107,9 +107,13 @@ def analyze_apollo_control_handoff(
         summary=summary_payload,
         control_handoff_debug=control_handoff_debug,
         control_survival=control_survival,
+        cyber_bridge_stats=cyber_stats,
         events=event_rows,
         logs=logs,
         log_paths=paths["control_logs"],
+        control_raw_rows=control_raw_rows,
+        control_consume_rows=control_consume_rows,
+        decode_rows=decode_rows,
     )
     input_readiness = _input_readiness(
         summary=summary_payload,
@@ -529,11 +533,32 @@ def _process_health(
     summary: Mapping[str, Any],
     control_handoff_debug: Mapping[str, Any],
     control_survival: Mapping[str, Any],
+    cyber_bridge_stats: Mapping[str, Any],
     events: Sequence[Mapping[str, Any]],
     logs: Sequence[str],
     log_paths: Sequence[Path],
+    control_raw_rows: Sequence[Mapping[str, Any]],
+    control_consume_rows: Sequence[Mapping[str, Any]],
+    decode_rows: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    evidence_available = bool(summary or control_handoff_debug or control_survival or logs or log_paths)
+    control_rx_count = _first_number(
+        cyber_bridge_stats.get("control_rx_count"),
+        cyber_bridge_stats.get("control_tx_count"),
+    )
+    control_output_artifact_count = (
+        len(control_raw_rows)
+        + len(control_consume_rows)
+        + len(decode_rows)
+        + (int(control_rx_count) if control_rx_count is not None and control_rx_count > 0 else 0)
+    )
+    evidence_available = bool(
+        summary
+        or control_handoff_debug
+        or control_survival
+        or logs
+        or log_paths
+        or control_output_artifact_count > 0
+    )
     log_text = "\n".join(logs)
     crash_reason, crash_signature = _detect_crash(log_text)
     debug_crash = _first_text(control_handoff_debug, "control_crash_reason", summary, "control_crash_reason")
@@ -551,6 +576,10 @@ def _process_health(
     pid = _first_number(control_handoff_debug.get("pid"), control_handoff_debug.get("control_pid"), summary.get("control_pid"))
     if started is None and pid is not None:
         started = True
+    started_evidence_source = None
+    if started is None and control_output_artifact_count > 0:
+        started = True
+        started_evidence_source = "control_output_artifacts"
     alive_after_5s = _first_bool(
         control_handoff_debug.get("alive_after_5s"),
         control_handoff_debug.get("control_survived_5s"),
@@ -625,6 +654,7 @@ def _process_health(
     return {
         "expected": True,
         "started": started,
+        "started_evidence_source": started_evidence_source,
         "pid": int(pid) if pid is not None else None,
         "alive_after_5s": alive_after_5s,
         "alive_at_end": alive_at_end,
@@ -634,6 +664,8 @@ def _process_health(
         "crash_reason": crash_reason,
         "crash_signature": crash_signature,
         "core_dump_detected": core_dump_detected,
+        "control_output_artifact_count": control_output_artifact_count,
+        "control_rx_count": int(control_rx_count) if control_rx_count is not None else None,
         "survival_probe_available": bool(control_survival),
         "survival_probe_window_sec": _num(control_survival.get("probe_window_sec")),
         "survival_probe_completed_at_sec": survival_probe_completed_at_sec,

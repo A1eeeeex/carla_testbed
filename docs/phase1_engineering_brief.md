@@ -205,7 +205,32 @@ Delivery-first update, 2026-06-23:
   non-empty Planning evidence was stale and control still reported zero input
   trajectory points. The refreshed handoff report now classifies this as
   `planning_nonzero_stale_before_control_consume`, which is more precise than
-  the older generic "Planning non-empty but control input zero" diagnosis.
+  the older generic "Planning non-empty but control input zero" diagnosis. The
+  route-established diagnostic profile was then tested in
+  `runs/phase1_online_pairs/lead_decel_70_to_40_20m_route_established_20260624_005806`.
+  It correctly wrote `apollo_control_route_established_wait.log`, but still
+  failed with the same stale handoff: routing success and the only non-empty
+  Planning message arrived together, and Control's first consume followed about
+  `2.29s` later. The next minimal runtime hypothesis is therefore encoded in
+  `configs/io/examples/phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml`:
+  keep the diagnostic overlay/low-capture/pacing stack, but start Control with
+  the Apollo module set so it can subscribe before the short dynamic-scene
+  Planning window. Fresh online pair
+  `runs/phase1_online_pairs/lead_decel_70_to_40_20m_eager_control_20260624_010827`
+  validates that this moves the blocker again. Apollo Control is now warm
+  before the first non-empty Planning window, the refreshed handoff report is
+  `warn` with `failure_stage=none`, and the run contains `101` non-empty
+  Planning messages plus `725` non-zero Control input trajectory rows. The
+  Phase 1 classifier also now treats the leading v-t-gap speed window as the
+  initial-state evidence, so the one-shot setup artifact's first-tick speed lag
+  no longer makes the run `initial_conditions_not_materialized`. The refreshed
+  comparison is `comparison_status=comparable` and
+  `comparison_target_status=apollo_vs_planning_control_evaluable`: builtin
+  succeeds, while Apollo is an evaluable `lane_invasion` failure. This is a
+  stronger dynamic-case behavior blocker, not Apollo lead-deceleration success
+  and not a natural-driving claim. The next highest-value Apollo investigation
+  is lateral semantics / reference-line / lane-event context for the dynamic
+  Baguang case, not stale control handoff.
 
 Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:

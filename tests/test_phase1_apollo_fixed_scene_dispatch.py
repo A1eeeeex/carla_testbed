@@ -58,7 +58,8 @@ def test_dynamic_lead_dispatch_contract_exposes_sidecar_runtime_command_without_
     assert launch["commands"]
     command = launch["commands"][0]
     assert (
-        "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml"
         in command
     )
     assert "--legacy-dispatch" in command
@@ -70,6 +71,8 @@ def test_dynamic_lead_dispatch_contract_exposes_sidecar_runtime_command_without_
     assert "scenario.spawn_legacy_front=false" in command
     assert "runtime.fixed_scene_player.enabled=true" in command
     assert "runtime.fixed_scene_player.materialize_ego_initial_speed=true" in command
+    assert "artifacts/apollo_control_route_established_wait.log" not in launch["expected_artifacts"]
+    assert "artifacts/apollo_control_deferred_survival.json" not in launch["expected_artifacts"]
     assert (
         "runtime.fixed_scene_player.scenario_path=configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml"
         in command

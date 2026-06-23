@@ -19,7 +19,8 @@ class ApolloCyberRTBackend:
         ),
     }
     _BAGUANG_FIXED_SCENE_SIDECAR_BASE_CONFIG = (
-        "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml"
     )
 
     def contract(self, plan: RunPlan | None = None) -> StackContract:
@@ -175,8 +176,6 @@ class ApolloCyberRTBackend:
                 [
                     "artifacts/fixed_scene_runtime_hook.json",
                     "artifacts/ego_initial_state_materialization.json",
-                    "artifacts/apollo_control_deferred_start.log",
-                    "artifacts/apollo_control_deferred_survival.json",
                     "artifacts/apollo_control_runtime_overlay_manifest.json",
                     "artifacts/apollo_control_runtime_overlay_restore.json",
                     "analysis/apollo_control_handoff/apollo_control_handoff_report.json",
@@ -240,6 +239,7 @@ class ApolloCyberRTBackend:
                         "Apollo dynamic fixed-scene command uses a guarded sidecar hook in the legacy follow-stop runner; it is a migration path, not completed online evidence.",
                         "The sidecar must produce fixed_scene_runtime_state, scenario_actor_trace, scenario_phase_events, obstacle GT, v-t-gap, and phase1_status before the run is evaluable.",
                         "The sidecar uses the diagnostic control-runtime overlay and wall-time pacing path because the non-overlay Apollo control process crashes before producing /apollo/control on current Baguang compatibility runs.",
+                        "The default dynamic sidecar profile starts Apollo Control eagerly so it can subscribe before short dynamic-scene Planning windows; this is a diagnostic startup hypothesis, not a behavior claim.",
                     ]
                     if dynamic_sidecar_config is not None
                     else []

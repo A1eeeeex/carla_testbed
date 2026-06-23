@@ -531,6 +531,83 @@ def test_ego_initial_speed_not_materialized_blocks_target_interaction_loss_claim
     assert "ego_initial_speed_not_materialized" in summary_text
 
 
+def test_ego_initial_speed_leading_window_materialized_allows_behavior_loss_claim(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    (run / "summary.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "exit_reason": "LANE_INVASION",
+                "lane_invasion_count": 1,
+                "collision_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    artifacts = run / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "fixed_scene_resolved.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "fixed_scene_storyboard.v1",
+                "roles": {"ego": {"initial_speed_mps": 19.44}},
+                "params": {"ego_initial_speed_mps": 19.44},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "ego_initial_state_materialization.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "ego_initial_state_materialization.v1",
+                "status": "pass",
+                "expected_ego_initial_speed_mps": 19.44,
+                "observed_ego_speed_mps": 0.98,
+                "warnings": ["observed_speed_may_lag_until_next_carla_tick"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "warn",
+                "rows": [
+                    {"gap_m": 16.0, "ego_speed_mps": 19.48, "target_speed_mps": 19.52},
+                    {"gap_m": 16.1, "ego_speed_mps": 19.52, "target_speed_mps": 19.44},
+                    {"gap_m": 16.1, "ego_speed_mps": 19.57, "target_speed_mps": 19.44},
+                    {"gap_m": 16.2, "ego_speed_mps": 18.0, "target_speed_mps": 19.44},
+                    {"gap_m": 16.3, "ego_speed_mps": 15.5, "target_speed_mps": 19.44},
+                    {"gap_m": 16.5, "ego_speed_mps": 13.5, "target_speed_mps": 19.44},
+                    {"gap_m": 16.9, "ego_speed_mps": 11.9, "target_speed_mps": 19.44},
+                    {"gap_m": 17.3, "ego_speed_mps": 10.1, "target_speed_mps": 19.44},
+                    {"gap_m": 17.8, "ego_speed_mps": 9.2, "target_speed_mps": 19.44},
+                    {"gap_m": 18.3, "ego_speed_mps": 8.1, "target_speed_mps": 19.44},
+                ],
+                "target_actor_contract": {"status": "resolved"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "lane_invasion"
+    assert report["run_evaluable"] is True
+    assert report["scenario_interaction_evaluable"] is True
+    assert report["scenario_interaction_reason"] is None
+    assert report["target_metric_evaluable"] is True
+    assert report["counts_as_backend_loss_for_target_scenario"] is True
+    initial = report["phase1_metrics"]["initial_condition_materialization"]
+    assert initial["status"] == "pass"
+    assert initial["observed_ego_initial_speed_source"] == "v_t_gap_leading_window"
+    assert initial["selected_observed_ego_initial_speed_window_count"] == 3
+    assert initial["observed_ego_initial_speed_mps"] == 19.52
+
+
 def test_large_final_gap_is_degraded(tmp_path) -> None:
     run = _base_run(tmp_path)
     out = run / "analysis" / "v_t_gap"

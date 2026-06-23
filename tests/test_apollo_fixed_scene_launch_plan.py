@@ -217,7 +217,8 @@ def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -
     command = launch.commands[0]
     assert command[:3] == ["python3", "-m", "carla_testbed"]
     assert (
-        "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml"
         in command
     )
     assert "run.scenario_id=baguang_lead_decel_70_to_40_20m" in command
@@ -233,7 +234,8 @@ def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -
     )
     assert "artifacts/fixed_scene_runtime_hook.json" in launch.expected_artifacts
     assert "artifacts/ego_initial_state_materialization.json" in launch.expected_artifacts
-    assert "artifacts/apollo_control_deferred_survival.json" in launch.expected_artifacts
+    assert "artifacts/apollo_control_route_established_wait.log" not in launch.expected_artifacts
+    assert "artifacts/apollo_control_deferred_survival.json" not in launch.expected_artifacts
     assert "artifacts/apollo_control_runtime_overlay_manifest.json" in launch.expected_artifacts
     assert "analysis/apollo_control_handoff/apollo_control_handoff_report.json" in launch.expected_artifacts
     assert any("sidecar hook" in warning for warning in launch.warnings)
@@ -262,7 +264,8 @@ def test_apollo_baguang_cut_out_launch_plan_uses_sidecar_runtime_command() -> No
     assert launch.commands
     command = launch.commands[0]
     assert (
-        "configs/io/examples/phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml"
         in command
     )
     assert "run.scenario_id=baguang_cut_out_35kph_right_to_left_25m" in command
@@ -285,6 +288,35 @@ def test_apollo_static_follow_stop_compat_config_defers_control_until_planning_r
     assert docker_cfg["deferred_control_start_mode"] == "dag"
     assert docker_cfg["deferred_control_start_async"] is True
     assert docker_cfg["deferred_control_disable_bvar_dump"] is True
+
+
+def test_apollo_dynamic_sidecar_profile_starts_control_after_route_established() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_sidecar_route_established_control_overlay_low_capture_paced_compat.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    docker_cfg = payload["algo"]["apollo"]["docker"]
+    assert docker_cfg["defer_control_until_planning_ready"] is False
+    assert docker_cfg["control_start_gate"] == "route_established"
+    assert docker_cfg["control_planning_ready_require_routing_success"] is True
+    assert "dynamic_sidecar_route_established" in payload["run"]["profile_name"]
+
+
+def test_apollo_dynamic_sidecar_default_profile_starts_control_eagerly() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    docker_cfg = payload["algo"]["apollo"]["docker"]
+    assert docker_cfg["defer_control_until_planning_ready"] is False
+    assert docker_cfg["control_start_gate"] == "none"
+    assert "dynamic_sidecar_eager_control" in payload["run"]["profile_name"]
 
 
 def test_apollo_static_follow_stop_default_overlay_profile_declares_runtime_overlay() -> None:

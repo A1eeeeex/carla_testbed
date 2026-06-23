@@ -235,10 +235,26 @@ compatibility evidence only: it is recorded in the assist ledger as
 non-blocking diagnostic context, while `legacy_followstop` remains a blocking
 assist for any natural-driving claim.
 
-This is a static follow-stop compatibility path only; dynamic lead accel/decel,
-cut-in/cut-out, and other fixed-scene cases still need real online evidence
-with fixed-scene actor trace, obstacle GT linkage, v-t-gap, phase1_status, and
-comparison artifacts before they can count as evaluable ApolloBackend runs.
+Dynamic Baguang fixed-scene cases use a separate guarded sidecar transition
+profile:
+`configs/io/examples/phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml`.
+It still inherits the diagnostic overlay/low-capture/pacing stack, but starts
+Apollo Control with the Apollo module set instead of waiting for route or
+Planning readiness. This exists to test the observed dynamic-scene failure
+where the only non-empty Planning message was stale before Control consumed it;
+a route-established diagnostic profile exists as a reproduction control, but
+the latest route-established sample still started Control too late because
+routing success and the only non-empty Planning message arrived together. These
+runs still need fixed-scene actor trace, obstacle GT linkage, v-t-gap,
+phase1_status, and comparison artifacts before they can count as evaluable
+ApolloBackend runs, and they remain Phase 1 diagnostic evidence only. The first
+eager-control online sample,
+`runs/phase1_online_pairs/lead_decel_70_to_40_20m_eager_control_20260624_010827`,
+does produce those artifacts and refreshes to a comparable pair: builtin
+succeeds, while Apollo is an evaluable `lane_invasion` behavior failure after
+handoff moves to `warn/failure_stage=none`. Treat this as a runtime-boundary
+reduction and lateral-semantics blocker, not as Apollo dynamic-following
+success.
 
 Use `tools/analyze_phase1_apollo_fixed_scene_dispatch.py` to inspect this
 LaunchPlan boundary before online work. A dispatch report with

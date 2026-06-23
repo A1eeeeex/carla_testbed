@@ -628,10 +628,26 @@ def _initial_condition_materialization(root: Path, v_t_gap: Mapping[str, Any]) -
             "tolerance_mps": _initial_speed_tolerance(expected),
         }
 
-    # The first rows can include one sync-frame wobble, so use the median of
-    # the first observed window rather than a single sample.
-    observed = _median(observed_values)
     tolerance = _initial_speed_tolerance(expected)
+    selected_values = observed_values
+    observed_source = "v_t_gap_initial_window_median"
+
+    # Initial speed materialization is a setup property. Apollo or another
+    # backend may legitimately change speed immediately after ownership, so a
+    # later control response must not erase evidence that the requested initial
+    # state existed at the start of the target interaction window. Accept the
+    # leading short window when at least two of the first three valid samples
+    # are close to the requested initial speed; otherwise fall back to the
+    # broader median window used historically.
+    leading_values = observed_values[:3]
+    leading_close_values = [
+        value for value in leading_values if abs(float(value) - float(expected)) <= tolerance
+    ]
+    if len(leading_close_values) >= 2:
+        selected_values = leading_values
+        observed_source = "v_t_gap_leading_window"
+
+    observed = _median(selected_values)
     delta = abs(float(observed) - float(expected))
     status = "pass" if delta <= tolerance else "fail"
     reason = None if status == "pass" else "ego_initial_speed_not_materialized"
@@ -640,7 +656,9 @@ def _initial_condition_materialization(root: Path, v_t_gap: Mapping[str, Any]) -
         "reason": reason,
         "expected_ego_initial_speed_mps": expected,
         "observed_ego_initial_speed_mps": observed,
+        "observed_ego_initial_speed_source": observed_source,
         "observed_ego_initial_speed_window_count": len(observed_values),
+        "selected_observed_ego_initial_speed_window_count": len(selected_values),
         "delta_mps": delta,
         "tolerance_mps": tolerance,
         "claim_boundary": (

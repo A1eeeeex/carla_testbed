@@ -303,6 +303,33 @@ def test_deferred_survival_artifact_satisfies_process_health(tmp_path: Path) -> 
     assert report["process_health"]["survival_probe_available"] is True
 
 
+def test_eager_control_output_artifacts_satisfy_process_start_without_survival_probe(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_case(tmp_path)
+    summary = _json(run_dir / "summary.json")
+    summary.pop("control_process_started", None)
+    _write_json(run_dir / "summary.json", summary)
+    (run_dir / "artifacts" / "control.out.log").unlink()
+    (run_dir / "artifacts" / "cyber_bridge_stats.json").write_text(
+        json.dumps({"control_rx_count": 3, "control_tx_count": 3}) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "artifacts" / "apollo_control_raw.jsonl").write_text(
+        json.dumps({"ts_sec": 1.0, "apollo_control_raw": {"throttle": 0.1, "brake": 0.0}})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_control_handoff(run_dir=run_dir)
+
+    assert report["failure_stage"] == "none"
+    assert report["process_health"]["status"] == "pass"
+    assert report["process_health"]["started"] is True
+    assert report["process_health"]["started_evidence_source"] == "control_output_artifacts"
+    assert report["process_health"]["survival_probe_available"] is False
+
+
 def test_post_run_survival_probe_end_does_not_fail_process_health(tmp_path: Path) -> None:
     run_dir = _copy_case(tmp_path)
     (run_dir / "events.jsonl").write_text(
