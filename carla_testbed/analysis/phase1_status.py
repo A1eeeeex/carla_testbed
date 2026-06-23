@@ -599,6 +599,27 @@ def _primary_behavior_blocker(
 
     if reason == "lane_invasion":
         if lane_event.get("available"):
+            lane_event_hard_gate = lane_event.get("lane_invasion_event_can_be_used_as_hard_gate")
+            if lane_event_hard_gate is False:
+                return {
+                    "primary_behavior_blocker": "lane_event_contract_quarantines_lane_invasion",
+                    "behavior_blocker_layer": "lane_event_contract",
+                    "behavior_next_action": (
+                        "Repair or explain the Baguang lane-event contract before counting "
+                        "this lane invasion as a backend behavior loss. Current evidence says "
+                        "the LaneInvasionSensor trigger is inconsistent with centerline/static "
+                        "footprint evidence, so compare spawn pose, OpenDRIVE road marks, "
+                        "vehicle footprint, and lane-invasion sensor placement before changing "
+                        "Apollo, builtin controller, steer scale, smoothing, or actuation mapping."
+                    ),
+                    "behavior_blocker_evidence": {
+                        "lane_event_reason": lane_event.get("reason"),
+                        "departure_classification": lane_event.get("departure_classification"),
+                        "departure_interpretation": list(lane_event.get("departure_interpretation") or []),
+                        "lane_invasion_event_can_be_used_as_hard_gate": lane_event_hard_gate,
+                        "path": lane_event.get("path"),
+                    },
+                }
             interpretation = list(lane_event.get("departure_interpretation") or [])
             same_sign = "raw_steer_same_sign_as_cross_track_error" in interpretation
             route_simple_lat_sign_convention = (

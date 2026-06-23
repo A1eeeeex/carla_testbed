@@ -130,9 +130,14 @@ Delivery-first update, 2026-06-23:
   control crash. The refreshed control-health report is `warn`, not a handoff
   hard fail. The run still fails Phase 1 (`lane_invasion`; comparison
   `partially_evaluable`) and remains diagnostic only because `legacy_followstop`
-  is a blocking assist. The current highest blocker for this sample is the
-  shared near-start lane-event contract, not total bridge breakage or a proven
-  Apollo control-process crash.
+  is a blocking assist. The current highest blocker for this sample is now
+  explicitly reported as `lane_event_contract_quarantines_lane_invasion`: both
+  Apollo and builtin runs are evaluable, but the shared near-start
+  LaneInvasionSensor trigger is inconsistent with centerline/static-footprint
+  evidence, so it is not counted as a backend behavior loss. The next useful
+  fix is to repair or explain the Baguang lane-event/spawn/OpenDRIVE
+  road-marking contract, not total bridge breakage or a proven Apollo
+  control-process crash.
 
 Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:

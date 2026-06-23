@@ -1518,6 +1518,21 @@ def _representative_run_context(run_reports: list[Mapping[str, Any]]) -> dict[st
         if isinstance(selected.get("vehicle_response_context"), Mapping)
         else {}
     )
+    departure = (
+        selected.get("departure_diagnostics")
+        if isinstance(selected.get("departure_diagnostics"), Mapping)
+        else {}
+    )
+    first_lane_invasion = (
+        selected.get("first_lane_invasion")
+        if isinstance(selected.get("first_lane_invasion"), Mapping)
+        else {}
+    )
+    static_crossing = (
+        selected.get("static_crossing_check")
+        if isinstance(selected.get("static_crossing_check"), Mapping)
+        else {}
+    )
     return {
         "available": True,
         "run_dir": selected.get("run_dir"),
@@ -1526,6 +1541,28 @@ def _representative_run_context(run_reports: list[Mapping[str, Any]]) -> dict[st
         "lane_event_count": selected.get("lane_event_count"),
         "lane_invasion_event_can_be_used_as_hard_gate": selected.get(
             "lane_invasion_event_can_be_used_as_hard_gate"
+        ),
+        "departure_classification": departure.get("classification"),
+        "departure_interpretation": departure.get("interpretation"),
+        "first_lane_invasion_event_time_s": first_lane_invasion.get("event_time_s"),
+        "first_lane_invasion_row_frame": first_lane_invasion.get("row_frame"),
+        "first_lane_invasion_distance_from_start_x_m": first_lane_invasion.get(
+            "distance_from_start_x_m"
+        ),
+        "first_lane_invasion_cross_track_error_m": first_lane_invasion.get(
+            "cross_track_error"
+        ),
+        "first_lane_invasion_heading_error_rad": first_lane_invasion.get(
+            "heading_error"
+        ),
+        "static_crossing_trigger_clearance_to_marking_m": static_crossing.get(
+            "trigger_clearance_to_marking_m"
+        ),
+        "static_crossing_trigger_footprint_intersects_marking": static_crossing.get(
+            "trigger_footprint_intersects_marking"
+        ),
+        "static_crossing_trigger_geometrically_implausible": static_crossing.get(
+            "trigger_geometrically_implausible"
         ),
         "lane_event_attribution_classification": attribution.get("classification"),
         "lane_event_attribution_reasons": attribution.get("reasons"),
@@ -1581,6 +1618,12 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
         f"- schema_version: `{report.get('schema_version')}`",
         f"- status: `{report.get('status')}`",
         f"- quarantine_recommended: `{report.get('quarantine_recommended')}`",
+        f"- representative_reason: `{representative.get('reason')}`",
+        f"- representative_departure_classification: `{representative.get('departure_classification')}`",
+        f"- representative_first_lane_invasion_distance_from_start_x_m: `{representative.get('first_lane_invasion_distance_from_start_x_m')}`",
+        f"- representative_first_lane_invasion_cross_track_error_m: `{representative.get('first_lane_invasion_cross_track_error_m')}`",
+        f"- representative_static_crossing_trigger_clearance_to_marking_m: `{representative.get('static_crossing_trigger_clearance_to_marking_m')}`",
+        f"- representative_static_crossing_trigger_footprint_intersects_marking: `{representative.get('static_crossing_trigger_footprint_intersects_marking')}`",
         f"- representative_lane_event_attribution: `{representative.get('lane_event_attribution_classification')}`",
         f"- representative_route_lateral_sign_policy: `{representative.get('route_lateral_sign_policy')}`",
         f"- representative_route_lateral_sign_sensitive_gate_allowed: `{representative.get('route_lateral_sign_sensitive_gate_allowed')}`",

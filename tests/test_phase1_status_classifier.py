@@ -313,6 +313,12 @@ def test_lane_event_contract_can_block_backend_loss_attribution(tmp_path) -> Non
     assert report["safety_event_hard_gate_eligible"] is False
     assert report["safety_event_hard_gate_reason"] == "lane_invasion_trigger_before_static_footprint_crossing"
     assert report["counts_as_backend_loss_for_target_scenario"] is False
+    assert report["primary_behavior_blocker"] == "lane_event_contract_quarantines_lane_invasion"
+    assert report["behavior_blocker_layer"] == "lane_event_contract"
+    assert (
+        report["behavior_blocker_evidence"]["lane_invasion_event_can_be_used_as_hard_gate"]
+        is False
+    )
 
 
 def test_duration_policy_not_reached_after_target_interaction_is_evaluable_failure(tmp_path) -> None:

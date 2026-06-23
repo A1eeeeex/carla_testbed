@@ -323,6 +323,14 @@ def test_low_cte_lane_invasion_recommends_quarantine(tmp_path: Path) -> None:
     assert run_report["reason"] == "lane_invasion_trigger_inconsistent_with_centerline_evidence"
     assert run_report["static_crossing_check"]["trigger_geometrically_implausible"] is True
     assert run_report["static_crossing_check"]["estimated_center_offset_to_cross_mark_m"] == 0.825
+    representative = report["representative_run_context"]
+    assert representative["reason"] == "lane_invasion_trigger_inconsistent_with_centerline_evidence"
+    assert representative["departure_classification"] == "near_start_lane_event"
+    assert representative["lane_invasion_event_can_be_used_as_hard_gate"] is False
+    assert abs(representative["first_lane_invasion_distance_from_start_x_m"] - 0.9) < 1e-9
+    assert representative["first_lane_invasion_cross_track_error_m"] == 0.001
+    assert representative["static_crossing_trigger_geometrically_implausible"] is True
+    assert representative["static_crossing_trigger_footprint_intersects_marking"] is False
 
 
 def test_high_cte_lane_invasion_is_not_quarantined(tmp_path: Path) -> None:
@@ -778,6 +786,8 @@ def test_writer_and_cli_create_report_files(tmp_path: Path) -> None:
     summary = Path(outputs["summary"]).read_text(encoding="utf-8")
     assert "Claim Boundary" in summary
     assert "raw_to_mapped_steer_gain_mean" in summary
+    assert "representative_departure_classification: `near_start_lane_event`" in summary
+    assert "representative_static_crossing_trigger_footprint_intersects_marking: `False`" in summary
 
     result = subprocess.run(
         [
