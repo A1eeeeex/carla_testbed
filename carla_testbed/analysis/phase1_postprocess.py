@@ -110,13 +110,17 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     scenario_actor_contract_report: dict[str, Any] | None = None
     scenario_actor_contract_paths: dict[str, str] | None = None
     phase1_scenario_binding_report = _ensure_phase1_scenario_binding(root)
-    fixed_scene_contract_report, fixed_scene_contract_paths = _write_fixed_scene_contract(root)
-    scenario_actor_contract_report, scenario_actor_contract_paths = _write_scenario_actor_contract(root)
-    if _is_apollo_fixed_scene_target_run(root):
+    is_apollo_fixed_scene_target_run = _is_apollo_fixed_scene_target_run(root)
+    if is_apollo_fixed_scene_target_run:
         apollo_fixed_scene_dispatch_report, apollo_fixed_scene_dispatch_paths = _write_apollo_dispatch(root)
         apollo_fixed_scene_readiness_report, apollo_fixed_scene_readiness_paths = _write_apollo_readiness(root)
         apollo_fixed_scene_compat_report = derive_apollo_fixed_scene_artifacts(root)
         _write_obstacle_gt_contract(root)
+
+    fixed_scene_contract_report, fixed_scene_contract_paths = _write_fixed_scene_contract(root)
+    scenario_actor_contract_report, scenario_actor_contract_paths = _write_scenario_actor_contract(root)
+
+    if is_apollo_fixed_scene_target_run:
         apollo_control_handoff_report, apollo_control_handoff_paths = _write_apollo_control_handoff(root)
         apollo_hdmap_projection_report, apollo_hdmap_projection_paths = _write_apollo_hdmap_projection(root)
         apollo_route_contract_report, apollo_route_contract_paths = _write_apollo_route_contract(root)

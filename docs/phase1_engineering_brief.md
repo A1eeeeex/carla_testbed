@@ -143,6 +143,26 @@ Delivery-first update, 2026-06-23:
   baguang/follow_stop_static_300m_spawn2m --out <out> --timeout-s <sec>`.
   Dry-run coverage now verifies that this path compiles both backend plans and
   selects the Apollo spawn2m paced overlay profile.
+- Spawn-mitigated online pair
+  `runs/phase1_online_pairs/follow_stop_static_spawn2m_20260623_232345`
+  confirms the next boundary. The unified pair runner executed both backends
+  successfully. PlanningControlBackend finished with `phase1_status=success`,
+  `lane_invasion_count=0`, and `v_t_gap.status=pass`. ApolloBackend produced
+  routing, non-empty Planning, `/apollo/control`, bridge receive/apply, obstacle
+  GT, derived scenario actor trace, and `v_t_gap.status=warn`, but failed with
+  one lane invasion after about `14.3m` from the shifted start and
+  `cross_track_error≈0.667m`.
+  A postprocess-order fix now derives Apollo fixed-scene compatibility artifacts
+  from `obstacle_gt_contract.jsonl` before writing `fixed_scene_contract` and
+  `scenario_actor_contract`, so the same run refreshes to
+  `fixed_scene_contract.status=pass`, `scenario_actor_contract.status=pass`,
+  `phase1_status.scenario_interaction_evaluable=true`, and
+  `counts_as_backend_loss_for_target_scenario=true`.
+  The refreshed comparison is therefore `comparison_status=comparable` and
+  `comparison_target_status=apollo_vs_planning_control_evaluable`: builtin
+  succeeded, Apollo is an evaluable lane-invasion behavior failure. This is
+  stronger Phase 1 comparison evidence, not Apollo follow-stop success and not
+  no-interference natural-driving evidence.
 
 Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:

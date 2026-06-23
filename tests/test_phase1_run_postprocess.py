@@ -377,6 +377,7 @@ def test_phase1_postprocess_derives_apollo_fixed_scene_trace_from_obstacle_rows(
     status = json.loads((run / "analysis" / "phase1_status" / "phase1_status.json").read_text(encoding="utf-8"))
 
     assert report["apollo_fixed_scene_compat_status"] == "pass"
+    assert report["scenario_actor_contract_status"] == "pass"
     assert report["v_t_gap_status"] == "pass"
     assert compat["actor_roles"] == {"lead_vehicle": "101"}
     assert runtime_state["actor_roles"] == {"lead_vehicle": "101"}
@@ -384,6 +385,16 @@ def test_phase1_postprocess_derives_apollo_fixed_scene_trace_from_obstacle_rows(
     assert trace_rows[0]["source"] == "derived_from_apollo_obstacle_gt_contract"
     assert phase_events[0]["source"] == "derived_from_apollo_obstacle_gt_contract"
     assert vt_gap["rows"][0]["target_actor_id"] == "101"
+    actor_contract = json.loads(
+        (
+            run
+            / "analysis"
+            / "scenario_actor_contract"
+            / "scenario_actor_contract_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert actor_contract["artifact_paths"]["trace"].endswith("artifacts/scenario_actor_trace.jsonl")
+    assert actor_contract["status"] == "pass"
     assert status["status"] == "success"
     assert status["evaluable"] is True
 
