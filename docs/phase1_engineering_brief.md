@@ -228,9 +228,14 @@ Delivery-first update, 2026-06-23:
   `comparison_target_status=apollo_vs_planning_control_evaluable`: builtin
   succeeds, while Apollo is an evaluable `lane_invasion` failure. This is a
   stronger dynamic-case behavior blocker, not Apollo lead-deceleration success
-  and not a natural-driving claim. The next highest-value Apollo investigation
-  is lateral semantics / reference-line / lane-event context for the dynamic
-  Baguang case, not stale control handoff.
+  and not a natural-driving claim. The raw Apollo link-health primary blocker
+  may still surface no-assist/natural-driving claim-boundary layers; Phase 1
+  status therefore also exposes `phase1_relevant_apollo_link_blocker`, which
+  filters those claim-only blockers and points this sample back to
+  `apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate`.
+  The next highest-value Apollo investigation is lateral semantics /
+  reference-line / lane-event context for the dynamic Baguang case, not stale
+  control handoff.
 
 Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:

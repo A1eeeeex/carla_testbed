@@ -1571,6 +1571,9 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert evidence["apollo_link_health_primary_blocker"] == (
         "apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate"
     )
+    assert evidence["phase1_relevant_apollo_link_blocker"] == (
+        "apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate"
+    )
     assert evidence["route_simple_lat_sign_convention_candidate"] is True
     assert evidence["route_lateral_provenance_evidence_level"] == "hdmap_projection_consistency"
     assert evidence["route_lateral_provenance_interpretation"] == (
@@ -1753,6 +1756,9 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     )
     assert refreshed_evidence["route_lateral_field_sign_sensitive_gate_allowed"] is False
     assert refreshed_evidence["route_lateral_field_absolute_magnitude_gate_allowed"] is True
+    assert refreshed_evidence["phase1_relevant_apollo_link_blocker"] == (
+        "apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate"
+    )
     policy = refreshed["route_lateral_field_policy"]
     assert policy["status"] == "available"
     assert policy["policy"] == "exclude_from_sign_sensitive_behavior_gates"
@@ -1866,6 +1872,123 @@ def test_phase1_status_uses_lateral_sign_convention_caveat_for_lane_departure(
     assert "control_target_between_planning_path_candidate_lateral_bounds" in summary_text
     assert "planning_debug_path_candidate_lateral_offset_from_hdmap_lane_center" in summary_text
     assert "path_candidate_surrogate_only_until_reference_line_debug_exported" in summary_text
+
+
+def test_phase1_status_filters_claim_only_apollo_link_primary_for_phase1_behavior(
+    tmp_path,
+) -> None:
+    run = _base_run(tmp_path)
+    _write_manifest(
+        run,
+        {
+            "run_id": "apollo_claim_boundary_primary",
+            "scenario_case": "baguang_cut_in_35kph_left_to_right_10m",
+            "scenario_id": "baguang_cut_in_35kph_left_to_right_10m",
+            "backend": "apollo_cyberrt",
+            "backend_type": "apollo_reference_backend",
+        },
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "exit_reason": "LANE_INVASION"}),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text(
+        "\n".join(
+            [
+                "frame,sim_time,ego_speed_mps,lane_invasion_count,cross_track_error,applied_steer,control_source",
+                "0,10.0,1.0,0,-0.10,-0.01,external_stack",
+                "1,10.05,3.5,1,0.85,0.04,external_stack",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "pass",
+                "target_actor_contract": {"status": "pass"},
+                "rows": [{"gap_m": 10.0, "ego_speed_mps": 3.5, "target_speed_mps": 3.0}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    link_health = run / "analysis" / "apollo_link_health"
+    link_health.mkdir(parents=True)
+    (link_health / "apollo_link_health_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_link_health.v1",
+                "primary_blocker": "no_assist_claim_boundary:blocking_assists_active",
+                "secondary_blockers": ["natural_driving_outcome:insufficient_data"],
+                "can_claim_unassisted_natural_driving": False,
+                "layers": {
+                    "apollo_lateral_semantics": {
+                        "key_metrics": {
+                            "route_simple_lat_sign_convention_candidate": True,
+                            "route_lateral_field_semantics_status": "available",
+                            "route_lateral_field_semantics_classification": (
+                                "route_lateral_field_opposite_signed_to_apollo_projection"
+                            ),
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    lane_event = run / "analysis" / "baguang_lane_event_contract"
+    lane_event.mkdir(parents=True)
+    (lane_event / "baguang_lane_event_contract_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "baguang_lane_event_contract.v1",
+                "status": "fail",
+                "run_reports": [
+                    {
+                        "reason": "possible_real_lane_departure_or_unclassified_lane_event",
+                        "lane_invasion_event_can_be_used_as_hard_gate": True,
+                        "departure_diagnostics": {
+                            "classification": "downstream_progressive_lane_departure",
+                            "interpretation": ["raw_steer_same_sign_as_cross_track_error"],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "lane_invasion"
+    assert (
+        report["primary_behavior_blocker"]
+        == "lane_departure_with_route_simple_lat_sign_convention_candidate"
+    )
+    evidence = report["behavior_blocker_evidence"]
+    assert evidence["apollo_link_health_primary_blocker"] == (
+        "no_assist_claim_boundary:blocking_assists_active"
+    )
+    assert evidence["phase1_relevant_apollo_link_blocker"] == (
+        "apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate"
+    )
+    link_summary = report["phase1_metrics"]["derived_blocker_evidence"]["apollo_link_health"]
+    assert link_summary["primary_blocker"] == "no_assist_claim_boundary:blocking_assists_active"
+    assert link_summary["phase1_relevant_primary_blocker"] == (
+        "apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate"
+    )
+
+    paths = write_phase1_status(report, run / "analysis" / "phase1_status")
+    summary_text = Path(paths["summary"]).read_text(encoding="utf-8")
+    assert "apollo_link_primary_blocker: `no_assist_claim_boundary:blocking_assists_active`" in summary_text
+    assert (
+        "phase1_relevant_apollo_link_blocker: "
+        "`apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate`"
+    ) in summary_text
 
 
 def test_legacy_apollo_route_id_normalizes_to_phase1_scenario_case(tmp_path) -> None:

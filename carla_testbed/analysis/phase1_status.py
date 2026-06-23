@@ -305,6 +305,7 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                 "",
                 f"- control_health_failure_reason: `{control_health.get('failure_reason')}`",
                 f"- apollo_link_primary_blocker: `{link_health.get('primary_blocker')}`",
+                f"- phase1_relevant_apollo_link_blocker: `{link_health.get('phase1_relevant_primary_blocker')}`",
                 f"- lane_event_departure_classification: `{lane_event.get('departure_classification')}`",
             ]
         )
@@ -848,6 +849,9 @@ def _primary_behavior_blocker(
                         "lane_invasion_event_can_be_used_as_hard_gate"
                     ),
                     "apollo_link_health_primary_blocker": link_health.get("primary_blocker"),
+                    "phase1_relevant_apollo_link_blocker": link_health.get(
+                        "phase1_relevant_primary_blocker"
+                    ),
                     "route_simple_lat_sign_convention_candidate": link_health.get(
                         "route_simple_lat_sign_convention_candidate"
                     ),
@@ -1386,10 +1390,17 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
         if isinstance(reference_metrics.get("planning_debug_path_candidate_hdmap_projection_alignment"), Mapping)
         else {}
     )
+    phase1_relevant_primary_blocker = _phase1_relevant_apollo_link_blocker(
+        report=report,
+        lateral_metrics=lateral_metrics,
+        reference_metrics=reference_metrics,
+        export_policy=export_policy,
+    )
     return {
         "available": bool(report),
         "path": str(path) if path.exists() else None,
         "primary_blocker": report.get("primary_blocker"),
+        "phase1_relevant_primary_blocker": phase1_relevant_primary_blocker,
         "secondary_blockers": list(report.get("secondary_blockers") or []),
         "can_claim_unassisted_natural_driving": report.get("can_claim_unassisted_natural_driving"),
         "reference_line_debug_export_policy_status": export_policy.get("status"),
@@ -1653,6 +1664,51 @@ def _apollo_link_health_blocker_summary(report: Mapping[str, Any], path: Path) -
             "route_simple_lat_alignment_interpretation"
         ),
     }
+
+
+_PHASE1_CLAIM_ONLY_APOLLO_LINK_PREFIXES = (
+    "no_assist_claim_boundary:",
+    "natural_driving_outcome:",
+)
+
+
+def _phase1_relevant_apollo_link_blocker(
+    *,
+    report: Mapping[str, Any],
+    lateral_metrics: Mapping[str, Any],
+    reference_metrics: Mapping[str, Any],
+    export_policy: Mapping[str, Any],
+) -> str | None:
+    """Return the Apollo link blocker that is actionable for Phase 1 behavior."""
+
+    candidates = [report.get("primary_blocker")]
+    candidates.extend(list(report.get("secondary_blockers") or []))
+    for blocker in candidates:
+        if not isinstance(blocker, str) or not blocker:
+            continue
+        if blocker.startswith(_PHASE1_CLAIM_ONLY_APOLLO_LINK_PREFIXES):
+            continue
+        return blocker
+
+    if lateral_metrics.get("route_simple_lat_sign_convention_candidate") is True:
+        return "apollo_lateral_semantics:route_simple_lat_sign_convention_mismatch_candidate"
+
+    lateral_classification = lateral_metrics.get("route_lateral_field_semantics_classification")
+    if isinstance(lateral_classification, str) and lateral_classification:
+        return f"apollo_lateral_semantics:{lateral_classification}"
+
+    export_classification = export_policy.get("classification")
+    if isinstance(export_classification, str) and export_classification:
+        return f"planning_reference_line:{export_classification}"
+
+    reference_classification = (
+        reference_metrics.get("planning_debug_presence_classification")
+        or reference_metrics.get("planning_debug_presence_last_diagnosis")
+    )
+    if isinstance(reference_classification, str) and reference_classification:
+        return f"planning_reference_line:{reference_classification}"
+
+    return None
 
 
 def _baguang_lane_event_blocker_summary(report: Mapping[str, Any], path: Path) -> dict[str, Any]:
