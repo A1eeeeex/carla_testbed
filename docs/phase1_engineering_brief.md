@@ -186,6 +186,25 @@ Executor update, 2026-06-25:
   `comparison_target_status=apollo_vs_planning_control_evaluable`. This is
   Phase 1 scenario-comparison evidence only; it is not Apollo behavior success
   and not no-interference natural-driving evidence.
+- The first full five-P0 online matrix through the same entry is
+  `runs/phase1_p0_matrix/phase1_p0_online_20260625_124044`. It materialized
+  all five pairs with one matrix command and a shared `--start-carla` lifecycle:
+  three rows are `completed` and comparable (`follow_stop_static`,
+  `lead_decel_accel`, `cut_in_simple`), while two rows are
+  `partial_or_failed` (`lane_keep_straight`, `lane_keep_curve`). The three
+  Baguang pairs show PlanningControlBackend `success` with `v_t_gap=pass` and
+  ApolloBackend evaluable `failed/lane_invasion` with `v_t_gap=warn`. The
+  Town01 straight row is partially evaluable: PlanningControlBackend is
+  evaluable but fails `lane_invasion`, while Apollo times out and is invalid
+  due to missing timeseries. The curve row is `all_runs_invalid`; both
+  backends lack timeseries for that row. This is the first matrix-level online
+  delivery evidence, but Phase 1 Core remains incomplete until all five P0 rows
+  are evaluable comparisons.
+- `phase1_p0_matrix_manifest.json` now records pair-level
+  `comparison_status`, `comparison_target_status`, backend Phase 1 statuses,
+  backend failure reasons, and comparable/partial/invalid counts in its
+  summary. This makes matrix review possible from the top-level artifact
+  instead of requiring operators to open every pair directory.
 - This is runtime lifecycle hardening only. It does not prove Apollo behavior,
   does not remove `legacy_followstop`, and does not complete the P0 online
   matrix.

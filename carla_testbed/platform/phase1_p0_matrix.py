@@ -256,6 +256,7 @@ def _row_from_pair(item: Phase1P0Scenario, pair: Phase1PairRunResult) -> dict[st
         row_status = "completed"
     else:
         row_status = "partial_or_failed"
+    comparison = _read_comparison_summary(pair.comparison_outputs.get("summary"))
     return {
         "canonical_case": item.canonical_case,
         "scenario": item.scenario,
@@ -268,6 +269,13 @@ def _row_from_pair(item: Phase1P0Scenario, pair: Phase1PairRunResult) -> dict[st
         "execution_statuses": statuses,
         "exit_codes": exit_codes,
         "comparison_outputs": dict(pair.comparison_outputs),
+        "comparison_status": comparison.get("comparison_status"),
+        "comparison_reason": comparison.get("reason"),
+        "comparison_target_status": comparison.get("comparison_target_status"),
+        "backend_phase1_statuses": comparison.get("backend_phase1_statuses") or {},
+        "backend_failure_reasons": comparison.get("backend_failure_reasons") or {},
+        "evaluable_run_count": comparison.get("evaluable_run_count"),
+        "invalid_run_count": comparison.get("invalid_run_count"),
         "status": row_status,
         "error": None,
     }
@@ -292,6 +300,13 @@ def _error_row(
         "execution_statuses": [],
         "exit_codes": [],
         "comparison_outputs": {},
+        "comparison_status": None,
+        "comparison_reason": None,
+        "comparison_target_status": None,
+        "backend_phase1_statuses": {},
+        "backend_failure_reasons": {},
+        "evaluable_run_count": 0,
+        "invalid_run_count": 0,
         "status": "error",
         "error": f"{error.__class__.__name__}: {error}",
     }
@@ -339,6 +354,13 @@ def _write_outputs(
                 "pair_manifest_path",
                 "execution_statuses",
                 "exit_codes",
+                "comparison_status",
+                "comparison_reason",
+                "comparison_target_status",
+                "backend_phase1_statuses",
+                "backend_failure_reasons",
+                "evaluable_run_count",
+                "invalid_run_count",
                 "error",
             ],
         )
@@ -354,6 +376,13 @@ def _write_outputs(
                     "pair_manifest_path": row.get("pair_manifest_path"),
                     "execution_statuses": json.dumps(row.get("execution_statuses") or []),
                     "exit_codes": json.dumps(row.get("exit_codes") or []),
+                    "comparison_status": row.get("comparison_status"),
+                    "comparison_reason": row.get("comparison_reason"),
+                    "comparison_target_status": row.get("comparison_target_status"),
+                    "backend_phase1_statuses": json.dumps(row.get("backend_phase1_statuses") or {}),
+                    "backend_failure_reasons": json.dumps(row.get("backend_failure_reasons") or {}),
+                    "evaluable_run_count": row.get("evaluable_run_count"),
+                    "invalid_run_count": row.get("invalid_run_count"),
                     "error": row.get("error"),
                 }
             )
@@ -362,13 +391,31 @@ def _write_outputs(
 
 def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     statuses: dict[str, int] = {}
+    comparison_statuses: dict[str, int] = {}
+    comparison_target_statuses: dict[str, int] = {}
     for row in rows:
         status = str(row.get("status") or "unknown")
         statuses[status] = statuses.get(status, 0) + 1
+        comparison_status = str(row.get("comparison_status") or "missing")
+        comparison_statuses[comparison_status] = comparison_statuses.get(comparison_status, 0) + 1
+        comparison_target_status = str(row.get("comparison_target_status") or "missing")
+        comparison_target_statuses[comparison_target_status] = (
+            comparison_target_statuses.get(comparison_target_status, 0) + 1
+        )
     return {
         "status_counts": statuses,
+        "comparison_status_counts": comparison_statuses,
+        "comparison_target_status_counts": comparison_target_statuses,
         "all_pairs_materialized": bool(rows) and all(row.get("pair_manifest_path") for row in rows),
         "all_dry_run": bool(rows) and all(row.get("status") == "dry_run" for row in rows),
+        "all_pairs_comparable": bool(rows) and all(row.get("comparison_status") == "comparable" for row in rows),
+        "comparable_pair_count": sum(1 for row in rows if row.get("comparison_status") == "comparable"),
+        "partially_evaluable_pair_count": sum(
+            1 for row in rows if row.get("comparison_status") == "partially_evaluable"
+        ),
+        "invalid_pair_count": sum(1 for row in rows if row.get("comparison_status") == "invalid"),
+        "all_pairs_apollo_vs_planning_control_evaluable": bool(rows)
+        and all(row.get("comparison_target_status") == "apollo_vs_planning_control_evaluable" for row in rows),
         "any_error": any(row.get("status") == "error" for row in rows),
     }
 
@@ -376,6 +423,39 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 def _slug(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() else "_" for ch in value.strip().lower())
     return "_".join(part for part in cleaned.split("_") if part) or "phase1"
+
+
+def _read_comparison_summary(path: str | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    summary_path = Path(path)
+    if not summary_path.exists():
+        return {}
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    backend_statuses: dict[str, str | None] = {}
+    backend_reasons: dict[str, str | None] = {}
+    for run in payload.get("participating_runs") or []:
+        if not isinstance(run, dict):
+            continue
+        backend = str(run.get("backend") or run.get("backend_name") or "")
+        if not backend:
+            continue
+        backend_statuses[backend] = run.get("phase1_status")
+        backend_reasons[backend] = run.get("failure_reason")
+    return {
+        "comparison_status": payload.get("comparison_status"),
+        "reason": payload.get("reason"),
+        "comparison_target_status": payload.get("comparison_target_status"),
+        "backend_phase1_statuses": backend_statuses,
+        "backend_failure_reasons": backend_reasons,
+        "evaluable_run_count": len(payload.get("evaluable_runs") or []),
+        "invalid_run_count": len(payload.get("invalid_runs") or []),
+    }
 
 
 def _infer_matrix_carla_town(scenarios: Sequence[Phase1P0Scenario]) -> str:

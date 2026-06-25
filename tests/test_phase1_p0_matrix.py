@@ -33,7 +33,13 @@ def test_phase1_p0_matrix_dry_run_materializes_five_pairs(tmp_path: Path) -> Non
     assert manifest["dry_run"] is True
     assert manifest["summary"]["all_pairs_materialized"] is True
     assert manifest["summary"]["all_dry_run"] is True
+    assert "comparison_status_counts" in manifest["summary"]
+    assert "comparison_target_status_counts" in manifest["summary"]
     assert "orchestration evidence only" in manifest["claim_boundary"]
+    for row in manifest["rows"]:
+        assert "comparison_status" in row
+        assert "comparison_target_status" in row
+        assert "backend_phase1_statuses" in row
 
 
 def test_phase1_p0_matrix_pair_outputs_keep_backend_contract_boundary(tmp_path: Path) -> None:
@@ -87,6 +93,10 @@ def test_cli_phase1_run_p0_matrix_dry_run(tmp_path: Path) -> None:
     manifest = json.loads((out / "phase1_p0_matrix_manifest.json").read_text(encoding="utf-8"))
     assert manifest["scenario_count"] == 5
     assert manifest["summary"]["all_pairs_materialized"] is True
+    assert "comparison_status" in manifest["rows"][0]
+    csv_text = (out / "phase1_p0_matrix.csv").read_text(encoding="utf-8")
+    assert "comparison_status" in csv_text
+    assert "backend_phase1_statuses" in csv_text
 
 
 def test_phase1_p0_matrix_start_carla_dry_run_records_matrix_session(tmp_path: Path) -> None:
