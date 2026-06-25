@@ -32,6 +32,19 @@ def test_phase1_pair_runner_dry_run_writes_plans_runs_and_comparison(tmp_path: P
         launch = json.loads((run_dir / "launch_plan.json").read_text(encoding="utf-8"))
         flattened = " ".join(" ".join(command) for command in launch["commands"])
         assert str(run_dir) in flattened
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["legacy_dispatch"] is False
+        assert manifest["backend_contract"]["backend"] in {"carla_builtin", "apollo_cyberrt"}
+        assert manifest["claim_boundary"]["schema_version"] == "phase1_claim_boundary.v1"
+        assert manifest["target_actor_contract"]["target_actor_role"] == "lead_vehicle"
+        if manifest["backend"] == "carla_builtin":
+            assert manifest["backend_type"] == "planning_control_backend"
+            assert manifest["input_contract"] == "scene_truth_direct"
+            assert manifest["output_control_mode"] == "carla_vehicle_control"
+        if manifest["backend"] == "apollo_cyberrt":
+            assert manifest["backend_type"] == "apollo_reference_backend"
+            assert manifest["input_contract"] == "apollo_truth_input_gt_replacement"
+            assert manifest["output_control_mode"] == "apollo_control_to_carla_vehicle_control"
 
 
 def test_phase1_pair_runner_dry_run_supports_baguang_spawn2m_mitigation(

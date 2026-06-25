@@ -1,6 +1,6 @@
 # CARLA Testbed
 
-CARLA-based simulation testbed for autonomous driving experiments, currently prioritizing CARLA + Apollo ground-truth MVP closed loop.
+CARLA-based simulation testbed for autonomous-driving experiments, currently prioritizing Phase 1 multi-backend fixed-scenario delivery: same-scenario pairs for `ApolloBackend` and the `PlanningControlBackend` category with reproducible artifacts and explicit failure reasons.
 
 This repository is not just a follow-stop demo. The intended project boundary is:
 
@@ -8,7 +8,7 @@ This repository is not just a follow-stop demo. The intended project boundary is
 - Baseline/demo: the historical follow-stop baseline used for smoke tests, demos, and compatibility checks.
 - External backend contract: ROS2 / `tbio` as a transition backend layer, plus an Apollo/CyberRT MVP adapter that is planned or experimental depending on the branch/config.
 
-Current priority is CARLA + Apollo ground-truth closed-loop work. Autoware remains legacy experimental support and is not the equal-priority target for new platform work.
+Current priority is Phase 1 runtime delivery, not a broad Apollo natural-driving claim: harden the RunPlan executor, remove blocking assists from Apollo fixed-scene evidence, and complete the five P0 pair matrix. Apollo remains the reference external AD-stack backend. Autoware remains legacy experimental support and is not the equal-priority target for new platform work.
 
 ## Current Status
 
@@ -16,8 +16,9 @@ Current priority is CARLA + Apollo ground-truth closed-loop work. Autoware remai
 | --- | --- | --- |
 | CARLA harness | experimental / supported | Main platform surface: config, run loop, CARLA lifecycle, recording, summaries. |
 | Follow-stop baseline | legacy baseline | Useful for smoke/demo/regression, but not the future platform architecture. |
+| Phase 1 pair runner | partial / delivery surface | Compiles and runs `ApolloBackend` vs `PlanningControlBackend` pairs; online P0 matrix is not complete. |
 | ROS2 native backend | transitional | Still used by existing GT/control paths; keep compatible while Apollo MVP matures. |
-| Apollo/CyberRT bridge | MVP planned / experimental | Current priority for CARLA + Apollo GT closed loop; do not overstate as fully complete. |
+| Apollo/CyberRT bridge | reference backend / partial runtime | Current reference external AD-stack path; no-assist P0 fixed-scene evidence is still required. |
 | Autoware | legacy experimental | Existing adapter/configs remain, but new work should not assume equal priority. |
 
 ## Recommended Entry Points

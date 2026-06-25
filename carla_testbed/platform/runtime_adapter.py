@@ -65,11 +65,29 @@ class PostprocessResult:
 
 
 @dataclass(frozen=True)
+class CleanupResult:
+    status: str
+    terminated_process: bool = False
+    closed_streams: int = 0
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "terminated_process": self.terminated_process,
+            "closed_streams": self.closed_streams,
+            "warnings": list(self.warnings),
+        }
+
+
+@dataclass(frozen=True)
 class RuntimeAdapterResult:
     status: str
     exit_code: int
     command: RuntimeCommandResult
     postprocess: PostprocessResult
+    cleanup: CleanupResult
+    commands: list[RuntimeCommandResult] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -78,7 +96,9 @@ class RuntimeAdapterResult:
             "status": self.status,
             "exit_code": self.exit_code,
             "command": self.command.to_dict(),
+            "commands": [command.to_dict() for command in self.commands],
             "postprocess": self.postprocess.to_dict(),
+            "cleanup": self.cleanup.to_dict(),
             "warnings": list(self.warnings),
         }
 
@@ -156,10 +176,23 @@ class BackendRuntimeAdapter:
                     warnings=[warning],
                 ),
             )
+        if len(commands) > 1:
+            return RuntimeHandle(
+                process=None,
+                command=[],
+                stdout_path=None,
+                stderr_path=None,
+                immediate_result=RuntimeCommandResult(
+                    status="unsupported_multi_command",
+                    exit_code=2,
+                    command=[],
+                    warnings=[
+                        "multiple launch commands present; BackendRuntimeAdapter refuses to execute a partial pipeline"
+                    ],
+                ),
+            )
         command = commands[0]
         warnings = []
-        if len(commands) > 1:
-            warnings.append("multiple launch commands present; executing first command only")
         stdout_path = execution_dir / "runtime_stdout.log"
         stderr_path = execution_dir / "runtime_stderr.log"
         stdout_file = stdout_path.open("w", encoding="utf-8")
@@ -216,7 +249,6 @@ class BackendRuntimeAdapter:
                 exit_code = 124
         duration = time.time() - started
         status = "timeout" if timed_out else ("completed" if exit_code == 0 else "failed")
-        self.stop(handle)
         return RuntimeCommandResult(
             status=status,
             exit_code=int(exit_code),
@@ -228,12 +260,23 @@ class BackendRuntimeAdapter:
             timed_out=timed_out,
         )
 
-    def stop(self, handle: RuntimeHandle) -> None:
+    def stop(self, handle: RuntimeHandle) -> CleanupResult:
+        terminated_process = False
+        closed_streams = 0
         if handle.process is not None and handle.process.poll() is None:
+            terminated_process = True
             _terminate_process(handle.process)
         for fh in (handle.stdout_file, handle.stderr_file):
             if fh is not None and not fh.closed:
                 fh.close()
+                closed_streams += 1
+        if handle.process is None and closed_streams == 0:
+            return CleanupResult(status="not_applicable")
+        return CleanupResult(
+            status="completed",
+            terminated_process=terminated_process,
+            closed_streams=closed_streams,
+        )
 
     def postprocess(
         self,
@@ -243,8 +286,6 @@ class BackendRuntimeAdapter:
     ) -> PostprocessResult:
         if context.dry_run:
             return PostprocessResult(status="skipped", warnings=["dry-run: postprocess commands were not executed"])
-        if command_result.exit_code != 0:
-            return PostprocessResult(status="skipped", warnings=["runtime command failed; postprocess skipped"])
         if not command_result.command:
             return PostprocessResult(
                 status="skipped",
@@ -253,12 +294,15 @@ class BackendRuntimeAdapter:
         commands = _postprocess_commands(launch_plan)
         if not commands:
             return PostprocessResult(status="not_applicable")
+        warnings = []
+        if command_result.exit_code != 0:
+            warnings.append("runtime command failed; running safe postprocess because a command was attempted")
         results: list[RuntimeCommandResult] = []
         for idx, command in enumerate(commands):
             results.append(_run_postprocess_command(context, command, idx))
             if results[-1].exit_code != 0:
-                return PostprocessResult(status="failed", commands=results)
-        return PostprocessResult(status="completed", commands=results)
+                return PostprocessResult(status="failed", commands=results, warnings=warnings)
+        return PostprocessResult(status="completed", commands=results, warnings=warnings)
 
     def execute(
         self,
@@ -271,6 +315,7 @@ class BackendRuntimeAdapter:
         self.prepare(context, launch_plan)
         handle = self.start(context, launch_plan)
         command_result = self.wait(handle, timeout_s=timeout_s)
+        cleanup = self.stop(handle)
         postprocess = self.postprocess(context, launch_plan, command_result)
         status = command_result.status
         exit_code = command_result.exit_code
@@ -283,7 +328,9 @@ class BackendRuntimeAdapter:
             status=status,
             exit_code=exit_code,
             command=command_result,
+            commands=[command_result],
             postprocess=postprocess,
+            cleanup=cleanup,
             warnings=warnings,
         )
         _write_json(_execution_dir(context) / "runtime_adapter_result.json", result.to_dict())

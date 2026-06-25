@@ -1,11 +1,17 @@
 # AGENTS.md
 
-This repository builds and evaluates a CARLA–ROS2–Apollo ground-truth simulation pipeline. Treat it as an engineering system with a strict evidence chain, not as a loose collection of scripts.
+This repository builds and evaluates a CARLA-based multi-backend simulation and comparison platform. Treat it as an engineering system with a strict evidence chain, not as a loose collection of scripts.
 
 ## Mission
-- Primary goal: make Apollo run stably in CARLA Town01 across full routes, not just a single local point fix.
-- Secondary goal: improve diagnosability, repeatability, and acceptance evaluation for the end-to-end pipeline.
-- Tertiary goal: keep the stack extensible for later sensor simulation and scenario-library integration.
+- Primary Phase 1 goal: deliver reproducible same-scenario closed-loop pairs for
+  `ApolloBackend` and the `PlanningControlBackend` category across the P0
+  fixed-scenario set, with unified artifacts and clear `invalid` vs behavior
+  `failed` status.
+- Secondary Apollo goal: keep reducing Apollo reference-backend blockers,
+  including Town01/Baguang route, planning, control, and no-assist ownership
+  issues, without treating Phase 1 as an Apollo natural-driving claim.
+- Tertiary goal: keep the stack extensible for later sensor simulation,
+  scenario-library integration, Autoware, E2E/VLM, and other algorithms.
 
 ## Current Phase 1 Scope
 - Phase 1 is a multi-backend scenario-platform engineering track, not an
@@ -19,6 +25,14 @@ This repository builds and evaluates a CARLA–ROS2–Apollo ground-truth simula
   failures and must not be counted as backend behavior losses.
 - A successful `carla_builtin` run is diagnostic scenario evidence only; it is
   not Apollo, Autoware, or natural-driving capability evidence.
+- Phase 1 Core is the P0 pair matrix: `follow_stop_static`,
+  `lead_decel_accel`, `cut_in_simple`, `lane_keep_straight`, and
+  `lane_keep_curve`. P1 cases such as cut-out, junction, and hard-brake are
+  Phase 1.1 backlog unless explicitly re-scoped.
+- Current Phase 1 delivery work should prioritize runtime lifecycle hardening,
+  no-blocking-assist Apollo fixed-scene runs, and the P0 pair matrix. Do not
+  add new acceptance/verifier/analyzer layers unless a real valid run is
+  incorrectly blocked by existing rules.
 
 ## Canonical Documentation Layers
 - `AGENTS.md`

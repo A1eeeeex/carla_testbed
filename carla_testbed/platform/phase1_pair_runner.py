@@ -97,7 +97,7 @@ def run_phase1_pair(
             plan,
             run_dir=run_dir,
             dry_run=dry_run,
-            legacy_dispatch=not dry_run,
+            legacy_dispatch=False,
             timeout_s=timeout_s,
         )
         plan_paths.append(plan_path)

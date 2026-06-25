@@ -18,6 +18,8 @@ class ExecutionResult:
     exit_code: int
     run_dir: Path
     launch_plan: dict[str, Any]
+    preflight: dict[str, Any]
+    backend_contract: dict[str, Any]
     artifacts: dict[str, str]
     dispatch: dict[str, Any]
 
@@ -28,6 +30,8 @@ class ExecutionResult:
             "exit_code": self.exit_code,
             "run_dir": str(self.run_dir),
             "launch_plan": self.launch_plan,
+            "preflight": dict(self.preflight),
+            "backend_contract": dict(self.backend_contract),
             "artifacts": dict(self.artifacts),
             "dispatch": dict(self.dispatch),
         }
@@ -48,14 +52,21 @@ def execute_run_plan(
         legacy_dispatch=legacy_dispatch,
     )
     backend = default_backend_registry().for_plan(plan)
+    backend_contract = backend.contract(plan).to_dict()
+    preflight = backend.preflight(plan).to_dict()
     launch_plan = backend.build_launch_plan(plan).to_dict()
     launch_plan = _rewrite_launch_plan_run_dir(launch_plan, plan=plan, run_dir=context.run_dir)
+    _write_json(context.run_dir / "preflight.json", preflight)
     write_runtime_context_artifacts(
         context,
         launch_plan=launch_plan,
         status="running" if not dry_run else "dry_run",
         compatibility_source=launch_plan.get("compatibility_source"),
-        summary={"dispatch": {"status": "starting" if not dry_run else "dry_run"}},
+        backend_contract=backend_contract,
+        summary={
+            "preflight": preflight,
+            "dispatch": {"status": "starting" if not dry_run else "dry_run"},
+        },
         preserve_existing=False,
     )
     adapter_result: RuntimeAdapterResult = BackendRuntimeAdapter().execute(
@@ -69,7 +80,8 @@ def execute_run_plan(
         launch_plan=launch_plan,
         status=status,
         compatibility_source=launch_plan.get("compatibility_source"),
-        summary={"dispatch": adapter_result.to_dict()},
+        backend_contract=backend_contract,
+        summary={"preflight": preflight, "dispatch": adapter_result.to_dict()},
         preserve_existing=not dry_run,
     )
     result = ExecutionResult(
@@ -77,12 +89,19 @@ def execute_run_plan(
         exit_code=adapter_result.exit_code,
         run_dir=context.run_dir,
         launch_plan=launch_plan,
+        preflight=preflight,
+        backend_contract=backend_contract,
         artifacts=artifacts,
         dispatch=adapter_result.to_dict(),
     )
     result_path = context.run_dir / "platform_execution_result.json"
     result_path.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _rewrite_launch_plan_run_dir(

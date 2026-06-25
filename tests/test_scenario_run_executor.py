@@ -27,8 +27,15 @@ def test_execute_run_plan_without_runtime_command_completes_offline_backend(tmp_
     assert result.dispatch["command"]["warnings"] == [
         "launch plan has no runtime command because backend is offline"
     ]
+    assert result.preflight["backend"] == "dummy"
+    assert result.backend_contract["backend"] == "dummy"
+    assert (tmp_path / "run" / "preflight.json").is_file()
+    manifest = json.loads((tmp_path / "run" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["backend_contract"]["backend"] == "dummy"
+    assert manifest["claim_boundary"]["schema_version"] == "phase1_claim_boundary.v1"
     summary = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
     assert summary["platform_runtime_status"] == "completed"
+    assert summary["preflight"]["backend"] == "dummy"
 
 
 def test_cli_run_plan_default_uses_executor_instead_of_not_implemented(tmp_path: Path) -> None:
@@ -62,3 +69,6 @@ def test_cli_run_plan_default_uses_executor_instead_of_not_implemented(tmp_path:
     assert "runtime dispatch is not implemented" not in result.stderr
     assert "platform_execution_result.v1" in result.stdout
     assert (run_dir / "execution" / "runtime_adapter_result.json").exists()
+    payload = json.loads((run_dir / "platform_execution_result.json").read_text(encoding="utf-8"))
+    assert payload["preflight"]["backend"] == "dummy"
+    assert payload["dispatch"]["cleanup"]["status"] == "not_applicable"

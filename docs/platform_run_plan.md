@@ -104,6 +104,23 @@ This writes `plan.resolved.yaml`, `launch_plan.json`, `manifest.json`,
 dispatch path is guarded; without `CARLA_TESTBED_ALLOW_LEGACY_DISPATCH=1` it
 writes a blocked dispatch result instead of starting CARLA/Apollo/Autoware.
 
+Dry-run the five Phase 1 P0 ApolloBackend vs PlanningControlBackend pairs:
+
+```bash
+python -m carla_testbed phase1 run-p0-matrix \
+  --out /tmp/phase1_p0_matrix_dry \
+  --dry-run
+```
+
+Attempt the same five P0 pairs online when the local CARLA/Apollo environment
+is ready:
+
+```bash
+python -m carla_testbed phase1 run-p0-matrix \
+  --out runs/phase1_p0_matrix/<id> \
+  --timeout-s 180
+```
+
 Build evidence and gate reports from an existing run directory:
 
 ```bash
@@ -208,15 +225,42 @@ profile.
   artifacts without starting runtime.
 - `python3 -m carla_testbed run --plan ... --run-dir runs/<id>` executes the
   resolved backend launch command, records PID/stdout/stderr/timeout under
-  `execution/`, writes `platform_execution_result.json`, and runs declared
-  postprocess commands after a successful runtime command.
+  `execution/`, writes `preflight.json` plus
+  `platform_execution_result.json`, records adapter cleanup status, and runs
+  declared postprocess commands even after a failed runtime command when a
+  runtime command was attempted. This is deliberate: failed Apollo/CARLA runs
+  still need `phase1_status`, failure-reason, and artifact-completeness
+  evidence.
 - `python3 -m carla_testbed phase1 run-pair --scenario <case> --out <dir>`
   compiles a PlanningControlBackend plan and an ApolloBackend plan, executes
   them sequentially, and writes a generic ScenarioComparison.
+- `python3 -m carla_testbed phase1 run-p0-matrix --out <dir>` runs the five
+  Phase 1 P0 scenario pairs through the same pair-runner surface and writes
+  `phase1_p0_matrix_manifest.json` plus `phase1_p0_matrix.csv`.
 
 This is a delivery-surface milestone, not a behavior claim. A backend command
 can still fail, timeout, or produce an invalid Phase 1 run. Invalid runs remain
 setup/evidence failures and must not be counted as backend losses.
+
+The P0 matrix runner is only orchestration evidence. It records per-case pair
+manifests, run directories, exit codes, and comparison paths, and continues
+across failed pairs by default. Behavior failures, invalid runs, and no-assist
+Apollo boundaries must still be read from each pair's `phase1_status`,
+`ScenarioComparison`, assist ledger, and backend-specific reports. A dry-run
+matrix proves command/materialization coverage only; an online matrix proves
+only that the selected pairs were attempted and artifacted.
+
+The current `BackendRuntimeAdapter` executes exactly one runtime command per
+LaunchPlan. If a backend emits multiple runtime commands, the adapter returns
+`unsupported_multi_command` rather than silently executing only the first step.
+Backends that need a real command pipeline must expose a single wrapper command
+or implement a proper lifecycle pipeline before Phase 1 uses that plan online.
+The Phase 1 pair runner no longer sets platform-level `legacy_dispatch=True`;
+legacy/transition compatibility is represented inside the selected backend
+LaunchPlan and adapter boundary.
+The adapter result includes `command`, `cleanup`, and `postprocess` sections so
+operators can distinguish process exit, stream/process cleanup, and evidence
+generation outcomes.
 
 Phase 1 currently has a deliberately narrow Apollo fixed-scene compatibility
 exception for Baguang static follow-stop variants:

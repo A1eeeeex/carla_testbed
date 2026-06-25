@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from carla_testbed.platform.compiler import write_run_plan
 from carla_testbed.platform.plan import RunPlan
+from carla_testbed.scenario_player.manifest_contract import fixed_scene_manifest_fields_from_template_path
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ def write_runtime_context_artifacts(
     launch_plan: Mapping[str, Any],
     status: str,
     compatibility_source: str | None,
+    backend_contract: Mapping[str, Any] | None = None,
     summary: Mapping[str, Any] | None = None,
     preserve_existing: bool = False,
 ) -> dict[str, str]:
@@ -52,6 +54,9 @@ def write_runtime_context_artifacts(
     launch_path.write_text(json.dumps(dict(launch_plan), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     manifest_path = run_dir / "manifest.json"
     traffic_flow = _traffic_flow_manifest_payload(context.plan, spawned_count=None)
+    backend_contract_payload = dict(backend_contract or {})
+    fixed_scene_fields = fixed_scene_manifest_fields_from_template_path(context.plan.source_profiles.get("scenario"))
+    claim_boundary = _claim_boundary_payload(context)
     manifest = {
         "schema_version": "run_manifest.platform.v1",
         "run_id": context.plan.identity.run_id,
@@ -61,6 +66,17 @@ def write_runtime_context_artifacts(
         "route_id": context.plan.scenario.route_ref,
         "map": context.plan.scenario.map,
         "backend": context.plan.platform.name,
+        "backend_name": backend_contract_payload.get("backend_name")
+        or backend_contract_payload.get("backend")
+        or context.plan.platform.name,
+        "backend_type": backend_contract_payload.get("backend_type", "unknown"),
+        "input_contract": backend_contract_payload.get("input_contract", "unspecified"),
+        "adapter_path": backend_contract_payload.get("adapter_path", "unspecified"),
+        "output_control_mode": backend_contract_payload.get("output_control_mode", "unspecified"),
+        "transport_mode": backend_contract_payload.get("transport_mode", context.plan.platform.middleware),
+        "backend_contract": backend_contract_payload,
+        "claim_boundary": claim_boundary,
+        **fixed_scene_fields,
         "platform": context.plan.to_dict().get("platform"),
         "algorithm_variant_id": context.plan.algorithm.variant_id,
         "recording_profile": context.plan.recording.profile,
@@ -89,6 +105,8 @@ def write_runtime_context_artifacts(
             "platform_execution_status": status,
             "dry_run": context.dry_run,
             "legacy_dispatch": context.legacy_dispatch,
+            "backend_contract": backend_contract_payload,
+            "claim_boundary": claim_boundary,
         },
     )
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -100,6 +118,9 @@ def write_runtime_context_artifacts(
         "scenario_class": context.plan.scenario.scenario_class,
         "route_id": context.plan.scenario.route_ref,
         "backend": context.plan.platform.name,
+        "backend_type": backend_contract_payload.get("backend_type", "unknown"),
+        "input_contract": backend_contract_payload.get("input_contract", "unspecified"),
+        "output_control_mode": backend_contract_payload.get("output_control_mode", "unspecified"),
         "traffic_flow": traffic_flow,
         "success": status in {"dry_run", "completed"},
         "exit_reason": f"platform_{status}",
@@ -117,6 +138,9 @@ def write_runtime_context_artifacts(
             "platform_runtime_exit_reason": f"platform_{status}",
             "dry_run": context.dry_run,
             "legacy_dispatch": context.legacy_dispatch,
+            "backend_type": backend_contract_payload.get("backend_type", "unknown"),
+            "input_contract": backend_contract_payload.get("input_contract", "unspecified"),
+            "output_control_mode": backend_contract_payload.get("output_control_mode", "unspecified"),
         },
     )
     summary_path.write_text(json.dumps(summary_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -136,6 +160,21 @@ def _ego_control_source(plan: RunPlan) -> str:
     if plan.platform.name == "carla_builtin" or plan.algorithm.stack == "builtin":
         return "carla_builtin"
     return plan.platform.name
+
+
+def _claim_boundary_payload(context: RuntimeContext) -> dict[str, Any]:
+    return {
+        "schema_version": "phase1_claim_boundary.v1",
+        "gate_profile": context.plan.gate.profile,
+        "can_claim_natural_driving": bool(context.plan.gate.can_claim_natural_driving),
+        "algorithm": dict(context.plan.algorithm.claim_boundary or {}),
+        "recording": dict(context.plan.recording.claim_boundary or {}),
+        "truth_input": context.plan.truth_input.claim_boundary,
+        "phase1_note": (
+            "Phase 1 run artifacts support scenario/backend comparison only; "
+            "behavior success is not Apollo/Autoware natural-driving evidence without the required claim gates."
+        ),
+    }
 
 
 def _merge_existing_json(

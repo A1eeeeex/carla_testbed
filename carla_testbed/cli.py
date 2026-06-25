@@ -31,6 +31,7 @@ from carla_testbed.platform.compiler import (
     write_run_plan,
 )
 from carla_testbed.platform.executor import execute_run_plan
+from carla_testbed.platform.phase1_p0_matrix import run_phase1_p0_matrix
 from carla_testbed.platform.phase1_pair_runner import run_phase1_pair
 from carla_testbed.platform.plan import RunPlan
 from carla_testbed.platform.registry import PlatformRegistry, PlatformRegistryError
@@ -167,6 +168,18 @@ def build_parser() -> argparse.ArgumentParser:
     pair_p.add_argument("--gate", default="scenario_validation")
     pair_p.add_argument("--dry-run", action="store_true")
     pair_p.add_argument("--timeout-s", type=float, default=None)
+    p0_p = phase1_sub.add_parser("run-p0-matrix", help="run the five Phase 1 P0 backend pairs")
+    p0_p.add_argument("--out", required=True, type=Path)
+    p0_p.add_argument("--matrix-id", default=None)
+    p0_p.add_argument("--apollo-profile", default="apollo/apollo10_carla_gt")
+    p0_p.add_argument("--planning-profile", default="builtin/simple_acc_route_follower")
+    p0_p.add_argument("--apollo-platform", default="apollo_cyberrt")
+    p0_p.add_argument("--planning-platform", default="carla_builtin")
+    p0_p.add_argument("--record", "--recording", dest="recording", default="metrics")
+    p0_p.add_argument("--gate", default="scenario_validation")
+    p0_p.add_argument("--dry-run", action="store_true")
+    p0_p.add_argument("--timeout-s", type=float, default=None)
+    p0_p.add_argument("--stop-on-failure", action="store_true")
     return ap
 
 
@@ -876,6 +889,23 @@ def _cmd_phase1(args: argparse.Namespace) -> int:
         )
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
         return max((item.exit_code for item in result.execution_results), default=0)
+    if args.phase1_cmd == "run-p0-matrix":
+        result = run_phase1_p0_matrix(
+            out_dir=args.out,
+            matrix_id=args.matrix_id,
+            apollo_profile=args.apollo_profile,
+            planning_profile=args.planning_profile,
+            apollo_platform=args.apollo_platform,
+            planning_platform=args.planning_platform,
+            recording=args.recording,
+            gate=args.gate,
+            dry_run=bool(args.dry_run),
+            timeout_s=args.timeout_s,
+            continue_on_failure=not bool(args.stop_on_failure),
+            registry=PlatformRegistry(repo_root=resolve_repo_root()),
+        )
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        return 0
     return 2
 
 

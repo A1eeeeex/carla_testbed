@@ -1,6 +1,6 @@
 # Phase 1 Engineering Brief
 
-Last reviewed: 2026-06-24
+Last reviewed: 2026-06-25
 
 This brief freezes the Phase 1 engineering target for `carla_testbed`. It is a
 scope and status document, not a capability announcement. Status labels below
@@ -54,27 +54,67 @@ success means:
 
 ## Current Phase 1 Progress Snapshot
 
-Latest reviewed snapshot: `2026-06-22`, after the GPT Pro audit that rejected
-the earlier "Phase 1 done / 8 DONE" wording and identified P0 trust-chain
-issues in Phase 1 acceptance, review-pack materialization, catalog ingestion,
-and Phase 1 artifact-completeness semantics. The local follow-up fixes add an
-independent acceptance verifier, review-pack internal bundle verification,
-catalog gating on verifier-passed acceptance reports, and real Phase 1 checks
-for `events.jsonl` plus executable control trace surfaces. These are
-evidence-chain fixes, not driving-behavior fixes.
+Latest reviewed snapshot: `2026-06-25`, after the GPT Pro audit of commit
+`21f2809f0692b53d9bc014c6fb4ea69093b7a246`. The audit shifted the remaining
+Phase 1 blocker from acceptance/catalog machinery to runtime delivery:
+executor lifecycle, no-blocking-assist Apollo fixed-scene evidence, and the
+five P0 online pair matrix. The acceptance/verifier/catalog layer is now treated
+as frozen unless it demonstrably blocks a real valid run.
 
 Layered progress status:
 
 - Phase 1 overall: `PARTIAL`
-- Delivery-first completion estimate: about `70%`
-- Platform skeleton estimate: about `80-85%`
-- Apollo reference runtime estimate: about `50-55%`
+- Delivery-first completion estimate: about `75%`
+- Platform skeleton estimate: about `85-90%`
+- Apollo reference runtime estimate: about `55-60%`
+- Five-P0 online pair matrix estimate: about `45-50%`
 - Local accepted comparison-surface catalog: `PARTIAL after verifier hardening`
 - Package-level acceptance surface: `PARTIAL until rebuilt from verifier-passed bundles`
 - Latest external Pro-audit completion verdict: `PARTIAL / Phase 1 done claim rejected`
 - Phase 1 completion gate: `PARTIAL`
 - Representative Apollo behavior capability: `PARTIAL / failing samples remain`
 - Apollo natural-driving or no-interference capability claim: `NOT_CLAIMED`
+
+Current P0 delivery blockers:
+
+- Runtime delivery, not evaluation infrastructure, is the active bottleneck.
+- Accepted Apollo P0 runs must remove `blocking_assists`, especially
+  `legacy_followstop`, before they can support Apollo ego-ownership evidence.
+- The five P0 rows are `follow_stop_static`, `lead_decel_accel`,
+  `cut_in_simple`, `lane_keep_straight`, and `lane_keep_curve`.
+- P1 rows such as `cut_out_simple`, `junction_turn_no_signal`, and
+  `lead_hard_brake` are Phase 1.1 backlog and should not block Phase 1 Core.
+- The next code path to exercise is the unified
+  `python3 -m carla_testbed phase1 run-pair --scenario <case> --out <dir>`
+  entry. Behavior failure is acceptable evidence when the run is evaluable;
+  setup/config/artifact `invalid` is not.
+
+Executor update, 2026-06-25:
+
+- `ScenarioRunExecutor` now materializes backend `preflight.json` into each
+  run, includes preflight in `platform_execution_result.json`, and echoes it in
+  `summary.json`.
+- `BackendRuntimeAdapter` no longer silently executes only the first command in
+  a multi-command launch plan. Multi-command plans are refused with
+  `unsupported_multi_command` until a real pipeline lifecycle is implemented.
+- `BackendRuntimeAdapter` now records cleanup status separately from runtime
+  command status and postprocess status. This makes stream/process cleanup
+  auditable without changing backend behavior.
+- Runtime command failure no longer skips postprocess automatically. If a
+  runtime command was attempted and postprocess commands are declared, the
+  adapter runs safe postprocess so `phase1_status`, failure reason, and
+  artifact-completeness checks can still be produced.
+- `phase1 run-pair` no longer sets platform-level `legacy_dispatch=True` for
+  real runs. Compatibility remains expressed by the selected backend launch
+  plan/adapter, not by the pair runner leaking legacy implementation details.
+- `phase1 run-p0-matrix` now loops the five P0 scenario pairs through the same
+  `run-pair` path and writes `phase1_p0_matrix_manifest.json` plus
+  `phase1_p0_matrix.csv`. This proves one-command matrix materialization and
+  artifact routing; it does not prove online Apollo behavior or no-assist
+  execution.
+- This is runtime lifecycle hardening only. It does not prove Apollo behavior,
+  does not remove `legacy_followstop`, and does not complete the P0 online
+  matrix.
 
 Delivery-first update, 2026-06-23:
 
@@ -1343,6 +1383,7 @@ Status definitions:
 | PlanningControlBackend | Self-written planning/control baseline backend | PARTIAL | `carla_testbed/backends/carla_builtin.py`; `configs/platforms/carla_builtin.yaml`; `configs/algorithms/builtin/simple_acc_route_follower.yaml`; `carla_testbed/control/simple_acc_route_follower.py`; `carla_testbed/scenario_player/builtin_ego_runner.py`; `runs/phase1_builtin_follow_stop_097_global_route_20260618_030049/analysis/phase1_status/phase1_status.json`; `runs/phase1_builtin_lead_accel_decel_097_goal_cycle_20260618_031551/analysis/phase1_status/phase1_status.json`; `runs/phase1_builtin_baguang_lead_decel_safety_surface_20260619_210418/analysis/phase1_status/phase1_status.json`; `tests/test_builtin_ego_controller.py`; `tests/test_manifest_input_contract.py` | Current runtime name remains `carla_builtin`; manifests identify it with `backend_type=planning_control_backend`, `input_contract=scene_truth_direct`, and diagnostic-only claim boundaries. It supports fixed-scene and route-only Phase 1 diagnostic runs. The Town01 `lead_decel_accel` builtin run remains evaluable success, while the refreshed Baguang lead-decel safety-surface run is evaluable but failed with near-start `lane_invasion`; both are diagnostic baseline evidence, not Apollo/Autoware capability, and any Apollo/Autoware comparison must use the same acceptance gate. | Use these manifest fields in comparison reports; do not rename runtime modules for documentation consistency, and do not count builtin success or failure as Apollo/Autoware capability. |
 | BackendRuntimeAdapter / ScenarioRunExecutor | Execute one resolved RunPlan through backend lifecycle | PARTIAL | `carla_testbed/platform/runtime_adapter.py`; `carla_testbed/platform/executor.py`; `python3 -m carla_testbed run --plan <plan> --run-dir <run>`; `tests/test_backend_runtime_adapter.py`; `tests/test_scenario_run_executor.py`; `tests/test_platform_executor.py` | The CLI no longer stops at "runtime dispatch not implemented"; it records PID, stdout/stderr, timeout, postprocess outcome, and platform execution result. This proves the execution surface exists, not that a given Apollo online run succeeds. | Use this entry for the next online P0 runs and keep behavior failures in `phase1_status` / `ScenarioComparison`. |
 | Phase 1 pair runner | One-command ApolloBackend vs PlanningControlBackend pair | PARTIAL | `carla_testbed/platform/phase1_pair_runner.py`; `python3 -m carla_testbed phase1 run-pair --scenario <case> --out <dir>`; `tests/test_phase1_pair_runner.py` | The pair runner compiles both plans, executes them sequentially, and writes ScenarioComparison. Dry-run CI coverage exists; online Apollo success remains unproven and invalid runs remain invalid/partially evaluable. | Run the five P0 scenarios through this entry online and reduce the first Apollo behavior blocker instead of adding more acceptance layers. |
+| Phase 1 P0 matrix runner | One-command orchestration for the five P0 pairs | PARTIAL | `carla_testbed/platform/phase1_p0_matrix.py`; `python3 -m carla_testbed phase1 run-p0-matrix --out <dir>`; `tests/test_phase1_p0_matrix.py` | The matrix runner materializes `follow_stop_static`, `lead_decel_accel`, `cut_in_simple`, `lane_keep_straight`, and `lane_keep_curve` through the same `run-pair` surface, writing `phase1_p0_matrix_manifest.json` and CSV. Current proof is dry-run/orchestration coverage; online five-row Apollo behavior evidence is still missing. | Use this as the next online delivery entry, then inspect per-pair `phase1_status` / `ScenarioComparison` instead of treating the matrix command itself as pass/fail evidence. |
 | ScenarioRun artifact structure | Per-run artifact envelope | PARTIAL | `docs/run_artifacts.md`; `carla_testbed/record/artifact_store.py`; `tests/unit/recording/test_artifact_store.py`; `carla_testbed/scenario_player/builtin_ego_runner.py` | Existing paths differ from the recommended Phase 1 layout; some online tools still write richer legacy artifacts. | Add a non-invasive artifact completeness checker for Phase 1 ScenarioRun. |
 | ScenarioComparison artifact structure | Backend comparison envelope | PARTIAL | `carla_testbed/analysis/scenario_comparison.py`; `tools/compare_scenario_runs.py`; `runs/phase1_comparisons/lane_keep_real_apollo_vs_builtin_safety_surface_20260619_164004/comparison_summary.json`; `runs/phase1_comparisons/follow_stop_097_apollo_vs_builtin_20260618_030308/comparison_summary.json`; `runs/phase1_comparisons/baguang_lead_decel_apollo_overlay_vs_builtin_safety_surface_20260619_210445/comparison_summary.json`; `runs/phase1_comparisons/baguang_lead_hard_brake_apollo_overlay_vs_builtin_safety_surface_20260620_004757/comparison_summary.json`; `runs/phase1_comparisons/baguang_cut_in_apollo_overlay_vs_builtin_safety_surface_20260620_005828/comparison_summary.json`; `runs/phase1_comparisons/baguang_cut_out_apollo_overlay_vs_builtin_safety_surface_20260620_010954/comparison_summary.json`; `tests/test_scenario_comparison.py`; Baguang-specific wrapper in `carla_testbed/analysis/baguang_stack_comparison.py` | Generic comparison exists, preserves invalid-run boundaries, records `comparison_target_status` / `backend_coverage`, checks safety-event evidence-surface consistency for `lane_invasion` and `collision`, and now has comparable evidence for all current P0/P1 rows. It is still PARTIAL as an artifact envelope because schemas and plotting surfaces remain minimal. | Keep extending report detail without weakening invalid-run or evidence-surface semantics. |
 | v-t-gap extraction | Core longitudinal behavior curves | PARTIAL | `carla_testbed/analysis/v_t_gap.py`; `tools/extract_v_t_gap.py`; `runs/phase1_online_builtin_lane_keep_20260617_135010/analysis/v_t_gap/v_t_gap_report.json`; `runs/phase1_builtin_lead_accel_decel_097_goal_cycle_20260618_031551/analysis/v_t_gap/v_t_gap_report.json`; `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742/analysis/v_t_gap/v_t_gap_report.json`; `tests/test_v_t_gap_extractor.py` | Extractor supports `timeseries.csv/jsonl` plus actor traces, filters cut-in target activation, emits `not_applicable` for route-only cases, aligns relative fixed-scene actor traces to absolute Apollo sidecar timeseries via `fixed_scene_runtime_hook.start_sim_time_s`, uses same-lane `route_s_bumper_gap` when route/lane evidence is comparable, rejects route-s rows that conflict with the actor-trace forward anchor, and uses `trajectory_progress_bumper_gap` for fixed-scene lane/road transitions or route-s anchor conflicts. Lane-keep comparison uses the route-only boundary; target-actor scenarios still need Apollo evaluable runs and HDMap/Frenet evidence for natural-driving claims. | Add evaluable ApolloBackend runs for fixed-scene target scenarios and keep trajectory-progress gap clearly separated from Apollo HDMap/Frenet claim evidence. |
@@ -1728,20 +1769,30 @@ UNKNOWN findings:
 ## Suggested Phase 1 PR Sequence
 
 The original evidence-spine PR sequence has largely landed. Under the
-2026-06-23 delivery-first scope, do not keep extending acceptance schemas unless
+2026-06-25 delivery-first scope, do not keep extending acceptance schemas unless
 they block a real valid run. The next PR sequence is:
 
-1. Use `python3 -m carla_testbed phase1 run-pair` to execute
-   `follow_stop_static` online for PlanningControlBackend and ApolloBackend.
-2. Remove or classify any remaining blocking legacy assist in the Apollo
-   follow-stop canonical path; do not count assisted runs as backend success.
-3. Repeat the pair runner on `lead_decel_accel` and `cut_in_simple`, preserving
-   invalid-run boundaries.
-4. Run `lane_keep_straight` and `lane_keep_curve` through the same pair runner,
-   with route/reference-line blockers reported as behavior evidence rather than
-   new schema gaps.
-5. Rebuild the Phase 1 review pack from the exact pair-run outputs and accepted
-   comparison artifacts.
+1. Use the hardened `ScenarioRunExecutor` lifecycle in online runs and verify
+   that runtime failures still produce `phase1_status` / failure-reason
+   postprocess artifacts.
+2. Produce one canonical `follow_stop_static` Apollo run with
+   `blocking_assists=[]`; behavior failure is acceptable, but assisted success
+   is not accepted ApolloBackend ownership evidence.
+3. Run the `follow_stop_static` pair through
+   `python3 -m carla_testbed phase1 run-pair --scenario <case> --out <dir>`
+   and confirm both runs are evaluable rather than setup/config/artifact
+   invalid.
+4. Dry-run the five-row matrix with
+   `python3 -m carla_testbed phase1 run-p0-matrix --out <dir> --dry-run` and
+   verify each row materializes both backend manifests with the backend
+   contract and claim boundary fields.
+5. Run the same matrix online. `lead_decel_accel`, `cut_in_simple`,
+   `lane_keep_straight`, and `lane_keep_curve` should preserve invalid-run
+   boundaries and avoid new acceptance/schema work; route/reference-line
+   blockers should be reported as behavior evidence rather than schema gaps.
+6. Rebuild the Phase 1 review pack from the exact matrix/pair outputs,
+   timeseries, actor/phase/control traces, assist ledgers, and comparison
+   artifacts.
 
 Historical sequence kept for provenance:
 
