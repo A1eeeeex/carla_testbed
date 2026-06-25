@@ -163,6 +163,29 @@ Executor update, 2026-06-25:
   `comparison_status=invalid` / `reason=all_runs_invalid` instead of emitting a
   Python traceback. This is an improvement in runtime delivery diagnostics, not
   a backend behavior result.
+- The next readiness fix moved `CarlaLauncher` RPC probes out of the caller's
+  Python when needed. The default project interpreter is Python 3.13, while the
+  local CARLA 0.9.16 package provides no cp313 wheel. The launcher now records
+  this in `carla_session.diagnostics.client_probe` and uses the local
+  `carla16` Python for CARLA client probes. Startup probes
+  `runs/phase1_online_pairs/carla_startup_probe_town01_external_world_retry_20260625_123649`
+  and
+  `runs/phase1_online_pairs/carla_startup_probe_baguang_external_world_20260625_123720`
+  both reach `world_ready` through the external probe. The observed initial
+  world is still `Carla/Maps/Town10HD_Opt`, so startup readiness remains
+  distinct from map-load identity; backend runs must still verify
+  `load_world(<scenario map>)` in their own artifacts.
+- With the external CARLA client probe, the unified pair entry now reaches an
+  evaluable online pair without a manual keepalive:
+  `runs/phase1_online_pairs/follow_stop_static_spawn2m_goal_external_probe_20260625_123157`.
+  The CARLA session is `ready` and stops cleanly. The PlanningControlBackend
+  run is `phase1_status=success` with `v_t_gap=pass`; the ApolloBackend run is
+  evaluable and fails with `failure_reason=lane_invasion`, `v_t_gap=warn`, and
+  no blocking assists in the ScenarioComparison summary. The pair comparison is
+  `comparison_status=comparable` and
+  `comparison_target_status=apollo_vs_planning_control_evaluable`. This is
+  Phase 1 scenario-comparison evidence only; it is not Apollo behavior success
+  and not no-interference natural-driving evidence.
 - This is runtime lifecycle hardening only. It does not prove Apollo behavior,
   does not remove `legacy_followstop`, and does not complete the P0 online
   matrix.

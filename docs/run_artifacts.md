@@ -144,6 +144,14 @@ response, and run validity explicit.
 
 Additional run-local artifacts:
 
+- `carla_session/phase1_carla_session.json` for Phase 1 pair/matrix runs that
+  request `--start-carla`.
+  - schema: `phase1_carla_session.v1`
+  - records requested CARLA root/town/args, readiness status, launcher
+    diagnostics, CARLA client probe interpreter, and stop status.
+  - startup/session evidence is environment evidence only. It does not prove
+    map identity, backend behavior, Apollo no-assist operation, or natural
+    driving.
 - `artifacts/fixed_scene_resolved.json`
   - should include `target_actor_contract` when the scenario has a target
     actor.

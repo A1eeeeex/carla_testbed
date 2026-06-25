@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -14,8 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tbio.carla.launcher import CarlaLauncher
-from tools.run_town01_route_health import _connect_world, _load_dotenv, _startup_probe_failure_family, write_json
+from tbio.carla.launcher import CarlaLauncher, _external_carla_python_candidates
+from tools.run_town01_route_health import _load_dotenv, _startup_probe_failure_family, write_json
 
 
 MODE_PRESETS: Dict[str, Dict[str, str]] = {
@@ -84,6 +86,74 @@ def _classify_attempt(row: Dict[str, Any]) -> str:
     if not any_port_open and not handshake_ready:
         return "no_listener_dead_state"
     return status or "unknown"
+
+
+def _external_world_probe(*, host: str, port: int, timeout_s: float) -> Dict[str, Any]:
+    script = (
+        "import json, sys\n"
+        "try:\n"
+        "    import carla\n"
+        "    client = carla.Client(sys.argv[1], int(sys.argv[2]))\n"
+        "    client.set_timeout(float(sys.argv[3]))\n"
+        "    client.get_server_version()\n"
+        "    world = client.get_world()\n"
+        "    print(json.dumps({'ok': True, 'world_map': world.get_map().name}))\n"
+        "except Exception as exc:\n"
+        "    print(json.dumps({'ok': False, 'error': f'{exc.__class__.__name__}: {exc}'}))\n"
+        "    raise SystemExit(1)\n"
+    )
+    candidates = _external_carla_python_candidates()
+    if not candidates:
+        return {
+            "ok": False,
+            "error": "no_external_carla_python_candidate",
+            "candidates": [],
+        }
+    attempts: list[Dict[str, Any]] = []
+    for candidate in candidates:
+        try:
+            result = subprocess.run(
+                [
+                    candidate,
+                    "-c",
+                    script,
+                    str(host),
+                    str(int(port)),
+                    str(float(timeout_s)),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=max(2.0, float(timeout_s) + 2.0),
+            )
+        except Exception as exc:
+            attempts.append(
+                {
+                    "python": candidate,
+                    "ok": False,
+                    "error": f"{exc.__class__.__name__}: {exc}",
+                }
+            )
+            continue
+        try:
+            payload = json.loads((result.stdout or "{}").strip() or "{}")
+        except json.JSONDecodeError:
+            payload = {"ok": False, "error": "invalid_probe_json", "stdout": result.stdout}
+        payload["python"] = candidate
+        payload["returncode"] = result.returncode
+        if result.stderr:
+            payload["stderr_tail"] = result.stderr.splitlines()[-10:]
+        attempt_record = dict(payload)
+        attempts.append(attempt_record)
+        if result.returncode == 0 and payload.get("ok"):
+            return {**attempt_record, "attempts": list(attempts)}
+    return {
+        "ok": False,
+        "error": "external_world_probe_failed",
+        "candidates": candidates,
+        "attempts": attempts,
+    }
 
 
 def _write_report(report_path: Path, rows: List[Dict[str, Any]]) -> None:
@@ -247,20 +317,19 @@ def main() -> None:
                 if launcher.wait_ready(timeout_s=float(args.timeout_sec), poll_s=min(float(args.poll_sec), 1.0)):
                     row["status"] = "rpc_ready"
                     row["rpc_ready"] = True
-                    try:
-                        client, world = _connect_world(
-                            "127.0.0.1",
-                            int(args.carla_port),
-                            timeout_s=float(args.timeout_sec),
-                            poll_s=float(args.poll_sec),
-                        )
+                    world_probe = _external_world_probe(
+                        host="127.0.0.1",
+                        port=int(args.carla_port),
+                        timeout_s=float(args.timeout_sec),
+                    )
+                    row["world_probe"] = world_probe
+                    if world_probe.get("ok"):
                         row["status"] = "world_ready"
                         row["world_ready"] = True
-                        row["world_map"] = str(world.get_map().name)
-                        del client
-                    except Exception as exc:
+                        row["world_map"] = str(world_probe.get("world_map") or "")
+                    else:
                         row["status"] = "world_not_ready"
-                        row["error"] = repr(exc)
+                        row["error"] = str(world_probe.get("error") or "world_not_ready")
                 else:
                     row["status"] = "rpc_not_ready"
                     row["error"] = "rpc_not_ready"

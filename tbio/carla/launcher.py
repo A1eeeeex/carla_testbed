@@ -14,10 +14,13 @@ from typing import Any, Dict, List, Optional
 
 
 _CARLA_MODULE = None
+_EXTERNAL_CARLA_CLIENT_PYTHON: Optional[str] = None
+_IN_PROCESS_CARLA_IMPORT_ERROR: Optional[str] = None
 
 
 def _load_carla_module():
     global _CARLA_MODULE
+    global _IN_PROCESS_CARLA_IMPORT_ERROR
     if _CARLA_MODULE is not None:
         return _CARLA_MODULE
     try:
@@ -40,14 +43,16 @@ def _load_carla_module():
             except ModuleNotFoundError:
                 sys.path.pop(0)
         available = ", ".join(item.name for item in sorted(dist_dir.glob("carla-*.whl")))
-        raise ModuleNotFoundError(
+        _IN_PROCESS_CARLA_IMPORT_ERROR = (
             "Failed to import CARLA Python API. "
             f"Current interpreter is cp{sys.version_info.major}{sys.version_info.minor}; "
             f"searched wheels under {dist_dir} and found [{available}]. "
             "Run the launcher under a CARLA-compatible interpreter, for example `conda run -n carla16 ...`, "
             "or provide a matching wheel via CARLA_ROOT."
-        ) from exc
+        )
+        raise ModuleNotFoundError(_IN_PROCESS_CARLA_IMPORT_ERROR) from exc
     _CARLA_MODULE = _carla
+    _IN_PROCESS_CARLA_IMPORT_ERROR = None
     return _CARLA_MODULE
 
 
@@ -67,8 +72,139 @@ def _client_ok(host: str, port: int, timeout: float = 1.0, require_world: bool =
             world = client.get_world()
             _ = world.get_map().name
         return True
+    except ModuleNotFoundError:
+        return _external_client_ok(host, port, timeout=timeout, require_world=require_world)
     except Exception:
         return False
+
+
+def _external_client_ok(host: str, port: int, timeout: float = 1.0, require_world: bool = False) -> bool:
+    for python_exec in _external_carla_python_candidates():
+        if _external_client_ok_with_python(
+            python_exec,
+            host=host,
+            port=port,
+            timeout=timeout,
+            require_world=require_world,
+        ):
+            return True
+    return False
+
+
+def _external_client_ok_with_python(
+    python_exec: str,
+    *,
+    host: str,
+    port: int,
+    timeout: float,
+    require_world: bool,
+) -> bool:
+    script = (
+        "import sys\n"
+        "import carla\n"
+        "client = carla.Client(sys.argv[1], int(sys.argv[2]))\n"
+        "client.set_timeout(float(sys.argv[3]))\n"
+        "client.get_server_version()\n"
+        "if sys.argv[4] == '1':\n"
+        "    world = client.get_world()\n"
+        "    _ = world.get_map().name\n"
+    )
+    try:
+        result = subprocess.run(
+            [
+                python_exec,
+                "-c",
+                script,
+                str(host),
+                str(int(port)),
+                str(float(timeout)),
+                "1" if require_world else "0",
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=max(2.0, float(timeout) + 2.0),
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def _external_carla_python_candidates() -> list[str]:
+    global _EXTERNAL_CARLA_CLIENT_PYTHON
+    raw_candidates = [
+        _EXTERNAL_CARLA_CLIENT_PYTHON,
+        os.environ.get("CARLA_TESTBED_CARLA_PYTHON"),
+        os.environ.get("CARLA16_PYTHON"),
+        "/home/ubuntu/miniconda3/envs/carla16/bin/python",
+        "/home/ubuntu/miniconda3/envs/carla16/bin/python3",
+        "/home/ubuntu/anaconda3/envs/carla16/bin/python",
+        "/home/ubuntu/anaconda3/envs/carla16/bin/python3",
+    ]
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_candidates:
+        if not raw:
+            continue
+        text = os.path.expanduser(os.path.expandvars(str(raw).strip()))
+        if not text or text in seen:
+            continue
+        if not Path(text).exists():
+            continue
+        seen.add(text)
+        candidates.append(text)
+    if _EXTERNAL_CARLA_CLIENT_PYTHON in candidates:
+        return candidates
+    for candidate in candidates:
+        if _python_can_import_carla(candidate):
+            _EXTERNAL_CARLA_CLIENT_PYTHON = candidate
+            return [candidate] + [item for item in candidates if item != candidate]
+    return candidates
+
+
+def _python_can_import_carla(python_exec: str) -> bool:
+    try:
+        result = subprocess.run(
+            [python_exec, "-c", "import carla"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5.0,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def _client_probe_details(host: str, port: int, timeout: float = 0.5) -> dict[str, Any]:
+    in_process_available = False
+    in_process_error = None
+    try:
+        _load_carla_module()
+        in_process_available = True
+    except Exception as exc:
+        in_process_error = f"{exc.__class__.__name__}: {exc}"
+    external_candidates = _external_carla_python_candidates()
+    external_ready_python = None
+    for candidate in external_candidates:
+        if _external_client_ok_with_python(
+            candidate,
+            host=host,
+            port=port,
+            timeout=timeout,
+            require_world=False,
+        ):
+            external_ready_python = candidate
+            break
+    return {
+        "current_python": sys.executable,
+        "current_python_tag": f"cp{sys.version_info.major}{sys.version_info.minor}",
+        "in_process_carla_available": in_process_available,
+        "in_process_carla_import_error": in_process_error or _IN_PROCESS_CARLA_IMPORT_ERROR,
+        "external_probe_candidates": external_candidates,
+        "external_probe_ready_python": external_ready_python,
+        "external_probe_available": bool(external_candidates),
+    }
 
 
 def _tail_contains_stream_eof(lines: list[str]) -> bool:
@@ -572,8 +708,10 @@ class CarlaLauncher:
         rpc_handshake_ready: Optional[bool]
         if probe_rpc:
             rpc_handshake_ready = bool(_client_ok(self.host, self.port, timeout=0.5, require_world=False))
+            client_probe = _client_probe_details(self.host, self.port, timeout=0.5)
         else:
             rpc_handshake_ready = None
+            client_probe = None
         actual_carla_pid = self._actual_carla_pid()
         launch_elapsed = (
             max(0.0, time.time() - self._launch_started_at)
@@ -613,6 +751,7 @@ class CarlaLauncher:
                 for port in self._target_ports()
             ],
             "rpc_handshake_ready": rpc_handshake_ready,
+            "client_probe": client_probe,
             "launcher_log_contains_end_of_file": tail_flags["stream_eof"],
             "launcher_log_contains_request_exit": tail_flags["request_exit"],
             "launcher_log_contains_sig11": tail_flags["sig11"],

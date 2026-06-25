@@ -146,6 +146,13 @@ diagnostics, and stop status. In `--dry-run`, the same commands write
 startup/environment evidence only; it is not backend behavior evidence and it
 does not make Apollo or `carla_builtin` pass a scenario.
 
+The launcher may be invoked from a Python that cannot import the CARLA client
+module, for example the project default Python 3.13 while CARLA 0.9.16 provides
+only cp310/cp311/cp312 wheels. In that case readiness is probed with the first
+working external Python from `CARLA_TESTBED_CARLA_PYTHON`, `CARLA16_PYTHON`, or
+common local `carla16` conda paths. The selected probe interpreter is recorded
+under `carla_session.diagnostics.client_probe`.
+
 If the session records `status=not_ready` or `status=startup_failed`, treat the
 run as a CARLA startup/RPC-readiness blocker. It is not an ApolloBackend or
 PlanningControlBackend behavior loss. The runner attempts to stop CARLA on
@@ -156,6 +163,12 @@ with `platform_execution_result.status=blocked_by_carla_startup` and
 `invalid/all_runs_invalid`. For `phase1 run-p0-matrix`, matrix-level CARLA
 startup failure writes `phase1_p0_matrix_manifest.json` and CSV rows with
 `status=error`. These are setup/environment artifacts, not backend losses.
+
+CARLA startup readiness does not prove the requested map is loaded. On this
+host the initial world observed after `-carla-map=<town>` can still be
+`Carla/Maps/Town10HD_Opt`; backend runners must still call/verify
+`load_world(<scenario map>)`, and run manifests remain the map-identity
+evidence.
 
 For `carla_builtin` fixed-scene runs, the launch plan uses the first executable
 Python found in `CARLA_TESTBED_CARLA_PYTHON`, `CARLA16_PYTHON`, or common local
