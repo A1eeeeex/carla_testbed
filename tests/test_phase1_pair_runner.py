@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import types
 from pathlib import Path
 
+import pytest
 import yaml
 
 from carla_testbed.platform.phase1_pair_runner import run_phase1_pair
@@ -102,3 +104,120 @@ def test_cli_phase1_run_pair_dry_run(tmp_path: Path) -> None:
     assert "phase1_pair_run.v1" in completed.stdout
     assert (out / "phase1_pair_manifest.json").exists()
     assert (out / "comparison" / "comparison_summary.json").exists()
+
+
+def test_phase1_pair_runner_start_carla_dry_run_records_session_without_starting(tmp_path: Path) -> None:
+    result = run_phase1_pair(
+        scenario="baguang/follow_stop_static_300m_spawn2m",
+        out_dir=tmp_path / "pair_start_carla",
+        pair_id="pair_start_carla",
+        dry_run=True,
+        start_carla=True,
+        carla_root="/tmp/nonexistent-cached-for-dry-run",
+    )
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["carla_session"]["requested"] is True
+    assert manifest["carla_session"]["status"] == "dry_run_not_started"
+    assert manifest["carla_session"]["town"] == "straight_road_for_baguang"
+    session_path = Path(manifest["carla_session"]["path"])
+    assert session_path.exists()
+    session_payload = json.loads(session_path.read_text(encoding="utf-8"))
+    assert session_payload["status"] == "dry_run_not_started"
+    assert result.carla_session["status"] == "dry_run_not_started"
+
+
+def test_cli_phase1_run_pair_start_carla_dry_run(tmp_path: Path) -> None:
+    out = tmp_path / "pair_cli_start_carla"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "carla_testbed",
+            "phase1",
+            "run-pair",
+            "--scenario",
+            "baguang/follow_stop_static_300m_spawn2m",
+            "--out",
+            str(out),
+            "--pair-id",
+            "pair_cli_start_carla",
+            "--dry-run",
+            "--start-carla",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "dry_run_not_started" in completed.stdout
+    manifest = json.loads((out / "phase1_pair_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["carla_session"]["status"] == "dry_run_not_started"
+
+
+def test_phase1_pair_runner_start_carla_failure_materializes_invalid_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    carla_root = tmp_path / "CARLA_0.9.16"
+    carla_root.mkdir()
+
+    class FakeLauncher:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+        def start(self) -> None:
+            return None
+
+        def wait_ready(self, *, timeout_s: float, poll_s: float) -> bool:
+            return False
+
+        def diagnostics_snapshot(self, *, probe_rpc: bool) -> dict[str, object]:
+            return {
+                "probe_rpc": probe_rpc,
+                "rpc_handshake_ready": False,
+                "process_alive": True,
+            }
+
+        def stop(self) -> None:
+            return None
+
+    tbio_mod = types.ModuleType("tbio")
+    carla_mod = types.ModuleType("tbio.carla")
+    launcher_mod = types.ModuleType("tbio.carla.launcher")
+    launcher_mod.CarlaLauncher = FakeLauncher
+    monkeypatch.setitem(sys.modules, "tbio", tbio_mod)
+    monkeypatch.setitem(sys.modules, "tbio.carla", carla_mod)
+    monkeypatch.setitem(sys.modules, "tbio.carla.launcher", launcher_mod)
+
+    result = run_phase1_pair(
+        scenario="baguang/follow_stop_static_300m_spawn2m",
+        out_dir=tmp_path / "pair_startup_failure",
+        pair_id="pair_startup_failure",
+        dry_run=False,
+        start_carla=True,
+        carla_root=carla_root,
+        carla_timeout_s=0.01,
+    )
+
+    assert result.startup_error
+    assert [item.status for item in result.execution_results] == [
+        "blocked_by_carla_startup",
+        "blocked_by_carla_startup",
+    ]
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["startup_error"]
+    assert manifest["carla_session"]["status"] == "not_ready"
+    assert manifest["carla_session"]["stop"]["status"] == "stopped_after_startup_failure"
+    comparison = json.loads(Path(manifest["comparison_outputs"]["summary"]).read_text(encoding="utf-8"))
+    assert comparison["comparison_status"] == "invalid"
+    assert comparison["reason"] == "all_runs_invalid"
+    for run_dir in result.run_dirs:
+        phase1_status = json.loads(
+            (run_dir / "analysis" / "phase1_status" / "phase1_status.json").read_text(encoding="utf-8")
+        )
+        assert phase1_status["status"] == "invalid"
+        assert phase1_status["failure_reason"] == "backend_not_ready"
+        platform_result = json.loads((run_dir / "platform_execution_result.json").read_text(encoding="utf-8"))
+        assert platform_result["status"] == "blocked_by_carla_startup"

@@ -121,6 +121,42 @@ python -m carla_testbed phase1 run-p0-matrix \
   --timeout-s 180
 ```
 
+The Phase 1 pair and matrix runners can also own a CARLA session explicitly:
+
+```bash
+python -m carla_testbed phase1 run-pair \
+  --scenario baguang/follow_stop_static_300m_spawn2m \
+  --out runs/phase1_online_pairs/<id> \
+  --timeout-s 240 \
+  --start-carla \
+  --carla-town straight_road_for_baguang \
+  --carla-extra-args=-RenderOffScreen
+
+python -m carla_testbed phase1 run-p0-matrix \
+  --out runs/phase1_p0_matrix/<id> \
+  --timeout-s 240 \
+  --start-carla \
+  --carla-extra-args=-RenderOffScreen
+```
+
+This writes `carla_session/phase1_carla_session.json` with
+`schema_version=phase1_carla_session.v1`, CARLA root, requested town, readiness
+diagnostics, and stop status. In `--dry-run`, the same commands write
+`status=dry_run_not_started` and do not start CARLA. The session artifact is
+startup/environment evidence only; it is not backend behavior evidence and it
+does not make Apollo or `carla_builtin` pass a scenario.
+
+If the session records `status=not_ready` or `status=startup_failed`, treat the
+run as a CARLA startup/RPC-readiness blocker. It is not an ApolloBackend or
+PlanningControlBackend behavior loss. The runner attempts to stop CARLA on
+startup failure and records the result in `carla_session.stop`. For
+`phase1 run-pair`, startup failure still materializes backend run directories
+with `platform_execution_result.status=blocked_by_carla_startup` and
+`analysis/phase1_status.status=invalid`; the pair comparison becomes
+`invalid/all_runs_invalid`. For `phase1 run-p0-matrix`, matrix-level CARLA
+startup failure writes `phase1_p0_matrix_manifest.json` and CSV rows with
+`status=error`. These are setup/environment artifacts, not backend losses.
+
 For `carla_builtin` fixed-scene runs, the launch plan uses the first executable
 Python found in `CARLA_TESTBED_CARLA_PYTHON`, `CARLA16_PYTHON`, or common local
 `carla16` conda paths, then falls back to `python3`. Operators should set one
@@ -129,10 +165,10 @@ interpreter is recorded in the launch-plan warnings.
 
 For online Baguang pairs, prefer a CARLA session started by the existing
 `CarlaLauncher` / `--start-carla` prestart path and keep it alive for the whole
-pair. A raw `CarlaUE4.sh` process may briefly open port `2000` before the world
-is actually ready or before `load_world(straight_road_for_baguang)` succeeds;
-that state should be treated as environment/startup evidence, not as a backend
-behavior result.
+pair or matrix. A raw `CarlaUE4.sh` process may briefly open port `2000` before
+the world is actually ready or before `load_world(straight_road_for_baguang)`
+succeeds; that state should be treated as environment/startup evidence, not as
+a backend behavior result.
 
 Build evidence and gate reports from an existing run directory:
 

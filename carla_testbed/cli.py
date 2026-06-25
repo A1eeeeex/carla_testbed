@@ -168,6 +168,11 @@ def build_parser() -> argparse.ArgumentParser:
     pair_p.add_argument("--gate", default="scenario_validation")
     pair_p.add_argument("--dry-run", action="store_true")
     pair_p.add_argument("--timeout-s", type=float, default=None)
+    pair_p.add_argument("--start-carla", action="store_true", help="start a CARLA session for this pair")
+    pair_p.add_argument("--carla-root", type=Path, default=None)
+    pair_p.add_argument("--carla-town", default=None)
+    pair_p.add_argument("--carla-extra-args", default="-RenderOffScreen")
+    pair_p.add_argument("--carla-timeout-s", type=float, default=90.0)
     p0_p = phase1_sub.add_parser("run-p0-matrix", help="run the five Phase 1 P0 backend pairs")
     p0_p.add_argument("--out", required=True, type=Path)
     p0_p.add_argument("--matrix-id", default=None)
@@ -180,6 +185,11 @@ def build_parser() -> argparse.ArgumentParser:
     p0_p.add_argument("--dry-run", action="store_true")
     p0_p.add_argument("--timeout-s", type=float, default=None)
     p0_p.add_argument("--stop-on-failure", action="store_true")
+    p0_p.add_argument("--start-carla", action="store_true", help="start one CARLA session for the matrix")
+    p0_p.add_argument("--carla-root", type=Path, default=None)
+    p0_p.add_argument("--carla-town", default=None)
+    p0_p.add_argument("--carla-extra-args", default="-RenderOffScreen")
+    p0_p.add_argument("--carla-timeout-s", type=float, default=90.0)
     return ap
 
 
@@ -885,6 +895,11 @@ def _cmd_phase1(args: argparse.Namespace) -> int:
             gate=args.gate,
             dry_run=bool(args.dry_run),
             timeout_s=args.timeout_s,
+            start_carla=bool(args.start_carla),
+            carla_root=args.carla_root,
+            carla_town=args.carla_town,
+            carla_extra_args=args.carla_extra_args,
+            carla_timeout_s=args.carla_timeout_s,
             registry=PlatformRegistry(repo_root=resolve_repo_root()),
         )
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
@@ -902,6 +917,11 @@ def _cmd_phase1(args: argparse.Namespace) -> int:
             dry_run=bool(args.dry_run),
             timeout_s=args.timeout_s,
             continue_on_failure=not bool(args.stop_on_failure),
+            start_carla=bool(args.start_carla),
+            carla_root=args.carla_root,
+            carla_town=args.carla_town,
+            carla_extra_args=args.carla_extra_args,
+            carla_timeout_s=args.carla_timeout_s,
             registry=PlatformRegistry(repo_root=resolve_repo_root()),
         )
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))

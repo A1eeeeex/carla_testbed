@@ -7,11 +7,20 @@ from pathlib import Path
 from typing import Any
 
 from carla_testbed.analysis.scenario_comparison import compare_scenario_runs, write_scenario_comparison
+from carla_testbed.analysis.phase1_status import classify_phase1_run, write_phase1_status
+from carla_testbed.backends.registry import default_backend_registry
 
+from .carla_session import (
+    Phase1CarlaStartupError,
+    dry_run_carla_session_payload,
+    start_phase1_carla_session,
+    write_phase1_carla_session_payload,
+)
 from .compiler import compile_run_plan, write_run_plan
-from .executor import ExecutionResult, execute_run_plan
+from .executor import ExecutionResult, _rewrite_launch_plan_run_dir, execute_run_plan
 from .plan import RunPlan
 from .registry import PlatformRegistry
+from .runtime_context import RuntimeContext, write_runtime_context_artifacts
 
 
 PAIR_RUNNER_SCHEMA_VERSION = "phase1_pair_run.v1"
@@ -26,6 +35,8 @@ class Phase1PairRunResult:
     execution_results: list[ExecutionResult]
     comparison_outputs: dict[str, str]
     manifest_path: Path
+    carla_session: dict[str, Any]
+    startup_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -37,6 +48,8 @@ class Phase1PairRunResult:
             "execution_results": [result.to_dict() for result in self.execution_results],
             "comparison_outputs": dict(self.comparison_outputs),
             "manifest_path": str(self.manifest_path),
+            "carla_session": dict(self.carla_session),
+            "startup_error": self.startup_error,
         }
 
 
@@ -53,6 +66,11 @@ def run_phase1_pair(
     pair_id: str | None = None,
     dry_run: bool = False,
     timeout_s: float | None = None,
+    start_carla: bool = False,
+    carla_root: str | Path | None = None,
+    carla_town: str | None = None,
+    carla_extra_args: str = "-RenderOffScreen",
+    carla_timeout_s: float = 90.0,
     registry: PlatformRegistry | None = None,
 ) -> Phase1PairRunResult:
     registry = registry or PlatformRegistry(repo_root=".")
@@ -64,7 +82,6 @@ def run_phase1_pair(
     comparison_dir = output / "comparison"
     plans_dir.mkdir(parents=True, exist_ok=True)
     runs_dir.mkdir(parents=True, exist_ok=True)
-
     plans = [
         _compile_pair_plan(
             scenario=scenario,
@@ -89,20 +106,73 @@ def run_phase1_pair(
     ]
     plan_paths: list[Path] = []
     run_dirs: list[Path] = []
-    execution_results: list[ExecutionResult] = []
     for plan in plans:
-        plan_path = write_run_plan(plan, plans_dir / f"{plan.identity.run_id}.plan.resolved.yaml")
-        run_dir = runs_dir / plan.identity.run_id
-        result = execute_run_plan(
-            plan,
-            run_dir=run_dir,
-            dry_run=dry_run,
-            legacy_dispatch=False,
-            timeout_s=timeout_s,
-        )
-        plan_paths.append(plan_path)
-        run_dirs.append(run_dir)
-        execution_results.append(result)
+        plan_paths.append(write_run_plan(plan, plans_dir / f"{plan.identity.run_id}.plan.resolved.yaml"))
+        run_dirs.append(runs_dir / plan.identity.run_id)
+
+    carla_session_obj = None
+    resolved_carla_town = carla_town or _infer_carla_town(scenario)
+    carla_session = dry_run_carla_session_payload(
+        requested=bool(start_carla),
+        carla_root=carla_root,
+        town=resolved_carla_town,
+        extra_args=carla_extra_args,
+    )
+    carla_session_path = write_phase1_carla_session_payload(
+        out_dir=output / "carla_session",
+        payload=carla_session,
+    )
+    startup_error: str | None = None
+    if start_carla and not dry_run:
+        try:
+            carla_session_obj = start_phase1_carla_session(
+                out_dir=output / "carla_session",
+                carla_root=carla_root,
+                town=resolved_carla_town,
+                extra_args=carla_extra_args,
+                timeout_s=carla_timeout_s,
+            )
+            carla_session = dict(carla_session_obj.payload)
+            carla_session_path = carla_session_obj.status_path
+        except Phase1CarlaStartupError as exc:
+            startup_error = f"{exc.__class__.__name__}: {exc}"
+            try:
+                carla_session = json.loads(carla_session_path.read_text(encoding="utf-8"))
+            except Exception:
+                carla_session = {
+                    **dict(carla_session),
+                    "status": "startup_failed",
+                    "error": startup_error,
+                }
+
+    execution_results: list[ExecutionResult] = []
+    if startup_error:
+        for plan, run_dir in zip(plans, run_dirs):
+            execution_results.append(
+                _materialize_carla_startup_blocked_result(
+                    plan=plan,
+                    run_dir=run_dir,
+                    startup_error=startup_error,
+                    carla_session={
+                        **dict(carla_session),
+                        "path": str(carla_session_path),
+                    },
+                )
+            )
+    else:
+        try:
+            for plan, run_dir in zip(plans, run_dirs):
+                result = execute_run_plan(
+                    plan,
+                    run_dir=run_dir,
+                    dry_run=dry_run,
+                    legacy_dispatch=False,
+                    timeout_s=timeout_s,
+                )
+                execution_results.append(result)
+        finally:
+            if carla_session_obj is not None:
+                carla_session = carla_session_obj.stop()
 
     comparison_report = compare_scenario_runs(run_dirs)
     comparison_outputs = write_scenario_comparison(comparison_report, comparison_dir)
@@ -113,6 +183,11 @@ def run_phase1_pair(
         "created_wall_time_s": time.time(),
         "dry_run": bool(dry_run),
         "timeout_s": timeout_s,
+        "startup_error": startup_error,
+        "carla_session": {
+            **dict(carla_session),
+            "path": str(carla_session_path),
+        },
         "planning_control": {
             "platform": planning_platform,
             "algorithm": planning_profile,
@@ -143,6 +218,11 @@ def run_phase1_pair(
         execution_results=execution_results,
         comparison_outputs=comparison_outputs,
         manifest_path=manifest_path,
+        carla_session={
+            **dict(carla_session),
+            "path": str(carla_session_path),
+        },
+        startup_error=startup_error,
     )
 
 
@@ -181,3 +261,80 @@ def _pair_id(scenario: str | Path) -> str:
     cleaned = "".join(ch if ch.isalnum() else "_" for ch in raw.strip().lower())
     cleaned = "_".join(part for part in cleaned.split("_") if part)
     return f"phase1_pair_{cleaned or 'scenario'}_{int(time.time())}"
+
+
+def _materialize_carla_startup_blocked_result(
+    *,
+    plan: RunPlan,
+    run_dir: Path,
+    startup_error: str,
+    carla_session: dict[str, Any],
+) -> ExecutionResult:
+    context = RuntimeContext.from_plan(
+        plan,
+        run_dir=run_dir,
+        dry_run=False,
+        legacy_dispatch=False,
+    )
+    backend = default_backend_registry().for_plan(plan)
+    backend_contract = backend.contract(plan).to_dict()
+    preflight = backend.preflight(plan).to_dict()
+    launch_plan = backend.build_launch_plan(plan).to_dict()
+    launch_plan = _rewrite_launch_plan_run_dir(launch_plan, plan=plan, run_dir=context.run_dir)
+    _write_json(context.run_dir / "preflight.json", preflight)
+    dispatch = {
+        "status": "blocked_by_carla_startup",
+        "exit_code": 2,
+        "error": startup_error,
+        "carla_session": dict(carla_session),
+        "claim_boundary": (
+            "CARLA startup failure is setup/environment evidence and is not a backend behavior loss."
+        ),
+    }
+    artifacts = write_runtime_context_artifacts(
+        context,
+        launch_plan=launch_plan,
+        status="blocked_by_carla_startup",
+        compatibility_source=launch_plan.get("compatibility_source"),
+        backend_contract=backend_contract,
+        summary={
+            "success": False,
+            "failure_reason": "backend_not_ready",
+            "fail_reason": "backend_not_ready",
+            "startup_error": startup_error,
+            "carla_session": dict(carla_session),
+            "preflight": preflight,
+            "dispatch": dispatch,
+        },
+        preserve_existing=False,
+    )
+    result = ExecutionResult(
+        status="blocked_by_carla_startup",
+        exit_code=2,
+        run_dir=context.run_dir,
+        launch_plan=launch_plan,
+        preflight=preflight,
+        backend_contract=backend_contract,
+        artifacts=artifacts,
+        dispatch=dispatch,
+    )
+    _write_json(context.run_dir / "platform_execution_result.json", result.to_dict())
+    write_phase1_status(
+        classify_phase1_run(context.run_dir),
+        context.run_dir / "analysis" / "phase1_status",
+    )
+    return result
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _infer_carla_town(scenario: str | Path) -> str:
+    lowered = str(scenario).lower()
+    if "baguang" in lowered or "straight_road_for_baguang" in lowered:
+        return "straight_road_for_baguang"
+    if "town01" in lowered:
+        return "Town01"
+    return "Town01"

@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from .carla_session import (
+    Phase1CarlaStartupError,
+    dry_run_carla_session_payload,
+    start_phase1_carla_session,
+    write_phase1_carla_session_payload,
+)
 from .phase1_pair_runner import Phase1PairRunResult, run_phase1_pair
 from .registry import PlatformRegistry
 
@@ -60,6 +66,7 @@ class Phase1P0MatrixResult:
     manifest_path: Path
     csv_path: Path
     rows: list[dict[str, Any]]
+    carla_session: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +76,7 @@ class Phase1P0MatrixResult:
             "manifest_path": str(self.manifest_path),
             "csv_path": str(self.csv_path),
             "rows": list(self.rows),
+            "carla_session": dict(self.carla_session),
         }
 
 
@@ -80,6 +88,11 @@ def run_phase1_p0_matrix(
     dry_run: bool = False,
     timeout_s: float | None = None,
     continue_on_failure: bool = True,
+    start_carla: bool = False,
+    carla_root: str | Path | None = None,
+    carla_town: str | None = None,
+    carla_extra_args: str = "-RenderOffScreen",
+    carla_timeout_s: float = 90.0,
     apollo_profile: str = "apollo/apollo10_carla_gt",
     planning_profile: str = "builtin/simple_acc_route_follower",
     apollo_platform: str = "apollo_cyberrt",
@@ -95,41 +108,115 @@ def run_phase1_p0_matrix(
     pairs_dir.mkdir(parents=True, exist_ok=True)
     resolved_scenarios = list(scenarios or DEFAULT_PHASE1_P0_SCENARIOS)
     registry = registry or PlatformRegistry(repo_root=".")
-
+    carla_session_obj = None
+    resolved_carla_town = carla_town or _infer_matrix_carla_town(resolved_scenarios)
+    carla_session = dry_run_carla_session_payload(
+        requested=bool(start_carla),
+        carla_root=carla_root,
+        town=resolved_carla_town,
+        extra_args=carla_extra_args,
+    )
+    carla_session_path = write_phase1_carla_session_payload(
+        out_dir=output / "carla_session",
+        payload=carla_session,
+    )
     rows: list[dict[str, Any]] = []
-    for item in resolved_scenarios:
-        pair_id = _pair_id(resolved_matrix_id, item.canonical_case)
-        pair_out = pairs_dir / item.canonical_case
+    if start_carla and not dry_run:
         try:
-            pair = run_phase1_pair(
-                scenario=item.scenario,
-                out_dir=pair_out,
-                pair_id=pair_id,
-                apollo_profile=apollo_profile,
-                planning_profile=planning_profile,
-                apollo_platform=apollo_platform,
-                planning_platform=planning_platform,
-                recording=recording,
-                gate=gate,
+            carla_session_obj = start_phase1_carla_session(
+                out_dir=output / "carla_session",
+                carla_root=carla_root,
+                town=resolved_carla_town,
+                extra_args=carla_extra_args,
+                timeout_s=carla_timeout_s,
+            )
+            carla_session = dict(carla_session_obj.payload)
+            carla_session_path = carla_session_obj.status_path
+        except Phase1CarlaStartupError as exc:
+            try:
+                carla_session = json.loads(carla_session_path.read_text(encoding="utf-8"))
+            except Exception:
+                carla_session = {
+                    **dict(carla_session),
+                    "status": "startup_failed",
+                    "error": f"{exc.__class__.__name__}: {exc}",
+                }
+            for item in resolved_scenarios:
+                pair_id = _pair_id(resolved_matrix_id, item.canonical_case)
+                rows.append(
+                    _error_row(
+                        item,
+                        pair_id=pair_id,
+                        pair_out=pairs_dir / item.canonical_case,
+                        error=exc,
+                    )
+                )
+            manifest_path, csv_path = _write_outputs(
+                output,
+                matrix_id=resolved_matrix_id,
+                rows=rows,
                 dry_run=dry_run,
                 timeout_s=timeout_s,
-                registry=registry,
+                continue_on_failure=continue_on_failure,
+                carla_session={
+                    **dict(carla_session),
+                    "path": str(carla_session_path),
+                },
             )
-        except Exception as exc:
-            row = _error_row(item, pair_id=pair_id, pair_out=pair_out, error=exc)
-            rows.append(row)
-            if not continue_on_failure:
-                _write_outputs(
-                    output,
-                    matrix_id=resolved_matrix_id,
-                    rows=rows,
+            return Phase1P0MatrixResult(
+                matrix_id=resolved_matrix_id,
+                out_dir=output,
+                manifest_path=manifest_path,
+                csv_path=csv_path,
+                rows=rows,
+                carla_session={
+                    **dict(carla_session),
+                    "path": str(carla_session_path),
+                },
+            )
+
+    try:
+        for item in resolved_scenarios:
+            pair_id = _pair_id(resolved_matrix_id, item.canonical_case)
+            pair_out = pairs_dir / item.canonical_case
+            try:
+                pair = run_phase1_pair(
+                    scenario=item.scenario,
+                    out_dir=pair_out,
+                    pair_id=pair_id,
+                    apollo_profile=apollo_profile,
+                    planning_profile=planning_profile,
+                    apollo_platform=apollo_platform,
+                    planning_platform=planning_platform,
+                    recording=recording,
+                    gate=gate,
                     dry_run=dry_run,
                     timeout_s=timeout_s,
-                    continue_on_failure=continue_on_failure,
+                    start_carla=False,
+                    registry=registry,
                 )
-                raise
-            continue
-        rows.append(_row_from_pair(item, pair))
+            except Exception as exc:
+                row = _error_row(item, pair_id=pair_id, pair_out=pair_out, error=exc)
+                rows.append(row)
+                if not continue_on_failure:
+                    _write_outputs(
+                        output,
+                        matrix_id=resolved_matrix_id,
+                        rows=rows,
+                        dry_run=dry_run,
+                        timeout_s=timeout_s,
+                        continue_on_failure=continue_on_failure,
+                        carla_session={
+                            **dict(carla_session),
+                            "path": str(carla_session_path),
+                        },
+                    )
+                    raise
+                continue
+            rows.append(_row_from_pair(item, pair))
+    finally:
+        if carla_session_obj is not None:
+            carla_session = carla_session_obj.stop()
 
     manifest_path, csv_path = _write_outputs(
         output,
@@ -138,6 +225,10 @@ def run_phase1_p0_matrix(
         dry_run=dry_run,
         timeout_s=timeout_s,
         continue_on_failure=continue_on_failure,
+        carla_session={
+            **dict(carla_session),
+            "path": str(carla_session_path),
+        },
     )
     return Phase1P0MatrixResult(
         matrix_id=resolved_matrix_id,
@@ -145,6 +236,10 @@ def run_phase1_p0_matrix(
         manifest_path=manifest_path,
         csv_path=csv_path,
         rows=rows,
+        carla_session={
+            **dict(carla_session),
+            "path": str(carla_session_path),
+        },
     )
 
 
@@ -210,6 +305,7 @@ def _write_outputs(
     dry_run: bool,
     timeout_s: float | None,
     continue_on_failure: bool,
+    carla_session: dict[str, Any] | None = None,
 ) -> tuple[Path, Path]:
     manifest_path = output / "phase1_p0_matrix_manifest.json"
     csv_path = output / "phase1_p0_matrix.csv"
@@ -220,6 +316,7 @@ def _write_outputs(
         "dry_run": bool(dry_run),
         "timeout_s": timeout_s,
         "continue_on_failure": bool(continue_on_failure),
+        "carla_session": dict(carla_session or dry_run_carla_session_payload(requested=False)),
         "scenario_count": len(rows),
         "rows": rows,
         "summary": _summary(rows),
@@ -279,3 +376,12 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 def _slug(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() else "_" for ch in value.strip().lower())
     return "_".join(part for part in cleaned.split("_") if part) or "phase1"
+
+
+def _infer_matrix_carla_town(scenarios: Sequence[Phase1P0Scenario]) -> str:
+    lowered = " ".join(item.scenario.lower() for item in scenarios)
+    if "baguang" in lowered:
+        return "straight_road_for_baguang"
+    if "town01" in lowered:
+        return "Town01"
+    return "Town01"

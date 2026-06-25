@@ -137,6 +137,32 @@ Executor update, 2026-06-25:
   active blocking assists, and natural-driving insufficiency. This is valid
   Phase 1 comparison evidence, not Apollo follow-stop success and not
   no-interference natural-driving evidence.
+- The pair and P0 matrix runners now expose the same lifecycle as an explicit
+  operator option: `--start-carla`. It starts CARLA through `CarlaLauncher`,
+  records `carla_session/phase1_carla_session.json`, keeps the server alive
+  for the pair or full matrix, and records stop status. In dry-run mode the
+  same option records `status=dry_run_not_started` without starting CARLA. This
+  removes the previous manual keepalive step from the reproducible workflow,
+  but remains startup/environment evidence only; it does not prove backend
+  behavior, Apollo no-assist operation, or natural driving.
+- Follow-up online validation with the new `--start-carla` path,
+  `runs/phase1_online_pairs/follow_stop_static_spawn2m_goal_start_carla_retry_20260625_120545`,
+  did not reach backend behavior. CARLA opened RPC ports for
+  `straight_road_for_baguang`, but `rpc_handshake_ready=false` after the
+  180s startup window. The runner wrote
+  `carla_session/phase1_carla_session.json` with `status=not_ready` and
+  `stop.status=stopped_after_startup_failure`, and no CARLA process remained.
+  This validates failure cleanup and artifact materialization, while leaving
+  CARLA startup/RPC readiness as the next online environment blocker for this
+  path.
+- A shorter retest after the graceful-startup fix,
+  `runs/phase1_online_pairs/follow_stop_static_spawn2m_goal_start_carla_graceful_20260625_121727`,
+  confirms the pair runner now writes both backend run directories,
+  `platform_execution_result.status=blocked_by_carla_startup`,
+  `analysis/phase1_status.status=invalid`, and
+  `comparison_status=invalid` / `reason=all_runs_invalid` instead of emitting a
+  Python traceback. This is an improvement in runtime delivery diagnostics, not
+  a backend behavior result.
 - This is runtime lifecycle hardening only. It does not prove Apollo behavior,
   does not remove `legacy_followstop`, and does not complete the P0 online
   matrix.
