@@ -127,6 +127,13 @@ Python found in `CARLA_TESTBED_CARLA_PYTHON`, `CARLA16_PYTHON`, or common local
 of those variables if their shell `python3` cannot `import carla`. The selected
 interpreter is recorded in the launch-plan warnings.
 
+For online Baguang pairs, prefer a CARLA session started by the existing
+`CarlaLauncher` / `--start-carla` prestart path and keep it alive for the whole
+pair. A raw `CarlaUE4.sh` process may briefly open port `2000` before the world
+is actually ready or before `load_world(straight_road_for_baguang)` succeeds;
+that state should be treated as environment/startup evidence, not as a backend
+behavior result.
+
 Build evidence and gate reports from an existing run directory:
 
 ```bash

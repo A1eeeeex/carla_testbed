@@ -123,6 +123,20 @@ Executor update, 2026-06-25:
   reported no running CARLA. The comparison remains `invalid/all_runs_invalid`.
   Treat this as online environment/startup evidence, not backend behavior
   evidence.
+- Keeping CARLA alive through the existing `CarlaLauncher` path then produced
+  a stronger online pair:
+  `runs/phase1_online_pairs/follow_stop_static_spawn2m_goal_keepalive_20260625_114446`.
+  Both backend commands completed and the comparison is
+  `comparison_status=comparable` with
+  `comparison_target_status=apollo_vs_planning_control_evaluable`. The
+  PlanningControlBackend run is `phase1_status=success`; the ApolloBackend run
+  is an evaluable `lane_invasion` failure with `v_t_gap.status=warn`.
+  `apollo_link_health.primary_blocker` is
+  `localization_gt_contract:apollo_hdmap_projection_lateral_error_high`, with
+  secondary blockers in HDMap projection, planning reference-line compatibility,
+  active blocking assists, and natural-driving insufficiency. This is valid
+  Phase 1 comparison evidence, not Apollo follow-stop success and not
+  no-interference natural-driving evidence.
 - This is runtime lifecycle hardening only. It does not prove Apollo behavior,
   does not remove `legacy_followstop`, and does not complete the P0 online
   matrix.
