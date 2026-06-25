@@ -30,6 +30,37 @@ def test_missing_timeseries_is_invalid_not_backend_failure(tmp_path) -> None:
     assert "invalid_run_is_setup_or_evidence_failure_not_backend_loss" in report["notes"]
 
 
+def test_platform_timeout_with_timeseries_is_evaluable_backend_failure(tmp_path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "r1",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "exit_reason": "platform_timeout"}),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text("sim_time,ego_speed_mps\n0.0,1.0\n", encoding="utf-8")
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "timeout"
+    assert report["failed_reasons"] == ["timeout"]
+    assert report["invalid_reasons"] == []
+    assert report["run_evaluable"] is True
+    assert report["required_artifacts"]["timeseries"] == "present"
+
+
 def test_backend_not_ready_takes_priority_over_missing_timeseries(tmp_path) -> None:
     run = tmp_path / "run"
     run.mkdir()

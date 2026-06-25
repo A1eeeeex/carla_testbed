@@ -205,6 +205,7 @@ class BackendRuntimeAdapter:
             text=True,
             stdout=stdout_file,
             stderr=stderr_file,
+            start_new_session=True,
         )
         pid_path = execution_dir / "runtime.pid"
         pid_path.write_text(str(process.pid) + "\n", encoding="utf-8")
@@ -260,22 +261,30 @@ class BackendRuntimeAdapter:
             timed_out=timed_out,
         )
 
-    def stop(self, handle: RuntimeHandle) -> CleanupResult:
+    def stop(self, handle: RuntimeHandle, *, context: RuntimeContext | None = None) -> CleanupResult:
         terminated_process = False
         closed_streams = 0
+        warnings: list[str] = []
         if handle.process is not None and handle.process.poll() is None:
             terminated_process = True
             _terminate_process(handle.process)
+        if context is not None and handle.command:
+            residual = _terminate_residual_processes_for_run_dir(context.run_dir)
+            if residual:
+                terminated_process = True
+                warnings.append(f"terminated_residual_processes_for_run_dir:{len(residual)}")
+                _write_json(_execution_dir(context) / "residual_process_cleanup.json", {"processes": residual})
         for fh in (handle.stdout_file, handle.stderr_file):
             if fh is not None and not fh.closed:
                 fh.close()
                 closed_streams += 1
-        if handle.process is None and closed_streams == 0:
+        if handle.process is None and closed_streams == 0 and not warnings:
             return CleanupResult(status="not_applicable")
         return CleanupResult(
             status="completed",
             terminated_process=terminated_process,
             closed_streams=closed_streams,
+            warnings=warnings,
         )
 
     def postprocess(
@@ -315,7 +324,7 @@ class BackendRuntimeAdapter:
         self.prepare(context, launch_plan)
         handle = self.start(context, launch_plan)
         command_result = self.wait(handle, timeout_s=timeout_s)
-        cleanup = self.stop(handle)
+        cleanup = self.stop(handle, context=context)
         postprocess = self.postprocess(context, launch_plan, command_result)
         status = command_result.status
         exit_code = command_result.exit_code
@@ -372,15 +381,89 @@ def _terminate_process(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
     try:
-        process.send_signal(signal.SIGINT)
+        pgid = os.getpgid(process.pid)
+    except Exception:
+        pgid = None
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGINT)
+        else:
+            process.send_signal(signal.SIGINT)
         process.wait(timeout=10.0)
     except Exception:
         if process.poll() is None:
-            process.kill()
+            try:
+                if pgid is not None:
+                    os.killpg(pgid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except Exception:
+                process.kill()
             try:
                 process.wait(timeout=5.0)
             except Exception:
                 pass
+
+
+def _terminate_residual_processes_for_run_dir(run_dir: Path) -> list[dict[str, Any]]:
+    token = str(run_dir.expanduser())
+    if not token:
+        return []
+    own_pid = os.getpid()
+    parent_pid = os.getppid()
+    try:
+        own_pgid = os.getpgrp()
+    except Exception:
+        own_pgid = None
+    matches: list[dict[str, Any]] = []
+    for proc_dir in Path("/proc").iterdir():
+        if not proc_dir.name.isdigit():
+            continue
+        pid = int(proc_dir.name)
+        if pid in {own_pid, parent_pid}:
+            continue
+        try:
+            raw = (proc_dir / "cmdline").read_bytes()
+        except OSError:
+            continue
+        cmdline = raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+        if token not in cmdline:
+            continue
+        try:
+            pgid = os.getpgid(pid)
+        except OSError:
+            pgid = None
+        if pgid is not None and own_pgid is not None and pgid == own_pgid:
+            continue
+        matches.append({"pid": pid, "pgid": pgid, "cmdline": cmdline[:1000]})
+    for item in matches:
+        _signal_residual_process(item, signal.SIGINT)
+    time.sleep(1.0 if matches else 0.0)
+    for item in matches:
+        if Path(f"/proc/{item['pid']}").exists():
+            _signal_residual_process(item, signal.SIGKILL)
+    return matches
+
+
+def _signal_residual_process(item: Mapping[str, Any], sig: signal.Signals) -> None:
+    pid = int(item.get("pid") or 0)
+    pgid_value = item.get("pgid")
+    pgid = int(pgid_value) if pgid_value is not None else None
+    try:
+        if pgid is not None:
+            os.killpg(pgid, sig)
+        elif pid:
+            os.kill(pid, sig)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        return
+    except OSError:
+        if pid:
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                return
 
 
 def _commands(launch_plan: Mapping[str, Any]) -> list[list[str]]:

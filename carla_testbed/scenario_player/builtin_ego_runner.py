@@ -28,6 +28,7 @@ from carla_testbed.scenario_player.manifest_contract import fixed_scene_manifest
 from carla_testbed.scenario_player.schema import load_fixed_scene_template
 from carla_testbed.scenario_player.target_actor import resolve_target_actor_contract
 from carla_testbed.scenarios.followstop_geometry import select_waypoint_ahead_transform
+from carla_testbed.sim.bringup import load_world_with_retry
 
 
 def run_builtin_ego_scenario(
@@ -131,8 +132,7 @@ def _run_builtin_ego_route_only(
     )
 
     client = carla.Client(host, int(port))
-    client.set_timeout(30.0)
-    world = client.load_world(town) if town else client.get_world()
+    world = _load_world_for_builtin_runner(client, town, artifact_dir=artifacts)
     original_settings = world.get_settings()
     sync_settings = world.get_settings()
     sync_settings.synchronous_mode = True
@@ -402,8 +402,7 @@ def run_builtin_ego_fixed_scene(
     )
 
     client = carla.Client(host, int(port))
-    client.set_timeout(30.0)
-    world = client.load_world(town) if town else client.get_world()
+    world = _load_world_for_builtin_runner(client, town, artifact_dir=artifacts)
     original_settings = world.get_settings()
     sync_settings = world.get_settings()
     sync_settings.synchronous_mode = True
@@ -1504,6 +1503,48 @@ def _append_event(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(dict(payload), sort_keys=True) + "\n")
+
+
+def _load_world_for_builtin_runner(
+    client: Any,
+    town: str | None,
+    *,
+    artifact_dir: Path,
+    attempts: int = 3,
+    delay_s: float = 2.0,
+    timeout_s: float = 60.0,
+) -> Any:
+    attempts_path = artifact_dir / "carla_load_world_attempts.jsonl"
+
+    if not town:
+        _append_event(
+            attempts_path,
+            {
+                "stage": "get_world_without_town",
+                "claim_boundary": "CARLA world-loading evidence only; not backend behavior evidence.",
+            },
+        )
+        return client.get_world()
+
+    def _record_attempt(stage: str, payload: dict[str, Any]) -> None:
+        _append_event(
+            attempts_path,
+            {
+                "stage": stage,
+                "claim_boundary": "CARLA world-loading evidence only; not backend behavior evidence.",
+                **dict(payload),
+            },
+        )
+
+    return load_world_with_retry(
+        client,
+        str(town),
+        attempts=int(attempts),
+        delay_s=float(delay_s),
+        timeout_s=float(timeout_s),
+        restore_timeout_s=30.0,
+        attempt_callback=_record_attempt,
+    )
 
 
 def _float_attr(obj: Any, name: str, default: float = 0.0) -> float:

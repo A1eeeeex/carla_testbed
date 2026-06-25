@@ -131,7 +131,7 @@ def test_cli_plan_carla_builtin_baguang_scenario_shows_launch() -> None:
     assert '"target_actor_role": "lead_vehicle"' in result.stdout
 
 
-def test_apollo_town01_launch_plan_uses_python3_for_online_runner() -> None:
+def test_apollo_town01_launch_plan_uses_carla_python_for_online_runner() -> None:
     from carla_testbed.backends.registry import default_backend_registry
 
     plan = compile_run_plan(
@@ -146,7 +146,9 @@ def test_apollo_town01_launch_plan_uses_python3_for_online_runner() -> None:
     launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
 
     assert launch.commands
-    assert launch.commands[0][0] == "python3"
+    assert launch.commands[0][0] == launch.env["CARLA16_PYTHON"]
+    assert launch.commands[0][0] == launch.env["CARLA_TESTBED_CARLA_PYTHON"]
+    assert Path(launch.commands[0][0]).name.startswith("python")
     assert launch.commands[0][1] == "tools/run_town01_capability_online_chain.py"
     assert "--step" in launch.commands[0]
     assert "lane_keep:town01_rh_spawn097_goal046" in launch.commands[0]

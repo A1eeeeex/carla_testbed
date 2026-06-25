@@ -95,6 +95,32 @@ def test_builtin_runner_manifest_records_scenario_spawn_offset(monkeypatch, tmp_
     assert world.spawn_transform.location.x == 2.0
 
 
+def test_builtin_runner_load_world_retries_and_records_attempts(tmp_path) -> None:
+    world = _RunnerWorld()
+    client = _FlakyLoadWorldClient(world)
+
+    loaded = runner._load_world_for_builtin_runner(
+        client,
+        "Town01",
+        artifact_dir=tmp_path / "artifacts",
+        attempts=2,
+        delay_s=0.0,
+        timeout_s=12.5,
+    )
+
+    assert loaded is world
+    assert client.load_calls == 2
+    assert client.timeout_s == 30.0
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "artifacts" / "carla_load_world_attempts.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    stages = [row["stage"] for row in rows]
+    assert "load_world_attempt_failed" in stages
+    assert "load_world_attempt_ok" in stages
+    assert all(row["claim_boundary"].startswith("CARLA world-loading evidence only") for row in rows)
+
+
 class _Location:
     def __init__(self, *, x: float, y: float, z: float = 0.0) -> None:
         self.x = x
@@ -170,6 +196,23 @@ class _FakeClient:
         self.timeout_s = timeout_s
 
     def load_world(self, town):
+        self.town = town
+        return self._world
+
+
+class _FlakyLoadWorldClient:
+    def __init__(self, world):
+        self._world = world
+        self.load_calls = 0
+        self.timeout_s = None
+
+    def set_timeout(self, timeout_s):
+        self.timeout_s = timeout_s
+
+    def load_world(self, town):
+        self.load_calls += 1
+        if self.load_calls == 1:
+            raise RuntimeError("simulator temporarily busy")
         self.town = town
         return self._world
 

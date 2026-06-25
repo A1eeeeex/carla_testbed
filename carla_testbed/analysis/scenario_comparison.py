@@ -1019,7 +1019,10 @@ def _write_combined_v_t_gap(report: Mapping[str, Any], output_path: Path) -> boo
             continue
         if not _run_evaluable(run) or not _run_target_metric_evaluable(run):
             continue
-        csv_path = Path(str((run.get("artifact_paths") or {}).get("v_t_gap", ""))).with_name("v_t_gap.csv")
+        v_t_gap_path = str((run.get("artifact_paths") or {}).get("v_t_gap", "") or "")
+        if not v_t_gap_path:
+            continue
+        csv_path = Path(v_t_gap_path).with_name("v_t_gap.csv")
         if not csv_path.exists():
             continue
         with csv_path.open("r", encoding="utf-8", newline="") as handle:

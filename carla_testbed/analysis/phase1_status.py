@@ -2751,6 +2751,8 @@ def _summary_has_failure_code(summary: Mapping[str, Any], code: str) -> bool:
 def _normalize_reason_value(value: Any) -> str:
     normalized = str(value or "").strip().lower()
     aliases = {
+        "platform_timeout": "timeout",
+        "runtime_timeout": "timeout",
         "route_establishment_latency_sec": "route_establishment_latency",
     }
     return aliases.get(normalized, normalized)

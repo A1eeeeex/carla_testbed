@@ -545,6 +545,45 @@ def test_scenario_comparison_writer(tmp_path) -> None:
     assert "no_clear_control_blocker" in markdown
 
 
+def test_scenario_comparison_writer_skips_missing_v_t_gap_curve(tmp_path) -> None:
+    report = {
+        "schema_version": "phase1_comparison.v1",
+        "comparison_id": "town01_lane_keep__apollo_cyberrt_vs_carla_builtin",
+        "scenario_id": "town01_lane_keep_097",
+        "scenario_case": "town01_lane_keep_097",
+        "backends": ["apollo_cyberrt", "carla_builtin"],
+        "comparison_status": "comparable",
+        "comparison_target_status": "apollo_vs_planning_control_evaluable",
+        "backend_coverage": {},
+        "validity_gates": {},
+        "participating_runs": [
+            {
+                "run_dir": str(tmp_path / "apollo"),
+                "run_id": "apollo",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "phase1_status": "failed",
+                "failure_reason": "timeout",
+                "run_evaluable": True,
+                "target_metric_evaluable": True,
+                "artifact_paths": {},
+            }
+        ],
+        "evaluable_runs": [],
+        "invalid_runs": [],
+        "backend_results": [],
+        "v_t_gap_files": [],
+        "evidence_files": [],
+        "claim_boundary": "ScenarioComparison compares evaluable Phase 1 runs only.",
+    }
+
+    outputs = write_scenario_comparison(report, tmp_path / "comparison")
+
+    assert "v_t_gap_csv" not in outputs
+    assert outputs["summary"].endswith("comparison_summary.json")
+    assert not (tmp_path / "comparison" / "comparison_curves" / "v_t_gap_combined.csv").exists()
+
+
 def test_scenario_comparison_curve_excludes_invalid_runs(tmp_path) -> None:
     run_a = _write_run(tmp_path, "apollo", "apollo_cyberrt", "apollo_reference_backend", "invalid", "backend_not_ready")
     run_b = _write_run(tmp_path, "builtin", "carla_builtin", "planning_control_backend", "success")

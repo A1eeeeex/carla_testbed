@@ -146,12 +146,16 @@ python -m carla_testbed phase1 run-p0-matrix \
   --carla-extra-args=-RenderOffScreen
 ```
 
-This writes `carla_session/phase1_carla_session.json` with
-`schema_version=phase1_carla_session.v1`, CARLA root, requested town, readiness
-diagnostics, and stop status. In `--dry-run`, the same commands write
-`status=dry_run_not_started` and do not start CARLA. The session artifact is
-startup/environment evidence only; it is not backend behavior evidence and it
-does not make Apollo or `carla_builtin` pass a scenario.
+For `phase1 run-pair`, this writes `carla_session/phase1_carla_session.json`
+with `schema_version=phase1_carla_session.v1`, CARLA root, requested town,
+readiness diagnostics, and stop status. For `phase1 run-p0-matrix`, the
+top-level `carla_session` artifact records `status=per_pair_isolated` and each
+pair owns its own `phase1_carla_session.json`. This avoids a legacy Apollo
+timeout or nested process contaminating later P0 rows in the same matrix. In
+`--dry-run`, the same commands write `status=dry_run_not_started` and do not
+start CARLA. The session artifact is startup/environment evidence only; it is
+not backend behavior evidence and it does not make Apollo or `carla_builtin`
+pass a scenario.
 
 The launcher may be invoked from a Python that cannot import the CARLA client
 module, for example the project default Python 3.13 while CARLA 0.9.16 provides
@@ -167,9 +171,9 @@ startup failure and records the result in `carla_session.stop`. For
 `phase1 run-pair`, startup failure still materializes backend run directories
 with `platform_execution_result.status=blocked_by_carla_startup` and
 `analysis/phase1_status.status=invalid`; the pair comparison becomes
-`invalid/all_runs_invalid`. For `phase1 run-p0-matrix`, matrix-level CARLA
-startup failure writes `phase1_p0_matrix_manifest.json` and CSV rows with
-`status=error`. These are setup/environment artifacts, not backend losses.
+`invalid/all_runs_invalid`. For `phase1 run-p0-matrix`, the same failure is
+contained inside the affected pair row, so the matrix can continue to later
+P0 rows. These are setup/environment artifacts, not backend losses.
 
 CARLA startup readiness does not prove the requested map is loaded. On this
 host the initial world observed after `-carla-map=<town>` can still be
@@ -183,12 +187,45 @@ Python found in `CARLA_TESTBED_CARLA_PYTHON`, `CARLA16_PYTHON`, or common local
 of those variables if their shell `python3` cannot `import carla`. The selected
 interpreter is recorded in the launch-plan warnings.
 
+For Apollo Town01 route-only compatibility runs, the launch plan follows the
+same interpreter rule. This matters because `tools/run_town01_capability_online_chain.py`
+uses CARLA Python APIs during prewarm/load-world checks; running it under a
+project interpreter without the CARLA wheel turns the run into
+`invalid/no_timeseries` or a timeout setup failure, not an Apollo behavior
+loss. The selected interpreter is recorded in `launch_plan.env` as
+`CARLA_TESTBED_CARLA_PYTHON` / `CARLA16_PYTHON` and echoed in launch warnings.
+
 For online Baguang pairs, prefer a CARLA session started by the existing
-`CarlaLauncher` / `--start-carla` prestart path and keep it alive for the whole
-pair or matrix. A raw `CarlaUE4.sh` process may briefly open port `2000` before
-the world is actually ready or before `load_world(straight_road_for_baguang)`
+`CarlaLauncher` / `--start-carla` prestart path and keep it alive for the pair.
+For the full P0 matrix, the runner starts isolated pair-level CARLA sessions
+rather than one shared matrix session because the current legacy Apollo
+compatibility path can leave nested processes or world state behind after
+timeouts. A raw `CarlaUE4.sh` process may briefly open port `2000` before the
+world is actually ready or before `load_world(straight_road_for_baguang)`
 succeeds; that state should be treated as environment/startup evidence, not as
 a backend behavior result.
+
+If a real runtime command is attempted and safe postprocess returns without
+writing `analysis/phase1_status/phase1_status.json`, `ScenarioRunExecutor`
+materializes a fallback Phase 1 status using the existing classifier. This
+keeps failed/timeout runs inspectable and prevents missing postprocess output
+from being mistaken for a backend behavior loss. The fallback does not run in
+dry-run mode and does not overwrite an existing status artifact.
+
+The runtime adapter starts backend commands in their own process group and, as
+a second safety net, terminates residual processes whose command line references
+the current run directory. This is needed for legacy wrappers that spawn a new
+session through `conda run` or nested CARLA/Apollo helpers. Residual cleanup is
+lifecycle evidence only; it must not be interpreted as backend behavior success.
+When residuals are found, the adapter writes
+`execution/residual_process_cleanup.json` and adds a cleanup warning such as
+`terminated_residual_processes_for_run_dir:<count>`.
+
+The builtin PlanningControlBackend runner uses retry-backed CARLA world loading
+for both route-only and fixed-scene runs. Attempts are recorded in
+`artifacts/carla_load_world_attempts.jsonl`. A transient `load_world` timeout is
+therefore observable and retryable, while a final failure still leaves the run
+`invalid/no_timeseries`.
 
 Build evidence and gate reports from an existing run directory:
 
@@ -391,3 +428,22 @@ python3 tools/run_town01_capability_online_chain.py \
 `--step curve_lane_follow:town01_rh_spawn217_goal048`. This keeps the unified
 executor aligned with the selected `ScenarioCase`; it still does not prove that
 the nested legacy online runner will produce an evaluable Apollo run.
+
+If that nested legacy runner writes exactly one `timeseries.csv` or
+`timeseries.jsonl` below the declared Phase 1 run directory, the executor
+normalizes the artifact surface by copying it to the declared run root and
+writing `analysis/phase1_artifact_normalization/phase1_artifact_normalization_report.json`.
+The same uniqueness rule applies to `events.jsonl`,
+`config.resolved.yaml`, and known control trace surfaces such as
+`artifacts/control_apply_trace.jsonl`. For route-only scenarios, the executor
+can write `v_t_gap.status=not_applicable` and Phase 1 artifact-completeness
+reports after normalization. These reports are evidence routing only: timeout
+remains timeout, lane invasion remains lane invasion, and Apollo behavior
+success is not inferred from artifact normalization.
+
+Fresh online validation of this path is
+`runs/phase1_p0_matrix/phase1_p0_auto_artifacts_20260625_153515`: all five P0
+pairs are comparable and all five have
+`comparison_target_status=apollo_vs_planning_control_evaluable`. The same
+artifact also shows the remaining behavior failures: Apollo `lane_invasion` on
+the three Baguang rows and Apollo `timeout` on the two Town01 route-only rows.

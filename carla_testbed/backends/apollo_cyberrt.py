@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -197,14 +198,19 @@ class ApolloCyberRTBackend:
                         "analysis/pedestrian_flow_contract/pedestrian_flow_contract_report.json",
                     ]
                 )
+        runtime_python = _runtime_python()
+        env = {
+            "CARLA_TESTBED_RUN_ID": plan.identity.run_id,
+            "CARLA_TESTBED_PLAN_SCHEMA_VERSION": plan.schema_version,
+        }
+        if runtime_python:
+            env.setdefault("CARLA_TESTBED_CARLA_PYTHON", runtime_python)
+            env.setdefault("CARLA16_PYTHON", runtime_python)
         return LaunchPlan(
             backend=self.name,
             mode="legacy_apollo_cyberrt_compat",
             commands=[command] if command else [],
-            env={
-                "CARLA_TESTBED_RUN_ID": plan.identity.run_id,
-                "CARLA_TESTBED_PLAN_SCHEMA_VERSION": plan.schema_version,
-            },
+            env=env,
             required_ports=[2000],
             expected_topics=expected_topics,
             expected_artifacts=expected_artifacts,
@@ -225,6 +231,7 @@ class ApolloCyberRTBackend:
             ),
             warnings=[
                 "LaunchPlan is a compatibility description; executor does not rewrite Apollo bridge runtime.",
+                f"Apollo compatibility runtime python: {runtime_python}",
                 *(
                     [
                         "Apollo static follow-stop fixed-scene compatibility uses a guarded legacy transition config; this is not generic fixed-scene runtime migration.",
@@ -353,11 +360,12 @@ _TOWN01_ROUTE_REF_OVERRIDES = {
 
 def _town01_route_only_command(plan: RunPlan, *, run_dir: str) -> list[str]:
     step = _town01_capability_step(plan)
+    runtime_python = _runtime_python()
     if step is None:
-        return ["python3", "tools/run_town01_capability_online_chain.py"]
+        return [runtime_python, "tools/run_town01_capability_online_chain.py"]
     capability_profile, route_id = step
     return [
-        "python3",
+        runtime_python,
         "tools/run_town01_capability_online_chain.py",
         "--step",
         f"{capability_profile}:{route_id}",
@@ -397,3 +405,18 @@ def _override_value(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def _runtime_python() -> str:
+    for raw in (
+        os.environ.get("CARLA_TESTBED_CARLA_PYTHON"),
+        os.environ.get("CARLA16_PYTHON"),
+        "/home/ubuntu/miniconda3/envs/carla16/bin/python",
+        "/home/ubuntu/miniconda3/envs/carla16/bin/python3",
+        "/home/ubuntu/anaconda3/envs/carla16/bin/python",
+        "/home/ubuntu/anaconda3/envs/carla16/bin/python3",
+    ):
+        candidate = os.path.expanduser(os.path.expandvars(str(raw or "").strip()))
+        if candidate and "${" not in candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return "python3"

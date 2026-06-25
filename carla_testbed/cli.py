@@ -185,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     p0_p.add_argument("--dry-run", action="store_true")
     p0_p.add_argument("--timeout-s", type=float, default=None)
     p0_p.add_argument("--stop-on-failure", action="store_true")
-    p0_p.add_argument("--start-carla", action="store_true", help="start one CARLA session for the matrix")
+    p0_p.add_argument("--start-carla", action="store_true", help="start an isolated CARLA session for each matrix pair")
     p0_p.add_argument("--carla-root", type=Path, default=None)
     p0_p.add_argument("--carla-town", default=None)
     p0_p.add_argument("--carla-extra-args", default="-RenderOffScreen")

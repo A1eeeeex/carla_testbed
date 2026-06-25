@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from carla_testbed.analysis.phase1_artifact_normalization import (
+    ensure_phase1_comparison_artifacts,
+    normalize_phase1_artifacts,
+)
+from carla_testbed.analysis.phase1_status import classify_phase1_run, write_phase1_status
 from carla_testbed.backends.registry import default_backend_registry
 from carla_testbed.platform.plan import RunPlan
 
@@ -24,6 +29,9 @@ class ExecutionResult:
     dispatch: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
+        command = self.dispatch.get("command") if isinstance(self.dispatch.get("command"), dict) else {}
+        postprocess = self.dispatch.get("postprocess") if isinstance(self.dispatch.get("postprocess"), dict) else {}
+        cleanup = self.dispatch.get("cleanup") if isinstance(self.dispatch.get("cleanup"), dict) else {}
         return {
             "schema_version": "platform_execution_result.v1",
             "status": self.status,
@@ -31,9 +39,14 @@ class ExecutionResult:
             "run_dir": str(self.run_dir),
             "launch_plan": self.launch_plan,
             "preflight": dict(self.preflight),
+            "preflight_status": self.preflight.get("status"),
             "backend_contract": dict(self.backend_contract),
             "artifacts": dict(self.artifacts),
             "dispatch": dict(self.dispatch),
+            "dispatch_status": self.status,
+            "runtime_exit_code": command.get("exit_code", self.exit_code),
+            "postprocess_status": postprocess.get("status"),
+            "cleanup_status": cleanup.get("status"),
         }
 
 
@@ -84,6 +97,34 @@ def execute_run_plan(
         summary={"preflight": preflight, "dispatch": adapter_result.to_dict()},
         preserve_existing=not dry_run,
     )
+    normalization_report = normalize_phase1_artifacts(context.run_dir) if not dry_run else {}
+    if normalization_report:
+        artifacts["phase1_artifact_normalization_report"] = str(
+            context.run_dir
+            / "analysis"
+            / "phase1_artifact_normalization"
+            / "phase1_artifact_normalization_report.json"
+        )
+        artifacts["phase1_artifact_normalization_summary"] = str(
+            context.run_dir
+            / "analysis"
+            / "phase1_artifact_normalization"
+            / "phase1_artifact_normalization_summary.md"
+        )
+    phase1_status_paths = _ensure_phase1_status_after_attempt(
+        context.run_dir,
+        dry_run=dry_run,
+        adapter_result=adapter_result,
+        artifact_normalization=normalization_report,
+    )
+    artifacts.update(phase1_status_paths)
+    comparison_artifacts = ensure_phase1_comparison_artifacts(context.run_dir) if not dry_run else {}
+    artifacts.update(
+        {
+            f"phase1_comparison_artifact_{key}": value
+            for key, value in (comparison_artifacts.get("outputs") or {}).items()
+        }
+    )
     result = ExecutionResult(
         status=status,
         exit_code=adapter_result.exit_code,
@@ -97,6 +138,56 @@ def execute_run_plan(
     result_path = context.run_dir / "platform_execution_result.json"
     result_path.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
+
+
+def _ensure_phase1_status_after_attempt(
+    run_dir: Path,
+    *,
+    dry_run: bool,
+    adapter_result: RuntimeAdapterResult,
+    artifact_normalization: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Materialize Phase 1 status when safe postprocess did not produce it.
+
+    Legacy online commands may fail before their own postprocess chain reaches
+    the Phase 1 classifier. The platform still needs an explicit invalid/failed
+    status artifact so ScenarioComparison can avoid treating missing evidence as
+    a backend loss or silently dropping the run from review.
+    """
+
+    if dry_run:
+        return {}
+    if not adapter_result.command.command:
+        return {}
+    status_path = run_dir / "analysis" / "phase1_status" / "phase1_status.json"
+    if status_path.exists() and not _phase1_status_needs_refresh(status_path, artifact_normalization):
+        return {}
+    paths = write_phase1_status(
+        classify_phase1_run(run_dir),
+        run_dir / "analysis" / "phase1_status",
+    )
+    return {f"phase1_status_{key}": value for key, value in paths.items()}
+
+
+def _phase1_status_needs_refresh(
+    status_path: Path,
+    artifact_normalization: dict[str, Any] | None,
+) -> bool:
+    try:
+        current = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+    if not isinstance(current, dict):
+        return True
+    if current.get("status") != "invalid" or current.get("failure_reason") != "no_timeseries":
+        return False
+    if (status_path.parents[2] / "timeseries.csv").exists() or (
+        status_path.parents[2] / "timeseries.jsonl"
+    ).exists():
+        return True
+    if artifact_normalization and artifact_normalization.get("status") == "promoted":
+        return True
+    return False
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

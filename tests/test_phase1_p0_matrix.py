@@ -186,9 +186,28 @@ def test_phase1_p0_matrix_start_carla_failure_writes_matrix_manifest(
     )
 
     assert len(result.rows) == len(DEFAULT_PHASE1_P0_SCENARIOS)
-    assert all(row["status"] == "error" for row in result.rows)
+    assert all(row["status"] == "partial_or_failed" for row in result.rows)
+    assert all(row["pair_manifest_path"] for row in result.rows)
+    assert all(row["comparison_status"] == "invalid" for row in result.rows)
+    assert all(row["comparison_reason"] == "all_runs_invalid" for row in result.rows)
+    assert all(row["invalid_run_count"] == 2 for row in result.rows)
+    assert all(set(row["backend_phase1_statuses"].values()) == {"invalid"} for row in result.rows)
+    assert all(
+        set(row["backend_failure_reasons"].values()) == {"backend_not_ready"} for row in result.rows
+    )
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
-    assert manifest["carla_session"]["status"] == "not_ready"
-    assert manifest["carla_session"]["stop"]["status"] == "stopped_after_startup_failure"
-    assert manifest["summary"]["any_error"] is True
-    assert result.carla_session["status"] == "not_ready"
+    assert manifest["carla_session"]["status"] == "per_pair_isolated"
+    assert manifest["carla_session"]["isolation_mode"] == "per_pair"
+    assert manifest["summary"]["any_error"] is False
+    assert manifest["summary"]["invalid_pair_count"] == len(DEFAULT_PHASE1_P0_SCENARIOS)
+    assert result.carla_session["status"] == "per_pair_isolated"
+
+    first_pair_manifest = json.loads(Path(result.rows[0]["pair_manifest_path"]).read_text(encoding="utf-8"))
+    assert first_pair_manifest["startup_error"].startswith("Phase1CarlaStartupError:")
+    assert first_pair_manifest["carla_session"]["status"] == "not_ready"
+    assert first_pair_manifest["carla_session"]["stop"]["status"] == "stopped_after_startup_failure"
+    for run_dir in result.rows[0]["run_dirs"]:
+        status_path = Path(run_dir) / "analysis" / "phase1_status" / "phase1_status.json"
+        execution_path = Path(run_dir) / "platform_execution_result.json"
+        assert json.loads(status_path.read_text(encoding="utf-8"))["status"] == "invalid"
+        assert json.loads(execution_path.read_text(encoding="utf-8"))["status"] == "blocked_by_carla_startup"

@@ -19,6 +19,12 @@ runs/<run_id>/
 ```
 
 `timeseries.jsonl` is also supported by `RunArtifactStore` for future backends.
+
+For Phase 1 CARLA-backed runtime delivery, `artifacts/carla_load_world_attempts.jsonl`
+may be present. It records `load_world` retry attempts made by the builtin
+PlanningControlBackend runner. This artifact is startup/lifecycle evidence only:
+it can explain an `invalid/no_timeseries` result or a recovered transient CARLA
+timeout, but it does not prove scenario behavior success.
 The legacy harness still writes CSV-oriented frame data.
 
 ## `manifest.json`
@@ -135,6 +141,48 @@ include:
 
 Future backends may prefer `timeseries.jsonl` for structured per-frame records.
 Both forms should stay run-local.
+
+### Phase 1 Legacy Artifact Normalization
+
+Phase 1 analyzers consume the declared run directory as the canonical artifact
+surface. Some compatibility backends still call a nested legacy runner that
+writes `timeseries.csv` or `timeseries.jsonl` below that declared run root. If
+the declared run root has no `timeseries.*` and exactly one nested legacy
+candidate exists, the executor may copy that file to the run root and write:
+
+```text
+analysis/phase1_artifact_normalization/
+  phase1_artifact_normalization_report.json
+  phase1_artifact_normalization_summary.md
+```
+
+This is artifact-surface normalization only. It does not rewrite
+`summary.json`, does not change runtime status, does not mark timeout/failure
+as success, and does not satisfy other missing artifact-completeness gates. If
+multiple nested candidates exist, normalization must report `ambiguous` and
+leave the root untouched.
+
+For Phase 1 comparison, the same uniqueness rule may promote
+`events.jsonl`, `config.resolved.yaml`, and control trace surfaces such as
+`artifacts/control_apply_trace.jsonl` from a nested legacy run. For route-only
+scenarios with no target actor, the executor may also write
+`analysis/v_t_gap/v_t_gap_report.json` with `status=not_applicable` and then
+generate the Phase 1 artifact-completeness surfaces:
+
+```text
+analysis/artifact_completeness/artifact_completeness_report.json
+analysis/phase1_status/artifact_completeness.json
+```
+
+These reports make ScenarioComparison evaluability explicit. They do not
+convert Apollo timeout, lane invasion, collision, or other behavior failures
+into success.
+
+Fresh online validation of this artifact surface is
+`runs/phase1_p0_matrix/phase1_p0_auto_artifacts_20260625_153515`: all five P0
+pairs are comparable with zero invalid pairs after automatic normalization.
+The same evidence still reports behavior failures (`lane_invasion`, `timeout`,
+and `collision`) as failures.
 
 ## Phase 1 Scenario Comparison Artifacts
 
