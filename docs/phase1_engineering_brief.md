@@ -112,6 +112,17 @@ Executor update, 2026-06-25:
   `phase1_p0_matrix.csv`. This proves one-command matrix materialization and
   artifact routing; it does not prove online Apollo behavior or no-assist
   execution.
+- Follow-up local online probe
+  `runs/phase1_online_pairs/follow_stop_static_spawn2m_goal_carla_ready_20260625_113744`
+  shows the next environment boundary. The pair runner now gets past the
+  earlier setup blockers where `carla_builtin` used a Python without the CARLA
+  API and the Apollo transition backend rejected platform preflight artifacts
+  as stale runtime evidence. It still does not reach behavior evaluation:
+  the package CARLA server opened port `2000` briefly, then exited before the
+  fixed-scene runner could `load_world(straight_road_for_baguang)`, and Apollo
+  reported no running CARLA. The comparison remains `invalid/all_runs_invalid`.
+  Treat this as online environment/startup evidence, not backend behavior
+  evidence.
 - This is runtime lifecycle hardening only. It does not prove Apollo behavior,
   does not remove `legacy_followstop`, and does not complete the P0 online
   matrix.

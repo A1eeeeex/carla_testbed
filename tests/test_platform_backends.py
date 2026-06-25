@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 from carla_testbed.backends.registry import default_backend_registry
 from carla_testbed.backends.replay import ReplayBackend
@@ -49,9 +50,11 @@ def test_carla_builtin_backend_launches_diagnostic_fixed_scene_runner() -> None:
     assert contract.needs_local_carla is True
     assert contract.needs_local_apollo is False
     assert launch.backend == "carla_builtin"
-    assert launch.commands[0][:2] == ["python3", "tools/run_builtin_ego_fixed_scene.py"]
+    assert launch.commands[0][1] == "tools/run_builtin_ego_fixed_scene.py"
+    assert launch.commands[0][0] == "python3" or Path(launch.commands[0][0]).is_file()
     assert "artifacts/ego_control_trace.jsonl" in launch.expected_artifacts
     assert any("diagnostic-only" in warning for warning in launch.warnings)
+    assert any("runtime python" in warning for warning in launch.warnings)
 
 
 def test_apollo_fixed_scene_launch_plan_requires_runtime_migration_before_dispatch() -> None:

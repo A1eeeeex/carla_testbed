@@ -212,7 +212,7 @@ def test_typed_transition_backend_allows_platform_lifecycle_preseed(
     cfg = load_config(config_path)
     run_dir = tmp_path / "claim_transition"
     run_dir.mkdir()
-    for name in ("launch_plan.json", "manifest.json", "plan.resolved.yaml", "summary.json"):
+    for name in ("launch_plan.json", "manifest.json", "plan.resolved.yaml", "preflight.json", "summary.json"):
         (run_dir / name).write_text("{}\n", encoding="utf-8")
     execution = run_dir / "execution"
     execution.mkdir()

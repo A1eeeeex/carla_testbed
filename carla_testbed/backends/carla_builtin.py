@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -79,8 +80,9 @@ class CarlaBuiltinBackend:
     def build_launch_plan(self, plan: RunPlan) -> LaunchPlan:
         run_dir = str(Path(str(plan.compatibility.get("output_root") or "runs")) / plan.identity.run_id)
         scenario_path = plan.source_profiles.get("scenario") or plan.scenario.scenario_id
+        runtime_python = _runtime_python()
         command = [
-            "python3",
+            runtime_python,
             "tools/run_builtin_ego_fixed_scene.py",
             "--template",
             str(scenario_path),
@@ -122,6 +124,20 @@ class CarlaBuiltinBackend:
             starts_runtime=True,
             compatibility_source="tools/run_builtin_ego_fixed_scene.py",
             warnings=[
-                "builtin ego controller is diagnostic-only and must not be used as Apollo/Autoware natural-driving evidence"
+                "builtin ego controller is diagnostic-only and must not be used as Apollo/Autoware natural-driving evidence",
+                f"builtin fixed-scene runtime python: {runtime_python}",
             ],
         )
+
+
+def _runtime_python() -> str:
+    for raw in (
+        os.environ.get("CARLA_TESTBED_CARLA_PYTHON"),
+        os.environ.get("CARLA16_PYTHON"),
+        "/home/ubuntu/miniconda3/envs/carla16/bin/python",
+        "/home/ubuntu/anaconda3/envs/carla16/bin/python",
+    ):
+        candidate = os.path.expanduser(os.path.expandvars(str(raw or "").strip()))
+        if candidate and "${" not in candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return "python3"

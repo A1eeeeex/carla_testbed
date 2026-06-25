@@ -791,6 +791,7 @@ _ALLOWED_TRANSITION_PRESEEDED_ROOT_FILES = {
     "launch_plan.json",
     "manifest.json",
     "plan.resolved.yaml",
+    "preflight.json",
     "summary.json",
 }
 

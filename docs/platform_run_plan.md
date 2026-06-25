@@ -121,6 +121,12 @@ python -m carla_testbed phase1 run-p0-matrix \
   --timeout-s 180
 ```
 
+For `carla_builtin` fixed-scene runs, the launch plan uses the first executable
+Python found in `CARLA_TESTBED_CARLA_PYTHON`, `CARLA16_PYTHON`, or common local
+`carla16` conda paths, then falls back to `python3`. Operators should set one
+of those variables if their shell `python3` cannot `import carla`. The selected
+interpreter is recorded in the launch-plan warnings.
+
 Build evidence and gate reports from an existing run directory:
 
 ```bash
