@@ -3686,6 +3686,50 @@ def _planning_summary_from_event_stream(planning_rows: List[Dict[str, Any]]) -> 
     }
 
 
+def _planning_nonzero_ratio_check(
+    planning_rows: List[Dict[str, Any]],
+    planning_summary: Mapping[str, Any],
+    *,
+    route_established_ts: float | None,
+) -> Dict[str, Any]:
+    source = "all_planning_messages"
+    denominator = int(planning_summary.get("total_messages_received", 0) or 0)
+    numerator = int(planning_summary.get("messages_with_nonzero_trajectory_points", 0) or 0)
+    post_route_rows: list[Dict[str, Any]] = []
+    if route_established_ts is not None:
+        for row in planning_rows:
+            ts = _route_health_event_ts(row)
+            if ts is not None and float(ts) >= float(route_established_ts):
+                post_route_rows.append(row)
+        if post_route_rows:
+            source = "post_route_established_planning_messages"
+            denominator = len(post_route_rows)
+            numerator = sum(
+                1
+                for row in post_route_rows
+                if int(row.get("trajectory_point_count", 0) or 0) > 0
+            )
+    actual = (float(numerator) / float(denominator)) if denominator > 0 else None
+    return {
+        "actual": actual,
+        "threshold": CORE_ACCEPTANCE_POLICY["planning_nonzero_ratio_min"],
+        "source": source,
+        "numerator": numerator,
+        "denominator": denominator,
+        "all_messages_numerator": int(planning_summary.get("messages_with_nonzero_trajectory_points", 0) or 0),
+        "all_messages_denominator": int(planning_summary.get("total_messages_received", 0) or 0),
+        "route_established_ts_sec": route_established_ts,
+    }
+
+
+def _route_health_event_ts(row: Mapping[str, Any]) -> float | None:
+    for key in ("sim_time_sec", "sim_time", "ts_sec", "timestamp"):
+        value = safe_float(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
 PLANNING_BRIDGE_CONTEXT_FIELDS: Sequence[str] = (
     "first_path_fallback_bridge_prev_normal_seq",
     "first_path_fallback_bridge_prev_normal_is_replan",
@@ -6000,13 +6044,25 @@ def _build_state_timeline(
 ) -> Tuple[List[Dict[str, Any]], str]:
     timeline: List[Dict[str, Any]] = []
     timestamps: List[float] = []
+
+    def _event_ts(row: Dict[str, Any]) -> Optional[float]:
+        # Prefer simulation time when available. Several Apollo/CARLA debug
+        # streams carry wall-clock `timestamp` and sim-time `sim_time_sec`;
+        # mixing both in one timeline creates meaningless billion-second
+        # route-establishment latencies.
+        for key in ("sim_time_sec", "ts_sec", "timestamp"):
+            value = safe_float(row.get(key))
+            if value is not None:
+                return value
+        return None
+
     for rows in (routing_rows, planning_rows, control_events):
         for row in rows:
-            ts = safe_float(row.get("timestamp"))
+            ts = _event_ts(row)
             if ts is not None:
                 timestamps.append(ts)
     for row in debug_rows:
-        ts = safe_float(row.get("ts_sec"))
+        ts = _event_ts(row)
         if ts is not None:
             timestamps.append(ts)
     base_ts = min(timestamps) if timestamps else 0.0
@@ -6021,7 +6077,7 @@ def _build_state_timeline(
     _append("CARLA_READY", base_ts, "earliest_event_stream_timestamp")
     _append("MAP_READY", base_ts, "scenario_metadata_available")
 
-    routing_ready_ts = next((safe_float(row.get("timestamp")) for row in routing_rows if bool(row.get("routing_request_sent"))), None)
+    routing_ready_ts = next((_event_ts(row) for row in routing_rows if bool(row.get("routing_request_sent"))), None)
     _append("ROUTING_READY", routing_ready_ts, "routing_request_sent")
 
     route_established_ts = routing_ready_ts if routing_success_count > 0 else None
@@ -6029,7 +6085,7 @@ def _build_state_timeline(
 
     planning_ready_ts = next(
         (
-            safe_float(row.get("timestamp"))
+            _event_ts(row)
             for row in planning_rows
             if int(row.get("trajectory_point_count", 0) or 0) > 0
         ),
@@ -6039,7 +6095,7 @@ def _build_state_timeline(
 
     control_ready_ts = next(
         (
-            safe_float(row.get("timestamp"))
+            _event_ts(row)
             for row in control_events
             if bool(row.get("control_used_planning_trajectory"))
         ),
@@ -6073,13 +6129,13 @@ def _build_state_timeline(
     )
     end_ts = None
     if debug_rows:
-        end_ts = safe_float(debug_rows[-1].get("ts_sec"))
+        end_ts = _event_ts(debug_rows[-1])
     elif control_events:
-        end_ts = safe_float(control_events[-1].get("timestamp"))
+        end_ts = _event_ts(control_events[-1])
     elif planning_rows:
-        end_ts = safe_float(planning_rows[-1].get("timestamp"))
+        end_ts = _event_ts(planning_rows[-1])
     elif routing_rows:
-        end_ts = safe_float(routing_rows[-1].get("timestamp"))
+        end_ts = _event_ts(routing_rows[-1])
     if completed:
         _append("ROUTE_COMPLETED", end_ts, "completion_threshold_met")
         failure_stage = "ROUTE_COMPLETED"
@@ -6364,6 +6420,12 @@ def finalize_town01_run(run_dir: Path, *, flags: Optional[Dict[str, Any]] = None
     if flags.get("enable_recording"):
         recording_ok = bool(recording_status) and bool(recording_manifest) and str(recording_status.get("recording_status") or "") not in {"", "failed"}
 
+    planning_nonzero_ratio_check = _planning_nonzero_ratio_check(
+        planning_rows,
+        planning_summary,
+        route_established_ts=route_established_ts,
+    )
+
     checks: Dict[str, Any] = {
         "bridge_runtime_import": {
             "actual": bridge_runtime_import_ok,
@@ -6381,13 +6443,7 @@ def finalize_town01_run(run_dir: Path, *, flags: Optional[Dict[str, Any]] = None
             "threshold": CORE_ACCEPTANCE_POLICY["route_establishment_latency_sec_max"],
             "ok": route_establishment_latency_sec is not None and route_establishment_latency_sec <= CORE_ACCEPTANCE_POLICY["route_establishment_latency_sec_max"],
         },
-        "planning_nonzero_ratio": {
-            "actual": (
-                (float(planning_summary.get("messages_with_nonzero_trajectory_points", 0) or 0) / float(max(1, int(planning_summary.get("total_messages_received", 0) or 0))))
-                if planning_summary else None
-            ),
-            "threshold": CORE_ACCEPTANCE_POLICY["planning_nonzero_ratio_min"],
-        },
+        "planning_nonzero_ratio": planning_nonzero_ratio_check,
         "control_used_planning_ratio": {
             "actual": control_used_planning_ratio,
             "threshold": CORE_ACCEPTANCE_POLICY["control_used_planning_ratio_min"],

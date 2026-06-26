@@ -5,7 +5,7 @@ import os
 import signal
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,7 +26,9 @@ class RuntimeCommandResult:
     stderr_path: str | None = None
     duration_s: float = 0.0
     timed_out: bool = False
+    timeout_s: float | None = None
     warnings: list[str] = field(default_factory=list)
+    completion_marker: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,7 +40,9 @@ class RuntimeCommandResult:
             "stderr_path": self.stderr_path,
             "duration_s": self.duration_s,
             "timed_out": self.timed_out,
+            "timeout_s": self.timeout_s,
             "warnings": list(self.warnings),
+            "completion_marker": dict(self.completion_marker) if self.completion_marker else None,
         }
 
 
@@ -234,22 +238,63 @@ class BackendRuntimeAdapter:
             started_wall_s=time.time(),
         )
 
-    def wait(self, handle: RuntimeHandle, *, timeout_s: float | None = None) -> RuntimeCommandResult:
+    def wait(
+        self,
+        handle: RuntimeHandle,
+        *,
+        timeout_s: float | None = None,
+        marker_root: Path | None = None,
+        completion_markers: list[Mapping[str, Any]] | None = None,
+        marker_poll_interval_s: float = 1.0,
+    ) -> RuntimeCommandResult:
         if handle.immediate_result is not None:
-            return handle.immediate_result
+            return replace(handle.immediate_result, timeout_s=timeout_s)
         assert handle.process is not None
         started = handle.started_wall_s or time.time()
+        markers = [dict(marker) for marker in (completion_markers or []) if isinstance(marker, Mapping)]
         timed_out = False
-        try:
-            exit_code = handle.process.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _terminate_process(handle.process)
-            exit_code = handle.process.returncode
-            if exit_code is None:
-                exit_code = 124
+        completion_marker: dict[str, Any] | None = None
+        if markers and marker_root is not None:
+            deadline = (started + float(timeout_s)) if timeout_s is not None else None
+            while True:
+                exit_code = handle.process.poll()
+                if exit_code is not None:
+                    break
+                completion_marker = _find_completion_marker(marker_root, markers)
+                if completion_marker is not None:
+                    _terminate_process(handle.process)
+                    success = completion_marker.get("success")
+                    exit_code = 0 if success is not False else 1
+                    break
+                if deadline is not None:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        timed_out = True
+                        _terminate_process(handle.process)
+                        exit_code = handle.process.returncode
+                        if exit_code is None:
+                            exit_code = 124
+                        break
+                    time.sleep(min(max(marker_poll_interval_s, 0.05), remaining))
+                else:
+                    time.sleep(max(marker_poll_interval_s, 0.05))
+        else:
+            try:
+                exit_code = handle.process.wait(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _terminate_process(handle.process)
+                exit_code = handle.process.returncode
+                if exit_code is None:
+                    exit_code = 124
         duration = time.time() - started
         status = "timeout" if timed_out else ("completed" if exit_code == 0 else "failed")
+        warnings = []
+        if completion_marker is not None:
+            warnings.append(
+                "runtime_completed_by_marker:"
+                f"{completion_marker.get('id') or completion_marker.get('path')}"
+            )
         return RuntimeCommandResult(
             status=status,
             exit_code=int(exit_code),
@@ -259,6 +304,9 @@ class BackendRuntimeAdapter:
             stderr_path=str(handle.stderr_path) if handle.stderr_path else None,
             duration_s=duration,
             timed_out=timed_out,
+            timeout_s=timeout_s,
+            warnings=warnings,
+            completion_marker=completion_marker,
         )
 
     def stop(self, handle: RuntimeHandle, *, context: RuntimeContext | None = None) -> CleanupResult:
@@ -323,7 +371,13 @@ class BackendRuntimeAdapter:
         warnings: list[str] = []
         self.prepare(context, launch_plan)
         handle = self.start(context, launch_plan)
-        command_result = self.wait(handle, timeout_s=timeout_s)
+        command_result = self.wait(
+            handle,
+            timeout_s=timeout_s,
+            marker_root=context.run_dir,
+            completion_markers=_completion_markers(launch_plan),
+            marker_poll_interval_s=_completion_marker_poll_interval_s(launch_plan),
+        )
         cleanup = self.stop(handle, context=context)
         postprocess = self.postprocess(context, launch_plan, command_result)
         status = command_result.status
@@ -375,6 +429,71 @@ def _run_postprocess_command(
         stderr_path=str(stderr_path),
         duration_s=time.time() - started,
     )
+
+
+def _completion_markers(launch_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+    markers = launch_plan.get("runtime_completion_markers")
+    if not isinstance(markers, list):
+        return []
+    return [dict(marker) for marker in markers if isinstance(marker, Mapping)]
+
+
+def _completion_marker_poll_interval_s(launch_plan: Mapping[str, Any]) -> float:
+    value = launch_plan.get("runtime_completion_marker_poll_interval_s")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = 1.0
+    return max(0.05, parsed)
+
+
+def _find_completion_marker(root: Path, markers: list[Mapping[str, Any]]) -> dict[str, Any] | None:
+    for marker in markers:
+        path_glob = str(marker.get("path_glob") or "").strip()
+        field = str(marker.get("json_field") or "").strip()
+        if not path_glob or not field:
+            continue
+        expected = marker.get("equals")
+        for path in sorted(root.glob(path_glob)):
+            if not path.is_file():
+                continue
+            payload = _read_json(path)
+            if not isinstance(payload, dict):
+                continue
+            actual = _nested_get(payload, field)
+            if expected is not None and actual != expected:
+                continue
+            success_field = str(marker.get("success_field") or "success").strip()
+            success_value = _nested_get(payload, success_field) if success_field else None
+            return {
+                "id": marker.get("id"),
+                "path": str(path),
+                "path_glob": path_glob,
+                "json_field": field,
+                "expected": expected,
+                "actual": actual,
+                "success_field": success_field or None,
+                "success": success_value if isinstance(success_value, bool) else None,
+                "description": marker.get("description"),
+            }
+    return None
+
+
+def _nested_get(payload: Mapping[str, Any], dotted_key: str) -> Any:
+    current: Any = payload
+    for part in dotted_key.split("."):
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _terminate_process(process: subprocess.Popen[str]) -> None:

@@ -30,10 +30,10 @@ DEFAULT_PHASE1_P0_SCENARIOS: tuple[Phase1P0Scenario, ...] = (
     ),
     Phase1P0Scenario(
         canonical_case="lead_decel_accel",
-        scenario="baguang/lead_decel_70_to_40_20m",
+        scenario="baguang/lead_decel_accel_70_40_70_20m",
         rationale=(
-            "Representative Baguang lead-speed-change case with existing online "
-            "delivery evidence; it covers the deceleration half of the canonical family."
+            "Representative Baguang lead-speed-change case: the target lead vehicle "
+            "decelerates from 70 kph to 40 kph, holds briefly, then accelerates back to 70 kph."
         ),
     ),
     Phase1P0Scenario(
@@ -222,6 +222,9 @@ def _row_from_pair(item: Phase1P0Scenario, pair: Phase1PairRunResult) -> dict[st
         "comparison_target_status": comparison.get("comparison_target_status"),
         "backend_phase1_statuses": comparison.get("backend_phase1_statuses") or {},
         "backend_failure_reasons": comparison.get("backend_failure_reasons") or {},
+        "backend_primary_behavior_blockers": comparison.get("backend_primary_behavior_blockers") or {},
+        "backend_behavior_blocker_layers": comparison.get("backend_behavior_blocker_layers") or {},
+        "backend_behavior_next_actions": comparison.get("backend_behavior_next_actions") or {},
         "evaluable_run_count": comparison.get("evaluable_run_count"),
         "invalid_run_count": comparison.get("invalid_run_count"),
         "status": row_status,
@@ -307,6 +310,9 @@ def _write_outputs(
                 "comparison_target_status",
                 "backend_phase1_statuses",
                 "backend_failure_reasons",
+                "backend_primary_behavior_blockers",
+                "backend_behavior_blocker_layers",
+                "backend_behavior_next_actions",
                 "evaluable_run_count",
                 "invalid_run_count",
                 "error",
@@ -329,6 +335,13 @@ def _write_outputs(
                     "comparison_target_status": row.get("comparison_target_status"),
                     "backend_phase1_statuses": json.dumps(row.get("backend_phase1_statuses") or {}),
                     "backend_failure_reasons": json.dumps(row.get("backend_failure_reasons") or {}),
+                    "backend_primary_behavior_blockers": json.dumps(
+                        row.get("backend_primary_behavior_blockers") or {}
+                    ),
+                    "backend_behavior_blocker_layers": json.dumps(
+                        row.get("backend_behavior_blocker_layers") or {}
+                    ),
+                    "backend_behavior_next_actions": json.dumps(row.get("backend_behavior_next_actions") or {}),
                     "evaluable_run_count": row.get("evaluable_run_count"),
                     "invalid_run_count": row.get("invalid_run_count"),
                     "error": row.get("error"),
@@ -341,6 +354,8 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     statuses: dict[str, int] = {}
     comparison_statuses: dict[str, int] = {}
     comparison_target_statuses: dict[str, int] = {}
+    behavior_blockers: dict[str, int] = {}
+    behavior_blocker_layers: dict[str, int] = {}
     for row in rows:
         status = str(row.get("status") or "unknown")
         statuses[status] = statuses.get(status, 0) + 1
@@ -350,10 +365,20 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         comparison_target_statuses[comparison_target_status] = (
             comparison_target_statuses.get(comparison_target_status, 0) + 1
         )
+        for blocker in (row.get("backend_primary_behavior_blockers") or {}).values():
+            if blocker:
+                key = str(blocker)
+                behavior_blockers[key] = behavior_blockers.get(key, 0) + 1
+        for layer in (row.get("backend_behavior_blocker_layers") or {}).values():
+            if layer:
+                key = str(layer)
+                behavior_blocker_layers[key] = behavior_blocker_layers.get(key, 0) + 1
     return {
         "status_counts": statuses,
         "comparison_status_counts": comparison_statuses,
         "comparison_target_status_counts": comparison_target_statuses,
+        "behavior_blocker_counts": behavior_blockers,
+        "behavior_blocker_layer_counts": behavior_blocker_layers,
         "all_pairs_materialized": bool(rows) and all(row.get("pair_manifest_path") for row in rows),
         "all_dry_run": bool(rows) and all(row.get("status") == "dry_run" for row in rows),
         "all_pairs_comparable": bool(rows) and all(row.get("comparison_status") == "comparable" for row in rows),
@@ -387,6 +412,9 @@ def _read_comparison_summary(path: str | None) -> dict[str, Any]:
         return {}
     backend_statuses: dict[str, str | None] = {}
     backend_reasons: dict[str, str | None] = {}
+    backend_behavior_blockers: dict[str, str | None] = {}
+    backend_behavior_layers: dict[str, str | None] = {}
+    backend_behavior_next_actions: dict[str, str | None] = {}
     for run in payload.get("participating_runs") or []:
         if not isinstance(run, dict):
             continue
@@ -395,12 +423,34 @@ def _read_comparison_summary(path: str | None) -> dict[str, Any]:
             continue
         backend_statuses[backend] = run.get("phase1_status")
         backend_reasons[backend] = run.get("failure_reason")
+        backend_behavior_blockers[backend] = run.get("primary_behavior_blocker")
+        backend_behavior_layers[backend] = run.get("behavior_blocker_layer")
+        backend_behavior_next_actions[backend] = run.get("behavior_next_action")
+    if not any(backend_behavior_blockers.values()):
+        for result in payload.get("backend_results") or []:
+            if not isinstance(result, dict):
+                continue
+            backend = str(result.get("backend") or result.get("backend_name") or "")
+            if not backend:
+                continue
+            backend_behavior_blockers[backend] = result.get("primary_behavior_blocker")
+            backend_behavior_layers[backend] = result.get("behavior_blocker_layer")
+            backend_behavior_next_actions[backend] = result.get("behavior_next_action")
     return {
         "comparison_status": payload.get("comparison_status"),
         "reason": payload.get("reason"),
         "comparison_target_status": payload.get("comparison_target_status"),
         "backend_phase1_statuses": backend_statuses,
         "backend_failure_reasons": backend_reasons,
+        "backend_primary_behavior_blockers": {
+            backend: blocker for backend, blocker in backend_behavior_blockers.items() if blocker
+        },
+        "backend_behavior_blocker_layers": {
+            backend: layer for backend, layer in backend_behavior_layers.items() if layer
+        },
+        "backend_behavior_next_actions": {
+            backend: action for backend, action in backend_behavior_next_actions.items() if action
+        },
         "evaluable_run_count": len(payload.get("evaluable_runs") or []),
         "invalid_run_count": len(payload.get("invalid_runs") or []),
     }

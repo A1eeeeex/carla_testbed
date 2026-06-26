@@ -16,7 +16,7 @@ Current priority is Phase 1 runtime delivery, not a broad Apollo natural-driving
 | --- | --- | --- |
 | CARLA harness | experimental / supported | Main platform surface: config, run loop, CARLA lifecycle, recording, summaries. |
 | Follow-stop baseline | legacy baseline | Useful for smoke/demo/regression, but not the future platform architecture. |
-| Phase 1 pair runner | partial / delivery surface | Compiles and runs `ApolloBackend` vs `PlanningControlBackend` pairs; online P0 matrix is not complete. |
+| Phase 1 pair runner | partial / delivery surface | Compiles and runs `ApolloBackend` vs `PlanningControlBackend` pairs. Local records show a five-P0 comparable matrix, but Apollo behavior still fails and external review requires the exact run artifacts before treating that matrix as independently proven. |
 | ROS2 native backend | transitional | Still used by existing GT/control paths; keep compatible while Apollo MVP matures. |
 | Apollo/CyberRT bridge | reference backend / partial runtime | Current reference external AD-stack path; no-assist P0 fixed-scene evidence is still required. |
 | Autoware | legacy experimental | Existing adapter/configs remain, but new work should not assume equal priority. |

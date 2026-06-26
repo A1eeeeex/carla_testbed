@@ -32,6 +32,27 @@ def test_backend_contracts_are_metadata_only() -> None:
     assert preflight.status == "local_required"
 
 
+def test_apollo_town01_route_only_launch_declares_finalized_summary_marker() -> None:
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="town01/lane_keep_097",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+
+    assert launch.runtime_completion_markers
+    marker = launch.runtime_completion_markers[0]
+    assert marker["id"] == "town01_route_health_finalized_summary"
+    assert marker["path_glob"] == "**/summary.json"
+    assert marker["json_field"] == "summary_status"
+    assert marker["equals"] == "finalized"
+    assert marker["success_field"] == "success"
+
+
 def test_carla_builtin_backend_launches_diagnostic_fixed_scene_runner() -> None:
     plan = compile_run_plan(
         platform="carla_builtin",
@@ -55,6 +76,24 @@ def test_carla_builtin_backend_launches_diagnostic_fixed_scene_runner() -> None:
     assert "artifacts/ego_control_trace.jsonl" in launch.expected_artifacts
     assert any("diagnostic-only" in warning for warning in launch.warnings)
     assert any("runtime python" in warning for warning in launch.warnings)
+
+
+def test_carla_builtin_route_only_launch_prefers_scenario_target_speed() -> None:
+    plan = compile_run_plan(
+        platform="carla_builtin",
+        algorithm="builtin/simple_acc_route_follower",
+        scenario="town01/lane_keep_097",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+
+    assert "--target-speed-mps" in launch.commands[0]
+    speed_index = launch.commands[0].index("--target-speed-mps") + 1
+    assert launch.commands[0][speed_index] == "10.0"
+    assert plan.algorithm.params["target_speed_mps"] == 19.44
 
 
 def test_apollo_fixed_scene_launch_plan_requires_runtime_migration_before_dispatch() -> None:

@@ -562,6 +562,16 @@ def _extract_followstop_progress(
     return {}
 
 
+def _load_live_summary(effective_run_dir: Path) -> Dict[str, Any]:
+    finalized = _load_json_if_exists(effective_run_dir / "summary.json")
+    if str(finalized.get("summary_status") or "").strip() == "finalized":
+        return finalized
+    provisional = _load_json_if_exists(effective_run_dir / "summary.provisional.json")
+    if provisional:
+        return provisional
+    return finalized
+
+
 def _collect_step_live_snapshot(item: Dict[str, Any]) -> Dict[str, Any]:
     batch_root = _extract_cli_arg_value(item.get("command_argv") or [], "--batch-root")
     if not batch_root:
@@ -607,9 +617,7 @@ def _collect_step_live_snapshot(item: Dict[str, Any]) -> Dict[str, Any]:
         snapshot["phase"] = _derive_live_phase(snapshot)
         return snapshot
 
-    summary = _load_json_if_exists(effective_run_dir / "summary.provisional.json")
-    if not summary:
-        summary = _load_json_if_exists(effective_run_dir / "summary.json")
+    summary = _load_live_summary(effective_run_dir)
     bridge_health = _load_json_if_exists(effective_run_dir / "artifacts" / "bridge_health_summary.json")
     if not bridge_health:
         bridge_health = _load_json_if_exists(effective_run_dir / "artifacts" / "bridge_health_summary.finalized.json")

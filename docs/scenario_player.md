@@ -52,6 +52,12 @@ diagnostics on `straight_road_for_baguang`:
   - ego and lead start near 70kph with a 20m gap; after 5s the lead ramps down
     toward 40kph and the scene lasts until the lead reaches the current
     Baguang straight-road end.
+- `configs/scenarios/baguang/lead_decel_accel_70_40_70_20m.yaml`
+  - the canonical Phase 1 `lead_decel_accel` P0 case; ego and lead start near
+    70kph with a 20m gap, the lead ramps down to 40kph, holds briefly, then
+    ramps back to 70kph before the current Baguang straight-road end. This keeps
+    the P0 case name aligned with the actual speed profile instead of using the
+    deceleration-only diagnostic scene.
 - `configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml`
   - lead starts in the left adjacent lane at 35kph at the 10m activation gap,
     ego starts in the right lane at 40kph, and the lead performs a
@@ -180,7 +186,11 @@ The same CLI also accepts route-only scenario specs such as
 `configs/scenarios/town01/lane_keep_097.yaml`. In that mode it spawns only ego,
 writes the Phase 1 artifact spine, and marks `v_t_gap.status=not_applicable`
 when `target_actor_contract.status=not_required`. It does not create
-fixed-scene actor artifacts and still remains diagnostic-only.
+fixed-scene actor artifacts and still remains diagnostic-only. Route-only
+scenarios may declare a diagnostic `success_intent.ego_target_speed_mps`; the
+`carla_builtin` launch plan prefers that scenario speed over the generic
+algorithm default so Town01 route checks do not inherit the Baguang-oriented
+70kph following speed.
 
 ## CARLA Runtime Adapter
 

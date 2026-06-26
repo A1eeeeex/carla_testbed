@@ -30,6 +30,95 @@ def test_missing_timeseries_is_invalid_not_backend_failure(tmp_path) -> None:
     assert "invalid_run_is_setup_or_evidence_failure_not_backend_loss" in report["notes"]
 
 
+def test_missing_timeseries_with_apollo_startup_artifacts_reports_setup_blocker(tmp_path) -> None:
+    run = tmp_path / "run"
+    artifacts = run / "legacy_nested" / "actual" / "artifacts"
+    artifacts.mkdir(parents=True)
+    (run / "execution").mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "r1",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "exit_reason": "platform_timeout"}),
+        encoding="utf-8",
+    )
+    (run / "platform_execution_result.json").write_text(
+        json.dumps({"status": "timeout", "exit_code": -2, "runtime_exit_code": -2}),
+        encoding="utf-8",
+    )
+    (run / "execution" / "runtime_stdout.log").write_text(
+        "\n".join(
+            [
+                "[online-chain][progress] phase=startup_starting status=starting",
+                "[online-chain][progress] phase=routing_wait status=running routing=0 planning=0 control_tx=0",
+                "[online-chain][progress] phase=routing_wait status=running routing=0 planning=0 control_tx=0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "startup_stage.json").write_text(
+        json.dumps({"stage": "adapter_prepare_done"}),
+        encoding="utf-8",
+    )
+    (artifacts / "apollo_control_runtime_overlay_manifest.json").write_text(
+        json.dumps(
+            {
+                "overlay_active": True,
+                "selected_count": 17,
+                "missing_source_dirs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "apollo_modules_start.log").write_text(
+        "\n".join(
+            [
+                "123 mainboard -d modules/routing/dag/routing.dag",
+                "124 mainboard -d modules/prediction/dag/prediction.dag",
+                "125 mainboard -d modules/planning/planning_component/dag/planning.dag",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    typed = run / "legacy_nested" / ".typed_runtime"
+    typed.mkdir()
+    (typed / "typed_transition_runtime.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "typed_transition_runtime.v1",
+                "transition_entrypoint": "examples.run_followstop",
+                "command": ["python", "-m", "examples.run_followstop"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "invalid"
+    assert report["failure_reason"] == "no_timeseries"
+    assert report["primary_behavior_blocker"] is None
+    assert report["primary_setup_blocker"] == "apollo_startup_command_materialization_missing_timeout"
+    assert report["setup_blocker_layer"] == "apollo_runtime_startup_materialization"
+    assert report["counts_as_backend_loss_for_target_scenario"] is False
+    evidence = report["setup_blocker_evidence"]
+    assert evidence["overlay_active"] is True
+    assert evidence["overlay_selected_count"] == 17
+    assert evidence["startup_stage"] == "adapter_prepare_done"
+    assert evidence["routing_process_seen"] is True
+    assert evidence["planning_process_seen"] is True
+    assert evidence["control_process_seen"] is False
+
+
 def test_platform_timeout_with_timeseries_is_evaluable_backend_failure(tmp_path) -> None:
     run = tmp_path / "run"
     run.mkdir()
@@ -59,6 +148,660 @@ def test_platform_timeout_with_timeseries_is_evaluable_backend_failure(tmp_path)
     assert report["invalid_reasons"] == []
     assert report["run_evaluable"] is True
     assert report["required_artifacts"]["timeseries"] == "present"
+
+
+def test_platform_timeout_with_routing_but_no_planning_reports_precise_blocker(tmp_path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "execution").mkdir()
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "r1",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "exit_reason": "platform_timeout"}),
+        encoding="utf-8",
+    )
+    (run / "platform_execution_result.json").write_text(
+        json.dumps({"status": "timeout", "exit_code": -2, "runtime_exit_code": -2}),
+        encoding="utf-8",
+    )
+    (run / "execution" / "runtime_stdout.log").write_text(
+        "\n".join(
+            [
+                "[online-chain][progress] phase=routing_wait status=running routing=0 planning=0 control_tx=0",
+                "[online-chain][progress] phase=planning_wait status=running ticks=70/700 routing=1 planning=0 control_tx=0",
+                "[online-chain][progress] phase=planning_wait status=running ticks=210/700 routing=1 planning=0 control_tx=0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text(
+        "sim_time,ego_speed_mps,route_s,control_source\n0.0,1.0,0.0,external_stack\n1.0,0.0,0.0,external_stack\n",
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "timeout"
+    assert report["primary_behavior_blocker"] == "routing_available_planning_missing_timeout"
+    assert report["behavior_blocker_layer"] == "apollo_planning_materialization"
+    evidence = report["behavior_blocker_evidence"]
+    assert evidence["max_routing_success_count"] == 1
+    assert evidence["max_planning_message_count"] == 0
+    assert evidence["max_control_tx_count"] == 0
+    assert evidence["route_s_delta_m"] == 0.0
+
+
+def test_timeout_with_nested_apollo_routing_and_empty_reference_line_reports_precise_blocker(
+    tmp_path,
+) -> None:
+    run = tmp_path / "run"
+    nested_artifacts = run / "legacy_nested" / "actual" / "artifacts"
+    nested_artifacts.mkdir(parents=True)
+    (run / "execution").mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "r1",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "exit_reason": "platform_timeout"}),
+        encoding="utf-8",
+    )
+    (run / "platform_execution_result.json").write_text(
+        json.dumps({"status": "timeout", "exit_code": -2, "runtime_exit_code": -2}),
+        encoding="utf-8",
+    )
+    (run / "execution" / "runtime_stdout.log").write_text(
+        "\n".join(
+            [
+                "[online-chain][progress] phase=routing_wait status=running routing=0 planning=0 control_tx=0",
+                "[online-chain][progress] phase=planning_wait status=running routing=0 planning=0 control_tx=0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text(
+        "sim_time,ego_speed_mps,route_s,control_source\n0.0,0.0,0.0,external_stack\n1.0,0.0,0.0,external_stack\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "cyber_bridge_stats.json").write_text(
+        json.dumps(
+            {
+                "routing_request_count": 1,
+                "routing_success_count": 1,
+                "routing_response_count": 1,
+                "control_rx_count": 0,
+                "control_tx_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (nested_artifacts / "planning_topic_debug_summary.json").write_text(
+        json.dumps(
+            {
+                "planning_debug_presence": {
+                    "last_diagnosis": "routing_present_reference_line_empty",
+                    "reference_line_nonempty_ratio": 0.0,
+                    "routing_segment_nonempty_ratio": 0.73,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (nested_artifacts / "command_materialization_summary.json").write_text(
+        json.dumps(
+            {
+                "last_error": "waiting_for_apollo_startup_warmup",
+                "gate_state": {
+                    "last_phase": "long",
+                    "last_blocking_reason": "routing_phase_already_sent",
+                    "first_ready_to_send_ts_sec": 123.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "timeout"
+    assert (
+        report["primary_behavior_blocker"]
+        == "routing_available_reference_line_empty_control_missing_timeout"
+    )
+    assert report["behavior_blocker_layer"] == "apollo_planning_reference_line"
+    evidence = report["behavior_blocker_evidence"]
+    assert evidence["runtime_routing_request_count"] == 1
+    assert evidence["runtime_routing_success_count"] == 1
+    assert evidence["runtime_control_tx_count"] == 0
+    assert evidence["planning_debug_presence_classification"] == "routing_present_reference_line_empty"
+    assert evidence["planning_debug_routing_segment_nonempty_ratio"] == 0.73
+    assert evidence["command_last_blocking_reason"] == "routing_phase_already_sent"
+
+
+def test_timeout_with_planning_trajectory_and_control_crash_reports_process_health_blocker(
+    tmp_path,
+) -> None:
+    run = tmp_path / "run"
+    nested_artifacts = run / "legacy_nested" / "actual" / "artifacts"
+    nested_artifacts.mkdir(parents=True)
+    (run / "execution").mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "r1",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "exit_reason": "platform_timeout"}),
+        encoding="utf-8",
+    )
+    (run / "platform_execution_result.json").write_text(
+        json.dumps({"status": "timeout", "exit_code": -2, "runtime_exit_code": -2}),
+        encoding="utf-8",
+    )
+    (run / "execution" / "runtime_stdout.log").write_text(
+        "\n".join(
+            [
+                "[online-chain][progress] phase=long status=running routing=1 planning=198 control_tx=0 control=running",
+                "[online-chain][progress] phase=long status=running routing=1 planning=198 control_tx=0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text(
+        "sim_time,ego_speed_mps,route_s,control_source\n0.0,0.0,0.0,external_stack\n1.0,0.0,0.0,external_stack\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "cyber_bridge_stats.json").write_text(
+        json.dumps(
+            {
+                "routing_request_count": 1,
+                "routing_success_count": 1,
+                "routing_response_count": 1,
+                "control_rx_count": 0,
+                "control_tx_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (nested_artifacts / "planning_topic_debug_summary.json").write_text(
+        json.dumps(
+            {
+                "messages_with_nonzero_trajectory_points": 198,
+                "planning_debug_presence": {
+                    "last_diagnosis": "routing_present_reference_line_empty",
+                    "reference_line_nonempty_ratio": 0.0,
+                    "routing_segment_nonempty_ratio": 0.73,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (nested_artifacts / "apollo_control_deferred_survival.json").write_text(
+        json.dumps(
+            {
+                "control_started_pid_seen": True,
+                "control_survived_5s": True,
+                "control_survived_10s": False,
+                "control_present_at_end": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (nested_artifacts / "apollo_control_deferred_mainboard.log").write_text(
+        "src/tcmalloc.cc:333] Attempt to free invalid pointer 0x4020f38fcaf2932d\n",
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "timeout"
+    assert report["primary_behavior_blocker"] == "planning_available_control_process_crash_timeout"
+    assert report["behavior_blocker_layer"] == "apollo_control_process_health"
+    evidence = report["behavior_blocker_evidence"]
+    assert evidence["runtime_routing_success_count"] == 1
+    assert evidence["planning_nonempty_trajectory_count"] == 198
+    assert evidence["runtime_control_tx_count"] == 0
+    assert evidence["control_started_pid_seen"] is True
+    assert evidence["control_survived_10s"] is False
+    assert evidence["control_crash_detected"] is True
+    assert evidence["control_crash_reason"] == "tcmalloc_invalid_free"
+
+
+def test_timeout_with_control_output_and_route_progress_reports_finalization_blocker(
+    tmp_path,
+) -> None:
+    run = tmp_path / "run"
+    nested_artifacts = run / "legacy_nested" / "actual" / "artifacts"
+    nested_artifacts.mkdir(parents=True)
+    (run / "execution").mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "r1",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "exit_reason": "platform_timeout"}),
+        encoding="utf-8",
+    )
+    (run / "platform_execution_result.json").write_text(
+        json.dumps({"status": "timeout", "exit_code": -2, "runtime_exit_code": -2}),
+        encoding="utf-8",
+    )
+    (run / "execution" / "runtime_stdout.log").write_text(
+        "\n".join(
+            [
+                "[online-chain][progress] phase=planning_output route=chain_not_alive summary=provisional routing=1 planning=40 control_tx=0 control=waiting speed=3.0mps",
+                "[online-chain][progress] phase=control_output route=chain_not_alive summary=provisional ticks=700/700 routing=1 planning=319 control_tx=2418 control=output speed=0.0mps",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text(
+        "sim_time,ego_speed_mps,route_s,control_source\n"
+        "0.0,0.0,0.0,external_stack\n"
+        "1.0,8.0,99.8,external_stack\n"
+        "2.0,0.0,99.8,external_stack\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "cyber_bridge_stats.json").write_text(
+        json.dumps(
+            {
+                "routing_request_count": 1,
+                "routing_success_count": 1,
+                "control_rx_count": 2418,
+                "control_tx_count": 2418,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (nested_artifacts / "planning_topic_debug_summary.json").write_text(
+        json.dumps({"messages_with_nonzero_trajectory_points": 319}),
+        encoding="utf-8",
+    )
+    (nested_artifacts / "command_materialization_summary.json").write_text(
+        json.dumps(
+            {
+                "command_path_stage": "materialized",
+                "summary_status": "provisional",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "timeout"
+    assert (
+        report["primary_behavior_blocker"]
+        == "control_output_present_route_chain_not_finalized_timeout"
+    )
+    assert report["behavior_blocker_layer"] == "phase1_runtime_finalization"
+    evidence = report["behavior_blocker_evidence"]
+    assert evidence["max_routing_success_count"] == 1
+    assert evidence["max_planning_message_count"] == 319
+    assert evidence["max_control_tx_count"] == 2418
+    assert evidence["runtime_control_tx_count"] == 2418
+    assert evidence["last_phase"] == "control_output"
+    assert evidence["last_route_status"] == "chain_not_alive"
+    assert evidence["last_summary_status"] == "provisional"
+    assert evidence["last_control_status"] == "output"
+    assert evidence["last_speed_mps"] == 0.0
+    assert evidence["route_s_delta_m"] == 99.8
+
+
+def test_timeout_with_finalized_nested_route_summary_reports_route_health_blocker(
+    tmp_path,
+) -> None:
+    run = tmp_path / "run"
+    nested_run = run / "legacy_nested" / "actual"
+    nested_artifacts = nested_run / "artifacts"
+    nested_artifacts.mkdir(parents=True)
+    (run / "execution").mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "r1",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "exit_reason": "platform_timeout"}),
+        encoding="utf-8",
+    )
+    (run / "platform_execution_result.json").write_text(
+        json.dumps({"status": "timeout", "exit_code": -2, "runtime_exit_code": -2}),
+        encoding="utf-8",
+    )
+    (run / "execution" / "runtime_stdout.log").write_text(
+        "\n".join(
+            [
+                "[online-chain][progress] phase=control_output route=chain_not_alive summary=provisional ticks=700/700 routing=1 planning=319 control_tx=2418 control=output speed=0.0mps",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text(
+        "sim_time,ego_speed_mps,route_s,control_source\n"
+        "0.0,0.0,0.0,external_stack\n"
+        "1.0,8.0,99.8,external_stack\n"
+        "2.0,0.0,99.8,external_stack\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "cyber_bridge_stats.json").write_text(
+        json.dumps(
+            {
+                "routing_request_count": 1,
+                "routing_success_count": 1,
+                "control_rx_count": 2418,
+                "control_tx_count": 2418,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (nested_artifacts / "planning_topic_debug_summary.json").write_text(
+        json.dumps({"messages_with_nonzero_trajectory_points": 319}),
+        encoding="utf-8",
+    )
+    (nested_run / "summary.provisional.json").write_text(
+        json.dumps(
+            {
+                "summary_status": "provisional",
+                "route_health_label": "chain_not_alive",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (nested_run / "summary.json").write_text(
+        json.dumps(
+            {
+                "summary_status": "finalized",
+                "finalized_from_event_stream": True,
+                "exit_reason": "max_steps_reached",
+                "fail_reason": "ROUTE_ESTABLISHMENT_LATENCY_SEC",
+                "route_health_label": "route_established_but_behavior_unhealthy",
+                "acceptance": {
+                    "failure_codes": [
+                        "ROUTE_ESTABLISHMENT_LATENCY_SEC",
+                        "ROUTE_COMPLETION_RATIO",
+                    ],
+                    "checks": {
+                        "route_distance_achieved_m": {"actual": 99.8, "ok": False},
+                        "route_completion_ratio": {"actual": 0.43, "ok": False},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "timeout"
+    assert (
+        report["primary_behavior_blocker"]
+        == "finalized_route_health_failure_platform_wrapper_timeout"
+    )
+    assert report["behavior_blocker_layer"] == "apollo_route_health_behavior"
+    evidence = report["behavior_blocker_evidence"]
+    assert evidence["nested_summary_status"] == "finalized"
+    assert evidence["nested_fail_reason"] == "ROUTE_ESTABLISHMENT_LATENCY_SEC"
+    assert evidence["nested_route_health_label"] == "route_established_but_behavior_unhealthy"
+    assert evidence["nested_route_distance_achieved_m"] == 99.8
+    assert evidence["nested_route_completion_ratio"] == 0.43
+    assert evidence["runtime_control_tx_count"] == 2418
+    assert evidence["route_s_delta_m"] == 99.8
+
+
+def test_failed_marker_with_finalized_nested_route_summary_reports_route_health_failure(
+    tmp_path,
+) -> None:
+    run = tmp_path / "run"
+    nested_run = run / "legacy_nested" / "actual"
+    nested_artifacts = nested_run / "artifacts"
+    nested_artifacts.mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "r1",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "exit_reason": "platform_failed"}),
+        encoding="utf-8",
+    )
+    (run / "platform_execution_result.json").write_text(
+        json.dumps({"status": "failed", "exit_code": 1, "runtime_exit_code": 1}),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text(
+        "sim_time,ego_speed_mps,route_s,control_source\n"
+        "0.0,0.0,0.0,external_stack\n"
+        "1.0,8.0,99.8,external_stack\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "cyber_bridge_stats.json").write_text(
+        json.dumps({"routing_success_count": 1, "control_tx_count": 2418}),
+        encoding="utf-8",
+    )
+    (nested_run / "summary.json").write_text(
+        json.dumps(
+            {
+                "summary_status": "finalized",
+                "success": False,
+                "finalized_from_event_stream": True,
+                "exit_reason": "max_steps_reached",
+                "fail_reason": "PLANNING_NONZERO_RATIO",
+                "route_health_label": "route_established_but_behavior_unhealthy",
+                "acceptance": {
+                    "failure_codes": [
+                        "PLANNING_NONZERO_RATIO",
+                        "ROUTE_DISTANCE_ACHIEVED_M",
+                    ],
+                    "checks": {
+                        "route_distance_achieved_m": {"actual": 99.8, "ok": False},
+                        "route_completion_ratio": {"actual": 0.43, "ok": False},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "route_health_failed"
+    assert report["primary_behavior_blocker"] == "finalized_route_health_failure"
+    assert report["behavior_blocker_layer"] == "apollo_route_health_behavior"
+    evidence = report["behavior_blocker_evidence"]
+    assert evidence["nested_summary_status"] == "finalized"
+    assert evidence["nested_summary_success"] is False
+    assert evidence["nested_fail_reason"] == "PLANNING_NONZERO_RATIO"
+    assert evidence["nested_failure_codes"] == [
+        "PLANNING_NONZERO_RATIO",
+        "ROUTE_DISTANCE_ACHIEVED_M",
+    ]
+    assert "Planning non-empty trajectory ratio" in report["behavior_next_action"]
+
+
+def test_route_health_failure_next_action_uses_actual_distance_completion_codes(
+    tmp_path,
+) -> None:
+    run = tmp_path / "run"
+    nested_run = run / "legacy_nested" / "actual"
+    nested_artifacts = nested_run / "artifacts"
+    nested_artifacts.mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "apollo_lane_keep",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "exit_reason": "platform_failed"}),
+        encoding="utf-8",
+    )
+    (run / "platform_execution_result.json").write_text(
+        json.dumps({"status": "failed", "exit_code": 1, "runtime_exit_code": 1}),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text(
+        "sim_time,ego_speed_mps,route_s,control_source\n"
+        "0.0,0.0,0.0,external_stack\n"
+        "1.0,0.0,121.8,external_stack\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "cyber_bridge_stats.json").write_text(
+        json.dumps({"routing_success_count": 1, "control_tx_count": 3341}),
+        encoding="utf-8",
+    )
+    (nested_run / "summary.json").write_text(
+        json.dumps(
+            {
+                "summary_status": "finalized",
+                "success": False,
+                "finalized_from_event_stream": True,
+                "exit_reason": "LANE_INVASION",
+                "fail_reason": "ROUTE_DISTANCE_ACHIEVED_M",
+                "route_health_label": "route_established_but_behavior_unhealthy",
+                "route_distance_achieved_m": 121.8,
+                "route_completion_ratio": 0.529,
+                "acceptance": {
+                    "failure_codes": [
+                        "ROUTE_DISTANCE_ACHIEVED_M",
+                        "ROUTE_COMPLETION_RATIO",
+                    ],
+                    "checks": {
+                        "planning_nonzero_ratio": {"actual": 0.994, "ok": True},
+                        "route_distance_achieved_m": {"actual": 121.8, "ok": False},
+                        "route_completion_ratio": {"actual": 0.529, "ok": False},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "route_health_failed"
+    assert report["primary_behavior_blocker"] == "finalized_route_health_failure"
+    evidence = report["behavior_blocker_evidence"]
+    assert evidence["nested_fail_reason"] == "ROUTE_DISTANCE_ACHIEVED_M"
+    assert evidence["nested_failure_codes"] == [
+        "ROUTE_DISTANCE_ACHIEVED_M",
+        "ROUTE_COMPLETION_RATIO",
+    ]
+    assert "route distance or completion stayed below threshold" in report["behavior_next_action"]
+    assert "Planning non-empty trajectory ratio" not in report["behavior_next_action"]
+    assert "LANE_INVASION" in report["behavior_next_action"]
+
+
+def test_platform_timeout_without_routing_reports_precise_blocker(tmp_path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "execution").mkdir()
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "r1",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "exit_reason": "platform_timeout"}),
+        encoding="utf-8",
+    )
+    (run / "platform_execution_result.json").write_text(
+        json.dumps({"status": "timeout", "exit_code": -2, "runtime_exit_code": -2}),
+        encoding="utf-8",
+    )
+    (run / "execution" / "runtime_stdout.log").write_text(
+        "\n".join(
+            [
+                "[online-chain][progress] phase=routing_wait status=running routing=0 planning=0 control_tx=0",
+                "[online-chain][progress] phase=routing_wait status=running ticks=35/700 routing=0 planning=0 control_tx=0",
+                "[online-chain][progress] phase=routing_wait status=running ticks=70/700 routing=0 planning=0 control_tx=0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text(
+        "sim_time,ego_speed_mps,route_s,control_source\n0.0,1.0,0.0,external_stack\n1.0,0.0,0.0,external_stack\n",
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "timeout"
+    assert report["primary_behavior_blocker"] == "routing_missing_timeout"
+    assert report["behavior_blocker_layer"] == "apollo_routing_materialization"
+    evidence = report["behavior_blocker_evidence"]
+    assert evidence["max_routing_success_count"] == 0
+    assert evidence["max_planning_message_count"] == 0
+    assert evidence["max_control_tx_count"] == 0
+    assert evidence["last_phase"] == "routing_wait"
 
 
 def test_backend_not_ready_takes_priority_over_missing_timeseries(tmp_path) -> None:

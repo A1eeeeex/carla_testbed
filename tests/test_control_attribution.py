@@ -264,6 +264,31 @@ def test_runtime_control_evidence_can_promote_when_handoff_report_is_incomplete(
     assert "control_handoff_status_not_claim_grade_but_runtime_control_seen" in report["control_source_evidence"]["warnings"]
 
 
+def test_none_control_source_is_promoted_with_apollo_control_evidence(tmp_path: Path) -> None:
+    rows = _base_rows()
+    trace = _write_rows(tmp_path / "timeseries.csv", rows)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"control_source": "none"}), encoding="utf-8")
+    handoff = tmp_path / "apollo_control_handoff_report.json"
+    handoff.write_text(
+        json.dumps(
+            {
+                "status": "warn",
+                "control_channel": {"name": "/apollo/control", "status": "pass"},
+                "bridge_receive": {"control_rx_count": 12},
+                "mapping_and_apply": {"apply_control_count": 11},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_control_attribution(trace, manifest_json=manifest, control_handoff_json=handoff)
+
+    assert report["control_source"] == "/apollo/control"
+    assert report["applied_control_source"] == "apollo_control"
+    assert report["control_chain_status"] == "apollo_control_attributed"
+
+
 def test_explicit_non_apollo_control_source_is_not_promoted_by_apollo_evidence(tmp_path: Path) -> None:
     rows = _base_rows()
     trace = _write_rows(tmp_path / "timeseries.csv", rows)

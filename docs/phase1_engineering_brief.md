@@ -54,19 +54,22 @@ success means:
 
 ## Current Phase 1 Progress Snapshot
 
-Latest reviewed snapshot: `2026-06-25`, after the GPT Pro audit of commit
-`21f2809f0692b53d9bc014c6fb4ea69093b7a246`. The audit shifted the remaining
-Phase 1 blocker from acceptance/catalog machinery to runtime delivery:
-executor lifecycle, no-blocking-assist Apollo fixed-scene evidence, and the
-five P0 online pair matrix. The acceptance/verifier/catalog layer is now treated
-as frozen unless it demonstrably blocks a real valid run.
+Latest reviewed snapshot: `2026-06-26`, after the GPT Pro audit of commit
+`bd228a8683033e0d98cfe1019666ca2f3ce6dc89` and the follow-up Town01
+`lane_keep_097` online validations. The audit accepts that Phase 1 has real
+platform progress, but rejects a completion claim until the package includes
+exact P0 matrix evidence and ApolloBackend proves at least one non-timeout
+longitudinal window and one non-timeout straight-lane window. The
+acceptance/verifier/catalog layer is now treated as frozen unless it
+demonstrably blocks a real valid run.
 
 Layered progress status:
 
 - Phase 1 overall: `PARTIAL`
-- Delivery-first completion estimate: about `85%`
+- Code-level platform delivery estimate: about `82-85%`
+- Current audit-package independently provable completion: about `70-75%`
 - Platform skeleton estimate: about `90%`
-- Apollo reference runtime estimate: about `55-60%`
+- Apollo reference runtime estimate: about `60%`
 - Five-P0 online pair matrix estimate: `DONE for evaluable comparison surface; behavior failures remain`
 - Local accepted comparison-surface catalog: `PARTIAL after verifier hardening`
 - Package-level acceptance surface: `PARTIAL until rebuilt from verifier-passed bundles`
@@ -80,13 +83,33 @@ Current P0 delivery and behavior blockers:
 - Runtime delivery for the five-P0 comparison surface is no longer the active
   blocker after the fresh automatic matrix below. The active blockers are now
   backend behavior failures: Apollo `lane_invasion` on the three Baguang rows,
-  Apollo `timeout` on the two Town01 route-only rows, plus PlanningControlBackend
-  lane/collision failures on the route-only rows.
+  Apollo `timeout` on the two Town01 route-only rows, plus a matrix-level
+  revalidation item for the PlanningControlBackend route-only rows. Standalone
+  PlanningControlBackend route-only retests after the diagnostic speed fix now
+  pass safety counters, but the full P0 matrix has not yet been rerun with that
+  fix.
 - Accepted Apollo P0 runs must continue to record clean assist evidence. Any
   run with `blocking_assists`, such as historical `legacy_followstop`, cannot
   support Apollo ego-ownership evidence.
 - The five P0 rows are `follow_stop_static`, `lead_decel_accel`,
   `cut_in_simple`, `lane_keep_straight`, and `lane_keep_curve`.
+- The `lead_decel_accel` P0 row now points to
+  `configs/scenarios/baguang/lead_decel_accel_70_40_70_20m.yaml`, whose speed
+  profile explicitly includes 70kph hold, deceleration to 40kph, a short hold,
+  and acceleration back to 70kph. The older
+  `lead_decel_70_to_40_20m.yaml` remains available as a deceleration-only
+  diagnostic scene, but it is no longer the default P0 matrix row.
+- Online semantic-check sample
+  `runs/phase1_online_pairs/phase1_lead_decel_accel_semantic_online_20260626_004017`
+  used the new combined `lead_decel_accel` scene. PlanningControlBackend ran to
+  `phase1_status=success` with `artifact_completeness=pass`. ApolloBackend
+  still timed out through the compatibility sidecar path; before the postprocess
+  fix it was `invalid/missing_required_artifact` because `analysis/v_t_gap` was
+  not generated. Running the now-required `tools/extract_v_t_gap.py` step on the
+  same Apollo run produced `v_t_gap.status=warn` with 322 rows and reclassified
+  the run as evaluable `failed/lane_invasion`. This is progress on the evidence
+  boundary, not Apollo behavior success; the next new online run must generate
+  v-t-gap before artifact-completeness without manual repair.
 - P1 rows such as `cut_out_simple`, `junction_turn_no_signal`, and
   `lead_hard_brake` are Phase 1.1 backlog and should not block Phase 1 Core.
 - The next code path to exercise is the unified
@@ -105,12 +128,249 @@ Current P0 delivery and behavior blockers:
   delivery/comparison surface, not Apollo behavior success: Apollo still fails
   with `lane_invasion` on the three Baguang rows and `timeout` on the two
   Town01 route-only rows.
+- Follow-up blocker surfacing on `2026-06-26` keeps the same verdicts but makes
+  the next Baguang action explicit at the matrix/operator layer. Recomputing
+  the three Baguang pair comparisons with non-hidden run directories preserves
+  `comparison_status=comparable` and
+  `comparison_target_status=apollo_vs_planning_control_evaluable`, while each
+  Apollo row now exposes
+  `primary_behavior_blocker=lane_departure_with_route_simple_lat_sign_convention_candidate`
+  and `behavior_blocker_layer=apollo_lateral_semantics`. This does not turn
+  `failed/lane_invasion` into success. It narrows the next fix to Apollo
+  lateral semantics / route-lateral sign convention / Planning reference-line
+  materialization evidence, and explicitly says not to tune steer scale,
+  smoothing, or control gains first.
+- The same blocker-surfacing pass now narrows the two Town01 Apollo route-only
+  rows from generic `failed/timeout` to
+  `primary_behavior_blocker=routing_available_planning_missing_timeout` and
+  `behavior_blocker_layer=apollo_planning_materialization`. Reclassifying
+  `lane_keep_straight` and `lane_keep_curve` from
+  `runs/phase1_p0_matrix/phase1_p0_auto_artifacts_20260625_153515` preserves
+  `status=failed` and `failure_reason=timeout`, but their progress logs show
+  `routing=1`, `planning=0`, `control_tx=0`; their `timeseries.csv` rows show
+  essentially zero `route_s` progress and final ego speed `0.0 m/s`. This is
+  evidence to inspect Apollo Planning readiness/reference-line materialization
+  and route/lane compatibility before control mapping or actuation tuning. It
+  is not Apollo lane-keep success and does not relax the timeout gate.
+- PlanningControlBackend route-only follow-up found that the builtin launch
+  plan was applying the generic `simple_acc_route_follower` 70kph algorithm
+  speed to Town01 lane/curve diagnostics. The P0 route-only scenarios now
+  declare conservative diagnostic target speeds in `success_intent`
+  (`lane_keep_097=10.0m/s`, `curve217=8.0m/s`), and the `carla_builtin` launch
+  plan prefers those scenario values over the algorithm default. This is a
+  baseline playback consistency fix, not an Apollo capability claim; the next
+  online P0 matrix must prove whether the PlanningControl route-only
+  lane/collision failures are actually reduced.
+- Online validation
+  `runs/phase1_online_planning_control_route_speed_20260626_011047` then ran
+  both route-only PlanningControlBackend samples directly against CARLA Town01.
+  `lane_keep_097` and `curve217_diagnostic` both produced
+  `phase1_status=success`, `artifact_completeness=pass`, `collision_count=0`,
+  and `lane_invasion_count=0`. This proves the standalone
+  PlanningControlBackend speed-surface fix for those two route-only samples; it
+  does not change Apollo behavior, and it still needs a full P0 matrix rerun to
+  replace the older matrix rows.
+- Unified pair validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_unified_speedcheck_20260626_011636`
+  then exercised the real `phase1 run-pair` entry for the same Town01 straight
+  row. The PlanningControlBackend launch command includes
+  `--target-speed-mps 10.0` and its run is `phase1_status=success`,
+  `artifact_completeness=pass`, `collision_count=0`, and
+  `lane_invasion_count=0`. The ApolloBackend run remains evaluable
+  `failed/timeout`, but the blocker is now more precise:
+  `primary_behavior_blocker=routing_missing_timeout`,
+  `behavior_blocker_layer=apollo_routing_materialization`, with progress logs
+  showing `routing=0`, `planning=0`, `control_tx=0`, and `last_phase=routing_wait`.
+  The refreshed comparison is still `comparison_status=comparable` and
+  `comparison_target_status=apollo_vs_planning_control_evaluable`. This moves
+  the next Apollo Town01 action earlier than Planning: inspect routing request
+  send/materialization, route goal validity, map/route compatibility, and
+  Dreamview/Apollo routing status before debugging Planning, Control, or
+  actuation.
+- Deeper inspection of that Apollo run then found an outer Phase 1 timeout
+  mismatch rather than enough evidence for a route-materialization root cause:
+  the nested `artifacts/command_materialization_summary.json` still reported
+  `last_blocking_reason=apollo_startup_warmup`, `first_eligible_ts_sec` near
+  `88.9s`, no routing request sent yet, and roughly `1.8s` warmup remaining
+  when the Phase 1 runner killed the process. The same runtime stdout declares
+  `timing_budget_total_upper_bound_sec: 215.0`, while the unified pair was
+  launched with `--timeout-s 180`. The executor now preserves the requested
+  timeout but raises Apollo compatibility runs to a recorded
+  `effective_runtime_timeout_s=240.0`, leaving PlanningControlBackend at the
+  requested timeout. This is timeout-budget alignment and provenance; it does
+  not make Apollo behavior successful. The next online validation is to rerun
+  the same lane-keep pair and check whether Apollo gets past startup warmup to
+  an actual routing/planning/control blocker.
+- Online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_timeout_policy_20260626_013215`
+  then reran the same pair through the unified entry with user
+  `--timeout-s 180`. The PlanningControlBackend row remained
+  `phase1_status=success`, while the ApolloBackend row recorded
+  `requested_runtime_timeout_s=180.0`, `effective_runtime_timeout_s=240.0`,
+  and ran for about `247.6s` before timeout. This proves the timeout policy is
+  applied and shows the previous 180s cutoff was too short for this
+  compatibility path. The new Apollo artifacts narrow the blocker again:
+  `routing_request_count=1`, `routing_success_count=1`, Planning materialized
+  non-empty trajectories (`nonempty_trajectory_count=198`), and
+  `/apollo/control` remains absent (`control_tx_count=0`). Refreshed Phase 1
+  status now records
+  `primary_behavior_blocker=planning_available_control_process_crash_timeout`
+  at `behavior_blocker_layer=apollo_control_process_health`, because the
+  deferred Control mainboard log contains
+  `tcmalloc.cc:333] Attempt to free invalid pointer` and the process survives
+  at 5s but not 10s. Planning debug still reports exported
+  `reference_line_nonempty_ratio=0.0`, so reference-line export remains a
+  secondary diagnostic gap, but the next fix should inspect Apollo Control
+  runtime process health / runtime overlay provenance before control mapping,
+  steering scale, smoothing, or actuation work.
+- Online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_control_bvarfix_20260626_020756`
+  then tested the narrow `deferred_control_disable_bvar_dump=true` hypothesis.
+  The Apollo start log confirms `APOLLO_DISABLE_BVAR_DUMP=1`, routing still
+  succeeds, and Planning again emits non-empty trajectories
+  (`nonempty_trajectory_count=193`), but Control still crashes with the same
+  `tcmalloc.cc:333] Attempt to free invalid pointer` signature before
+  `/apollo/control` materializes. This makes bvar dumping an excluded
+  first-order cause for the Town01 route-only sample. The canonical
+  `town01_apollo_route_health` config keeps
+  `deferred_control_disable_bvar_dump=false`; changing that flag is not a
+  behavior fix.
+- Online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_explicit_config_20260626_024805`
+  then confirmed the actual Phase 1 launch command records
+  `--config configs/io/examples/town01_apollo_route_health.yaml` and applies
+  the same `requested_runtime_timeout_s=180.0` to
+  `effective_runtime_timeout_s=240.0` Apollo policy. PlanningControlBackend
+  again succeeded with `collision_count=0` and `lane_invasion_count=0`. Apollo
+  remained an evaluable `failed/timeout`; after the executor refresh-order fix,
+  its `phase1_status.json` records
+  `primary_behavior_blocker=planning_available_control_process_crash_timeout`,
+  Planning non-empty trajectories (`planning_nonempty_trajectory_count=190`),
+  `control_tx_count=0`, and the same `tcmalloc_invalid_free` Control mainboard
+  crash. The pair comparison remains `comparable` /
+  `apollo_vs_planning_control_evaluable`, with `blocking_assists=[]`.
+- Diagnostic online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_behavior_recovery_diag_20260626_030455`
+  then tried the explicit
+  `configs/platforms/apollo_cyberrt_town01_behavior_recovery.yaml` profile.
+  This is a `diagnostic_only` control-runtime survival probe, not a default
+  backend change. PlanningControlBackend again succeeded, but the Apollo row is
+  `invalid/no_timeseries`, not an evaluable behavior failure. Refreshed
+  `phase1_status.json` now reports
+  `primary_setup_blocker=apollo_startup_command_materialization_missing_timeout`
+  at `setup_blocker_layer=apollo_runtime_startup_materialization`: the overlay
+  manifest was active (`selected_count=17`), routing/prediction/planning
+  processes were seen, no Control process was seen, `startup_stage` stopped at
+  `adapter_prepare_done`, and no command-materialization/timeseries/control
+  artifacts were produced before timeout. The pair comparison is therefore
+  `partially_evaluable` with `missing_evaluable_apollo_reference_backend`.
+  This narrows the next diagnostic-profile task to startup/materialization
+  lifecycle, and it does not replace the default-profile Control crash blocker.
+- Follow-up diagnostic validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_behavior_recovery_diag_dreamview_timeoutfix_20260626_034500`
+  then bounded the Dreamview fallback start command and re-ran the same
+  `apollo_cyberrt_town01_behavior_recovery` profile. This removed the
+  startup/materialization blocker: `dreamview_launch.log` records fallback
+  startup readiness, root/nested `timeseries.csv` are present, the comparison is
+  now `comparable` / `apollo_vs_planning_control_evaluable`, and Apollo is an
+  evaluable `failed/timeout` instead of `invalid/no_timeseries`. The refreshed
+  Apollo `phase1_status.json` reports
+  `primary_behavior_blocker=finalized_route_health_failure_platform_wrapper_timeout`
+  at `behavior_blocker_layer=apollo_route_health_behavior`. Key evidence:
+  routing succeeded (`routing_success_count=1`), Planning emitted non-empty
+  trajectories (`planning_nonempty_trajectory_count=319`), `/apollo/control`
+  materialized (`control_tx_count=2418`), Control survived, and the ego vehicle
+  advanced about `99.76m` before ending near zero speed. The nested Apollo
+  route-health summary is finalized. After fixing route-health state-timeline
+  timestamp selection to prefer sim-time fields over wall-time `timestamp`,
+  `route_establishment_latency_sec` is now `8.0s` and passes the `45s`
+  threshold; the previous billion-second latency was a mixed-clock artifact.
+  The remaining finalized route-health failure is
+  `fail_reason=PLANNING_NONZERO_RATIO`,
+  `route_health_label=route_established_but_behavior_unhealthy`,
+  `route_distance_achieved_m≈99.76`, and
+  `route_completion_ratio≈0.434`, with failure codes
+  `PLANNING_NONZERO_RATIO`, `ROUTE_DISTANCE_ACHIEVED_M`, and
+  `ROUTE_COMPLETION_RATIO`. The remaining blocker is therefore the finalized
+  route-health behavior failure plus a platform-wrapper lifecycle timeout after
+  finalized summary, not a missing Control process and not a proof of Apollo
+  lane-keep success.
+- Wrapper lifecycle follow-up
+  `runs/phase1_online_pairs/phase1_lane_keep097_behavior_recovery_marker_20260626_040644`
+  added a Phase 1 runtime completion marker for nested Town01 route-health
+  `summary_status=finalized`. The same diagnostic profile remains
+  `comparable` / `apollo_vs_planning_control_evaluable`, but Apollo is now
+  `failed/route_health_failed` instead of wrapper `failed/timeout`:
+  `platform_execution_result.dispatch.command.timed_out=false`,
+  `completion_marker.id=town01_route_health_finalized_summary`, and
+  `completion_marker.success=false`. The behavior blocker is now
+  `primary_behavior_blocker=finalized_route_health_failure` at
+  `behavior_blocker_layer=apollo_route_health_behavior`. Runtime evidence again
+  shows materialized routing/planning/control (`routing_success_count=1`,
+  `planning_nonempty_trajectory_count=314`, `control_tx_count=2404`) and ego
+  route progress (`route_s_delta_m≈109.86`). A follow-up analyzer refresh now
+  computes `planning_nonzero_ratio` on the post-route-established Planning
+  window instead of counting pre-route zero-trajectory warmup messages; the
+  check is `0.994` and passes, while preserving all-message counts for audit.
+  Finalized route-health still fails `ROUTE_DISTANCE_ACHIEVED_M` and
+  `ROUTE_COMPLETION_RATIO` (`route_completion_ratio≈0.478`). This closes the
+  wrapper-finalization and Planning-ratio attribution blockers for this path;
+  it does not make Apollo lane-keeping pass. The next useful fix is Apollo
+  route-health behavior: why the ego covers only about 110m of a ~230m route
+  before the acceptance window ends or the vehicle stops, including route target
+  length/duration, path fallback/matched-point/reference-line evidence, and
+  destination/longitudinal behavior.
+- Follow-up online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_behavior_recovery_900ticks_20260626_042955`
+  extended only the diagnostic behavior-recovery route-health window from 700
+  to 900 ticks. This did not change acceptance thresholds or control mapping.
+  The pair remains `comparable` /
+  `apollo_vs_planning_control_evaluable`; PlanningControlBackend succeeds, and
+  Apollo remains `failed/route_health_failed`. The longer window proves
+  routing/planning/control continue to materialize (`routing_success_count=1`,
+  Planning non-empty trajectories observed, `control_tx_count≈3341`) and the
+  wrapper stops by finalized-summary marker rather than timeout. It also
+  narrows the active behavior blocker: Apollo reaches about `121.8m`
+  (`route_completion_ratio≈0.530`) but then hits `LANE_INVASION` around
+  `route_s≈105-111m`, cross-track error grows past about `-1.0m`, and the ego
+  later stops near `route_s≈121.8m` with Apollo commanding strong brake. This is
+  not lane-keep success. A follow-up artifact-surface fix now promotes the
+  nested control/config/bridge summaries to the Phase 1 root and overlays sparse
+  `timeseries.csv` control placeholders from `artifacts/control_apply_trace.jsonl`.
+  Re-running `tools/analyze_control_attribution.py --run-dir` on the same Apollo
+  run gives `verdict.status=pass`,
+  `control_chain_status=apollo_control_attributed`, `control_source=/apollo/control`,
+  and `dominant_breakpoint=none`. That rules out a missing raw/mapped/applied
+  control evidence chain for this sample. Running the existing
+  `apollo_lateral_semantics` analyzer on the same run reports `status=warn`,
+  `suspected_layer=target_point_semantics`, and the anomaly
+  `high_lateral_drift_with_low_source_steer`: the route is near-straight,
+  cross-track error grows above `1m`, while Apollo source/applied steer remains
+  near zero. Because matched/target/kappa debug fields are still missing, this
+  is diagnostic evidence, not a root-cause proof. The next useful fix is not
+  more validation machinery and not steer-scale tuning; inspect lane-event
+  timing, route/lane sign convention, path fallback/matched-point evidence, and
+  why Apollo transitions from forward progress to a mid-route full stop.
+- A fresh online attempt for this blocker-surfacing path,
+  `runs/phase1_online_pairs/phase1_baguang_blocker_surface_20260626_001715`,
+  did not reach backend behavior because CARLA startup for
+  `straight_road_for_baguang` never exposed an RPC listener. The pair writes
+  `carla_session.status=not_ready`, `stop.status=stopped_after_startup_failure`,
+  and `comparison_status=invalid/all_runs_invalid`. Residual-process inspection
+  found no real CARLA / Apollo / bridge process after cleanup. Treat this as
+  online environment evidence only; it does not contradict the previous fresh
+  matrix and does not validate new behavior.
 
 Executor update, 2026-06-25:
 
 - `ScenarioRunExecutor` now materializes backend `preflight.json` into each
   run, includes preflight in `platform_execution_result.json`, and echoes it in
   `summary.json`.
+- `ScenarioRunExecutor` now writes a final platform execution snapshot before
+  refreshing fallback `phase1_status.json`, then rewrites the result with the
+  status artifact paths. This lets timeout classifiers consume final dispatch
+  status, effective timeout, and nested runtime artifacts in the same executor
+  call instead of requiring manual reclassification.
 - `BackendRuntimeAdapter` no longer silently executes only the first command in
   a multi-command launch plan. Multi-command plans are refused with
   `unsupported_multi_command` until a real pipeline lifecycle is implemented.
@@ -137,6 +397,11 @@ Executor update, 2026-06-25:
   `phase1_p0_matrix.csv`. This proves one-command matrix materialization and
   artifact routing; it does not prove online Apollo behavior or no-assist
   execution.
+- Apollo Town01 route-only launch previews now pass the configured
+  `configs/io/examples/town01_apollo_route_health.yaml` explicitly through
+  `tools/run_town01_capability_online_chain.py --config ...` instead of relying
+  on that tool's implicit default. This is provenance hardening only; it does
+  not change Apollo runtime behavior or make the current timeout samples pass.
 - Follow-up local online probe
   `runs/phase1_online_pairs/follow_stop_static_spawn2m_goal_carla_ready_20260625_113744`
   shows the next environment boundary. The pair runner now gets past the
@@ -1611,7 +1876,7 @@ Status definitions:
 | fixed_scene_player CARLA online playback validation | Validate non-ego actor playback in CARLA | PARTIAL | `carla_testbed/scenario_player/carla_runtime.py`; `docs/scenario_player.md`; `tests/test_fixed_scene_carla_runtime.py`; `tools/run_fixed_scene_carla_smoke.py`; `tools/run_builtin_ego_fixed_scene.py` | Runtime support exists and latest local evidence includes CARLA builtin playback for all current P0/P1 catalog rows, but this remains host/run dependent and is not Apollo evidence. | Keep catalog evidence explicit and add Apollo fixed-scene compatibility before marking scenarios DONE. |
 | scenario case catalog | Enumerate reusable ScenarioCases | PARTIAL | `carla_testbed/analysis/phase1_scenario_catalog.py`; `tools/phase1_scenario_catalog.py`; `carla_testbed/analysis/phase1_acceptance.py`; `tools/phase1_acceptance.py`; `artifacts/phase1_scenario_catalog_current/phase1_scenario_catalog.json`; `tests/test_phase1_scenario_catalog.py`; `tests/test_phase1_acceptance.py` | The local catalog can still report `8 DONE / 0 PARTIAL` as an accepted comparison-surface artifact state, but the latest Pro audit requires the project progress table to treat this as `PARTIAL` until an external package includes the generated catalog, exact comparison directories, participating runs, raw traces, artifact-completeness reports, assist ledgers, and hashes needed to independently recompute the result. This is Phase 1 comparison-surface evidence, not Apollo natural-driving success. | Keep accepted bundles, but make each external review pack self-contained before using catalog DONE language outside the local machine. |
 | follow_stop_static | P0 static lead stop | PARTIAL | `configs/scenarios/baguang/follow_stop_static_300m.yaml`; `configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml`; `configs/scenario_templates/static_lead_stop.yaml`; `runs/phase1_acceptance_follow_stop_static_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_phase1_scenario_catalog.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py` | Local accepted comparison bundle exists and includes target actor traces, phase events, v-t-gap, comparison, acceptance, and control trace surfaces. The representative Apollo run is still an evaluable behavior failure, so this is not Apollo follow-stop success and remains Phase 1 `PARTIAL` at project-progress level. | Use accepted evidence to prioritize behavior blocker reduction rather than rebuilding the comparison surface. |
-| lead_decel_accel | P0 lead speed-change following | PARTIAL | `configs/scenario_templates/lead_vehicle_accel_decel.yaml`; `configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml`; `configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml`; `runs/phase1_acceptance_lead_decel_accel_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_v_t_gap_extractor.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py` | Local accepted comparison bundle exists with target actor, phase, v-t-gap, and control trace evidence. Participating runs remain evaluable failures, so this is comparison-surface completion only and Phase 1 project progress remains `PARTIAL`. | Use the bundle to compare failure timing and reduce representative Apollo/Baguang lane-invasion blockers. |
+| lead_decel_accel | P0 lead speed-change following | PARTIAL | `configs/scenario_templates/lead_vehicle_accel_decel.yaml`; `configs/scenarios/baguang/lead_decel_accel_70_40_70_20m.yaml`; `configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml`; `configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml`; `runs/phase1_acceptance_lead_decel_accel_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_compiler.py`; `tests/test_v_t_gap_extractor.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py` | The P0 matrix now uses the combined decelerate-then-accelerate Baguang scene, so the canonical case name matches the actual target speed profile. Local accepted comparison bundle evidence still comes from earlier lead-speed-change artifacts; participating Apollo runs remain evaluable failures, so this is comparison-surface completion only and Phase 1 project progress remains `PARTIAL`. | Re-run the P0 matrix with the combined scenario and reduce representative Apollo/Baguang lane-invasion blockers. |
 | cut_in_simple | P0 target enters ego lane | PARTIAL | `configs/scenario_templates/cut_in.yaml`; `configs/scenarios/baguang/cut_in_35kph_left_to_right_10m.yaml`; `configs/scenarios/town01/cut_in_097.yaml`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/artifacts/apollo_planning.data`; `runs/phase1_apollo_sidecar_cut_in_bvar_prediction_online_20260620_181700/analysis/prediction_evidence/prediction_evidence_report.json`; `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742/events.jsonl`; `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742/analysis/baguang_lane_event_contract/baguang_lane_event_contract_report.json`; `runs/phase1_builtin_baguang_cut_in_safety_attach_online_20260620_203218/summary.json`; `runs/phase1_comparisons/baguang_cut_in_time_aligned_v_t_gap_20260620_204023/comparison_summary.json`; `runs/phase1_acceptance_cut_in_simple_time_aligned_v_t_gap_20260620_204023/acceptance/phase1_acceptance_report.json`; `tests/test_fixed_scene_player.py::test_baguang_cut_in_starts_at_configured_activation_gap`; `tests/test_apollo_prediction_evidence.py::test_planning_bvar_prediction_count_counts_as_native_observed_with_source`; `tests/test_scenario_comparison.py::test_lane_event_contract_blocks_lane_invasion_backend_loss`; `tests/test_baguang_lane_event_contract.py::test_downstream_lane_invasion_before_footprint_crossing_is_quarantined`; `tests/test_baguang_lane_event_contract.py::test_yaw_aware_vehicle_footprint_prevents_false_quarantine`; `tests/test_v_t_gap_extractor.py::test_v_t_gap_aligns_relative_actor_trace_to_absolute_apollo_timeseries`; `tests/unit/test_apollo_compat_runtime.py::test_transition_events_append_without_erasing_backend_events`; `tests/test_builtin_ego_runner_safety_integration.py`; `tests/test_phase1_acceptance.py` | The newest correctly configured Apollo cut-in sample preserves root `events.jsonl` runtime events and includes `crossed_lane_marking_types=["Solid"]`; scenario actor contract passes and `v_t_gap` is available. After yaw-aware vehicle footprint correction, the Apollo lane event is hard-gate eligible and classified as `possible_real_lane_departure_or_unclassified_lane_event`. The refreshed builtin run attaches safety sensors after ego spawn settling, has `lane_invasion_count=0`, and clears the previous low-CTE quarantine. The local comparison surface is accepted, but Apollo's representative run still failed with lane invasion and external review must receive raw traces to independently recompute it. | Use this accepted bundle to reduce Apollo cut-in behavior blockers; do not reinterpret it as Apollo cut-in success. |
 | lane_keep_straight | P0 lateral baseline | PARTIAL | `configs/scenarios/town01/lane_keep_097.yaml`; `runs/phase1_acceptance_lane_keep_straight_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_phase1_scenario_catalog.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py`; `tests/test_run_artifact_completeness.py` | Local route-only comparison-surface evidence is self-contained and accepted, including executable control trace surfaces. Apollo's participating run remains an evaluable failure, not natural-driving capability evidence. | Use this accepted route-only row as the template for future review packs. |
 | lane_keep_curve | P0 lateral curve baseline | PARTIAL | `configs/scenarios/town01/curve217_diagnostic.yaml`; `runs/phase1_acceptance_lane_keep_curve_selfcontained_control_20260620_185256/acceptance/phase1_acceptance_report.json`; `tests/test_phase1_status_classifier.py`; `tests/test_scenario_comparison.py`; `tests/test_phase1_acceptance.py`; `tests/test_run_artifact_completeness.py` | Local route-only curve comparison-surface evidence is self-contained and accepted. Apollo behavior remains diagnosable with route/reference-line style blockers; do not tune control from this result alone. | Use this surface for route/reference-line blocker reduction. |
@@ -1622,7 +1887,7 @@ Status definitions:
 | PlanningControlBackend | Self-written planning/control baseline backend | PARTIAL | `carla_testbed/backends/carla_builtin.py`; `configs/platforms/carla_builtin.yaml`; `configs/algorithms/builtin/simple_acc_route_follower.yaml`; `carla_testbed/control/simple_acc_route_follower.py`; `carla_testbed/scenario_player/builtin_ego_runner.py`; `runs/phase1_builtin_follow_stop_097_global_route_20260618_030049/analysis/phase1_status/phase1_status.json`; `runs/phase1_builtin_lead_accel_decel_097_goal_cycle_20260618_031551/analysis/phase1_status/phase1_status.json`; `runs/phase1_builtin_baguang_lead_decel_safety_surface_20260619_210418/analysis/phase1_status/phase1_status.json`; `tests/test_builtin_ego_controller.py`; `tests/test_manifest_input_contract.py` | Current runtime name remains `carla_builtin`; manifests identify it with `backend_type=planning_control_backend`, `input_contract=scene_truth_direct`, and diagnostic-only claim boundaries. It supports fixed-scene and route-only Phase 1 diagnostic runs. The Town01 `lead_decel_accel` builtin run remains evaluable success, while the refreshed Baguang lead-decel safety-surface run is evaluable but failed with near-start `lane_invasion`; both are diagnostic baseline evidence, not Apollo/Autoware capability, and any Apollo/Autoware comparison must use the same acceptance gate. | Use these manifest fields in comparison reports; do not rename runtime modules for documentation consistency, and do not count builtin success or failure as Apollo/Autoware capability. |
 | BackendRuntimeAdapter / ScenarioRunExecutor | Execute one resolved RunPlan through backend lifecycle | PARTIAL | `carla_testbed/platform/runtime_adapter.py`; `carla_testbed/platform/executor.py`; `python3 -m carla_testbed run --plan <plan> --run-dir <run>`; `tests/test_backend_runtime_adapter.py`; `tests/test_scenario_run_executor.py`; `tests/test_platform_executor.py` | The CLI no longer stops at "runtime dispatch not implemented"; it records PID, stdout/stderr, timeout, postprocess outcome, and platform execution result. This proves the execution surface exists, not that a given Apollo online run succeeds. | Use this entry for the next online P0 runs and keep behavior failures in `phase1_status` / `ScenarioComparison`. |
 | Phase 1 pair runner | One-command ApolloBackend vs PlanningControlBackend pair | PARTIAL | `carla_testbed/platform/phase1_pair_runner.py`; `python3 -m carla_testbed phase1 run-pair --scenario <case> --out <dir>`; `tests/test_phase1_pair_runner.py` | The pair runner compiles both plans, executes them sequentially, and writes ScenarioComparison. Dry-run CI coverage exists; online Apollo success remains unproven and invalid runs remain invalid/partially evaluable. | Run the five P0 scenarios through this entry online and reduce the first Apollo behavior blocker instead of adding more acceptance layers. |
-| Phase 1 P0 matrix runner | One-command orchestration for the five P0 pairs | PARTIAL | `carla_testbed/platform/phase1_p0_matrix.py`; `python3 -m carla_testbed phase1 run-p0-matrix --out <dir>`; `tests/test_phase1_p0_matrix.py`; `runs/phase1_p0_matrix/phase1_p0_online_pair_isolated_20260625_143833`; `runs/phase1_p0_matrix/phase1_p0_online_pair_isolated_20260625_143833/analysis/phase1_posthoc_artifact_normalization/summary.json` | The matrix runner materializes `follow_stop_static`, `lead_decel_accel`, `cut_in_simple`, `lane_keep_straight`, and `lane_keep_curve` through the same `run-pair` surface, writing `phase1_p0_matrix_manifest.json` and CSV. Pair-isolated online evidence has all five rows materialized. Post-hoc normalization proves both Town01 Apollo route-only rows contained unique nested `timeseries.csv`, `events.jsonl`, and `control_apply_trace.jsonl`; after writing route-only `v_t_gap=not_applicable` and Phase 1 artifact-completeness reports, the existing matrix recomputes to `5 comparable` and `5 apollo_vs_planning_control_evaluable` pairs. Apollo still behavior-fails in every row (`lane_invasion` or `timeout`), so this is platform comparability evidence, not Apollo success. | Keep pair-isolated `--start-carla` as the delivery entry. Next highest-value work is to rerun the full P0 matrix with the automatic normalization/comparison-artifact path and ensure the fresh top-level matrix manifest records the same five comparable pairs without post-hoc intervention. |
+| Phase 1 P0 matrix runner | One-command orchestration for the five P0 pairs | PARTIAL | `carla_testbed/platform/phase1_p0_matrix.py`; `python3 -m carla_testbed phase1 run-p0-matrix --out <dir>`; `tests/test_phase1_p0_matrix.py`; `runs/phase1_p0_matrix/phase1_p0_online_pair_isolated_20260625_143833`; `runs/phase1_p0_matrix/phase1_p0_online_pair_isolated_20260625_143833/analysis/phase1_posthoc_artifact_normalization/summary.json` | The matrix runner materializes `follow_stop_static`, `lead_decel_accel`, `cut_in_simple`, `lane_keep_straight`, and `lane_keep_curve` through the same `run-pair` surface, writing `phase1_p0_matrix_manifest.json` and CSV. Pair-isolated online evidence has all five rows materialized. Post-hoc normalization proves both Town01 Apollo route-only rows contained unique nested `timeseries.csv`, `events.jsonl`, and `control_apply_trace.jsonl`; after writing route-only `v_t_gap=not_applicable` and Phase 1 artifact-completeness reports, the existing matrix recomputes to `5 comparable` and `5 apollo_vs_planning_control_evaluable` pairs. That local result was not independently included in the reviewed package, and Apollo still behavior-fails in every row (`lane_invasion` or `timeout`), so this is platform comparability evidence, not Apollo success. | Keep pair-isolated `--start-carla` as the delivery entry. Next highest-value work is to rerun the full P0 matrix with the automatic normalization/comparison-artifact path and package the exact five-pair run evidence before making external completion claims. |
 | ScenarioRun artifact structure | Per-run artifact envelope | PARTIAL | `docs/run_artifacts.md`; `carla_testbed/record/artifact_store.py`; `tests/unit/recording/test_artifact_store.py`; `carla_testbed/scenario_player/builtin_ego_runner.py` | Existing paths differ from the recommended Phase 1 layout; some online tools still write richer legacy artifacts. | Add a non-invasive artifact completeness checker for Phase 1 ScenarioRun. |
 | ScenarioComparison artifact structure | Backend comparison envelope | PARTIAL | `carla_testbed/analysis/scenario_comparison.py`; `tools/compare_scenario_runs.py`; `runs/phase1_comparisons/lane_keep_real_apollo_vs_builtin_safety_surface_20260619_164004/comparison_summary.json`; `runs/phase1_comparisons/follow_stop_097_apollo_vs_builtin_20260618_030308/comparison_summary.json`; `runs/phase1_comparisons/baguang_lead_decel_apollo_overlay_vs_builtin_safety_surface_20260619_210445/comparison_summary.json`; `runs/phase1_comparisons/baguang_lead_hard_brake_apollo_overlay_vs_builtin_safety_surface_20260620_004757/comparison_summary.json`; `runs/phase1_comparisons/baguang_cut_in_apollo_overlay_vs_builtin_safety_surface_20260620_005828/comparison_summary.json`; `runs/phase1_comparisons/baguang_cut_out_apollo_overlay_vs_builtin_safety_surface_20260620_010954/comparison_summary.json`; `tests/test_scenario_comparison.py`; Baguang-specific wrapper in `carla_testbed/analysis/baguang_stack_comparison.py` | Generic comparison exists, preserves invalid-run boundaries, records `comparison_target_status` / `backend_coverage`, checks safety-event evidence-surface consistency for `lane_invasion` and `collision`, and now has comparable evidence for all current P0/P1 rows. It is still PARTIAL as an artifact envelope because schemas and plotting surfaces remain minimal. | Keep extending report detail without weakening invalid-run or evidence-surface semantics. |
 | v-t-gap extraction | Core longitudinal behavior curves | PARTIAL | `carla_testbed/analysis/v_t_gap.py`; `tools/extract_v_t_gap.py`; `runs/phase1_online_builtin_lane_keep_20260617_135010/analysis/v_t_gap/v_t_gap_report.json`; `runs/phase1_builtin_lead_accel_decel_097_goal_cycle_20260618_031551/analysis/v_t_gap/v_t_gap_report.json`; `runs/phase1_apollo_sidecar_cut_in_event_append_online_20260620_195742/analysis/v_t_gap/v_t_gap_report.json`; `tests/test_v_t_gap_extractor.py` | Extractor supports `timeseries.csv/jsonl` plus actor traces, filters cut-in target activation, emits `not_applicable` for route-only cases, aligns relative fixed-scene actor traces to absolute Apollo sidecar timeseries via `fixed_scene_runtime_hook.start_sim_time_s`, uses same-lane `route_s_bumper_gap` when route/lane evidence is comparable, rejects route-s rows that conflict with the actor-trace forward anchor, and uses `trajectory_progress_bumper_gap` for fixed-scene lane/road transitions or route-s anchor conflicts. Lane-keep comparison uses the route-only boundary; target-actor scenarios still need Apollo evaluable runs and HDMap/Frenet evidence for natural-driving claims. | Add evaluable ApolloBackend runs for fixed-scene target scenarios and keep trajectory-progress gap clearly separated from Apollo HDMap/Frenet claim evidence. |

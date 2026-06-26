@@ -31,6 +31,7 @@ FAILED_REASONS = {
     "overshoot_target",
     "unsafe_gap",
     "timeout",
+    "route_health_failed",
     "off_route",
     "lane_invasion",
     "route_establishment_latency",
@@ -160,6 +161,22 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                 ),
             ]
     )
+    if report.get("primary_setup_blocker"):
+        lines.extend(
+            [
+                "",
+                "## Primary Setup Blocker",
+                "",
+                f"- blocker: `{report.get('primary_setup_blocker')}`",
+                f"- layer: `{report.get('setup_blocker_layer')}`",
+                f"- next_action: `{report.get('setup_next_action')}`",
+                (
+                    "- claim_boundary: `Phase 1 setup blocker attribution explains why "
+                    "a run is invalid; it is not backend behavior evidence and must not "
+                    "be counted as a backend loss.`"
+                ),
+            ]
+        )
     route_lateral_policy = report.get("route_lateral_field_policy")
     if (
         isinstance(route_lateral_policy, Mapping)
@@ -343,6 +360,11 @@ def _status(
         reason=reason,
         derived_blocker_evidence=derived_blocker_evidence,
     )
+    setup_blocker = _primary_setup_blocker(
+        status=status,
+        reason=reason,
+        derived_blocker_evidence=derived_blocker_evidence,
+    )
     route_lateral_field_policy = _route_lateral_field_policy(derived_blocker_evidence)
     reference_line_debug_export_policy = _reference_line_debug_export_policy(
         derived_blocker_evidence
@@ -366,6 +388,10 @@ def _status(
         "behavior_blocker_layer": behavior_blocker["behavior_blocker_layer"],
         "behavior_next_action": behavior_blocker["behavior_next_action"],
         "behavior_blocker_evidence": behavior_blocker["behavior_blocker_evidence"],
+        "primary_setup_blocker": setup_blocker["primary_setup_blocker"],
+        "setup_blocker_layer": setup_blocker["setup_blocker_layer"],
+        "setup_next_action": setup_blocker["setup_next_action"],
+        "setup_blocker_evidence": setup_blocker["setup_blocker_evidence"],
         "route_lateral_field_policy": route_lateral_field_policy,
         "reference_line_debug_export_policy": reference_line_debug_export_policy,
         "path_candidate_control_context": path_candidate_control_context,
@@ -710,12 +736,14 @@ def _derived_blocker_evidence(root: Path) -> dict[str, Any]:
     control_health = _read_json(control_health_path)
     link_health = _read_json(link_health_path)
     lane_event = _read_json(lane_event_path)
-    available = bool(control_health or link_health or lane_event)
+    platform_timeout = _platform_timeout_blocker_summary(root)
+    available = bool(control_health or link_health or lane_event or platform_timeout.get("available"))
     return {
         "available": available,
         "control_health": _control_health_blocker_summary(control_health, control_health_path),
         "apollo_link_health": _apollo_link_health_blocker_summary(link_health, link_health_path),
         "baguang_lane_event_contract": _baguang_lane_event_blocker_summary(lane_event, lane_event_path),
+        "platform_timeout": platform_timeout,
         "claim_boundary": (
             "Derived blocker evidence explains an evaluable Phase 1 failure. "
             "It does not override phase1 status, and it is not natural-driving capability evidence."
@@ -751,6 +779,11 @@ def _primary_behavior_blocker(
     link_health = (
         derived_blocker_evidence.get("apollo_link_health")
         if isinstance(derived_blocker_evidence.get("apollo_link_health"), Mapping)
+        else {}
+    )
+    platform_timeout = (
+        derived_blocker_evidence.get("platform_timeout")
+        if isinstance(derived_blocker_evidence.get("platform_timeout"), Mapping)
         else {}
     )
 
@@ -1005,12 +1038,402 @@ def _primary_behavior_blocker(
             },
         }
 
+    if reason == "timeout" and platform_timeout.get("classification") == (
+        "planning_available_control_process_crash_timeout"
+    ):
+        return {
+            "primary_behavior_blocker": "planning_available_control_process_crash_timeout",
+            "behavior_blocker_layer": "apollo_control_process_health",
+            "behavior_next_action": (
+                "Routing succeeded and Planning emitted non-empty trajectories before timeout, "
+                "but the deferred Apollo Control process did not stay alive and /apollo/control "
+                "never materialized. Inspect Control runtime process health and startup logs "
+                "before changing reference-line, steer scale, smoothing, or CARLA actuation."
+            ),
+            "behavior_blocker_evidence": {
+                "classification": platform_timeout.get("classification"),
+                "platform_status": platform_timeout.get("platform_status"),
+                "exit_code": platform_timeout.get("exit_code"),
+                "runtime_exit_code": platform_timeout.get("runtime_exit_code"),
+                "runtime_routing_request_count": platform_timeout.get("runtime_routing_request_count"),
+                "runtime_routing_success_count": platform_timeout.get("runtime_routing_success_count"),
+                "runtime_control_tx_count": platform_timeout.get("runtime_control_tx_count"),
+                "planning_nonempty_trajectory_count": platform_timeout.get(
+                    "planning_nonempty_trajectory_count"
+                ),
+                "control_started_pid_seen": platform_timeout.get("control_started_pid_seen"),
+                "control_survived_5s": platform_timeout.get("control_survived_5s"),
+                "control_survived_10s": platform_timeout.get("control_survived_10s"),
+                "control_present_at_end": platform_timeout.get("control_present_at_end"),
+                "control_crash_detected": platform_timeout.get("control_crash_detected"),
+                "control_crash_reason": platform_timeout.get("control_crash_reason"),
+                "control_crash_signature": platform_timeout.get("control_crash_signature"),
+                "control_deferred_survival_path": platform_timeout.get(
+                    "control_deferred_survival_path"
+                ),
+                "control_deferred_mainboard_log_path": platform_timeout.get(
+                    "control_deferred_mainboard_log_path"
+                ),
+                "planning_topic_debug_summary_path": platform_timeout.get(
+                    "planning_topic_debug_summary_path"
+                ),
+                "cyber_bridge_stats_path": platform_timeout.get("cyber_bridge_stats_path"),
+                "platform_execution_path": platform_timeout.get("platform_execution_path"),
+            },
+        }
+
+    if reason == "timeout" and platform_timeout.get("classification") == (
+        "routing_available_reference_line_empty_control_missing_timeout"
+    ):
+        return {
+            "primary_behavior_blocker": "routing_available_reference_line_empty_control_missing_timeout",
+            "behavior_blocker_layer": "apollo_planning_reference_line",
+            "behavior_next_action": (
+                "Routing was sent and succeeded before timeout, and Planning debug shows "
+                "routing segments while debug.planning_data.reference_line remains empty. "
+                "Inspect Apollo Planning reference-line materialization, route/lane compatibility, "
+                "and Planning logs before changing Control, steer scale, smoothing, or CARLA actuation."
+            ),
+            "behavior_blocker_evidence": {
+                "classification": platform_timeout.get("classification"),
+                "platform_status": platform_timeout.get("platform_status"),
+                "exit_code": platform_timeout.get("exit_code"),
+                "runtime_exit_code": platform_timeout.get("runtime_exit_code"),
+                "runtime_routing_request_count": platform_timeout.get("runtime_routing_request_count"),
+                "runtime_routing_success_count": platform_timeout.get("runtime_routing_success_count"),
+                "runtime_control_tx_count": platform_timeout.get("runtime_control_tx_count"),
+                "planning_debug_presence_classification": platform_timeout.get(
+                    "planning_debug_presence_classification"
+                ),
+                "planning_debug_reference_line_nonempty_ratio": platform_timeout.get(
+                    "planning_debug_reference_line_nonempty_ratio"
+                ),
+                "planning_debug_routing_segment_nonempty_ratio": platform_timeout.get(
+                    "planning_debug_routing_segment_nonempty_ratio"
+                ),
+                "command_last_blocking_reason": platform_timeout.get("command_last_blocking_reason"),
+                "command_last_phase": platform_timeout.get("command_last_phase"),
+                "command_first_ready_to_send_ts_sec": platform_timeout.get(
+                    "command_first_ready_to_send_ts_sec"
+                ),
+                "cyber_bridge_stats_path": platform_timeout.get("cyber_bridge_stats_path"),
+                "planning_topic_debug_summary_path": platform_timeout.get(
+                    "planning_topic_debug_summary_path"
+                ),
+                "command_materialization_summary_path": platform_timeout.get(
+                    "command_materialization_summary_path"
+                ),
+                "runtime_stdout_path": platform_timeout.get("runtime_stdout_path"),
+                "platform_execution_path": platform_timeout.get("platform_execution_path"),
+            },
+        }
+
+    if reason == "timeout" and platform_timeout.get("classification") == (
+        "control_output_present_route_chain_not_finalized_timeout"
+    ):
+        return {
+            "primary_behavior_blocker": "control_output_present_route_chain_not_finalized_timeout",
+            "behavior_blocker_layer": "phase1_runtime_finalization",
+            "behavior_next_action": (
+                "Routing, Planning, and /apollo/control all materialized before timeout, "
+                "and timeseries shows route progress. Inspect route-chain completion, "
+                "Phase 1 exit criteria, finalized summary materialization, and why the "
+                "online progress log still reports a non-final route/summary state before "
+                "changing Control, steer scale, smoothing, or CARLA actuation."
+            ),
+            "behavior_blocker_evidence": {
+                "classification": platform_timeout.get("classification"),
+                "platform_status": platform_timeout.get("platform_status"),
+                "exit_code": platform_timeout.get("exit_code"),
+                "runtime_exit_code": platform_timeout.get("runtime_exit_code"),
+                "max_routing_success_count": platform_timeout.get("max_routing_success_count"),
+                "max_planning_message_count": platform_timeout.get("max_planning_message_count"),
+                "max_control_tx_count": platform_timeout.get("max_control_tx_count"),
+                "runtime_routing_success_count": platform_timeout.get("runtime_routing_success_count"),
+                "planning_nonempty_trajectory_count": platform_timeout.get(
+                    "planning_nonempty_trajectory_count"
+                ),
+                "runtime_control_tx_count": platform_timeout.get("runtime_control_tx_count"),
+                "last_phase": platform_timeout.get("last_phase"),
+                "last_route_status": platform_timeout.get("last_route_status"),
+                "last_summary_status": platform_timeout.get("last_summary_status"),
+                "last_control_status": platform_timeout.get("last_control_status"),
+                "last_speed_mps": platform_timeout.get("last_speed_mps"),
+                "phase_counts": platform_timeout.get("phase_counts"),
+                "timeseries_rows": platform_timeout.get("timeseries_rows"),
+                "route_s_delta_m": platform_timeout.get("route_s_delta_m"),
+                "final_ego_speed_mps": platform_timeout.get("final_ego_speed_mps"),
+                "command_materialization_summary_path": platform_timeout.get(
+                    "command_materialization_summary_path"
+                ),
+                "cyber_bridge_stats_path": platform_timeout.get("cyber_bridge_stats_path"),
+                "runtime_stdout_path": platform_timeout.get("runtime_stdout_path"),
+                "platform_execution_path": platform_timeout.get("platform_execution_path"),
+            },
+        }
+
+    if (
+        reason == "route_health_failed"
+        or (
+            reason == "timeout"
+            and platform_timeout.get("classification")
+            == "finalized_route_health_failure_platform_wrapper_timeout"
+        )
+    ):
+        return {
+            "primary_behavior_blocker": (
+                "finalized_route_health_failure_platform_wrapper_timeout"
+                if reason == "timeout"
+                else "finalized_route_health_failure"
+            ),
+            "behavior_blocker_layer": "apollo_route_health_behavior",
+            "behavior_next_action": _route_health_failure_next_action(
+                platform_timeout.get("nested_failure_codes"),
+                nested_exit_reason=platform_timeout.get("nested_exit_reason"),
+                timed_out_after_summary=(reason == "timeout"),
+            ),
+            "behavior_blocker_evidence": {
+                "classification": platform_timeout.get("classification"),
+                "platform_status": platform_timeout.get("platform_status"),
+                "exit_code": platform_timeout.get("exit_code"),
+                "runtime_exit_code": platform_timeout.get("runtime_exit_code"),
+                "nested_summary_path": platform_timeout.get("nested_summary_path"),
+                "nested_summary_status": platform_timeout.get("nested_summary_status"),
+                "nested_summary_success": platform_timeout.get("nested_summary_success"),
+                "nested_exit_reason": platform_timeout.get("nested_exit_reason"),
+                "nested_fail_reason": platform_timeout.get("nested_fail_reason"),
+                "nested_failure_codes": platform_timeout.get("nested_failure_codes"),
+                "nested_route_health_label": platform_timeout.get("nested_route_health_label"),
+                "nested_route_distance_achieved_m": platform_timeout.get(
+                    "nested_route_distance_achieved_m"
+                ),
+                "nested_route_completion_ratio": platform_timeout.get(
+                    "nested_route_completion_ratio"
+                ),
+                "max_routing_success_count": platform_timeout.get("max_routing_success_count"),
+                "max_planning_message_count": platform_timeout.get("max_planning_message_count"),
+                "max_control_tx_count": platform_timeout.get("max_control_tx_count"),
+                "runtime_routing_success_count": platform_timeout.get("runtime_routing_success_count"),
+                "planning_nonempty_trajectory_count": platform_timeout.get(
+                    "planning_nonempty_trajectory_count"
+                ),
+                "runtime_control_tx_count": platform_timeout.get("runtime_control_tx_count"),
+                "last_phase": platform_timeout.get("last_phase"),
+                "last_route_status": platform_timeout.get("last_route_status"),
+                "last_summary_status": platform_timeout.get("last_summary_status"),
+                "last_control_status": platform_timeout.get("last_control_status"),
+                "last_speed_mps": platform_timeout.get("last_speed_mps"),
+                "timeseries_rows": platform_timeout.get("timeseries_rows"),
+                "route_s_delta_m": platform_timeout.get("route_s_delta_m"),
+                "final_ego_speed_mps": platform_timeout.get("final_ego_speed_mps"),
+                "runtime_stdout_path": platform_timeout.get("runtime_stdout_path"),
+                "platform_execution_path": platform_timeout.get("platform_execution_path"),
+            },
+        }
+
+    if reason == "timeout" and platform_timeout.get("classification") == (
+        "routing_missing_timeout"
+    ):
+        return {
+            "primary_behavior_blocker": "routing_missing_timeout",
+            "behavior_blocker_layer": "apollo_routing_materialization",
+            "behavior_next_action": (
+                "The timed-out Apollo run never showed routing success in online-chain "
+                "progress logs. Inspect routing request send/materialization, map/route "
+                "compatibility, Dreamview/Apollo routing status, and route goal validity "
+                "before debugging Planning, Control, or CARLA actuation."
+            ),
+            "behavior_blocker_evidence": {
+                "classification": platform_timeout.get("classification"),
+                "platform_status": platform_timeout.get("platform_status"),
+                "exit_code": platform_timeout.get("exit_code"),
+                "runtime_exit_code": platform_timeout.get("runtime_exit_code"),
+                "max_routing_success_count": platform_timeout.get("max_routing_success_count"),
+                "max_planning_message_count": platform_timeout.get("max_planning_message_count"),
+                "max_control_tx_count": platform_timeout.get("max_control_tx_count"),
+                "max_tick_count": platform_timeout.get("max_tick_count"),
+                "last_phase": platform_timeout.get("last_phase"),
+                "phase_counts": platform_timeout.get("phase_counts"),
+                "timeseries_rows": platform_timeout.get("timeseries_rows"),
+                "route_s_delta_m": platform_timeout.get("route_s_delta_m"),
+                "final_ego_speed_mps": platform_timeout.get("final_ego_speed_mps"),
+                "runtime_stdout_path": platform_timeout.get("runtime_stdout_path"),
+                "platform_execution_path": platform_timeout.get("platform_execution_path"),
+            },
+        }
+
+    if reason == "timeout" and platform_timeout.get("classification") == (
+        "routing_available_planning_missing_timeout"
+    ):
+        return {
+            "primary_behavior_blocker": "routing_available_planning_missing_timeout",
+            "behavior_blocker_layer": "apollo_planning_materialization",
+            "behavior_next_action": (
+                "Routing materialized during the timed-out Apollo run, but progress logs "
+                "never showed Planning output or control_tx. Inspect Planning readiness, "
+                "reference-line materialization, route/lane compatibility, and Planning logs "
+                "before changing control mapping, smoothing, steer scale, or CARLA actuation."
+            ),
+            "behavior_blocker_evidence": {
+                "classification": platform_timeout.get("classification"),
+                "platform_status": platform_timeout.get("platform_status"),
+                "exit_code": platform_timeout.get("exit_code"),
+                "runtime_exit_code": platform_timeout.get("runtime_exit_code"),
+                "max_routing_success_count": platform_timeout.get("max_routing_success_count"),
+                "max_planning_message_count": platform_timeout.get("max_planning_message_count"),
+                "max_control_tx_count": platform_timeout.get("max_control_tx_count"),
+                "max_tick_count": platform_timeout.get("max_tick_count"),
+                "last_phase": platform_timeout.get("last_phase"),
+                "phase_counts": platform_timeout.get("phase_counts"),
+                "timeseries_rows": platform_timeout.get("timeseries_rows"),
+                "route_s_delta_m": platform_timeout.get("route_s_delta_m"),
+                "final_ego_speed_mps": platform_timeout.get("final_ego_speed_mps"),
+                "runtime_stdout_path": platform_timeout.get("runtime_stdout_path"),
+                "platform_execution_path": platform_timeout.get("platform_execution_path"),
+            },
+        }
+
     return {
         "primary_behavior_blocker": reason,
         "behavior_blocker_layer": "phase1_status",
         "behavior_next_action": "Inspect scenario-specific evidence before changing runtime behavior.",
         "behavior_blocker_evidence": {},
     }
+
+
+def _route_health_failure_next_action(
+    nested_failure_codes: Any,
+    *,
+    nested_exit_reason: Any = None,
+    timed_out_after_summary: bool = False,
+) -> str:
+    codes = {
+        str(item)
+        for item in (nested_failure_codes or [])
+        if str(item).strip()
+    }
+    parts = [
+        "The nested Apollo route-health run wrote a finalized failure summary.",
+    ]
+    if "PLANNING_NONZERO_RATIO" in codes:
+        parts.append(
+            "Inspect Planning non-empty trajectory ratio, path fallback, matched-point evidence, and route completion."
+        )
+    elif {"ROUTE_DISTANCE_ACHIEVED_M", "ROUTE_COMPLETION_RATIO"} & codes:
+        parts.append(
+            "Planning/control materialized; inspect why route distance or completion stayed below threshold, "
+            "including mid-route stop behavior, lane-invasion timing, path fallback/matched-point evidence, "
+            "route target length, and evaluation window before changing control gains or steer scale."
+        )
+    else:
+        parts.append(
+            "Inspect the finalized route-health acceptance failures, path fallback/matched-point evidence, and route completion."
+        )
+    if str(nested_exit_reason or "").upper() == "LANE_INVASION":
+        parts.append(
+            "Because the nested exit reason is LANE_INVASION, check lane-event timing, cross-track error, "
+            "route/lane sign convention, and footprint/sensor evidence before treating it as a pure longitudinal failure."
+        )
+    if timed_out_after_summary:
+        parts.append("If the platform wrapper still timed out after this summary, fix lifecycle propagation separately.")
+    parts.append("Do not treat this as startup, missing Control, or natural-driving success.")
+    return " ".join(parts)
+
+
+def _primary_setup_blocker(
+    *,
+    status: str,
+    reason: str | None,
+    derived_blocker_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    empty = {
+        "primary_setup_blocker": None,
+        "setup_blocker_layer": None,
+        "setup_next_action": None,
+        "setup_blocker_evidence": {},
+    }
+    if status != "invalid" or not reason:
+        return empty
+
+    platform_timeout = (
+        derived_blocker_evidence.get("platform_timeout")
+        if isinstance(derived_blocker_evidence.get("platform_timeout"), Mapping)
+        else {}
+    )
+    classification = platform_timeout.get("classification")
+    if reason == "no_timeseries" and classification == (
+        "apollo_startup_command_materialization_missing_timeout"
+    ):
+        return {
+            "primary_setup_blocker": "apollo_startup_command_materialization_missing_timeout",
+            "setup_blocker_layer": "apollo_runtime_startup_materialization",
+            "setup_next_action": (
+                "The Apollo diagnostic run timed out before root timeseries or command "
+                "materialization artifacts were produced. Inspect typed runtime startup, "
+                "Dreamview/adapter startup stage, routing request eligibility, and the "
+                "selected diagnostic config before treating this as backend behavior. "
+                "A comparable Phase 1 run needs timeseries plus routing/planning/control "
+                "materialization evidence."
+            ),
+            "setup_blocker_evidence": {
+                "classification": classification,
+                "platform_status": platform_timeout.get("platform_status"),
+                "exit_code": platform_timeout.get("exit_code"),
+                "runtime_exit_code": platform_timeout.get("runtime_exit_code"),
+                "last_phase": platform_timeout.get("last_phase"),
+                "phase_counts": platform_timeout.get("phase_counts"),
+                "max_routing_success_count": platform_timeout.get("max_routing_success_count"),
+                "max_planning_message_count": platform_timeout.get("max_planning_message_count"),
+                "max_control_tx_count": platform_timeout.get("max_control_tx_count"),
+                "timeseries_rows": platform_timeout.get("timeseries_rows"),
+                "startup_stage": platform_timeout.get("startup_stage"),
+                "startup_stage_path": platform_timeout.get("startup_stage_path"),
+                "typed_transition_entrypoint": platform_timeout.get(
+                    "typed_transition_entrypoint"
+                ),
+                "typed_transition_path": platform_timeout.get("typed_transition_path"),
+                "overlay_active": platform_timeout.get("overlay_active"),
+                "overlay_selected_count": platform_timeout.get("overlay_selected_count"),
+                "overlay_missing_source_dirs": platform_timeout.get(
+                    "overlay_missing_source_dirs"
+                ),
+                "overlay_manifest_path": platform_timeout.get("overlay_manifest_path"),
+                "routing_process_seen": platform_timeout.get("routing_process_seen"),
+                "prediction_process_seen": platform_timeout.get("prediction_process_seen"),
+                "planning_process_seen": platform_timeout.get("planning_process_seen"),
+                "control_process_seen": platform_timeout.get("control_process_seen"),
+                "apollo_modules_start_log_path": platform_timeout.get(
+                    "apollo_modules_start_log_path"
+                ),
+                "runtime_stdout_path": platform_timeout.get("runtime_stdout_path"),
+                "platform_execution_path": platform_timeout.get("platform_execution_path"),
+            },
+        }
+
+    if reason == "no_timeseries" and platform_timeout.get("available"):
+        return {
+            "primary_setup_blocker": classification or "apollo_runtime_no_timeseries",
+            "setup_blocker_layer": "apollo_runtime_artifact_materialization",
+            "setup_next_action": (
+                "The run is invalid because root timeseries is missing, but Apollo "
+                "runtime evidence exists. Inspect runtime_stdout, nested startup artifacts, "
+                "and artifact normalization before counting this as backend behavior."
+            ),
+            "setup_blocker_evidence": {
+                "classification": classification,
+                "platform_status": platform_timeout.get("platform_status"),
+                "exit_code": platform_timeout.get("exit_code"),
+                "runtime_exit_code": platform_timeout.get("runtime_exit_code"),
+                "last_phase": platform_timeout.get("last_phase"),
+                "max_routing_success_count": platform_timeout.get("max_routing_success_count"),
+                "max_planning_message_count": platform_timeout.get("max_planning_message_count"),
+                "max_control_tx_count": platform_timeout.get("max_control_tx_count"),
+                "runtime_stdout_path": platform_timeout.get("runtime_stdout_path"),
+                "platform_execution_path": platform_timeout.get("platform_execution_path"),
+            },
+        }
+
+    return empty
 
 
 def collect_derived_blocker_evidence(root: str | Path) -> dict[str, Any]:
@@ -1301,6 +1724,465 @@ def _path_candidate_control_context(
             "reference-line debug is present and claim-grade."
         ),
     }
+
+
+def _platform_timeout_blocker_summary(root: Path) -> dict[str, Any]:
+    platform_path = root / "platform_execution_result.json"
+    platform = _read_json(platform_path)
+    progress = _online_chain_progress_summary(root)
+    runtime_artifacts = _apollo_timeout_runtime_artifact_summary(root)
+    motion = _timeseries_timeout_motion_summary(root)
+    status = str(platform.get("status") or "").strip()
+    exit_code = platform.get("exit_code")
+    runtime_exit_code = platform.get("runtime_exit_code")
+    timeout_observed = status == "timeout" or exit_code == -2 or runtime_exit_code == -2
+    available = bool(
+        platform
+        or progress.get("available")
+        or runtime_artifacts.get("available")
+        or motion.get("timeseries_rows")
+    )
+
+    max_routing = progress.get("max_routing_success_count")
+    max_planning = progress.get("max_planning_message_count")
+    max_control_tx = progress.get("max_control_tx_count")
+    nested_summary_finalized = runtime_artifacts.get("nested_summary_status") == "finalized"
+    if (
+        timeout_observed
+        and not motion.get("timeseries_rows")
+        and progress.get("available")
+        and _zero_number(max_routing)
+        and not runtime_artifacts.get("command_materialization_summary_path")
+        and (
+            runtime_artifacts.get("startup_stage_path")
+            or runtime_artifacts.get("typed_transition_path")
+            or runtime_artifacts.get("overlay_manifest_path")
+        )
+    ):
+        classification = "apollo_startup_command_materialization_missing_timeout"
+    elif timeout_observed and (
+        _positive_number(runtime_artifacts.get("runtime_routing_success_count"))
+        and _positive_number(runtime_artifacts.get("planning_nonempty_trajectory_count"))
+        and not _positive_number(runtime_artifacts.get("runtime_control_tx_count"))
+        and runtime_artifacts.get("control_crash_detected") is True
+    ):
+        classification = "planning_available_control_process_crash_timeout"
+    elif timeout_observed and (
+        _positive_number(runtime_artifacts.get("runtime_routing_success_count"))
+        and not _positive_number(runtime_artifacts.get("runtime_control_tx_count"))
+        and runtime_artifacts.get("planning_debug_presence_classification")
+        == "routing_present_reference_line_empty"
+    ):
+        classification = "routing_available_reference_line_empty_control_missing_timeout"
+    elif (
+        timeout_observed
+        and _zero_number(max_routing)
+        and not _positive_number(max_planning)
+        and not _positive_number(max_control_tx)
+    ):
+        classification = "routing_missing_timeout"
+    elif timeout_observed and _positive_number(max_routing) and not _positive_number(max_planning) and not _positive_number(max_control_tx):
+        classification = "routing_available_planning_missing_timeout"
+    elif timeout_observed and nested_summary_finalized:
+        classification = "finalized_route_health_failure_platform_wrapper_timeout"
+    elif nested_summary_finalized and runtime_artifacts.get("nested_summary_success") is False:
+        classification = "finalized_route_health_failure"
+    elif (
+        timeout_observed
+        and _positive_number(max_routing)
+        and _positive_number(max_planning)
+        and _positive_number(max_control_tx)
+    ):
+        classification = "control_output_present_route_chain_not_finalized_timeout"
+    elif timeout_observed and progress.get("available"):
+        classification = "timeout_with_progress_log"
+    elif timeout_observed:
+        classification = "timeout_without_progress_log"
+    else:
+        classification = "not_applicable"
+
+    return {
+        "available": available,
+        "classification": classification,
+        "platform_status": status or None,
+        "exit_code": exit_code,
+        "runtime_exit_code": runtime_exit_code,
+        "platform_execution_path": str(platform_path) if platform_path.exists() else None,
+        **progress,
+        **runtime_artifacts,
+        **motion,
+        "claim_boundary": (
+            "Platform-timeout blocker evidence narrows Phase 1 attribution only. It does not "
+            "prove backend behavior success and does not override failed/invalid run status."
+        ),
+    }
+
+
+def _apollo_timeout_runtime_artifact_summary(root: Path) -> dict[str, Any]:
+    cyber_path = _first_nested_artifact(root, "cyber_bridge_stats.json")
+    planning_path = _first_nested_artifact(root, "planning_topic_debug_summary.json")
+    command_path = _first_nested_artifact(root, "command_materialization_summary.json")
+    survival_path = _first_nested_artifact(root, "apollo_control_deferred_survival.json")
+    control_log_path = _first_nested_artifact(root, "apollo_control_deferred_mainboard.log")
+    startup_stage_path = _first_nested_artifact(root, "startup_stage.json")
+    overlay_path = _first_nested_artifact(root, "apollo_control_runtime_overlay_manifest.json")
+    typed_transition_path = _first_nested_artifact(root, "typed_transition_runtime.json")
+    modules_start_log_path = _first_nested_artifact(root, "apollo_modules_start.log")
+    nested_summary_path = _first_nested_summary(root)
+    cyber = _read_json(cyber_path) if cyber_path else {}
+    planning = _read_json(planning_path) if planning_path else {}
+    command = _read_json(command_path) if command_path else {}
+    survival = _read_json(survival_path) if survival_path else {}
+    startup_stage = _read_json(startup_stage_path) if startup_stage_path else {}
+    overlay = _read_json(overlay_path) if overlay_path else {}
+    typed_transition = _read_json(typed_transition_path) if typed_transition_path else {}
+    nested_summary = _read_json(nested_summary_path) if nested_summary_path else {}
+    control_crash = _control_deferred_log_crash_summary(control_log_path)
+    module_processes = _apollo_modules_start_process_summary(modules_start_log_path)
+    planning_presence = (
+        planning.get("planning_debug_presence")
+        if isinstance(planning.get("planning_debug_presence"), Mapping)
+        else {}
+    )
+    gate_state = command.get("gate_state") if isinstance(command.get("gate_state"), Mapping) else {}
+    observed = (
+        command.get("observed_counters")
+        if isinstance(command.get("observed_counters"), Mapping)
+        else {}
+    )
+    routing_request_count = cyber.get("routing_request_count", observed.get("routing_request_count"))
+    routing_success_count = cyber.get("routing_success_count", observed.get("routing_success_count"))
+    control_tx_count = cyber.get("control_tx_count", observed.get("control_tx_count"))
+    return {
+        "available": bool(cyber or planning or command),
+        "cyber_bridge_stats_path": str(cyber_path) if cyber_path else None,
+        "planning_topic_debug_summary_path": str(planning_path) if planning_path else None,
+        "command_materialization_summary_path": str(command_path) if command_path else None,
+        "control_deferred_survival_path": str(survival_path) if survival_path else None,
+        "control_deferred_mainboard_log_path": str(control_log_path) if control_log_path else None,
+        "startup_stage_path": str(startup_stage_path) if startup_stage_path else None,
+        "startup_stage": startup_stage.get("stage"),
+        "startup_stage_step": startup_stage.get("step"),
+        "overlay_manifest_path": str(overlay_path) if overlay_path else None,
+        "overlay_active": overlay.get("overlay_active"),
+        "overlay_selected_count": overlay.get("selected_count"),
+        "overlay_missing_source_dirs": overlay.get("missing_source_dirs"),
+        "typed_transition_path": str(typed_transition_path) if typed_transition_path else None,
+        "typed_transition_entrypoint": typed_transition.get("transition_entrypoint"),
+        "typed_transition_command": typed_transition.get("command"),
+        "apollo_modules_start_log_path": str(modules_start_log_path) if modules_start_log_path else None,
+        **module_processes,
+        "nested_summary_path": str(nested_summary_path) if nested_summary_path else None,
+        "nested_summary_status": nested_summary.get("summary_status"),
+        "nested_summary_success": nested_summary.get("success"),
+        "nested_finalized_from_event_stream": nested_summary.get("finalized_from_event_stream"),
+        "nested_exit_reason": nested_summary.get("exit_reason"),
+        "nested_fail_reason": nested_summary.get("fail_reason"),
+        "nested_failure_codes": _nested_failure_codes(nested_summary),
+        "nested_route_health_label": nested_summary.get("route_health_label"),
+        "nested_route_distance_achieved_m": _acceptance_check_actual(
+            nested_summary, "route_distance_achieved_m"
+        ),
+        "nested_route_completion_ratio": _acceptance_check_actual(
+            nested_summary, "route_completion_ratio"
+        ),
+        "runtime_routing_request_count": routing_request_count,
+        "runtime_routing_success_count": routing_success_count,
+        "runtime_routing_response_count": cyber.get("routing_response_count"),
+        "runtime_control_rx_count": cyber.get("control_rx_count", observed.get("control_rx_count")),
+        "runtime_control_tx_count": control_tx_count,
+        "planning_nonempty_trajectory_count": planning.get(
+            "messages_with_nonzero_trajectory_points"
+        ),
+        "planning_debug_presence_classification": planning_presence.get("last_diagnosis"),
+        "planning_debug_reference_line_nonempty_ratio": planning_presence.get(
+            "reference_line_nonempty_ratio"
+        ),
+        "planning_debug_routing_segment_nonempty_ratio": planning_presence.get(
+            "routing_segment_nonempty_ratio"
+        ),
+        "command_last_blocking_reason": gate_state.get("last_blocking_reason"),
+        "command_last_phase": gate_state.get("last_phase"),
+        "command_first_ready_to_send_ts_sec": gate_state.get("first_ready_to_send_ts_sec"),
+        "command_last_ready_to_send_ts_sec": gate_state.get("last_ready_to_send_ts_sec"),
+        "command_last_error": command.get("last_error"),
+        "control_started_pid_seen": survival.get("control_started_pid_seen"),
+        "control_survived_5s": survival.get("control_survived_5s"),
+        "control_survived_10s": survival.get("control_survived_10s"),
+        "control_present_after_first_nonzero_planning": survival.get(
+            "control_present_after_first_nonzero_planning"
+        ),
+        "control_present_at_end": survival.get("control_present_at_end"),
+        **control_crash,
+    }
+
+
+def _control_deferred_log_crash_summary(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {
+            "control_crash_detected": False,
+            "control_crash_reason": None,
+            "control_crash_signature": None,
+        }
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return {
+            "control_crash_detected": False,
+            "control_crash_reason": None,
+            "control_crash_signature": None,
+        }
+    lowered = text.lower()
+    if "attempt to free invalid pointer" in lowered:
+        return {
+            "control_crash_detected": True,
+            "control_crash_reason": "tcmalloc_invalid_free",
+            "control_crash_signature": _first_matching_line(
+                text,
+                ("Attempt to free invalid pointer", "attempt to free invalid pointer"),
+            ),
+        }
+    if "segmentation fault" in lowered or "check failed" in lowered or "fatal" in lowered:
+        return {
+            "control_crash_detected": True,
+            "control_crash_reason": "control_process_crash",
+            "control_crash_signature": _first_matching_line(
+                text,
+                ("Segmentation fault", "Check failed", "FATAL", "fatal"),
+            ),
+        }
+    return {
+        "control_crash_detected": False,
+        "control_crash_reason": None,
+        "control_crash_signature": None,
+    }
+
+
+def _apollo_modules_start_process_summary(path: Path | None) -> dict[str, Any]:
+    empty = {
+        "routing_process_seen": None,
+        "prediction_process_seen": None,
+        "planning_process_seen": None,
+        "control_process_seen": None,
+    }
+    if path is None or not path.exists():
+        return empty
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return empty
+    if "--- stdout ---" in text:
+        text = text.split("--- stdout ---", 1)[1]
+        if "--- stderr ---" in text:
+            text = text.split("--- stderr ---", 1)[0]
+    return {
+        "routing_process_seen": "modules/routing/dag/routing.dag" in text,
+        "prediction_process_seen": "modules/prediction/dag/prediction.dag" in text,
+        "planning_process_seen": "modules/planning/planning_component/dag/planning.dag" in text,
+        "control_process_seen": "modules/control/control_component/dag/control.dag" in text,
+    }
+
+
+def _first_matching_line(text: str, needles: tuple[str, ...]) -> str | None:
+    lowered_needles = tuple(needle.lower() for needle in needles)
+    for line in text.splitlines():
+        lowered = line.lower()
+        if any(needle in lowered for needle in lowered_needles):
+            return line.strip()
+    return None
+
+
+def _first_nested_artifact(root: Path, name: str) -> Path | None:
+    preferred = root / "artifacts" / name
+    if preferred.exists():
+        return preferred
+    matches = sorted(
+        path for path in root.rglob(name) if "analysis" not in path.parts and "execution" not in path.parts
+    )
+    return matches[0] if matches else None
+
+
+def _first_nested_summary(root: Path) -> Path | None:
+    matches = sorted(
+        path
+        for path in root.rglob("summary.json")
+        if path != root / "summary.json"
+        and "analysis" not in path.parts
+        and "execution" not in path.parts
+    )
+    finalized: list[Path] = []
+    for path in matches:
+        payload = _read_json(path)
+        if payload.get("summary_status") == "finalized":
+            finalized.append(path)
+    if finalized:
+        return finalized[0]
+    return matches[0] if matches else None
+
+
+def _nested_failure_codes(summary: Mapping[str, Any]) -> list[str]:
+    acceptance = summary.get("acceptance") if isinstance(summary.get("acceptance"), Mapping) else {}
+    codes = acceptance.get("failure_codes")
+    if isinstance(codes, list):
+        return [str(code) for code in codes]
+    return []
+
+
+def _acceptance_check_actual(summary: Mapping[str, Any], check_name: str) -> Any:
+    acceptance = summary.get("acceptance") if isinstance(summary.get("acceptance"), Mapping) else {}
+    checks = acceptance.get("checks") if isinstance(acceptance.get("checks"), Mapping) else {}
+    check = checks.get(check_name) if isinstance(checks.get(check_name), Mapping) else {}
+    return check.get("actual")
+
+
+def _online_chain_progress_summary(root: Path) -> dict[str, Any]:
+    path = _first_existing_path(
+        (
+            root / "execution" / "runtime_stdout.log",
+            root / "runtime_stdout.log",
+        )
+    )
+    if path is None:
+        return {"available": False, "runtime_stdout_path": None}
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return {"available": False, "runtime_stdout_path": str(path)}
+
+    phase_counts: dict[str, int] = {}
+    max_routing: int | None = None
+    max_planning: int | None = None
+    max_control_tx: int | None = None
+    max_ticks: int | None = None
+    last_phase: str | None = None
+    last_route_status: str | None = None
+    last_summary_status: str | None = None
+    last_control_status: str | None = None
+    last_speed_mps: float | None = None
+    progress_line_count = 0
+    for line in text.splitlines():
+        if "[online-chain][progress]" not in line:
+            continue
+        progress_line_count += 1
+        tokens = _key_value_tokens(line)
+        phase = tokens.get("phase")
+        if phase:
+            last_phase = phase
+            phase_counts[phase] = phase_counts.get(phase, 0) + 1
+        max_routing = _max_optional_int(max_routing, _int_token(tokens.get("routing")))
+        max_planning = _max_optional_int(max_planning, _int_token(tokens.get("planning")))
+        max_control_tx = _max_optional_int(max_control_tx, _int_token(tokens.get("control_tx")))
+        max_ticks = _max_optional_int(max_ticks, _ticks_token(tokens.get("ticks")))
+        last_route_status = tokens.get("route") or last_route_status
+        last_summary_status = tokens.get("summary") or last_summary_status
+        last_control_status = tokens.get("control") or last_control_status
+        speed_mps = _float_token(tokens.get("speed"), suffix="mps")
+        if speed_mps is not None:
+            last_speed_mps = speed_mps
+
+    return {
+        "available": progress_line_count > 0,
+        "runtime_stdout_path": str(path),
+        "progress_line_count": progress_line_count,
+        "phase_counts": phase_counts,
+        "last_phase": last_phase,
+        "last_route_status": last_route_status,
+        "last_summary_status": last_summary_status,
+        "last_control_status": last_control_status,
+        "last_speed_mps": last_speed_mps,
+        "max_routing_success_count": max_routing,
+        "max_planning_message_count": max_planning,
+        "max_control_tx_count": max_control_tx,
+        "max_tick_count": max_ticks,
+    }
+
+
+def _timeseries_timeout_motion_summary(root: Path) -> dict[str, Any]:
+    rows = _read_timeseries_rows(root)
+    if not rows:
+        return {
+            "timeseries_rows": 0,
+            "route_s_delta_m": None,
+            "final_ego_speed_mps": None,
+            "control_source_counts": {},
+        }
+    route_s = _series_from_aliases(rows, ("route_s", "ego_route_s", "route_progress_m"))[1]
+    speed = _series_from_aliases(rows, ("ego_speed_mps", "ego_speed", "v_mps"))[1]
+    route_s_delta = None
+    if len(route_s) >= 2:
+        route_s_delta = route_s[-1] - route_s[0]
+    return {
+        "timeseries_rows": len(rows),
+        "route_s_delta_m": route_s_delta,
+        "final_ego_speed_mps": speed[-1] if speed else None,
+        "control_source_counts": _value_counts(rows, "control_source"),
+    }
+
+
+def _first_existing_path(candidates: tuple[Path, ...]) -> Path | None:
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
+def _key_value_tokens(line: str) -> dict[str, str]:
+    tokens: dict[str, str] = {}
+    for item in line.split():
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        tokens[key.strip()] = value.strip()
+    return tokens
+
+
+def _int_token(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _ticks_token(value: str | None) -> int | None:
+    if not value:
+        return None
+    return _int_token(value.split("/", 1)[0])
+
+
+def _float_token(value: str | None, *, suffix: str = "") -> float | None:
+    if value is None:
+        return None
+    text = value
+    if suffix and text.endswith(suffix):
+        text = text[: -len(suffix)]
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _max_optional_int(left: int | None, right: int | None) -> int | None:
+    if right is None:
+        return left
+    if left is None:
+        return right
+    return max(left, right)
+
+
+def _positive_number(value: Any) -> bool:
+    try:
+        return float(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _zero_number(value: Any) -> bool:
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
 
 
 def _control_health_blocker_summary(report: Mapping[str, Any], path: Path) -> dict[str, Any]:
@@ -2524,6 +3406,10 @@ def _failed_reason(root: Path, summary: Mapping[str, Any], v_t_gap: Mapping[str,
     if handoff_failure:
         return handoff_failure
     reason = _normalized_reason(summary)
+    if reason == "timeout":
+        return reason
+    if _nested_route_health_failed(root):
+        return "route_health_failed"
     if reason in FAILED_REASONS:
         return reason
     if _summary_has_failure_code(summary, "EGO_NOT_MOVING"):
@@ -2558,6 +3444,16 @@ def _apollo_handoff_failed_reason(root: Path) -> str | None:
     if stage == "planning_control_handoff":
         return "planning_control_handoff_missing"
     return None
+
+
+def _nested_route_health_failed(root: Path) -> bool:
+    nested_summary_path = _first_nested_summary(root)
+    if nested_summary_path is None:
+        return False
+    nested_summary = _read_json(nested_summary_path)
+    if nested_summary.get("summary_status") != "finalized":
+        return False
+    return nested_summary.get("success") is False or bool(_nested_failure_codes(nested_summary))
 
 
 def _source_brake_indicates_handoff_missing(reason: Any) -> bool:

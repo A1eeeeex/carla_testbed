@@ -556,6 +556,8 @@ Comparison directory artifacts:
     can be separated from target/gap/playback failures without opening every
     nested artifact.
   - when present, backend results also carry
+    `primary_behavior_blocker`, `behavior_blocker_layer`, and
+    `behavior_next_action` from `phase1_status.json`, plus
     `phase1_metrics.derived_blocker_evidence` from each run. The Markdown table
     may surface compact fields such as link-health primary blocker,
     control-health failure reason, and lane-event departure class. These fields

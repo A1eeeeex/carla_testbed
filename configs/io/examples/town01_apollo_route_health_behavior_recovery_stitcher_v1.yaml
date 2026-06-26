@@ -6,13 +6,16 @@
 # 说明：
 # - 保持 Dreamview-on + planning_ready + dag + legacy control runtime overlay；
 # - 不改横向增益、不改 routing 速度，只改 planning stitcher 语义；
-# - 默认仍保留 700 ticks，在线短 probe 通过 CLI 覆盖到 420 ticks；
+# - 默认使用 900 ticks；最新 700-tick marker run 证明 routing/planning/control
+#   已闭环，但有效 route-progress window 只有约 21.6s，结束时 ego 仍以
+#   6.6m/s 前进并只覆盖约 110m，低于 140m route-health threshold。
+#   延长窗口是为了验证持续行为，不改变 acceptance gate 或控制参数。
 # - 使用显式 wall-time pacing，避免 camera PNG capture 偶然成为 Apollo wall-clock 节奏源。
 # -----------------------------------------------------------------------------
 run:
   seed: 1
   capability_profile: lane_keep
-  ticks: 700
+  ticks: 900
   fixed_delta_seconds: 0.05
   wall_time_pacing:
     enabled: true

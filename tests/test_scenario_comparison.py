@@ -729,6 +729,33 @@ def test_scenario_comparison_refreshes_stale_derived_blocker_evidence(tmp_path) 
     assert derived["control_health"]["failure_reason"] == "control_process_crash_before_control_output"
 
 
+def test_scenario_comparison_surfaces_primary_behavior_blocker(tmp_path) -> None:
+    run_a = _write_run(
+        tmp_path,
+        "apollo",
+        "apollo_cyberrt",
+        "apollo_reference_backend",
+        "failed",
+        "lane_invasion",
+        primary_behavior_blocker="lane_departure_with_route_simple_lat_sign_convention_candidate",
+        behavior_blocker_layer="apollo_lateral_semantics",
+        behavior_next_action="inspect Apollo Planning reference-line materialization before tuning control",
+    )
+    run_b = _write_run(tmp_path, "builtin", "carla_builtin", "planning_control_backend", "success")
+
+    report = compare_scenario_runs([run_a, run_b])
+
+    apollo = [item for item in report["backend_results"] if item["backend"] == "apollo_cyberrt"][0]
+    assert (
+        apollo["primary_behavior_blocker"]
+        == "lane_departure_with_route_simple_lat_sign_convention_candidate"
+    )
+    assert apollo["behavior_blocker_layer"] == "apollo_lateral_semantics"
+    assert "Planning reference-line" in apollo["behavior_next_action"]
+    participating = [item for item in report["participating_runs"] if item["backend"] == "apollo_cyberrt"][0]
+    assert participating["primary_behavior_blocker"] == apollo["primary_behavior_blocker"]
+
+
 def _write_run(
     tmp_path,
     name,
@@ -752,6 +779,9 @@ def _write_run(
     target_metric_status=None,
     target_metric_reason=None,
     phase1_artifact_status="pass",
+    primary_behavior_blocker=None,
+    behavior_blocker_layer=None,
+    behavior_next_action=None,
 ):
     run = tmp_path / name
     analysis = run / "analysis" / "phase1_status"
@@ -783,6 +813,31 @@ def _write_run(
                 **({"backend_type": backend_type} if backend_type is not None else {}),
                 "status": status,
                 "failure_reason": reason,
+                **(
+                    {"primary_behavior_blocker": primary_behavior_blocker}
+                    if primary_behavior_blocker is not None
+                    else {}
+                ),
+                **(
+                    {"behavior_blocker_layer": behavior_blocker_layer}
+                    if behavior_blocker_layer is not None
+                    else {}
+                ),
+                **(
+                    {"behavior_next_action": behavior_next_action}
+                    if behavior_next_action is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "behavior_blocker_evidence": {
+                            "source": "test_fixture",
+                            "blocker": primary_behavior_blocker,
+                        }
+                    }
+                    if primary_behavior_blocker is not None
+                    else {}
+                ),
                 "evaluable": status != "invalid",
                 **(
                     {"run_evaluable": status != "invalid"}

@@ -42,6 +42,62 @@ def test_existing_root_timeseries_is_preserved(tmp_path: Path) -> None:
     assert report["promoted_artifacts"] == []
 
 
+def test_sparse_root_timeseries_control_fields_are_overlaid_from_control_trace(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    nested = run / "legacy" / "actual"
+    nested_artifacts = nested / "artifacts"
+    nested_artifacts.mkdir(parents=True)
+    (nested / "timeseries.csv").write_text(
+        "sim_time,apollo_steer_raw,bridge_steer_mapped,carla_steer_applied,ego_speed\n"
+        "0.00,0.0,,0.0,0.0\n"
+        "0.05,0.0,,0.0,1.0\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "control_apply_trace.jsonl").write_text(
+        json.dumps(
+            {
+                "schema_version": "control_apply_trace.v1",
+                "timestamp": 0.05,
+                "apollo_raw": {"steer": 0.2, "throttle": 0.3, "brake": 0.0},
+                "bridge_mapped": {"steer": 0.05, "mapped_carla_steer_cmd": 0.05},
+                "carla_applied": {"steer": 0.05},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = normalize_phase1_artifacts(run)
+
+    rows = (run / "timeseries.csv").read_text(encoding="utf-8").splitlines()
+    header = rows[0].split(",")
+    values = dict(zip(header, rows[2].split(",")))
+    assert values["apollo_steer_raw"] == "0.2"
+    assert values["bridge_steer_mapped"] == "0.05"
+    assert values["carla_steer_applied"] == "0.05"
+    assert "throttle_raw" in header
+    assert any(item["name"] == "timeseries_control_trace_overlay" for item in report["promoted_artifacts"])
+    assert "root_timeseries_control_fields_overlaid_from_control_apply_trace" in report["warnings"]
+    assert "does_not_change_runtime_behavior" in report["claim_boundary"]
+
+
+def test_config_resolved_ambiguous_candidates_select_non_hidden_runtime_config(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    hidden = run / "legacy" / ".typed_runtime"
+    visible = run / "legacy" / "actual"
+    hidden.mkdir(parents=True)
+    visible.mkdir(parents=True)
+    (visible / "timeseries.csv").write_text("sim_time\n0\n", encoding="utf-8")
+    (hidden / "config.resolved.yaml").write_text("source: hidden\n", encoding="utf-8")
+    (visible / "config.resolved.yaml").write_text("source: visible\n", encoding="utf-8")
+
+    report = normalize_phase1_artifacts(run)
+
+    assert (run / "config.resolved.yaml").read_text(encoding="utf-8") == "source: visible\n"
+    assert any(item["name"] == "config_resolved" for item in report["promoted_artifacts"])
+    assert "multiple_nested_config_resolved_candidates_selected_non_hidden" in report["warnings"]
+
+
 def test_ambiguous_nested_timeseries_is_not_promoted(tmp_path: Path) -> None:
     run = tmp_path / "run"
     first = run / "legacy_a" / "actual"
@@ -111,6 +167,18 @@ def test_route_only_phase1_comparison_artifacts_can_pass_after_promotion(tmp_pat
         json.dumps({"sim_time": 0.0, "steer": 0.0}) + "\n",
         encoding="utf-8",
     )
+    (nested_artifacts / "bridge_health_summary.json").write_text(
+        json.dumps({"control_apply_path": "ros2_control_bridge"}) + "\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "cyber_bridge_stats.json").write_text(
+        json.dumps({"control_tx_count": 3}) + "\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "control_handoff_summary.json").write_text(
+        json.dumps({"status": "pass"}) + "\n",
+        encoding="utf-8",
+    )
 
     normalize_phase1_artifacts(run)
     surface = ensure_phase1_comparison_artifacts(run)
@@ -120,6 +188,9 @@ def test_route_only_phase1_comparison_artifacts_can_pass_after_promotion(tmp_pat
     assert surface["v_t_gap_status"] == "not_applicable"
     assert (run / "events.jsonl").exists()
     assert (run / "artifacts" / "control_apply_trace.jsonl").exists()
+    assert (run / "artifacts" / "bridge_health_summary.json").exists()
+    assert (run / "artifacts" / "cyber_bridge_stats.json").exists()
+    assert (run / "artifacts" / "control_handoff_summary.json").exists()
     assert (run / "analysis" / "v_t_gap" / "v_t_gap_report.json").exists()
     legacy = json.loads((run / "analysis" / "phase1_status" / "artifact_completeness.json").read_text())
     assert legacy["schema_version"] == "phase1_artifact_completeness.v1"

@@ -22,6 +22,7 @@ requirements:
   traffic_light_required: false
 success_intent:
   diagnostic_only: true
+  ego_target_speed_mps: 8.0
   inspect_matched_target_anomalies: true
 tags:
   - town01

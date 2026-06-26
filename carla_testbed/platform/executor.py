@@ -69,6 +69,11 @@ def execute_run_plan(
     preflight = backend.preflight(plan).to_dict()
     launch_plan = backend.build_launch_plan(plan).to_dict()
     launch_plan = _rewrite_launch_plan_run_dir(launch_plan, plan=plan, run_dir=context.run_dir)
+    requested_timeout_s = timeout_s if timeout_s is not None else plan.world.timeout_s
+    effective_timeout_s, launch_plan = _apply_runtime_timeout_policy(
+        launch_plan,
+        requested_timeout_s=requested_timeout_s,
+    )
     _write_json(context.run_dir / "preflight.json", preflight)
     write_runtime_context_artifacts(
         context,
@@ -85,7 +90,7 @@ def execute_run_plan(
     adapter_result: RuntimeAdapterResult = BackendRuntimeAdapter().execute(
         context,
         launch_plan,
-        timeout_s=timeout_s if timeout_s is not None else plan.world.timeout_s,
+        timeout_s=effective_timeout_s,
     )
     status = adapter_result.status
     artifacts = write_runtime_context_artifacts(
@@ -111,6 +116,18 @@ def execute_run_plan(
             / "phase1_artifact_normalization"
             / "phase1_artifact_normalization_summary.md"
         )
+    result = ExecutionResult(
+        status=status,
+        exit_code=adapter_result.exit_code,
+        run_dir=context.run_dir,
+        launch_plan=launch_plan,
+        preflight=preflight,
+        backend_contract=backend_contract,
+        artifacts=artifacts,
+        dispatch=adapter_result.to_dict(),
+    )
+    result_path = context.run_dir / "platform_execution_result.json"
+    result_path.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     phase1_status_paths = _ensure_phase1_status_after_attempt(
         context.run_dir,
         dry_run=dry_run,
@@ -135,7 +152,6 @@ def execute_run_plan(
         artifacts=artifacts,
         dispatch=adapter_result.to_dict(),
     )
-    result_path = context.run_dir / "platform_execution_result.json"
     result_path.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
 
@@ -193,6 +209,49 @@ def _phase1_status_needs_refresh(
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _apply_runtime_timeout_policy(
+    launch_plan: dict[str, Any],
+    *,
+    requested_timeout_s: float | None,
+) -> tuple[float | None, dict[str, Any]]:
+    minimum_timeout_s = _optional_float(launch_plan.get("minimum_runtime_timeout_s"))
+    effective_timeout_s = requested_timeout_s
+    reason = "requested_or_plan_timeout"
+    policy_applied = False
+    if minimum_timeout_s is not None and (effective_timeout_s is None or effective_timeout_s < minimum_timeout_s):
+        effective_timeout_s = minimum_timeout_s
+        reason = "backend_minimum_runtime_timeout"
+        policy_applied = True
+
+    enriched = dict(launch_plan)
+    warnings = list(enriched.get("warnings") or [])
+    if policy_applied:
+        warnings.append(
+            "runtime_timeout_raised_to_backend_minimum:"
+            f"{requested_timeout_s}->{effective_timeout_s}"
+        )
+    enriched["warnings"] = warnings
+    enriched["requested_runtime_timeout_s"] = requested_timeout_s
+    enriched["effective_runtime_timeout_s"] = effective_timeout_s
+    enriched["runtime_timeout_policy"] = {
+        "requested_timeout_s": requested_timeout_s,
+        "minimum_runtime_timeout_s": minimum_timeout_s,
+        "effective_timeout_s": effective_timeout_s,
+        "policy_applied": policy_applied,
+        "reason": reason,
+    }
+    return effective_timeout_s, enriched
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _rewrite_launch_plan_run_dir(

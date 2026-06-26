@@ -124,7 +124,9 @@ python -m carla_testbed phase1 run-p0-matrix \
 `phase1_p0_matrix_manifest.json` records both orchestration status and
 comparison status. Each row includes command execution status, exit codes,
 `comparison_status`, `comparison_target_status`, backend Phase 1 statuses, and
-backend failure reasons. The top-level summary includes comparable,
+backend failure reasons. New rows also include backend primary behavior
+blockers, blocker layers, and next-action hints when the run-local
+`phase1_status.json` provides them. The top-level summary includes comparable,
 partially-evaluable, and invalid pair counts. Use these fields to distinguish
 delivery progress from backend behavior outcomes.
 

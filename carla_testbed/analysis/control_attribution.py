@@ -961,7 +961,7 @@ def _can_promote_generic_external_source(control_source: str | None) -> bool:
     if control_source in {None, ""}:
         return True
     normalized = str(control_source).strip().lower()
-    return normalized in {"external_stack", "external"}
+    return normalized in {"external_stack", "external", "none", "unknown", "not_recorded"}
 
 
 def _normalize_applied_control_source(control_source: str | None) -> str | None:

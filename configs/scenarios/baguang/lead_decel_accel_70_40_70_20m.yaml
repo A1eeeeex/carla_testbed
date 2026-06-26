@@ -1,0 +1,74 @@
+schema_version: scenario_spec.v1
+scenario_id: baguang_lead_decel_accel_70_40_70_20m
+map: straight_road_for_baguang
+route_id: straight_road_for_baguang_mainline_lead_decel_accel_20m
+scenario_class: lead_vehicle_accel_decel
+gate_role: diagnostic_gate
+target_actor:
+  required: true
+  role: lead_vehicle
+  activation:
+    activation_semantics: active_from_scenario_start
+    active_after_phase: null
+fixed_scene:
+  schema_version: fixed_scene_template.v1
+  template: lead_vehicle_accel_decel
+  roles:
+    ego:
+      control_owner: backend
+      spawn_ref: carla_spawn_index_0
+      initial_speed_mps: 19.44
+    lead_vehicle:
+      control_owner: fixed_scene_player
+      blueprint: vehicle.lincoln.mkz_2020
+      initial_speed_mps: 19.44
+      spawn:
+        relative_to: ego
+        lane: same
+        s_offset_m: 20.0
+        prefer_waypoint: false
+        feasibility:
+          enabled: true
+          s_offset_tolerance_m: 3.0
+          max_lateral_m: 2.5
+          require_waypoint: false
+  params:
+    duration_s: 18.0
+    duration_policy: lead_reaches_road_end
+    lead_route_end_s_m: 300.0
+    expected_lead_travel_m: 280.0
+    ego_initial_speed_mps: 19.44
+    ego_target_speed_mps: 19.44
+    ego_target_speed_kph: 70.0
+    lead_initial_speed_mps: 19.44
+    lead_initial_speed_kph: 70.0
+    lead_decel_target_speed_mps: 11.11
+    lead_decel_target_speed_kph: 40.0
+    lead_final_speed_mps: 19.44
+    lead_final_speed_kph: 70.0
+    lead_speed_change_time_s: 5.0
+    lead_deceleration_mps2: 2.08
+    lead_acceleration_mps2: 1.67
+    initial_gap_m: 20.0
+    speed_profile_interpolation: linear
+    speed_profile:
+      - {t: 0.0, speed_mps: 19.44}
+      - {t: 5.0, speed_mps: 19.44}
+      - {t: 9.0, speed_mps: 11.11}
+      - {t: 12.0, speed_mps: 11.11}
+      - {t: 17.0, speed_mps: 19.44}
+      - {t: 18.0, speed_mps: 19.44}
+  success_criteria:
+    speed_profile_executed: true
+    lead_speed_reaches_decel_target: true
+    lead_speed_restores_final_target: true
+required_artifacts:
+  - fixed_scene_resolved.json
+  - fixed_scene_runtime_state.json
+  - scenario_actor_trace.jsonl
+  - scenario_phase_events.jsonl
+  - ego_control_trace.jsonl
+claim_boundary:
+  fixed_scene_playback_is_not_autonomy_evidence: true
+  builtin_controller_is_diagnostic_only: true
+notes: "Baguang P0 lead-speed-change scene: both vehicles start near 70kph with a 20m gap; after 5s the lead ramps down to 40kph, holds briefly, then ramps back to 70kph before the current Baguang straight-road end. This file keeps the canonical lead_decel_accel case name semantically aligned with the actual speed profile."

@@ -109,8 +109,10 @@ class LaunchPlan:
     expected_artifacts: list[str] = field(default_factory=list)
     shutdown_hooks: list[str] = field(default_factory=list)
     postprocess_commands: list[list[str]] = field(default_factory=list)
+    runtime_completion_markers: list[dict[str, Any]] = field(default_factory=list)
     starts_runtime: bool = False
     compatibility_source: str | None = None
+    minimum_runtime_timeout_s: float | None = None
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -125,8 +127,10 @@ class LaunchPlan:
             "expected_artifacts": list(self.expected_artifacts),
             "shutdown_hooks": list(self.shutdown_hooks),
             "postprocess_commands": [list(command) for command in self.postprocess_commands],
+            "runtime_completion_markers": [dict(marker) for marker in self.runtime_completion_markers],
             "starts_runtime": self.starts_runtime,
             "compatibility_source": self.compatibility_source,
+            "minimum_runtime_timeout_s": self.minimum_runtime_timeout_s,
             "warnings": list(self.warnings),
         }
 

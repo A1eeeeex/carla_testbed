@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -115,6 +116,58 @@ class DreamviewOpenUrlTests(unittest.TestCase):
                 (artifacts / "dreamview_wait_page_target.txt").read_text(encoding="utf-8").strip(),
                 "http://localhost:8888",
             )
+
+    def test_docker_dreamview_start_timeout_is_logged_and_nonfatal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifacts = Path(tmpdir)
+            backend = CyberRTBackend(
+                {
+                    "algo": {
+                        "apollo": {
+                            "dreamview": {
+                                "enabled": True,
+                                "auto_start": True,
+                                "auto_open": False,
+                                "ready_timeout_sec": 0.0,
+                                "start_timeout_sec": 0.25,
+                            }
+                        }
+                    }
+                }
+            )
+            backend._docker_container_name = "apollo_test"
+
+            def fake_docker_exec(*_args, **kwargs):
+                assert kwargs.get("timeout") == 0.25
+                raise subprocess.TimeoutExpired(cmd="dreamview_start", timeout=0.25)
+
+            with mock.patch.object(backend, "_wait_for_tcp", return_value=False), mock.patch.object(
+                backend,
+                "_docker_enabled",
+                return_value=True,
+            ), mock.patch.object(backend, "_docker_container", return_value="apollo_test"), mock.patch.object(
+                backend,
+                "_docker_ensure_dreamview_runtime_deps",
+            ), mock.patch.object(
+                backend,
+                "_docker_modules_prefix",
+                return_value="source apollo_env",
+            ), mock.patch.object(
+                backend,
+                "_dreamview_start_cmd",
+                return_value="dreamview_start",
+            ), mock.patch.object(
+                backend,
+                "_docker_exec",
+                side_effect=fake_docker_exec,
+            ):
+                backend._maybe_start_dreamview(artifacts)
+
+            launch_log = (artifacts / "dreamview_launch.log").read_text(encoding="utf-8")
+            self.assertIn("start_cmd=dreamview_start", launch_log)
+            self.assertIn("start_timeout_sec=0.25", launch_log)
+            self.assertIn("start_failed=", launch_log)
+            self.assertFalse(backend._dreamview_started_by_backend)
 
 
 if __name__ == "__main__":

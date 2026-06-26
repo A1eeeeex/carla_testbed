@@ -10,7 +10,9 @@ import pytest
 from carla_testbed.platform.compiler import compile_run_plan, write_run_plan
 from carla_testbed.platform.executor import execute_run_plan
 from carla_testbed.platform.registry import PlatformRegistry
+from carla_testbed.platform.runtime_context import RuntimeContext
 from carla_testbed.platform.runtime_adapter import (
+    BackendRuntimeAdapter,
     CleanupResult,
     PostprocessResult,
     RuntimeAdapterResult,
@@ -132,6 +134,256 @@ def test_execute_run_plan_materializes_phase1_status_when_postprocess_misses_it(
     platform_result = json.loads((tmp_path / "run" / "platform_execution_result.json").read_text(encoding="utf-8"))
     assert platform_result["postprocess_status"] == "completed"
     assert platform_result["cleanup_status"] == "completed"
+    assert "phase1_status_report" in platform_result["artifacts"]
+
+
+def test_execute_run_plan_raises_apollo_timeout_to_backend_minimum(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="town01/lane_keep_097",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+    observed: dict[str, object] = {}
+
+    class FakeAdapter:
+        def execute(self, context, launch_plan, *, timeout_s=None):  # noqa: ANN001
+            observed["timeout_s"] = timeout_s
+            observed["launch_plan"] = launch_plan
+            return RuntimeAdapterResult(
+                status="failed",
+                exit_code=1,
+                command=RuntimeCommandResult(
+                    status="failed",
+                    exit_code=1,
+                    command=["fake-apollo-runtime"],
+                    timeout_s=timeout_s,
+                    warnings=[],
+                ),
+                commands=[
+                    RuntimeCommandResult(
+                        status="failed",
+                        exit_code=1,
+                        command=["fake-apollo-runtime"],
+                        timeout_s=timeout_s,
+                        warnings=[],
+                    )
+                ],
+                postprocess=PostprocessResult(status="completed"),
+                cleanup=CleanupResult(status="completed"),
+                warnings=[],
+            )
+
+    monkeypatch.setattr("carla_testbed.platform.executor.BackendRuntimeAdapter", FakeAdapter)
+
+    result = execute_run_plan(plan, run_dir=tmp_path / "run", dry_run=False, timeout_s=180.0)
+
+    assert result.status == "failed"
+    assert observed["timeout_s"] == 240.0
+    launch_plan = observed["launch_plan"]
+    assert isinstance(launch_plan, dict)
+    assert launch_plan["requested_runtime_timeout_s"] == 180.0
+    assert launch_plan["effective_runtime_timeout_s"] == 240.0
+    assert launch_plan["runtime_timeout_policy"]["policy_applied"] is True
+    platform_result = json.loads((tmp_path / "run" / "platform_execution_result.json").read_text(encoding="utf-8"))
+    assert platform_result["launch_plan"]["requested_runtime_timeout_s"] == 180.0
+    assert platform_result["launch_plan"]["effective_runtime_timeout_s"] == 240.0
+    assert platform_result["dispatch"]["command"]["timeout_s"] == 240.0
+
+
+def test_runtime_adapter_stops_after_failed_completion_marker(tmp_path: Path) -> None:
+    script = tmp_path / "write_finalized_then_sleep.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, sys, time",
+                "from pathlib import Path",
+                "root = Path(sys.argv[1])",
+                "time.sleep(0.2)",
+                "path = root / 'legacy_chain' / 'actual_run' / 'summary.json'",
+                "path.parent.mkdir(parents=True, exist_ok=True)",
+                "path.write_text(json.dumps({",
+                "    'summary_status': 'finalized',",
+                "    'success': False,",
+                "    'fail_reason': 'PLANNING_NONZERO_RATIO',",
+                "}) + '\\n', encoding='utf-8')",
+                "while True:",
+                "    time.sleep(1.0)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    plan = compile_run_plan(
+        platform="dummy",
+        algorithm="dummy",
+        scenario="town01/lane_keep_097",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+    run_dir = tmp_path / "run"
+    context = RuntimeContext.from_plan(plan, run_dir=run_dir, dry_run=False, legacy_dispatch=True)
+
+    result = BackendRuntimeAdapter().execute(
+        context,
+        {
+            "backend": "test_backend",
+            "mode": "completion_marker_test",
+            "commands": [[sys.executable, str(script), str(run_dir)]],
+            "runtime_completion_marker_poll_interval_s": 0.05,
+            "runtime_completion_markers": [
+                {
+                    "id": "finalized_summary",
+                    "path_glob": "**/summary.json",
+                    "json_field": "summary_status",
+                    "equals": "finalized",
+                    "success_field": "success",
+                }
+            ],
+            "postprocess_commands": [],
+            "starts_runtime": True,
+        },
+        timeout_s=10.0,
+    )
+
+    assert result.status == "failed"
+    assert result.exit_code == 1
+    assert result.command.timed_out is False
+    assert result.command.completion_marker is not None
+    assert result.command.completion_marker["id"] == "finalized_summary"
+    assert result.command.completion_marker["success"] is False
+    assert result.command.duration_s < 10.0
+
+
+def test_execute_run_plan_refreshes_phase1_status_after_final_platform_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="town01/lane_keep_097",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    class FakeAdapter:
+        def execute(self, context, launch_plan, *, timeout_s=None):  # noqa: ANN001
+            (context.run_dir / "timeseries.csv").write_text(
+                "sim_time,ego_speed_mps\n0.0,0.0\n",
+                encoding="utf-8",
+            )
+            (context.run_dir / "events.jsonl").write_text(
+                json.dumps({"event": "timeout"}) + "\n",
+                encoding="utf-8",
+            )
+            artifacts = context.run_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (artifacts / "control_apply_trace.jsonl").write_text(
+                json.dumps({"sim_time": 0.0, "throttle": 0.0, "brake": 0.0, "steer": 0.0}) + "\n",
+                encoding="utf-8",
+            )
+            (context.run_dir / "summary.json").write_text(
+                json.dumps({"success": False, "exit_reason": "timeout"}) + "\n",
+                encoding="utf-8",
+            )
+            nested_artifacts = context.run_dir / "legacy_chain" / "actual_run" / "artifacts"
+            nested_artifacts.mkdir(parents=True)
+            (nested_artifacts / "cyber_bridge_stats.json").write_text(
+                json.dumps(
+                    {
+                        "routing_request_count": 1,
+                        "routing_success_count": 1,
+                        "control_rx_count": 0,
+                        "control_tx_count": 0,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (nested_artifacts / "planning_topic_debug_summary.json").write_text(
+                json.dumps(
+                    {
+                        "messages_with_nonzero_trajectory_points": 42,
+                        "max_trajectory_point_count": 239,
+                        "planning_debug_presence": {
+                            "last_diagnosis": "routing_present_reference_line_empty",
+                            "reference_line_nonempty_ratio": 0.0,
+                            "routing_segment_nonempty_ratio": 0.75,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (nested_artifacts / "apollo_control_deferred_survival.json").write_text(
+                json.dumps(
+                    {
+                        "control_started_pid_seen": True,
+                        "control_survived_5s": False,
+                        "control_survived_10s": False,
+                        "control_present_at_end": False,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (nested_artifacts / "apollo_control_deferred_mainboard.log").write_text(
+                "src/tcmalloc.cc:333] Attempt to free invalid pointer 0xabc\n",
+                encoding="utf-8",
+            )
+            return RuntimeAdapterResult(
+                status="timeout",
+                exit_code=-2,
+                command=RuntimeCommandResult(
+                    status="timeout",
+                    exit_code=-2,
+                    command=["fake-apollo-runtime"],
+                    timed_out=True,
+                    timeout_s=timeout_s,
+                    warnings=[],
+                ),
+                commands=[
+                    RuntimeCommandResult(
+                        status="timeout",
+                        exit_code=-2,
+                        command=["fake-apollo-runtime"],
+                        timed_out=True,
+                        timeout_s=timeout_s,
+                        warnings=[],
+                    )
+                ],
+                postprocess=PostprocessResult(status="completed"),
+                cleanup=CleanupResult(status="completed"),
+                warnings=[],
+            )
+
+    monkeypatch.setattr("carla_testbed.platform.executor.BackendRuntimeAdapter", FakeAdapter)
+
+    result = execute_run_plan(plan, run_dir=tmp_path / "run", dry_run=False, timeout_s=180.0)
+
+    assert result.status == "timeout"
+    status = json.loads(
+        (tmp_path / "run" / "analysis" / "phase1_status" / "phase1_status.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert status["status"] == "failed"
+    assert status["failure_reason"] == "timeout"
+    assert status["primary_behavior_blocker"] == "planning_available_control_process_crash_timeout"
+    assert status["behavior_blocker_layer"] == "apollo_control_process_health"
+    evidence = status["behavior_blocker_evidence"]
+    assert evidence["planning_nonempty_trajectory_count"] == 42
+    assert evidence["control_crash_reason"] == "tcmalloc_invalid_free"
+    platform_result = json.loads((tmp_path / "run" / "platform_execution_result.json").read_text(encoding="utf-8"))
+    assert platform_result["status"] == "timeout"
     assert "phase1_status_report" in platform_result["artifacts"]
 
 

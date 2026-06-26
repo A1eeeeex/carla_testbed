@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import json
+import math
 import shutil
 from pathlib import Path
 from typing import Any, Mapping
@@ -44,6 +46,9 @@ def normalize_phase1_artifacts(run_dir: str | Path) -> dict[str, Any]:
                 optional = _promote_unique_relative_file(root, spec)
                 promoted_artifacts.extend(optional["promoted_artifacts"])
                 warnings.extend(optional["warnings"])
+            control_overlay = _overlay_control_trace_fields(root)
+            promoted_artifacts.extend(control_overlay["promoted_artifacts"])
+            warnings.extend(control_overlay["warnings"])
     except Exception as exc:  # pragma: no cover - defensive artifact path
         status = "error"
         source_artifacts = []
@@ -154,6 +159,31 @@ _OPTIONAL_PROMOTION_SPECS = [
         "patterns": ("**/artifacts/control_apply_trace.jsonl",),
     },
     {
+        "name": "bridge_health_summary",
+        "root_rel": Path("artifacts/bridge_health_summary.json"),
+        "patterns": ("**/artifacts/bridge_health_summary.json",),
+    },
+    {
+        "name": "bridge_health_summary_finalized",
+        "root_rel": Path("artifacts/bridge_health_summary.finalized.json"),
+        "patterns": ("**/artifacts/bridge_health_summary.finalized.json",),
+    },
+    {
+        "name": "cyber_bridge_stats",
+        "root_rel": Path("artifacts/cyber_bridge_stats.json"),
+        "patterns": ("**/artifacts/cyber_bridge_stats.json",),
+    },
+    {
+        "name": "control_handoff_summary",
+        "root_rel": Path("artifacts/control_handoff_summary.json"),
+        "patterns": ("**/artifacts/control_handoff_summary.json",),
+    },
+    {
+        "name": "command_materialization_summary",
+        "root_rel": Path("artifacts/command_materialization_summary.json"),
+        "patterns": ("**/artifacts/command_materialization_summary.json",),
+    },
+    {
         "name": "apollo_control_raw",
         "root_rel": Path("artifacts/apollo_control_raw.jsonl"),
         "patterns": ("**/artifacts/apollo_control_raw.jsonl",),
@@ -216,9 +246,236 @@ def _promote_unique_relative_file(root: Path, spec: Mapping[str, Any]) -> dict[s
             ],
             "warnings": [],
         }
+    if len(candidates) > 1 and spec.get("name") == "config_resolved":
+        preferred = _select_non_hidden_candidate(candidates)
+        if preferred is not None:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(preferred, destination)
+            return {
+                "promoted_artifacts": [
+                    {
+                        "name": str(spec["name"]),
+                        "source": str(preferred),
+                        "destination": str(destination),
+                    }
+                ],
+                "warnings": ["multiple_nested_config_resolved_candidates_selected_non_hidden"],
+            }
     if len(candidates) > 1:
         return {"promoted_artifacts": [], "warnings": [f"multiple_nested_{spec['name']}_candidates"]}
     return {"promoted_artifacts": [], "warnings": []}
+
+
+def _select_non_hidden_candidate(candidates: list[Path]) -> Path | None:
+    visible = [path for path in candidates if not any(part.startswith(".") for part in path.parts)]
+    return visible[0] if len(visible) == 1 else None
+
+
+_CONTROL_TRACE_OVERLAY_FIELDS = {
+    "apollo_steer_raw": ("apollo_steer_raw", "apollo_raw.steer"),
+    "bridge_steer_mapped": (
+        "bridge_steer_mapped",
+        "bridge_mapped.steer",
+        "bridge_mapped.mapped_carla_steer_cmd",
+    ),
+    "carla_steer_applied": ("carla_steer_applied", "carla_applied.steer"),
+    "throttle_raw": ("throttle_raw", "apollo_raw.throttle"),
+    "throttle_mapped": (
+        "throttle_mapped",
+        "bridge_mapped.throttle",
+        "bridge_mapped.mapped_throttle_cmd",
+    ),
+    "throttle_applied": ("throttle_applied", "carla_applied.throttle"),
+    "brake_raw": ("brake_raw", "apollo_raw.brake"),
+    "brake_mapped": ("brake_mapped", "bridge_mapped.brake", "bridge_mapped.mapped_brake_cmd"),
+    "brake_applied": ("brake_applied", "carla_applied.brake"),
+    "control_latency_ms": ("control_latency_ms",),
+}
+
+
+def _overlay_control_trace_fields(root: Path) -> dict[str, Any]:
+    """Fill sparse root timeseries control fields from canonical control trace.
+
+    Compatibility Apollo paths can expose a promoted root `timeseries.csv` whose
+    control columns are blank or all-zero placeholders, while
+    `artifacts/control_apply_trace.jsonl` contains the actual raw/mapped/applied
+    control rows. This overlay only repairs the evidence surface. It does not
+    change behavior status, summary success, or acceptance verdicts.
+    """
+
+    timeseries_path = root / "timeseries.csv"
+    control_trace_path = root / "artifacts" / "control_apply_trace.jsonl"
+    if not timeseries_path.exists() or not control_trace_path.exists():
+        return {"promoted_artifacts": [], "warnings": []}
+
+    rows = _read_csv_rows(timeseries_path)
+    trace_rows = _read_jsonl_rows(control_trace_path)
+    if not rows or not trace_rows:
+        return {"promoted_artifacts": [], "warnings": []}
+
+    time_key = "sim_time" if "sim_time" in rows[0] else "timestamp" if "timestamp" in rows[0] else None
+    if time_key is None:
+        return {"promoted_artifacts": [], "warnings": ["control_trace_overlay_skipped:no_timeseries_time_field"]}
+
+    trace_points = _control_trace_points(trace_rows)
+    if not trace_points:
+        return {"promoted_artifacts": [], "warnings": ["control_trace_overlay_skipped:no_usable_control_rows"]}
+
+    target_fields = [
+        field
+        for field in _CONTROL_TRACE_OVERLAY_FIELDS
+        if _timeseries_field_needs_overlay(rows, field, trace_points)
+    ]
+    if not target_fields:
+        return {"promoted_artifacts": [], "warnings": []}
+
+    times = [_optional_float(row.get(time_key)) for row in rows]
+    indexed_times = [(index, value) for index, value in enumerate(times) if value is not None]
+    if not indexed_times:
+        return {"promoted_artifacts": [], "warnings": ["control_trace_overlay_skipped:no_numeric_timeseries_time"]}
+
+    tolerance_s = _time_join_tolerance_s([value for _, value in indexed_times])
+    updates = 0
+    updated_fields: set[str] = set()
+    for point in trace_points:
+        trace_time = point.get("time")
+        if trace_time is None:
+            continue
+        nearest = min(indexed_times, key=lambda item: abs(item[1] - trace_time))
+        row_index, row_time = nearest
+        if abs(row_time - trace_time) > tolerance_s:
+            continue
+        row = rows[row_index]
+        for field in target_fields:
+            value = point.get(field)
+            if value is None:
+                continue
+            previous = row.get(field)
+            row[field] = _format_overlay_value(value)
+            if row[field] != previous:
+                updates += 1
+                updated_fields.add(field)
+
+    if updates <= 0:
+        return {"promoted_artifacts": [], "warnings": ["control_trace_overlay_skipped:no_matching_timeseries_rows"]}
+
+    fieldnames = list(rows[0].keys())
+    for field in target_fields:
+        if field not in fieldnames:
+            fieldnames.append(field)
+    with timeseries_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return {
+        "promoted_artifacts": [
+            {
+                "name": "timeseries_control_trace_overlay",
+                "source": str(control_trace_path),
+                "destination": str(timeseries_path),
+                "fields": ",".join(sorted(updated_fields)),
+                "updated_cells": str(updates),
+            }
+        ],
+        "warnings": ["root_timeseries_control_fields_overlaid_from_control_apply_trace"],
+    }
+
+
+def _read_csv_rows(path: Path) -> list[dict[str, str]]:
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            return [dict(row) for row in csv.DictReader(handle)]
+    except Exception:
+        return []
+
+
+def _read_jsonl_rows(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                payload = json.loads(line)
+                if isinstance(payload, Mapping):
+                    rows.append(dict(payload))
+    except Exception:
+        return []
+    return rows
+
+
+def _control_trace_points(rows: list[dict[str, Any]]) -> list[dict[str, float | None]]:
+    points: list[dict[str, float | None]] = []
+    for row in rows:
+        point: dict[str, float | None] = {
+            "time": _first_number(row, ("sim_time", "timestamp", "gt_state.sim_time_sec"))
+        }
+        for field, aliases in _CONTROL_TRACE_OVERLAY_FIELDS.items():
+            point[field] = _first_number(row, aliases)
+        if any(point.get(field) is not None for field in _CONTROL_TRACE_OVERLAY_FIELDS):
+            points.append(point)
+    return points
+
+
+def _timeseries_field_needs_overlay(
+    rows: list[dict[str, str]],
+    field: str,
+    trace_points: list[dict[str, float | None]],
+) -> bool:
+    trace_values = [point[field] for point in trace_points if point.get(field) is not None]
+    if not trace_values:
+        return False
+    if not any(abs(float(value)) > 1e-12 for value in trace_values):
+        return False
+    if field not in rows[0]:
+        return True
+    values = [_optional_float(row.get(field)) for row in rows]
+    present = [value for value in values if value is not None]
+    if not present:
+        return True
+    return all(abs(value) <= 1e-12 for value in present)
+
+
+def _time_join_tolerance_s(times: list[float]) -> float:
+    ordered = sorted(set(times))
+    deltas = [b - a for a, b in zip(ordered, ordered[1:]) if b > a]
+    if not deltas:
+        return 0.075
+    median_delta = sorted(deltas)[len(deltas) // 2]
+    return max(0.075, min(0.5, median_delta * 1.5))
+
+
+def _first_number(row: Mapping[str, Any], aliases: tuple[str, ...]) -> float | None:
+    for alias in aliases:
+        value = _nested_get(row, alias)
+        parsed = _optional_float(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _nested_get(row: Mapping[str, Any], dotted: str) -> Any:
+    current: Any = row
+    for part in dotted.split("."):
+        if not isinstance(current, Mapping) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _format_overlay_value(value: float) -> str:
+    return f"{value:.12g}"
 
 
 def _root_timeseries(root: Path) -> Path | None:

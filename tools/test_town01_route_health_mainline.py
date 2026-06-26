@@ -43,6 +43,8 @@ from carla_testbed.utils.town01_route_health import (
     _compute_planning_trajectory_type_summary,
     _compute_route_metrics,
     _compute_planning_control_alignment,
+    _build_state_timeline,
+    _planning_nonzero_ratio_check,
     _extract_carla_bootstrap_summary,
     _extract_command_materialization_summary,
     evaluate_runtime_contract,
@@ -3013,6 +3015,130 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
         self.assertFalse(snapshot["carla_startup_world_ready"])
         self.assertEqual(snapshot["carla_startup_failure_family"], "rpc_ready_followup_missing_eof_alive")
         self.assertEqual(snapshot["phase"], "startup_rpc_ready_followup_missing_eof_alive")
+
+    def test_collect_step_live_snapshot_prefers_finalized_summary_over_stale_provisional(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            batch_root = Path(tmpdir)
+            effective_run_dir = batch_root / "current_run"
+            effective_run_dir.mkdir(parents=True, exist_ok=True)
+            (batch_root / "LATEST.txt").write_text(str(effective_run_dir), encoding="utf-8")
+            _write_json(
+                effective_run_dir / "summary.provisional.json",
+                {
+                    "summary_status": "provisional",
+                    "route_health_label": "chain_not_alive",
+                },
+            )
+            _write_json(
+                effective_run_dir / "summary.json",
+                {
+                    "summary_status": "finalized",
+                    "route_health_label": "route_established_but_behavior_unhealthy",
+                },
+            )
+            _write_json(
+                effective_run_dir / "artifacts" / "cyber_bridge_stats.json",
+                {
+                    "routing_request_count": 1,
+                    "control_tx_count": 2418,
+                    "last_measured_control": {"speed_mps": 0.0},
+                    "planning": {"nonempty_trajectory_count": 319},
+                },
+            )
+            item = {
+                "command_argv": [
+                    "python3",
+                    "/tmp/run_town01_route_health.py",
+                    "--batch-root",
+                    str(batch_root),
+                ]
+            }
+            snapshot = capability_online_chain._collect_step_live_snapshot(item)
+
+        self.assertEqual(snapshot["summary_status"], "finalized")
+        self.assertEqual(
+            snapshot["route_health_label"],
+            "route_established_but_behavior_unhealthy",
+        )
+        self.assertEqual(snapshot["phase"], "control_output")
+        self.assertEqual(snapshot["control_tx_count"], 2418)
+
+    def test_route_health_state_timeline_prefers_sim_time_over_wall_timestamp(self) -> None:
+        timeline, failure_stage = _build_state_timeline(
+            routing_rows=[
+                {
+                    "timestamp": 1_782_415_622.5,
+                    "sim_time_sec": 122.1,
+                    "routing_request_sent": True,
+                }
+            ],
+            planning_rows=[
+                {
+                    "timestamp": 1_782_415_624.9,
+                    "sim_time_sec": 124.5,
+                    "trajectory_point_count": 70,
+                }
+            ],
+            control_events=[
+                {
+                    "timestamp": 1_782_415_625.0,
+                    "sim_time_sec": 124.6,
+                    "control_used_planning_trajectory": True,
+                }
+            ],
+            debug_rows=[
+                {
+                    "ts_sec": 114.1,
+                    "map_x": 0.0,
+                    "map_y": 0.0,
+                    "speed_mps": 0.0,
+                },
+                {
+                    "ts_sec": 125.0,
+                    "map_x": 6.0,
+                    "map_y": 0.0,
+                    "speed_mps": 2.0,
+                },
+            ],
+            route_metrics={"route_completion_ratio": 0.5, "final_goal_distance_m": 100.0},
+            routing_success_count=1,
+        )
+
+        by_state = {item["state"]: item for item in timeline}
+        latency = (
+            by_state["ROUTE_ESTABLISHED"]["entered_ts_sec"]
+            - by_state["CARLA_READY"]["entered_ts_sec"]
+        )
+        self.assertAlmostEqual(latency, 8.0, places=3)
+        self.assertLess(latency, 45.0)
+        self.assertEqual(failure_stage, "CRUISE_ACTIVE")
+
+    def test_planning_nonzero_ratio_uses_post_route_established_window(self) -> None:
+        planning_rows = [
+            {"sim_time_sec": 110.0, "trajectory_point_count": 0},
+            {"sim_time_sec": 110.1, "trajectory_point_count": 0},
+            {"sim_time_sec": 110.2, "trajectory_point_count": 0},
+            {"sim_time_sec": 110.3, "trajectory_point_count": 0},
+            {"sim_time_sec": 118.3, "trajectory_point_count": 120},
+            {"sim_time_sec": 118.4, "trajectory_point_count": 125},
+        ]
+        planning_summary = {
+            "total_messages_received": 6,
+            "messages_with_nonzero_trajectory_points": 2,
+        }
+
+        check = _planning_nonzero_ratio_check(
+            planning_rows,
+            planning_summary,
+            route_established_ts=118.0,
+        )
+
+        self.assertEqual(check["source"], "post_route_established_planning_messages")
+        self.assertEqual(check["numerator"], 2)
+        self.assertEqual(check["denominator"], 2)
+        self.assertEqual(check["all_messages_numerator"], 2)
+        self.assertEqual(check["all_messages_denominator"], 6)
+        self.assertEqual(check["actual"], 1.0)
 
     def test_estimate_online_chain_time_budget_counts_startup_once(self) -> None:
         budget = estimate_online_chain_time_budget(

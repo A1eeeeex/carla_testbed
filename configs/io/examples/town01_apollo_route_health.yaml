@@ -69,9 +69,12 @@ algo:
       start_modules: true
       # Canonical mainline keeps the last known good planning-ready gate and
       # now realigns deferred control startup back to direct mainboard/dag.
-      # Recent Town01 evidence shows `launch + bvar=false` still fails before
-      # output materialization, while the last known good baseline used direct
-      # dag semantics. The forced bvar-disable remains off.
+      # 2026-06 Phase 1 evidence shows direct dag startup reaches Planning
+      # trajectory output, but the Control process can exit before
+      # /apollo/control materializes with tcmalloc invalid-free. A follow-up
+      # bvar-disable probe still crashed, so the mainline keeps the historical
+      # bvar setting and treats this as a Control runtime process-health
+      # blocker, not a control tuning or behavior-success claim.
       defer_control_until_planning_ready: true
       control_start_gate: planning_ready
       deferred_control_start_mode: dag

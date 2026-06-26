@@ -5,9 +5,11 @@ import subprocess
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import carla_testbed.platform.phase1_p0_matrix as matrix_mod
 from carla_testbed.platform.phase1_p0_matrix import DEFAULT_PHASE1_P0_SCENARIOS, run_phase1_p0_matrix
 
 
@@ -42,6 +44,15 @@ def test_phase1_p0_matrix_dry_run_materializes_five_pairs(tmp_path: Path) -> Non
         assert "backend_phase1_statuses" in row
 
 
+def test_phase1_p0_matrix_uses_true_lead_decel_accel_scenario() -> None:
+    scenarios = {item.canonical_case: item for item in DEFAULT_PHASE1_P0_SCENARIOS}
+
+    lead = scenarios["lead_decel_accel"]
+
+    assert lead.scenario == "baguang/lead_decel_accel_70_40_70_20m"
+    assert "accelerates back to 70 kph" in lead.rationale
+
+
 def test_phase1_p0_matrix_pair_outputs_keep_backend_contract_boundary(tmp_path: Path) -> None:
     result = run_phase1_p0_matrix(
         out_dir=tmp_path / "p0_matrix",
@@ -65,6 +76,83 @@ def test_phase1_p0_matrix_pair_outputs_keep_backend_contract_boundary(tmp_path: 
         assert payload["backend_contract"]["backend"] in {"carla_builtin", "apollo_cyberrt"}
         assert payload["claim_boundary"]["schema_version"] == "phase1_claim_boundary.v1"
         assert payload["backend_type"] in {"planning_control_backend", "apollo_reference_backend"}
+
+
+def test_phase1_p0_matrix_surfaces_backend_behavior_blockers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run_phase1_pair(**kwargs):
+        pair_out = Path(kwargs["out_dir"])
+        pair_out.mkdir(parents=True, exist_ok=True)
+        comparison_dir = pair_out / "comparison"
+        comparison_dir.mkdir(parents=True, exist_ok=True)
+        comparison_summary = comparison_dir / "comparison_summary.json"
+        comparison_summary.write_text(
+            json.dumps(
+                {
+                    "comparison_status": "comparable",
+                    "comparison_target_status": "apollo_vs_planning_control_evaluable",
+                    "participating_runs": [
+                        {
+                            "backend": "carla_builtin",
+                            "phase1_status": "success",
+                            "failure_reason": None,
+                        },
+                        {
+                            "backend": "apollo_cyberrt",
+                            "phase1_status": "failed",
+                            "failure_reason": "lane_invasion",
+                            "primary_behavior_blocker": (
+                                "lane_departure_with_route_simple_lat_sign_convention_candidate"
+                            ),
+                            "behavior_blocker_layer": "apollo_lateral_semantics",
+                            "behavior_next_action": "inspect Apollo Planning reference-line materialization",
+                        },
+                    ],
+                    "evaluable_runs": [{"run_id": "builtin"}, {"run_id": "apollo"}],
+                    "invalid_runs": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        manifest = pair_out / "phase1_pair_manifest.json"
+        manifest.write_text("{}", encoding="utf-8")
+        return SimpleNamespace(
+            pair_id=kwargs["pair_id"],
+            out_dir=pair_out,
+            plan_paths=[],
+            run_dirs=[pair_out / "runs" / "builtin", pair_out / "runs" / "apollo"],
+            execution_results=[
+                SimpleNamespace(status="completed", exit_code=0),
+                SimpleNamespace(status="completed", exit_code=0),
+            ],
+            comparison_outputs={"summary": str(comparison_summary)},
+            manifest_path=manifest,
+            carla_session={},
+        )
+
+    monkeypatch.setattr(matrix_mod, "run_phase1_pair", fake_run_phase1_pair)
+
+    result = run_phase1_p0_matrix(
+        out_dir=tmp_path / "p0_matrix",
+        matrix_id="p0_blockers",
+        scenarios=DEFAULT_PHASE1_P0_SCENARIOS[:1],
+        dry_run=False,
+    )
+
+    row = result.rows[0]
+    assert row["backend_primary_behavior_blockers"] == {
+        "apollo_cyberrt": "lane_departure_with_route_simple_lat_sign_convention_candidate"
+    }
+    assert row["backend_behavior_blocker_layers"] == {"apollo_cyberrt": "apollo_lateral_semantics"}
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["summary"]["behavior_blocker_counts"] == {
+        "lane_departure_with_route_simple_lat_sign_convention_candidate": 1
+    }
+    csv_text = result.csv_path.read_text(encoding="utf-8")
+    assert "backend_primary_behavior_blockers" in csv_text
+    assert "lane_departure_with_route_simple_lat_sign_convention_candidate" in csv_text
 
 
 def test_cli_phase1_run_p0_matrix_dry_run(tmp_path: Path) -> None:

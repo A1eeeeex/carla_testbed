@@ -223,9 +223,51 @@ def test_apollo_town01_route_only_launch_plan_uses_carla_python(
 
     assert launch.compatibility_source == "tools/run_town01_capability_online_chain.py"
     assert launch.commands[0][0] == str(fake_python)
+    assert "--config" in launch.commands[0]
+    config_index = launch.commands[0].index("--config")
+    assert launch.commands[0][config_index + 1] == "configs/io/examples/town01_apollo_route_health.yaml"
+    assert launch.minimum_runtime_timeout_s == 240.0
     assert launch.env["CARLA16_PYTHON"] == str(fake_python)
     assert launch.env["CARLA_TESTBED_CARLA_PYTHON"] == str(fake_python)
+    assert any("at least 240s runtime timeout" in warning for warning in launch.warnings)
     assert any(str(fake_python) in warning for warning in launch.warnings)
+
+
+def test_apollo_town01_behavior_recovery_platform_uses_explicit_diagnostic_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    fake_python = tmp_path / "carla16_python"
+    fake_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_python.chmod(fake_python.stat().st_mode | 0o111)
+    monkeypatch.setenv("CARLA16_PYTHON", str(fake_python))
+    monkeypatch.delenv("CARLA_TESTBED_CARLA_PYTHON", raising=False)
+
+    plan = compile_run_plan(
+        platform="apollo_cyberrt_town01_behavior_recovery",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="town01/lane_keep_097",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    backend = default_backend_registry().for_plan(plan)
+    launch = backend.build_launch_plan(plan)
+
+    assert plan.platform.adapter == "apollo_cyberrt"
+    assert plan.platform.params["diagnostic_only"] is True
+    assert "--config" in launch.commands[0]
+    config_index = launch.commands[0].index("--config")
+    assert (
+        launch.commands[0][config_index + 1]
+        == "configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml"
+    )
+    assert launch.minimum_runtime_timeout_s == 240.0
 
 
 def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -> None:
@@ -268,10 +310,12 @@ def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -
     )
     assert "artifacts/fixed_scene_runtime_hook.json" in launch.expected_artifacts
     assert "artifacts/ego_initial_state_materialization.json" in launch.expected_artifacts
+    assert "analysis/v_t_gap/v_t_gap_report.json" in launch.expected_artifacts
     assert "artifacts/apollo_control_route_established_wait.log" not in launch.expected_artifacts
     assert "artifacts/apollo_control_deferred_survival.json" not in launch.expected_artifacts
     assert "artifacts/apollo_control_runtime_overlay_manifest.json" in launch.expected_artifacts
     assert "analysis/apollo_control_handoff/apollo_control_handoff_report.json" in launch.expected_artifacts
+    assert any(command[:2] == ["python3", "tools/extract_v_t_gap.py"] for command in launch.postprocess_commands)
     assert any("sidecar hook" in warning for warning in launch.warnings)
     assert any("control-runtime overlay" in warning for warning in launch.warnings)
 

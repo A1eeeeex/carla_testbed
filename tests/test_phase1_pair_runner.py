@@ -78,6 +78,38 @@ def test_phase1_pair_runner_dry_run_supports_baguang_spawn2m_mitigation(
     assert "phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml" in flattened
 
 
+def test_phase1_pair_runner_applies_apollo_timeout_minimum_only_to_apollo(
+    tmp_path: Path,
+) -> None:
+    result = run_phase1_pair(
+        scenario="town01/lane_keep_097",
+        out_dir=tmp_path / "pair_timeout",
+        pair_id="pair_timeout",
+        dry_run=True,
+        timeout_s=180.0,
+    )
+
+    planning_launch = json.loads((result.run_dirs[0] / "launch_plan.json").read_text(encoding="utf-8"))
+    apollo_launch = json.loads((result.run_dirs[1] / "launch_plan.json").read_text(encoding="utf-8"))
+    planning_result = json.loads(
+        (result.run_dirs[0] / "platform_execution_result.json").read_text(encoding="utf-8")
+    )
+    apollo_result = json.loads(
+        (result.run_dirs[1] / "platform_execution_result.json").read_text(encoding="utf-8")
+    )
+
+    assert planning_launch["backend"] == "carla_builtin"
+    assert planning_launch["requested_runtime_timeout_s"] == 180.0
+    assert planning_launch["effective_runtime_timeout_s"] == 180.0
+    assert planning_result["dispatch"]["command"]["timeout_s"] == 180.0
+
+    assert apollo_launch["backend"] == "apollo_cyberrt"
+    assert apollo_launch["requested_runtime_timeout_s"] == 180.0
+    assert apollo_launch["effective_runtime_timeout_s"] == 240.0
+    assert apollo_launch["runtime_timeout_policy"]["policy_applied"] is True
+    assert apollo_result["dispatch"]["command"]["timeout_s"] == 240.0
+
+
 def test_cli_phase1_run_pair_dry_run(tmp_path: Path) -> None:
     out = tmp_path / "pair_cli"
 

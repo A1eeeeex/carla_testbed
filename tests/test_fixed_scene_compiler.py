@@ -84,6 +84,30 @@ def test_baguang_lead_decel_profile_matches_70_to_40_kph() -> None:
     assert storyboard["roles"]["lead_vehicle"]["initial_speed_mps"] == 19.44
 
 
+def test_baguang_lead_decel_accel_profile_matches_canonical_case_name() -> None:
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_decel_accel_70_40_70_20m.yaml")
+
+    storyboard = compile_fixed_scene_template(template)
+
+    profile = storyboard["storyboard"]["phases"][0]["actions"][0]["profile"]
+    action = storyboard["storyboard"]["phases"][0]["actions"][0]
+    assert storyboard["scene_id"] == "baguang_lead_decel_accel_70_40_70_20m"
+    assert storyboard["scenario_class"] == "lead_vehicle_accel_decel"
+    assert action["interpolation"] == "linear"
+    assert profile == [
+        {"t": 0.0, "speed_mps": 19.44},
+        {"t": 5.0, "speed_mps": 19.44},
+        {"t": 9.0, "speed_mps": 11.11},
+        {"t": 12.0, "speed_mps": 11.11},
+        {"t": 17.0, "speed_mps": 19.44},
+        {"t": 18.0, "speed_mps": 19.44},
+    ]
+    assert storyboard["params"]["duration_policy"] == "lead_reaches_road_end"
+    assert storyboard["params"]["lead_decel_target_speed_mps"] == 11.11
+    assert storyboard["params"]["lead_final_speed_mps"] == 19.44
+    assert storyboard["target_actor_contract"]["target_actor_role"] == "lead_vehicle"
+
+
 def test_baguang_lead_hard_brake_profile_matches_70_to_stop() -> None:
     template = load_fixed_scene_template("configs/scenarios/baguang/lead_hard_brake_70_to_0_20m.yaml")
 

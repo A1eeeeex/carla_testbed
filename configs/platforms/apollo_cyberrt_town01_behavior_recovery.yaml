@@ -1,9 +1,11 @@
 schema_version: platform_profile.v1
-name: apollo_cyberrt
+name: apollo_cyberrt_town01_behavior_recovery
+aliases:
+  - apollo_town01_behavior_recovery
 adapter: apollo_cyberrt
 runtime_mode: docker
 middleware: cyberrt
-launch_profile: apollo_truth_input_minimal
+launch_profile: apollo_truth_input_town01_behavior_recovery_diagnostic
 expected_outputs:
   - routing_response
   - planning
@@ -19,6 +21,8 @@ supported_recorders:
   - apollo_cyber_record
 params:
   compatibility_backend: tools/apollo10_cyber_bridge
-  town01_route_health_config: configs/io/examples/town01_apollo_route_health.yaml
+  town01_route_health_config: configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml
   needs_local_carla: true
   needs_local_apollo: true
+  diagnostic_only: true
+  claim_boundary: control_runtime_survival_probe_not_default_backend

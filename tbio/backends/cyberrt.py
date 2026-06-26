@@ -1962,13 +1962,18 @@ class CyberRTBackend(Backend):
                 self._docker_ensure_dreamview_runtime_deps(artifacts)
                 raw_cmd = self._dreamview_start_cmd()
                 cmd = f"{self._docker_modules_prefix()}; {raw_cmd}"
+                start_timeout = float(
+                    cfg.get("start_timeout_sec") or max(20.0, ready_timeout + 5.0)
+                )
+                lines.append(f"start_cmd={raw_cmd}")
+                lines.append(f"start_cmd_with_env={cmd}")
+                lines.append(f"start_timeout_sec={start_timeout}")
                 result = self._docker_exec(
                     cmd,
                     check=False,
                     capture_output=True,
+                    timeout=start_timeout,
                 )
-                lines.append(f"start_cmd={raw_cmd}")
-                lines.append(f"start_cmd_with_env={cmd}")
                 lines.append(f"returncode={result.returncode}")
                 if result.stdout:
                     lines.append("[stdout]")

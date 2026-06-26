@@ -22,6 +22,7 @@ requirements:
   dynamic_obstacle_required: false
   prediction_required: false
 success_intent:
+  ego_target_speed_mps: 10.0
   min_distance_m: 75
   no_collision: true
   no_lane_invasion: true

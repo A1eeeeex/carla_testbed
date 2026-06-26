@@ -11,6 +11,7 @@ from .base import BackendDiagnostics, BackendPreflightResult, LaunchPlan, StackC
 
 class ApolloCyberRTBackend:
     name = "apollo_cyberrt"
+    _COMPATIBILITY_MIN_RUNTIME_TIMEOUT_S = 240.0
     _STATIC_FOLLOW_STOP_COMPAT_CONFIGS = {
         "baguang_follow_stop_static_300m": (
             "configs/io/examples/phase1_baguang_apollo_followstop_static_control_overlay_paced_compat.yaml"
@@ -217,8 +218,21 @@ class ApolloCyberRTBackend:
             shutdown_hooks=["stop_apollo_bridge", "stop_recorders", "leave_carla_running_policy_dependent"],
             postprocess_commands=[
                 ["python3", "tools/analyze_apollo_link_health.py", "--run-dir", run_dir],
+                [
+                    "python3",
+                    "tools/extract_v_t_gap.py",
+                    "--run-dir",
+                    run_dir,
+                    "--out",
+                    f"{run_dir}/analysis/v_t_gap",
+                ],
                 ["python3", "-m", "carla_testbed", "analyze", "--run-dir", run_dir],
             ],
+            runtime_completion_markers=(
+                _apollo_route_health_completion_markers()
+                if (not fixed_scene_enabled) and command
+                else []
+            ),
             starts_runtime=(not fixed_scene_enabled) or fixed_scene_compat or dynamic_sidecar_config is not None,
             compatibility_source=(
                 "phase1_static_follow_stop_legacy_transition"
@@ -229,9 +243,26 @@ class ApolloCyberRTBackend:
                 if fixed_scene_enabled
                 else "tools/run_town01_capability_online_chain.py"
             ),
+            minimum_runtime_timeout_s=(
+                ApolloCyberRTBackend._COMPATIBILITY_MIN_RUNTIME_TIMEOUT_S
+                if (not fixed_scene_enabled) or fixed_scene_compat or dynamic_sidecar_config is not None
+                else None
+            ),
             warnings=[
                 "LaunchPlan is a compatibility description; executor does not rewrite Apollo bridge runtime.",
                 f"Apollo compatibility runtime python: {runtime_python}",
+                *(
+                    [
+                        (
+                            "Apollo compatibility runs require at least "
+                            f"{ApolloCyberRTBackend._COMPATIBILITY_MIN_RUNTIME_TIMEOUT_S:.0f}s runtime timeout "
+                            "because legacy startup warmup and online-chain materialization can exceed short "
+                            "Phase 1 pair timeouts."
+                        )
+                    ]
+                    if (not fixed_scene_enabled) or fixed_scene_compat or dynamic_sidecar_config is not None
+                    else []
+                ),
                 *(
                     [
                         "Apollo static follow-stop fixed-scene compatibility uses a guarded legacy transition config; this is not generic fixed-scene runtime migration.",
@@ -284,6 +315,25 @@ def _static_follow_stop_compat_config(plan: RunPlan) -> str | None:
     ):
         return None
     return ApolloCyberRTBackend._STATIC_FOLLOW_STOP_COMPAT_CONFIGS.get(scenario_id)
+
+
+def _apollo_route_health_completion_markers() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "town01_route_health_finalized_summary",
+            "path_glob": "**/summary.json",
+            "json_field": "summary_status",
+            "equals": "finalized",
+            "success_field": "success",
+            "description": (
+                "Stop the Phase 1 wrapper once the nested Town01 route-health "
+                "runner has written its finalized summary. The summary still "
+                "decides pass/fail; this marker only prevents an already "
+                "finalized behavior failure from being reclassified as a "
+                "platform timeout."
+            ),
+        }
+    ]
 
 
 def _static_follow_stop_compat(plan: RunPlan) -> bool:
@@ -364,7 +414,7 @@ def _town01_route_only_command(plan: RunPlan, *, run_dir: str) -> list[str]:
     if step is None:
         return [runtime_python, "tools/run_town01_capability_online_chain.py"]
     capability_profile, route_id = step
-    return [
+    command = [
         runtime_python,
         "tools/run_town01_capability_online_chain.py",
         "--step",
@@ -375,6 +425,20 @@ def _town01_route_only_command(plan: RunPlan, *, run_dir: str) -> list[str]:
         plan.identity.run_id,
         "--continue-on-failure",
     ]
+    route_health_config = _town01_route_health_config(plan)
+    if route_health_config:
+        command.extend(["--config", route_health_config])
+    return command
+
+
+def _town01_route_health_config(plan: RunPlan) -> str | None:
+    raw = (
+        plan.platform.params.get("town01_route_health_config")
+        or plan.algorithm.params.get("town01_route_health_config")
+        or plan.scenario.success_intent.get("apollo_route_health_config")
+    )
+    value = str(raw or "").strip()
+    return value or None
 
 
 def _town01_capability_step(plan: RunPlan) -> tuple[str, str] | None:

@@ -52,6 +52,8 @@ FIELD_ALIASES = {
         "apollo_reference_curvature",
         "apollo_debug_simple_lat_curvature",
         "debug_simple_lat_curvature",
+        "debug_simple_lon_current_reference_point_kappa",
+        "debug_simple_lon_preview_reference_point_kappa",
         "target_curvature",
     ],
     "route_curvature": ["route_curvature", "curvature_at_nearest"],
@@ -91,12 +93,14 @@ FIELD_ALIASES = {
         "apollo_simple_lat_target_point_s",
         "apollo_debug_simple_lat_target_point_s",
         "debug_simple_lat_target_point_s",
+        "debug_simple_lon_preview_reference_point_s_m",
         "apollo_target_point_s",
     ],
     "apollo_simple_lon_matched_point_s": [
         "apollo_simple_lon_matched_point_s",
         "apollo_debug_simple_lon_matched_point_s",
         "debug_simple_lon_matched_point_s",
+        "debug_simple_lon_current_matched_point_s_m",
         "apollo_matched_point_s",
     ],
     "ego_x": ["ego_x", "localization_x", "apollo_localization_x"],
@@ -105,28 +109,34 @@ FIELD_ALIASES = {
     "route_y": ["route_y", "nearest_route_y"],
     "apollo_matched_point_x": [
         "apollo_debug_simple_lon_matched_point_x",
+        "debug_simple_lon_current_matched_point_x",
         "apollo_debug_simple_mpc_matched_point_x",
         "apollo_matched_point_x",
     ],
     "apollo_matched_point_y": [
         "apollo_debug_simple_lon_matched_point_y",
+        "debug_simple_lon_current_matched_point_y",
         "apollo_debug_simple_mpc_matched_point_y",
         "apollo_matched_point_y",
     ],
     "apollo_current_reference_point_x": [
         "apollo_debug_simple_lat_current_reference_point_x",
         "debug_simple_lat_current_reference_point_x",
+        "debug_simple_lon_current_reference_point_x",
     ],
     "apollo_current_reference_point_y": [
         "apollo_debug_simple_lat_current_reference_point_y",
         "debug_simple_lat_current_reference_point_y",
+        "debug_simple_lon_current_reference_point_y",
     ],
     "apollo_target_point_x": [
         "apollo_debug_simple_lat_target_point_x",
+        "debug_simple_lon_preview_reference_point_x",
         "apollo_target_point_x",
     ],
     "apollo_target_point_y": [
         "apollo_debug_simple_lat_target_point_y",
+        "debug_simple_lon_preview_reference_point_y",
         "apollo_target_point_y",
     ],
     "heading_error": [
@@ -307,7 +317,7 @@ def analyze_apollo_lateral_semantics(
     reference_line_contract_payload = _read_json(reference_line_contract)
     route_definition_payload = _read_json(route_definition)
     semantic_rows = _merge_control_trace_fields([*timeseries_rows, *planning_rows], control_trace_rows)
-    rows = [*semantic_rows, *control_trace_rows]
+    rows = _derive_point_distance_fields([*semantic_rows, *control_trace_rows])
     supplemental = _supplemental_values(route_health_payload, source_summary, kappa_summary)
 
     resolved_fields = {
@@ -1052,6 +1062,52 @@ def _merge_control_trace_fields(
             current["_control_trace_merge_dt_s"] = min(merge_dts)
         merged.append(current)
     return merged
+
+
+def _derive_point_distance_fields(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    ego_x_aliases = ["localization_x", "apollo_localization_x", "apollo_map_x", "map_x"]
+    ego_y_aliases = ["localization_y", "apollo_localization_y", "apollo_map_y", "map_y"]
+    derived: list[dict[str, Any]] = []
+    for row in rows:
+        current = dict(row)
+        if _row_value(current, FIELD_ALIASES["matched_point_distance"]) is None:
+            distance = _xy_distance(
+                current,
+                ego_x_aliases,
+                ego_y_aliases,
+                FIELD_ALIASES["apollo_matched_point_x"],
+                FIELD_ALIASES["apollo_matched_point_y"],
+            )
+            if distance is not None:
+                current["matched_point_distance"] = distance
+        if _row_value(current, FIELD_ALIASES["target_point_distance"]) is None:
+            distance = _xy_distance(
+                current,
+                ego_x_aliases,
+                ego_y_aliases,
+                FIELD_ALIASES["apollo_target_point_x"],
+                FIELD_ALIASES["apollo_target_point_y"],
+            )
+            if distance is not None:
+                current["target_point_distance"] = distance
+        derived.append(current)
+    return derived
+
+
+def _xy_distance(
+    row: Mapping[str, Any],
+    left_x_aliases: Sequence[str],
+    left_y_aliases: Sequence[str],
+    right_x_aliases: Sequence[str],
+    right_y_aliases: Sequence[str],
+) -> float | None:
+    left_x = _row_value(row, left_x_aliases)
+    left_y = _row_value(row, left_y_aliases)
+    right_x = _row_value(row, right_x_aliases)
+    right_y = _row_value(row, right_y_aliases)
+    if None in (left_x, left_y, right_x, right_y):
+        return None
+    return math.hypot(float(left_x) - float(right_x), float(left_y) - float(right_y))
 
 
 def _nearest_control_row_with_field(

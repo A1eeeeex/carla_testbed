@@ -98,6 +98,8 @@ class CarlaBuiltinBackend:
         if isinstance(scenario_params, Mapping):
             target_speed = scenario_params.get("ego_target_speed_mps")
         if target_speed is None:
+            target_speed = _scenario_target_speed_mps(plan.scenario.success_intent)
+        if target_speed is None:
             target_speed = plan.algorithm.params.get("target_speed_mps")
         if target_speed is not None:
             command.extend(["--target-speed-mps", str(target_speed)])
@@ -141,3 +143,10 @@ def _runtime_python() -> str:
         if candidate and "${" not in candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate
     return "python3"
+
+
+def _scenario_target_speed_mps(success_intent: Mapping[str, Any]) -> Any:
+    for key in ("ego_target_speed_mps", "target_speed_mps", "desired_speed_mps"):
+        if success_intent.get(key) is not None:
+            return success_intent[key]
+    return None

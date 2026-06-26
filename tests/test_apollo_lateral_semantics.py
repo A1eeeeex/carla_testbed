@@ -26,6 +26,8 @@ def _write_rows(path: Path, rows: list[dict[str, object]]) -> Path:
         "sim_time",
         "ts_sec",
         "route_s",
+        "localization_x",
+        "localization_y",
         "map_x",
         "map_y",
         "route_curvature",
@@ -429,6 +431,56 @@ def test_missing_fields_gracefully_degrade(tmp_path: Path) -> None:
     assert report["suspected_layer"] == "insufficient_data"
     assert "apollo_planning_first_kappa" in report["missing_fields"]
     assert "insufficient_data" in _types(report)
+
+
+def test_run_dir_derives_point_distances_from_control_apply_trace_aliases(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    artifacts = run / "artifacts"
+    artifacts.mkdir(parents=True)
+    _write_rows(
+        run / "timeseries.csv",
+        [
+            {
+                **_base_rows()[0],
+                "sim_time": 1.0,
+                "localization_x": 10.0,
+                "localization_y": 20.0,
+                "route_x": 10.0,
+                "route_y": 20.0,
+                "apollo_matched_point_distance": "",
+                "apollo_target_point_distance": "",
+            }
+        ],
+    )
+    (artifacts / "control_apply_trace.jsonl").write_text(
+        json.dumps(
+            {
+                "schema_version": "control_apply_trace.v1",
+                "sim_time": 1.0,
+                "apollo_raw": {"steer": 0.1},
+                "bridge_mapped": {"mapped_carla_steer_cmd": 0.025},
+                "carla_applied": {"steer": 0.025},
+                "vehicle_response": {"yaw_rate_rad_s": 0.01},
+                "debug_simple_lon_current_matched_point_x": 10.3,
+                "debug_simple_lon_current_matched_point_y": 20.4,
+                "debug_simple_lon_preview_reference_point_x": 13.0,
+                "debug_simple_lon_preview_reference_point_y": 24.0,
+                "debug_simple_lon_current_reference_point_kappa": 0.0,
+                "debug_simple_lon_preview_reference_point_kappa": 0.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run)
+
+    assert report["matched_point_available"] is True
+    assert report["target_point_available"] is True
+    assert "matched_point_distance" not in report["missing_fields"]
+    assert "target_point_distance" not in report["missing_fields"]
+    assert report["correlation_summary"]["matched_point_distance_abs"]["p95"] == pytest.approx(0.5)
+    assert report["correlation_summary"]["target_point_distance_abs"]["p95"] == pytest.approx(5.0)
 
 
 def test_alias_fields_are_resolved(tmp_path: Path) -> None:
