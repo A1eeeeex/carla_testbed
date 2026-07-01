@@ -251,6 +251,50 @@ def test_normalize_channel_stats_prefers_row_level_artifacts_when_available(tmp_
     assert str(artifacts / "publish_gap_trace.jsonl") in stats["source"]["row_level_artifacts"]
 
 
+def test_normalize_channel_stats_does_not_treat_sampled_control_debug_as_cadence(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    bridge_stats = _bridge_stats()
+    bridge_stats["artifact_buffering"] = {
+        "control_debug_artifact_sample_stride": 50,
+        "control_debug_artifact_seen_counts": {"bridge_control_decode": 300},
+        "control_debug_artifact_written_counts": {"bridge_control_decode": 6},
+    }
+    (artifacts / "cyber_bridge_stats.json").write_text(
+        json.dumps(bridge_stats),
+        encoding="utf-8",
+    )
+    rows = [
+        {
+            "ts_sec": 1000.0 + idx * 5.0,
+            "raw_throttle": 0.1,
+            "raw_brake": 0.0,
+        }
+        for idx in range(6)
+    ]
+    (artifacts / "bridge_control_decode.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    stats = normalize_channel_stats_for_run(run_dir)
+
+    assert stats is not None
+    control = stats["channels"]["/apollo/control"]
+    assert control["source"] == "cyber_bridge_stats"
+    assert control["message_count"] == 300
+    assert control["hz"] == pytest.approx(10.0)
+    assert control["derived_from_bridge_counters"] is True
+    assert control["evidence_source"] == "bridge_counter_with_sampled_row_level_artifact"
+    assert control["row_level_artifact_sampled"] is True
+    assert control["row_level_artifact_source"] == "bridge_control_decode.jsonl"
+    assert control["row_level_artifact_message_count"] == 6
+    assert control["row_level_artifact_sample_stride"] == 50
+
+
 def test_normalize_channel_stats_prefers_topic_publish_stats_for_claim_grade_rows(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     artifacts = run_dir / "artifacts"

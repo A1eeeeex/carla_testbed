@@ -68,6 +68,41 @@ class CyberRTBackend(Backend):
         self._deferred_control_start_async_failure: Optional[str] = None
         self._control_runtime_overlay_active = False
 
+    # ------------------------------------------------------------------
+    # P0-2 (2026-06-30): structured exception logging helper.
+    # Replaces silent `except Exception: pass` in critical lifecycle paths
+    # with JSONL logging so that silent failures in process management,
+    # Docker exec, and file cleanup are discoverable during triage.
+    # ------------------------------------------------------------------
+    def _log_silenced(self, context: str, exc: Exception, extra: Optional[Dict[str, Any]] = None) -> None:
+        """Log a silently handled exception to the artifacts silented-errors file."""
+        payload: Dict[str, Any] = {
+            "ts": time.time(),
+            "context": context,
+            "exc_type": type(exc).__name__,
+            "exc_msg": str(exc),
+        }
+        if extra:
+            payload.update(extra)
+        try:
+            line = json.dumps(payload, ensure_ascii=False, default=str) + "\n"
+            artifacts = self._artifacts_dir()
+            artifacts.mkdir(parents=True, exist_ok=True)
+            log_path = artifacts / "cyberrt_silenced_exceptions.jsonl"
+            with open(log_path, "a") as fh:
+                fh.write(line)
+        except Exception:
+            # Last-resort fallback: print to stderr so the operator can
+            # still discover that something went wrong.
+            try:
+                print(
+                    f"[cyberrt][ERROR] _log_silenced: {context} "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+            except Exception:
+                pass
+
     def _apollo_cfg(self) -> Dict[str, Any]:
         return (self.profile.get("algo", {}) or {}).get("apollo", {}) or {}
 
@@ -913,8 +948,12 @@ class CyberRTBackend(Backend):
             for path in host_dir.glob("stage6_*.jsonl"):
                 try:
                     path.unlink()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._log_silenced(
+                        "prepare_internal_debug_unlink",
+                        exc,
+                        {"path": str(path)},
+                    )
             (artifacts / "apollo_internal_debug_dir.txt").write_text(str(host_dir) + "\n")
         if self._docker_container_name:
             try:
@@ -923,8 +962,12 @@ class CyberRTBackend(Backend):
                     f"mkdir -p {shlex.quote(docker_dir)} && rm -f {shlex.quote(docker_dir)}/stage6_*.jsonl",
                     check=False,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log_silenced(
+                    "prepare_internal_debug_docker_mkdir",
+                    exc,
+                    {"container": self._docker_container_name},
+                )
 
     def _snapshot_apollo_internal_debug(self, artifacts: Path) -> None:
         stage6_cfg = self._apollo_stage6_cfg()
@@ -2386,6 +2429,12 @@ class CyberRTBackend(Backend):
     def _apollo_control_runtime_cfg(self) -> Dict[str, Any]:
         return (self._apollo_cfg().get("control_runtime", {}) or {})
 
+    def _apollo_control_lqr_cfg(self) -> Dict[str, Any]:
+        return (self._apollo_cfg().get("control_lqr", {}) or {})
+
+    def _apollo_control_lon_cfg(self) -> Dict[str, Any]:
+        return (self._apollo_cfg().get("control_lon", {}) or {})
+
     def _global_flagfile_map_overlay_shell(self) -> str:
         """Point Apollo modules at the CARLA run map before launch.
 
@@ -2784,6 +2833,198 @@ class CyberRTBackend(Backend):
             + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)
         )
 
+    def _control_lqr_overlay_shell(self) -> str:
+        """Override Apollo LQR controller parameters (cf_, cr_, matrix_q)
+        via conf_overlay without modifying Apollo source.
+
+        Reads from algo.apollo.control_lqr in the profile YAML.
+        When enabled, writes a custom controller_conf.pb.txt to
+        /apollo_workspace/conf_overlay/modules/control/controllers/
+        lat_based_lqr_controller/conf/controller_conf.pb.txt.
+        """
+        cfg = self._apollo_control_lqr_cfg()
+        if not bool(cfg.get("enabled", False)):
+            return self._managed_overlay_link_shell(
+                overlay_path=(
+                    "/apollo_workspace/conf_overlay/modules/control/controllers/"
+                    "lat_based_lqr_controller/conf/controller_conf.pb.txt"
+                ),
+                target_path="/apollo/modules/control/controllers/lat_based_lqr_controller/conf/controller_conf.pb.txt",
+                enabled=False,
+            )
+
+        # --- Default Apollo LQR parameters (Lincoln MKZ, mass=2080kg) ---
+        defaults: Dict[str, Any] = {
+            "ts": 0.01,
+            "preview_window": 0,
+            "cf": 155494.663,
+            "cr": 155494.663,
+            "mass_fl": 520,
+            "mass_fr": 520,
+            "mass_rl": 520,
+            "mass_rr": 520,
+            "eps": 0.01,
+            "matrix_q": [0.05, 0.0, 1.0, 0.0],
+            "cutoff_freq": 10,
+            "mean_filter_window_size": 10,
+            "max_iteration": 150,
+            "max_lateral_acceleration": 5.0,
+            "enable_reverse_leadlag_compensation": True,
+            "lookahead_station": 1.4224,
+            "lookback_station": 2.8448,
+            "switch_speed": 2.0,
+            "switch_speed_window": 0.5,
+        }
+        merged = dict(defaults)
+        merged.update(cfg)
+
+        # --- Build protobuf text content ---
+        lines: List[str] = []
+        lines.append(f"ts: {float(merged['ts']):.4f}")
+        lines.append(f"preview_window: {int(merged['preview_window'])}")
+        lines.append(f"cf: {float(merged['cf']):.4f}")
+        lines.append(f"cr: {float(merged['cr']):.4f}")
+        lines.append(f"mass_fl: {int(merged['mass_fl'])}")
+        lines.append(f"mass_fr: {int(merged['mass_fr'])}")
+        lines.append(f"mass_rl: {int(merged['mass_rl'])}")
+        lines.append(f"mass_rr: {int(merged['mass_rr'])}")
+        lines.append(f"eps: {float(merged['eps']):.4f}")
+        for val in merged["matrix_q"]:
+            # Use concise format: strip trailing zeros, ensure at least one digit
+            fv = float(val)
+            lines.append(f"matrix_q: {fv:g}")
+        lines.append("reverse_matrix_q: 0.05")
+        lines.append("reverse_matrix_q: 0.0")
+        lines.append("reverse_matrix_q: 1.0")
+        lines.append("reverse_matrix_q: 0.0")
+        lines.append(f"cutoff_freq: {int(merged['cutoff_freq'])}")
+        lines.append(f"mean_filter_window_size: {int(merged['mean_filter_window_size'])}")
+        lines.append(f"max_iteration: {int(merged['max_iteration'])}")
+        lines.append(f"max_lateral_acceleration: {float(merged['max_lateral_acceleration']):.4f}")
+        lines.append(f"enable_reverse_leadlag_compensation: {'true' if bool(merged.get('enable_reverse_leadlag_compensation', True)) else 'false'}")
+        lines.append("enable_steer_mrac_control: false")
+        lines.append("enable_look_ahead_back_control: true")
+        lines.append(f"lookahead_station: {float(merged['lookahead_station']):.4f}")
+        lines.append(f"lookback_station: {float(merged['lookback_station']):.4f}")
+        lines.append(f"lookahead_station_high_speed: {float(merged['lookahead_station']):.4f}")
+        lines.append(f"lookback_station_high_speed: {float(merged['lookback_station']):.4f}")
+        lines.append(f"switch_speed: {float(merged['switch_speed']):.4f}")
+        lines.append(f"switch_speed_window: {float(merged['switch_speed_window']):.4f}")
+        lines.append("query_relative_time: 0.3")
+        lines.append("enable_navigation_mode_position_update: true")
+        lines.append("trajectory_transform_to_com_reverse: true")
+        lines.append("trajectory_transform_to_com_drive: true")
+        lines.append(f"enable_feedback_augment_on_high_speed: {'true' if bool(merged.get('enable_feedback_augment_on_high_speed', False)) else 'false'}")
+        lines.append("enable_maximum_steer_rate_limit: false")
+        lines.append("lock_steer_speed: -0.081")
+        lines.append("query_time_nearest_point_only: false")
+        lines.append("enable_navigation_mode_error_filter: false")
+        lines.append("reverse_feedforward_ratio: 1.4")
+        lines.append("reverse_use_dynamic_model: false")
+        # Gain scheduler tables
+        lat_speed = merged.get("lat_err_gain_scheduler_speed", [4.0, 8.0, 12.0, 20.0, 25.0])
+        lat_ratio = merged.get("lat_err_gain_scheduler_ratio", [1.0, 0.6, 0.2, 0.1, 0.05])
+        lines.append("lat_err_gain_scheduler {")
+        for s, r in zip(lat_speed, lat_ratio):
+            lines.append(f"  scheduler {{")
+            lines.append(f"    speed: {float(s):.4f}")
+            lines.append(f"    ratio: {float(r):.4f}")
+            lines.append(f"  }}")
+        lines.append("}")
+        head_speed = merged.get("heading_err_gain_scheduler_speed", [4.0, 8.0, 12.0, 20.0, 25.0])
+        head_ratio = merged.get("heading_err_gain_scheduler_ratio", [1.0, 0.6, 0.4, 0.2, 0.1])
+        lines.append("heading_err_gain_scheduler {")
+        for s, r in zip(head_speed, head_ratio):
+            lines.append(f"  scheduler {{")
+            lines.append(f"    speed: {float(s):.4f}")
+            lines.append(f"    ratio: {float(r):.4f}")
+            lines.append(f"  }}")
+        lines.append("}")
+        lines.append("reverse_leadlag_conf {")
+        leadlag = merged.get("reverse_leadlag_conf", {})
+        lines.append(f"  innerstate_saturation_level: {int(leadlag.get('innerstate_saturation_level', 3000))}")
+        lines.append(f"  alpha: {float(leadlag.get('alpha', 1.0)):.4f}")
+        lines.append(f"  beta: {float(leadlag.get('beta', 1.0)):.4f}")
+        lines.append(f"  tau: {float(leadlag.get('tau', 0.0)):.4f}")
+        lines.append("}")
+        lines.append("steer_mrac_conf {")
+        lines.append("  mrac_model_order: 1")
+        lines.append("  reference_time_constant: 0.09")
+        lines.append("  reference_natural_frequency: 10")
+        lines.append("  reference_damping_ratio: 0.9")
+        lines.append("  adaption_state_gain: 0.0001")
+        lines.append("  adaption_desired_gain: 0.0001")
+        lines.append("  adaption_nonlinear_gain: 0.0001")
+        lines.append("  adaption_matrix_p: 1.0")
+        lines.append("  mrac_saturation_level: 1.0")
+        lines.append("  anti_windup_compensation_gain: 0.0001")
+        lines.append("  clamping_time_constant: 0.08")
+        lines.append("}")
+        content = "\n".join(lines)
+
+        overlay_path = (
+            "/apollo_workspace/conf_overlay/modules/control/controllers/"
+            "lat_based_lqr_controller/conf/controller_conf.pb.txt"
+        )
+        target_path = (
+            "/apollo/modules/control/controllers/"
+            "lat_based_lqr_controller/conf/controller_conf.pb.txt"
+        )
+
+        return (
+            "python3 -c "
+            + shlex.quote(
+                "from pathlib import Path; "
+                f"p=Path({overlay_path!r}); "
+                "p.parent.mkdir(parents=True, exist_ok=True); "
+                f"p.write_text({content!r})"
+            )
+            + "; "
+            + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)
+        )
+
+    def _control_lon_overlay_shell(self) -> str:
+        """Override Apollo LonController parameter use_speed_itfc via conf_overlay.
+
+        When enabled, sets use_speed_itfc=true so LonController::ComputeControlCommand()
+        calls cmd->set_speed(), preventing ControlCommand.speed from staying at the
+        protobuf default 0.0.  This eliminates bridge-side low_speed_steer_guard false
+        positives caused by speed=0 despite actual vehicle movement.
+        """
+        cfg = self._apollo_control_lon_cfg()
+        if not bool(cfg.get("enabled", False)):
+            return self._managed_overlay_link_shell(
+                overlay_path=(
+                    "/apollo_workspace/conf_overlay/modules/control/controllers/"
+                    "lon_based_pid_controller/conf/controller_conf.pb.txt"
+                ),
+                target_path="/apollo/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt",
+                enabled=False,
+            )
+
+        # Only override use_speed_itfc; keep all other LonController defaults.
+        content = "use_speed_itfc: true\n"
+        overlay_path = (
+            "/apollo_workspace/conf_overlay/modules/control/controllers/"
+            "lon_based_pid_controller/conf/controller_conf.pb.txt"
+        )
+        target_path = (
+            "/apollo/modules/control/controllers/"
+            "lon_based_pid_controller/conf/controller_conf.pb.txt"
+        )
+
+        return (
+            "python3 -c "
+            + shlex.quote(
+                "from pathlib import Path; "
+                f"p=Path({overlay_path!r}); "
+                "p.parent.mkdir(parents=True, exist_ok=True); "
+                f"p.write_text({content!r})"
+            )
+            + "; "
+            + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)
+        )
+
     def _control_runtime_interval_ms(self) -> Optional[int]:
         cfg = self._apollo_control_runtime_cfg()
         raw_ms = cfg.get("control_interval_ms")
@@ -2849,10 +3090,28 @@ class CyberRTBackend(Backend):
 
     def _control_flags_overlay_shell(self) -> str:
         control_period_s = self._control_runtime_period_s()
+        lqr_cfg = self._apollo_control_lqr_cfg()
         overlay_path = "/apollo_workspace/conf_overlay/modules/control/control_component/conf/control.conf"
         target_path = "/apollo/modules/control/control_component/conf/control.conf"
-        if control_period_s is None:
+        # Collect gflag overrides from control_lqr config
+        flag_overrides = {}
+        if "minimum_speed_protection" in lqr_cfg:
+            flag_overrides["minimum_speed_protection"] = float(lqr_cfg["minimum_speed_protection"])
+        if "minimum_speed_resolution" in lqr_cfg:
+            flag_overrides["minimum_speed_resolution"] = float(lqr_cfg["minimum_speed_resolution"])
+        # Need overlay if either control_period_s is set OR there are flag overrides
+        has_overrides = control_period_s is not None or bool(flag_overrides)
+        if not has_overrides:
             return self._managed_overlay_link_shell(overlay_path, target_path, enabled=False)
+        prefix_list = []
+        append_parts = []
+        if control_period_s is not None:
+            prefix_list.append("--control_period=")
+            append_parts.append(f"'--control_period={float(control_period_s):.3f}'")
+        for flag_name in flag_overrides:
+            prefix_list.append(f"--{flag_name}=")
+            append_parts.append(f"'--{flag_name}={flag_overrides[flag_name]}'")
+        prefix_str = ", ".join(repr(p) for p in prefix_list)
         script_parts = [
             "from pathlib import Path; ",
             "cands=[",
@@ -2862,9 +3121,9 @@ class CyberRTBackend(Backend):
             "]; ",
             "src=next((cand for cand in cands if Path(cand).exists()), ''); ",
             "lines=((Path(src).read_text().splitlines()) if src else ['--pipeline_file=modules/control/control_component/conf/pipeline.pb.txt']); ",
-            "prefixes=['--control_period=']; ",
+            f"prefixes=[{prefix_str}]; ",
             "lines=[ln for ln in lines if not any(ln.startswith(prefix) for prefix in prefixes)]; ",
-            f"lines.append('--control_period={float(control_period_s):.3f}'); ",
+            f"lines.extend([{', '.join(append_parts)}]); ",
             f"out=Path({overlay_path!r}); ",
             "out.parent.mkdir(parents=True, exist_ok=True); ",
             "out.write_text('\\n'.join(lines)+'\\n')",
@@ -3064,6 +3323,8 @@ class CyberRTBackend(Backend):
                 self._control_dag_overlay_shell(),
                 self._control_flags_overlay_shell(),
                 self._control_pipeline_overlay_shell(),
+                self._control_lqr_overlay_shell(),
+                self._control_lon_overlay_shell(),
                 "declare -A lf_map=( "
                 "[lane_change_path.pb.txt]=lane_change_path "
                 "[lane_follow_path.pb.txt]=lane_follow_path "
@@ -6099,14 +6360,16 @@ PY"""
         (artifacts / "cyber_bridge_healthcheck.json").write_text(json.dumps(status, indent=2))
         return ok
 
-    @staticmethod
-    def _terminate(proc: Optional[subprocess.Popen], timeout_s: float = 8.0) -> None:
+    def _terminate(self, proc: Optional[subprocess.Popen], timeout_s: float = 8.0) -> None:
         if proc is None or proc.poll() is not None:
             return
+        pid = proc.pid
         try:
-            pgid = os.getpgid(proc.pid)
-        except Exception:
+            pgid = os.getpgid(pid)
+        except Exception as exc:
+            self._log_silenced("terminate_getpgid", exc, {"pid": pid})
             pgid = None
+        # Stage 1: SIGINT (graceful)
         try:
             if pgid is not None:
                 os.killpg(pgid, signal.SIGINT)
@@ -6114,8 +6377,13 @@ PY"""
                 proc.send_signal(signal.SIGINT)
             proc.wait(timeout=timeout_s)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            self._log_silenced(
+                "terminate_sigint",
+                exc,
+                {"pid": pid, "pgid": pgid, "timeout_s": timeout_s},
+            )
+        # Stage 2: SIGTERM
         try:
             if pgid is not None:
                 os.killpg(pgid, signal.SIGTERM)
@@ -6123,15 +6391,24 @@ PY"""
                 proc.terminate()
             proc.wait(timeout=3.0)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            self._log_silenced(
+                "terminate_sigterm",
+                exc,
+                {"pid": pid, "pgid": pgid},
+            )
+        # Stage 3: SIGKILL (last resort)
         try:
             if pgid is not None:
                 os.killpg(pgid, signal.SIGKILL)
             else:
                 proc.kill()
-        except Exception:
-            pass
+        except Exception as exc:
+            self._log_silenced(
+                "terminate_sigkill",
+                exc,
+                {"pid": pid, "pgid": pgid},
+            )
 
     def stop(self) -> None:
         apollo_cfg = self._apollo_cfg()
@@ -6142,8 +6419,8 @@ PY"""
         if self._deferred_control_start_thread is not None and self._deferred_control_start_thread.is_alive():
             try:
                 self._deferred_control_start_thread.join(timeout=0.2)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log_silenced("stop_deferred_thread_join", exc)
         self._terminate(self.control_proc)
         self._terminate(self.bridge_proc)
         self._cleanup_stale_control_bridge(topic)
@@ -6160,15 +6437,21 @@ PY"""
                     f"sleep 1; pkill -9 -f '{patt}' >/dev/null 2>&1 || true",
                     check=False,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log_silenced(
+                    "stop_docker_pkill_modules", exc,
+                    {"container": self._docker_container_name},
+                )
         self._docker_restore_control_runtime_overlay(artifacts)
         if self._docker_container_name and self._docker_stage_dir:
             try:
                 pattern = shlex.quote(f"{self._docker_stage_dir}/tools/apollo10_cyber_bridge/bridge.py")
                 self._docker_exec(f"pkill -f {pattern} >/dev/null 2>&1 || true", check=False)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log_silenced(
+                    "stop_docker_pkill_bridge", exc,
+                    {"container": self._docker_container_name, "stage_dir": self._docker_stage_dir},
+                )
         self.control_proc = None
         self.bridge_proc = None
         self._snapshot_apollo_logs(artifacts)
@@ -6183,8 +6466,8 @@ PY"""
             if fp is not None:
                 try:
                     fp.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._log_silenced("stop_fp_close", exc, {"fp_attr": fp_attr})
                 setattr(self, fp_attr, None)
 
     def _snapshot_docker_modules_status(self, artifacts: Path, artifact_name: str) -> None:

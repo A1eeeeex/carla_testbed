@@ -1,14 +1,17 @@
+# P0 verification config — Baguang follow_stop_static (reduced ticks)
+# Tests P0-1 (reference_line path fallback) + P0-2 (silenced exception logging)
+
 run:
-  id: phase1_baguang_apollo_followstop_static_compat
-  ticks: 1800
+  id: verify_p0_followstop_baguang
+  ticks: 500
   fixed_delta_seconds: 0.05
   seed: 1
   output_root: runs
   claim_profile: true
-  profile_name: phase1_baguang_apollo_followstop_static_compat
+  profile_name: verify_p0_followstop_baguang
   map: straight_road_for_baguang
-  route_id: straight_road_for_baguang_mainline_followstop_300m
-  scenario_id: baguang_follow_stop_static_300m
+  route_id: straight_road_for_baguang_mainline_followstop_300m_spawn2m
+  scenario_id: baguang_follow_stop_static_300m_spawn2m
   capability_profile: phase1_fixed_scene_compatibility
 
 sim:
@@ -33,6 +36,8 @@ scenario:
   auto_align_front_spawn: false
   require_aligned_front_spawn: true
   vehicle_blueprint_id: vehicle.lincoln.mkz_2020
+  ego_pose_offset:
+    s_offset_m: 2.0
   ego_initial_hold:
     brake: 0.0
     hand_brake: false
@@ -80,12 +85,13 @@ algo:
       deferred_control_start_mode: dag
       deferred_control_start_async: true
       deferred_control_disable_bvar_dump: true
+      # P0: control_runtime_overlay_source_dirs REMOVED — Apollo native binaries
       apollo_root_in_container: /apollo
       apollo_distribution_home: /opt/apollo/neo
       python_exec: python3
     dreamview:
-      enabled: true
-      auto_start: true
+      enabled: false
+      auto_start: false
       auto_open: false
     bridge_template: tools/apollo10_cyber_bridge/config_example.yaml
     carla_to_apollo:
@@ -135,33 +141,12 @@ algo:
       steer_sign: 1.0
       throttle_scale: 1.5
       brake_scale: 1.0
-      steering_percent_normalization: angle_degree_at_select
-      apollo_max_steer_angle_deg: 30.0
       terminal_stop_hold:
         enabled: true
         activate_gap_m: 15.0
         release_gap_m: 20.0
         hold_brake: 0.18
-    # P1: LQR 调优 — 通过 conf_overlay 调整 Apollo LQR 参数
-    # 禁用 leadlag 增强器、降低 matrix_q、增大 minimum_speed_protection
-    # 配合 steer_scale=1.0 + angle_degree_at_select 归一化
-    control_lqr:
-      enabled: true
-      cf: 155494.663
-      cr: 155494.663
-      mass_fl: 424
-      mass_fr: 424
-      mass_rl: 424
-      mass_rr: 424
-      matrix_q: [0.15, 0.0, 1.0, 0.0]
-      enable_reverse_leadlag_compensation: false
-      lat_err_gain_scheduler_speed: [0.5, 2.0, 4.0, 8.0, 12.0, 20.0, 25.0]
-      lat_err_gain_scheduler_ratio: [0.05, 0.15, 1.0, 0.6, 0.2, 0.1, 0.05]
-      heading_err_gain_scheduler_speed: [0.5, 2.0, 4.0, 8.0, 12.0, 20.0, 25.0]
-      heading_err_gain_scheduler_ratio: [0.05, 0.15, 1.0, 0.6, 0.4, 0.2, 0.1]
-      minimum_speed_protection: 1.0
-    # P1: use_speed_itfc=true — 让 LonController 设置 ControlCommand.speed 非零
-    # 避免 bridge 侧 low_speed_steer_guard 因 speed=0 误触发
+    # P1: use_speed_itfc=true (唯一确认安全的 P1 修改)
     control_lon:
       enabled: true
 
@@ -174,12 +159,15 @@ runtime:
     town: straight_road_for_baguang
     extra_args: ""
   postprocess:
-    phase1_scenario_path: configs/scenarios/baguang/follow_stop_static_300m.yaml
+    phase1_scenario_path: configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml
+    auto_export_apollo_hdmap_projection: true
+
+record:
+  probe:
+    enable: false
 
 recording:
-  enabled: true
-  artifacts:
-    phase1_scenario_path: configs/scenarios/baguang/follow_stop_static_300m.yaml
+  enabled: false
 
 assist_ledger:
   schema_version: assist_ledger.v1
@@ -192,4 +180,5 @@ assist_ledger:
   source_artifact: config
   can_claim_unassisted_natural_driving: false
   notes:
-    - Phase 1 Apollo fixed-scene compatibility path uses legacy follow-stop transition; diagnostic only.
+    - P0 verification run — Apollo native binaries (no control_runtime_overlay).
+    - Validates heading consistency: debug_simple_lat_heading vs localization_heading.

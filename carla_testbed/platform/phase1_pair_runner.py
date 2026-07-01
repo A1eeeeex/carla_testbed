@@ -71,6 +71,7 @@ def run_phase1_pair(
     carla_town: str | None = None,
     carla_extra_args: str = "-RenderOffScreen",
     carla_timeout_s: float = 90.0,
+    apollo_overrides: tuple[str, ...] = (),
     registry: PlatformRegistry | None = None,
 ) -> Phase1PairRunResult:
     registry = registry or PlatformRegistry(repo_root=".")
@@ -91,6 +92,7 @@ def run_phase1_pair(
             output_root=runs_dir,
             recording=recording,
             gate=gate,
+            runtime_overrides=(),
             registry=registry,
         ),
         _compile_pair_plan(
@@ -101,6 +103,7 @@ def run_phase1_pair(
             output_root=runs_dir,
             recording=recording,
             gate=gate,
+            runtime_overrides=tuple(apollo_overrides),
             registry=registry,
         ),
     ]
@@ -201,6 +204,7 @@ def run_phase1_pair(
             "run_dir": str(run_dirs[1]),
             "plan_path": str(plan_paths[1]),
             "execution_status": execution_results[1].status,
+            "runtime_overrides": list(apollo_overrides),
         },
         "comparison_outputs": comparison_outputs,
         "claim_boundary": (
@@ -235,9 +239,10 @@ def _compile_pair_plan(
     output_root: Path,
     recording: str,
     gate: str,
+    runtime_overrides: tuple[str, ...],
     registry: PlatformRegistry,
 ) -> RunPlan:
-    return compile_run_plan(
+    plan = compile_run_plan(
         {
             "run": {
                 "id": run_id,
@@ -254,6 +259,18 @@ def _compile_pair_plan(
         },
         registry=registry,
     )
+    if not runtime_overrides:
+        return plan
+    payload = plan.to_dict()
+    payload["compatibility"] = {
+        **payload.get("compatibility", {}),
+        "runtime_overrides": list(runtime_overrides),
+        "runtime_overrides_boundary": (
+            "Explicit Phase 1 probe overrides are appended to the backend launch command. "
+            "They are diagnostic-only unless separately promoted by evidence."
+        ),
+    }
+    return RunPlan.from_dict(payload)
 
 
 def _pair_id(scenario: str | Path) -> str:

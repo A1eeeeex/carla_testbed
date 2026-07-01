@@ -13,6 +13,8 @@ from .registry import PlatformRegistry
 
 
 PHASE1_P0_MATRIX_SCHEMA_VERSION = "phase1_p0_matrix.v1"
+DEFAULT_PHASE1_P0_APOLLO_PLATFORM = "apollo_cyberrt_town01_behavior_recovery"
+DEFAULT_PHASE1_P0_PLANNING_PLATFORM = "carla_builtin"
 
 
 @dataclass(frozen=True)
@@ -90,8 +92,8 @@ def run_phase1_p0_matrix(
     carla_timeout_s: float = 90.0,
     apollo_profile: str = "apollo/apollo10_carla_gt",
     planning_profile: str = "builtin/simple_acc_route_follower",
-    apollo_platform: str = "apollo_cyberrt",
-    planning_platform: str = "carla_builtin",
+    apollo_platform: str = DEFAULT_PHASE1_P0_APOLLO_PLATFORM,
+    planning_platform: str = DEFAULT_PHASE1_P0_PLANNING_PLATFORM,
     recording: str = "metrics",
     gate: str = "scenario_validation",
     registry: PlatformRegistry | None = None,

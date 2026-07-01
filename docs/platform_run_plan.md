@@ -112,6 +112,13 @@ python -m carla_testbed phase1 run-p0-matrix \
   --dry-run
 ```
 
+The P0 matrix default Apollo platform is
+`apollo_cyberrt_town01_behavior_recovery`, which is a Phase 1 diagnostic
+profile selected to exercise the current Town01 route-health behavior path.
+Use `--apollo-platform apollo_cyberrt` only when intentionally reproducing the
+older baseline config. This default is a matrix delivery choice, not an Apollo
+natural-driving capability claim.
+
 Attempt the same five P0 pairs online when the local CARLA/Apollo environment
 is ready:
 
@@ -147,6 +154,36 @@ python -m carla_testbed phase1 run-p0-matrix \
   --start-carla \
   --carla-extra-args=-RenderOffScreen
 ```
+
+For Town01 Apollo compatibility rows, the Apollo backend may record a larger
+`effective_runtime_timeout_s` than the user-supplied `--timeout-s`. Current
+online evidence requires a `300s` Apollo compatibility floor so the nested
+route-health runner can reach its finalized summary instead of being
+misclassified as a platform timeout. PlanningControlBackend rows keep the
+requested timeout unless their own launch plan declares a minimum.
+
+Phase 1 Apollo postprocess is not fixed-scene-only. Route-only Apollo rows such
+as Town01 `lane_keep_097` must refresh the same run-local
+`apollo_control_handoff`, `localization_contract`, `control_attribution`,
+`control_health`, `apollo_lateral_semantics`, and `apollo_link_health` artifacts
+when raw inputs exist. Apollo launch plans now call
+`tools/postprocess_phase1_run.py` between `tools/extract_v_t_gap.py` and the
+generic `python3 -m carla_testbed analyze` step. `apollo_link_health` is a final
+evidence index: run it last, after the Phase 1 and generic per-layer
+extraction/analysis steps, so it consumes refreshed reports rather than
+reporting stale missing-artifact blockers.
+
+Phase 1 artifact normalization may promote a unique nested legacy
+`analysis/route_health/` report set to the declared run root. This exposes
+existing route-health evidence for localization/link-health analyzers; it does
+not rewrite route-health status, change runtime behavior, or turn Apollo
+failures into success.
+
+`tools/postprocess_phase1_run.py` also runs Phase 1 artifact normalization
+internally before per-layer analyzers. This matters for legacy Apollo
+compatibility commands because launch-plan postprocess runs before the executor
+performs its final artifact-surface bookkeeping. The internal normalization
+keeps standalone postprocess and launch-plan postprocess consistent.
 
 For `phase1 run-pair`, this writes `carla_session/phase1_carla_session.json`
 with `schema_version=phase1_carla_session.v1`, CARLA root, requested town,

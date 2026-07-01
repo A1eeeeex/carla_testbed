@@ -26,6 +26,7 @@ DEFAULT_MESSAGE_TYPE = "LocalizationEstimate"
 DEFAULT_HEADING_WARN_RAD = 0.20
 DEFAULT_HEADING_FAIL_RAD = 0.50
 DEFAULT_LANE_HEADING_BLOCK_RAD = 0.35
+DEFAULT_ROUTE_DEPARTURE_CTE_M = 0.75
 DEFAULT_YAW_RATE_WARN_RAD_S = 0.30
 DEFAULT_SPEED_WARN_MPS = 0.50
 DEFAULT_SPEED_FAIL_MPS = 2.00
@@ -141,6 +142,7 @@ ALIASES = {
     "ego_z": ["ego_z", "z"],
     "route_cross_track_error_m": ["cross_track_error", "cross_track_error_m", "route_cross_track_error_m"],
     "route_s": ["route_s", "route_station_m"],
+    "lane_invasion_count": ["lane_invasion_count"],
     "lane_inside": ["lane_inside"],
     "lane_dist_m": ["lane_dist_m", "lane_projection_distance_m"],
     "lane_lateral_error_m": ["e_y_m", "lane_lateral_error_m"],
@@ -217,7 +219,15 @@ def analyze_localization_contract(
     if pose["heading_error_to_route_p95_rad"] is not None:
         heading_p95 = float(pose["heading_error_to_route_p95_rad"])
         if heading_p95 >= DEFAULT_HEADING_FAIL_RAD:
-            blocking_reasons.append("heading_error_to_route_high")
+            route_heading_context = pose.get("route_heading_error_context")
+            if (
+                isinstance(route_heading_context, Mapping)
+                and route_heading_context.get("classification")
+                == "route_heading_error_after_lateral_departure_candidate"
+            ):
+                warnings.append("heading_error_to_route_high_after_lateral_departure")
+            else:
+                blocking_reasons.append("heading_error_to_route_high")
         elif heading_p95 >= DEFAULT_HEADING_WARN_RAD:
             warnings.append("heading_error_to_route_elevated")
     if pose["heading_error_to_lane_p95_rad"] is not None:
@@ -484,6 +494,7 @@ def localization_contract_summary_md(report: Mapping[str, Any]) -> str:
     pose = _mapping(report.get("pose_consistency"))
     hdmap_projection = _mapping(report.get("apollo_hdmap_projection"))
     hdmap_route_lateral = _mapping(report.get("hdmap_route_lateral_consistency"))
+    route_heading_context = _mapping(pose.get("route_heading_error_context"))
     time = _mapping(report.get("time"))
     kinematics = _mapping(report.get("kinematics"))
     checklist = _mapping(report.get("acceptance_checklist"))
@@ -511,6 +522,8 @@ def localization_contract_summary_md(report: Mapping[str, Any]) -> str:
         f"- Position uses VRP: `{reference_point.get('position_uses_vrp')}`",
         f"- Heading source: `{pose.get('heading_source')}` truthful=`{pose.get('heading_source_truthful')}`",
         f"- Heading error to route p95 rad: `{pose.get('heading_error_to_route_p95_rad')}`",
+        f"- Route heading error context: `{route_heading_context.get('classification')}`",
+        f"- Pre-departure heading error p95 rad: `{route_heading_context.get('pre_departure_heading_error_p95_rad')}`",
         f"- Apollo HDMap projection status: `{hdmap_projection.get('status')}`",
         f"- Apollo HDMap projection claim-grade: `{hdmap_projection.get('claim_grade')}`",
         f"- Apollo HDMap projection heading p95 rad: `{hdmap_projection.get('heading_error_p95_rad')}`",
@@ -1215,6 +1228,7 @@ def _analyze_pose_consistency(
         heading_route = _route_health_metric(route_health, "heading_error_p95_rad")
     if heading_route is None:
         missing_fields.append("heading_error")
+    route_heading_context = _route_heading_error_context(rows, heading_route)
     heading_lane = _lane_heading_error_p95(rows)
     if heading_lane is None:
         missing_fields.append("lane_heading_error")
@@ -1236,6 +1250,7 @@ def _analyze_pose_consistency(
         "orientation_heading_diff_source": orientation_diff_source,
         "orientation_heading_diff_p95_rad": orientation_diff,
         "heading_error_to_route_p95_rad": heading_route,
+        "route_heading_error_context": route_heading_context,
         "heading_error_to_lane_p95_rad": heading_lane,
         "spawn_projection_error_m": spawn_projection,
     }
@@ -1877,6 +1892,102 @@ def _lane_heading_error_p95(rows: list[dict[str, Any]]) -> float | None:
     if deg_values:
         return _p95_abs_numbers([math.radians(value) for value in deg_values])
     return None
+
+
+def _route_heading_error_context(
+    rows: list[dict[str, Any]],
+    full_heading_p95: float | None,
+) -> dict[str, Any]:
+    heading_samples: list[tuple[int, dict[str, Any], float]] = []
+    first_lateral_departure: tuple[int, dict[str, Any]] | None = None
+    first_lane_invasion: tuple[int, dict[str, Any]] | None = None
+    first_heading_fail: tuple[int, dict[str, Any]] | None = None
+    for index, row in enumerate(rows):
+        heading_error = _number_or_none(_value(row, "heading_error"))
+        if heading_error is not None:
+            heading_samples.append((index, row, heading_error))
+            if abs(heading_error) >= DEFAULT_HEADING_FAIL_RAD and first_heading_fail is None:
+                first_heading_fail = (index, row)
+        cross_track = _number_or_none(_value(row, "route_cross_track_error_m"))
+        if (
+            cross_track is not None
+            and abs(cross_track) >= DEFAULT_ROUTE_DEPARTURE_CTE_M
+            and first_lateral_departure is None
+        ):
+            first_lateral_departure = (index, row)
+        lane_invasion = _number_or_none(_value(row, "lane_invasion_count"))
+        if lane_invasion is not None and lane_invasion > 0 and first_lane_invasion is None:
+            first_lane_invasion = (index, row)
+    if not heading_samples:
+        return {
+            "available": False,
+            "classification": "heading_error_samples_missing",
+            "pre_departure_heading_error_p95_rad": None,
+        }
+
+    departure_indices = [
+        pair[0]
+        for pair in (first_lateral_departure, first_lane_invasion)
+        if pair is not None
+    ]
+    departure_index = min(departure_indices) if departure_indices else None
+    if departure_index is None:
+        pre_departure_values = [heading for _, _, heading in heading_samples]
+    else:
+        pre_departure_values = [
+            heading for index, _, heading in heading_samples if index < departure_index
+        ]
+    pre_departure_p95 = _p95_abs_numbers(pre_departure_values)
+    heading_fail_after_departure = (
+        first_heading_fail is not None
+        and departure_index is not None
+        and first_heading_fail[0] >= departure_index
+    )
+    high_full_heading = (
+        full_heading_p95 is not None and abs(float(full_heading_p95)) >= DEFAULT_HEADING_FAIL_RAD
+    )
+    pre_departure_clean = (
+        pre_departure_p95 is not None and pre_departure_p95 < DEFAULT_HEADING_WARN_RAD
+    )
+    if high_full_heading and heading_fail_after_departure and pre_departure_clean:
+        classification = "route_heading_error_after_lateral_departure_candidate"
+        interpretation = (
+            "Full-run route heading error is high, but pre-departure heading error "
+            "is below warning threshold; treat the high heading as a likely "
+            "consequence of lateral departure unless stronger localization evidence contradicts it."
+        )
+    elif high_full_heading:
+        classification = "route_heading_error_high_before_or_without_departure"
+        interpretation = "Route heading error is high before a clear lateral departure boundary, or no boundary is available."
+    else:
+        classification = "route_heading_error_within_contract"
+        interpretation = "Route heading error stays below the blocking threshold."
+    return {
+        "available": True,
+        "classification": classification,
+        "interpretation": interpretation,
+        "departure_cross_track_threshold_m": DEFAULT_ROUTE_DEPARTURE_CTE_M,
+        "pre_departure_sample_count": len(pre_departure_values),
+        "pre_departure_heading_error_p95_rad": pre_departure_p95,
+        "full_heading_error_p95_rad": full_heading_p95,
+        "first_lateral_departure": _row_context(first_lateral_departure),
+        "first_lane_invasion": _row_context(first_lane_invasion),
+        "first_heading_fail": _row_context(first_heading_fail),
+    }
+
+
+def _row_context(index_row: tuple[int, Mapping[str, Any]] | None) -> dict[str, Any] | None:
+    if index_row is None:
+        return None
+    index, row = index_row
+    return {
+        "row_index": index,
+        "sim_time": _number_or_none(_value(row, "sim_time")),
+        "route_s": _number_or_none(_value(row, "route_s")),
+        "cross_track_error": _number_or_none(_value(row, "route_cross_track_error_m")),
+        "heading_error": _number_or_none(_value(row, "heading_error")),
+        "lane_invasion_count": _number_or_none(_value(row, "lane_invasion_count")),
+    }
 
 
 def _has_orientation_quaternion(rows: list[dict[str, Any]]) -> bool:

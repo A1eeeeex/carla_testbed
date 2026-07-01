@@ -294,6 +294,31 @@ def _phase1_status_markdown(report: Mapping[str, Any]) -> str:
                 f"- claim_boundary: `{initial_condition.get('claim_boundary')}`",
             ]
         )
+    route_start_alignment = (
+        metrics.get("route_start_alignment")
+        if isinstance(metrics.get("route_start_alignment"), Mapping)
+        else {}
+    )
+    if route_start_alignment.get("available"):
+        lines.extend(
+            [
+                "",
+                "## Route Start Alignment",
+                "",
+                f"- status: `{route_start_alignment.get('status')}`",
+                f"- reason: `{route_start_alignment.get('reason')}`",
+                f"- static_spawn_lateral_offset_m: `{route_start_alignment.get('static_spawn_lateral_offset_m')}`",
+                f"- initial_cross_track_error_m: `{route_start_alignment.get('initial_cross_track_error_m')}`",
+                f"- startup_geometry_localization_to_final_start_distance_m: `{route_start_alignment.get('startup_geometry_localization_to_final_start_distance_m')}`",
+                f"- recommended_ego_offset_y_delta_m: `{route_start_alignment.get('recommended_ego_offset_y_delta_m')}`",
+                f"- warnings: `{route_start_alignment.get('warnings')}`",
+                f"- hypotheses: `{route_start_alignment.get('hypotheses')}`",
+                (
+                    "- claim_boundary: `Route-start alignment is diagnostic setup evidence. "
+                    "It can justify a probe override, but it does not prove backend behavior success.`"
+                ),
+            ]
+        )
     blockers = (
         metrics.get("derived_blocker_evidence")
         if isinstance(metrics.get("derived_blocker_evidence"), Mapping)
@@ -420,6 +445,7 @@ def _status(
                 summary,
                 route_lateral_field_policy=route_lateral_field_policy,
             ),
+            "route_start_alignment": _route_start_alignment_metrics(root),
             "derived_blocker_evidence": derived_blocker_evidence,
         },
         "evidence_files": _evidence_files(root),
@@ -590,6 +616,8 @@ def _evidence_files(root: Path) -> list[str]:
         "analysis/obstacle_gt_contract/obstacle_gt_contract_report.json",
         "artifacts/obstacle_gt_contract.jsonl",
         "artifacts/obstacle_gt_contract.json",
+        "artifacts/startup_geometry_summary.json",
+        "analysis/route_start_alignment/route_start_alignment_report.json",
     ]
     return [str(root / rel) for rel in candidates if (root / rel).exists()]
 
@@ -623,6 +651,75 @@ def _phase1_metrics(v_t_gap: Mapping[str, Any]) -> dict[str, Any]:
         "final_ego_speed_mps": ego_speeds[-1] if ego_speeds else None,
         "max_target_speed_mps": max(target_speeds) if target_speeds else None,
         "final_target_speed_mps": target_speeds[-1] if target_speeds else None,
+    }
+
+
+def _route_start_alignment_metrics(root: Path) -> dict[str, Any]:
+    path = root / "analysis" / "route_start_alignment" / "route_start_alignment_report.json"
+    report = _read_json(path)
+    if not report:
+        return {
+            "available": False,
+            "status": None,
+            "reason": None,
+            "path": None,
+            "claim_boundary": (
+                "Route-start alignment was not evaluated for this run. Missing "
+                "route-start evidence must not be interpreted as setup alignment success."
+            ),
+        }
+
+    static = report.get("static_spawn_alignment") if isinstance(report.get("static_spawn_alignment"), Mapping) else {}
+    initial = report.get("initial_ego_alignment") if isinstance(report.get("initial_ego_alignment"), Mapping) else {}
+    startup = (
+        report.get("startup_geometry_alignment")
+        if isinstance(report.get("startup_geometry_alignment"), Mapping)
+        else {}
+    )
+    recommendation = (
+        report.get("recommendation") if isinstance(report.get("recommendation"), Mapping) else {}
+    )
+    source = report.get("source") if isinstance(report.get("source"), Mapping) else {}
+    return {
+        "available": True,
+        "status": report.get("status"),
+        "reason": report.get("reason"),
+        "warnings": list(report.get("warnings") or []),
+        "hypotheses": list(report.get("hypotheses") or []),
+        "path": str(path),
+        "source_run_dir": source.get("run_dir"),
+        "source_startup_geometry_summary_path": source.get("startup_geometry_summary_path"),
+        "static_spawn_lateral_offset_m": _to_float(static.get("spawn_lateral_offset_m")),
+        "static_spawn_longitudinal_offset_m": _to_float(static.get("spawn_longitudinal_offset_m")),
+        "static_spawn_to_route_start_distance_m": _to_float(static.get("spawn_to_route_start_distance_m")),
+        "initial_cross_track_error_m": _to_float(initial.get("cross_track_error_m")),
+        "initial_heading_error_rad": _to_float(initial.get("heading_error_rad")),
+        "initial_route_s_m": _to_float(initial.get("route_s")),
+        "initial_rear_axle_offset_compatible": initial.get("rear_axle_offset_compatible"),
+        "initial_rear_axle_offset_error_m": _to_float(initial.get("rear_axle_offset_error_m")),
+        "startup_geometry_summary_status": startup.get("summary_status"),
+        "startup_geometry_record_count": _to_float(startup.get("record_count")),
+        "startup_geometry_localization_to_final_start_distance_m": _to_float(
+            startup.get("localization_to_final_start_distance_m")
+        ),
+        "startup_geometry_raw_start_to_snapped_start_distance_m": _to_float(
+            startup.get("raw_start_to_snapped_start_distance_m")
+        ),
+        "startup_geometry_localization_reference_mode": startup.get("localization_reference_mode"),
+        "startup_geometry_trusted_lane_centerline": startup.get("trusted_lane_centerline"),
+        "recommended_config_field": recommendation.get("recommended_config_field"),
+        "recommended_ego_offset_y_delta_m": _to_float(
+            recommendation.get("recommended_ego_offset_y_delta_m")
+        ),
+        "recommended_ego_offset_y_m_if_current_zero": _to_float(
+            recommendation.get("recommended_ego_offset_y_m_if_current_zero")
+        ),
+        "probe_only": recommendation.get("probe_only"),
+        "claim_boundary": (
+            "Route-start alignment is diagnostic setup evidence for Phase 1. "
+            "A cleaner start alignment can reduce one confounder, but it does not "
+            "turn a failed backend run into behavior success or natural-driving evidence."
+        ),
     }
 
 
@@ -749,6 +846,39 @@ def _derived_blocker_evidence(root: Path) -> dict[str, Any]:
             "It does not override phase1 status, and it is not natural-driving capability evidence."
         ),
     }
+
+
+_ROUTE_HEALTH_LINK_BLOCKER_LAYERS = {
+    "apollo_lateral_semantics",
+    "planning_reference_line",
+    "routing_planning_control_handoff",
+    "control_mapping_apply",
+    "localization_gt_contract",
+}
+
+
+def _route_health_link_behavior_blocker(link_health: Mapping[str, Any]) -> dict[str, str] | None:
+    if not link_health.get("available"):
+        return None
+    candidates = (
+        link_health.get("phase1_relevant_primary_blocker"),
+        link_health.get("primary_blocker"),
+    )
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate:
+            continue
+        if ":" in candidate:
+            layer, blocker = candidate.split(":", 1)
+        else:
+            layer, blocker = "apollo_link_health", candidate
+        if layer not in _ROUTE_HEALTH_LINK_BLOCKER_LAYERS or not blocker:
+            continue
+        return {
+            "layer": layer,
+            "blocker": blocker,
+            "source": candidate,
+        }
+    return None
 
 
 def _primary_behavior_blocker(
@@ -1180,18 +1310,41 @@ def _primary_behavior_blocker(
             == "finalized_route_health_failure_platform_wrapper_timeout"
         )
     ):
-        return {
-            "primary_behavior_blocker": (
+        link_route_health_blocker = (
+            _route_health_link_behavior_blocker(link_health)
+            if reason == "route_health_failed"
+            else None
+        )
+        primary_behavior_blocker = (
+            link_route_health_blocker["blocker"]
+            if link_route_health_blocker
+            else (
                 "finalized_route_health_failure_platform_wrapper_timeout"
                 if reason == "timeout"
                 else "finalized_route_health_failure"
-            ),
-            "behavior_blocker_layer": "apollo_route_health_behavior",
-            "behavior_next_action": _route_health_failure_next_action(
-                platform_timeout.get("nested_failure_codes"),
-                nested_exit_reason=platform_timeout.get("nested_exit_reason"),
-                timed_out_after_summary=(reason == "timeout"),
-            ),
+            )
+        )
+        behavior_blocker_layer = (
+            link_route_health_blocker["layer"]
+            if link_route_health_blocker
+            else "apollo_route_health_behavior"
+        )
+        behavior_next_action = _route_health_failure_next_action(
+            platform_timeout.get("nested_failure_codes"),
+            nested_exit_reason=platform_timeout.get("nested_exit_reason"),
+            timed_out_after_summary=(reason == "timeout"),
+        )
+        if link_route_health_blocker:
+            behavior_next_action = (
+                "Route-health finalized as failed, and Apollo link-health provides a more "
+                f"specific behavior blocker at `{behavior_blocker_layer}`. Inspect "
+                f"`{primary_behavior_blocker}` evidence before changing control mapping, "
+                "steer scale, smoothing, or CARLA actuation. " + behavior_next_action
+            )
+        return {
+            "primary_behavior_blocker": primary_behavior_blocker,
+            "behavior_blocker_layer": behavior_blocker_layer,
+            "behavior_next_action": behavior_next_action,
             "behavior_blocker_evidence": {
                 "classification": platform_timeout.get("classification"),
                 "platform_status": platform_timeout.get("platform_status"),
@@ -1228,6 +1381,23 @@ def _primary_behavior_blocker(
                 "final_ego_speed_mps": platform_timeout.get("final_ego_speed_mps"),
                 "runtime_stdout_path": platform_timeout.get("runtime_stdout_path"),
                 "platform_execution_path": platform_timeout.get("platform_execution_path"),
+                "apollo_link_health_primary_blocker": link_health.get("primary_blocker"),
+                "phase1_relevant_apollo_link_blocker": link_health.get(
+                    "phase1_relevant_primary_blocker"
+                ),
+                "apollo_link_health_path": link_health.get("path"),
+                "route_simple_lat_sign_convention_candidate": link_health.get(
+                    "route_simple_lat_sign_convention_candidate"
+                ),
+                "route_lateral_field_semantics_classification": link_health.get(
+                    "route_lateral_field_semantics_classification"
+                ),
+                "route_lateral_field_recommended_gate_policy": link_health.get(
+                    "route_lateral_field_recommended_gate_policy"
+                ),
+                "simple_lat_station_frame_classification": link_health.get(
+                    "simple_lat_station_frame_classification"
+                ),
             },
         }
 

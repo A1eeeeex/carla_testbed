@@ -184,16 +184,16 @@ def test_execute_run_plan_raises_apollo_timeout_to_backend_minimum(
     result = execute_run_plan(plan, run_dir=tmp_path / "run", dry_run=False, timeout_s=180.0)
 
     assert result.status == "failed"
-    assert observed["timeout_s"] == 240.0
+    assert observed["timeout_s"] == 300.0
     launch_plan = observed["launch_plan"]
     assert isinstance(launch_plan, dict)
     assert launch_plan["requested_runtime_timeout_s"] == 180.0
-    assert launch_plan["effective_runtime_timeout_s"] == 240.0
+    assert launch_plan["effective_runtime_timeout_s"] == 300.0
     assert launch_plan["runtime_timeout_policy"]["policy_applied"] is True
     platform_result = json.loads((tmp_path / "run" / "platform_execution_result.json").read_text(encoding="utf-8"))
     assert platform_result["launch_plan"]["requested_runtime_timeout_s"] == 180.0
-    assert platform_result["launch_plan"]["effective_runtime_timeout_s"] == 240.0
-    assert platform_result["dispatch"]["command"]["timeout_s"] == 240.0
+    assert platform_result["launch_plan"]["effective_runtime_timeout_s"] == 300.0
+    assert platform_result["dispatch"]["command"]["timeout_s"] == 300.0
 
 
 def test_runtime_adapter_stops_after_failed_completion_marker(tmp_path: Path) -> None:

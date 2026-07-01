@@ -226,10 +226,10 @@ def test_apollo_town01_route_only_launch_plan_uses_carla_python(
     assert "--config" in launch.commands[0]
     config_index = launch.commands[0].index("--config")
     assert launch.commands[0][config_index + 1] == "configs/io/examples/town01_apollo_route_health.yaml"
-    assert launch.minimum_runtime_timeout_s == 240.0
+    assert launch.minimum_runtime_timeout_s == 300.0
     assert launch.env["CARLA16_PYTHON"] == str(fake_python)
     assert launch.env["CARLA_TESTBED_CARLA_PYTHON"] == str(fake_python)
-    assert any("at least 240s runtime timeout" in warning for warning in launch.warnings)
+    assert any("at least 300s runtime timeout" in warning for warning in launch.warnings)
     assert any(str(fake_python) in warning for warning in launch.warnings)
 
 
@@ -267,7 +267,7 @@ def test_apollo_town01_behavior_recovery_platform_uses_explicit_diagnostic_confi
         launch.commands[0][config_index + 1]
         == "configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml"
     )
-    assert launch.minimum_runtime_timeout_s == 240.0
+    assert launch.minimum_runtime_timeout_s == 300.0
 
 
 def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -> None:
@@ -316,6 +316,23 @@ def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -
     assert "artifacts/apollo_control_runtime_overlay_manifest.json" in launch.expected_artifacts
     assert "analysis/apollo_control_handoff/apollo_control_handoff_report.json" in launch.expected_artifacts
     assert any(command[:2] == ["python3", "tools/extract_v_t_gap.py"] for command in launch.postprocess_commands)
+    extract_index = next(
+        idx for idx, item in enumerate(launch.postprocess_commands) if item[:2] == ["python3", "tools/extract_v_t_gap.py"]
+    )
+    phase1_postprocess_index = next(
+        idx
+        for idx, item in enumerate(launch.postprocess_commands)
+        if item[:2] == ["python3", "tools/postprocess_phase1_run.py"]
+    )
+    analyze_index = next(
+        idx for idx, item in enumerate(launch.postprocess_commands) if item[:3] == ["python3", "-m", "carla_testbed"]
+    )
+    link_health_index = next(
+        idx
+        for idx, item in enumerate(launch.postprocess_commands)
+        if item[:2] == ["python3", "tools/analyze_apollo_link_health.py"]
+    )
+    assert extract_index < phase1_postprocess_index < analyze_index < link_health_index
     assert any("sidecar hook" in warning for warning in launch.warnings)
     assert any("control-runtime overlay" in warning for warning in launch.warnings)
 

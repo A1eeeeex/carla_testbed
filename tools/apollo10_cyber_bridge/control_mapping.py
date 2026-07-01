@@ -14,12 +14,15 @@ FloatCoercer = Callable[[Any, float, str, str], float]
 ZeroHoldApplier = Callable[[float, float, float], float]
 
 STEERING_PERCENT_FIELDS = {"steering_target", "steering_percentage"}
+STEERING_ANGLE_DEGREE_FIELDS = {"steering_target"}
 STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT = "single_percent_at_select"
 STEERING_NORMALIZATION_LEGACY_DOUBLE_PERCENT = "legacy_double_percent"
+STEERING_NORMALIZATION_ANGLE_DEGREE_AT_SELECT = "angle_degree_at_select"
 STEERING_NORMALIZATION_FIELD_VALUE_CLAMP_ONLY = "field_value_clamp_only"
 STEERING_PERCENT_NORMALIZATION_MODES = {
     STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT,
     STEERING_NORMALIZATION_LEGACY_DOUBLE_PERCENT,
+    STEERING_NORMALIZATION_ANGLE_DEGREE_AT_SELECT,
 }
 
 
@@ -66,6 +69,7 @@ def select_steering_field(
     physical_steer_field_priority: Sequence[str],
     coerce_float: FloatCoercer,
     percent_normalization_mode: str = STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT,
+    max_steer_angle_deg: float = 30.0,
 ) -> Tuple[str, float]:
     percent_mode = (
         percent_normalization_mode
@@ -80,6 +84,9 @@ def select_steering_field(
     for key in field_order:
         if key in raw_fields:
             raw_value = coerce_float(raw_fields.get(key), 0.0, key, "apollo.control")
+            if percent_mode == STEERING_NORMALIZATION_ANGLE_DEGREE_AT_SELECT and key in STEERING_ANGLE_DEGREE_FIELDS:
+                divisor = max(abs(float(max_steer_angle_deg)), 1e-6)
+                return key, raw_value / divisor
             if key in STEERING_PERCENT_FIELDS:
                 if percent_mode == STEERING_NORMALIZATION_LEGACY_DOUBLE_PERCENT:
                     return key, raw_value / 10000.0
@@ -93,8 +100,10 @@ def steering_normalization_mode(
     *,
     percent_normalization_mode: str = STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT,
 ) -> str:
+    if percent_normalization_mode == STEERING_NORMALIZATION_ANGLE_DEGREE_AT_SELECT and selected_field in STEERING_ANGLE_DEGREE_FIELDS:
+        return STEERING_NORMALIZATION_ANGLE_DEGREE_AT_SELECT
     if selected_field in STEERING_PERCENT_FIELDS:
-        if percent_normalization_mode in STEERING_PERCENT_NORMALIZATION_MODES:
+        if percent_normalization_mode in {STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT, STEERING_NORMALIZATION_LEGACY_DOUBLE_PERCENT}:
             return percent_normalization_mode
         return STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT
     return STEERING_NORMALIZATION_FIELD_VALUE_CLAMP_ONLY

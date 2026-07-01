@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
+import sys
 
 import carla_testbed.analysis.phase1_postprocess as phase1_postprocess
 from carla_testbed.analysis.phase1_postprocess import run_phase1_postprocess
@@ -39,6 +41,30 @@ def test_phase1_postprocess_writes_v_t_gap_status_and_completeness(tmp_path) -> 
     assert report["outputs"]["legacy_phase1_artifact_completeness"].endswith(
         "analysis/phase1_status/artifact_completeness.json"
     )
+
+
+def test_phase1_postprocess_cli_wrapper_writes_run_local_artifacts(tmp_path) -> None:
+    run = _write_complete_run(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, "tools/postprocess_phase1_run.py", "--run-dir", str(run)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "phase1_postprocess.v1"
+    assert payload["phase1_status"] == "success"
+    assert payload["artifact_normalization_status"] == "already_present"
+    assert (run / "analysis" / "phase1_status" / "phase1_status.json").is_file()
+    persisted = json.loads(
+        (run / "analysis" / "phase1_postprocess" / "phase1_postprocess_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert persisted["schema_version"] == "phase1_postprocess.v1"
+    assert persisted["phase1_status"] == "success"
 
 
 def test_phase1_postprocess_missing_timeseries_is_invalid_not_backend_loss(tmp_path) -> None:
@@ -111,6 +137,75 @@ def test_phase1_postprocess_route_only_completeness_does_not_require_fixed_scene
     assert "scenario_actor_trace" not in completeness["artifacts"]
     assert "artifacts/fixed_scene_resolved.json" not in canonical_completeness["missing_artifacts"]
     assert "artifacts/scenario_actor_trace.jsonl" not in canonical_completeness["missing_artifacts"]
+    assert report["apollo_control_handoff_status"] == "insufficient_data"
+    assert report["control_attribution_status"] == "insufficient_data"
+    assert report["control_health_status"] == "insufficient_data"
+    assert report["localization_contract_status"] in {"insufficient_data", "warn", "fail"}
+    assert report["apollo_link_health_primary_blocker"] in {
+        "localization_gt_contract:localization_header_frame_id_not_map",
+        "routing_planning_control_handoff:process_health_insufficient_data",
+    }
+    assert "apollo_control_handoff" in report["outputs"]
+    assert "control_attribution" in report["outputs"]
+    assert "control_health" in report["outputs"]
+    assert "localization_contract" in report["outputs"]
+    assert (run / "analysis" / "localization_contract" / "localization_contract_report.json").exists()
+    assert "apollo_link_health" in report["outputs"]
+    assert "apollo_fixed_scene_dispatch" not in report["outputs"]
+
+
+def test_phase1_postprocess_normalizes_nested_route_only_artifacts_before_localization(tmp_path) -> None:
+    run = tmp_path / "route_only_nested"
+    nested = run / "legacy" / "actual"
+    nested_route_health = nested / "analysis" / "route_health"
+    nested_route_health.mkdir(parents=True)
+    (run / "manifest.json").parent.mkdir(parents=True, exist_ok=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "route_only_nested",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "target_actor_contract": {"status": "not_required", "source": "scenario_class_not_required"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(json.dumps({"run_id": "route_only_nested", "success": False}), encoding="utf-8")
+    (nested / "timeseries.csv").write_text(
+        "sim_time,frame_id,ego_heading,route_heading,heading_error,ego_speed_mps,chassis_speed_mps,"
+        "localization_timestamp,chassis_timestamp\n"
+        "0.0,map,0.0,0.0,0.0,1.0,1.0,0.0,0.0\n",
+        encoding="utf-8",
+    )
+    (nested_route_health / "route_health.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "route_health_report.v1",
+                "route_id": "lane097",
+                "status": "fail",
+                "run_metrics": {"heading_error_p95_rad": 0.0},
+                "route_geometry": {"spawn_projection_error_m": 0.1},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_phase1_postprocess(run)
+    localization = json.loads(
+        (run / "analysis" / "localization_contract" / "localization_contract_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert report["artifact_normalization_status"] == "promoted"
+    assert (run / "timeseries.csv").exists()
+    assert (run / "analysis" / "route_health" / "route_health.json").exists()
+    assert "timeseries" not in localization["missing_fields"]
+    assert "route_health" not in localization["missing_fields"]
+    assert "route_health_missing" not in localization["warnings"]
 
 
 def test_phase1_postprocess_restores_dynamic_identity_from_typed_runtime_config(tmp_path) -> None:
@@ -746,7 +841,7 @@ def test_phase1_postprocess_refreshes_projection_and_reference_before_link_healt
         projection_rows.append(
             {
                 "timestamp": float(idx),
-                "sample_type": "ego",
+                "sample_type": "route",
                 "source": "apollo_hdmap_api",
                 "status": "ok",
                 "map_name": "straight_road_for_baguang",
@@ -926,6 +1021,140 @@ def test_phase1_postprocess_refreshes_projection_and_reference_before_link_healt
     assert refreshed_route["status"] == "warn"
     assert refreshed_reference["status"] == "warn"
     assert refreshed_module["blocking_reasons"] == []
+
+
+def test_phase1_postprocess_auto_exports_empty_apollo_hdmap_projection(tmp_path, monkeypatch) -> None:
+    run = _write_complete_run(tmp_path)
+    _make_run_apollo_fixed_scene(run)
+    (run / "config.resolved.yaml").write_text(
+        "\n".join(
+            [
+                "runtime:",
+                "  postprocess:",
+                "    auto_export_apollo_hdmap_projection: true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    projection_path = run / "artifacts" / "apollo_hdmap_projection.jsonl"
+    projection_path.write_text("", encoding="utf-8")
+    calls = []
+
+    def fake_export(**kwargs):
+        calls.append(kwargs)
+        out_path = kwargs["out_path"]
+        rows = []
+        for idx in range(60):
+            rows.append(
+                {
+                    "timestamp": float(idx),
+                    "sample_type": "route",
+                    "source": "apollo_hdmap_api",
+                    "status": "ok",
+                    "map_name": "Town01",
+                    "map_dir": "/apollo/modules/map/data/Town01",
+                    "nearest_lane_id": "15_1_1",
+                    "projection_s": float(idx) * 5.0,
+                    "projection_l": 0.01,
+                    "heading_error_rad": 0.001,
+                    "lateral_error_m": 0.01,
+                    "expected_duration_s": 60.0,
+                    "expected_route_distance_m": 295.0,
+                }
+            )
+        out_path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        return {
+            "schema_version": "apollo_hdmap_projection_export.v1",
+            "status": "pass",
+            "row_count": len(rows),
+            "ok_row_count": len(rows),
+            "out_path": str(out_path),
+        }
+
+    monkeypatch.setattr(phase1_postprocess, "export_apollo_hdmap_projection_jsonl", fake_export)
+
+    report = run_phase1_postprocess(run)
+    export_status_path = (
+        run
+        / "analysis"
+        / "apollo_hdmap_projection_export"
+        / "apollo_hdmap_projection_export_status.json"
+    )
+    export_status = json.loads(export_status_path.read_text(encoding="utf-8"))
+    projection_report = json.loads(
+        (
+            run
+            / "analysis"
+            / "apollo_hdmap_projection"
+            / "apollo_hdmap_projection_report.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["include_route_samples"] is True
+    assert calls[0]["include_start_goal"] is True
+    assert calls[0]["max_samples"] == 80
+    assert calls[0]["route_sample_step_m"] == 5.0
+    assert report["apollo_hdmap_projection_auto_export_status"] == "pass"
+    assert report["apollo_hdmap_projection_status"] == "pass"
+    assert report["outputs"]["apollo_hdmap_projection_auto_export"] == str(export_status_path)
+    assert export_status["status"] == "pass"
+    assert projection_report["status"] == "pass"
+    assert projection_report["claim_grade"] is True
+    assert projection_report["projection"]["official_row_count"] == 60
+
+
+def test_phase1_postprocess_auto_export_skips_existing_non_empty_projection(tmp_path, monkeypatch) -> None:
+    run = _write_complete_run(tmp_path)
+    _make_run_apollo_fixed_scene(run)
+    (run / "config.resolved.yaml").write_text(
+        "\n".join(
+            [
+                "runtime:",
+                "  postprocess:",
+                "    auto_export_apollo_hdmap_projection: true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    projection_path = run / "artifacts" / "apollo_hdmap_projection.jsonl"
+    projection_path.write_text(
+        json.dumps(
+            {
+                "timestamp": 0.0,
+                "sample_type": "route",
+                "source": "apollo_hdmap_api",
+                "status": "ok",
+                "projection_s": 0.0,
+                "projection_l": 0.0,
+                "heading_error_rad": 0.0,
+                "lateral_error_m": 0.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fail_export(**kwargs):  # pragma: no cover - should never be called
+        raise AssertionError("existing non-empty projection artifact must not be overwritten")
+
+    monkeypatch.setattr(phase1_postprocess, "export_apollo_hdmap_projection_jsonl", fail_export)
+
+    report = run_phase1_postprocess(run)
+    export_status = json.loads(
+        (
+            run
+            / "analysis"
+            / "apollo_hdmap_projection_export"
+            / "apollo_hdmap_projection_export_status.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert report["apollo_hdmap_projection_auto_export_status"] == "skipped"
+    assert export_status["status"] == "skipped"
+    assert export_status["reason"] == "existing_non_empty_projection_artifact"
 
 
 def _make_run_apollo_fixed_scene(run) -> None:

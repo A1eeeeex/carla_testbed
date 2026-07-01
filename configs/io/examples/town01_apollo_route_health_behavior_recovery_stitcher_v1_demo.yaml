@@ -109,6 +109,7 @@ algo:
       auto_calib: false
     bridge:
       publish_rate_hz: 20.0
+      artifact_stats_flush_interval_s: 2.0
       max_obstacles: 64
       radius_m: 120.0
       localization_back_offset_m: 1.4235
@@ -124,7 +125,10 @@ algo:
       disable_destination_rule: true
       disable_traffic_light_rule: true
       lane_follow_only_scenario: true
-      enable_reference_line_stitching: true
+      # P1 修复: 禁用 stitching，每次从 scratch 生成参考线，绕过
+      # LaneInfo::GetProjection heading filter (90°) 导致的
+      # "Vehicle current point not on previous reference line" 问题。
+      enable_reference_line_stitching: false
       enable_trajectory_stitcher: true
       default_cruise_speed_mps: 16.67
     routing:
@@ -176,7 +180,9 @@ algo:
       steer_sign: 1.0
       throttle_scale: 1.5
       brake_scale: 1.0
-      steer_scale: 0.25
+      steer_scale: 1.0
+      steering_percent_normalization: angle_degree_at_select
+      apollo_max_steer_angle_deg: 30.0
       brake_deadzone: 0.05
       actuator_mapping_mode: legacy
       straight_lane_zero_steer_enabled: false
@@ -190,8 +196,8 @@ algo:
       straight_lane_zero_steer_release_ignore_e_psi_below_speed_mps: 2.0
       low_speed_steer_guard_enabled: true
       low_speed_steer_guard_speed_mps: 0.35
-      low_speed_steer_guard_max_abs_steer: 0.08
-      low_speed_steer_guard_max_e_y_m: 0.25
+      low_speed_steer_guard_max_abs_steer: 0.20
+      low_speed_steer_guard_max_e_y_m: 0.50
       low_speed_steer_guard_max_e_psi_deg: 3.0
       low_speed_sustained_saturation_guard_enabled: true
       low_speed_sustained_saturation_guard_speed_mps: 0.6

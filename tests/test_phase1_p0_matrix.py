@@ -53,6 +53,25 @@ def test_phase1_p0_matrix_uses_true_lead_decel_accel_scenario() -> None:
     assert "accelerates back to 70 kph" in lead.rationale
 
 
+def test_phase1_p0_matrix_defaults_to_behavior_recovery_apollo_platform(tmp_path: Path) -> None:
+    result = run_phase1_p0_matrix(
+        out_dir=tmp_path / "p0_matrix",
+        matrix_id="p0_behavior_default",
+        dry_run=True,
+    )
+
+    lane_row = next(row for row in result.rows if row["canonical_case"] == "lane_keep_straight")
+    apollo_plan = next(path for path in lane_row["plan_paths"] if str(path).endswith("__apollo.plan.resolved.yaml"))
+    plan_text = Path(apollo_plan).read_text(encoding="utf-8")
+
+    assert "name: apollo_cyberrt_town01_behavior_recovery" in plan_text
+    assert "town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml" in plan_text
+    assert "town01_apollo_route_health.yaml" not in plan_text
+
+    pair_manifest = json.loads(Path(lane_row["pair_manifest_path"]).read_text(encoding="utf-8"))
+    assert pair_manifest["apollo"]["platform"] == "apollo_cyberrt_town01_behavior_recovery"
+
+
 def test_phase1_p0_matrix_pair_outputs_keep_backend_contract_boundary(tmp_path: Path) -> None:
     result = run_phase1_p0_matrix(
         out_dir=tmp_path / "p0_matrix",

@@ -4,6 +4,8 @@ from tools.apollo10_cyber_bridge.control_mapping import (
     ControlMappingConfig,
     apply_throttle_brake_mutual_exclusion,
     legacy_map_base_controls,
+    select_steering_field,
+    steering_normalization_mode,
 )
 
 
@@ -95,3 +97,24 @@ def test_hysteresis_marks_and_suppresses_immediate_throttle_brake_flip() -> None
     assert result["desired_state"] == "brake"
     assert result["hysteresis_counter"] == 1
     assert result["hysteresis_held"] is True
+
+
+def test_angle_degree_normalization_treats_steering_target_as_degrees() -> None:
+    field, value = select_steering_field(
+        {"steering_target": 15.0},
+        physical_mode=False,
+        physical_steer_field_priority=("steering_target",),
+        coerce_float=lambda value, _default, _field, _scope: float(value),
+        percent_normalization_mode="angle_degree_at_select",
+        max_steer_angle_deg=30.0,
+    )
+
+    assert field == "steering_target"
+    assert value == 0.5
+    assert (
+        steering_normalization_mode(
+            field,
+            percent_normalization_mode="angle_degree_at_select",
+        )
+        == "angle_degree_at_select"
+    )

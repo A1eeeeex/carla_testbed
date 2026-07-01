@@ -1278,6 +1278,18 @@ class TestHarness:
             "hook_errors": hook_error_summaries(hook_dispatcher.errors),
             "route_curve_fields_schema_version": ROUTE_CURVE_FIELDS_SCHEMA_VERSION,
             "route_curve_diagnostics": route_curve_diagnostics,
+            # Bridge-derived planning/control counters (populated by post-run
+            # augmentation in run_followstop.py; kept as None here to avoid
+            # misleading zero-defaults in the harness-authored summary.json).
+            "routing_success_count": None,
+            "routing_materialized": None,
+            "planning_message_count": None,
+            "planning_nonempty_count": None,
+            "planning_nonempty_trajectory_ratio": None,
+            "planning_materialized": None,
+            "control_rx_count": None,
+            "control_tx_count": None,
+            "control_handoff_status": None,
         }
         summary["metrics"] = metrics.finalize(
             wall_duration_s=summary["wall_duration_s"],

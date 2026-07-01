@@ -1,6 +1,6 @@
 # Phase 1 Engineering Brief
 
-Last reviewed: 2026-06-25
+Last reviewed: 2026-07-01
 
 This brief freezes the Phase 1 engineering target for `carla_testbed`. It is a
 scope and status document, not a capability announcement. Status labels below
@@ -54,20 +54,20 @@ success means:
 
 ## Current Phase 1 Progress Snapshot
 
-Latest reviewed snapshot: `2026-06-26`, after the GPT Pro audit of commit
-`bd228a8683033e0d98cfe1019666ca2f3ce6dc89` and the follow-up Town01
-`lane_keep_097` online validations. The audit accepts that Phase 1 has real
-platform progress, but rejects a completion claim until the package includes
-exact P0 matrix evidence and ApolloBackend proves at least one non-timeout
-longitudinal window and one non-timeout straight-lane window. The
-acceptance/verifier/catalog layer is now treated as frozen unless it
+Latest reviewed snapshot: `2026-07-01`, after the GPT Pro audit of commit
+`bd228a8683033e0d98cfe1019666ca2f3ce6dc89`, the follow-up Town01
+`lane_keep_097` online validations, and the fresh default-entry P0 matrix
+`runs/phase1_p0_matrix/phase1_p0_behavior_default_20260701_030213`. The audit
+accepts that Phase 1 has real platform progress, but still rejects a completion
+claim because ApolloBackend behavior remains failed across all five P0 rows.
+The acceptance/verifier/catalog layer is now treated as frozen unless it
 demonstrably blocks a real valid run.
 
 Layered progress status:
 
 - Phase 1 overall: `PARTIAL`
-- Code-level platform delivery estimate: about `82-85%`
-- Current audit-package independently provable completion: about `70-75%`
+- Code-level platform delivery estimate: about `85-88%`
+- Current repo independently provable completion: about `80-85%`
 - Platform skeleton estimate: about `90%`
 - Apollo reference runtime estimate: about `60%`
 - Five-P0 online pair matrix estimate: `DONE for evaluable comparison surface; behavior failures remain`
@@ -81,13 +81,18 @@ Layered progress status:
 Current P0 delivery and behavior blockers:
 
 - Runtime delivery for the five-P0 comparison surface is no longer the active
-  blocker after the fresh automatic matrix below. The active blockers are now
-  backend behavior failures: Apollo `lane_invasion` on the three Baguang rows,
-  Apollo `timeout` on the two Town01 route-only rows, plus a matrix-level
-  revalidation item for the PlanningControlBackend route-only rows. Standalone
-  PlanningControlBackend route-only retests after the diagnostic speed fix now
-  pass safety counters, but the full P0 matrix has not yet been rerun with that
-  fix.
+  blocker after the fresh online matrix
+  `runs/phase1_p0_matrix/phase1_p0_behavior_default_20260701_030213`. Its
+  top-level manifest reports `comparable_pair_count=5`,
+  `invalid_pair_count=0`, and
+  `comparison_target_status_counts={"apollo_vs_planning_control_evaluable": 5}`.
+  PlanningControlBackend is `success` in all five rows. ApolloBackend is
+  evaluable but behavior-failed in all five rows: three Baguang rows fail with
+  `lane_invasion`, while the two Town01 route-only rows now use the
+  `apollo_cyberrt_town01_behavior_recovery` diagnostic profile and fail as
+  finalized `route_health_failed` samples instead of old Control-process
+  timeout samples. This upgrades the Phase 1 comparison-surface evidence, not
+  Apollo capability.
 - Accepted Apollo P0 runs must continue to record clean assist evidence. Any
   run with `blocking_assists`, such as historical `legacy_followstop`, cannot
   support Apollo ego-ownership evidence.
@@ -116,18 +121,268 @@ Current P0 delivery and behavior blockers:
   `python3 -m carla_testbed phase1 run-pair --scenario <case> --out <dir>`
   entry. Behavior failure is acceptable evidence when the run is evaluable;
   setup/config/artifact `invalid` is not.
-- The latest fresh five-P0 matrix is
-  `runs/phase1_p0_matrix/phase1_p0_auto_artifacts_20260625_153515`. It was run
-  after automatic artifact normalization was integrated into the executor, not
-  repaired by a post-hoc script. Its top-level manifest reports
-  `comparable_pair_count=5`, `partially_evaluable_pair_count=0`,
-  `invalid_pair_count=0`,
-  `comparison_status_counts={"comparable": 5}`, and
-  `comparison_target_status_counts={"apollo_vs_planning_control_evaluable": 5}`.
-  All Apollo rows keep `blocking_assists=[]`. This proves the Phase 1 P0
-  delivery/comparison surface, not Apollo behavior success: Apollo still fails
-  with `lane_invasion` on the three Baguang rows and `timeout` on the two
-  Town01 route-only rows.
+- The previous full five-P0 matrix
+  `runs/phase1_p0_matrix/phase1_p0_auto_artifacts_20260625_153515` proved the
+  automatic artifact-normalization path but still carried timeout-era Town01
+  Apollo rows. The current matrix
+  `runs/phase1_p0_matrix/phase1_p0_behavior_default_20260701_030213` replaces
+  that matrix-level status for Phase 1 delivery: it keeps all five pairs
+  comparable, preserves PlanningControlBackend success in all rows, and moves
+  both Town01 Apollo rows to finalized `route_health_failed` behavior failures.
+  This is still not Apollo behavior success.
+- Follow-up route-start alignment refresh on the current matrix now consumes
+  `artifacts/startup_geometry_summary.json` instead of reusing runtime
+  placeholder reports with
+  `blocking_reasons=["route_start_runtime_pose_missing"]`. On the same matrix,
+  `lane_keep_straight` reports static/initial/startup lateral-start evidence
+  around `0.509m`, and `lane_keep_curve` reports about `0.318m`. Both rows are
+  still `warn/spawn_lateral_offset_high`; this narrows the next Town01 Apollo
+  action to spawn/route-start/reference-line alignment evidence before control
+  tuning. It does not make Apollo lane keeping pass.
+- Route-start probe
+  `runs/phase1_online_pairs/phase1_lane_keep097_route_start_probe_20260701_033622`
+  used the unified pair entry and passed
+  `--apollo-override scenario.route_health.ego_offset_y_m=0.5089201844029378`
+  only to the Apollo launch plan. PlanningControlBackend stayed `success`.
+  Apollo remained comparable but failed with `route_health_failed` /
+  `LANE_INVASION`; however, its refreshed route-start metrics changed from the
+  previous roughly `0.509m` initial/startup offset to
+  `initial_cross_track_error_m≈0.000000004` and
+  `startup_geometry_localization_to_final_start_distance_m≈0.00019`. This
+  proves the probe can remove the start-offset confounder for this row, but it
+  also proves that start-offset correction alone is not a behavior fix. The
+  route-start analyzer now treats this pattern as
+  `spawn_lateral_offset_compensated_by_runtime_start_alignment` for its
+  recommendation path, so postprocess no longer tells operators to repeat the
+  same offset probe after initial/startup alignment is already low. The next
+  Town01 Apollo work should stay on route/reference-line/lateral semantics and
+  Planning debug export evidence, not control smoothing, PID, steer scale, or
+  CARLA actuation.
+- The same postprocess refresh now promotes Apollo timing diagnostics needed by
+  channel cadence analysis (`publish_gap_trace.jsonl`,
+  `topic_publish_stats.jsonl`, `carla_tick_health.jsonl`, and
+  `carla_tick_health_summary.json`) into the canonical root artifact surface.
+  Re-running channel-cadence diagnosis on the route-start probe removes the
+  earlier `missing_publish_gap_trace` ambiguity and keeps a real blocker:
+  `localization:isolated_header_sim_gap_over_contract` with publish-loop
+  overrun / stale-sample skips and max tick stage `wall_time_pacing_sleep`.
+  This is evidence for a GT publish cadence / pacing-queue issue to inspect
+  before control tuning; it is not Apollo behavior success.
+- The next bridge-side minimum fix keeps periodic `cyber_bridge_stats.json`
+  visible to wrappers but makes the periodic write lightweight: it no longer
+  flushes artifact buffers, health summaries, startup geometry summaries,
+  planning summaries, or node artifacts from the 20Hz GT publish hot path.
+  Full stats/summaries are still written at shutdown, and full/lightweight
+  writes are counted and timed separately under
+  `cyber_bridge_stats.artifact_buffering`
+  (`full_stats_write_count`, `lightweight_stats_write_count`,
+  `full_stats_write_duration_s_max`, and
+  `lightweight_stats_write_duration_s_max`). Fresh online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_cadence_lightweight_verify2_20260701_043727`
+  confirms those fields are now materialized
+  (`full_stats_write_count=1`, `lightweight_stats_write_count=16`,
+  `full_stats_write_duration_s_max≈0.0055s`,
+  `lightweight_stats_write_duration_s_max≈0.0818s`). The same run still
+  finalizes as evaluable Apollo `failed/route_health_failed`, and channel
+  cadence remains a non-blocking `warn` with publish-loop overruns and
+  stale-sample skips (`over_target_period_count=85`,
+  `gt_stale_sample_skip_count=60`). This proves the stats hot-path
+  instrumentation is present, not that Apollo behavior improved.
+- The same `phase1_lane_keep097_cadence_lightweight_verify2_20260701_043727`
+  sample also exposed a root-artifact gap: the nested compatibility run had an
+  `apollo_reference_line_contract_report.json`, but the Phase 1 root did not.
+  Artifact normalization now promotes that existing nested report without
+  rewriting its status. After promotion, `apollo_link_health` moved the primary
+  blocker upstream to reference-line heading semantics; the latest re-analysis
+  below further refines that blocker to a PATH_FALLBACK trajectory-vs-segment
+  heading mismatch. The lateral semantics report remains supporting diagnostic evidence with
+  `route_lateral_error_opposes_simple_lat_lateral_error`. Guard-related
+  raw-to-mapped steering changes are now surfaced as
+  `control_mapping_apply:bridge_guard_intervention` secondary evidence
+  (`guard_apply_count=77`, `guard_apply_ratio≈0.0418`) instead of being
+  reported as generic bridge mapping failure. The next validation should
+  inspect Apollo reference-line, routing lane IDs, HDMap projection, and the
+  CARLA route lateral-error / Apollo `simple_lat` convention on the same
+  `route_s` window before changing steer scale, PID, smoothing, or actuation
+  mapping.
+- Follow-up normalization on the same sample now promotes the associated
+  reference-line raw debug inputs and Apollo HDMap projection surface into the
+  Phase 1 root as well:
+  `artifacts/apollo_reference_line_contract.jsonl`,
+  `artifacts/planning_topic_debug.jsonl`,
+  `artifacts/planning_topic_debug_summary.json`,
+  `artifacts/planning_route_segment_debug.jsonl`,
+  `artifacts/apollo_route_segment_debug.jsonl`,
+  `artifacts/apollo_planning.INFO`,
+  `artifacts/control_trajectory_consume_debug.jsonl`,
+  `analysis/planning_materialization/planning_materialization_report.json`,
+  `artifacts/apollo_hdmap_projection.jsonl`, and
+  `analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json`.
+  Re-running Phase 1 postprocess on the root then regenerates
+  `apollo_reference_line_contract_report.json` from canonical root inputs. The
+  HDMap projection state is now correctly reported as
+  `file_present=true`, `artifact_status=artifact_empty`, and
+  `empty_reason=apollo_hdmap_projection_artifact_empty_no_exported_rows`
+  instead of `artifact_missing`. This is better evidence hygiene, not a
+  behavior fix: `apollo_link_health.primary_blocker` remained in the
+  reference-line heading family at this stage. The next
+  highest-value validation is to make the existing HDMap projection exporter
+  produce official `source=apollo_hdmap_api` rows for the same run, then
+  re-check reference-line heading/lateral metrics before treating bridge guard
+  intervention or steering actuation as primary.
+- The next offline projection probe on that same run successfully invoked the
+  existing `tools/export_apollo_hdmap_projection.py` path against Apollo
+  `map_xysl` in `apollo_neo_dev_10.0.0_pkg`. It produced official
+  `source=apollo_hdmap_api` rows on lane `15_1_1`; the initial samples have
+  near-zero lateral/heading error, while later runtime ego samples show high
+  projection error after the vehicle has already drifted
+  (`runtime_ego_projection.status=fail`,
+  `heading_error_p95_rad≈0.89`, `lateral_error_p95_m≈1.00`). The projection
+  analyzer now classifies ego-only projection as
+  `claim_evidence_scope=runtime_ego_only`,
+  `status=insufficient_data`, with
+  `apollo_hdmap_projection_static_route_samples_missing`; it does not turn
+  runtime drift into a static HDMap/localization contract failure. After
+  postprocess, `apollo_reference_line_contract` is still `fail`; at this stage
+  its only blocking reason is the still-generic
+  `planning_reference_heading_error_high`.
+- Follow-up normalization then promoted the nested `route.json`, allowing the
+  same exporter to run with `--include-route-samples --include-start-goal`.
+  The refreshed projection report now has official static route/start/goal
+  evidence: `status=pass`, `claim_grade=true`,
+  `claim_evidence_scope=route_start_goal`,
+  `nearest_lane_id_topk=["15_1_1"]`, static route heading p95 about
+  `0.00013rad`, and static lateral p95 `0.0m`. This narrows the latest
+  Town01 `lane_keep_097` blocker again: it is no longer map identity or static
+  HDMap projection for this sample. Re-running the reference-line contract with
+  trajectory-vs-segment heading metrics shows the remaining blocker is
+  `planning_reference_line:planning_path_fallback_segment_heading_mismatch`:
+  normal trajectory-vs-segment heading p95 is about `2.9e-6rad`, but
+  PATH_FALLBACK trajectory-vs-segment heading p95 is about `3.14159rad`.
+  Follow-up online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_lookahead_heading_probe_20260701_053934`
+  confirms the bridge now records future/non-expired lookahead trajectory
+  heading diagnostics. The run remains evaluable Apollo
+  `failed/route_health_failed`, and `phase1_status.primary_behavior_blocker`
+  is still `planning_path_fallback_segment_heading_mismatch`. The short-segment
+  PATH_FALLBACK future heading p95 is about `3.14159rad`; the more robust
+  lookahead heading p95 is also about `3.14159rad`, so the mismatch is no
+  longer just an expired-prefix/one-step sampling artifact. A manual exporter
+  rerun on the same Apollo run then generated `238` official
+  `source=apollo_hdmap_api` rows and refreshed
+  `apollo_hdmap_projection.status=pass` / `claim_grade=true`, with about
+  `231.4m` projection-s coverage on lanes `15_1_1` / `15_1_-1`. This confirms
+  the immediate blocker is not static HDMap projection; the remaining
+  automation gap was that Phase 1 postprocess did not yet invoke the exporter
+  when the run-local projection file was empty. The next validation should
+  confirm automatic projection export in postprocess and then inspect the
+  PATH_FALLBACK onset window, Planning trajectory sample source,
+  route-segment heading export, and Apollo Planning logs before changing
+  control mapping, steer scale, PID, or actuation.
+- Follow-up online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_auto_projection_verify_20260701_060342`
+  confirms that Phase 1 postprocess now invokes the HDMap projection exporter
+  when the run-local projection artifact is empty. The Apollo run remains an
+  evaluable `failed/route_health_failed` sample with
+  `primary_behavior_blocker=planning_path_fallback_segment_heading_mismatch`,
+  but `analysis/apollo_hdmap_projection_export/apollo_hdmap_projection_export_status.json`
+  records `status=pass`, `row_count=59`, and `ok_row_count=59`. The refreshed
+  projection report is `status=pass` / `claim_grade=true` with
+  `claim_evidence_scope=route_start_goal`, about `231.4m` projection-s
+  coverage, `nearest_lane_id_topk=["15_1_1"]`, heading p95 about
+  `0.00013rad`, and lateral p95 `0.0m`. This removes the automatic
+  projection-export gap for this row. The remaining blocker is still upstream
+  Planning reference-line / PATH_FALLBACK trajectory semantics, not static map
+  projection and not control actuation. Re-analysis after the fallback
+  lookahead diagnostic patch keeps the same fail verdict and adds that
+  PATH_FALLBACK future lookahead p95 distance is only about `0.397m`, the
+  minimum lookahead distance is effectively zero, all fallback lookahead
+  distances are below `1m`, and about `70.8%` of fallback samples have
+  first-nonexpired theta vs future-lookahead heading near the reverse-heading
+  family. This makes the next target Planning fallback trajectory point order /
+  heading semantics, not HDMap projection wiring. The bridge planning debug
+  helper now records `trajectory_future_window_points` around the first
+  non-expired and lookahead indices so the next online run can inspect the
+  local PATH_FALLBACK point order directly instead of inferring it only from
+  aggregate heading deltas.
+- Follow-up online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_future_window_behavior_verify_20260701_065329`
+  used the same `apollo_cyberrt_town01_behavior_recovery` platform and
+  confirmed the new local trajectory window evidence lands in real Apollo
+  artifacts. The pair is still `comparison_status=comparable` /
+  `comparison_target_status=apollo_vs_planning_control_evaluable`.
+  PlanningControlBackend is `success`. ApolloBackend remains an evaluable
+  `failed/route_health_failed` row with
+  `primary_behavior_blocker=planning_path_fallback_segment_heading_mismatch`
+  and `behavior_blocker_layer=planning_reference_line`. In the Apollo
+  `artifacts/planning_topic_debug.jsonl`, there are `93` NORMAL rows and `194`
+  PATH_FALLBACK rows; all `194` PATH_FALLBACK rows now carry
+  `trajectory_future_window_points`. The refreshed reference-line contract is
+  still `fail`; PATH_FALLBACK first-nonexpired theta vs future-lookahead
+  heading p95 is about `3.14159rad`, future-lookahead distance p95 is about
+  `0.419m`, all fallback lookahead distances are below `1m`, and the
+  reverse-heading ratio is about `0.792`. Example local windows show jumps from
+  `y≈-247.93` back to `y≈-248.28/-248.52` while point theta remains around
+  `+1.5707rad`, making Planning fallback trajectory point order / heading
+  semantics the next highest-value Apollo blocker.
+  A follow-up log/timeseries inspection further narrows the failure chain:
+  before the reverse-looking PATH_FALLBACK windows dominate, route-local
+  cross-track error grows from about `-0.76m` at `sim_time≈98.54s` to about
+  `-2.57m` at `sim_time≈99.74s`, while Apollo Planning logs report
+  `Decide path bound failed`, `piecewise jerk path optimizer failed`, and
+  `PATH_DECIDER` failure. The fallback debug lines show path bounds around
+  `[-0.945m, 0.945m]` but `self_opt_l≈1.598m`. The current blocker should
+  therefore be read as a Planning path-bound / lateral-state infeasibility
+  feeding PATH_FALLBACK, then local fallback point-order/heading inconsistency.
+  The reference-line analyzer now parses this Planning INFO path-bound family
+  into `planning_info_log_path_bound_evidence`, and `apollo_link_health`
+  surfaces the next validation as reference-line/path-bound lateral envelope
+  investigation. Do not tune steering/control mapping or add smoothing until
+  this reference-line/path-bound failure is explained.
+  Control evidence around the same window adds an important boundary: sampled
+  `control_apply_trace.jsonl` rows show `apollo_steer_raw=-1.0` before and
+  during the lateral drift, while bridge mapping initially limits it to
+  `-0.35` and later applies `-1.0`. The bridge guard/limit is still a
+  confounder, but the next root-cause loop should inspect Apollo source-control
+  lateral semantics and path-bound corridor alignment together, not treat the
+  event as CARLA actuation alone.
+- No-guard diagnostic probe
+  `runs/phase1_online_pairs/phase1_lane_keep097_no_lateral_guard_probe_20260701_072248`
+  closed the main guard-vs-source-control ambiguity. The pair stayed
+  comparable: PlanningControlBackend succeeded, while ApolloBackend remained
+  evaluable `failed/route_health_failed` with the same
+  `primary_behavior_blocker=planning_path_fallback_segment_heading_mismatch`.
+  The resolved Apollo config confirms
+  `low_speed_steer_guard_enabled=false`,
+  `low_speed_sustained_saturation_guard_enabled=false`,
+  `sustained_lateral_guard_enabled=false`, and
+  `trajectory_contract_lateral_guard_enabled=false`; bridge stats report
+  `lateral_guard_apply_count=0` and
+  `trajectory_contract_lateral_guard_apply_count=0`. With guards disabled,
+  `control_attribution` changes from `bridge_guard_intervention` to
+  `source_control_semantics`, and `apollo_lateral_semantics` changes from a
+  control-mapping suspicion to `reference_line_semantics`. Apollo raw steer
+  still saturates early (`first_raw_sat` around `sim_time≈94.28s`,
+  `route_s≈0.65m`, `cross_track_error≈-0.58m`), and the run reaches
+  `|cross_track_error|≥2m` by `sim_time≈95.33s`. This shows the guard was a
+  confounder/limiter, not the primary source of the failure. The refreshed
+  `apollo_lateral_semantics` report now adds `critical_window_samples` and can
+  read nested wrapper-run `control_decode_debug.jsonl` as a fallback evidence
+  source. On this no-guard run, the critical anchor is around
+  `sim_time≈94.48s` / `route_s≈0.85m`: route CTE is about `-0.70m`, Apollo
+  `simple_lat` lateral error is about `+0.24m`, and `apollo_steer_raw=-1.0`.
+  Thus source steer is same-sign with route CTE but opposite-sign with Apollo
+  `simple_lat` in the same window. The same report now carries
+  `reference_line_context`: first PATH_FALLBACK onset follows about `1.4s`
+  later, `path_fallback_trajectory_ratio≈0.73`,
+  `path_fallback_future_lookahead_reverse_heading_ratio≈0.65`, and Planning
+  INFO path-bound evidence classifies the fallback as
+  `fallback_lateral_state_outside_path_bound` with `241` out-of-bounds
+  fallback samples. The first logged fallback path-bound violation is at
+  Apollo Planning `s≈50.215m`: `self_opt_l≈1.367m` exceeds the upper bound
+  `0.945m` by about `0.422m`. The next experiment should inspect Apollo Planning
+  path-bound corridor / route-lateral frame semantics, not repeat a guard-only
+  probe.
 - Follow-up blocker surfacing on `2026-06-26` keeps the same verdicts but makes
   the next Baguang action explicit at the matrix/operator layer. Recomputing
   the three Baguang pair comparisons with non-hidden run directories preserves
@@ -351,6 +606,159 @@ Current P0 delivery and behavior blockers:
   more validation machinery and not steer-scale tuning; inspect lane-event
   timing, route/lane sign convention, path fallback/matched-point evidence, and
   why Apollo transitions from forward progress to a mid-route full stop.
+- Inf-cycle online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_infcycle_20260630_235802`
+  showed that the previous `240s` Apollo compatibility timeout floor was still
+  too short for the current Town01 behavior-recovery path: Apollo reached
+  `control_output` with `routing=1`, `planning=83`, and `control_tx=288` shortly
+  before the wrapper killed the process. The Apollo compatibility floor is now
+  `300s`. Follow-up run
+  `runs/phase1_online_pairs/phase1_lane_keep097_timeout300_20260701_000507`
+  validated that this changes the Apollo row from a platform timeout into an
+  evaluable finalized behavior failure: root Phase 1 status is
+  `failed/route_health_failed`, `dispatch.command.timed_out=false`, and the
+  nested finalized summary reports `routing_request_count=1`,
+  `routing_success_count=1`, `planning_message_count=270`, `control_tx_count=1621`,
+  `control_handoff_status=control_consuming_with_nonzero_planning`,
+  `exit_reason=LANE_INVASION`, `lane_invasion_count=4`, and
+  `route_completion_ratio≈0.008`. This is a runtime-finalization improvement
+  and a sharper Apollo behavior failure, not lane-keep success. The same
+  pair's PlanningControlBackend row is `invalid/no_timeseries` because
+  `run-pair` was launched without `--start-carla` and CARLA `load_world(Town01)`
+  timed out before any timeseries was produced. That invalid row is setup /
+  environment evidence, not a PlanningControlBackend behavior loss. The next
+  clean pair validation should own CARLA explicitly with `--start-carla` or use
+  a proven persistent CARLA session, then re-check whether the pair is
+  comparable while preserving the Apollo `route_health_failed` behavior
+  blocker.
+- Clean pair online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_clean_owned_carla_20260701_002332`
+  then reran the same Town01 straight-lane row with `--start-carla`. This
+  closes the previous PlanningControl invalid row: CARLA session startup is
+  recorded as `ready`, the PlanningControlBackend row completes in about `10s`,
+  writes `timeseries.csv`, and reports `phase1_status=success`,
+  `artifact_completeness=pass`, `collision_count=0`, and
+  `lane_invasion_count=0`. The pair comparison is now `comparable` /
+  `apollo_vs_planning_control_evaluable`. Apollo still fails, but now as a
+  clean behavior failure rather than platform timeout:
+  `phase1_status=failed`, `failure_reason=route_health_failed`,
+  `primary_behavior_blocker=finalized_route_health_failure`,
+  `behavior_blocker_layer=apollo_route_health_behavior`, and
+  `dispatch.command.timed_out=false`. Nested Apollo evidence shows
+  `routing_success_count=1`, `planning_message_count=301`,
+  `messages_with_nonzero_trajectory_points=273`, `control_tx_count=1600`,
+  `control_handoff_status=control_consuming_with_nonzero_planning`,
+  `exit_reason=LANE_INVASION`, and `lane_invasion_count=3`. The next blocker is
+  no longer Phase 1 pair comparability for this row; it is Apollo
+  route-health/lateral behavior plus control/channel quality. A follow-up
+  postprocess fix now lets route-only Apollo Phase 1 runs refresh the same
+  control-handoff, control-attribution, control-health, lateral-semantics, and
+  link-health reports that fixed-scene Apollo runs already generated. Re-running
+  postprocess on this sample produces `apollo_control_handoff.status=warn`,
+  `control_attribution.verdict.status=fail` with
+  `dominant_breakpoint=bridge_mapping`, `control_health.status=insufficient_data`
+  with `failure_reason=runtime_contract_missing_status`. A second evidence
+  refresh fixed a channel-stats artifact sampling false positive: sampled
+  `bridge_control_decode.jsonl` rows were no longer used as `/apollo/control`
+  cadence truth when `cyber_bridge_stats.artifact_buffering` proves
+  `control_debug_artifact_sample_stride=50`. The refreshed channel cadence now
+  treats `/apollo/control` as counter-derived warn evidence
+  (`message_count=1666`, `hz≈59.9`, non-promotion-grade), and link-health
+  `primary_blocker` moves to
+  `localization_gt_contract:heading_error_to_route_high`. This is sharper
+  evidence than the previous missing-report/cadence false-positive gap, but it
+  is still Apollo behavior/evidence failure, not lane-keep success.
+- Follow-up online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_postprocess_fix_20260701_005244`
+  confirms the same pattern on a fresh owned-CARLA pair: CARLA session startup
+  and shutdown are clean, PlanningControlBackend is `success`, and Apollo is an
+  evaluable `failed/route_health_failed` row rather than a timeout or startup
+  failure. The Apollo nested route-health run materializes
+  `routing_success_count=1`, non-empty Planning, and `/apollo/control`, then
+  finalizes with `exit_reason=LANE_INVASION`, `route_completion_ratio≈0.010`,
+  and `route_distance_achieved_m≈2.4`.
+- The same run exposed a postprocess wiring gap: the launch plan previously
+  ran the generic evidence bundle and link-health tools, but did not invoke the
+  Phase 1 postprocess function that writes route-only Apollo
+  `apollo_control_handoff`, `control_attribution`, `control_health`,
+  `apollo_lateral_semantics`, and localization/link-health inputs. The
+  launch plan now calls `tools/postprocess_phase1_run.py` before the generic
+  analyze step and final link-health refresh. Replaying that postprocess on the
+  fresh sample writes the missing run-local reports. The first refreshed blocker
+  was `localization_gt_contract:heading_error_to_route_high`; a later context
+  pass now shows this high full-run route-heading error appears after lateral
+  departure, not before it. `/apollo/control` cadence remains sampled
+  counter-derived warn evidence, not promotion-grade.
+  A second small artifact-surface fix promotes the unique nested
+  `analysis/route_health/` report set to the Phase 1 run root, so
+  localization/link-health no longer misreport route-health as absent when the
+  nested legacy runner already wrote it. `run_phase1_postprocess()` now performs
+  that normalization itself before running per-layer analyzers, which keeps
+  launch-plan postprocess consistent with manual replay. Replaying postprocess
+  on the latest online sample after that fix removes the stale
+  `timeseries_missing` and `route_health_missing` localization warnings. The
+  localization contract now records
+  `route_heading_error_after_lateral_departure_candidate`, with
+  pre-departure route-heading p95 about `0.000198rad`, first lateral departure
+  at `sim_time≈93.60s`, and first route-heading fail later at
+  `sim_time≈94.05s`. That keeps localization non-claim-grade because other
+  fields are still missing, but it no longer treats full-run
+  `heading_error_to_route_high` as the primary root cause.
+- The next inf-cycle pass fixed a diagnosis conflict rather than changing
+  behavior. On
+  `runs/phase1_online_pairs/phase1_lane_keep097_phase1post_auto_20260701_011535`,
+  `control_attribution` proves raw->mapped and mapped->applied steer consistency
+  (`error_p95=0.0` for both) while the lateral-semantics report had been
+  promoting a duplicate `raw_mapped_applied_mismatch` as the primary suspected
+  layer. `apollo_lateral_semantics` now consumes the existing
+  `control_attribution_report.json` in run-dir mode and suppresses that specific
+  mismatch when control attribution already marks both control mapping legs as
+  pass. The refreshed report keeps
+  `source_steer_same_sign_as_lateral_error`, moves `suspected_layer` to
+  `reference_line_semantics`, and records the suppressed control-mapping
+  anomaly for auditability. The next refresh connected the existing
+  `artifacts/apollo_control_raw.jsonl` Apollo Control debug rows to
+  lateral-semantics run-dir analysis. Because those rows carry Apollo
+  `simple_lat` / target / matched-point fields but no explicit `sim_time`, the
+  analyzer now infers `sim_time` from `control_header_timestamp_sec` anchors in
+  `control_apply_trace.jsonl`; it still does not treat raw
+  `steering_target` as normalized `apollo_steer_raw`. Replaying the analyzer on
+  the same run raises `apollo_simple_lat_lateral_error_abs.count` to `102` and
+  changes `apollo_link_health.primary_blocker` to
+  `apollo_lateral_semantics:route_lateral_error_opposes_simple_lat_lateral_error`.
+  Generic environment, bridge, localization, HDMap/reference-line, route
+  establishment, module consumption, control-health, perception, prediction,
+  assist, and natural-driving artifact gaps remain secondary blockers. This
+  narrows the next Apollo work to route-lateral field sign convention,
+  official projection/reference-line pairing, and Control simple_lat semantics
+  before lane invasion; it is not a lane-keep success and does not relax any
+  Phase 1 gate. Re-running `tools/postprocess_phase1_run.py` and
+  `tools/compare_scenario_runs.py` on the same pair preserves
+  `comparison_status=comparable` and Apollo `failed/route_health_failed`, but
+  updates the Apollo row to
+  `primary_behavior_blocker=route_lateral_error_opposes_simple_lat_lateral_error`
+  and `behavior_blocker_layer=apollo_lateral_semantics`.
+- Fresh online validation
+  `runs/phase1_online_pairs/phase1_lane_keep097_infcycle_verify_20260701_022242`
+  reproduces this blocker through the live `phase1 run-pair` entry with an
+  owned CARLA session. PlanningControlBackend is `status=success` with root
+  `timeseries.csv` and `artifact_completeness=pass`. Apollo is evaluable but
+  failed: `status=failed`, `failure_reason=route_health_failed`,
+  `primary_behavior_blocker=route_lateral_error_opposes_simple_lat_lateral_error`,
+  and `behavior_blocker_layer=apollo_lateral_semantics`. The Apollo row is no
+  longer a wrapper timeout: the runtime completed through the nested finalized
+  route-health marker, with `routing_success_count=1`,
+  `planning_message_count=277`, `runtime_control_tx_count=1857`,
+  `nested_exit_reason=LANE_INVASION`, `nested_route_completion_ratio≈0.011`,
+  and `route_s_delta_m≈2.66`. `apollo_link_health.primary_blocker` agrees with
+  the Phase 1 status:
+  `apollo_lateral_semantics:route_lateral_error_opposes_simple_lat_lateral_error`.
+  Rebuilding `comparison_summary.json` after the summary-surface fix now puts
+  `status`, `phase1_status`, and `run_dir` directly in each `backend_results`
+  row, so the comparison can be audited without cross-opening
+  `participating_runs`. This is stronger Phase 1 evidence surfacing; it is not
+  Apollo lane-keep success and does not close the full five-P0 matrix rerun
+  requirement.
 - A fresh online attempt for this blocker-surfacing path,
   `runs/phase1_online_pairs/phase1_baguang_blocker_surface_20260626_001715`,
   did not reach backend behavior because CARLA startup for

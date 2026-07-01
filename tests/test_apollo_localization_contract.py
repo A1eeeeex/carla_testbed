@@ -467,6 +467,30 @@ def test_high_heading_error_warns_or_fails() -> None:
     assert "heading_error_to_route_elevated" in report["warnings"]
 
 
+def test_route_heading_error_after_lateral_departure_is_not_localization_blocker() -> None:
+    rows = _read_csv(TIMESERIES)
+    for index, row in enumerate(rows):
+        row["cross_track_error"] = "0.10" if index < 3 else "1.10"
+        row["lane_invasion_count"] = "0" if index < 3 else "1"
+        row["heading_error"] = "0.01" if index < 3 else "1.10"
+
+    report = analyze_localization_contract(
+        timeseries_rows=rows,
+        channel_stats=_read_json(CHANNEL_STATS),
+        route_health=_read_json(ROUTE_HEALTH),
+        frame_transform=load_frame_transform(FRAME_TRANSFORM),
+        vehicle_reference=load_vehicle_reference(VEHICLE_REFERENCE),
+        source=_runtime_reference_source(),
+    )
+
+    assert "heading_error_to_route_high" not in report["verdict"]["blocking_reasons"]
+    assert "heading_error_to_route_high_after_lateral_departure" in report["warnings"]
+    context = report["pose_consistency"]["route_heading_error_context"]
+    assert context["classification"] == "route_heading_error_after_lateral_departure_candidate"
+    assert context["pre_departure_heading_error_p95_rad"] < 0.02
+    assert context["first_heading_fail"]["row_index"] >= context["first_lateral_departure"]["row_index"]
+
+
 def test_yaw_rate_unit_unknown_warns() -> None:
     rows = _read_csv(TIMESERIES)
     for row in rows:

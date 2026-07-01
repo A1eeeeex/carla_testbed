@@ -1065,6 +1065,7 @@ PY
             "brake_deadzone",
             "actuator_mapping_mode",
             "steering_percent_normalization",
+            "apollo_max_steer_angle_deg",
             "zero_hold_sec",
             "startup_throttle_boost_add",
             "startup_throttle_boost_cap",

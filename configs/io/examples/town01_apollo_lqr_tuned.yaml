@@ -1,23 +1,23 @@
 # -----------------------------------------------------------------------------
-# Apollo Town01 Route Health: behavior_recovery_stitcher_speed_mild_v1
-# 用途：在 `behavior_recovery_stitcher_v1` 已经恢复 Town01 lane/junction/curve
-#      真实闭环的基础上，只做一档温和提速，验证当前速度是否主要受
-#      target-speed 设置偏保守影响。
+# Apollo Town01 LQR Tuned: lateral control precision via config-only
+# 用途：通过 conf_overlay 机制调整 Apollo LQR 控制器参数（cf_, cr_, matrix_q），
+#       匹配 CARLA MKZ 2020 车辆动力学，减少横向误差累积。
 # 说明：
-# - 保持 Dreamview-on + planning_ready + dag + legacy control runtime overlay；
-# - 不改横向增益、不改控制映射、不改 planning stitcher 语义；
-# - 只小幅抬升 routing/planning 目标速度；
-# - 默认仍保留 700 ticks，在线短 probe 通过 CLI 覆盖到 420 ticks。
+# - 不修改 Apollo 源码，完全通过 APOLLO_CONF_PATH 优先级覆盖。
+# - 基于 baseline_recovery 配置，增加 control_lqr 节。
+# - cf_/cr_ 按 CARLA 实际质量 1696kg 线性缩放到 ~126,820 N/rad。
+# - matrix_q 增大横向误差和航向误差权重，优先抑制误差。
+# - 增益调度表保持 Apollo 默认，适配 Town01 低速场景（<8 m/s）。
 # -----------------------------------------------------------------------------
 run:
   seed: 1
-  ticks: 700
+  ticks: 500
   fail_strategy: log_and_continue
-  post_fail_steps: 300
+  post_fail_steps: 120
   ego_id: hero
   map: Town01
   weather: ClearNoon
-  profile_name: town01_apollo_route_health_behavior_recovery_stitcher_speed_mild_v1
+  profile_name: town01_apollo_lqr_tuned
 scenario:
   driver: carla_town01_route_health
   traffic_lights:
@@ -126,16 +126,19 @@ algo:
       disable_destination_rule: true
       disable_traffic_light_rule: true
       lane_follow_only_scenario: true
-      # P1 修复: 禁用 stitching，每次从 scratch 生成参考线，绕过
-      # LaneInfo::GetProjection heading filter (90°) 导致的
-      # "Vehicle current point not on previous reference line" 问题。
+      # P1 修复: 禁用 reference_line_stitching，让 Planning 每次从 scratch
+      # 生成参考线，绕过 LaneInfo::GetProjection heading filter (90°) 问题。
+      # 当车辆 heading 与 lane heading 偏差 > 90° 时，stitching 路径的
+      # ExtendReferenceLine 投影失败导致 "Vehicle current point not on
+      # previous reference line" 错误，Planning 重规划停滞。
+      # SmoothRouteSegment 回退路径基于 route segments 构建路径，不依赖
+      # 前一轮参考线的投影结果。
       enable_reference_line_stitching: false
-      enable_trajectory_stitcher: true
-      default_cruise_speed_mps: 18.0
+      default_cruise_speed_mps: 16.67
     routing:
       enable: true
       goal_mode: scenario_xy
-      target_speed_mps: 8.8
+      target_speed_mps: 8.0
       startup_delay_sec: 3.0
       startup_apollo_warmup_sec: 30.0
       startup_end_ahead_m: 30.0
@@ -159,7 +162,13 @@ algo:
       send_routing_request: true
       wait_for_obstacle_gt_before_initial_routing: false
       skip_invalid_long_route: true
-      suppress_long_phase_reroute_on_unstable_reference_line: true
+      # 2026-06-30: 修复空轨迹根因 — 禁用 unstable reroute guard
+      #   当 map_contract_invalid=true 时, 此 guard 阻止所有 long-phase 路由,
+      #   导致 Apollo 只有 30m startup 路由。Planning 频繁到达参考线终点,
+      #   产生空轨迹 → Control safe hold → 车辆漂移 → LANE_INVASION。
+      #   禁用后 long-phase 路由正常发送, Apollo 获得 230m+ 参考线,
+      #   Planning 可持续输出非空轨迹。
+      suppress_long_phase_reroute_on_unstable_reference_line: false
       freeze_after_success: true
       freeze_after_long_route_success_only: true
       use_seed_heading: true
@@ -174,6 +183,81 @@ algo:
       policy: ignore
       publish_hz: 10.0
       ignore_roll_enabled: false
+    # ---------------------------------------------------------------------------
+    # LQR Controller Tuning (纯配置方式，不修改 Apollo 源码)
+    # ---------------------------------------------------------------------------
+    # 原理：
+    #   - cf_/cr_ 是 Apollo LQR 动力学模型中的前后轮侧偏刚度 (N/rad)。
+    #     CARLA 的 Pacejka 轮胎模型在低侧偏角下有效刚度可能低于线性模型，
+    #     因此保守策略是保持 Apollo 默认值 155,495 N/rad，主要靠 matrix_q
+    #     增大误差权重来增强修正。
+    #   - matrix_q 是 LQR 状态权重矩阵 (4维: e1, de1, e2, de2)。
+    #     增大 e1(横向误差)和 e2(航向误差)权重可让 LQR 更积极抑制误差。
+    #   - 增益调度表 (lat_err_gain_scheduler / heading_err_gain_scheduler)
+    #     根据车速缩放 matrix_q 权重，低速时保持高权重。
+    #
+    # 2026-06-30 低转速向饱和修复 (Phase 1):
+    #   根因: Apollo LQR 自行车模型在低速时有 1/v 阻尼项 (A(1,1) = -(cf+cr)/m/v),
+    #   在 v=0.66 m/s 时 A(1,1) ≈ -226, A(3,3) ≈ -452, 导致 LQR 求解器产生
+    #   过高的反馈增益 K。同时 enable_reverse_leadlag_compensation 的 leadlag
+    #   增强器 (alpha=1.0, beta=1.0) 在低速 (< switch_speed=2.0 m/s) 时激活,
+    #   对微小横向误差产生 ~30 deg (100pct单位) 的增强输出。两者叠加导致
+    #   2.4mm 横向误差产生 -14.1° 转向指令。
+    #   修复策略:
+    #   A) 禁用 enable_reverse_leadlag_compensation — 消除 leadlag 增强项
+    #   B) 降低 matrix_q 至接近默认值 — 减少 LQR 增益侵略性
+    #   C) 在低速段添加增益调度条目 (v=0.5, 1.0, 2.0 m/s) — 进一步降低低速增益
+    #   D) 增大 minimum_speed_protection (0.1→0.5) — 减小 1/v 项放大
+    #   影响评估: 禁用的 leadlag 增强器原本是为低速泊车/机动设计的, lane_keep
+    #   场景不需要此增强。LQR 反馈增益降低后, 低速横向修正可能变慢但不会过度。
+    # ---------------------------------------------------------------------------
+    control_lqr:
+      enabled: true
+      # 轮胎侧偏刚度：保持 Apollo 默认值（线性缩放 126,820 在 2026-06-26
+      # 第一轮验证中导致转向修正不足、CTE 恶化到 2.80m）。
+      cf: 155494.663
+      cr: 155494.663
+      # 四角质量：按 CARLA 总质量等比分配 (1696/2080 * 520 ≈ 424)
+      mass_fl: 424
+      mass_fr: 424
+      mass_rl: 424
+      mass_rr: 424
+      # 状态权重矩阵 [e1_lateral, de1_lateral_rate, e2_heading, de2_heading_rate]
+      # 2026-06-30: 从 (0.25, 0, 1.5, 0) 降低至 (0.15, 0, 1.0, 0)
+      #   理由: 原值 (e1=0.25, e2=1.5) 在低速时配合 1/v 阻尼项产生过大增益,
+      #   新值 (e1=0.15, e2=1.0) 适度降低但仍高于默认 (e1=0.05)
+      matrix_q:
+        - 0.15    # e1: 横向误差权重 (默认0.05 → 适度增大3倍, 原值5倍)
+        - 0.0     # de1: 横向误差变化率
+        - 1.0     # e2: 航向误差权重 (默认1.0 → 保持不变)
+        - 0.0     # de2: 航向误差变化率
+      # 2026-06-30: 禁用 leadlag 增强器
+      #   在低速 (< switch_speed=2.0 m/s) 时, leadlag 增强器对横向误差
+      #   产生放大输出 (alpha=1.0, beta=1.0 → 2x 增益), 是转向饱和的主要贡献者
+      enable_reverse_leadlag_compensation: false
+      # leadlag 增强器参数 (仅在 enable_reverse_leadlag_compensation=true 时生效)
+      reverse_leadlag_conf:
+        innerstate_saturation_level: 3000
+        alpha: 1.0
+        beta: 1.0
+        tau: 0.0
+      # 低速段增益调度: 在 0.5-4.0 m/s 区间大幅降低 LQR 增益
+      #   v=0.5: 0.05x (原1.0x) — 极低速几乎关闭横向反馈
+      #   v=2.0: 0.15x — 低速大幅降低
+      #   v=4.0: 1.0x — 恢复正常增益
+      lat_err_gain_scheduler_speed: [0.5, 2.0, 4.0, 8.0, 12.0, 20.0, 25.0]
+      lat_err_gain_scheduler_ratio: [0.05, 0.15, 1.0, 0.6, 0.2, 0.1, 0.05]
+      heading_err_gain_scheduler_speed: [0.5, 2.0, 4.0, 8.0, 12.0, 20.0, 25.0]
+      heading_err_gain_scheduler_ratio: [0.05, 0.15, 1.0, 0.6, 0.4, 0.2, 0.1]
+      # 2026-06-30: 增大 minimum_speed_protection (0.1→1.0)
+      #   此 gflag 控制 LQR UpdateMatrix() 中的 v = max(v, minimum_speed_protection_)
+      #   增大后, A(1,1) 在 v=1.0 时 ≈ -149.5 (原 -1495.1 at v=0.1), 1/v 放大减小 10x
+      #   覆盖 speed ≤ 1.0 m/s 的低速场景
+      minimum_speed_protection: 1.0
+    # P2.1 修复: 启用 use_speed_itfc，让 LonController 设置 ControlCommand.speed
+    # 为非零值，避免 bridge 侧 low_speed_steer_guard 因 speed=0 误触发。
+    control_lon:
+      enabled: true
     control_mapping:
       max_steer_angle: 0.6
       speed_gain: 10.0
@@ -232,3 +316,23 @@ algo:
       timeout_sec: 2.5
       apply_hz: 20.0
       sync_to_world_tick: true
+      dryrun: false
+    vehicle_param:
+      enabled: true
+      auto_from_carla: false
+record:
+  probe:
+    enable: true
+    max_msgs: 5
+  control_log:
+    enable: true
+    topic: /tb/ego/control_cmd
+    max_msgs: 100000
+logging:
+  level: INFO
+acceptance:
+  min_speed_mps: 5.0
+  require_apollo_health_artifacts: true
+  min_planning_nonempty_trajectory_count: 1500
+  min_planning_nonzero_ratio: 0.80
+  max_invalid_goal_count: 0

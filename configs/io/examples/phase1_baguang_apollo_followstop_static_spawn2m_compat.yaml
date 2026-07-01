@@ -133,15 +133,36 @@ algo:
       publish_hz: 10.0
     control_mapping:
       actuator_mapping_mode: legacy
-      steer_scale: 0.25
+      steer_scale: 1.0
       steer_sign: 1.0
       throttle_scale: 1.5
       brake_scale: 1.0
+      steering_percent_normalization: angle_degree_at_select
+      apollo_max_steer_angle_deg: 30.0
       terminal_stop_hold:
         enabled: true
         activate_gap_m: 15.0
         release_gap_m: 20.0
         hold_brake: 0.18
+    # P1: LQR 调优 — 通过 conf_overlay 调整 Apollo LQR 参数
+    control_lqr:
+      enabled: true
+      cf: 155494.663
+      cr: 155494.663
+      mass_fl: 424
+      mass_fr: 424
+      mass_rl: 424
+      mass_rr: 424
+      matrix_q: [0.15, 0.0, 1.0, 0.0]
+      enable_reverse_leadlag_compensation: false
+      lat_err_gain_scheduler_speed: [0.5, 2.0, 4.0, 8.0, 12.0, 20.0, 25.0]
+      lat_err_gain_scheduler_ratio: [0.05, 0.15, 1.0, 0.6, 0.2, 0.1, 0.05]
+      heading_err_gain_scheduler_speed: [0.5, 2.0, 4.0, 8.0, 12.0, 20.0, 25.0]
+      heading_err_gain_scheduler_ratio: [0.05, 0.15, 1.0, 0.6, 0.4, 0.2, 0.1]
+      minimum_speed_protection: 1.0
+    # P1: use_speed_itfc=true
+    control_lon:
+      enabled: true
 
 runtime:
   mode: online

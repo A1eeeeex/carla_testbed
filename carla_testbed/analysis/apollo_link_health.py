@@ -359,6 +359,8 @@ def analyze_apollo_link_health(
             payloads.get("control_health"),
             inputs.get("control_health"),
             source_kind=source_kinds.get("control_health", "report"),
+            control_attribution=payloads.get("control_attribution"),
+            control_attribution_path=inputs.get("control_attribution"),
         ),
         "perception_gt_obstacles": _obstacle_gt_layer(
             payloads.get("obstacle_gt_contract"),
@@ -1073,6 +1075,13 @@ def _resolve_inputs(root: Path) -> dict[str, Path | None]:
                 "control_health_report.json",
             ],
         ),
+        "control_attribution": _find_first(
+            root,
+            [
+                "analysis/control_attribution/control_attribution_report.json",
+                "control_attribution_report.json",
+            ],
+        ),
         "traffic_light_contract": _find_first(
             root,
             [
@@ -1513,6 +1522,12 @@ def _apollo_lateral_semantics_layer(report: Mapping[str, Any] | None, path: Path
                 "Verify and document the sign convention between CARLA route cross-track error and "
                 "Apollo simple_lat lateral error before changing control mapping, steer scale, or smoothing."
             )
+    elif "route_lateral_error_opposes_simple_lat_lateral_error" in anomaly_types:
+        next_action = (
+            "Compare CARLA route lateral-error sign convention, Apollo simple_lat lateral error, "
+            "official HDMap projection rows, and reference-line/path-candidate evidence on the same route_s window "
+            "before treating raw/mapped/applied steer mismatch as the primary control problem."
+        )
     elif suspected_layer == "reference_line_semantics":
         next_action = "Inspect reference-line curvature/heading and Apollo routing lane ids before changing control mapping."
     elif suspected_layer == "control_mapping":
@@ -2153,6 +2168,16 @@ def _should_regenerate_apollo_reference_line_contract(report: Mapping[str, Any] 
         and "path_fallback_trajectory_ratio" not in metrics
     ):
         return True
+    if (
+        status == "fail"
+        and blockers
+        & {
+            "planning_reference_heading_error_high",
+            "planning_path_fallback_heading_error_high",
+        }
+        and "path_fallback_trajectory_first_theta_vs_segment_heading_p95_rad" not in metrics
+    ):
+        return True
     if status == "fail":
         return False
     if blockers and blockers != {"apollo_reference_line_runtime_evidence_missing"}:
@@ -2374,7 +2399,7 @@ def _should_regenerate_channel_cadence(report: Mapping[str, Any] | None) -> bool
         return True
     if "sim_wall_cadence" not in report:
         return True
-    return _normalize_status(report.get("status")) == "insufficient_data"
+    return _normalize_status(report.get("status")) in {"fail", "insufficient_data"}
 
 
 def _route_establishment_layer(
@@ -2717,8 +2742,12 @@ def _control_health_layer(
     path: Path | None,
     *,
     source_kind: str = "report",
+    control_attribution: Mapping[str, Any] | None = None,
+    control_attribution_path: Path | None = None,
 ) -> dict[str, Any]:
     if not report:
+        if control_attribution:
+            return _control_attribution_only_layer(control_attribution, control_attribution_path)
         return _missing_report_layer(
             path=path,
             next_action="Generate control_health_report.json; inspect raw/mapped/applied controls, cadence, and vehicle response.",
@@ -2741,12 +2770,47 @@ def _control_health_layer(
         semantics=semantics,
         oscillation_diagnosis=oscillation_diagnosis,
     )
+    attribution_verdict = (
+        control_attribution.get("verdict")
+        if isinstance(control_attribution, Mapping) and isinstance(control_attribution.get("verdict"), Mapping)
+        else {}
+    )
+    attribution = (
+        control_attribution.get("attribution")
+        if isinstance(control_attribution, Mapping) and isinstance(control_attribution.get("attribution"), Mapping)
+        else {}
+    )
+    attribution_dominant = attribution.get("dominant_breakpoint") or attribution_verdict.get("dominant_breakpoint")
+    attribution_failure = attribution_verdict.get("failure_reason")
+    attribution_status = _normalize_status(attribution_verdict.get("status"))
+    steer_guard_intervention = (
+        attribution.get("steer_guard_intervention")
+        if isinstance(attribution.get("steer_guard_intervention"), Mapping)
+        else {}
+    )
+    layer_status = _normalize_status(report.get("status"))
+    blocking = [reason for reason in [report.get("failure_reason")] if reason and report.get("status") == "fail"]
+    if attribution_status == "fail" and attribution_failure:
+        layer_status = "fail"
+        if attribution_failure not in blocking:
+            blocking.append(str(attribution_failure))
+    next_action = _control_health_next_action(semantics_primary, oscillation_diagnosis)
+    if attribution_dominant == "bridge_guard_intervention":
+        next_action = (
+            "Inspect lateral/trajectory guard triggers and upstream lateral semantics before "
+            "changing steer scale, PID, or actuation mapping. Guard intervention is not "
+            "claim-grade no-assist evidence."
+        )
     return _layer(
-        status=_normalize_status(report.get("status")),
-        blocking_reasons=[reason for reason in [report.get("failure_reason")] if reason and report.get("status") == "fail"],
+        status=layer_status,
+        blocking_reasons=blocking,
         warnings=list(report.get("warnings") or []),
         key_metrics={
             "failure_reason": report.get("failure_reason"),
+            "control_attribution_status": attribution_status,
+            "control_attribution_failure_reason": attribution_failure,
+            "control_attribution_dominant_breakpoint": attribution_dominant,
+            "steer_guard_intervention": dict(steer_guard_intervention),
             "control_oscillation_primary_suspected_layer": compact_oscillation.get(
                 "primary_suspected_layer"
             ),
@@ -2794,8 +2858,46 @@ def _control_health_layer(
             "mapped_applied_brake_abs_error_p95": _nested(report, "metrics.mapped_applied_brake_abs_error_p95"),
             "route_s_after_first_applied_control_delta_m": _nested(report, "metrics.route_s_after_first_applied_control_delta_m"),
         },
-        artifact_paths={"control_health": str(path) if path else None, "source_kind": source_kind},
-        next_action=_control_health_next_action(semantics_primary, oscillation_diagnosis),
+        artifact_paths={
+            "control_health": str(path) if path else None,
+            "control_attribution": str(control_attribution_path) if control_attribution_path else None,
+            "source_kind": source_kind,
+        },
+        next_action=next_action,
+    )
+
+
+def _control_attribution_only_layer(
+    report: Mapping[str, Any],
+    path: Path | None,
+) -> dict[str, Any]:
+    verdict = report.get("verdict") if isinstance(report.get("verdict"), Mapping) else {}
+    attribution = report.get("attribution") if isinstance(report.get("attribution"), Mapping) else {}
+    dominant = attribution.get("dominant_breakpoint") or verdict.get("dominant_breakpoint")
+    failure_reason = verdict.get("failure_reason")
+    status = _normalize_status(verdict.get("status") or report.get("status"))
+    blocking = [str(failure_reason)] if status == "fail" and failure_reason else []
+    steer_guard_intervention = attribution.get("steer_guard_intervention")
+    if not isinstance(steer_guard_intervention, Mapping):
+        steer_guard_intervention = {}
+    next_action = "Generate control_health_report.json to add cadence, oscillation, and vehicle-response context."
+    if dominant == "bridge_guard_intervention":
+        next_action = (
+            "Inspect lateral/trajectory guard triggers and upstream lateral semantics before changing "
+            "steer scale, PID, or actuation mapping."
+        )
+    return _layer(
+        status=status,
+        blocking_reasons=blocking,
+        warnings=list(report.get("warnings") or []),
+        key_metrics={
+            "control_attribution_status": status,
+            "control_attribution_failure_reason": failure_reason,
+            "control_attribution_dominant_breakpoint": dominant,
+            "steer_guard_intervention": dict(steer_guard_intervention),
+        },
+        artifact_paths={"control_attribution": str(path) if path else None},
+        next_action=next_action,
     )
 
 
@@ -3420,7 +3522,7 @@ def _no_assist_layer(
     )
     if backend is None:
         reasons.append("backend_missing")
-    elif backend != "apollo_cyberrt":
+    elif not _is_apollo_cyberrt_backend(backend):
         reasons.append("backend_not_apollo_cyberrt")
         explicit_blockers.append("backend_not_apollo_cyberrt")
     if control_source is None:
@@ -4098,6 +4200,11 @@ def _blocker_summary(layers: Mapping[str, Mapping[str, Any]]) -> tuple[str | Non
         secondary = [item for item in blockers if item != claim_boundary_primary]
         return claim_boundary_primary, secondary
 
+    diagnostic_lateral_primary = _lateral_semantics_diagnostic_primary(layers)
+    if diagnostic_lateral_primary:
+        secondary = [item for item in blockers if item != diagnostic_lateral_primary]
+        return diagnostic_lateral_primary, secondary
+
     defer_control_primary = _defer_control_primary_until_loc_ref_pass(layers)
 
     primary: str | None = None
@@ -4394,9 +4501,8 @@ def _lateral_semantics_warning_primary(layers: Mapping[str, Mapping[str, Any]]) 
     lateral = layers.get("apollo_lateral_semantics", {})
     if lateral.get("status") != "warn":
         return None
-    metrics = lateral.get("key_metrics") if isinstance(lateral.get("key_metrics"), Mapping) else {}
-    anomaly_types = [str(item) for item in metrics.get("anomaly_types") or [] if item]
-    if not anomaly_types and "lateral_semantics_anomaly" not in set(lateral.get("warnings") or []):
+    reason = _lateral_semantics_primary_reason(lateral)
+    if not reason:
         return None
     for prerequisite in (
         "environment_world",
@@ -4421,6 +4527,74 @@ def _lateral_semantics_warning_primary(layers: Mapping[str, Mapping[str, Any]]) 
     )
     if not natural_missing:
         return None
+    return f"apollo_lateral_semantics:{reason}"
+
+
+def _lateral_semantics_diagnostic_primary(layers: Mapping[str, Mapping[str, Any]]) -> str | None:
+    """Use lateral semantics as the action-focused blocker for evaluable drift runs.
+
+    This path is intentionally weaker than `_lateral_semantics_warning_primary`:
+    it does not make missing claim-grade artifacts disappear, and it does not
+    enable natural-driving claims. It only keeps generic `insufficient_data`
+    layers from hiding the best next debugging action once a non-blocking
+    lateral-semantics anomaly report exists.
+    """
+
+    lateral = layers.get("apollo_lateral_semantics", {})
+    if lateral.get("status") != "warn":
+        return None
+    reason = _lateral_semantics_primary_reason(lateral)
+    if not reason:
+        return None
+    natural = layers.get("natural_driving_outcome", {})
+    natural_missing = (
+        natural.get("status") == "insufficient_data"
+        and "natural_driving_report_missing" in set(natural.get("warnings") or [])
+    )
+    if not natural_missing:
+        return None
+    for prerequisite in (
+        "environment_world",
+        "bridge_runtime",
+        "channel_health",
+        "localization_gt_contract",
+        "routing_planning_control_handoff",
+        "control_mapping_apply",
+    ):
+        layer = layers.get(prerequisite, {})
+        if prerequisite == "control_mapping_apply" and _control_layer_is_guard_intervention(layer):
+            continue
+        if layer.get("status") == "fail" or layer.get("blocking_reasons"):
+            return None
+    for prerequisite in ("planning_reference_line", "route_establishment"):
+        layer = layers.get(prerequisite, {})
+        if layer.get("status") == "fail":
+            return None
+    return f"apollo_lateral_semantics:{reason}"
+
+
+def _control_layer_is_guard_intervention(layer: Mapping[str, Any]) -> bool:
+    """Guard intervention is a downstream symptom, not the upstream lateral root."""
+
+    reasons = {str(item) for item in layer.get("blocking_reasons") or []}
+    metrics = layer.get("key_metrics") if isinstance(layer.get("key_metrics"), Mapping) else {}
+    dominant = str(metrics.get("control_attribution_dominant_breakpoint") or "")
+    failure = str(metrics.get("control_attribution_failure_reason") or "")
+    steer_guard = metrics.get("steer_guard_intervention")
+    guard_active = bool(isinstance(steer_guard, Mapping) and steer_guard.get("active") is True)
+    return bool(
+        "bridge_guard_intervention" in reasons
+        or dominant == "bridge_guard_intervention"
+        or failure == "bridge_guard_intervention"
+        or guard_active
+    )
+
+
+def _lateral_semantics_primary_reason(lateral: Mapping[str, Any]) -> str | None:
+    metrics = lateral.get("key_metrics") if isinstance(lateral.get("key_metrics"), Mapping) else {}
+    anomaly_types = [str(item) for item in metrics.get("anomaly_types") or [] if item]
+    if not anomaly_types and "lateral_semantics_anomaly" not in set(lateral.get("warnings") or []):
+        return None
     priority = (
         "route_simple_lat_sign_convention_mismatch_candidate",
         "route_lateral_error_opposes_simple_lat_lateral_error",
@@ -4431,7 +4605,7 @@ def _lateral_semantics_warning_primary(layers: Mapping[str, Mapping[str, Any]]) 
     reason = next((item for item in priority if item in anomaly_types), None)
     if reason is None:
         reason = anomaly_types[0] if anomaly_types else str(metrics.get("suspected_layer") or "lateral_semantics_anomaly")
-    return f"apollo_lateral_semantics:{reason}"
+    return reason
 
 
 def _layer_blocker_name(name: str, layer: Mapping[str, Any]) -> str:
@@ -4711,6 +4885,51 @@ def _next_highest_value_validation(primary: str | None, layers: Mapping[str, Map
         return (
             "HDMap lateral error matches CARLA route cross-track, so treat it as real closed-loop lateral drift. "
             "Inspect route_s windows around drift growth, Apollo target/matched point semantics, and raw/mapped/applied steer before changing localization transform."
+        )
+    if primary == "planning_reference_line:planning_reference_heading_error_high":
+        hdmap = layers.get("hdmap_projection", {})
+        if hdmap.get("status") == "pass":
+            return (
+                "Static route/start/goal HDMap projection is non-blocking; compare Planning reference-line "
+                "heading, trajectory first-point heading, route segment heading, and Apollo routing lane window "
+                "on the same route_s window before changing control mapping, steer scale, PID, or actuation."
+            )
+    if primary == "planning_reference_line:ego_heading_diverged_from_aligned_planning_reference":
+        return (
+            "Planning trajectory heading and route-segment heading are self-consistent, so inspect the ego drift "
+            "onset against localization heading, Apollo simple_lat, raw/mapped/applied steer, and guard intervention "
+            "on the same route_s window before changing HDMap, route, or reference-line artifacts."
+        )
+    if primary == "planning_reference_line:planning_path_fallback_segment_heading_mismatch":
+        reference = layers.get("planning_reference_line", {})
+        metrics = reference.get("key_metrics") if isinstance(reference.get("key_metrics"), Mapping) else {}
+        planning_info = (
+            metrics.get("planning_info_log_reference_line_evidence")
+            if isinstance(metrics.get("planning_info_log_reference_line_evidence"), Mapping)
+            else {}
+        )
+        path_bound = (
+            planning_info.get("planning_info_log_path_bound_evidence")
+            if isinstance(planning_info.get("planning_info_log_path_bound_evidence"), Mapping)
+            else {}
+        )
+        if path_bound.get("classification") == "fallback_lateral_state_outside_path_bound":
+            return (
+                "PATH_FALLBACK is preceded by Planning path-bound lateral-state infeasibility. "
+                "Inspect why Apollo's reference-line/path-bound corridor places ego outside the "
+                "valid lateral envelope before changing control mapping, steer scale, PID, or actuation."
+            )
+        return (
+            "PATH_FALLBACK future/non-expired trajectory heading disagrees with the exported route-segment "
+            "heading. Inspect the PATH_FALLBACK onset window, Planning trajectory sample source, route-segment "
+            "heading export, and Apollo Planning logs before changing control mapping, steer scale, PID, or "
+            "actuation."
+        )
+    if primary == "apollo_lateral_semantics:route_lateral_error_opposes_simple_lat_lateral_error":
+        return (
+            "Validate the CARLA route lateral-error sign convention against Apollo simple_lat and reference-line "
+            "evidence on the same route_s window; keep guard intervention as a downstream control symptom until "
+            "the lateral semantics mismatch is resolved."
         )
     if primary and "apollo_hdmap_projection_route_s_coverage_low" in primary:
         return (
@@ -5189,6 +5408,13 @@ def _infer_backend(
         if control_channel == "/apollo/control" or bridge_stats.get("control_rx_count") not in {None, ""}:
             return "apollo_cyberrt"
     return None
+
+
+def _is_apollo_cyberrt_backend(backend: str | None) -> bool:
+    if backend is None:
+        return False
+    normalized = str(backend).strip().lower()
+    return normalized == "apollo_cyberrt" or normalized.startswith("apollo_cyberrt_")
 
 
 def _infer_control_source(

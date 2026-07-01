@@ -153,7 +153,10 @@ def test_nominal_lane_keep_profile_keeps_artifact_io_out_of_gt_publish_hot_path(
 
     assert bridge["artifact_flush_interval_s"] == 0.0
     assert bridge["artifact_flush_max_pending_rows"] == 0
-    assert bridge["artifact_stats_flush_interval_s"] == 0.0
+    # Keep per-row artifact flushing out of the GT publish hot path, but allow
+    # lightweight periodic stats materialization so the Phase 1 wrapper can read
+    # routing/planning/control counters before bridge shutdown completes.
+    assert bridge["artifact_stats_flush_interval_s"] == 2.0
     assert bridge["stage5_debug_artifact_sample_stride"] == 50
     assert bridge["reference_debug_artifact_sample_stride"] == 10
     assert bridge["control_debug_artifact_sample_stride"] == 50

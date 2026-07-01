@@ -189,6 +189,9 @@ def analyze_control_attribution(
         steering_sign=steering_sign,
         thresholds=active_thresholds,
     )
+    steer_guard_intervention = _steer_guard_intervention(rows, cyber_bridge_stats)
+    raw_to_mapped["guard_intervention_likely"] = steer_guard_intervention.get("active")
+    raw_to_mapped["guard_intervention_status"] = steer_guard_intervention.get("status")
     mapped_to_applied = _pair_consistency(
         rows,
         "bridge_steer_mapped",
@@ -269,9 +272,11 @@ def analyze_control_attribution(
         thresholds=active_thresholds,
         vehicle_response=vehicle_response,
         source_semantics=source_semantics,
+        steer_guard_intervention=steer_guard_intervention,
     )
     attribution = {
         "raw_to_mapped_steer_consistency": raw_to_mapped,
+        "steer_guard_intervention": steer_guard_intervention,
         "mapped_to_applied_steer_consistency": mapped_to_applied,
         "applied_steer_to_yaw_rate_response": vehicle_response,
         "throttle_raw_mapped_applied_consistency": throttle_consistency,
@@ -292,7 +297,13 @@ def analyze_control_attribution(
     if dominant == "insufficient_data":
         verdict_status = "insufficient_data"
         failure_reason = "missing_control_chain_fields"
-    elif dominant in {"source_control_semantics", "bridge_mapping", "carla_apply", "vehicle_response"}:
+    elif dominant in {
+        "source_control_semantics",
+        "bridge_mapping",
+        "bridge_guard_intervention",
+        "carla_apply",
+        "vehicle_response",
+    }:
         verdict_status = "fail"
         failure_reason = dominant
     elif control_chain_status == "applied_not_apollo":
@@ -480,11 +491,14 @@ def _dominant_breakpoint(
     thresholds: Mapping[str, float],
     vehicle_response: Mapping[str, Any],
     source_semantics: Mapping[str, Any],
+    steer_guard_intervention: Mapping[str, Any],
 ) -> str:
     if not raw_available:
         return "insufficient_data"
     if not mapped_available:
         return "insufficient_data"
+    if raw_to_mapped.get("status") == "fail" and steer_guard_intervention.get("active") is True:
+        return "bridge_guard_intervention"
     if raw_to_mapped.get("status") == "fail":
         return "bridge_mapping"
     if not applied_available:
@@ -522,6 +536,72 @@ def _longitudinal_dominant_breakpoint(
         if mapped_to_applied is not None and mapped_to_applied > threshold:
             return "carla_apply"
     return None
+
+
+def _steer_guard_intervention(
+    rows: Sequence[Mapping[str, Any]],
+    cyber_bridge_stats: Mapping[str, Any],
+) -> dict[str, Any]:
+    row_guard_fields = [
+        "lateral_guard_applied",
+        "sustained_lateral_guard_applied",
+        "low_speed_steer_guard_applied",
+        "low_speed_sustained_guard_applied",
+        "trajectory_contract_lateral_guard_applied",
+        "trajectory_contract_guard_applied",
+        "force_zero_steer_applied",
+        "straight_lane_zero_steer_applied",
+    ]
+    stats_guard_keys = [
+        "lateral_guard_apply_count",
+        "low_speed_steer_guard_apply_count",
+        "low_speed_sustained_guard_apply_count",
+        "trajectory_contract_lateral_guard_apply_count",
+        "force_zero_steer_apply_count",
+        "straight_lane_zero_steer_apply_count",
+    ]
+    row_counts = {
+        field: sum(1 for row in rows if _truthy_suffix(row, field))
+        for field in row_guard_fields
+    }
+    row_guard_count = sum(row_counts.values())
+    flat_stats = _flatten_mapping(cyber_bridge_stats) if cyber_bridge_stats else {}
+    stats_counts = {
+        key: int(value)
+        for key in stats_guard_keys
+        if (value := _num(_value_from_flat(flat_stats, key))) is not None and value > 0
+    }
+    stats_guard_count = sum(stats_counts.values())
+    active = row_guard_count > 0 or stats_guard_count > 0
+    control_count = (
+        _num(_value_from_flat(flat_stats, "control_tx_count"))
+        or _num(_value_from_flat(flat_stats, "control_apply_count"))
+        or _num(_value_from_flat(flat_stats, "mapping_and_apply.apply_control_count"))
+    )
+    denominator = float(control_count or len(rows) or 0)
+    ratio = None if denominator <= 0.0 else max(row_guard_count, stats_guard_count) / denominator
+    source = "none"
+    if row_guard_count > 0:
+        source = "control_trace"
+    elif stats_guard_count > 0:
+        source = "cyber_bridge_stats"
+    return {
+        "status": "active" if active else "none",
+        "active": active,
+        "source": source,
+        "row_guard_count": row_guard_count,
+        "stats_guard_count": stats_guard_count,
+        "guard_apply_count": max(row_guard_count, stats_guard_count),
+        "guard_apply_ratio": ratio,
+        "row_guard_counts": {key: value for key, value in row_counts.items() if value > 0},
+        "stats_guard_counts": stats_counts,
+        "interpretation": (
+            "Steer was changed by explicit bridge guard/contract logic; this is "
+            "not pure scale/sign mapping and cannot support no-assist claims."
+            if active
+            else "No explicit steer guard intervention was observed."
+        ),
+    }
 
 
 def _raw_to_mapped_steer_consistency(
@@ -911,6 +991,26 @@ def _value_for_field(row: Mapping[str, Any], field: str) -> float | None:
     return None
 
 
+def _truthy_suffix(row: Mapping[str, Any], suffix: str) -> bool:
+    flat = _flatten_mapping(row)
+    candidates = [row.get(suffix), flat.get(suffix)]
+    candidates.extend(value for key, value in flat.items() if key.endswith(f".{suffix}"))
+    for value in candidates:
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            if value.strip().lower() in {"true", "yes", "y", "1"}:
+                return True
+            if value.strip().lower() in {"false", "no", "n", "0"}:
+                continue
+        number = _num(value)
+        if number is not None and abs(number) > 0.0:
+            return True
+    return False
+
+
 def _resolved_fields(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     resolved: dict[str, str] = {}
     flat_rows = [_flatten_mapping(row) for row in rows]
@@ -1025,6 +1125,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
     ]
     for key in (
         "raw_to_mapped_steer_consistency",
+        "steer_guard_intervention",
         "mapped_to_applied_steer_consistency",
         "applied_steer_to_yaw_rate_response",
         "throttle_raw_mapped_applied_consistency",

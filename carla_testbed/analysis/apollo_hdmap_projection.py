@@ -134,9 +134,21 @@ def summarize_apollo_hdmap_projection(
     # Map/HDMap projection claim is about whether the claimed route/start/goal
     # lands on Apollo HDMap lanes. Ego runtime samples are still reported, but
     # they reflect behavior/localization/control drift and must not make the map
-    # identity gate fail when static route projection is already available.
-    claim_rows = ok_static_rows if ok_static_rows else ok_rows
-    claim_evidence_scope = "route_start_goal" if ok_static_rows else "all_ok_rows"
+    # identity gate fail when static route projection is already available. If
+    # only ego runtime rows are available, the projection is useful diagnostic
+    # evidence but remains insufficient for static map/reference-line claims.
+    ego_only_projection = bool(official_rows) and all(
+        str(row.get("sample_type") or "").lower() == "ego" for row in official_rows
+    )
+    if ok_static_rows:
+        claim_rows = ok_static_rows
+        claim_evidence_scope = "route_start_goal"
+    elif ego_only_projection:
+        claim_rows = ok_ego_rows
+        claim_evidence_scope = "runtime_ego_only"
+    else:
+        claim_rows = ok_rows
+        claim_evidence_scope = "all_ok_rows"
     heading_p95 = _p95_abs(_num(row.get("heading_error_rad")) for row in claim_rows)
     lateral_p95 = _p95_abs(_num(row.get("lateral_error_m")) for row in claim_rows)
     all_heading_p95 = _p95_abs(_num(row.get("heading_error_rad")) for row in ok_rows)
@@ -255,18 +267,31 @@ def summarize_apollo_hdmap_projection(
     if official_rows and (heading_p95 is None or lateral_p95 is None):
         warnings.append("apollo_hdmap_projection_metrics_missing")
 
+    if ego_only_projection:
+        warnings.append("apollo_hdmap_projection_runtime_ego_only")
+        insufficient.append("apollo_hdmap_projection_static_route_samples_missing")
+        missing_fields.append("sample_type=start_goal_or_route")
+
     if heading_p95 is not None:
         if heading_p95 >= HDMAP_HEADING_FAIL_RAD:
-            blocking.append("apollo_hdmap_projection_heading_error_high")
-            suspected_layers.extend(["map_alignment", "lane_direction", "routing_snap"])
+            if ego_only_projection:
+                warnings.append("runtime_ego_projection_heading_error_high")
+                suspected_layers.extend(["runtime_behavior_drift", "localization"])
+            else:
+                blocking.append("apollo_hdmap_projection_heading_error_high")
+                suspected_layers.extend(["map_alignment", "lane_direction", "routing_snap"])
         elif heading_p95 >= HDMAP_HEADING_WARN_RAD:
             warnings.append("apollo_hdmap_projection_heading_error_elevated")
             suspected_layers.extend(["map_alignment", "lane_direction"])
 
     if lateral_p95 is not None:
         if lateral_p95 >= HDMAP_LATERAL_FAIL_M:
-            blocking.append("apollo_hdmap_projection_lateral_error_high")
-            suspected_layers.extend(["map_alignment", "lane_id", "routing_snap"])
+            if ego_only_projection:
+                warnings.append("runtime_ego_projection_lateral_error_high")
+                suspected_layers.extend(["runtime_behavior_drift", "localization"])
+            else:
+                blocking.append("apollo_hdmap_projection_lateral_error_high")
+                suspected_layers.extend(["map_alignment", "lane_id", "routing_snap"])
         elif lateral_p95 >= HDMAP_LATERAL_WARN_M:
             warnings.append("apollo_hdmap_projection_lateral_error_elevated")
             suspected_layers.extend(["map_alignment", "lane_id"])

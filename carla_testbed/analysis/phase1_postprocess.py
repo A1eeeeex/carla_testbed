@@ -11,6 +11,10 @@ from carla_testbed.analysis.apollo_hdmap_projection import (
     analyze_apollo_hdmap_projection_file,
     write_apollo_hdmap_projection_report,
 )
+from carla_testbed.analysis.apollo_hdmap_projection_export import (
+    export_apollo_hdmap_projection_jsonl,
+    infer_map_xysl_config_from_run_dir,
+)
 from carla_testbed.analysis.apollo_link_health import analyze_and_write_apollo_link_health
 from carla_testbed.analysis.apollo_lateral_semantics import (
     analyze_apollo_lateral_semantics_run_dir,
@@ -45,11 +49,20 @@ from carla_testbed.analysis.fixed_scene_contract import (
     analyze_fixed_scene_contract_run_dir,
     write_fixed_scene_contract_report,
 )
+from carla_testbed.analysis.localization_contract import (
+    analyze_localization_contract_files,
+    write_localization_contract_report,
+)
 from carla_testbed.analysis.obstacle_gt_contract import (
     analyze_obstacle_gt_contract_run_dir,
     write_obstacle_gt_contract_report,
 )
+from carla_testbed.analysis.phase1_artifact_normalization import normalize_phase1_artifacts
 from carla_testbed.analysis.phase1_status import classify_phase1_run, write_phase1_status
+from carla_testbed.analysis.route_start_alignment import (
+    analyze_route_start_alignment_run_dir,
+    write_route_start_alignment_report,
+)
 from carla_testbed.analysis.scenario_actor_contract import (
     analyze_scenario_actor_contract_run_dir,
     write_scenario_actor_contract_report,
@@ -81,6 +94,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
 
     root = Path(run_dir).expanduser()
     analysis = root / "analysis"
+    normalization_report = normalize_phase1_artifacts(root)
     phase1_identity_updates = _ensure_phase1_identity_metadata(root)
     apollo_fixed_scene_compat_report: dict[str, Any] | None = None
     apollo_fixed_scene_dispatch_report: dict[str, Any] | None = None
@@ -91,12 +105,16 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     apollo_control_handoff_paths: dict[str, str] | None = None
     apollo_hdmap_projection_report: dict[str, Any] | None = None
     apollo_hdmap_projection_paths: dict[str, str] | None = None
+    apollo_hdmap_projection_auto_export_status: dict[str, Any] | None = None
+    apollo_hdmap_projection_auto_export_path: str | None = None
     apollo_route_contract_report: dict[str, Any] | None = None
     apollo_route_contract_paths: dict[str, str] | None = None
     apollo_reference_line_contract_report: dict[str, Any] | None = None
     apollo_reference_line_contract_paths: dict[str, str] | None = None
     apollo_module_consumption_report: dict[str, Any] | None = None
     apollo_module_consumption_paths: dict[str, str] | None = None
+    localization_contract_report: dict[str, Any] | None = None
+    localization_contract_paths: dict[str, str] | None = None
     control_attribution_report: dict[str, Any] | None = None
     control_attribution_paths: dict[str, str] | None = None
     control_health_report: dict[str, Any] | None = None
@@ -109,7 +127,10 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     fixed_scene_contract_paths: dict[str, str] | None = None
     scenario_actor_contract_report: dict[str, Any] | None = None
     scenario_actor_contract_paths: dict[str, str] | None = None
+    route_start_alignment_report: dict[str, Any] | None = None
+    route_start_alignment_paths: dict[str, str] | None = None
     phase1_scenario_binding_report = _ensure_phase1_scenario_binding(root)
+    is_apollo_phase1_target_run = _is_apollo_phase1_target_run(root)
     is_apollo_fixed_scene_target_run = _is_apollo_fixed_scene_target_run(root)
     if is_apollo_fixed_scene_target_run:
         apollo_fixed_scene_dispatch_report, apollo_fixed_scene_dispatch_paths = _write_apollo_dispatch(root)
@@ -119,13 +140,19 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
 
     fixed_scene_contract_report, fixed_scene_contract_paths = _write_fixed_scene_contract(root)
     scenario_actor_contract_report, scenario_actor_contract_paths = _write_scenario_actor_contract(root)
+    route_start_alignment_report, route_start_alignment_paths = _write_route_start_alignment(root)
 
-    if is_apollo_fixed_scene_target_run:
+    if is_apollo_phase1_target_run:
         apollo_control_handoff_report, apollo_control_handoff_paths = _write_apollo_control_handoff(root)
+        (
+            apollo_hdmap_projection_auto_export_status,
+            apollo_hdmap_projection_auto_export_path,
+        ) = _maybe_auto_export_apollo_hdmap_projection(root)
         apollo_hdmap_projection_report, apollo_hdmap_projection_paths = _write_apollo_hdmap_projection(root)
         apollo_route_contract_report, apollo_route_contract_paths = _write_apollo_route_contract(root)
         apollo_reference_line_contract_report, apollo_reference_line_contract_paths = _write_apollo_reference_line_contract(root)
         apollo_module_consumption_report, apollo_module_consumption_paths = _write_apollo_module_consumption(root)
+        localization_contract_report, localization_contract_paths = _write_localization_contract(root)
         control_attribution_report, control_attribution_paths = _write_control_attribution(root)
         control_health_report, control_health_paths = _write_control_health(root)
         apollo_lateral_semantics_report, apollo_lateral_semantics_paths = _write_apollo_lateral_semantics(root)
@@ -147,6 +174,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     return {
         "schema_version": PHASE1_POSTPROCESS_SCHEMA_VERSION,
         "run_dir": str(root),
+        "artifact_normalization_status": normalization_report.get("status"),
         "phase1_identity_updates": phase1_identity_updates,
         "v_t_gap_status": v_t_gap_report.get("status"),
         "phase1_status": phase1_report.get("status"),
@@ -169,6 +197,9 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         "scenario_actor_contract_status": (
             scenario_actor_contract_report.get("status") if scenario_actor_contract_report else None
         ),
+        "route_start_alignment_status": (
+            route_start_alignment_report.get("status") if route_start_alignment_report else None
+        ),
         "baguang_lane_event_contract_status": (
             baguang_lane_event_report.get("status") if baguang_lane_event_report else None
         ),
@@ -189,6 +220,11 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         "apollo_hdmap_projection_status": (
             apollo_hdmap_projection_report.get("status") if apollo_hdmap_projection_report else None
         ),
+        "apollo_hdmap_projection_auto_export_status": (
+            apollo_hdmap_projection_auto_export_status.get("status")
+            if apollo_hdmap_projection_auto_export_status
+            else None
+        ),
         "apollo_route_contract_status": (
             apollo_route_contract_report.get("status") if apollo_route_contract_report else None
         ),
@@ -197,6 +233,11 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         ),
         "apollo_module_consumption_status": (
             apollo_module_consumption_report.get("status") if apollo_module_consumption_report else None
+        ),
+        "localization_contract_status": (
+            (localization_contract_report.get("verdict") or {}).get("status")
+            if localization_contract_report
+            else None
         ),
         "apollo_link_health_primary_blocker": (
             apollo_link_health_report.get("primary_blocker") if apollo_link_health_report else None
@@ -239,6 +280,11 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
                 if apollo_lateral_semantics_paths
                 else {}
             ),
+            **(
+                {"apollo_hdmap_projection_auto_export": apollo_hdmap_projection_auto_export_path}
+                if apollo_hdmap_projection_auto_export_path
+                else {}
+            ),
             **({"apollo_hdmap_projection": apollo_hdmap_projection_paths} if apollo_hdmap_projection_paths else {}),
             **({"apollo_route_contract": apollo_route_contract_paths} if apollo_route_contract_paths else {}),
             **(
@@ -247,8 +293,10 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
                 else {}
             ),
             **({"apollo_module_consumption": apollo_module_consumption_paths} if apollo_module_consumption_paths else {}),
+            **({"localization_contract": localization_contract_paths} if localization_contract_paths else {}),
             **({"apollo_link_health": apollo_link_health_paths} if apollo_link_health_paths else {}),
             **({"fixed_scene_contract": fixed_scene_contract_paths} if fixed_scene_contract_paths else {}),
+            **({"route_start_alignment": route_start_alignment_paths} if route_start_alignment_paths else {}),
             **(
                 {"scenario_actor_contract": scenario_actor_contract_paths}
                 if scenario_actor_contract_paths
@@ -268,6 +316,12 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _write_route_start_alignment(root: Path) -> tuple[dict[str, Any], dict[str, str]]:
+    report = analyze_route_start_alignment_run_dir(root)
+    paths = write_route_start_alignment_report(report, root / "analysis" / "route_start_alignment")
+    return report, paths
 
 
 def _write_fixed_scene_contract(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
@@ -434,6 +488,75 @@ def _write_apollo_hdmap_projection(root: Path) -> tuple[dict[str, Any] | None, d
     return report, paths
 
 
+def _maybe_auto_export_apollo_hdmap_projection(root: Path) -> tuple[dict[str, Any] | None, str | None]:
+    if not _phase1_auto_export_apollo_hdmap_projection_requested(root):
+        return None, None
+    out_dir = root / "analysis" / "apollo_hdmap_projection_export"
+    status_path = out_dir / "apollo_hdmap_projection_export_status.json"
+    projection_path = root / "artifacts" / "apollo_hdmap_projection.jsonl"
+    if projection_path.exists() and projection_path.stat().st_size > 0:
+        status = {
+            "schema_version": "apollo_hdmap_projection_auto_export.v1",
+            "status": "skipped",
+            "reason": "existing_non_empty_projection_artifact",
+            "out_path": str(projection_path),
+            "claim_boundary": (
+                "Existing projection evidence is analyzed by Phase 1 postprocess; "
+                "auto export does not change driving behavior."
+            ),
+        }
+        _write_json(status_path, status)
+        return status, str(status_path)
+    try:
+        projection_path.parent.mkdir(parents=True, exist_ok=True)
+        frame_transform_path = DEFAULT_APOLLO_FRAME_TRANSFORM if DEFAULT_APOLLO_FRAME_TRANSFORM.exists() else None
+        export_status = export_apollo_hdmap_projection_jsonl(
+            run_dir=root,
+            out_path=projection_path,
+            config=infer_map_xysl_config_from_run_dir(root),
+            max_samples=80,
+            include_route_samples=True,
+            include_start_goal=True,
+            frame_transform_path=frame_transform_path,
+            route_sample_step_m=5.0,
+            min_route_s_coverage=20.0,
+        )
+        status = {
+            "schema_version": "apollo_hdmap_projection_auto_export.v1",
+            "status": export_status.get("status"),
+            "export": export_status,
+            "out_path": str(projection_path),
+            "claim_boundary": (
+                "Projection export adds Apollo HDMap API evidence only; it does not change runtime behavior."
+            ),
+        }
+    except Exception as exc:  # pragma: no cover - depends on local Apollo/Docker runtime
+        status = {
+            "schema_version": "apollo_hdmap_projection_auto_export.v1",
+            "status": "failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "out_path": str(projection_path),
+            "claim_boundary": (
+                "HDMap projection export failed during postprocess. Treat projection evidence as "
+                "insufficient_data, not as a driving-behavior failure."
+            ),
+        }
+    _write_json(status_path, status)
+    return status, str(status_path)
+
+
+def _phase1_auto_export_apollo_hdmap_projection_requested(root: Path) -> bool:
+    for rel in ("config.resolved.yaml", "typed_runtime.effective_legacy.yaml", "effective.yaml"):
+        payload = _read_yaml(root / rel)
+        for value in _walk_values_for_key(payload, "auto_export_apollo_hdmap_projection"):
+            return bool(value)
+    manifest = _read_json(root / "manifest.json")
+    for value in _walk_values_for_key(manifest, "auto_export_apollo_hdmap_projection"):
+        return bool(value)
+    return False
+
+
 def _write_apollo_route_contract(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
     if not _apollo_route_contract_raw_exists(root):
         return None, None
@@ -471,6 +594,31 @@ def _write_apollo_module_consumption(root: Path) -> tuple[dict[str, Any] | None,
     report = analyze_apollo_module_consumption_run_dir(root)
     paths = write_apollo_module_consumption_report(report, root / "analysis" / "apollo_module_consumption")
     return report, paths
+
+
+def _write_localization_contract(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    if not _localization_contract_raw_exists(root):
+        return None, None
+    report = analyze_localization_contract_files(run_dir=root)
+    paths = write_localization_contract_report(report, root / "analysis" / "localization_contract")
+    return report, paths
+
+
+def _localization_contract_raw_exists(root: Path) -> bool:
+    return any(
+        path.exists()
+        for path in (
+            root / "timeseries.csv",
+            root / "timeseries.jsonl",
+            root / "artifacts" / "debug_timeseries.csv",
+            root / "debug_timeseries.csv",
+            root / "channel_stats.json",
+            root / "analysis" / "channel_stats_normalized" / "channel_stats_normalized.json",
+            root / "artifacts" / "topic_publish_stats.jsonl",
+            root / "analysis" / "route_health" / "route_health.json",
+            root / "artifacts" / "cyber_bridge_stats.json",
+        )
+    )
 
 
 def _apollo_module_consumption_raw_exists(root: Path) -> bool:
@@ -860,12 +1008,17 @@ def _walk_values_for_key(payload: Any, key: str):
             yield from _walk_values_for_key(item, key)
 
 
-def _is_apollo_fixed_scene_target_run(root: Path) -> bool:
+def _is_apollo_phase1_target_run(root: Path) -> bool:
     manifest = _read_json(root / "manifest.json")
     summary = _read_json(root / "summary.json")
     backend = str(manifest.get("backend") or manifest.get("backend_name") or summary.get("backend") or "")
     backend_type = str(manifest.get("backend_type") or summary.get("backend_type") or "")
-    if backend != "apollo_cyberrt" and backend_type != "apollo_reference_backend":
+    return backend == "apollo_cyberrt" or backend_type == "apollo_reference_backend"
+
+
+def _is_apollo_fixed_scene_target_run(root: Path) -> bool:
+    manifest = _read_json(root / "manifest.json")
+    if not _is_apollo_phase1_target_run(root):
         return False
     target_contract = _target_actor_contract(root, manifest)
     if target_contract.get("status") != "resolved" or not target_contract.get("target_actor_role"):

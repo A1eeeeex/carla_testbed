@@ -81,6 +81,7 @@ def analyze_apollo_reference_line_contract_files(
     planning_materialization = _read_json(planning_materialization_path)
     route_contract = _read_json(route_contract_path)
     hdmap_rows = _read_hdmap_projection(hdmap_projection_path)
+    hdmap_projection_artifact_exists = _path_exists(hdmap_projection_path)
 
     rows = _normalized_rows(
         contract_rows=contract_rows,
@@ -97,6 +98,7 @@ def analyze_apollo_reference_line_contract_files(
         planning_info_log_reference_line_evidence=planning_info_log_reference_line_evidence,
         route_contract=route_contract,
         hdmap_projection_rows=hdmap_rows,
+        hdmap_projection_artifact_exists=hdmap_projection_artifact_exists,
         source=source,
     )
 
@@ -110,10 +112,14 @@ def analyze_apollo_reference_line_contract(
     planning_info_log_reference_line_evidence: Mapping[str, Any] | None = None,
     route_contract: Mapping[str, Any] | None = None,
     hdmap_projection_rows: Sequence[Mapping[str, Any]] | None = None,
+    hdmap_projection_artifact_exists: bool | None = None,
     source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized = [dict(row) for row in rows]
-    hdmap_projection = summarize_apollo_hdmap_projection(hdmap_projection_rows or [])
+    hdmap_projection = summarize_apollo_hdmap_projection(
+        hdmap_projection_rows or [],
+        artifact_file_exists=hdmap_projection_artifact_exists,
+    )
     if not normalized:
         contracts = _contracts(
             rows=[],
@@ -134,6 +140,7 @@ def analyze_apollo_reference_line_contract(
             planning_info_log_reference_line_evidence=planning_info_log_reference_line_evidence,
             route_contract=route_contract,
             hdmap_projection_rows=hdmap_projection_rows,
+            hdmap_projection_artifact_exists=hdmap_projection_artifact_exists,
             source=source,
             contracts=contracts,
         )
@@ -160,6 +167,7 @@ def analyze_apollo_reference_line_contract(
             planning_info_log_reference_line_evidence=planning_info_log_reference_line_evidence,
             route_contract=route_contract,
             hdmap_projection_rows=hdmap_projection_rows,
+            hdmap_projection_artifact_exists=hdmap_projection_artifact_exists,
             source=source,
             contracts=contracts,
         )
@@ -181,6 +189,7 @@ def analyze_apollo_reference_line_contract(
             planning_info_log_reference_line_evidence=planning_info_log_reference_line_evidence,
             route_contract=route_contract,
             hdmap_projection_rows=hdmap_projection_rows,
+            hdmap_projection_artifact_exists=hdmap_projection_artifact_exists,
             source=source,
             contracts=contracts,
         )
@@ -196,6 +205,7 @@ def analyze_apollo_reference_line_contract(
         planning_info_log_reference_line_evidence=planning_info_log_reference_line_evidence,
         route_contract=route_contract,
         hdmap_projection_rows=hdmap_projection_rows,
+        hdmap_projection_artifact_exists=hdmap_projection_artifact_exists,
         source=source,
         contracts=contracts,
     )
@@ -290,11 +300,21 @@ def _has_reference_line_regeneration_inputs(root: Path) -> bool:
 
 def _reference_line_report_needs_regeneration(report: Mapping[str, Any]) -> bool:
     status = str(report.get("status") or "").strip().lower()
-    if status == "fail":
-        return False
     blockers = {str(item) for item in report.get("blocking_reasons") or [] if item}
     evidence = report.get("evidence") if isinstance(report.get("evidence"), Mapping) else {}
     metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+    stale_heading_blockers = {
+        "planning_reference_heading_error_high",
+        "planning_path_fallback_heading_error_high",
+    }
+    if (
+        status == "fail"
+        and blockers & stale_heading_blockers
+        and "path_fallback_trajectory_first_theta_vs_segment_heading_p95_rad" not in metrics
+    ):
+        return True
+    if status == "fail":
+        return False
     missing_runtime = "apollo_reference_line_runtime_evidence_missing" in blockers
     missing_evidence = not any(
         evidence.get(key) is not None
@@ -351,6 +371,42 @@ def build_reference_line_contract_event(row: Mapping[str, Any], *, source_confid
     else:
         control_error = _angle_delta(loc_heading, control_ref if control_ref is not None else control_heading)
     first_segment_heading = _num(_first(row, "trajectory_first_segment_heading", "first_segment_heading"))
+    future_segment_heading = _num(_first(row, "trajectory_future_first_segment_heading", "future_segment_heading"))
+    future_lookahead_heading = _num(
+        _first(row, "trajectory_future_lookahead_heading", "future_lookahead_heading")
+    )
+    future_lookahead_index = _first(
+        row,
+        "trajectory_future_lookahead_point_index",
+        "future_lookahead_point_index",
+    )
+    future_lookahead_distance = _num(
+        _first(row, "trajectory_future_lookahead_distance_m", "future_lookahead_distance_m")
+    )
+    future_lookahead_time = _num(
+        _first(row, "trajectory_future_lookahead_time_s", "future_lookahead_time_s")
+    )
+    first_nonexpired_theta = _num(
+        _first(row, "trajectory_first_nonexpired_point_theta", "first_nonexpired_point_theta")
+    )
+    first_nonexpired_relative_time = _num(
+        _first(
+            row,
+            "trajectory_first_nonexpired_point_relative_time",
+            "first_nonexpired_point_relative_time",
+        )
+    )
+    first_nonexpired_index = _first(
+        row,
+        "trajectory_first_nonexpired_point_index",
+        "first_nonexpired_point_index",
+    )
+    expired_prefix_count = _first(row, "trajectory_expired_prefix_count", "expired_prefix_count")
+    first_nonexpired_remaining_point_count = _first(
+        row,
+        "trajectory_first_nonexpired_remaining_point_count",
+        "first_nonexpired_remaining_point_count",
+    )
     reference_line_field_present = _first(row, "planning_debug_reference_line_field_present")
     if reference_line_field_present is None and "planning_debug_reference_line_count" in row:
         reference_line_field_present = True
@@ -400,8 +456,19 @@ def build_reference_line_contract_event(row: Mapping[str, Any], *, source_confid
             "first_trajectory_point_kappa": _num(_first(row, "first_trajectory_point_kappa")),
             "first_trajectory_point_v": _num(_first(row, "first_trajectory_point_v")),
             "trajectory_sample_points": _sample_points(_first(row, "trajectory_sample_points")),
+            "trajectory_future_window_points": _sample_points(_first(row, "trajectory_future_window_points")),
             "trajectory_total_path_length": _num(_first(row, "trajectory_total_path_length")),
             "trajectory_first_segment_heading": first_segment_heading,
+            "trajectory_future_first_segment_heading": future_segment_heading,
+            "trajectory_future_lookahead_heading": future_lookahead_heading,
+            "trajectory_future_lookahead_point_index": future_lookahead_index,
+            "trajectory_future_lookahead_distance_m": future_lookahead_distance,
+            "trajectory_future_lookahead_time_s": future_lookahead_time,
+            "trajectory_first_nonexpired_point_theta": first_nonexpired_theta,
+            "trajectory_first_nonexpired_point_relative_time": first_nonexpired_relative_time,
+            "trajectory_first_nonexpired_point_index": first_nonexpired_index,
+            "trajectory_first_nonexpired_remaining_point_count": first_nonexpired_remaining_point_count,
+            "trajectory_expired_prefix_count": expired_prefix_count,
             "lane_ids": _list_value(_first(row, "lane_ids", "lane_id_first")),
             "target_lane_ids": _list_value(_first(row, "target_lane_ids", "target_lane_id_first")),
             "reference_line_count": _num(
@@ -457,6 +524,14 @@ def build_reference_line_contract_event(row: Mapping[str, Any], *, source_confid
             "localization_to_control_ref_heading_error_rad": control_error,
             "localization_to_control_lateral_error_m": _num(_first(row, "debug_simple_lat_lateral_error", "apollo_debug_simple_lat_lateral_error", "cross_track_error")),
             "trajectory_first_theta_vs_segment_heading_p95_rad": _angle_delta(planning_theta, first_segment_heading),
+            "trajectory_first_nonexpired_theta_vs_future_segment_heading_rad": _angle_delta(
+                first_nonexpired_theta,
+                future_segment_heading,
+            ),
+            "trajectory_first_nonexpired_theta_vs_future_lookahead_heading_rad": _angle_delta(
+                first_nonexpired_theta,
+                future_lookahead_heading,
+            ),
             "planning_reference_available": planning_theta is not None or _num(_first(row, "reference_line_count")) not in {None, 0.0},
             "control_reference_available": control_ref is not None or control_heading_error is not None,
             "apollo_reference_line_verified_candidate": False,
@@ -550,6 +625,16 @@ def apollo_reference_line_contract_summary_md(report: Mapping[str, Any]) -> str:
             f"- Normal trajectory heading p95 rad: `{metrics.get('normal_trajectory_heading_error_p95_rad')}`",
             f"- PATH_FALLBACK trajectory ratio: `{metrics.get('path_fallback_trajectory_ratio')}`",
             f"- PATH_FALLBACK heading p95 rad: `{metrics.get('path_fallback_heading_error_p95_rad')}`",
+            f"- PATH_FALLBACK trajectory-vs-segment heading p95 rad: `{metrics.get('path_fallback_trajectory_first_theta_vs_segment_heading_p95_rad')}`",
+            f"- PATH_FALLBACK future short-segment heading p95 rad: `{metrics.get('path_fallback_first_nonexpired_theta_vs_future_segment_heading_p95_rad')}`",
+            f"- PATH_FALLBACK future lookahead heading p95 rad: `{metrics.get('path_fallback_first_nonexpired_theta_vs_future_lookahead_heading_p95_rad')}`",
+            f"- PATH_FALLBACK future lookahead distance p95 m: `{metrics.get('path_fallback_future_lookahead_distance_p95_m')}`",
+            f"- PATH_FALLBACK future lookahead min distance m: `{metrics.get('path_fallback_future_lookahead_distance_min_m')}`",
+            f"- PATH_FALLBACK future lookahead <1m ratio: `{metrics.get('path_fallback_future_lookahead_distance_lt_1m_ratio')}`",
+            f"- PATH_FALLBACK future lookahead reverse-heading ratio: `{metrics.get('path_fallback_future_lookahead_reverse_heading_ratio')}`",
+            f"- Normal trajectory-vs-segment heading p95 rad: `{metrics.get('normal_trajectory_first_theta_vs_segment_heading_p95_rad')}`",
+            f"- Normal future short-segment heading p95 rad: `{metrics.get('normal_first_nonexpired_theta_vs_future_segment_heading_p95_rad')}`",
+            f"- Normal future lookahead heading p95 rad: `{metrics.get('normal_first_nonexpired_theta_vs_future_lookahead_heading_p95_rad')}`",
             f"- Control ref heading p95 rad: `{metrics.get('control_ref_heading_error_p95_rad')}`",
             f"- Control lateral error p95 m: `{metrics.get('control_lateral_error_p95_m')}`",
             f"- Apollo HDMap projection status: `{hdmap_projection.get('status')}`",
@@ -578,10 +663,14 @@ def _report(
     planning_info_log_reference_line_evidence: Mapping[str, Any] | None,
     route_contract: Mapping[str, Any] | None,
     hdmap_projection_rows: Sequence[Mapping[str, Any]] | None,
+    hdmap_projection_artifact_exists: bool | None,
     source: Mapping[str, Any] | None,
     contracts: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    hdmap_projection = summarize_apollo_hdmap_projection(hdmap_projection_rows or [])
+    hdmap_projection = summarize_apollo_hdmap_projection(
+        hdmap_projection_rows or [],
+        artifact_file_exists=hdmap_projection_artifact_exists,
+    )
     evidence = _evidence(rows, hdmap_projection)
     metrics = _metrics(rows)
     planning_projection_alignment = _planning_first_point_projection_alignment(
@@ -708,11 +797,44 @@ def _planning_trajectory_contract(
     normal_heading_p95 = _num(metrics.get("normal_trajectory_heading_error_p95_rad"))
     path_fallback_ratio = _num(metrics.get("path_fallback_trajectory_ratio"))
     path_fallback_heading_p95 = _num(metrics.get("path_fallback_heading_error_p95_rad"))
+    path_fallback_segment_heading_p95 = _num(
+        metrics.get("path_fallback_trajectory_first_theta_vs_segment_heading_p95_rad")
+    )
+    path_fallback_future_segment_heading_p95 = _num(
+        metrics.get("path_fallback_first_nonexpired_theta_vs_future_segment_heading_p95_rad")
+    )
+    path_fallback_future_lookahead_heading_p95 = _num(
+        metrics.get("path_fallback_first_nonexpired_theta_vs_future_lookahead_heading_p95_rad")
+    )
+    path_fallback_future_lookahead_distance_p95 = _num(
+        metrics.get("path_fallback_future_lookahead_distance_p95_m")
+    )
+    path_fallback_future_lookahead_distance_min = _num(
+        metrics.get("path_fallback_future_lookahead_distance_min_m")
+    )
+    path_fallback_future_lookahead_distance_lt_1m_ratio = _num(
+        metrics.get("path_fallback_future_lookahead_distance_lt_1m_ratio")
+    )
+    path_fallback_future_lookahead_reverse_heading_ratio = _num(
+        metrics.get("path_fallback_future_lookahead_reverse_heading_ratio")
+    )
+    trajectory_segment_heading_p95 = _num(
+        metrics.get("trajectory_first_theta_vs_segment_heading_p95_rad")
+    )
+    trajectory_reference_self_consistent = (
+        trajectory_segment_heading_p95 is not None
+        and trajectory_segment_heading_p95 < PASS_HEADING_RAD
+    )
     claim_window_materialized = (
         effective_nonempty_ratio is not None
         and effective_nonempty_ratio >= MIN_NONEMPTY_TRAJECTORY_RATIO
     )
     heading_evidence_available = planning_heading_p95 is not None
+    ego_heading_diverged_from_aligned_reference = (
+        planning_heading_p95 is not None
+        and planning_heading_p95 >= FAIL_HEADING_RAD
+        and trajectory_reference_self_consistent
+    )
 
     if not rows:
         missing.append("planning_trajectory_rows")
@@ -743,7 +865,26 @@ def _planning_trajectory_contract(
         and path_fallback_heading_p95 >= FAIL_HEADING_RAD
         and (normal_heading_p95 is None or normal_heading_p95 < FAIL_HEADING_RAD)
     )
-    if fallback_driven_heading_error:
+    path_fallback_segment_metric = (
+        path_fallback_future_lookahead_heading_p95
+        if path_fallback_future_lookahead_heading_p95 is not None
+        else (
+            path_fallback_future_segment_heading_p95
+            if path_fallback_future_segment_heading_p95 is not None
+            else path_fallback_segment_heading_p95
+        )
+    )
+    path_fallback_segment_heading_mismatch = (
+        path_fallback_ratio is not None
+        and path_fallback_ratio > 0.0
+        and path_fallback_segment_metric is not None
+        and path_fallback_segment_metric >= FAIL_HEADING_RAD
+    )
+    if path_fallback_segment_heading_mismatch:
+        blocking.append("planning_path_fallback_segment_heading_mismatch")
+    elif ego_heading_diverged_from_aligned_reference:
+        blocking.append("ego_heading_diverged_from_aligned_planning_reference")
+    elif fallback_driven_heading_error:
         blocking.append("planning_path_fallback_heading_error_high")
     else:
         _apply_heading_threshold(
@@ -755,6 +896,16 @@ def _planning_trajectory_contract(
         )
     if path_fallback_ratio is not None and path_fallback_ratio > 0.0:
         warnings.append("planning_path_fallback_trajectory_present")
+    if (
+        path_fallback_future_lookahead_reverse_heading_ratio is not None
+        and path_fallback_future_lookahead_reverse_heading_ratio > 0.0
+    ):
+        warnings.append("planning_path_fallback_lookahead_reverse_heading_present")
+    if (
+        path_fallback_future_lookahead_distance_lt_1m_ratio is not None
+        and path_fallback_future_lookahead_distance_lt_1m_ratio >= 0.50
+    ):
+        warnings.append("planning_path_fallback_lookahead_distance_short")
     if available and planning_heading_p95 is None:
         missing.append("planning_ref_heading_error_p95_rad")
     status = _contract_status(
@@ -785,11 +936,37 @@ def _planning_trajectory_contract(
             "normal_trajectory_heading_error_p95_rad": normal_heading_p95,
             "path_fallback_trajectory_ratio": path_fallback_ratio,
             "path_fallback_heading_error_p95_rad": path_fallback_heading_p95,
+            "path_fallback_trajectory_first_theta_vs_segment_heading_p95_rad": path_fallback_segment_heading_p95,
+            "path_fallback_first_nonexpired_theta_vs_future_segment_heading_p95_rad": path_fallback_future_segment_heading_p95,
+            "path_fallback_first_nonexpired_theta_vs_future_lookahead_heading_p95_rad": path_fallback_future_lookahead_heading_p95,
+            "path_fallback_future_lookahead_distance_p95_m": path_fallback_future_lookahead_distance_p95,
+            "path_fallback_future_lookahead_distance_min_m": path_fallback_future_lookahead_distance_min,
+            "path_fallback_future_lookahead_distance_lt_1m_ratio": path_fallback_future_lookahead_distance_lt_1m_ratio,
+            "path_fallback_future_lookahead_reverse_heading_ratio": path_fallback_future_lookahead_reverse_heading_ratio,
+            "path_fallback_segment_heading_metric_source": (
+                "first_nonexpired_theta_vs_future_lookahead"
+                if path_fallback_future_lookahead_heading_p95 is not None
+                else (
+                    "first_nonexpired_theta_vs_future_segment"
+                    if path_fallback_future_segment_heading_p95 is not None
+                    else "first_theta_vs_first_segment"
+                )
+            ),
             "path_fallback_first_kappa_p95_abs": metrics.get("path_fallback_first_kappa_p95_abs"),
             "path_fallback_onset": metrics.get("path_fallback_onset"),
+            "normal_trajectory_first_theta_vs_segment_heading_p95_rad": metrics.get(
+                "normal_trajectory_first_theta_vs_segment_heading_p95_rad"
+            ),
+            "normal_first_nonexpired_theta_vs_future_segment_heading_p95_rad": metrics.get(
+                "normal_first_nonexpired_theta_vs_future_segment_heading_p95_rad"
+            ),
+            "normal_first_nonexpired_theta_vs_future_lookahead_heading_p95_rad": metrics.get(
+                "normal_first_nonexpired_theta_vs_future_lookahead_heading_p95_rad"
+            ),
             "reference_line_count_zero_ratio": reference_line_zero_ratio,
             "routing_segment_count_zero_ratio": metrics.get("routing_segment_count_zero_ratio"),
             "trajectory_first_theta_vs_segment_heading_p95_rad": metrics.get("trajectory_first_theta_vs_segment_heading_p95_rad"),
+            "trajectory_reference_heading_self_consistent": trajectory_reference_self_consistent,
         },
         "interpretation": (
             "Planning trajectory evidence checks Apollo trajectory continuity and heading semantics. "
@@ -1090,6 +1267,85 @@ def _metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:
             _first_number(row, "computed.localization_to_planning_first_heading_error_rad")
             for row in rows
             if _planning_trajectory_is_path_fallback(row)
+        ),
+        "path_fallback_trajectory_first_theta_vs_segment_heading_p95_rad": _p95_abs(
+            _first_number(
+                row,
+                "computed.trajectory_first_theta_vs_segment_heading_p95_rad",
+                "computed.trajectory_first_theta_vs_segment_heading_error_rad",
+            )
+            for row in rows
+            if _planning_trajectory_is_path_fallback(row)
+        ),
+        "path_fallback_first_nonexpired_theta_vs_future_segment_heading_p95_rad": _p95_abs(
+            _first_number(
+                row,
+                "computed.trajectory_first_nonexpired_theta_vs_future_segment_heading_rad",
+            )
+            for row in rows
+            if _planning_trajectory_is_path_fallback(row)
+        ),
+        "path_fallback_first_nonexpired_theta_vs_future_lookahead_heading_p95_rad": _p95_abs(
+            _first_number(
+                row,
+                "computed.trajectory_first_nonexpired_theta_vs_future_lookahead_heading_rad",
+            )
+            for row in rows
+            if _planning_trajectory_is_path_fallback(row)
+        ),
+        "path_fallback_future_lookahead_distance_p95_m": _p95_abs(
+            _first_number(row, "planning.trajectory_future_lookahead_distance_m")
+            for row in rows
+            if _planning_trajectory_is_path_fallback(row)
+        ),
+        "path_fallback_future_lookahead_distance_min_m": _min_number(
+            _first_number(row, "planning.trajectory_future_lookahead_distance_m")
+            for row in rows
+            if _planning_trajectory_is_path_fallback(row)
+        ),
+        "path_fallback_future_lookahead_distance_lt_1m_ratio": _ratio_where(
+            (
+                _first_number(row, "planning.trajectory_future_lookahead_distance_m")
+                for row in rows
+                if _planning_trajectory_is_path_fallback(row)
+            ),
+            lambda value: value < 1.0,
+        ),
+        "path_fallback_future_lookahead_reverse_heading_ratio": _ratio_where(
+            (
+                _first_number(
+                    row,
+                    "computed.trajectory_first_nonexpired_theta_vs_future_lookahead_heading_rad",
+                )
+                for row in rows
+                if _planning_trajectory_is_path_fallback(row)
+            ),
+            lambda value: abs(value) >= 2.50,
+        ),
+        "normal_trajectory_first_theta_vs_segment_heading_p95_rad": _p95_abs(
+            _first_number(
+                row,
+                "computed.trajectory_first_theta_vs_segment_heading_p95_rad",
+                "computed.trajectory_first_theta_vs_segment_heading_error_rad",
+            )
+            for row in rows
+            if _planning_trajectory_nonempty(row) and not _planning_trajectory_is_path_fallback(row)
+        ),
+        "normal_first_nonexpired_theta_vs_future_segment_heading_p95_rad": _p95_abs(
+            _first_number(
+                row,
+                "computed.trajectory_first_nonexpired_theta_vs_future_segment_heading_rad",
+            )
+            for row in rows
+            if _planning_trajectory_nonempty(row) and not _planning_trajectory_is_path_fallback(row)
+        ),
+        "normal_first_nonexpired_theta_vs_future_lookahead_heading_p95_rad": _p95_abs(
+            _first_number(
+                row,
+                "computed.trajectory_first_nonexpired_theta_vs_future_lookahead_heading_rad",
+            )
+            for row in rows
+            if _planning_trajectory_nonempty(row) and not _planning_trajectory_is_path_fallback(row)
         ),
         "path_fallback_first_kappa_p95_abs": _p95_abs(
             _first_number(row, "planning.first_trajectory_point_kappa")
@@ -1401,11 +1657,82 @@ def _planning_info_log_reference_line_evidence(path: str | Path | None) -> dict[
     print_counts: Counter[str] = Counter()
     st_boundary_ids: list[str] = []
     destination_warning_count = 0
-    for line in lines:
+    fallback_l_lower_values: list[float] = []
+    fallback_l_upper_values: list[float] = []
+    fallback_opt_l_values: list[float] = []
+    fallback_opt_l_out_of_bounds_margins: list[float] = []
+    current_fallback_l_lower: tuple[float, float] | None = None
+    current_fallback_l_upper: tuple[float, float] | None = None
+    current_fallback_l_lower_points: list[tuple[float, float]] = []
+    current_fallback_l_upper_points: list[tuple[float, float]] = []
+    first_fallback_path_bound_violation: dict[str, Any] | None = None
+    for line_number, line in enumerate(lines, start=1):
         if "print_regular/self_ref_l:" in line:
             print_counts["print_regular_self_ref_l"] += 1
         if "print_regular/self_opt_l:" in line:
             print_counts["print_regular_self_opt_l"] += 1
+        if "print_fallback/self_l_lower:" in line:
+            print_counts["print_fallback_self_l_lower"] += 1
+            points = _extract_debug_curve_points(line, "print_fallback/self_l_lower:")
+            values = [value for _, value in points]
+            fallback_l_lower_values.extend(values)
+            current_fallback_l_lower_points = points
+            if values:
+                current_fallback_l_lower = (min(values), max(values))
+        if "print_fallback/self_l_upper:" in line:
+            print_counts["print_fallback_self_l_upper"] += 1
+            points = _extract_debug_curve_points(line, "print_fallback/self_l_upper:")
+            values = [value for _, value in points]
+            fallback_l_upper_values.extend(values)
+            current_fallback_l_upper_points = points
+            if values:
+                current_fallback_l_upper = (min(values), max(values))
+        if "print_fallback/self_opt_l:" in line:
+            print_counts["print_fallback_self_opt_l"] += 1
+            opt_points = _extract_debug_curve_points(line, "print_fallback/self_opt_l:")
+            values = [value for _, value in opt_points]
+            fallback_opt_l_values.extend(values)
+            if current_fallback_l_lower is not None and current_fallback_l_upper is not None:
+                lower = current_fallback_l_lower[0]
+                upper = current_fallback_l_upper[1]
+                for index, value in enumerate(values):
+                    lower_at_index = (
+                        current_fallback_l_lower_points[index][1]
+                        if index < len(current_fallback_l_lower_points)
+                        else lower
+                    )
+                    upper_at_index = (
+                        current_fallback_l_upper_points[index][1]
+                        if index < len(current_fallback_l_upper_points)
+                        else upper
+                    )
+                    s_at_index = opt_points[index][0] if index < len(opt_points) else None
+                    if value < lower:
+                        margin = lower - value
+                        fallback_opt_l_out_of_bounds_margins.append(margin)
+                        if first_fallback_path_bound_violation is None:
+                            first_fallback_path_bound_violation = {
+                                "line_number": line_number,
+                                "s_m": s_at_index,
+                                "opt_l_m": value,
+                                "lower_l_m": lower_at_index,
+                                "upper_l_m": upper_at_index,
+                                "violated_bound": "lower",
+                                "margin_m": margin,
+                            }
+                    elif value > upper:
+                        margin = value - upper
+                        fallback_opt_l_out_of_bounds_margins.append(margin)
+                        if first_fallback_path_bound_violation is None:
+                            first_fallback_path_bound_violation = {
+                                "line_number": line_number,
+                                "s_m": s_at_index,
+                                "opt_l_m": value,
+                                "lower_l_m": lower_at_index,
+                                "upper_l_m": upper_at_index,
+                                "violated_bound": "upper",
+                                "margin_m": margin,
+                            }
         if "print_st_reference_line:" in line:
             print_counts["print_st_reference_line"] += 1
         if "print_vt_reference_line:" in line:
@@ -1416,6 +1743,16 @@ def _planning_info_log_reference_line_evidence(path: str | Path | None) -> dict[
             print_counts["lane_follow_path"] += 1
         if "Planning Perf: task name [LANE_FOLLOW_PATH]" in line:
             print_counts["lane_follow_path_task"] += 1
+        if "Decide path bound failed" in line:
+            print_counts["decide_path_bound_failed"] += 1
+        if "fallback/selfpiecewise jerk path optimizer failed" in line:
+            print_counts["fallback_self_piecewise_jerk_path_optimizer_failed"] += 1
+        if "Failed to make decisions for static obstacles" in line:
+            print_counts["path_decider_static_obstacle_decision_failed"] += 1
+        if "Failed to make decision based on tunnel" in line:
+            print_counts["path_decider_tunnel_decision_failed"] += 1
+        if "Path fallback due to algorithm failure" in line:
+            print_counts["path_fallback_due_to_algorithm_failure"] += 1
         if "build reference line st boundary. id:" in line:
             print_counts["build_reference_line_st_boundary"] += 1
             st_boundary_ids.append(line.rsplit("id:", 1)[-1].strip())
@@ -1446,6 +1783,42 @@ def _planning_info_log_reference_line_evidence(path: str | Path | None) -> dict[
         "print_counts": dict(sorted(print_counts.items())),
         "st_boundary_id_topk": _topk_counts(st_boundary_ids),
         "destination_warning_count": destination_warning_count,
+        "planning_info_log_path_bound_evidence": {
+            "classification": _path_bound_evidence_classification(
+                print_counts, fallback_opt_l_out_of_bounds_margins
+            ),
+            "decide_path_bound_failed_count": print_counts.get(
+                "decide_path_bound_failed", 0
+            ),
+            "fallback_self_piecewise_jerk_path_optimizer_failed_count": print_counts.get(
+                "fallback_self_piecewise_jerk_path_optimizer_failed", 0
+            ),
+            "path_decider_tunnel_decision_failed_count": print_counts.get(
+                "path_decider_tunnel_decision_failed", 0
+            ),
+            "path_decider_static_obstacle_decision_failed_count": print_counts.get(
+                "path_decider_static_obstacle_decision_failed", 0
+            ),
+            "path_fallback_due_to_algorithm_failure_count": print_counts.get(
+                "path_fallback_due_to_algorithm_failure", 0
+            ),
+            "fallback_self_l_lower_min_m": _min_number(fallback_l_lower_values),
+            "fallback_self_l_upper_max_m": _max_number(fallback_l_upper_values),
+            "fallback_self_opt_l_max_abs_m": _max_abs_number(fallback_opt_l_values),
+            "fallback_self_opt_l_out_of_bounds_count": len(
+                fallback_opt_l_out_of_bounds_margins
+            ),
+            "fallback_self_opt_l_out_of_bounds_max_margin_m": _max_number(
+                fallback_opt_l_out_of_bounds_margins
+            ),
+            "first_fallback_path_bound_violation": first_fallback_path_bound_violation,
+            "claim_boundary": (
+                "Planning INFO path-bound evidence is diagnostic only. It can "
+                "show that Apollo Planning considered the lateral state outside "
+                "the current corridor, but it does not by itself prove the root "
+                "cause or justify changing control mapping."
+            ),
+        },
         "text_log_reference_line_claim_grade_allowed": False,
         "interpretation": (
             "Planning INFO text traces can show that Apollo Planning internally printed "
@@ -3368,6 +3741,17 @@ def _augment_contract_rows_with_planning_debug(
             "trajectory_sample_points",
             "trajectory_total_path_length",
             "trajectory_first_segment_heading",
+            "trajectory_future_first_segment_heading",
+            "trajectory_future_lookahead_heading",
+            "trajectory_future_lookahead_point_index",
+            "trajectory_future_lookahead_distance_m",
+            "trajectory_future_lookahead_time_s",
+            "trajectory_first_nonexpired_point_theta",
+            "trajectory_first_nonexpired_point_relative_time",
+            "trajectory_first_nonexpired_point_index",
+            "trajectory_first_nonexpired_remaining_point_count",
+            "trajectory_expired_prefix_count",
+            "trajectory_future_window_points",
         ):
             value = planning_payload.get(key)
             if _present_value(value) and not _present_value(row_planning.get(key)):
@@ -3381,6 +3765,18 @@ def _augment_contract_rows_with_planning_debug(
             row_ts,
             _event_timestamp(planning_event),
         )
+        future_heading_delta = _nested(
+            planning_event,
+            "computed.trajectory_first_nonexpired_theta_vs_future_segment_heading_rad",
+        )
+        if _present_value(future_heading_delta):
+            row_computed["trajectory_first_nonexpired_theta_vs_future_segment_heading_rad"] = future_heading_delta
+        future_lookahead_delta = _nested(
+            planning_event,
+            "computed.trajectory_first_nonexpired_theta_vs_future_lookahead_heading_rad",
+        )
+        if _present_value(future_lookahead_delta):
+            row_computed["trajectory_first_nonexpired_theta_vs_future_lookahead_heading_rad"] = future_lookahead_delta
         row_computed["planning_sample_join_matched"] = True
         row["planning"] = row_planning
         row["computed"] = row_computed
@@ -3826,6 +4222,10 @@ def _read_hdmap_projection(path: str | Path | None) -> list[dict[str, Any]]:
     return read_apollo_hdmap_projection(path)
 
 
+def _path_exists(path: str | Path | None) -> bool:
+    return bool(path and Path(path).exists())
+
+
 def _find_first(root: Path, relatives: Sequence[str]) -> Path | None:
     for relative in relatives:
         path = root / relative
@@ -3891,6 +4291,28 @@ def _p95_abs(values: Iterable[float | None]) -> float | None:
     return finite[lower] * (1.0 - fraction) + finite[upper] * fraction
 
 
+def _min_number(values: Iterable[float | None]) -> float | None:
+    finite = [float(value) for value in values if value is not None and math.isfinite(float(value))]
+    return min(finite) if finite else None
+
+
+def _max_number(values: Iterable[float | None]) -> float | None:
+    finite = [float(value) for value in values if value is not None and math.isfinite(float(value))]
+    return max(finite) if finite else None
+
+
+def _max_abs_number(values: Iterable[float | None]) -> float | None:
+    finite = [abs(float(value)) for value in values if value is not None and math.isfinite(float(value))]
+    return max(finite) if finite else None
+
+
+def _ratio_where(values: Iterable[float | None], predicate: Any) -> float | None:
+    finite = [float(value) for value in values if value is not None and math.isfinite(float(value))]
+    if not finite:
+        return None
+    return sum(1 for value in finite if predicate(value)) / len(finite)
+
+
 def _topk(values: Iterable[str], *, k: int = 5) -> list[str]:
     counter = Counter(value for value in values if str(value).strip())
     return [item for item, _ in counter.most_common(k)]
@@ -3900,6 +4322,43 @@ def _topk_counts(values: Iterable[Any], *, k: int = 5) -> list[dict[str, Any]]:
     cleaned = [str(value) for value in values if value not in {None, ""}]
     counter = Counter(cleaned)
     return [{"value": item, "count": count} for item, count in counter.most_common(k)]
+
+
+def _extract_debug_curve_second_values(line: str, marker: str) -> list[float]:
+    return [value for _, value in _extract_debug_curve_points(line, marker)]
+
+
+def _extract_debug_curve_points(line: str, marker: str) -> list[tuple[float, float]]:
+    if marker not in line:
+        return []
+    tail = line.split(marker, 1)[1]
+    values: list[tuple[float, float]] = []
+    for part in tail.split(";"):
+        part = part.strip()
+        if not part.startswith("(") or "," not in part:
+            continue
+        part = part.strip("()")
+        pieces = part.split(",")
+        if len(pieces) < 2:
+            continue
+        s_value = _num(pieces[0].strip())
+        l_value = _num(pieces[1].strip())
+        if s_value is not None and l_value is not None:
+            values.append((s_value, l_value))
+    return values
+
+
+def _path_bound_evidence_classification(
+    print_counts: Mapping[str, int],
+    out_of_bounds_margins: Sequence[float],
+) -> str:
+    if out_of_bounds_margins:
+        return "fallback_lateral_state_outside_path_bound"
+    if print_counts.get("decide_path_bound_failed", 0) > 0:
+        return "path_bound_failure_logged"
+    if print_counts.get("path_fallback_due_to_algorithm_failure", 0) > 0:
+        return "path_fallback_algorithm_failure_logged"
+    return "path_bound_failure_not_observed"
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:

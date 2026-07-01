@@ -3664,10 +3664,12 @@ def main():
         planning_nonempty_count = _safe_int(
             apollo_bridge_health.get("planning_nonempty_trajectory_count")
         )
-        if planning_nonempty_count is None:
-            planning_nonempty_count = _safe_int(
+        if planning_nonempty_count is None or planning_nonempty_count == 0:
+            fallback_val = _safe_int(
                 apollo_planning_summary.get("messages_with_nonzero_trajectory_points")
             )
+            if fallback_val is not None and (planning_nonempty_count is None or fallback_val > 0):
+                planning_nonempty_count = fallback_val
         planning_total_messages = _safe_int(apollo_planning_summary.get("total_messages_received")) or 0
         planning_nonzero_ratio: Optional[float] = None
         if planning_total_messages > 0 and planning_nonempty_count is not None:
@@ -3679,6 +3681,10 @@ def main():
             apollo_cyber_bridge_stats.get("routing_skipped_due_to_invalid_goal_count")
         )
         routing_success_count = _safe_int(apollo_cyber_bridge_stats.get("routing_success_count"))
+        if routing_success_count is None:
+            routing_success_count = _safe_int(apollo_bridge_health.get("routing_response_count"))
+        if routing_success_count is None:
+            routing_success_count = 0  # final fallback; bridge stats not yet materialized
         last_goal_validity = apollo_bridge_health.get("goal_validity_last") or {}
         low_speed_creep_metrics = (
             _compute_low_speed_creep_metrics(
@@ -4038,6 +4044,34 @@ def main():
         summary_data["sensor_capture_config_source"] = sensor_capture_config_source
         if adapter_fail_reason:
             summary_data["adapter_fail_reason"] = adapter_fail_reason
+        # cyber_bridge_stats.json may not be fully written yet; retry up to 10s
+        # for control_rx_count to appear (bridge writes stats periodically, and
+        # the first write may precede control message receipt).
+        # Also fall back to command_materialization_summary.json (written by
+        # bridge at exit alongside cyber_bridge_stats.json) for control counters.
+        apollo_cmd_mat_path = out_run_dir / "artifacts" / "command_materialization_summary.json"
+        # Wait for cyber_bridge_stats.json to contain control_rx_count > 0.
+        # The file is written by bridge at exit (artifact_stats_flush_interval_s=0
+        # disables periodic writes).  Bridge exit can take several seconds after
+        # the scenario ends, so we retry for up to 60s.
+        _cbs_retries = 0
+        _cbs_max_retries = 60  # 30s at 0.5s intervals (stats flushed every 2s)
+        _cbs_has_control = (
+            "control_rx_count" in apollo_cyber_bridge_stats
+            and _safe_int(apollo_cyber_bridge_stats.get("control_rx_count")) is not None
+            and _safe_int(apollo_cyber_bridge_stats.get("control_rx_count")) > 0
+        )
+        while _cbs_retries < _cbs_max_retries and not _cbs_has_control:
+            time.sleep(0.5)
+            apollo_cyber_bridge_stats = _load_json_if_exists(apollo_cyber_bridge_stats_path)
+            _cbs_has_control = (
+                "control_rx_count" in apollo_cyber_bridge_stats
+                and _safe_int(apollo_cyber_bridge_stats.get("control_rx_count")) is not None
+                and _safe_int(apollo_cyber_bridge_stats.get("control_rx_count")) > 0
+            )
+            _cbs_retries += 1
+        if not _cbs_has_control:
+            print("[INFO] cyber_bridge_stats.json: control_rx_count not yet available; counts deferred")
         control_rx_count = _safe_int(apollo_cyber_bridge_stats.get("control_rx_count"))
         control_tx_count = _safe_int(apollo_cyber_bridge_stats.get("control_tx_count"))
         summary_data["routing_success_count"] = routing_success_count

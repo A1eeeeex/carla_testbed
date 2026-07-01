@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from types import SimpleNamespace
 
+import pytest
+
 from tools.apollo10_cyber_bridge.planning_debug import (
     build_planning_debug_presence,
     build_trajectory_shape_debug,
@@ -49,6 +51,47 @@ def test_build_trajectory_shape_debug_handles_dict_points_and_heading_wrap() -> 
     assert debug["trajectory_theta_delta_abs"]["max_abs"] < 0.03
     assert debug["trajectory_first_segment_heading"] == math.pi
     assert abs(debug["trajectory_first_theta_minus_first_segment_heading_rad"] + 0.01) < 1e-9
+
+
+def test_build_trajectory_shape_debug_reports_nonexpired_future_segment() -> None:
+    points = [
+        _point(0.0, 0.0, math.pi / 2.0, 0.0, 0.0, -0.2),
+        _point(0.0, -1.0, math.pi / 2.0, 0.0, 0.0, -0.1),
+        _point(0.0, 0.0, math.pi / 2.0, 0.0, 0.0, 0.0),
+        _point(0.0, 1.0, math.pi / 2.0, 0.0, 0.0, 0.1),
+    ]
+
+    debug = build_trajectory_shape_debug(points)
+
+    assert debug["trajectory_expired_prefix_count"] == 2
+    assert debug["trajectory_first_nonexpired_point_index"] == 2
+    assert debug["trajectory_first_nonexpired_point_relative_time"] == 0.0
+    assert debug["trajectory_first_nonexpired_point_theta"] == math.pi / 2.0
+    assert debug["trajectory_future_first_segment_heading"] == math.pi / 2.0
+    assert debug["trajectory_first_nonexpired_theta_minus_future_segment_heading_rad"] == 0.0
+    assert debug["trajectory_future_lookahead_heading"] == math.pi / 2.0
+    assert debug["trajectory_first_nonexpired_theta_minus_future_lookahead_heading_rad"] == 0.0
+    assert debug["trajectory_first_nonexpired_remaining_point_count"] == 2
+    assert [point["index"] for point in debug["trajectory_future_window_points"]] == [0, 1, 2, 3]
+
+
+def test_build_trajectory_shape_debug_reports_lookahead_separately_from_short_segment() -> None:
+    points = [
+        _point(0.0, -2.0, math.pi / 2.0, 0.0, 0.0, -0.2),
+        _point(0.0, -1.0, math.pi / 2.0, 0.0, 0.0, -0.1),
+        _point(0.0, 0.0, math.pi / 2.0, 0.0, 0.0, 0.0),
+        _point(0.0, -0.01, math.pi / 2.0, 0.0, 0.0, 0.02),
+        _point(0.0, 0.50, math.pi / 2.0, 0.0, 0.0, 0.30),
+    ]
+
+    debug = build_trajectory_shape_debug(points)
+
+    assert debug["trajectory_future_first_segment_heading"] == pytest.approx(-math.pi / 2.0)
+    assert abs(debug["trajectory_first_nonexpired_theta_minus_future_segment_heading_rad"]) > 3.0
+    assert debug["trajectory_future_lookahead_point_index"] == 4
+    assert debug["trajectory_future_lookahead_heading"] == math.pi / 2.0
+    assert debug["trajectory_first_nonexpired_theta_minus_future_lookahead_heading_rad"] == 0.0
+    assert [point["index"] for point in debug["trajectory_future_window_points"]] == [0, 1, 2, 3, 4]
 
 
 def test_build_trajectory_shape_debug_empty_points() -> None:
@@ -210,6 +253,50 @@ def test_build_planning_debug_presence_summarizes_path_candidate_points() -> Non
         {"index": 0, "x": 1.0, "y": 2.0, "theta": 0.1, "kappa": 0.01},
         {"index": 1, "x": 2.0, "y": 2.1, "theta": 0.1, "kappa": 0.01},
     ]
+
+
+def test_build_planning_debug_presence_uses_path_geometry_fallback() -> None:
+    msg = SimpleNamespace(
+        debug=SimpleNamespace(
+            planning_data=SimpleNamespace(
+                reference_line=[],
+                path=[
+                    SimpleNamespace(
+                        path_point=[
+                            SimpleNamespace(x=0.0, y=0.0, theta=0.0, kappa=0.0),
+                            SimpleNamespace(x=3.0, y=4.0, theta=0.0, kappa=0.0),
+                        ],
+                    ),
+                    SimpleNamespace(
+                        path_point=[
+                            SimpleNamespace(x=10.0, y=10.0, theta=0.0, kappa=0.0),
+                            SimpleNamespace(x=10.0, y=16.0, theta=0.0, kappa=0.0),
+                        ],
+                    ),
+                ],
+                routing=SimpleNamespace(
+                    road=[
+                        SimpleNamespace(
+                            passage=[
+                                SimpleNamespace(
+                                    segment=[SimpleNamespace(id="lane_a", start_s=0.0, end_s=50.0)]
+                                )
+                            ]
+                        )
+                    ]
+                ),
+            )
+        )
+    )
+
+    presence = build_planning_debug_presence(msg)
+
+    assert presence["planning_debug_reference_line_field_present"] is True
+    assert presence["planning_debug_path_fallback_used"] is True
+    assert presence["planning_debug_path_item_count"] == 2
+    assert presence["planning_debug_path_point_total"] == 4
+    assert presence["planning_debug_reference_line_count"] == 2
+    assert presence["planning_debug_reference_line_lengths"] == [5.0, 6.0]
 
 
 def test_build_planning_debug_presence_reports_missing_planning_data() -> None:

@@ -571,6 +571,8 @@ def test_bridge_write_stats_records_diagnostic_write_durations(tmp_path: Path) -
     adapter._write_stats()
 
     buffering = adapter.stats["artifact_buffering"]
+    assert buffering["last_stats_write_mode"] == "full"
+    assert buffering["full_stats_write_count"] == 1
     for key in (
         "health_summary_write_duration_s",
         "startup_geometry_summary_write_duration_s",
@@ -578,16 +580,52 @@ def test_bridge_write_stats_records_diagnostic_write_durations(tmp_path: Path) -
         "node_write_artifacts_duration_s",
         "stats_json_write_duration_s",
         "stats_write_duration_s",
+        "full_stats_write_duration_s",
     ):
         assert key in buffering
         assert buffering[key] >= 0.0
         assert buffering[f"{key}_max"] >= buffering[key]
+    assert adapter.stats_path.is_file()
+    persisted = json.loads(adapter.stats_path.read_text(encoding="utf-8"))
+    persisted_buffering = persisted["artifact_buffering"]
+    assert persisted_buffering["full_stats_write_count"] == 1
+    assert "full_stats_write_duration_s" in persisted_buffering
+    assert "full_stats_write_duration_s_max" in persisted_buffering
+
+
+def test_bridge_write_stats_lightweight_skips_hot_path_summary_writes(tmp_path: Path) -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.stats = {}
+    adapter.stats_path = tmp_path / "cyber_bridge_stats.json"
+    adapter.artifact_stats_flush_interval_s = 0.0
+    adapter._last_artifact_stats_flush_sec = 0.0
+    calls: list[str] = []
+    adapter.node = types.SimpleNamespace(write_artifacts=lambda: calls.append("node"))
+    adapter._write_health_summary = lambda: calls.append("health")
+    adapter._write_startup_geometry_summary = lambda: calls.append("startup")
+    adapter._write_planning_topic_debug_summary = lambda: calls.append("planning")
+
+    adapter._write_stats(full=False)
+
+    buffering = adapter.stats["artifact_buffering"]
+    assert buffering["last_stats_write_mode"] == "lightweight"
+    assert buffering["lightweight_stats_write_count"] == 1
+    assert calls == []
+    assert "stats_json_write_duration_s" in buffering
+    assert "stats_write_duration_s" in buffering
+    assert "lightweight_stats_write_duration_s" in buffering
+    assert "full_stats_write_duration_s" not in buffering
+    assert "health_summary_write_duration_s" not in buffering
     assert adapter.stats_path.is_file()
 
 
 def test_bridge_run_loop_uses_configured_periodic_stats_flush() -> None:
     source = Path("tools/apollo10_cyber_bridge/bridge.py").read_text(encoding="utf-8")
     assert "def maybe_write_periodic_stats" in source
+    assert "self._write_stats(full=False)" in source
     assert 'getattr(self, "artifact_stats_flush_interval_s", 0.0)' in source
     assert "if interval_s <= 0.0:" in source
     assert "if (now - last_stats_flush) >= 1.0:" not in source

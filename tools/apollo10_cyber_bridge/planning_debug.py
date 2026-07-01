@@ -16,6 +16,7 @@ def build_trajectory_shape_debug(points: Any, *, max_sample_points: int = 8) -> 
     theta_deltas = [_wrap_to_pi(thetas[index] - thetas[index - 1]) for index in range(1, len(thetas))]
     first_segment_heading = _first_segment_heading(seq)
     first_theta = _num(_nested(seq[0], ("path_point", "theta"))) if seq else None
+    future = _future_segment_debug(seq)
     return {
         "trajectory_sample_points": samples,
         "trajectory_kappa": _series_stats(kappas),
@@ -29,6 +30,7 @@ def build_trajectory_shape_debug(points: Any, *, max_sample_points: int = 8) -> 
             if first_theta is not None and first_segment_heading is not None
             else None
         ),
+        **future,
     }
 
 
@@ -39,6 +41,13 @@ def build_planning_debug_presence(msg: Any) -> dict[str, Any]:
     objects. The bridge writes this alongside the existing parsed route/reference
     counters to distinguish "Apollo did not populate debug fields" from "bridge
     parsed the wrong path".
+
+    P0-1 fix (2026-06-30): when enable_reference_line_stitching=false, Apollo
+    does not populate debug.planning_data.reference_line (0 elements), but it
+    does populate debug.planning_data.path with 4 boundary items each containing
+    path_points with full geometry (x, y, theta, kappa).  We now fall back to
+    path items when reference_line is empty, so reference_line_count and
+    reference_line_lengths are never reported as 0 when usable geometry exists.
     """
 
     debug = _nested(msg, ("debug",))
@@ -72,6 +81,36 @@ def build_planning_debug_presence(msg: Any) -> dict[str, Any]:
         length = _num(_nested(item, ("length",)))
         if length is not None:
             reference_line_lengths.append(length)
+
+    # ------------------------------------------------------------------
+    # P0-1: path fallback when reference_line is empty but path is populated.
+    # When enable_reference_line_stitching=false, Apollo 10.0 Planning
+    # sets planning_data.reference_line to 0 elements but still populates
+    # planning_data.path with boundary items that contain path_points with
+    # x, y, theta, kappa geometry.
+    # ------------------------------------------------------------------
+    path_fallback_used = False
+    path_item_count = 0
+    path_point_total = 0
+    if len(reference_lines) == 0 and planning_data is not None:
+        path_items = _as_sequence(_nested(planning_data, ("path",)))
+        if path_items:
+            path_item_count = len(path_items)
+            # Count total path_points across all path items.
+            for path_item in path_items[:6]:  # safety cap
+                pts = _as_sequence(_nested(path_item, ("path_point",)))
+                path_point_total += len(pts)
+            # If we have actual geometry points, mark fallback as used.
+            if path_point_total > 0:
+                path_fallback_used = True
+                # Treat each path item as one "reference line" for counting,
+                # and compute approximate lengths from the path_point geometry.
+                for path_item in path_items[:6]:
+                    pts = _as_sequence(_nested(path_item, ("path_point",)))
+                    approx_len = _path_point_total_length(pts)
+                    if approx_len is not None:
+                        reference_line_lengths.append(approx_len)
+
     routing_roads = _as_sequence(_nested(routing, ("road",))) if routing is not None else []
     routing_passage_count = 0
     routing_segment_count = 0
@@ -85,8 +124,11 @@ def build_planning_debug_presence(msg: Any) -> dict[str, Any]:
         "planning_debug_planning_data_present": planning_data is not None,
         "planning_debug_reference_line_path": reference_line_path,
         "planning_debug_reference_line_field_present": reference_line is not None,
-        "planning_debug_reference_line_count": len(reference_lines),
+        "planning_debug_reference_line_count": len(reference_lines) if not path_fallback_used else path_item_count,
         "planning_debug_reference_line_lengths": reference_line_lengths,
+        "planning_debug_path_fallback_used": path_fallback_used,
+        "planning_debug_path_item_count": path_item_count,
+        "planning_debug_path_point_total": path_point_total,
         "planning_debug_routing_path": routing_path,
         "planning_debug_routing_field_present": routing is not None,
         "planning_debug_routing_road_count": len(routing_roads),
@@ -98,7 +140,7 @@ def build_planning_debug_presence(msg: Any) -> dict[str, Any]:
             debug_present=debug is not None,
             planning_data_present=planning_data is not None,
             reference_line_field_present=reference_line is not None,
-            reference_line_count=len(reference_lines),
+            reference_line_count=len(reference_lines) if not path_fallback_used else path_item_count,
             routing_field_present=routing is not None,
             routing_segment_count=routing_segment_count,
         ),
@@ -440,6 +482,160 @@ def _first_segment_heading(points: Sequence[Any]) -> float | None:
     return None
 
 
+def _future_segment_debug(points: Sequence[Any]) -> dict[str, Any]:
+    first_future_index: int | None = None
+    expired_prefix_count = 0
+    saw_relative_time = False
+    for index, point in enumerate(points):
+        relative_time = _num(_nested(point, ("relative_time",)))
+        if relative_time is None:
+            continue
+        saw_relative_time = True
+        if relative_time < 0.0:
+            if first_future_index is None:
+                expired_prefix_count += 1
+            continue
+        first_future_index = index
+        break
+
+    if first_future_index is None:
+        return {
+            "trajectory_expired_prefix_count": expired_prefix_count if saw_relative_time else None,
+            "trajectory_first_nonexpired_point_index": None,
+            "trajectory_first_nonexpired_point_relative_time": None,
+            "trajectory_first_nonexpired_point_theta": None,
+            "trajectory_first_nonexpired_remaining_point_count": None,
+            "trajectory_future_first_segment_heading": None,
+            "trajectory_first_nonexpired_theta_minus_future_segment_heading_rad": None,
+            "trajectory_future_lookahead_heading": None,
+            "trajectory_future_lookahead_point_index": None,
+            "trajectory_future_lookahead_distance_m": None,
+            "trajectory_future_lookahead_time_s": None,
+            "trajectory_first_nonexpired_theta_minus_future_lookahead_heading_rad": None,
+            "trajectory_future_window_points": [],
+        }
+
+    future_points = list(points[first_future_index:])
+    first_future = future_points[0] if future_points else None
+    first_future_theta = _num(_nested(first_future, ("path_point", "theta")))
+    first_future_relative_time = _num(_nested(first_future, ("relative_time",)))
+    future_segment_heading = _first_segment_heading(future_points)
+    lookahead = _future_lookahead_heading(
+        future_points,
+        min_distance_m=0.25,
+        min_time_s=0.25,
+    )
+    lookahead_heading = lookahead.get("heading")
+    lookahead_absolute_index = (
+        first_future_index + int(lookahead["point_index"])
+        if lookahead.get("point_index") is not None
+        else None
+    )
+    return {
+        "trajectory_expired_prefix_count": expired_prefix_count,
+        "trajectory_first_nonexpired_point_index": first_future_index,
+        "trajectory_first_nonexpired_point_relative_time": first_future_relative_time,
+        "trajectory_first_nonexpired_point_theta": first_future_theta,
+        "trajectory_first_nonexpired_remaining_point_count": len(points) - first_future_index,
+        "trajectory_future_first_segment_heading": future_segment_heading,
+        "trajectory_first_nonexpired_theta_minus_future_segment_heading_rad": (
+            _wrap_to_pi(float(first_future_theta) - float(future_segment_heading))
+            if first_future_theta is not None and future_segment_heading is not None
+            else None
+        ),
+        "trajectory_future_lookahead_heading": lookahead_heading,
+        "trajectory_future_lookahead_point_index": lookahead_absolute_index,
+        "trajectory_future_lookahead_distance_m": lookahead.get("distance_m"),
+        "trajectory_future_lookahead_time_s": lookahead.get("time_s"),
+        "trajectory_first_nonexpired_theta_minus_future_lookahead_heading_rad": (
+            _wrap_to_pi(float(first_future_theta) - float(lookahead_heading))
+            if first_future_theta is not None and lookahead_heading is not None
+            else None
+        ),
+        "trajectory_future_window_points": _window_points(
+            points,
+            centers=[first_future_index, lookahead_absolute_index],
+            radius=3,
+            max_points=16,
+        ),
+    }
+
+
+def _future_lookahead_heading(
+    points: Sequence[Any],
+    *,
+    min_distance_m: float,
+    min_time_s: float,
+) -> dict[str, Any]:
+    first: tuple[float, float, float | None] | None = None
+    last_candidate: tuple[int, float, float, float | None] | None = None
+    for index, point in enumerate(points):
+        x = _num(_nested(point, ("path_point", "x")))
+        y = _num(_nested(point, ("path_point", "y")))
+        t = _num(_nested(point, ("relative_time",)))
+        if x is None or y is None:
+            continue
+        if first is None:
+            first = (float(x), float(y), float(t) if t is not None else None)
+            continue
+        dx = float(x) - first[0]
+        dy = float(y) - first[1]
+        distance = math.hypot(dx, dy)
+        if distance <= 1e-9:
+            continue
+        dt = None
+        if first[2] is not None and t is not None:
+            dt = float(t) - first[2]
+        last_candidate = (index, distance, math.atan2(dy, dx), dt)
+        if distance >= min_distance_m or (dt is not None and dt >= min_time_s):
+            return {
+                "point_index": index,
+                "distance_m": distance,
+                "time_s": dt,
+                "heading": math.atan2(dy, dx),
+            }
+    if last_candidate is None:
+        return {"point_index": None, "distance_m": None, "time_s": None, "heading": None}
+    index, distance, heading, dt = last_candidate
+    return {"point_index": index, "distance_m": distance, "time_s": dt, "heading": heading}
+
+
+def _window_points(
+    points: Sequence[Any],
+    *,
+    centers: Sequence[int | None],
+    radius: int,
+    max_points: int,
+) -> list[dict[str, Any]]:
+    if not points or max_points <= 0:
+        return []
+    indices: list[int] = []
+    for center in centers:
+        if center is None:
+            continue
+        for index in range(int(center) - radius, int(center) + radius + 1):
+            if 0 <= index < len(points) and index not in indices:
+                indices.append(index)
+    indices.sort()
+    if len(indices) > max_points:
+        indices = indices[:max_points]
+    out: list[dict[str, Any]] = []
+    for index in indices:
+        point = points[index]
+        out.append(
+            {
+                "index": index,
+                "x": _num(_nested(point, ("path_point", "x"))),
+                "y": _num(_nested(point, ("path_point", "y"))),
+                "theta": _num(_nested(point, ("path_point", "theta"))),
+                "kappa": _num(_nested(point, ("path_point", "kappa"))),
+                "v": _num(_nested(point, ("v",))),
+                "relative_time": _num(_nested(point, ("relative_time",))),
+            }
+        )
+    return out
+
+
 def _series_stats(values: Sequence[float]) -> dict[str, Any]:
     finite = [float(value) for value in values if math.isfinite(float(value))]
     if not finite:
@@ -514,6 +710,24 @@ def _wrap_to_pi(angle: float) -> float:
     while angle < -math.pi:
         angle += 2.0 * math.pi
     return angle
+
+
+def _path_point_total_length(points: Sequence[Any]) -> float | None:
+    """Approximate total length of a path_point sequence by summing xy distances."""
+    if not points:
+        return None
+    total: float = 0.0
+    prev_x: float | None = None
+    prev_y: float | None = None
+    for point in points:
+        x = _num(_nested(point, ("x",)))
+        y = _num(_nested(point, ("y",)))
+        if x is None or y is None:
+            continue
+        if prev_x is not None and prev_y is not None:
+            total += math.hypot(x - prev_x, y - prev_y)
+        prev_x, prev_y = x, y
+    return total if total > 0.0 else None
 
 
 def _planning_debug_diagnosis(

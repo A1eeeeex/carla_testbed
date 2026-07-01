@@ -177,6 +177,11 @@ def _run_entry(run_dir: Path) -> dict[str, Any]:
     )
     artifact_paths = _run_artifact_paths(run_dir)
     phase1_metrics = _phase1_metrics_with_current_derived_blockers(run_dir, phase1_status)
+    route_start_alignment = (
+        phase1_metrics.get("route_start_alignment")
+        if isinstance(phase1_metrics.get("route_start_alignment"), Mapping)
+        else {}
+    )
     run_evaluable = bool(phase1_status.get("run_evaluable", phase1_status.get("evaluable")))
     return {
         "run_dir": str(run_dir),
@@ -212,6 +217,16 @@ def _run_entry(run_dir: Path) -> dict[str, Any]:
             "counts_as_backend_loss_for_target_scenario"
         ),
         "phase1_metrics": phase1_metrics,
+        "route_start_alignment_status": route_start_alignment.get("status"),
+        "route_start_alignment_reason": route_start_alignment.get("reason"),
+        "static_spawn_lateral_offset_m": route_start_alignment.get("static_spawn_lateral_offset_m"),
+        "initial_cross_track_error_m": route_start_alignment.get("initial_cross_track_error_m"),
+        "startup_geometry_localization_to_final_start_distance_m": route_start_alignment.get(
+            "startup_geometry_localization_to_final_start_distance_m"
+        ),
+        "recommended_ego_offset_y_delta_m": route_start_alignment.get(
+            "recommended_ego_offset_y_delta_m"
+        ),
         "invalid_reasons": list(phase1_status.get("invalid_reasons") or []),
         "missing_artifacts": list(phase1_status.get("missing_artifacts") or []),
         "expected_artifacts": list(phase1_status.get("expected_artifacts") or manifest.get("expected_artifacts") or []),
@@ -244,10 +259,24 @@ def _phase1_metrics_with_current_derived_blockers(
     phase1_status: Mapping[str, Any],
 ) -> dict[str, Any]:
     metrics = dict(phase1_status.get("phase1_metrics") or {})
+    route_start = _route_start_alignment_metrics(run_dir)
+    if route_start.get("available"):
+        metrics["route_start_alignment"] = route_start
     current = collect_derived_blocker_evidence(run_dir)
     if current.get("available"):
         metrics["derived_blocker_evidence"] = current
     return metrics
+
+
+def _route_start_alignment_metrics(run_dir: Path) -> dict[str, Any]:
+    current = classify_phase1_run(run_dir)
+    metrics = current.get("phase1_metrics") if isinstance(current.get("phase1_metrics"), Mapping) else {}
+    route_start = (
+        metrics.get("route_start_alignment")
+        if isinstance(metrics.get("route_start_alignment"), Mapping)
+        else {}
+    )
+    return dict(route_start)
 
 
 def _comparison_artifact_completeness(
@@ -389,7 +418,9 @@ def _backend_results(
             {
                 "backend": run.get("backend"),
                 "backend_type": run.get("backend_type"),
+                "run_dir": run.get("run_dir"),
                 "run_id": run.get("run_id"),
+                "status": run.get("phase1_status"),
                 "phase1_status": run.get("phase1_status"),
                 "failure_reason": run.get("failure_reason"),
                 "primary_behavior_blocker": run.get("primary_behavior_blocker"),
@@ -410,6 +441,14 @@ def _backend_results(
                 "missing_artifacts": list(run.get("missing_artifacts") or []),
                 "missing_expected_artifacts": list(run.get("missing_expected_artifacts") or []),
                 "phase1_metrics": dict(run.get("phase1_metrics") or {}),
+                "route_start_alignment_status": run.get("route_start_alignment_status"),
+                "route_start_alignment_reason": run.get("route_start_alignment_reason"),
+                "static_spawn_lateral_offset_m": run.get("static_spawn_lateral_offset_m"),
+                "initial_cross_track_error_m": run.get("initial_cross_track_error_m"),
+                "startup_geometry_localization_to_final_start_distance_m": run.get(
+                    "startup_geometry_localization_to_final_start_distance_m"
+                ),
+                "recommended_ego_offset_y_delta_m": run.get("recommended_ego_offset_y_delta_m"),
                 "safety_event_evidence": _run_safety_event_evidence(run),
                 "apollo_control_handoff_status": run.get("apollo_control_handoff_status"),
                 "apollo_control_handoff_failure_stage": run.get("apollo_control_handoff_failure_stage"),
@@ -929,8 +968,8 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
         json.dumps(report.get("backend_coverage") or {}, indent=2, sort_keys=True),
         "```",
         "",
-        "| Run | Backend | Status | Reason | Handoff stage | Handoff reason | Control signature | Control diagnosis | Link blocker | Control-health reason | Lane-event class | Backend loss? |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Run | Backend | Status | Reason | Route-start | Initial CTE | Startup dist | Handoff stage | Handoff reason | Control signature | Control diagnosis | Link blocker | Control-health reason | Lane-event class | Backend loss? |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in report.get("backend_results") or []:
         if isinstance(item, Mapping):
@@ -960,7 +999,11 @@ def _summary_markdown(report: Mapping[str, Any]) -> str:
             )
             lines.append(
                 f"| {item.get('run_id')} | {item.get('backend')} | {item.get('phase1_status')} | "
-                f"{item.get('failure_reason')} | {item.get('apollo_control_handoff_failure_stage')} | "
+                f"{item.get('failure_reason')} | "
+                f"{item.get('route_start_alignment_status')}/{item.get('route_start_alignment_reason')} | "
+                f"{item.get('initial_cross_track_error_m')} | "
+                f"{item.get('startup_geometry_localization_to_final_start_distance_m')} | "
+                f"{item.get('apollo_control_handoff_failure_stage')} | "
                 f"{item.get('apollo_control_handoff_failure_reason') or ','.join(item.get('apollo_control_handoff_failure_reasons') or []) or None} | "
                 f"{control_motion.get('stuck_control_signature')} | "
                 f"{control_motion.get('source_brake_interpretation')} | "

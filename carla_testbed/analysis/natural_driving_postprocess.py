@@ -886,6 +886,8 @@ def _route_start_alignment_report_reusable(
     scenario_class: str | None,
 ) -> bool:
     report = _read_json(path)
+    if _route_start_alignment_placeholder_can_be_regenerated(report, run_dir=run_dir):
+        return False
     if str(report.get("scenario_class") or "") != str(scenario_class or ""):
         return False
     expected_route_id = _run_route_id(run_dir)
@@ -902,6 +904,28 @@ def _route_start_alignment_report_reusable(
             "failure_timeline_path",
         ),
     )
+
+
+def _route_start_alignment_placeholder_can_be_regenerated(
+    report: Mapping[str, Any],
+    *,
+    run_dir: Path,
+) -> bool:
+    blocking = {str(item) for item in (report.get("blocking_reasons") or []) if item not in {None, ""}}
+    if "route_start_runtime_pose_missing" not in blocking:
+        return False
+    raw_inputs_present = any(
+        (run_dir / relative).exists()
+        for relative in (
+            "route.json",
+            "artifacts/route.json",
+            "artifacts/scenario_metadata.json",
+            "timeseries.csv",
+            "timeseries.jsonl",
+            "artifacts/startup_geometry_summary.json",
+        )
+    )
+    return raw_inputs_present
 
 
 def _ensure_route_curve_artifact_gap(run_dir: Path, *, refresh: bool) -> dict[str, Any]:

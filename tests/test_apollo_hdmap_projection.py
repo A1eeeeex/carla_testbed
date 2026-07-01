@@ -145,6 +145,27 @@ def test_route_projection_claim_does_not_fail_on_runtime_ego_lateral_drift(tmp_p
     assert "apollo_hdmap_projection_lateral_error_high" not in report["blocking_reasons"]
 
 
+def test_runtime_ego_only_projection_is_diagnostic_not_static_claim_failure(tmp_path: Path) -> None:
+    path = tmp_path / "apollo_hdmap_projection.jsonl"
+    rows = _projection_rows(heading_error_rad=0.35, lateral_error_m=0.95)
+    for row in rows:
+        row["sample_type"] = "ego"
+    _write_jsonl(path, rows)
+
+    report = analyze_apollo_hdmap_projection_file(path)
+    projection = report["projection"]
+
+    assert report["status"] == "insufficient_data"
+    assert report["claim_grade"] is False
+    assert projection["claim_evidence_scope"] == "runtime_ego_only"
+    assert projection["runtime_ego_projection"]["status"] == "fail"
+    assert "runtime_ego_projection_heading_error_high" in report["warnings"]
+    assert "runtime_ego_projection_lateral_error_high" in report["warnings"]
+    assert "apollo_hdmap_projection_static_route_samples_missing" in report["insufficient_reasons"]
+    assert "apollo_hdmap_projection_heading_error_high" not in report["blocking_reasons"]
+    assert "apollo_hdmap_projection_lateral_error_high" not in report["blocking_reasons"]
+
+
 def test_start_goal_projection_failure_blocks_alignment_evidence(tmp_path: Path) -> None:
     path = tmp_path / "apollo_hdmap_projection.jsonl"
     rows = _projection_rows(heading_error_rad=0.01, lateral_error_m=0.05)

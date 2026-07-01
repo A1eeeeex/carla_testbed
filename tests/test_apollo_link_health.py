@@ -369,11 +369,117 @@ def test_reference_line_fail_report_without_path_fallback_metrics_is_regenerated
         "metrics": {
             "planning_ref_heading_error_p95_rad": 0.31,
             "path_fallback_trajectory_ratio": 0.10,
+            "path_fallback_trajectory_first_theta_vs_segment_heading_p95_rad": 0.01,
         },
     }
 
     assert _should_regenerate_apollo_reference_line_contract(stale_report) is True
     assert _should_regenerate_apollo_reference_line_contract(fresh_report) is False
+
+
+def test_reference_heading_blocker_after_hdmap_projection_pass_points_to_planning_debug(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    reference_path = run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json"
+    reference = json.loads(reference_path.read_text(encoding="utf-8"))
+    reference["status"] = "fail"
+    reference["blocking_reasons"] = ["planning_reference_heading_error_high"]
+    reference["metrics"]["planning_ref_heading_error_p95_rad"] = 0.89
+    reference["apollo_hdmap_projection"] = {
+        "file_present": True,
+        "official_source_available": True,
+        "status": "pass",
+        "claim_grade": True,
+        "claim_evidence_scope": "route_start_goal",
+        "heading_error_p95_rad": 0.0001,
+        "lateral_error_p95_m": 0.0,
+        "blocking_reasons": [],
+        "warnings": [],
+    }
+    _write_json(reference_path, reference)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert report["primary_blocker"] == "planning_reference_line:planning_reference_heading_error_high"
+    assert "Static route/start/goal HDMap projection is non-blocking" in report["next_highest_value_validation"]
+    assert "Planning reference-line heading" in report["next_highest_value_validation"]
+    assert "before changing control mapping" in report["next_highest_value_validation"]
+
+
+def test_aligned_reference_with_ego_heading_divergence_points_to_drift_onset(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    reference_path = run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json"
+    reference = json.loads(reference_path.read_text(encoding="utf-8"))
+    reference["status"] = "fail"
+    reference["blocking_reasons"] = ["ego_heading_diverged_from_aligned_planning_reference"]
+    reference["metrics"]["planning_ref_heading_error_p95_rad"] = 0.89
+    reference["metrics"]["trajectory_first_theta_vs_segment_heading_p95_rad"] = 0.000001
+    _write_json(reference_path, reference)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert (
+        report["primary_blocker"]
+        == "planning_reference_line:ego_heading_diverged_from_aligned_planning_reference"
+    )
+    assert "Planning trajectory heading and route-segment heading are self-consistent" in report[
+        "next_highest_value_validation"
+    ]
+    assert "ego drift onset" in report["next_highest_value_validation"]
+
+
+def test_path_fallback_segment_heading_mismatch_points_to_planning_debug(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    reference_path = run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json"
+    reference = json.loads(reference_path.read_text(encoding="utf-8"))
+    reference["status"] = "fail"
+    reference["blocking_reasons"] = ["planning_path_fallback_segment_heading_mismatch"]
+    reference["metrics"]["path_fallback_trajectory_first_theta_vs_segment_heading_p95_rad"] = 3.14
+    _write_json(reference_path, reference)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert (
+        report["primary_blocker"]
+        == "planning_reference_line:planning_path_fallback_segment_heading_mismatch"
+    )
+    assert "PATH_FALLBACK future/non-expired trajectory heading disagrees" in report[
+        "next_highest_value_validation"
+    ]
+    assert "before changing control mapping" in report["next_highest_value_validation"]
+
+
+def test_path_fallback_with_path_bound_evidence_points_to_lateral_corridor(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    reference_path = run_dir / "analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json"
+    reference = json.loads(reference_path.read_text(encoding="utf-8"))
+    reference["status"] = "fail"
+    reference["blocking_reasons"] = ["planning_path_fallback_segment_heading_mismatch"]
+    reference["planning_info_log_reference_line_evidence"] = {
+        "planning_info_log_path_bound_evidence": {
+            "classification": "fallback_lateral_state_outside_path_bound",
+            "fallback_self_opt_l_out_of_bounds_count": 7,
+            "fallback_self_opt_l_out_of_bounds_max_margin_m": 0.65,
+        }
+    }
+    _write_json(reference_path, reference)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert (
+        report["primary_blocker"]
+        == "planning_reference_line:planning_path_fallback_segment_heading_mismatch"
+    )
+    assert "path-bound lateral-state infeasibility" in report["next_highest_value_validation"]
+    assert "valid lateral envelope" in report["next_highest_value_validation"]
+    assert "before changing control mapping" in report["next_highest_value_validation"]
 
 
 def test_all_green_link_health_is_claimable(tmp_path: Path) -> None:
@@ -2533,6 +2639,69 @@ def test_lateral_semantics_warn_outranks_missing_natural_driving_report_for_phas
     assert report["can_claim_unassisted_natural_driving"] is False
 
 
+def test_lateral_semantics_diagnostic_primary_surfaces_with_nonblocking_artifact_gaps(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    (run_dir / "analysis/natural_driving/natural_driving_report.json").unlink()
+
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.pop("runtime_contract", None)
+    _write_json(summary_path, summary)
+
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("runtime_contract", None)
+    manifest.pop("carla_world", None)
+    _write_json(manifest_path, manifest)
+
+    loc_path = run_dir / "analysis/localization_contract/localization_contract_report.json"
+    loc = json.loads(loc_path.read_text(encoding="utf-8"))
+    loc["verdict"] = {"status": "insufficient_data", "blocking_reasons": []}
+    loc["warnings"] = ["heading_error_to_route_high_after_lateral_departure"]
+    loc["pose_consistency"]["route_heading_error_context"] = {
+        "classification": "route_heading_error_after_lateral_departure_candidate",
+        "pre_departure_heading_error_p95_rad": 0.0002,
+    }
+    _write_json(loc_path, loc)
+
+    _write_json(
+        run_dir / "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
+        {
+            "schema_version": "apollo_lateral_semantics.v1",
+            "verdict": {
+                "status": "warn",
+                "failure_reason": "lateral_semantics_anomaly",
+                "suspected_layer": "reference_line_semantics",
+                "confidence": "medium",
+            },
+            "suspected_layer": "reference_line_semantics",
+            "confidence": "medium",
+            "anomalies": [
+                {
+                    "type": "source_steer_same_sign_as_lateral_error",
+                    "suspected_layer": "reference_line_semantics",
+                    "reason": "Apollo source steer points into the growing route lateral error.",
+                }
+            ],
+            "correlation_summary": {
+                "cross_track_error_abs": {"p95": 0.84},
+                "apollo_steer_raw_abs": {"p95": 0.31},
+                "carla_steer_applied_abs": {"p95": 0.08},
+            },
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert report["primary_blocker"] == "apollo_lateral_semantics:source_steer_same_sign_as_lateral_error"
+    assert "environment_world:insufficient_data" in report["secondary_blockers"]
+    assert "localization_gt_contract:insufficient_data" in report["secondary_blockers"]
+    assert "natural_driving_outcome:insufficient_data" in report["secondary_blockers"]
+    assert report["can_claim_unassisted_natural_driving"] is False
+
+
 def test_control_process_crash_is_explicit_handoff_blocker(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     _write_json(
@@ -3185,6 +3354,21 @@ def test_missing_backend_evidence_is_insufficient_not_wrong_backend(tmp_path: Pa
     assert "backend_not_apollo_cyberrt" not in layer["blocking_reasons"]
 
 
+def test_apollo_cyberrt_backend_variant_counts_as_apollo_backend(tmp_path: Path) -> None:
+    run_dir = _base_run(tmp_path)
+    for rel in ("summary.json", "manifest.json"):
+        path = run_dir / rel
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["backend"] = "apollo_cyberrt_town01_behavior_recovery"
+        _write_json(path, payload)
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    layer = report["layers"]["no_assist_claim_boundary"]
+    assert layer["key_metrics"]["backend"] == "apollo_cyberrt_town01_behavior_recovery"
+    assert "backend_not_apollo_cyberrt" not in layer["blocking_reasons"]
+
+
 def test_missing_required_artifact_is_insufficient_not_pass(tmp_path: Path) -> None:
     run_dir = _base_run(tmp_path)
     (run_dir / "analysis/apollo_channel_health/apollo_channel_health_report.json").unlink()
@@ -3629,6 +3813,118 @@ def test_control_health_existing_fail_report_is_not_overwritten(tmp_path: Path) 
         )
     )
     assert refreshed["metrics"]["sentinel"] == "keep_existing_failure"
+
+
+def test_control_mapping_layer_uses_control_attribution_guard_intervention(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    _write_json(
+        run_dir / "analysis/control_health/control_health_report.json",
+        {
+            "schema_version": "control_health_report.v1",
+            "status": "insufficient_data",
+            "failure_reason": "runtime_contract_missing_status",
+            "warnings": [],
+        },
+    )
+    _write_json(
+        run_dir / "analysis/control_attribution/control_attribution_report.json",
+        {
+            "schema_version": "control_attribution.v1",
+            "verdict": {
+                "status": "fail",
+                "failure_reason": "bridge_guard_intervention",
+                "dominant_breakpoint": "bridge_guard_intervention",
+            },
+            "attribution": {
+                "dominant_breakpoint": "bridge_guard_intervention",
+                "steer_guard_intervention": {
+                    "status": "active",
+                    "active": True,
+                    "guard_apply_count": 12,
+                    "source": "cyber_bridge_stats",
+                },
+            },
+            "warnings": [],
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    layer = report["layers"]["control_mapping_apply"]
+
+    assert layer["status"] == "fail"
+    assert "bridge_guard_intervention" in layer["blocking_reasons"]
+    assert layer["key_metrics"]["control_attribution_dominant_breakpoint"] == "bridge_guard_intervention"
+    assert layer["key_metrics"]["steer_guard_intervention"]["guard_apply_count"] == 12
+    assert "Guard intervention is not claim-grade no-assist evidence" in layer["next_action"]
+
+
+def test_lateral_semantics_primary_outranks_guard_intervention_symptom(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    (run_dir / "analysis/natural_driving/natural_driving_report.json").unlink()
+    _write_json(
+        run_dir / "analysis/apollo_lateral_semantics/apollo_lateral_semantics_report.json",
+        {
+            "schema_version": "apollo_lateral_semantics.v1",
+            "verdict": {
+                "status": "warn",
+                "failure_reason": "lateral_semantics_anomaly",
+                "suspected_layer": "control_mapping",
+                "confidence": "medium",
+            },
+            "suspected_layer": "control_mapping",
+            "confidence": "medium",
+            "anomalies": [
+                {
+                    "type": "route_lateral_error_opposes_simple_lat_lateral_error",
+                    "suspected_layer": "control_mapping",
+                    "reason": "Route lateral and Apollo simple_lat signs disagree in the drift window.",
+                },
+                {
+                    "type": "raw_mapped_applied_mismatch",
+                    "suspected_layer": "control_mapping",
+                    "reason": "Raw and mapped steering diverge while guard counters are active.",
+                },
+            ],
+        },
+    )
+    _write_json(
+        run_dir / "analysis/control_attribution/control_attribution_report.json",
+        {
+            "schema_version": "control_attribution.v1",
+            "verdict": {
+                "status": "fail",
+                "failure_reason": "bridge_guard_intervention",
+                "dominant_breakpoint": "bridge_guard_intervention",
+            },
+            "attribution": {
+                "dominant_breakpoint": "bridge_guard_intervention",
+                "steer_guard_intervention": {
+                    "status": "active",
+                    "active": True,
+                    "guard_apply_count": 12,
+                    "source": "cyber_bridge_stats",
+                },
+            },
+            "warnings": [],
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+
+    assert report["primary_blocker"] == (
+        "apollo_lateral_semantics:route_lateral_error_opposes_simple_lat_lateral_error"
+    )
+    assert "control_mapping_apply:bridge_guard_intervention" in report["secondary_blockers"]
+    assert report["layers"]["control_mapping_apply"]["status"] == "fail"
+    assert "route lateral-error sign convention" in report["next_highest_value_validation"]
+    assert "downstream control symptom" in report["next_highest_value_validation"]
+    lateral_next_action = report["layers"]["apollo_lateral_semantics"]["next_action"]
+    assert "Apollo simple_lat lateral error" in lateral_next_action
+    assert "before treating raw/mapped/applied steer mismatch" in lateral_next_action
 
 
 def test_control_health_stale_handoff_fail_report_can_be_regenerated(
@@ -4242,6 +4538,94 @@ def test_channel_cadence_diagnosis_refines_channel_primary(tmp_path: Path) -> No
     cadence_report = json.loads(cadence_path.read_text(encoding="utf-8"))
     assert cadence_report["schema_version"] == "channel_cadence_diagnosis.v1"
     assert cadence_report["primary_cadence_issue"] == "localization:isolated_header_sim_gap_over_contract"
+
+
+def test_link_health_refreshes_stale_fail_cadence_after_sampled_control_stats_fix(
+    tmp_path: Path,
+) -> None:
+    run_dir = _base_run(tmp_path)
+    channels = {
+        "/apollo/localization/pose": {
+            "message_count": 100,
+            "hz": 20.0,
+            "max_gap_ms": 100.0,
+            "timestamp_monotonic": True,
+            "sequence_monotonic": True,
+            "stale_count": 0,
+            "source": "topic_publish_stats.jsonl",
+        },
+        "/apollo/canbus/chassis": {
+            "message_count": 100,
+            "hz": 20.0,
+            "max_gap_ms": 100.0,
+            "timestamp_monotonic": True,
+            "sequence_monotonic": True,
+            "stale_count": 0,
+            "source": "topic_publish_stats.jsonl",
+        },
+        "/apollo/planning": {
+            "message_count": 100,
+            "hz": 10.0,
+            "max_gap_ms": 100.0,
+            "timestamp_monotonic": True,
+            "sequence_monotonic": True,
+            "stale_count": 0,
+            "source": "planning_topic_debug.jsonl",
+        },
+        "/apollo/control": {
+            "message_count": 300,
+            "hz": 10.0,
+            "max_gap_ms": 100.0,
+            "timestamp_monotonic": True,
+            "sequence_monotonic": True,
+            "stale_count": 0,
+            "derived_from_bridge_counters": True,
+            "max_gap_ms_estimated": True,
+            "source": "cyber_bridge_stats",
+            "evidence_source": "bridge_counter_with_sampled_row_level_artifact",
+            "row_level_artifact_sampled": True,
+            "row_level_artifact_source": "bridge_control_decode.jsonl",
+            "row_level_artifact_message_count": 6,
+            "row_level_artifact_sample_stride": 50,
+        },
+    }
+    _write_json(
+        run_dir / "channel_stats.json",
+        {"schema_version": "channel_stats.v1", "channels": channels},
+    )
+    _write_json(
+        run_dir / "analysis/channel_cadence_diagnosis/channel_cadence_diagnosis_report.json",
+        {
+            "schema_version": "channel_cadence_diagnosis.v1",
+            "status": "fail",
+            "channels": {
+                "control": {
+                    "status": "fail",
+                    "blocking_reasons": ["header_sim_rate_below_contract"],
+                    "source": "bridge_control_decode.jsonl",
+                    "evidence_source": "row_level_artifact",
+                }
+            },
+            "primary_cadence_issue": "control:header_sim_rate_below_contract",
+            "blocking_reasons": ["control:header_sim_rate_below_contract"],
+            "sim_wall_cadence": {},
+        },
+    )
+
+    report = analyze_apollo_link_health_run_dir(run_dir)
+    layer = report["layers"]["channel_health"]
+    refreshed = json.loads(
+        (run_dir / "analysis/channel_cadence_diagnosis/channel_cadence_diagnosis_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert layer["artifact_paths"]["channel_cadence_source_kind"] == "regenerated_from_run_artifacts"
+    assert layer["key_metrics"]["channel_cadence_primary_issue"] is None
+    assert "channel_health:control:header_sim_rate_below_contract" != report["primary_blocker"]
+    assert refreshed["channels"]["control"]["evidence_source"] == "bridge_counter_with_sampled_row_level_artifact"
+    assert refreshed["channels"]["control"]["status"] == "warn"
+    assert "derived_or_estimated_stats_not_claim_grade" in refreshed["channels"]["control"]["warnings"]
 
 
 def test_missing_obstacle_contract_blocks_unassisted_claim(tmp_path: Path) -> None:

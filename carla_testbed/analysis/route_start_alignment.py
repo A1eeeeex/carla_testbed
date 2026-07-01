@@ -35,6 +35,7 @@ def analyze_route_start_alignment_run_dir(
     route_path = _find_first(root, ["route.json", "artifacts/route.json"])
     scenario_metadata_path = _find_first(root, ["artifacts/scenario_metadata.json", "scenario_metadata.json"])
     timeseries_path = _find_first(root, ["timeseries.csv", "timeseries.jsonl"])
+    startup_geometry_path = _find_first(root, ["artifacts/startup_geometry_summary.json", "startup_geometry_summary.json"])
     failure_timeline_path = _find_first(
         root,
         [
@@ -48,12 +49,14 @@ def analyze_route_start_alignment_run_dir(
     scenario_metadata = _read_json(scenario_metadata_path)
     route = _load_route(route_path, scenario_metadata)
     rows = _read_rows(timeseries_path)
+    startup_geometry_summary = _read_json(startup_geometry_path)
     failure_timeline = _read_json(failure_timeline_path)
 
     missing_inputs: list[str] = []
     if route is None:
         missing_inputs.append("route")
-    if not rows:
+    startup_geometry = _startup_geometry_alignment(startup_geometry_summary, active_thresholds)
+    if not rows and not startup_geometry.get("available"):
         missing_inputs.append("timeseries")
     if not failure_timeline_path:
         missing_inputs.append("failure_timeline")
@@ -64,6 +67,7 @@ def analyze_route_start_alignment_run_dir(
     status, reason, warnings, hypotheses = _verdict(
         static_spawn=static_spawn,
         initial=initial,
+        startup_geometry=startup_geometry,
         failure=failure,
         missing_inputs=missing_inputs,
         thresholds=active_thresholds,
@@ -71,10 +75,12 @@ def analyze_route_start_alignment_run_dir(
     recommendation = _alignment_recommendation(
         static_spawn=static_spawn,
         initial=initial,
+        startup_geometry=startup_geometry,
         failure=failure,
         status=status,
         reason=reason,
         hypotheses=hypotheses,
+        thresholds=active_thresholds,
     )
 
     return {
@@ -86,6 +92,7 @@ def analyze_route_start_alignment_run_dir(
         "reason": reason,
         "static_spawn_alignment": static_spawn,
         "initial_ego_alignment": initial,
+        "startup_geometry_alignment": startup_geometry,
         "failure_anchor_alignment": failure,
         "recommendation": recommendation,
         "hypotheses": hypotheses,
@@ -100,6 +107,7 @@ def analyze_route_start_alignment_run_dir(
             "route_path": str(route_path) if route_path else None,
             "scenario_metadata_path": str(scenario_metadata_path) if scenario_metadata_path else None,
             "timeseries_path": str(timeseries_path) if timeseries_path else None,
+            "startup_geometry_summary_path": str(startup_geometry_path) if startup_geometry_path else None,
             "failure_timeline_path": str(failure_timeline_path) if failure_timeline_path else None,
         },
         "interpretation_boundary": (
@@ -210,6 +218,75 @@ def _initial_alignment(rows: Sequence[Mapping[str, Any]], thresholds: Mapping[st
     return result
 
 
+def _startup_geometry_alignment(
+    startup_geometry: Mapping[str, Any],
+    thresholds: Mapping[str, float],
+) -> dict[str, Any]:
+    result = {
+        "available": False,
+        "summary_status": None,
+        "record_count": None,
+        "finalized_from_event_stream": None,
+        "localization_to_final_start_distance_m": None,
+        "raw_start_to_snapped_start_distance_m": None,
+        "heading_diff_vehicle_vs_snap_lane_deg_abs": None,
+        "snap_applied": None,
+        "snap_source_type": None,
+        "localization_reference_mode": None,
+        "localization_back_offset_m": None,
+        "map_geometry_enabled": None,
+        "map_geometry_source_type": None,
+        "trusted_lane_centerline": None,
+        "threshold_m": float(thresholds["max_spawn_lateral_offset_warn_m"]),
+    }
+    if not startup_geometry:
+        return result
+    first_record = startup_geometry.get("first_record") if isinstance(startup_geometry.get("first_record"), Mapping) else {}
+    map_geometry = startup_geometry.get("map_geometry") if isinstance(startup_geometry.get("map_geometry"), Mapping) else {}
+    distance_stats = (
+        startup_geometry.get("distance_stats")
+        if isinstance(startup_geometry.get("distance_stats"), Mapping)
+        else {}
+    )
+    localization_distance = _stat_or_record(
+        distance_stats,
+        "localization_to_final_start_distance_m",
+        first_record,
+        "localization_to_final_start_distance_m",
+    )
+    raw_to_snapped = _stat_or_record(
+        distance_stats,
+        "raw_start_to_snapped_start_distance_m",
+        first_record,
+        "raw_start_to_snapped_start_distance_m",
+    )
+    heading_diff = _stat_or_record(
+        distance_stats,
+        "heading_diff_vehicle_vs_snap_lane_deg_abs",
+        first_record,
+        "heading_diff_vehicle_vs_snap_lane_deg",
+    )
+    result.update(
+        {
+            "available": True,
+            "summary_status": _text(startup_geometry.get("summary_status")),
+            "record_count": _num(startup_geometry.get("record_count")),
+            "finalized_from_event_stream": startup_geometry.get("finalized_from_event_stream"),
+            "localization_to_final_start_distance_m": localization_distance,
+            "raw_start_to_snapped_start_distance_m": raw_to_snapped,
+            "heading_diff_vehicle_vs_snap_lane_deg_abs": abs(float(heading_diff)) if heading_diff is not None else None,
+            "snap_applied": first_record.get("snap_applied"),
+            "snap_source_type": _text(first_record.get("snap_source_type")),
+            "localization_reference_mode": _text(first_record.get("localization_reference_mode")),
+            "localization_back_offset_m": _num(first_record.get("localization_back_offset_m")),
+            "map_geometry_enabled": map_geometry.get("enabled"),
+            "map_geometry_source_type": _text(map_geometry.get("source_type")),
+            "trusted_lane_centerline": map_geometry.get("trusted_lane_centerline"),
+        }
+    )
+    return result
+
+
 def _failure_anchor_alignment(failure_timeline: Mapping[str, Any]) -> dict[str, Any]:
     result = {
         "available": False,
@@ -256,21 +333,30 @@ def _verdict(
     *,
     static_spawn: Mapping[str, Any],
     initial: Mapping[str, Any],
+    startup_geometry: Mapping[str, Any],
     failure: Mapping[str, Any],
     missing_inputs: Sequence[str],
     thresholds: Mapping[str, float],
 ) -> tuple[str, str | None, list[str], list[str]]:
     warnings: list[str] = []
     hypotheses: list[str] = []
+    startup_warnings, startup_hypotheses = _startup_geometry_findings(
+        startup_geometry=startup_geometry,
+        thresholds=thresholds,
+    )
     if failure.get("anchor_before_route_start") is True and _failure_anchor_actionable(failure):
         warnings.append("failure_anchor_before_route_start")
+        warnings.extend(startup_warnings)
         hypotheses.append("spawn_or_route_start_alignment_candidate")
+        hypotheses.extend(startup_hypotheses)
         if initial.get("rear_axle_offset_compatible") is True:
             hypotheses.append("rear_axle_localization_offset_compatible")
         return "warn", "failure_before_route_start", warnings, hypotheses
     if failure.get("anchor_near_route_start") is True and _failure_anchor_actionable(failure):
         warnings.append("failure_anchor_near_route_start")
+        warnings.extend(startup_warnings)
         hypotheses.append("route_start_gate_candidate")
+        hypotheses.extend(startup_hypotheses)
         return "warn", "failure_near_route_start", warnings, hypotheses
 
     lateral = _num(static_spawn.get("spawn_lateral_offset_m"))
@@ -283,6 +369,8 @@ def _verdict(
         hypotheses.append("initial_lateral_alignment_candidate")
     if initial.get("rear_axle_offset_compatible") is True:
         hypotheses.append("rear_axle_localization_offset_compatible")
+    warnings.extend(startup_warnings)
+    hypotheses.extend(startup_hypotheses)
 
     if warnings:
         return "warn", warnings[0], warnings, hypotheses
@@ -308,14 +396,37 @@ def _failure_anchor_actionable(failure: Mapping[str, Any]) -> bool:
     return event_type not in _NON_ACTIONABLE_ROUTE_START_ANCHOR_TYPES
 
 
+def _startup_geometry_findings(
+    *,
+    startup_geometry: Mapping[str, Any],
+    thresholds: Mapping[str, float],
+) -> tuple[list[str], list[str]]:
+    warnings: list[str] = []
+    hypotheses: list[str] = []
+    if not startup_geometry.get("available"):
+        return warnings, hypotheses
+    startup_distance = _num(startup_geometry.get("localization_to_final_start_distance_m"))
+    raw_to_snapped = _num(startup_geometry.get("raw_start_to_snapped_start_distance_m"))
+    threshold = float(thresholds["max_spawn_lateral_offset_warn_m"])
+    if startup_distance is not None and abs(startup_distance) > threshold:
+        warnings.append("startup_geometry_localization_to_start_distance_high")
+        hypotheses.append("startup_geometry_alignment_candidate")
+    if raw_to_snapped is not None and abs(raw_to_snapped) > threshold:
+        warnings.append("startup_geometry_raw_to_snapped_distance_high")
+        hypotheses.append("startup_geometry_snap_candidate")
+    return warnings, hypotheses
+
+
 def _alignment_recommendation(
     *,
     static_spawn: Mapping[str, Any],
     initial: Mapping[str, Any],
+    startup_geometry: Mapping[str, Any],
     failure: Mapping[str, Any],
     status: str,
     reason: str | None,
     hypotheses: Sequence[str],
+    thresholds: Mapping[str, float],
 ) -> dict[str, Any]:
     lateral = _num(static_spawn.get("spawn_lateral_offset_m"))
     if lateral is None or "spawn_lateral_alignment_candidate" not in hypotheses and reason not in {
@@ -347,6 +458,33 @@ def _alignment_recommendation(
                 "The route definition spawn is laterally offset from the route start, but the observed "
                 "initial lateral alignment is already low and the longitudinal rear-axle frame is "
                 "compatible. Do not repeat the same ego_offset_y_m probe from this report alone."
+            ),
+        }
+    startup_distance = _num(startup_geometry.get("localization_to_final_start_distance_m"))
+    startup_distance_high = (
+        startup_distance is not None
+        and abs(float(startup_distance)) > float(thresholds["max_spawn_lateral_offset_warn_m"])
+    )
+    if (
+        reason == "spawn_lateral_offset_high"
+        and not initial_lateral_high
+        and startup_distance is not None
+        and not startup_distance_high
+        and (not failure.get("anchor_event_type") or not _failure_anchor_actionable(failure))
+    ):
+        return {
+            "available": False,
+            "action": "none",
+            "reason": "spawn_lateral_offset_compensated_by_runtime_start_alignment",
+            "startup_geometry_localization_to_final_start_distance_m": startup_distance,
+            "rear_axle_offset_compatible": initial.get("rear_axle_offset_compatible"),
+            "failure_route_s": failure.get("route_s"),
+            "notes": (
+                "The route definition spawn is laterally offset from the route start, but "
+                "the observed initial cross-track error and startup localization-to-start "
+                "distance are already low. Do not repeat the same ego_offset_y_m probe "
+                "from this report alone; inspect downstream route/reference-line/lateral "
+                "semantics instead."
             ),
         }
     correction = -float(lateral)
@@ -422,6 +560,11 @@ def _heading_from_pose(pose: Mapping[str, Any]) -> float | None:
 def _markdown(report: Mapping[str, Any]) -> str:
     static = report.get("static_spawn_alignment") if isinstance(report.get("static_spawn_alignment"), Mapping) else {}
     initial = report.get("initial_ego_alignment") if isinstance(report.get("initial_ego_alignment"), Mapping) else {}
+    startup = (
+        report.get("startup_geometry_alignment")
+        if isinstance(report.get("startup_geometry_alignment"), Mapping)
+        else {}
+    )
     failure = report.get("failure_anchor_alignment") if isinstance(report.get("failure_anchor_alignment"), Mapping) else {}
     recommendation = report.get("recommendation") if isinstance(report.get("recommendation"), Mapping) else {}
     lines = [
@@ -444,6 +587,16 @@ def _markdown(report: Mapping[str, Any]) -> str:
         f"- cross_track_error_m: `{initial.get('cross_track_error_m')}`",
         f"- rear_axle_offset_compatible: `{initial.get('rear_axle_offset_compatible')}`",
         f"- rear_axle_offset_error_m: `{initial.get('rear_axle_offset_error_m')}`",
+        "",
+        "## Startup Geometry",
+        "",
+        f"- available: `{startup.get('available')}`",
+        f"- summary_status: `{startup.get('summary_status')}`",
+        f"- localization_to_final_start_distance_m: `{startup.get('localization_to_final_start_distance_m')}`",
+        f"- raw_start_to_snapped_start_distance_m: `{startup.get('raw_start_to_snapped_start_distance_m')}`",
+        f"- heading_diff_vehicle_vs_snap_lane_deg_abs: `{startup.get('heading_diff_vehicle_vs_snap_lane_deg_abs')}`",
+        f"- snap_source_type: `{startup.get('snap_source_type')}`",
+        f"- localization_reference_mode: `{startup.get('localization_reference_mode')}`",
         "",
         "## Failure Anchor",
         "",
@@ -542,3 +695,21 @@ def _num(*values: Any) -> float | None:
             continue
         return number
     return None
+
+
+def _text(value: Any) -> str | None:
+    if value in {None, ""}:
+        return None
+    return str(value)
+
+
+def _stat_or_record(
+    stats: Mapping[str, Any],
+    stats_key: str,
+    record: Mapping[str, Any],
+    record_key: str,
+) -> float | None:
+    item = stats.get(stats_key)
+    if isinstance(item, Mapping):
+        return _num(item.get("mean"), item.get("min"), item.get("max"))
+    return _num(record.get(record_key))

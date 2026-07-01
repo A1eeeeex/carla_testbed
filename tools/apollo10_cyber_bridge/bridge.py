@@ -139,6 +139,7 @@ try:
         normalize_steering_command as normalize_steering_command_impl,
         physical_map_base_controls as physical_map_base_controls_impl,
         select_steering_field as select_steering_field_impl,
+        STEERING_NORMALIZATION_ANGLE_DEGREE_AT_SELECT,
         STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT,
         STEERING_PERCENT_NORMALIZATION_MODES,
         steering_normalization_mode as steering_normalization_mode_impl,
@@ -152,6 +153,7 @@ except Exception:
         normalize_steering_command as normalize_steering_command_impl,
         physical_map_base_controls as physical_map_base_controls_impl,
         select_steering_field as select_steering_field_impl,
+        STEERING_NORMALIZATION_ANGLE_DEGREE_AT_SELECT,
         STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT,
         STEERING_PERCENT_NORMALIZATION_MODES,
         steering_normalization_mode as steering_normalization_mode_impl,
@@ -730,10 +732,15 @@ class Transform2D:
     ty: float = 0.0
     tz: float = 0.0
     yaw_deg: float = 0.0
+    heading_offset_deg: float = 0.0
 
     @property
     def yaw_rad(self) -> float:
         return math.radians(self.yaw_deg)
+
+    @property
+    def heading_offset_rad(self) -> float:
+        return math.radians(self.heading_offset_deg)
 
     def apply_position(self, x: float, y: float, z: float) -> Tuple[float, float, float]:
         c = math.cos(self.yaw_rad)
@@ -751,7 +758,7 @@ class Transform2D:
         return xx, yy, z
 
     def apply_yaw(self, yaw: float) -> float:
-        return yaw + self.yaw_rad
+        return yaw + self.yaw_rad + self.heading_offset_rad
 
 
 def _extract_xy_series(map_file: Path) -> List[Tuple[float, float]]:
@@ -1510,6 +1517,7 @@ class ApolloGtBridge:
             ty=float(tf_cfg.get("ty", 0.0)),
             tz=float(tf_cfg.get("tz", 0.0)),
             yaw_deg=float(tf_cfg.get("yaw_deg", 0.0)),
+            heading_offset_deg=float(tf_cfg.get("heading_offset_deg", 0.0)),
         )
         self.publish_rate_hz = float(bridge_cfg.get("publish_rate_hz", 20.0))
         run_cfg = (cfg.get("run", {}) or {})
@@ -2590,6 +2598,10 @@ class ApolloGtBridge:
         self._planning_recent_events: deque[Dict[str, Any]] = deque(maxlen=4096)
         self._planning_last_event: Optional[Dict[str, Any]] = None
         self._planning_last_route_debug_event: Optional[Dict[str, Any]] = None
+        # 2026-06-30: Planning stall detection — track consecutive empty trajectories
+        self._planning_stall_consecutive_empty: int = 0
+        self._planning_stall_first_empty_ts_sec: Optional[float] = None
+        self._planning_stall_last_reported: int = 0
         self._routing_first_response_ts_sec: Optional[float] = None
         self._routing_first_success_response_ts_sec: Optional[float] = None
         self._routing_last_response_ts_sec: Optional[float] = None
@@ -4626,6 +4638,35 @@ class ApolloGtBridge:
                     out.append(float(length))
         except Exception:
             return []
+
+        # P0-1 fix (2026-06-30): path fallback when reference_line is empty.
+        # When enable_reference_line_stitching=false, Apollo does not populate
+        # debug.planning_data.reference_line but does populate path items with
+        # path_points containing x, y, theta, kappa geometry.
+        if not out:
+            planning_data = self._resolve_nested_value(msg, (("debug", "planning_data",),))
+            if planning_data is not None:
+                try:
+                    path_items = getattr(planning_data, "path", None)
+                    if path_items is not None:
+                        for path_item in list(path_items or [])[:6]:
+                            pts = getattr(path_item, "path_point", None)
+                            if pts is None:
+                                continue
+                            total = 0.0
+                            prev_x = prev_y = None
+                            for pt in list(pts):
+                                x = self._resolve_nested_float(pt, (("x",),))
+                                y = self._resolve_nested_float(pt, (("y",),))
+                                if x is None or y is None:
+                                    continue
+                                if prev_x is not None and prev_y is not None:
+                                    total += math.hypot(x - prev_x, y - prev_y)
+                                prev_x, prev_y = x, y
+                            if total > 0.0:
+                                out.append(total)
+                except Exception:
+                    pass
         return out
 
     def _planning_routing_counts(self, msg: Any) -> Tuple[int, int, int]:
@@ -5155,6 +5196,11 @@ class ApolloGtBridge:
                 if last_event.get("planning_header_sequence_num") is not None
                 else None
             ),
+            "planning_stall": {
+                "consecutive_empty_count": int(self._planning_stall_consecutive_empty),
+                "first_empty_ts_sec": self._planning_stall_first_empty_ts_sec,
+                "max_consecutive_empty_reported": int(self._planning_stall_last_reported),
+            },
         }
 
     def _write_planning_topic_debug_summary(self) -> None:
@@ -5920,7 +5966,20 @@ class ApolloGtBridge:
             "trajectory_kappa_spike_count_abs_ge_0_10": 0,
             "trajectory_first_segment_heading": None,
             "trajectory_first_theta_minus_first_segment_heading_rad": None,
+            "trajectory_expired_prefix_count": None,
+            "trajectory_first_nonexpired_point_index": None,
+            "trajectory_first_nonexpired_point_relative_time": None,
+            "trajectory_first_nonexpired_point_theta": None,
+            "trajectory_first_nonexpired_remaining_point_count": None,
+            "trajectory_future_first_segment_heading": None,
+            "trajectory_first_nonexpired_theta_minus_future_segment_heading_rad": None,
+            "trajectory_future_lookahead_heading": None,
+            "trajectory_future_lookahead_point_index": None,
+            "trajectory_future_lookahead_distance_m": None,
+            "trajectory_future_lookahead_time_s": None,
+            "trajectory_first_nonexpired_theta_minus_future_lookahead_heading_rad": None,
             "trajectory_sample_points": [],
+            "trajectory_future_window_points": [],
             "is_replan": None,
             "replan_reason": None,
             "lane_id_first": None,
@@ -5945,6 +6004,9 @@ class ApolloGtBridge:
             "planning_debug_reference_line_field_present": None,
             "planning_debug_reference_line_count": None,
             "planning_debug_reference_line_lengths": [],
+            "planning_debug_path_fallback_used": None,
+            "planning_debug_path_item_count": None,
+            "planning_debug_path_point_total": None,
             "planning_debug_routing_path": None,
             "planning_debug_routing_field_present": None,
             "planning_debug_routing_road_count": None,
@@ -6006,12 +6068,16 @@ class ApolloGtBridge:
             "planning_stage_name": None,
             "task_name": None,
             "planning_empty_reason_guess": "",
+            "planning_empty_reason_detail": {},
             "planning_debug_debug_present": None,
             "planning_debug_planning_data_present": None,
             "planning_debug_reference_line_path": None,
             "planning_debug_reference_line_field_present": None,
             "planning_debug_reference_line_count": None,
             "planning_debug_reference_line_lengths": [],
+            "planning_debug_path_fallback_used": None,
+            "planning_debug_path_item_count": None,
+            "planning_debug_path_point_total": None,
             "planning_debug_routing_path": None,
             "planning_debug_routing_field_present": None,
             "planning_debug_routing_road_count": None,
@@ -6103,6 +6169,41 @@ class ApolloGtBridge:
                 first_kappa = self._resolve_nested_float(pts[0], (("path_point", "kappa"),))
                 first_v = self._resolve_nested_float(pts[0], (("v",),))
                 first_relative_time = self._resolve_nested_float(pts[0], (("relative_time",),))
+            # -----------------------------------------------------------------
+            # Planning stall detection (2026-06-30)
+            # Track consecutive empty trajectories. When >50 consecutive empty
+            # messages are seen with routing present but no reference_line,
+            # emit a detailed stall diagnostic.
+            # -----------------------------------------------------------------
+            if pt_count > 0:
+                self._planning_stall_consecutive_empty = 0
+                self._planning_stall_first_empty_ts_sec = None
+            else:
+                self._planning_stall_consecutive_empty += 1
+                if self._planning_stall_first_empty_ts_sec is None:
+                    self._planning_stall_first_empty_ts_sec = now_sec
+                stall_threshold = 50
+                if (
+                    self._planning_stall_consecutive_empty >= stall_threshold
+                    and self._planning_stall_consecutive_empty > self._planning_stall_last_reported
+                ):
+                    self._planning_stall_last_reported = self._planning_stall_consecutive_empty
+                    stall_dur = (
+                        now_sec - float(self._planning_stall_first_empty_ts_sec)
+                        if self._planning_stall_first_empty_ts_sec is not None
+                        else 0.0
+                    )
+                    print(
+                        f"[bridge][planning][ERROR] PLANNING_STALL_DETECTED "
+                        f"consecutive_empty={self._planning_stall_consecutive_empty} "
+                        f"stall_duration_sec={stall_dur:.1f} "
+                        f"routing_segment_count={routing_segment_count} "
+                        f"reference_line_count={len(ref_lengths)} "
+                        f"routing_established={self.auto_routing_established} "
+                        f"map_contract_invalid={self.map_contract_invalid} "
+                        f"suppress_unstable_reroute={self.auto_routing_suppress_long_phase_reroute_on_unstable_reference_line} "
+                        f"current_routing_phase={self.auto_routing_current_phase}"
+                    )
             trajectory_shape_debug = build_trajectory_shape_debug_impl(pts)
             debug_row.update(
                 {
@@ -6182,16 +6283,77 @@ class ApolloGtBridge:
             trajectory_nonzero_reference_line_debug_missing = bool(
                 pt_count > 0 and len(ref_lengths) <= 0 and routing_segment_count > 0
             )
-            if pt_count <= 0 and len(ref_lengths) <= 0:
-                empty_reason_guess = "reference_line_missing"
-            elif pt_count <= 0 and routing_segment_count <= 0:
-                empty_reason_guess = "route_segment_missing"
-            elif pt_count <= 0 and dest_beyond_reference_line is True:
-                empty_reason_guess = "dest_beyond_reference_line"
-            elif pt_count <= 0:
-                empty_reason_guess = "zero_trajectory_points"
-            else:
-                empty_reason_guess = ""
+            # -----------------------------------------------------------------
+            # Planning empty trajectory diagnosis (enhanced 2026-06-30)
+            # Causal chain for reference_line_missing:
+            #   1. map_contract_invalid → route debug missing/stale
+            #   2. suppress_long_phase_reroute_on_unstable_reference_line
+            #      blocks long-phase routing when map_contract_invalid=true
+            #   3. Apollo stuck with startup 30m route only
+            #   4. Planning reaches end of short reference line → empty trajectory
+            #   5. Control enters safe hold → vehicle drifts → CTE grows
+            # -----------------------------------------------------------------
+            empty_reason_guess = ""
+            empty_reason_detail = {}
+            if pt_count <= 0:
+                if len(ref_lengths) <= 0 and routing_segment_count <= 0:
+                    empty_reason_guess = "reference_line_and_routing_empty"
+                    empty_reason_detail = {
+                        "ref_lengths_count": len(ref_lengths),
+                        "routing_segment_count": routing_segment_count,
+                        "routing_road_count": routing_road_count,
+                        "planning_data_present": planning_debug_presence.get(
+                            "planning_debug_planning_data_present"
+                        ),
+                        "reference_line_field_present": planning_debug_presence.get(
+                            "planning_debug_reference_line_field_present"
+                        ),
+                        "routing_field_present": planning_debug_presence.get(
+                            "planning_debug_routing_field_present"
+                        ),
+                        "map_contract_invalid": bool(self.map_contract_invalid),
+                        "routing_established": bool(self.auto_routing_established),
+                        "suppress_unstable_reroute": bool(
+                            self.auto_routing_suppress_long_phase_reroute_on_unstable_reference_line
+                        ),
+                        "current_routing_phase": str(
+                            self.auto_routing_current_phase or ""
+                        ),
+                    }
+                elif len(ref_lengths) <= 0:
+                    empty_reason_guess = "reference_line_missing"
+                    empty_reason_detail = {
+                        "ref_lengths_count": 0,
+                        "routing_segment_count": routing_segment_count,
+                        "map_contract_invalid": bool(self.map_contract_invalid),
+                    }
+                elif routing_segment_count <= 0:
+                    empty_reason_guess = "route_segment_missing"
+                    empty_reason_detail = {
+                        "routing_segment_count": 0,
+                        "ref_lengths_count": len(ref_lengths),
+                    }
+                elif dest_beyond_reference_line is True:
+                    empty_reason_guess = "dest_beyond_reference_line"
+                    empty_reason_detail = {
+                        "ref_len_max": ref_len_max,
+                        "remain_length_to_dest": remain_length_to_dest,
+                        "ego_front_to_center": ego_front_to_center,
+                    }
+                else:
+                    empty_reason_guess = "zero_trajectory_points_unknown"
+                    empty_reason_detail = {
+                        "ref_lengths_count": len(ref_lengths),
+                        "routing_segment_count": routing_segment_count,
+                        "pt_count": int(pt_count),
+                    }
+            # Log empty trajectory with detail at WARNING level every 50th event
+            if pt_count <= 0 and self._planning_empty_count > 0 and self._planning_empty_count % 50 == 0:
+                print(
+                    f"[bridge][planning][warn] empty_trajectory_#{self._planning_empty_count} "
+                    f"reason={empty_reason_guess} detail={empty_reason_detail} "
+                    f"nonempty_ratio={self._planning_nonempty_count}/{self._planning_msg_count}"
+                )
             if trajectory_nonzero_reference_line_debug_missing:
                 lane_follow_map_status = "trajectory_nonzero_reference_line_debug_missing"
             elif len(ref_lengths) <= 0 and routing_segment_count > 0:
@@ -6238,6 +6400,7 @@ class ApolloGtBridge:
                     "planning_stage_name": stage_plugin_type,
                     "task_name": scenario_plugin_type,
                     "planning_empty_reason_guess": empty_reason_guess,
+                    "planning_empty_reason_detail": empty_reason_detail,
                 }
             )
         except Exception as exc:
@@ -6730,6 +6893,7 @@ class ApolloGtBridge:
                 "steering_percent_normalization",
                 STEERING_NORMALIZATION_SINGLE_PERCENT_AT_SELECT,
             ),
+            max_steer_angle_deg=getattr(self, "physical_apollo_max_steer_angle_deg", 30.0),
         )
 
     @staticmethod
@@ -10449,26 +10613,55 @@ class ApolloGtBridge:
             self.stats["routing_waiting_for_route_debug_ready_count"] = int(
                 self.stats.get("routing_waiting_for_route_debug_ready_count", 0) or 0
             ) + 1
-        unstable_long_reroute_guard_active = bool(
+        # -----------------------------------------------------------------
+        # Unstable reference line guard: suppress long-phase reroute when
+        # planning cannot produce reference lines (2026-06-30 enhanced)
+        #
+        # Blocking conditions (any one triggers guard):
+        #   A) invalid_goal — goal projection failed or goal is outside map
+        #   B) reference_line_count <= 0 AND not debug_missing — no ref line
+        #      and the debug field itself is present (so it's a real missing,
+        #      not just debug not populated)
+        #   C) route_segment_count <= 0 — no route segments from routing
+        #   D) lane_follow_map_inconsistent — map/lane metadata mismatch
+        #   E) map_contract_invalid — bridge map ≠ runtime map (WARNING:
+        #      this alone blocks ALL long-phase routing regardless of
+        #      reference_line status!)
+        # -----------------------------------------------------------------
+        unstable_long_reroute_guard_triggers = []
+        unstable_long_reroute_guard_active = False
+        if (
             phase == "long"
             and not routing_waiting_for_route_debug_ready
             and not ignore_roll_active
             and self.auto_routing_suppress_long_phase_reroute_on_unstable_reference_line
             and post_routing_reference_guard_applicable
-            and (
-                bool(goal_validity.get("invalid_goal"))
-                or (
-                    recent_route_debug_fresh
-                    and (
-                        recent_reference_line_count <= 0
-                        and not recent_reference_line_debug_missing_but_trajectory_nonzero
-                    )
+        ):
+            if bool(goal_validity.get("invalid_goal")):
+                unstable_long_reroute_guard_triggers.append(
+                    f"invalid_goal:{goal_validity.get('invalid_goal_reason', 'unknown')}"
                 )
-                or (recent_route_debug_fresh and recent_route_segment_count <= 0)
-                or (recent_route_debug_fresh and lane_follow_map_inconsistent_active)
-                or bool(self.map_contract_invalid)
-            )
-        )
+            if (
+                recent_route_debug_fresh
+                and recent_reference_line_count <= 0
+                and not recent_reference_line_debug_missing_but_trajectory_nonzero
+            ):
+                unstable_long_reroute_guard_triggers.append(
+                    f"reference_line_empty(ref_count={recent_reference_line_count})"
+                )
+            if recent_route_debug_fresh and recent_route_segment_count <= 0:
+                unstable_long_reroute_guard_triggers.append(
+                    f"route_segment_empty(seg_count={recent_route_segment_count})"
+                )
+            if recent_route_debug_fresh and lane_follow_map_inconsistent_active:
+                unstable_long_reroute_guard_triggers.append(
+                    f"lane_follow_inconsistent(status={recent_lane_follow_map_status})"
+                )
+            if bool(self.map_contract_invalid):
+                unstable_long_reroute_guard_triggers.append(
+                    f"map_contract_invalid(reason={self.map_contract_mismatch_reason[:80]})"
+                )
+            unstable_long_reroute_guard_active = bool(unstable_long_reroute_guard_triggers)
         if unstable_long_reroute_guard_active:
             routing_skipped_due_to_unstable_reference_line = True
             if send_routing_now:
@@ -10476,6 +10669,17 @@ class ApolloGtBridge:
                 self.stats["routing_skipped_due_to_unstable_reference_line_count"] = int(
                     self.stats.get("routing_skipped_due_to_unstable_reference_line_count", 0) or 0
                 ) + 1
+            # Log detailed trigger info on first skip and every 50th
+            skip_count = int(
+                self.stats.get("routing_skipped_due_to_unstable_reference_line_count", 0) or 0
+            )
+            if skip_count <= 1 or skip_count % 50 == 0:
+                print(
+                    f"[bridge][routing][warn] unstable_long_reroute_guard "
+                    f"skip_count={skip_count} triggers={unstable_long_reroute_guard_triggers} "
+                    f"map_invalid={self.map_contract_invalid} "
+                    f"suppress_enabled={self.auto_routing_suppress_long_phase_reroute_on_unstable_reference_line}"
+                )
             self.auto_routing_long_routing_sent = True
         self.stats["goal_validity_last"] = dict(goal_validity)
         self._record_goal_validity_event(
@@ -10716,6 +10920,8 @@ class ApolloGtBridge:
                     "lane_follow_map_status": recent_lane_follow_map_status,
                     "lane_follow_map_inconsistent": lane_follow_map_inconsistent_active,
                     "map_contract_invalid": bool(self.map_contract_invalid),
+                    "unstable_long_reroute_guard_active": unstable_long_reroute_guard_active,
+                    "unstable_long_reroute_guard_triggers": unstable_long_reroute_guard_triggers,
                 },
                 "current_goal": {
                     "x": x1,
@@ -11044,9 +11250,13 @@ class ApolloGtBridge:
                 self.auto_routing_long_lane_follow_sent = True
             self.auto_routing_active_goal = (x1, y1, z1)
 
-    def _write_stats(self) -> None:
+    def _write_stats(self, *, full: bool = True) -> None:
         stats_write_start_s = time.time()
         buffering = self.stats.setdefault("artifact_buffering", {})
+        stats_write_mode = "full" if full else "lightweight"
+        buffering["last_stats_write_mode"] = stats_write_mode
+        count_key = f"{stats_write_mode}_stats_write_count"
+        buffering[count_key] = int(buffering.get(count_key, 0) or 0) + 1
 
         def record_stats_phase_duration(key: str, start_s: float) -> None:
             duration_s = max(0.0, time.time() - start_s)
@@ -11054,43 +11264,52 @@ class ApolloGtBridge:
             max_key = f"{key}_max"
             buffering[max_key] = max(float(buffering.get(max_key, 0.0) or 0.0), duration_s)
 
-        try:
-            stats_flush_interval_s = max(
-                0.0,
-                float(getattr(self, "artifact_stats_flush_interval_s", 5.0) or 0.0),
-            )
-            last_flush = float(getattr(self, "_last_artifact_stats_flush_sec", 0.0) or 0.0)
-            now = time.time()
-            if stats_flush_interval_s > 0.0 and (now - last_flush) >= stats_flush_interval_s:
-                flush_start_s = time.time()
-                self._flush_artifact_buffers(close=False)
-                record_stats_phase_duration("artifact_stats_flush_duration_s", flush_start_s)
-                self._last_artifact_stats_flush_sec = now
-        except Exception:
-            pass
-        health_start_s = time.time()
-        self._write_health_summary()
-        record_stats_phase_duration("health_summary_write_duration_s", health_start_s)
-        startup_start_s = time.time()
-        self._write_startup_geometry_summary()
-        record_stats_phase_duration("startup_geometry_summary_write_duration_s", startup_start_s)
-        planning_start_s = time.time()
-        self._write_planning_topic_debug_summary()
-        record_stats_phase_duration("planning_summary_write_duration_s", planning_start_s)
-        if hasattr(self.node, "write_artifacts"):
+        if full:
             try:
-                node_artifacts_start_s = time.time()
-                self.node.write_artifacts()
-                record_stats_phase_duration(
-                    "node_write_artifacts_duration_s",
-                    node_artifacts_start_s,
+                stats_flush_interval_s = max(
+                    0.0,
+                    float(getattr(self, "artifact_stats_flush_interval_s", 5.0) or 0.0),
                 )
+                last_flush = float(getattr(self, "_last_artifact_stats_flush_sec", 0.0) or 0.0)
+                now = time.time()
+                if stats_flush_interval_s > 0.0 and (now - last_flush) >= stats_flush_interval_s:
+                    flush_start_s = time.time()
+                    self._flush_artifact_buffers(close=False)
+                    record_stats_phase_duration("artifact_stats_flush_duration_s", flush_start_s)
+                    self._last_artifact_stats_flush_sec = now
             except Exception:
                 pass
+            health_start_s = time.time()
+            self._write_health_summary()
+            record_stats_phase_duration("health_summary_write_duration_s", health_start_s)
+            startup_start_s = time.time()
+            self._write_startup_geometry_summary()
+            record_stats_phase_duration("startup_geometry_summary_write_duration_s", startup_start_s)
+            planning_start_s = time.time()
+            self._write_planning_topic_debug_summary()
+            record_stats_phase_duration("planning_summary_write_duration_s", planning_start_s)
+            if hasattr(self.node, "write_artifacts"):
+                try:
+                    node_artifacts_start_s = time.time()
+                    self.node.write_artifacts()
+                    record_stats_phase_duration(
+                        "node_write_artifacts_duration_s",
+                        node_artifacts_start_s,
+                    )
+                except Exception:
+                    pass
         stats_file_start_s = time.time()
         self._write_json_file(self.stats_path, self.stats)
         record_stats_phase_duration("stats_json_write_duration_s", stats_file_start_s)
         record_stats_phase_duration("stats_write_duration_s", stats_write_start_s)
+        record_stats_phase_duration(
+            f"{stats_write_mode}_stats_write_duration_s",
+            stats_write_start_s,
+        )
+        if full:
+            # Persist shutdown/full-mode timing fields that are only known after
+            # the first JSON write. Keep the 20 Hz lightweight path single-write.
+            self._write_json_file(self.stats_path, self.stats)
 
     def run(self) -> int:
         self.ros_thread.start()
@@ -11131,7 +11350,10 @@ class ApolloGtBridge:
             if interval_s <= 0.0:
                 return
             if (now_s - last_stats_flush) >= interval_s:
-                self._write_stats()
+                # Keep periodic progress visible to wrappers without flushing
+                # heavier summaries or node artifacts from the 20 Hz GT publish
+                # hot path. Full stats/summaries are still forced at shutdown.
+                self._write_stats(full=False)
                 last_stats_flush = now_s
 
         while not self.stop_event.is_set():

@@ -123,6 +123,39 @@ def test_raw_ok_mapped_wrong_is_bridge_mapping(tmp_path: Path) -> None:
     assert report["attribution"]["raw_to_mapped_steer_consistency"]["status"] == "fail"
 
 
+def test_raw_mapped_mismatch_with_guard_is_guard_intervention(tmp_path: Path) -> None:
+    rows = _base_rows()
+    for row in rows:
+        row["apollo_steer_raw"] = 1.0
+        row["bridge_steer_mapped"] = 0.08
+        row["carla_steer_applied"] = 0.08
+        row["ego_yaw_rate"] = 0.04
+        row["steer_scale"] = 1.0
+    path = _write_rows(tmp_path / "timeseries.csv", rows)
+    stats = tmp_path / "cyber_bridge_stats.json"
+    stats.write_text(
+        json.dumps(
+            {
+                "control_tx_count": 4,
+                "lateral_guard_apply_count": 2,
+                "trajectory_contract_lateral_guard_apply_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_control_attribution(path, cyber_bridge_stats_json=stats)
+
+    assert report["attribution"]["dominant_breakpoint"] == "bridge_guard_intervention"
+    assert report["verdict"]["status"] == "fail"
+    assert report["verdict"]["failure_reason"] == "bridge_guard_intervention"
+    guard = report["attribution"]["steer_guard_intervention"]
+    assert guard["status"] == "active"
+    assert guard["source"] == "cyber_bridge_stats"
+    assert guard["stats_guard_count"] == 3
+    assert report["attribution"]["raw_to_mapped_steer_consistency"]["guard_intervention_likely"] is True
+
+
 def test_mapped_ok_applied_wrong_is_carla_apply(tmp_path: Path) -> None:
     rows = _base_rows()
     for row in rows:

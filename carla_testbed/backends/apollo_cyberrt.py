@@ -11,7 +11,13 @@ from .base import BackendDiagnostics, BackendPreflightResult, LaunchPlan, StackC
 
 class ApolloCyberRTBackend:
     name = "apollo_cyberrt"
-    _COMPATIBILITY_MIN_RUNTIME_TIMEOUT_S = 240.0
+    # The Town01 compatibility chain includes CARLA prewarm, Apollo warmup,
+    # routing/planning materialization, runtime cleanup, and post-run summary
+    # finalization.  A 2026-06-30 lane_keep_097 sample reached control output
+    # just before the previous 240s wrapper timeout, so keep a conservative
+    # floor that lets valid failures finalize instead of being reclassified as
+    # platform timeouts.
+    _COMPATIBILITY_MIN_RUNTIME_TIMEOUT_S = 300.0
     _STATIC_FOLLOW_STOP_COMPAT_CONFIGS = {
         "baguang_follow_stop_static_300m": (
             "configs/io/examples/phase1_baguang_apollo_followstop_static_control_overlay_paced_compat.yaml"
@@ -131,6 +137,7 @@ class ApolloCyberRTBackend:
             if fixed_scene_enabled
             else _town01_route_only_command(plan, run_dir=run_dir)
         )
+        command = _append_runtime_overrides(command, plan)
         expected_topics = [
             "/apollo/localization/pose",
             "/apollo/canbus/chassis",
@@ -217,7 +224,6 @@ class ApolloCyberRTBackend:
             expected_artifacts=expected_artifacts,
             shutdown_hooks=["stop_apollo_bridge", "stop_recorders", "leave_carla_running_policy_dependent"],
             postprocess_commands=[
-                ["python3", "tools/analyze_apollo_link_health.py", "--run-dir", run_dir],
                 [
                     "python3",
                     "tools/extract_v_t_gap.py",
@@ -226,7 +232,9 @@ class ApolloCyberRTBackend:
                     "--out",
                     f"{run_dir}/analysis/v_t_gap",
                 ],
+                ["python3", "tools/postprocess_phase1_run.py", "--run-dir", run_dir],
                 ["python3", "-m", "carla_testbed", "analyze", "--run-dir", run_dir],
+                ["python3", "tools/analyze_apollo_link_health.py", "--run-dir", run_dir],
             ],
             runtime_completion_markers=(
                 _apollo_route_health_completion_markers()
@@ -439,6 +447,20 @@ def _town01_route_health_config(plan: RunPlan) -> str | None:
     )
     value = str(raw or "").strip()
     return value or None
+
+
+def _append_runtime_overrides(command: list[str], plan: RunPlan) -> list[str]:
+    overrides = [
+        str(item)
+        for item in (plan.compatibility.get("runtime_overrides") or [])
+        if str(item).strip()
+    ]
+    if not command or not overrides:
+        return command
+    patched = list(command)
+    for override in overrides:
+        patched.extend(["--override", override])
+    return patched
 
 
 def _town01_capability_step(plan: RunPlan) -> tuple[str, str] | None:

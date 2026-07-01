@@ -33,12 +33,71 @@ def test_two_evaluable_runs_are_comparable(tmp_path) -> None:
     assert "phase1_comparison_not_natural_driving_claim" in report["summary_notes"]
     assert all(item["counts_as_backend_loss"] is False for item in report["backend_results"])
     apollo = [item for item in report["backend_results"] if item["backend"] == "apollo_cyberrt"][0]
+    assert apollo["run_dir"] == str(run_a)
+    assert apollo["status"] == "success"
+    assert apollo["phase1_status"] == "success"
     assert apollo["phase1_metrics"]["control_motion"]["stuck_control_signature"] == "no_clear_control_blocker"
     assert apollo["apollo_control_handoff_status"] == "pass"
     assert apollo["apollo_control_handoff_failure_stage"] == "none"
     assert apollo["apollo_control_handoff_failure_reasons"] == []
     assert any(path.endswith("analysis/apollo_control_handoff/apollo_control_handoff_report.json") for path in report["evidence_files"])
     assert sum(path.endswith("analysis/apollo_control_handoff/apollo_control_handoff_report.json") for path in report["evidence_files"]) == 1
+
+
+def test_comparison_surfaces_route_start_alignment_metrics_from_current_report(tmp_path) -> None:
+    run_a = _write_run(
+        tmp_path,
+        "apollo",
+        "apollo_cyberrt",
+        "apollo_reference_backend",
+        "failed",
+        "lane_invasion",
+        scenario_id="town01_lane_keep_097",
+        scenario_case="town01_lane_keep_097",
+    )
+    run_b = _write_run(
+        tmp_path,
+        "builtin",
+        "carla_builtin",
+        "planning_control_backend",
+        "success",
+        scenario_id="town01_lane_keep_097",
+        scenario_case="town01_lane_keep_097",
+    )
+    alignment_dir = run_a / "analysis" / "route_start_alignment"
+    alignment_dir.mkdir(parents=True)
+    (alignment_dir / "route_start_alignment_report.json").write_text(
+        json.dumps(
+            {
+                "status": "warn",
+                "reason": "spawn_lateral_offset_high",
+                "static_spawn_alignment": {"spawn_lateral_offset_m": -0.5089},
+                "initial_ego_alignment": {"cross_track_error_m": 0.0002},
+                "startup_geometry_alignment": {
+                    "localization_to_final_start_distance_m": 0.0003,
+                },
+                "recommendation": {
+                    "recommended_ego_offset_y_delta_m": 0.5089,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = compare_scenario_runs([run_a, run_b])
+
+    apollo = [item for item in report["backend_results"] if item["backend"] == "apollo_cyberrt"][0]
+    assert apollo["route_start_alignment_status"] == "warn"
+    assert apollo["route_start_alignment_reason"] == "spawn_lateral_offset_high"
+    assert apollo["initial_cross_track_error_m"] == 0.0002
+    assert apollo["startup_geometry_localization_to_final_start_distance_m"] == 0.0003
+    assert apollo["recommended_ego_offset_y_delta_m"] == 0.5089
+    assert apollo["phase1_metrics"]["route_start_alignment"]["static_spawn_lateral_offset_m"] == -0.5089
+
+    outputs = write_scenario_comparison(report, tmp_path / "comparison")
+    markdown = open(outputs["markdown"], encoding="utf-8").read()
+    assert "Route-start" in markdown
+    assert "spawn_lateral_offset_high" in markdown
 
 
 def test_invalid_run_does_not_count_as_backend_loss(tmp_path) -> None:

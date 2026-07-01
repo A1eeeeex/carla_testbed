@@ -124,7 +124,7 @@ def normalize_channel_stats_for_run(run_dir: str | Path, *, output_path: str | P
         duration_s=duration_s,
         duration_source=duration_source,
     )
-    _merge_row_level_artifact_stats(root, stats)
+    _merge_row_level_artifact_stats(root, stats, bridge_stats=bridge_stats)
     target = Path(output_path).expanduser() if output_path is not None else root / "channel_stats.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(stats, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -178,7 +178,12 @@ def _channel_entry(count: int, *, duration_s: float | None, source: str) -> dict
     }
 
 
-def _merge_row_level_artifact_stats(run_dir: Path, stats: dict[str, Any]) -> None:
+def _merge_row_level_artifact_stats(
+    run_dir: Path,
+    stats: dict[str, Any],
+    *,
+    bridge_stats: Mapping[str, Any] | None = None,
+) -> None:
     channels = stats.setdefault("channels", {})
     if not isinstance(channels, dict):
         return
@@ -254,7 +259,25 @@ def _merge_row_level_artifact_stats(run_dir: Path, stats: dict[str, Any]) -> Non
             source=control.name,
         )
         if entry is not None:
-            channels["/apollo/control"] = entry
+            if _control_row_level_artifact_is_sampled(
+                control,
+                entry,
+                bridge_stats=bridge_stats,
+            ):
+                base = channels.get("/apollo/control")
+                if isinstance(base, dict):
+                    base["row_level_artifact_sampled"] = True
+                    base["row_level_artifact_source"] = control.name
+                    base["row_level_artifact_message_count"] = entry.get("message_count")
+                    base["row_level_artifact_sample_stride"] = _control_debug_sample_stride(bridge_stats)
+                    base["evidence_source"] = "bridge_counter_with_sampled_row_level_artifact"
+                else:
+                    sampled_entry = dict(entry)
+                    sampled_entry["row_level_artifact_sampled"] = True
+                    sampled_entry["evidence_source"] = "sampled_row_level_artifact"
+                    channels["/apollo/control"] = sampled_entry
+            else:
+                channels["/apollo/control"] = entry
             _append_row_level_artifact(source, control)
 
     topic_publish_stats = _find_first(
@@ -677,6 +700,37 @@ def _append_row_level_artifact(source: Any, path: Path) -> None:
     value = str(path)
     if isinstance(artifacts, list) and value not in artifacts:
         artifacts.append(value)
+
+
+def _control_row_level_artifact_is_sampled(
+    path: Path,
+    entry: Mapping[str, Any],
+    *,
+    bridge_stats: Mapping[str, Any] | None,
+) -> bool:
+    buffering = bridge_stats.get("artifact_buffering") if isinstance(bridge_stats, Mapping) else None
+    if not isinstance(buffering, Mapping):
+        return False
+    stride = _control_debug_sample_stride(bridge_stats)
+    if stride is None:
+        return False
+    seen_counts = buffering.get("control_debug_artifact_seen_counts")
+    written_counts = buffering.get("control_debug_artifact_written_counts")
+    if not isinstance(seen_counts, Mapping) or not isinstance(written_counts, Mapping):
+        return False
+    artifact_name = path.stem
+    seen = _int_or_zero(seen_counts.get(artifact_name))
+    written = _int_or_zero(written_counts.get(artifact_name))
+    rows = _int_or_zero(entry.get("message_count"))
+    return seen > written > 0 and rows == written
+
+
+def _control_debug_sample_stride(bridge_stats: Mapping[str, Any] | None) -> int | None:
+    buffering = bridge_stats.get("artifact_buffering") if isinstance(bridge_stats, Mapping) else None
+    if not isinstance(buffering, Mapping):
+        return None
+    stride = _int_or_zero(buffering.get("control_debug_artifact_sample_stride"))
+    return stride if stride > 1 else None
 
 
 def _duration_s_for_run(run_dir: Path, stats: Mapping[str, Any]) -> tuple[float | None, str | None]:

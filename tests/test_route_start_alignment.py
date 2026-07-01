@@ -114,6 +114,47 @@ def test_route_start_alignment_detects_start_gate_and_rear_axle_offset(tmp_path:
     assert "rear_axle_localization_offset_compatible" in report["hypotheses"]
 
 
+def test_route_start_alignment_includes_startup_geometry_summary(tmp_path: Path) -> None:
+    run_dir = _write_run(tmp_path)
+    _write_json(
+        run_dir / "artifacts" / "startup_geometry_summary.json",
+        {
+            "summary_status": "provisional",
+            "record_count": 1,
+            "finalized_from_event_stream": False,
+            "map_geometry": {
+                "enabled": True,
+                "source_type": "routing_map_lane_centerline",
+                "trusted_lane_centerline": True,
+            },
+            "distance_stats": {
+                "localization_to_final_start_distance_m": {"count": 1, "mean": 0.52},
+                "raw_start_to_snapped_start_distance_m": {"count": 1, "mean": 0.52},
+                "heading_diff_vehicle_vs_snap_lane_deg_abs": {"count": 1, "mean": 0.02},
+            },
+            "first_record": {
+                "snap_applied": True,
+                "snap_source_type": "routing_map_lane_centerline",
+                "localization_reference_mode": "rear_axle",
+                "localization_back_offset_m": 1.4235,
+            },
+        },
+    )
+
+    report = analyze_route_start_alignment_run_dir(run_dir)
+
+    startup = report["startup_geometry_alignment"]
+    assert startup["available"] is True
+    assert startup["localization_to_final_start_distance_m"] == 0.52
+    assert startup["raw_start_to_snapped_start_distance_m"] == 0.52
+    assert startup["heading_diff_vehicle_vs_snap_lane_deg_abs"] == 0.02
+    assert startup["snap_source_type"] == "routing_map_lane_centerline"
+    assert startup["localization_reference_mode"] == "rear_axle"
+    assert report["source"]["startup_geometry_summary_path"].endswith("startup_geometry_summary.json")
+    assert "startup_geometry_localization_to_start_distance_high" in report["warnings"]
+    assert "startup_geometry_alignment_candidate" in report["hypotheses"]
+
+
 def test_route_start_alignment_does_not_repeat_compensated_static_spawn_probe(tmp_path: Path) -> None:
     run_dir = _write_run(tmp_path)
     timeline_path = run_dir / "analysis" / "failure_timeline" / "failure_timeline_report.json"
@@ -222,6 +263,68 @@ def test_route_start_alignment_recommends_probe_when_initial_lateral_error_remai
     assert report["recommendation"]["available"] is True
     assert report["recommendation"]["action"] == "probe_spawn_lateral_alignment"
     assert report["recommendation"]["recommended_ego_offset_y_delta_m"] == -0.45
+
+
+def test_route_start_alignment_does_not_repeat_probe_when_runtime_start_is_compensated(
+    tmp_path: Path,
+) -> None:
+    run_dir = _write_run(tmp_path)
+    timeline_path = run_dir / "analysis" / "failure_timeline" / "failure_timeline_report.json"
+    timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+    timeline["anchor_event"] = None
+    timeline["route_start_gate"] = {}
+    timeline_path.write_text(json.dumps(timeline, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (run_dir / "artifacts").mkdir(exist_ok=True)
+    (run_dir / "artifacts" / "startup_geometry_summary.json").write_text(
+        json.dumps(
+                {
+                    "summary_status": "provisional",
+                    "record_count": 1,
+                    "first_record": {
+                        "localization_to_final_start_distance_m": 0.0002,
+                        "raw_start_to_snapped_start_distance_m": 0.0002,
+                        "localization_reference_mode": "rear_axle",
+                    },
+                "map_geometry": {
+                    "trusted_lane_centerline": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    timeseries_path = run_dir / "timeseries.csv"
+    with timeseries_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "sim_time",
+                "route_s",
+                "cross_track_error",
+                "heading_error",
+                "ego_speed",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "sim_time": "0.0",
+                "route_s": "0.0",
+                "cross_track_error": "0.0002",
+                "heading_error": "0.0",
+                "ego_speed": "1.0",
+            }
+        )
+
+    report = analyze_route_start_alignment_run_dir(run_dir)
+
+    assert report["status"] == "warn"
+    assert report["reason"] == "spawn_lateral_offset_high"
+    assert report["startup_geometry_alignment"]["localization_to_final_start_distance_m"] == 0.0002
+    assert report["recommendation"]["available"] is False
+    assert (
+        report["recommendation"]["reason"]
+        == "spawn_lateral_offset_compensated_by_runtime_start_alignment"
+    )
 
 
 def test_route_start_alignment_ignores_non_actionable_semantic_anchor_without_ordering_findings(

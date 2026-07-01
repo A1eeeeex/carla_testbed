@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 
 APOLLO_LATERAL_SEMANTICS_SCHEMA_VERSION = "apollo_lateral_semantics.v1"
 CONTROL_TRACE_MERGE_MAX_DT_S = 0.075
+CONTROL_TRACE_HEADER_EXTRAPOLATE_MAX_DT_S = 1.5
 
 FIELD_ALIASES = {
     "apollo_steer_raw": [
@@ -184,6 +185,9 @@ DEFAULT_THRESHOLDS = {
     "drift_window_high_lateral_abs_m": 0.50,
     "drift_context_window_s": 2.0,
     "drift_context_window_route_s_m": 10.0,
+    "critical_window_pre_s": 0.50,
+    "critical_window_post_s": 1.50,
+    "critical_window_max_samples": 16,
     "simple_lat_lateral_error_low_abs_p95_m": 0.05,
     "route_s_station_delta_high_p95_m": 20.0,
     "matched_point_near_ego_p95_m": 0.30,
@@ -221,7 +225,7 @@ def analyze_apollo_lateral_semantics_run_dir(
     timeseries_paths = [
         path
         for path in (
-            _find_first(root, ["artifacts/debug_timeseries.csv"]),
+            _find_first_deep(root, ["artifacts/debug_timeseries.csv"]),
             _find_first(root, ["timeseries.csv", "timeseries.jsonl"]),
         )
         if path is not None
@@ -241,8 +245,9 @@ def analyze_apollo_lateral_semantics_run_dir(
         control_trace=[
             path
             for path in (
-                _find_first(root, ["artifacts/control_apply_trace.jsonl", "control_apply_trace.jsonl"]),
-                _find_first(root, ["artifacts/control_decode_debug.jsonl", "control_decode_debug.jsonl"]),
+                _find_first_deep(root, ["artifacts/control_apply_trace.jsonl", "control_apply_trace.jsonl"]),
+                _find_first_deep(root, ["artifacts/control_decode_debug.jsonl", "control_decode_debug.jsonl"]),
+                _find_first_deep(root, ["artifacts/apollo_control_raw.jsonl", "apollo_control_raw.jsonl"]),
             )
             if path is not None
         ],
@@ -284,6 +289,13 @@ def analyze_apollo_lateral_semantics_run_dir(
                 "analysis/apollo_route_contract/route_definition_claim.json",
             ],
         ),
+        control_attribution=_find_first(
+            root,
+            [
+                "analysis/control_attribution/control_attribution_report.json",
+                "control_attribution_report.json",
+            ],
+        ),
         run_dir=root,
         thresholds=thresholds,
     )
@@ -301,6 +313,7 @@ def analyze_apollo_lateral_semantics(
     hdmap_projection: str | Path | Sequence[str | Path] | None = None,
     reference_line_contract: str | Path | None = None,
     route_definition: str | Path | None = None,
+    control_attribution: str | Path | None = None,
     run_dir: str | Path | None = None,
     thresholds: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
@@ -308,7 +321,7 @@ def analyze_apollo_lateral_semantics(
     active_thresholds.update(thresholds or {})
     timeseries_rows = _read_rows(timeseries)
     planning_rows = _read_rows(planning_debug)
-    control_trace_rows = _read_rows(control_trace)
+    control_trace_rows = _infer_control_trace_sim_times(_read_rows(control_trace))
     route_health_payload = _read_json(route_health)
     source_summary = _read_json(source_steer_summary)
     kappa_summary = _read_json(kappa_audit_summary)
@@ -316,6 +329,7 @@ def analyze_apollo_lateral_semantics(
     hdmap_projection_rows = _read_rows(hdmap_projection)
     reference_line_contract_payload = _read_json(reference_line_contract)
     route_definition_payload = _read_json(route_definition)
+    control_attribution_payload = _read_json(control_attribution)
     semantic_rows = _merge_control_trace_fields([*timeseries_rows, *planning_rows], control_trace_rows)
     rows = _derive_point_distance_fields([*semantic_rows, *control_trace_rows])
     supplemental = _supplemental_values(route_health_payload, source_summary, kappa_summary)
@@ -424,6 +438,11 @@ def analyze_apollo_lateral_semantics(
         hdmap_projection_rows=hdmap_projection_rows,
         route_definition_payload=route_definition_payload,
     )
+    critical_window_samples = _critical_window_samples(
+        rows,
+        active_thresholds,
+        reference_line_contract=reference_line_contract_payload,
+    )
     anomalies = _anomalies(
         values,
         stats,
@@ -432,6 +451,11 @@ def analyze_apollo_lateral_semantics(
         hdmap_route_lateral_consistency=hdmap_route_lateral_consistency,
         reference_debug_summary=reference_debug_summary,
         lateral_sign_alignment=lateral_sign_alignment,
+    )
+    control_attribution_summary = _control_attribution_summary(control_attribution_payload)
+    anomalies, suppressed_control_mapping_anomalies = _suppress_control_mapping_anomalies(
+        anomalies,
+        control_attribution_summary,
     )
     if not rows and not route_health_payload:
         anomalies.append(_anomaly("insufficient_data", "missing_timeseries_and_route_health", "insufficient_data"))
@@ -470,8 +494,11 @@ def analyze_apollo_lateral_semantics(
         "correlation_summary": stats,
         "hdmap_route_lateral_consistency": hdmap_route_lateral_consistency,
         "reference_debug_summary": reference_debug_summary,
+        "control_attribution_summary": control_attribution_summary,
+        "suppressed_control_mapping_anomalies": suppressed_control_mapping_anomalies,
         "drift_window_summary": drift_window_summary,
         "lateral_sign_alignment": lateral_sign_alignment,
+        "critical_window_samples": critical_window_samples,
         "suspected_layer": suspected_layer,
         "confidence": confidence,
         "missing_fields": sorted(set(missing_fields)),
@@ -495,6 +522,7 @@ def analyze_apollo_lateral_semantics(
             "hdmap_projection": _path_repr(hdmap_projection),
             "reference_line_contract": None if reference_line_contract is None else str(Path(reference_line_contract)),
             "route_definition": None if route_definition is None else str(Path(route_definition)),
+            "control_attribution": None if control_attribution is None else str(Path(control_attribution)),
         },
         "interpretation_boundary": (
             "This report identifies a suspected lateral-semantics layer with confidence; "
@@ -1041,6 +1069,8 @@ def _merge_control_trace_fields(
         "apollo_target_point_kappa",
         "apollo_matched_point_x",
         "apollo_matched_point_y",
+        "apollo_current_reference_point_x",
+        "apollo_current_reference_point_y",
         "apollo_target_point_x",
         "apollo_target_point_y",
     )
@@ -1062,6 +1092,67 @@ def _merge_control_trace_fields(
             current["_control_trace_merge_dt_s"] = min(merge_dts)
         merged.append(current)
     return merged
+
+
+def _infer_control_trace_sim_times(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    normalized = [dict(row) for row in rows]
+    anchors: list[tuple[float, float]] = []
+    for row in normalized:
+        sim_time = _num(row.get("sim_time"))
+        header_timestamp = _row_value(row, ["control_header_timestamp_sec"])
+        if sim_time is not None and header_timestamp is not None:
+            anchors.append((float(header_timestamp), float(sim_time)))
+    if not anchors:
+        return normalized
+    anchors = sorted(set(anchors), key=lambda item: item[0])
+    for row in normalized:
+        if _num(row.get("sim_time")) is not None:
+            continue
+        header_timestamp = _row_value(row, ["control_header_timestamp_sec"])
+        if header_timestamp is None:
+            continue
+        sim_time = _interpolate_control_header_to_sim_time(float(header_timestamp), anchors)
+        if sim_time is None:
+            continue
+        row["sim_time"] = sim_time
+        row["_sim_time_inferred_from"] = "control_header_timestamp_sec"
+    return normalized
+
+
+def _interpolate_control_header_to_sim_time(
+    header_timestamp: float,
+    anchors: Sequence[tuple[float, float]],
+) -> float | None:
+    if not anchors:
+        return None
+    headers = [item[0] for item in anchors]
+    insert_at = bisect_left(headers, header_timestamp)
+    if 0 < insert_at < len(anchors):
+        left_header, left_sim = anchors[insert_at - 1]
+        right_header, right_sim = anchors[insert_at]
+        if right_header == left_header:
+            return left_sim
+        ratio = (header_timestamp - left_header) / (right_header - left_header)
+        return left_sim + ratio * (right_sim - left_sim)
+    if insert_at == 0:
+        nearest_header, nearest_sim = anchors[0]
+        if abs(header_timestamp - nearest_header) > CONTROL_TRACE_HEADER_EXTRAPOLATE_MAX_DT_S:
+            return None
+        if len(anchors) >= 2 and anchors[1][0] != anchors[0][0]:
+            slope = (anchors[1][1] - anchors[0][1]) / (anchors[1][0] - anchors[0][0])
+        else:
+            slope = 1.0
+        return nearest_sim + (header_timestamp - nearest_header) * slope
+    nearest_header, nearest_sim = anchors[-1]
+    if abs(header_timestamp - nearest_header) > CONTROL_TRACE_HEADER_EXTRAPOLATE_MAX_DT_S:
+        return None
+    if len(anchors) >= 2 and anchors[-1][0] != anchors[-2][0]:
+        slope = (anchors[-1][1] - anchors[-2][1]) / (anchors[-1][0] - anchors[-2][0])
+    else:
+        slope = 1.0
+    return nearest_sim + (header_timestamp - nearest_header) * slope
 
 
 def _derive_point_distance_fields(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1387,6 +1478,231 @@ def _drift_context(
             field: _stats_abs([sample[field] for sample in window if field in sample])
             for field in context_fields
         },
+    }
+
+
+def _critical_window_samples(
+    rows: Sequence[Mapping[str, Any]],
+    thresholds: Mapping[str, float],
+    *,
+    reference_line_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    samples = _drift_samples(rows)
+    if not samples:
+        return {
+            "available": False,
+            "status": "insufficient_data",
+            "reason": "missing_route_lateral_samples",
+            "samples": [],
+        }
+
+    lateral_min = float(thresholds["drift_window_high_lateral_abs_m"])
+    sign_lateral_min = float(thresholds["lateral_sign_active_abs_m"])
+    steer_min = float(thresholds["steer_sign_active_abs"])
+    source_steer_high = float(thresholds["high_source_steer_abs"])
+    anchor_index: int | None = None
+    anchor_reason: str | None = None
+
+    for index, sample in enumerate(samples):
+        source_steer = sample.get("apollo_steer_raw")
+        cte = sample.get("cross_track_error")
+        simple_lat = sample.get("apollo_simple_lat_lateral_error")
+        if (
+            source_steer is not None
+            and cte is not None
+            and simple_lat is not None
+            and abs(float(source_steer)) >= source_steer_high
+            and abs(float(cte)) >= lateral_min
+        ):
+            anchor_index = index
+            anchor_reason = "source_steer_saturation_with_lateral_error"
+            break
+
+    for index, sample in enumerate(samples):
+        if anchor_index is not None:
+            break
+        source_steer = sample.get("apollo_steer_raw")
+        cte = sample.get("cross_track_error")
+        if (
+            source_steer is not None
+            and cte is not None
+            and abs(float(source_steer)) >= source_steer_high
+            and abs(float(cte)) >= lateral_min
+        ):
+            anchor_index = index
+            anchor_reason = "source_steer_saturation_with_lateral_error"
+            break
+
+    if anchor_index is None:
+        for index, sample in enumerate(samples):
+            source_steer = sample.get("apollo_steer_raw")
+            if source_steer is not None and abs(float(source_steer)) >= source_steer_high:
+                anchor_index = index
+                anchor_reason = "source_steer_saturation"
+                break
+
+    if anchor_index is None:
+        for index, sample in enumerate(samples):
+            cte = sample.get("cross_track_error")
+            if cte is not None and abs(float(cte)) >= lateral_min:
+                anchor_index = index
+                anchor_reason = "first_high_lateral_error"
+                break
+
+    if anchor_index is None:
+        return {
+            "available": False,
+            "status": "no_critical_window",
+            "reason": "no_high_source_steer_or_lateral_error_sample",
+            "high_source_steer_abs": source_steer_high,
+            "high_lateral_threshold_m": lateral_min,
+            "samples": [],
+        }
+
+    anchor = samples[anchor_index]
+    anchor_time = anchor.get("sim_time")
+    pre_s = float(thresholds["critical_window_pre_s"])
+    post_s = float(thresholds["critical_window_post_s"])
+    if anchor_time is not None:
+        window = [
+            sample
+            for sample in samples
+            if sample.get("sim_time") is not None
+            and float(anchor_time) - pre_s <= float(sample["sim_time"]) <= float(anchor_time) + post_s
+        ]
+    else:
+        start = max(0, anchor_index - 4)
+        stop = min(len(samples), anchor_index + 8)
+        window = list(samples[start:stop])
+    if not window:
+        window = [anchor]
+
+    limited = _limit_evenly(window, int(thresholds["critical_window_max_samples"]))
+    report = {
+        "available": True,
+        "status": "available",
+        "anchor_reason": anchor_reason,
+        "anchor_has_simple_lat": anchor.get("apollo_simple_lat_lateral_error") is not None,
+        "anchor": _critical_window_sample(anchor, lateral_min_abs=sign_lateral_min, steer_min_abs=steer_min),
+        "sample_count": len(window),
+        "returned_sample_count": len(limited),
+        "time_window_s": {"pre": pre_s, "post": post_s},
+        "samples": [
+            _critical_window_sample(sample, lateral_min_abs=sign_lateral_min, steer_min_abs=steer_min)
+            for sample in limited
+        ],
+        "interpretation_boundary": (
+            "This is a same-window diagnostic slice only. It aligns route lateral error, "
+            "Apollo simple_lat lateral error, source steer, mapped steer, and applied steer; "
+            "it does not prove a definitive root cause or justify changing control gains."
+        ),
+    }
+    report["reference_line_context"] = _critical_reference_line_context(
+        reference_line_contract or {},
+        anchor,
+    )
+    return report
+
+
+def _critical_window_sample(
+    sample: Mapping[str, float],
+    *,
+    lateral_min_abs: float,
+    steer_min_abs: float,
+) -> dict[str, Any]:
+    cross_track = sample.get("cross_track_error")
+    simple_lat = sample.get("apollo_simple_lat_lateral_error")
+    source_steer = sample.get("apollo_steer_raw")
+    mapped_steer = sample.get("bridge_steer_mapped")
+    applied_steer = sample.get("carla_steer_applied")
+    snapshot = _sample_snapshot(sample) or {}
+    snapshot.update(
+        {
+            "source_steer_vs_route_lateral_error": _sign_relation(cross_track, source_steer, steer_min_abs),
+            "source_steer_vs_simple_lat_lateral_error": _sign_relation(simple_lat, source_steer, steer_min_abs),
+            "route_lateral_error_vs_simple_lat_lateral_error": _sign_relation(
+                cross_track,
+                simple_lat,
+                lateral_min_abs,
+            ),
+            "mapped_steer_vs_route_lateral_error": _sign_relation(cross_track, mapped_steer, steer_min_abs),
+            "applied_steer_vs_route_lateral_error": _sign_relation(cross_track, applied_steer, steer_min_abs),
+            "route_simple_lat_abs_magnitude_delta_m": (
+                abs(abs(float(cross_track)) - abs(float(simple_lat)))
+                if cross_track is not None and simple_lat is not None
+                else None
+            ),
+        }
+    )
+    return snapshot
+
+
+def _limit_evenly(items: Sequence[Mapping[str, float]], max_count: int) -> list[Mapping[str, float]]:
+    if max_count <= 0 or len(items) <= max_count:
+        return list(items)
+    if max_count == 1:
+        return [items[0]]
+    step = (len(items) - 1) / float(max_count - 1)
+    indexes = sorted({round(index * step) for index in range(max_count)})
+    return [items[index] for index in indexes]
+
+
+def _critical_reference_line_context(
+    reference_line_contract: Mapping[str, Any],
+    anchor: Mapping[str, float],
+) -> dict[str, Any]:
+    if not reference_line_contract:
+        return {
+            "available": False,
+            "reason": "missing_reference_line_contract",
+        }
+    metrics = reference_line_contract.get("metrics")
+    if not isinstance(metrics, Mapping):
+        metrics = _nested(reference_line_contract, "planning_trajectory_contract.key_metrics")
+    metrics = metrics if isinstance(metrics, Mapping) else {}
+    onset = metrics.get("path_fallback_onset") if isinstance(metrics.get("path_fallback_onset"), Mapping) else {}
+    path_bound = _nested(
+        reference_line_contract,
+        "planning_info_log_reference_line_evidence.planning_info_log_path_bound_evidence",
+    )
+    path_bound = path_bound if isinstance(path_bound, Mapping) else {}
+    anchor_time = _num(anchor.get("sim_time"))
+    onset_time = _num(onset.get("sim_time_sec")) if isinstance(onset, Mapping) else None
+    return {
+        "available": True,
+        "status": reference_line_contract.get("status"),
+        "blocking_reasons": list(reference_line_contract.get("blocking_reasons") or []),
+        "path_fallback_trajectory_ratio": _num(metrics.get("path_fallback_trajectory_ratio")),
+        "path_fallback_future_lookahead_reverse_heading_ratio": _num(
+            metrics.get("path_fallback_future_lookahead_reverse_heading_ratio")
+        ),
+        "path_fallback_future_lookahead_distance_p95_m": _num(
+            metrics.get("path_fallback_future_lookahead_distance_p95_m")
+        ),
+        "path_fallback_onset": dict(onset) if isinstance(onset, Mapping) else {},
+        "critical_anchor_to_path_fallback_onset_dt_s": (
+            float(onset_time) - float(anchor_time)
+            if onset_time is not None and anchor_time is not None
+            else None
+        ),
+        "path_bound_evidence": {
+            "classification": path_bound.get("classification"),
+            "decide_path_bound_failed_count": path_bound.get("decide_path_bound_failed_count"),
+            "fallback_self_opt_l_out_of_bounds_count": path_bound.get(
+                "fallback_self_opt_l_out_of_bounds_count"
+            ),
+            "fallback_self_opt_l_out_of_bounds_max_margin_m": path_bound.get(
+                "fallback_self_opt_l_out_of_bounds_max_margin_m"
+            ),
+            "first_fallback_path_bound_violation": path_bound.get(
+                "first_fallback_path_bound_violation"
+            ),
+        },
+        "interpretation_boundary": (
+            "This context aligns the lateral-semantics critical window with the "
+            "reference-line contract summary. It is diagnostic; it does not prove "
+            "the exact Planning root cause without raw Planning row inspection."
+        ),
     }
 
 
@@ -3053,6 +3369,65 @@ def _reference_debug_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _control_attribution_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, Mapping) or not payload:
+        return {
+            "available": False,
+            "status": "not_available",
+            "dominant_breakpoint": None,
+            "raw_to_mapped_steer_status": None,
+            "mapped_to_applied_steer_status": None,
+            "control_mapping_consistent": False,
+        }
+    attribution = payload.get("attribution") if isinstance(payload.get("attribution"), Mapping) else {}
+    raw_to_mapped = (
+        attribution.get("raw_to_mapped_steer_consistency")
+        if isinstance(attribution.get("raw_to_mapped_steer_consistency"), Mapping)
+        else {}
+    )
+    mapped_to_applied = (
+        attribution.get("mapped_to_applied_steer_consistency")
+        if isinstance(attribution.get("mapped_to_applied_steer_consistency"), Mapping)
+        else {}
+    )
+    verdict = payload.get("verdict") if isinstance(payload.get("verdict"), Mapping) else {}
+    raw_status = raw_to_mapped.get("status")
+    applied_status = mapped_to_applied.get("status")
+    return {
+        "available": True,
+        "status": verdict.get("status") or payload.get("status"),
+        "dominant_breakpoint": attribution.get("dominant_breakpoint") or verdict.get("dominant_breakpoint"),
+        "raw_to_mapped_steer_status": raw_status,
+        "raw_to_mapped_steer_error_p95": raw_to_mapped.get("error_p95"),
+        "mapped_to_applied_steer_status": applied_status,
+        "mapped_to_applied_steer_error_p95": mapped_to_applied.get("error_p95"),
+        "control_mapping_consistent": raw_status == "pass" and applied_status == "pass",
+    }
+
+
+def _suppress_control_mapping_anomalies(
+    anomalies: Sequence[Mapping[str, Any]],
+    control_attribution_summary: Mapping[str, Any],
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    if control_attribution_summary.get("control_mapping_consistent") is not True:
+        return list(anomalies), []
+    kept: list[Mapping[str, Any]] = []
+    suppressed: list[Mapping[str, Any]] = []
+    for anomaly in anomalies:
+        if anomaly.get("type") == "raw_mapped_applied_mismatch":
+            copy = dict(anomaly)
+            copy["suppression_reason"] = (
+                "control_attribution_report marks raw->mapped and mapped->applied "
+                "steer consistency as pass; keep the lateral report focused on "
+                "remaining source/reference-line semantics"
+            )
+            copy["control_attribution_summary"] = dict(control_attribution_summary)
+            suppressed.append(copy)
+        else:
+            kept.append(anomaly)
+    return kept, suppressed
+
+
 def _raw_mapped_expected_error(rows: Sequence[Mapping[str, Any]]) -> float | None:
     errors: list[float] = []
     for row in rows:
@@ -3178,6 +3553,8 @@ def _read_rows(path: str | Path | Sequence[str | Path] | None) -> list[dict[str,
             return [_normalize_control_apply_trace_row(row) for row in rows]
         if "control_decode_debug" in resolved.name:
             return [_normalize_control_decode_debug_row(row) for row in rows]
+        if "apollo_control_raw" in resolved.name:
+            return [_normalize_apollo_control_raw_row(row) for row in rows]
         return rows
     if resolved.suffix == ".json":
         payload = _read_json(resolved)
@@ -3196,7 +3573,22 @@ def _normalize_control_apply_trace_row(row: Mapping[str, Any]) -> dict[str, Any]
     carla_applied = row.get("carla_applied") if isinstance(row.get("carla_applied"), Mapping) else {}
     vehicle_response = row.get("vehicle_response") if isinstance(row.get("vehicle_response"), Mapping) else {}
     gt_state = row.get("gt_state") if isinstance(row.get("gt_state"), Mapping) else {}
+    apollo_control = row.get("apollo_control") if isinstance(row.get("apollo_control"), Mapping) else {}
     _set_if_numeric(normalized, "sim_time", _first_numeric_value(row.get("sim_time"), row.get("timestamp"), gt_state.get("sim_time_sec")))
+    _set_if_numeric(
+        normalized,
+        "control_header_timestamp_sec",
+        _first_numeric_value(
+            row.get("control_header_timestamp_sec"),
+            apollo_control.get("header_timestamp_sec"),
+            apollo_control.get("control_timestamp"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "control_header_sequence_num",
+        _first_numeric_value(row.get("control_header_sequence_num"), apollo_control.get("header_sequence_num")),
+    )
     _set_if_numeric(normalized, "apollo_steer_raw", _first_numeric_value(row.get("apollo_steer_raw"), apollo_raw.get("steer")))
     _set_if_numeric(
         normalized,
@@ -3228,6 +3620,16 @@ def _normalize_control_decode_debug_row(row: Mapping[str, Any]) -> dict[str, Any
     raw = row.get("raw_control_msg_dump") if isinstance(row.get("raw_control_msg_dump"), Mapping) else {}
     output = row.get("output_to_carla") if isinstance(row.get("output_to_carla"), Mapping) else {}
     _set_if_numeric(normalized, "sim_time", _first_numeric_value(output.get("gt_state_sim_time_sec")))
+    _set_if_numeric(
+        normalized,
+        "control_header_timestamp_sec",
+        _first_numeric_value(raw.get("control_header_timestamp_sec"), parsed.get("control_header_timestamp_sec")),
+    )
+    _set_if_numeric(
+        normalized,
+        "control_header_sequence_num",
+        _first_numeric_value(raw.get("control_header_sequence_num"), parsed.get("control_header_sequence_num")),
+    )
     _set_if_numeric(normalized, "apollo_steer_raw", _first_numeric_value(parsed.get("steer")))
     _set_if_numeric(
         normalized,
@@ -3330,6 +3732,122 @@ def _normalize_control_decode_debug_row(row: Mapping[str, Any]) -> dict[str, Any
     return normalized
 
 
+def _normalize_apollo_control_raw_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    raw = row.get("apollo_control_raw") if isinstance(row.get("apollo_control_raw"), Mapping) else row
+    _set_if_numeric(
+        normalized,
+        "control_header_timestamp_sec",
+        _first_numeric_value(row.get("control_header_timestamp_sec"), raw.get("control_header_timestamp_sec")),
+    )
+    _set_if_numeric(
+        normalized,
+        "control_header_sequence_num",
+        _first_numeric_value(row.get("control_header_sequence_num"), raw.get("control_header_sequence_num")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_lateral_error_m",
+        _first_numeric_value(raw.get("debug_simple_lat_lateral_error")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_heading_error_rad",
+        _first_numeric_value(raw.get("debug_simple_lat_heading_error")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_curvature",
+        _first_numeric_value(raw.get("debug_simple_lat_curvature")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_target_point_kappa",
+        _first_numeric_value(raw.get("debug_simple_lat_current_target_point_kappa")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_target_point_s",
+        _first_numeric_value(raw.get("debug_simple_lat_current_target_point_s")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_target_point_x",
+        _first_numeric_value(raw.get("debug_simple_lat_current_target_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_target_point_y",
+        _first_numeric_value(raw.get("debug_simple_lat_current_target_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_current_reference_point_x",
+        _first_numeric_value(raw.get("debug_simple_lat_current_reference_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_current_reference_point_y",
+        _first_numeric_value(raw.get("debug_simple_lat_current_reference_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lon_current_station_m",
+        _first_numeric_value(raw.get("debug_simple_lon_current_station")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lon_station_reference_m",
+        _first_numeric_value(raw.get("debug_simple_lon_station_reference")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lon_matched_point_s",
+        _first_numeric_value(raw.get("debug_simple_lon_current_matched_point_s")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lon_matched_point_x",
+        _first_numeric_value(raw.get("debug_simple_lon_current_matched_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lon_matched_point_y",
+        _first_numeric_value(raw.get("debug_simple_lon_current_matched_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "debug_simple_lon_current_reference_point_x",
+        _first_numeric_value(raw.get("debug_simple_lon_current_reference_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "debug_simple_lon_current_reference_point_y",
+        _first_numeric_value(raw.get("debug_simple_lon_current_reference_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "debug_simple_lon_current_reference_point_kappa",
+        _first_numeric_value(raw.get("debug_simple_lon_current_reference_point_kappa")),
+    )
+    _set_if_numeric(
+        normalized,
+        "debug_simple_lon_preview_reference_point_x",
+        _first_numeric_value(raw.get("debug_simple_lon_preview_reference_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "debug_simple_lon_preview_reference_point_y",
+        _first_numeric_value(raw.get("debug_simple_lon_preview_reference_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "debug_simple_lon_preview_reference_point_kappa",
+        _first_numeric_value(raw.get("debug_simple_lon_preview_reference_point_kappa")),
+    )
+    return normalized
+
+
 def _first_numeric_value(*values: Any) -> float | None:
     for value in values:
         number = _num(value)
@@ -3377,6 +3895,21 @@ def _find_first(root: Path, relative_paths: Sequence[str]) -> Path | None:
         if path.exists():
             return path
     return None
+
+
+def _find_first_deep(root: Path, relative_paths: Sequence[str]) -> Path | None:
+    exact = _find_first(root, relative_paths)
+    if exact is not None:
+        return exact
+    candidates: list[Path] = []
+    for relative in relative_paths:
+        name = Path(relative).name
+        if not name:
+            continue
+        candidates.extend(path for path in root.rglob(name) if path.is_file())
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda path: (len(path.relative_to(root).parts), str(path)))[0]
 
 
 def _find_best_route_definition(root: Path, relative_paths: Sequence[str]) -> Path | None:
@@ -3494,6 +4027,14 @@ def _markdown(report: Mapping[str, Any]) -> str:
             f"- first_high_lateral: `{_nested(report, 'drift_window_summary.first_high_lateral')}`",
             f"- max_abs_lateral: `{_nested(report, 'drift_window_summary.max_abs_lateral')}`",
             f"- phase_samples: `{_nested(report, 'drift_window_summary.phase_samples')}`",
+            "",
+            "## Critical Same-Window Samples",
+            "",
+            f"- status: `{_nested(report, 'critical_window_samples.status')}`",
+            f"- anchor_reason: `{_nested(report, 'critical_window_samples.anchor_reason')}`",
+            f"- anchor: `{_nested(report, 'critical_window_samples.anchor')}`",
+            f"- returned_sample_count: `{_nested(report, 'critical_window_samples.returned_sample_count')}`",
+            f"- reference_line_context: `{_nested(report, 'critical_window_samples.reference_line_context')}`",
             "",
             "## Lateral Sign Alignment",
             "",

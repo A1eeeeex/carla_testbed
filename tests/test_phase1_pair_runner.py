@@ -105,9 +105,33 @@ def test_phase1_pair_runner_applies_apollo_timeout_minimum_only_to_apollo(
 
     assert apollo_launch["backend"] == "apollo_cyberrt"
     assert apollo_launch["requested_runtime_timeout_s"] == 180.0
-    assert apollo_launch["effective_runtime_timeout_s"] == 240.0
+    assert apollo_launch["effective_runtime_timeout_s"] == 300.0
     assert apollo_launch["runtime_timeout_policy"]["policy_applied"] is True
-    assert apollo_result["dispatch"]["command"]["timeout_s"] == 240.0
+    assert apollo_result["dispatch"]["command"]["timeout_s"] == 300.0
+
+
+def test_phase1_pair_runner_applies_apollo_probe_overrides_only_to_apollo(
+    tmp_path: Path,
+) -> None:
+    override = "scenario.route_health.ego_offset_y_m=0.5089"
+    result = run_phase1_pair(
+        scenario="town01/lane_keep_097",
+        out_dir=tmp_path / "pair_probe",
+        pair_id="pair_probe",
+        dry_run=True,
+        apollo_overrides=(override,),
+    )
+
+    planning_launch = json.loads((result.run_dirs[0] / "launch_plan.json").read_text(encoding="utf-8"))
+    apollo_launch = json.loads((result.run_dirs[1] / "launch_plan.json").read_text(encoding="utf-8"))
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    planning_flat = " ".join(" ".join(command) for command in planning_launch["commands"])
+    apollo_flat = " ".join(" ".join(command) for command in apollo_launch["commands"])
+
+    assert override not in planning_flat
+    assert f"--override {override}" in apollo_flat
+    assert manifest["apollo"]["runtime_overrides"] == [override]
+    assert apollo_launch["backend"] == "apollo_cyberrt"
 
 
 def test_cli_phase1_run_pair_dry_run(tmp_path: Path) -> None:
@@ -136,6 +160,37 @@ def test_cli_phase1_run_pair_dry_run(tmp_path: Path) -> None:
     assert "phase1_pair_run.v1" in completed.stdout
     assert (out / "phase1_pair_manifest.json").exists()
     assert (out / "comparison" / "comparison_summary.json").exists()
+
+
+def test_cli_phase1_run_pair_accepts_apollo_probe_override(tmp_path: Path) -> None:
+    out = tmp_path / "pair_cli_probe"
+    override = "scenario.route_health.ego_offset_y_m=0.5089"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "carla_testbed",
+            "phase1",
+            "run-pair",
+            "--scenario",
+            "town01/lane_keep_097",
+            "--out",
+            str(out),
+            "--pair-id",
+            "pair_cli_probe",
+            "--apollo-override",
+            override,
+            "--dry-run",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "phase1_pair_run.v1" in completed.stdout
+    manifest = json.loads((out / "phase1_pair_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["apollo"]["runtime_overrides"] == [override]
 
 
 def test_phase1_pair_runner_start_carla_dry_run_records_session_without_starting(tmp_path: Path) -> None:

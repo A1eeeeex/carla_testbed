@@ -154,6 +154,11 @@ _OPTIONAL_PROMOTION_SPECS = [
         "patterns": ("**/config.resolved.yaml",),
     },
     {
+        "name": "route_json",
+        "root_rel": Path("route.json"),
+        "patterns": ("**/route.json",),
+    },
+    {
         "name": "control_apply_trace",
         "root_rel": Path("artifacts/control_apply_trace.jsonl"),
         "patterns": ("**/artifacts/control_apply_trace.jsonl",),
@@ -184,9 +189,129 @@ _OPTIONAL_PROMOTION_SPECS = [
         "patterns": ("**/artifacts/command_materialization_summary.json",),
     },
     {
+        "name": "startup_geometry_summary",
+        "root_rel": Path("artifacts/startup_geometry_summary.json"),
+        "patterns": ("**/artifacts/startup_geometry_summary.json",),
+    },
+    {
+        "name": "publish_gap_trace",
+        "root_rel": Path("artifacts/publish_gap_trace.jsonl"),
+        "patterns": ("**/artifacts/publish_gap_trace.jsonl",),
+    },
+    {
+        "name": "topic_publish_stats",
+        "root_rel": Path("artifacts/topic_publish_stats.jsonl"),
+        "patterns": ("**/artifacts/topic_publish_stats.jsonl",),
+    },
+    {
+        "name": "carla_tick_health",
+        "root_rel": Path("artifacts/carla_tick_health.jsonl"),
+        "patterns": ("**/artifacts/carla_tick_health.jsonl",),
+    },
+    {
+        "name": "carla_tick_health_summary",
+        "root_rel": Path("artifacts/carla_tick_health_summary.json"),
+        "patterns": ("**/artifacts/carla_tick_health_summary.json",),
+    },
+    {
         "name": "apollo_control_raw",
         "root_rel": Path("artifacts/apollo_control_raw.jsonl"),
         "patterns": ("**/artifacts/apollo_control_raw.jsonl",),
+    },
+    {
+        "name": "apollo_reference_line_contract_raw",
+        "root_rel": Path("artifacts/apollo_reference_line_contract.jsonl"),
+        "patterns": ("**/artifacts/apollo_reference_line_contract.jsonl",),
+    },
+    {
+        "name": "planning_topic_debug",
+        "root_rel": Path("artifacts/planning_topic_debug.jsonl"),
+        "patterns": ("**/artifacts/planning_topic_debug.jsonl",),
+    },
+    {
+        "name": "planning_topic_debug_summary",
+        "root_rel": Path("artifacts/planning_topic_debug_summary.json"),
+        "patterns": ("**/artifacts/planning_topic_debug_summary.json",),
+    },
+    {
+        "name": "planning_route_segment_debug",
+        "root_rel": Path("artifacts/planning_route_segment_debug.jsonl"),
+        "patterns": ("**/artifacts/planning_route_segment_debug.jsonl",),
+    },
+    {
+        "name": "apollo_route_segment_debug",
+        "root_rel": Path("artifacts/apollo_route_segment_debug.jsonl"),
+        "patterns": ("**/artifacts/apollo_route_segment_debug.jsonl",),
+    },
+    {
+        "name": "apollo_planning_info_log",
+        "root_rel": Path("artifacts/apollo_planning.INFO"),
+        "patterns": ("**/artifacts/apollo_planning.INFO",),
+    },
+    {
+        "name": "control_trajectory_consume_debug",
+        "root_rel": Path("artifacts/control_trajectory_consume_debug.jsonl"),
+        "patterns": ("**/artifacts/control_trajectory_consume_debug.jsonl",),
+    },
+    {
+        "name": "planning_materialization_report",
+        "root_rel": Path("analysis/planning_materialization/planning_materialization_report.json"),
+        "patterns": ("**/analysis/planning_materialization/planning_materialization_report.json",),
+    },
+    {
+        "name": "route_health_json",
+        "root_rel": Path("analysis/route_health/route_health.json"),
+        "patterns": ("**/analysis/route_health/route_health.json",),
+    },
+    {
+        "name": "route_health_csv",
+        "root_rel": Path("analysis/route_health/route_health.csv"),
+        "patterns": ("**/analysis/route_health/route_health.csv",),
+    },
+    {
+        "name": "route_health_curve_segments",
+        "root_rel": Path("analysis/route_health/curve_segments.csv"),
+        "patterns": ("**/analysis/route_health/curve_segments.csv",),
+    },
+    {
+        "name": "route_health_summary",
+        "root_rel": Path("analysis/route_health/route_health_summary.md"),
+        "patterns": ("**/analysis/route_health/route_health_summary.md",),
+    },
+    {
+        "name": "route_start_alignment_json",
+        "root_rel": Path("analysis/route_start_alignment/route_start_alignment_report.json"),
+        "patterns": ("**/analysis/route_start_alignment/route_start_alignment_report.json",),
+    },
+    {
+        "name": "route_start_alignment_summary",
+        "root_rel": Path("analysis/route_start_alignment/route_start_alignment_summary.md"),
+        "patterns": ("**/analysis/route_start_alignment/route_start_alignment_summary.md",),
+    },
+    {
+        "name": "apollo_reference_line_contract_report",
+        "root_rel": Path("analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json"),
+        "patterns": ("**/analysis/apollo_reference_line_contract/apollo_reference_line_contract_report.json",),
+    },
+    {
+        "name": "apollo_reference_line_contract_summary",
+        "root_rel": Path("analysis/apollo_reference_line_contract/apollo_reference_line_contract_summary.md"),
+        "patterns": ("**/analysis/apollo_reference_line_contract/apollo_reference_line_contract_summary.md",),
+    },
+    {
+        "name": "apollo_hdmap_projection_raw",
+        "root_rel": Path("artifacts/apollo_hdmap_projection.jsonl"),
+        "patterns": ("**/artifacts/apollo_hdmap_projection.jsonl",),
+    },
+    {
+        "name": "apollo_hdmap_projection_report",
+        "root_rel": Path("analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json"),
+        "patterns": ("**/analysis/apollo_hdmap_projection/apollo_hdmap_projection_report.json",),
+    },
+    {
+        "name": "apollo_hdmap_projection_summary",
+        "root_rel": Path("analysis/apollo_hdmap_projection/apollo_hdmap_projection_summary.md"),
+        "patterns": ("**/analysis/apollo_hdmap_projection/apollo_hdmap_projection_summary.md",),
     },
     {
         "name": "ego_control_trace",

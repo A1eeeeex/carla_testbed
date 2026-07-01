@@ -351,6 +351,37 @@ def test_postprocess_regenerates_route_start_alignment_when_context_is_stale(
     assert report["natural_driving"]["status"] == "pass"
 
 
+def test_postprocess_regenerates_route_start_alignment_runtime_placeholder(
+    tmp_path: Path,
+) -> None:
+    suite_root = _copy_suite(tmp_path)
+    lane = suite_root / "lane_keep_097"
+    alignment_path = lane / "analysis" / "route_start_alignment" / "route_start_alignment_report.json"
+    alignment = json.loads(alignment_path.read_text(encoding="utf-8"))
+    alignment.update(
+        {
+            "status": "insufficient_data",
+            "blocking_reasons": ["route_start_runtime_pose_missing"],
+            "source": {
+                "manifest_path": "manifest.json",
+                "summary_path": "summary.json",
+                "timeseries_path": "timeseries.csv",
+                "failure_timeline_path": "analysis/failure_timeline/failure_timeline_report.json",
+            },
+        }
+    )
+    alignment_path.write_text(json.dumps(alignment, indent=2) + "\n", encoding="utf-8")
+
+    report = postprocess_natural_driving_runs(suite_root, out_dir=tmp_path / "out")
+    lane_result = next(run for run in report["runs"] if run["run_id"] == "lane_keep_097")
+    regenerated = json.loads(Path(lane_result["route_start_alignment"]["path"]).read_text(encoding="utf-8"))
+
+    assert lane_result["route_start_alignment"]["status"] == "generated"
+    assert "route_start_runtime_pose_missing" not in regenerated.get("blocking_reasons", [])
+    assert regenerated["source"]["timeseries_path"].endswith("timeseries.csv")
+    assert report["natural_driving"]["status"] == "pass"
+
+
 def test_postprocess_regenerates_failure_timeline_and_route_start_alignment_when_source_is_missing(
     tmp_path: Path,
 ) -> None:

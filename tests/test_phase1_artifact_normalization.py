@@ -98,6 +98,280 @@ def test_config_resolved_ambiguous_candidates_select_non_hidden_runtime_config(t
     assert "multiple_nested_config_resolved_candidates_selected_non_hidden" in report["warnings"]
 
 
+def test_promotes_unique_nested_route_json_for_static_projection_exports(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    nested = run / "legacy" / "actual"
+    nested.mkdir(parents=True)
+    (run / "timeseries.csv").write_text("sim_time\n0\n", encoding="utf-8")
+    route_payload = {
+        "schema_version": "runtime_route_trace.v1",
+        "coordinate_frame": "carla_world",
+        "points": [
+            {"x": 1.0, "y": 2.0, "z": 0.0, "yaw_deg": -90.0},
+            {"x": 1.0, "y": 1.0, "z": 0.0, "yaw_deg": -90.0},
+        ],
+    }
+    (nested / "route.json").write_text(json.dumps(route_payload) + "\n", encoding="utf-8")
+
+    report = normalize_phase1_artifacts(run)
+
+    promoted_names = {item["name"] for item in report["promoted_artifacts"]}
+    assert "route_json" in promoted_names
+    promoted = json.loads((run / "route.json").read_text(encoding="utf-8"))
+    assert promoted["schema_version"] == "runtime_route_trace.v1"
+    assert promoted["coordinate_frame"] == "carla_world"
+    assert "does_not_change_runtime_behavior" in report["claim_boundary"]
+
+
+def test_promotes_unique_nested_route_health_reports_without_rewriting_status(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    nested_route_health = run / "legacy" / "actual" / "analysis" / "route_health"
+    nested_route_health.mkdir(parents=True)
+    (run / "timeseries.csv").write_text("sim_time\n0\n", encoding="utf-8")
+    (nested_route_health / "route_health.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "route_health_report.v1",
+                "status": "fail",
+                "route_source": "configured_route_file",
+                "hard_gate_eligible": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (nested_route_health / "route_health.csv").write_text("route_s,lateral_error\n0,0.0\n", encoding="utf-8")
+    (nested_route_health / "curve_segments.csv").write_text("start_s,end_s\n", encoding="utf-8")
+    (nested_route_health / "route_health_summary.md").write_text("# Route Health\n", encoding="utf-8")
+
+    report = normalize_phase1_artifacts(run)
+
+    promoted_names = {item["name"] for item in report["promoted_artifacts"]}
+    assert {
+        "route_health_json",
+        "route_health_csv",
+        "route_health_curve_segments",
+        "route_health_summary",
+    }.issubset(promoted_names)
+    promoted = json.loads((run / "analysis" / "route_health" / "route_health.json").read_text(encoding="utf-8"))
+    assert promoted["status"] == "fail"
+    assert promoted["hard_gate_eligible"] is True
+    assert "does_not_change_runtime_behavior" in report["claim_boundary"]
+
+
+def test_promotes_unique_nested_reference_line_contract_without_rewriting_status(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    nested_reference = run / "legacy" / "actual" / "analysis" / "apollo_reference_line_contract"
+    nested_reference.mkdir(parents=True)
+    (run / "timeseries.csv").write_text("sim_time\n0\n", encoding="utf-8")
+    (nested_reference / "apollo_reference_line_contract_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_reference_line_contract.v1",
+                "status": "insufficient_data",
+                "blocking_reasons": ["apollo_reference_line_runtime_evidence_missing"],
+                "warnings": ["compat_runtime_did_not_observe_planning_reference_line"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (nested_reference / "apollo_reference_line_contract_summary.md").write_text(
+        "# Apollo Reference Line Contract\n",
+        encoding="utf-8",
+    )
+
+    report = normalize_phase1_artifacts(run)
+
+    promoted_names = {item["name"] for item in report["promoted_artifacts"]}
+    assert {
+        "apollo_reference_line_contract_report",
+        "apollo_reference_line_contract_summary",
+    }.issubset(promoted_names)
+    promoted = json.loads(
+        (
+            run
+            / "analysis"
+            / "apollo_reference_line_contract"
+            / "apollo_reference_line_contract_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert promoted["status"] == "insufficient_data"
+    assert promoted["blocking_reasons"] == ["apollo_reference_line_runtime_evidence_missing"]
+    assert "does_not_change_runtime_behavior" in report["claim_boundary"]
+
+
+def test_promotes_unique_nested_apollo_hdmap_projection_without_rewriting_status(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    nested = run / "legacy" / "actual"
+    nested_artifacts = nested / "artifacts"
+    nested_projection = nested / "analysis" / "apollo_hdmap_projection"
+    nested_artifacts.mkdir(parents=True)
+    nested_projection.mkdir(parents=True)
+    (run / "timeseries.csv").write_text("sim_time\n0\n", encoding="utf-8")
+    (nested_artifacts / "apollo_hdmap_projection.jsonl").write_text("", encoding="utf-8")
+    (nested_projection / "apollo_hdmap_projection_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_hdmap_projection_report.v1",
+                "status": "insufficient_data",
+                "claim_grade": False,
+                "artifact_status": "artifact_empty",
+                "warnings": ["apollo_hdmap_projection_empty"],
+                "missing_fields": ["apollo_hdmap_projection_rows"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (nested_projection / "apollo_hdmap_projection_summary.md").write_text(
+        "# Apollo HDMap Projection\n",
+        encoding="utf-8",
+    )
+
+    report = normalize_phase1_artifacts(run)
+
+    promoted_names = {item["name"] for item in report["promoted_artifacts"]}
+    assert {
+        "apollo_hdmap_projection_raw",
+        "apollo_hdmap_projection_report",
+        "apollo_hdmap_projection_summary",
+    }.issubset(promoted_names)
+    promoted = json.loads(
+        (run / "analysis" / "apollo_hdmap_projection" / "apollo_hdmap_projection_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert promoted["status"] == "insufficient_data"
+    assert promoted["artifact_status"] == "artifact_empty"
+    assert (run / "artifacts" / "apollo_hdmap_projection.jsonl").is_file()
+    assert "does_not_change_runtime_behavior" in report["claim_boundary"]
+
+
+def test_promotes_unique_nested_apollo_reference_line_raw_debug_inputs(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    nested = run / "legacy" / "actual"
+    nested_artifacts = nested / "artifacts"
+    nested_planning = nested / "analysis" / "planning_materialization"
+    nested_artifacts.mkdir(parents=True)
+    nested_planning.mkdir(parents=True)
+    (run / "timeseries.csv").write_text("sim_time\n0\n", encoding="utf-8")
+    raw_files = {
+        "apollo_reference_line_contract.jsonl": {"planning_reference_available": True},
+        "planning_topic_debug.jsonl": {"trajectory_point_count": 10},
+        "planning_topic_debug_summary.json": {"total_messages_received": 1},
+        "planning_route_segment_debug.jsonl": {"reference_line_provider_status": "ready"},
+        "apollo_route_segment_debug.jsonl": {"lane_id": "15_1_1"},
+        "apollo_planning.INFO": "I reference_line_provider ready\n",
+        "control_trajectory_consume_debug.jsonl": {"planning_sequence_num": 1},
+    }
+    for name, payload in raw_files.items():
+        path = nested_artifacts / name
+        if isinstance(payload, str):
+            path.write_text(payload, encoding="utf-8")
+        elif name.endswith(".json"):
+            path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        else:
+            path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    (nested_planning / "planning_materialization_report.json").write_text(
+        json.dumps({"schema_version": "planning_materialization.v1", "verdict": "warn"}) + "\n",
+        encoding="utf-8",
+    )
+
+    report = normalize_phase1_artifacts(run)
+
+    promoted_names = {item["name"] for item in report["promoted_artifacts"]}
+    assert {
+        "apollo_reference_line_contract_raw",
+        "planning_topic_debug",
+        "planning_topic_debug_summary",
+        "planning_route_segment_debug",
+        "apollo_route_segment_debug",
+        "apollo_planning_info_log",
+        "control_trajectory_consume_debug",
+        "planning_materialization_report",
+    }.issubset(promoted_names)
+    assert (run / "artifacts" / "apollo_reference_line_contract.jsonl").is_file()
+    assert (run / "artifacts" / "planning_topic_debug.jsonl").is_file()
+    assert (run / "artifacts" / "planning_topic_debug_summary.json").is_file()
+    assert (run / "artifacts" / "planning_route_segment_debug.jsonl").is_file()
+    assert (run / "artifacts" / "apollo_route_segment_debug.jsonl").is_file()
+    assert (run / "artifacts" / "apollo_planning.INFO").is_file()
+    assert (run / "artifacts" / "control_trajectory_consume_debug.jsonl").is_file()
+    assert (run / "analysis" / "planning_materialization" / "planning_materialization_report.json").is_file()
+    assert "does_not_change_runtime_behavior" in report["claim_boundary"]
+
+
+def test_promotes_unique_nested_route_start_alignment_and_startup_geometry(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    nested = run / "legacy" / "actual"
+    nested_alignment = nested / "analysis" / "route_start_alignment"
+    nested_artifacts = nested / "artifacts"
+    nested_alignment.mkdir(parents=True)
+    nested_artifacts.mkdir(parents=True)
+    (run / "timeseries.csv").write_text("sim_time\n0\n", encoding="utf-8")
+    (nested_alignment / "route_start_alignment_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "route_start_alignment_report.v1",
+                "status": "warn",
+                "reason": "spawn_lateral_offset_high",
+                "startup_geometry_alignment": {
+                    "localization_to_final_start_distance_m": 0.51,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (nested_alignment / "route_start_alignment_summary.md").write_text("# Route Start\n", encoding="utf-8")
+    (nested_artifacts / "startup_geometry_summary.json").write_text(
+        json.dumps({"summary_status": "provisional", "record_count": 1}) + "\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "publish_gap_trace.jsonl").write_text(
+        json.dumps({"schema_version": "publish_gap_trace.v1", "sim_time_sec": 1.0}) + "\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "topic_publish_stats.jsonl").write_text(
+        json.dumps({"schema_version": "topic_publish_stats.v1", "topic": "/apollo/localization/pose"}) + "\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "carla_tick_health.jsonl").write_text(
+        json.dumps({"schema_version": "carla_tick_health.v1", "frame": 1}) + "\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "carla_tick_health_summary.json").write_text(
+        json.dumps({"schema_version": "carla_tick_health_summary.v1", "status": "warn"}) + "\n",
+        encoding="utf-8",
+    )
+
+    report = normalize_phase1_artifacts(run)
+
+    promoted_names = {item["name"] for item in report["promoted_artifacts"]}
+    assert {
+        "route_start_alignment_json",
+        "route_start_alignment_summary",
+        "startup_geometry_summary",
+        "publish_gap_trace",
+        "topic_publish_stats",
+        "carla_tick_health",
+        "carla_tick_health_summary",
+    }.issubset(promoted_names)
+    promoted_alignment = json.loads(
+        (run / "analysis" / "route_start_alignment" / "route_start_alignment_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    promoted_startup = json.loads((run / "artifacts" / "startup_geometry_summary.json").read_text(encoding="utf-8"))
+    assert promoted_alignment["reason"] == "spawn_lateral_offset_high"
+    assert promoted_startup["summary_status"] == "provisional"
+    assert (run / "artifacts" / "publish_gap_trace.jsonl").is_file()
+    assert (run / "artifacts" / "topic_publish_stats.jsonl").is_file()
+    assert (run / "artifacts" / "carla_tick_health.jsonl").is_file()
+    assert (run / "artifacts" / "carla_tick_health_summary.json").is_file()
+
+
 def test_ambiguous_nested_timeseries_is_not_promoted(tmp_path: Path) -> None:
     run = tmp_path / "run"
     first = run / "legacy_a" / "actual"

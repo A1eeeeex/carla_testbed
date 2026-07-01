@@ -150,6 +150,84 @@ def test_platform_timeout_with_timeseries_is_evaluable_backend_failure(tmp_path)
     assert report["required_artifacts"]["timeseries"] == "present"
 
 
+def test_phase1_status_includes_route_start_alignment_metrics(tmp_path) -> None:
+    run = tmp_path / "run"
+    alignment_dir = run / "analysis" / "route_start_alignment"
+    alignment_dir.mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "r1",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(json.dumps({"success": True}), encoding="utf-8")
+    (run / "timeseries.csv").write_text("sim_time,ego_speed_mps\n0.0,1.0\n", encoding="utf-8")
+    (run / "artifacts").mkdir()
+    (run / "artifacts" / "startup_geometry_summary.json").write_text(
+        json.dumps({"summary_status": "provisional", "record_count": 1}),
+        encoding="utf-8",
+    )
+    (alignment_dir / "route_start_alignment_report.json").write_text(
+        json.dumps(
+            {
+                "status": "warn",
+                "reason": "spawn_lateral_offset_high",
+                "warnings": ["spawn_lateral_offset_high"],
+                "hypotheses": ["spawn_lateral_alignment_candidate"],
+                "static_spawn_alignment": {
+                    "spawn_lateral_offset_m": -0.5089,
+                    "spawn_longitudinal_offset_m": 0.01,
+                    "spawn_to_route_start_distance_m": 0.509,
+                },
+                "initial_ego_alignment": {
+                    "cross_track_error_m": 0.0002,
+                    "heading_error_rad": 0.001,
+                    "route_s": 0.0,
+                    "rear_axle_offset_compatible": False,
+                    "rear_axle_offset_error_m": 1.42,
+                },
+                "startup_geometry_alignment": {
+                    "summary_status": "provisional",
+                    "record_count": 1,
+                    "localization_to_final_start_distance_m": 0.0003,
+                    "raw_start_to_snapped_start_distance_m": 0.0003,
+                    "localization_reference_mode": "rear_axle",
+                    "trusted_lane_centerline": True,
+                },
+                "recommendation": {
+                    "recommended_config_field": "scenario.route_health.ego_offset_y_m",
+                    "recommended_ego_offset_y_delta_m": 0.5089,
+                    "probe_only": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    route_start = report["phase1_metrics"]["route_start_alignment"]
+    assert route_start["available"] is True
+    assert route_start["status"] == "warn"
+    assert route_start["reason"] == "spawn_lateral_offset_high"
+    assert route_start["static_spawn_lateral_offset_m"] == -0.5089
+    assert route_start["initial_cross_track_error_m"] == 0.0002
+    assert route_start["startup_geometry_localization_to_final_start_distance_m"] == 0.0003
+    assert route_start["recommended_ego_offset_y_delta_m"] == 0.5089
+    assert any(path.endswith("analysis/route_start_alignment/route_start_alignment_report.json") for path in report["evidence_files"])
+
+    outputs = write_phase1_status(report, run / "analysis" / "phase1_status")
+    summary = Path(outputs["summary"]).read_text(encoding="utf-8")
+    assert "Route Start Alignment" in summary
+    assert "spawn_lateral_offset_high" in summary
+
+
 def test_platform_timeout_with_routing_but_no_planning_reports_precise_blocker(tmp_path) -> None:
     run = tmp_path / "run"
     run.mkdir()
@@ -750,6 +828,121 @@ def test_route_health_failure_next_action_uses_actual_distance_completion_codes(
     assert "route distance or completion stayed below threshold" in report["behavior_next_action"]
     assert "Planning non-empty trajectory ratio" not in report["behavior_next_action"]
     assert "LANE_INVASION" in report["behavior_next_action"]
+
+
+def test_route_health_failure_uses_specific_apollo_link_health_blocker(
+    tmp_path,
+) -> None:
+    run = tmp_path / "run"
+    nested_run = run / "legacy_nested" / "actual"
+    nested_artifacts = nested_run / "artifacts"
+    nested_artifacts.mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "apollo_lane_keep",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"success": False, "exit_reason": "platform_failed"}),
+        encoding="utf-8",
+    )
+    (run / "platform_execution_result.json").write_text(
+        json.dumps({"status": "failed", "exit_code": 1, "runtime_exit_code": 1}),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text(
+        "sim_time,ego_speed_mps,route_s,control_source\n"
+        "0.0,0.0,0.0,external_stack\n"
+        "1.0,0.0,2.4,external_stack\n",
+        encoding="utf-8",
+    )
+    (nested_artifacts / "cyber_bridge_stats.json").write_text(
+        json.dumps({"routing_success_count": 1, "control_tx_count": 5714}),
+        encoding="utf-8",
+    )
+    (nested_run / "summary.json").write_text(
+        json.dumps(
+            {
+                "summary_status": "finalized",
+                "success": False,
+                "finalized_from_event_stream": True,
+                "exit_reason": "LANE_INVASION",
+                "fail_reason": "ROUTE_DISTANCE_ACHIEVED_M",
+                "route_health_label": "route_established_but_behavior_unhealthy",
+                "route_distance_achieved_m": 2.4,
+                "route_completion_ratio": 0.010,
+                "acceptance": {
+                    "failure_codes": [
+                        "ROUTE_DISTANCE_ACHIEVED_M",
+                        "ROUTE_COMPLETION_RATIO",
+                    ],
+                    "checks": {
+                        "planning_nonzero_ratio": {"actual": 0.90, "ok": True},
+                        "route_distance_achieved_m": {"actual": 2.4, "ok": False},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    link_health = run / "analysis" / "apollo_link_health"
+    link_health.mkdir(parents=True)
+    (link_health / "apollo_link_health_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_link_health.v1",
+                "primary_blocker": (
+                    "apollo_lateral_semantics:"
+                    "route_lateral_error_opposes_simple_lat_lateral_error"
+                ),
+                "secondary_blockers": ["environment_world:insufficient_data"],
+                "layers": {
+                    "apollo_lateral_semantics": {
+                        "key_metrics": {
+                            "route_simple_lat_sign_convention_candidate": True,
+                            "route_lateral_field_semantics": {
+                                "classification": (
+                                    "route_lateral_field_opposite_signed_to_apollo_projection"
+                                ),
+                                "recommended_gate_policy": (
+                                    "absolute_magnitude_only_until_canonical_sign_declared"
+                                ),
+                            },
+                            "simple_lat_station_frame_classification": (
+                                "local_station_frame_offset_candidate"
+                            ),
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "route_health_failed"
+    assert report["primary_behavior_blocker"] == (
+        "route_lateral_error_opposes_simple_lat_lateral_error"
+    )
+    assert report["behavior_blocker_layer"] == "apollo_lateral_semantics"
+    assert "Route-health finalized as failed" in report["behavior_next_action"]
+    evidence = report["behavior_blocker_evidence"]
+    assert evidence["apollo_link_health_primary_blocker"] == (
+        "apollo_lateral_semantics:route_lateral_error_opposes_simple_lat_lateral_error"
+    )
+    assert evidence["route_simple_lat_sign_convention_candidate"] is True
+    assert evidence["simple_lat_station_frame_classification"] == (
+        "local_station_frame_offset_candidate"
+    )
 
 
 def test_platform_timeout_without_routing_reports_precise_blocker(tmp_path) -> None:

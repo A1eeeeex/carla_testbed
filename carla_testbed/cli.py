@@ -31,7 +31,10 @@ from carla_testbed.platform.compiler import (
     write_run_plan,
 )
 from carla_testbed.platform.executor import execute_run_plan
-from carla_testbed.platform.phase1_p0_matrix import run_phase1_p0_matrix
+from carla_testbed.platform.phase1_p0_matrix import (
+    DEFAULT_PHASE1_P0_APOLLO_PLATFORM,
+    run_phase1_p0_matrix,
+)
 from carla_testbed.platform.phase1_pair_runner import run_phase1_pair
 from carla_testbed.platform.plan import RunPlan
 from carla_testbed.platform.registry import PlatformRegistry, PlatformRegistryError
@@ -164,6 +167,15 @@ def build_parser() -> argparse.ArgumentParser:
     pair_p.add_argument("--planning-profile", default="builtin/simple_acc_route_follower")
     pair_p.add_argument("--apollo-platform", default="apollo_cyberrt")
     pair_p.add_argument("--planning-platform", default="carla_builtin")
+    pair_p.add_argument(
+        "--apollo-override",
+        action="append",
+        default=[],
+        help=(
+            "Append a diagnostic-only key=value override to the ApolloBackend launch command. "
+            "Use for probe runs; it does not affect PlanningControlBackend."
+        ),
+    )
     pair_p.add_argument("--record", "--recording", dest="recording", default="metrics")
     pair_p.add_argument("--gate", default="scenario_validation")
     pair_p.add_argument("--dry-run", action="store_true")
@@ -178,7 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     p0_p.add_argument("--matrix-id", default=None)
     p0_p.add_argument("--apollo-profile", default="apollo/apollo10_carla_gt")
     p0_p.add_argument("--planning-profile", default="builtin/simple_acc_route_follower")
-    p0_p.add_argument("--apollo-platform", default="apollo_cyberrt")
+    p0_p.add_argument("--apollo-platform", default=DEFAULT_PHASE1_P0_APOLLO_PLATFORM)
     p0_p.add_argument("--planning-platform", default="carla_builtin")
     p0_p.add_argument("--record", "--recording", dest="recording", default="metrics")
     p0_p.add_argument("--gate", default="scenario_validation")
@@ -900,6 +912,7 @@ def _cmd_phase1(args: argparse.Namespace) -> int:
             carla_town=args.carla_town,
             carla_extra_args=args.carla_extra_args,
             carla_timeout_s=args.carla_timeout_s,
+            apollo_overrides=tuple(args.apollo_override or ()),
             registry=PlatformRegistry(repo_root=resolve_repo_root()),
         )
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))

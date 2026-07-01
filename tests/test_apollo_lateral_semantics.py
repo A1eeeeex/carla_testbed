@@ -137,6 +137,37 @@ def test_raw_mapped_mismatch_suspects_control_mapping(tmp_path: Path) -> None:
     assert "raw_mapped_applied_mismatch" in _types(report)
 
 
+def test_run_dir_suppresses_mapping_mismatch_when_control_attribution_passes(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    analysis_dir = run_dir / "analysis" / "control_attribution"
+    analysis_dir.mkdir(parents=True)
+    rows = _base_rows()
+    for row in rows:
+        row["bridge_steer_mapped"] = 0.50
+        row["carla_steer_applied"] = 0.50
+    _write_rows(run_dir / "timeseries.csv", rows)
+    (analysis_dir / "control_attribution_report.json").write_text(
+        json.dumps(
+            {
+                "verdict": {"status": "fail", "dominant_breakpoint": "source_control_semantics"},
+                "attribution": {
+                    "dominant_breakpoint": "source_control_semantics",
+                    "raw_to_mapped_steer_consistency": {"status": "pass", "error_p95": 0.0},
+                    "mapped_to_applied_steer_consistency": {"status": "pass", "error_p95": 0.0},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+
+    assert report["suspected_layer"] == "none"
+    assert "raw_mapped_applied_mismatch" not in _types(report)
+    assert report["suppressed_control_mapping_anomalies"][0]["type"] == "raw_mapped_applied_mismatch"
+    assert report["control_attribution_summary"]["dominant_breakpoint"] == "source_control_semantics"
+
+
 def test_applied_steer_no_yaw_response_suspects_vehicle_response(tmp_path: Path) -> None:
     rows = _base_rows()
     for row in rows:
@@ -422,6 +453,124 @@ def test_lateral_sign_alignment_opposite_sign_is_not_an_anomaly(tmp_path: Path) 
     alignment = report["lateral_sign_alignment"]
     assert alignment["source_steer_vs_route_lateral_error"]["opposite_sign_ratio"] == 1.0
     assert alignment["source_steer_vs_simple_lat_lateral_error"]["opposite_sign_ratio"] == 1.0
+
+
+def test_critical_window_samples_align_route_simple_lat_and_control_same_window(
+    tmp_path: Path,
+) -> None:
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["sim_time"] = index * 0.50
+        row["route_s"] = index * 0.60
+        row["cross_track_error"] = [0.05, 0.35, 0.65, 0.85][index]
+        row["apollo_debug_simple_lat_lateral_error_m"] = [-0.05, -0.35, -0.60, -0.80][index]
+        row["apollo_steer_raw"] = [-0.10, -0.30, -0.95, -1.00][index]
+        row["bridge_steer_mapped"] = [-0.025, -0.075, -0.2375, -0.25][index]
+        row["carla_steer_applied"] = [-0.025, -0.075, -0.2375, -0.25][index]
+
+    report = _analyze(tmp_path, rows)
+
+    window = report["critical_window_samples"]
+    assert window["status"] == "available"
+    assert window["anchor_reason"] == "source_steer_saturation_with_lateral_error"
+    assert window["anchor_has_simple_lat"] is True
+    assert window["returned_sample_count"] == 3
+    anchor = window["anchor"]
+    assert anchor["sim_time"] == 1.0
+    assert anchor["route_lateral_error_vs_simple_lat_lateral_error"] == "opposite_sign"
+    assert anchor["source_steer_vs_route_lateral_error"] == "opposite_sign"
+    assert anchor["source_steer_vs_simple_lat_lateral_error"] == "same_sign"
+
+
+def test_run_dir_falls_back_to_nested_control_decode_debug_for_critical_window(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "phase1_wrapper_run"
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["sim_time"] = index * 0.50
+        row["route_s"] = index * 0.60
+        row["cross_track_error"] = [0.05, 0.35, 0.65, 0.85][index]
+        row["apollo_steer_raw"] = 0.0
+        row["bridge_steer_mapped"] = 0.0
+        row["carla_steer_applied"] = 0.0
+    _write_rows(run_dir / "timeseries.csv", rows)
+
+    nested_artifacts = run_dir / "lane_keep" / "raw_online_run" / "artifacts"
+    nested_artifacts.mkdir(parents=True)
+    control_rows = [
+        {"sim_time": 1.0, "apollo_steer_raw": -0.95, "apollo_simple_lat_lateral_error": -0.60},
+        {"sim_time": 1.5, "apollo_steer_raw": -1.00, "apollo_simple_lat_lateral_error": -0.80},
+    ]
+    (nested_artifacts / "control_decode_debug.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in control_rows),
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+
+    assert any(
+        str(path).endswith("control_decode_debug.jsonl")
+        for path in report["source"]["control_trace"]
+    )
+    anchor = report["critical_window_samples"]["anchor"]
+    assert anchor["apollo_simple_lat_lateral_error"] == -0.60
+    assert anchor["route_lateral_error_vs_simple_lat_lateral_error"] == "opposite_sign"
+
+
+def test_critical_window_includes_reference_line_fallback_context(tmp_path: Path) -> None:
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["sim_time"] = index * 0.50
+        row["route_s"] = index * 0.60
+        row["cross_track_error"] = [0.05, 0.35, 0.65, 0.85][index]
+        row["apollo_debug_simple_lat_lateral_error_m"] = [-0.05, -0.35, -0.60, -0.80][index]
+        row["apollo_steer_raw"] = [-0.10, -0.30, -0.95, -1.00][index]
+    timeseries = _write_rows(tmp_path / "timeseries.csv", rows)
+    reference_line_contract = tmp_path / "apollo_reference_line_contract_report.json"
+    reference_line_contract.write_text(
+        json.dumps(
+            {
+                "status": "fail",
+                "blocking_reasons": ["planning_path_fallback_segment_heading_mismatch"],
+                "metrics": {
+                    "path_fallback_trajectory_ratio": 0.7,
+                    "path_fallback_future_lookahead_reverse_heading_ratio": 0.6,
+                    "path_fallback_future_lookahead_distance_p95_m": 0.4,
+                    "path_fallback_onset": {
+                        "sim_time_sec": 1.5,
+                        "row_index": 9,
+                    },
+                },
+                "planning_info_log_reference_line_evidence": {
+                    "planning_info_log_path_bound_evidence": {
+                        "classification": "fallback_lateral_state_outside_path_bound",
+                        "decide_path_bound_failed_count": 3,
+                        "fallback_self_opt_l_out_of_bounds_count": 3,
+                        "fallback_self_opt_l_out_of_bounds_max_margin_m": 0.4,
+                        "first_fallback_path_bound_violation": {
+                            "s_m": 31.0,
+                            "opt_l_m": 1.1,
+                            "upper_l_m": 0.9,
+                            "margin_m": 0.2,
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics(
+        timeseries=timeseries,
+        reference_line_contract=reference_line_contract,
+    )
+
+    context = report["critical_window_samples"]["reference_line_context"]
+    assert context["status"] == "fail"
+    assert context["critical_anchor_to_path_fallback_onset_dt_s"] == 0.5
+    assert context["path_bound_evidence"]["classification"] == "fallback_lateral_state_outside_path_bound"
+    assert context["path_bound_evidence"]["first_fallback_path_bound_violation"]["s_m"] == 31.0
 
 
 def test_missing_fields_gracefully_degrade(tmp_path: Path) -> None:
@@ -743,6 +892,90 @@ def test_run_dir_merges_control_decode_debug_simple_lat_fields(tmp_path: Path) -
     assert alignment["route_lateral_error_vs_simple_lat_lateral_error"] == "opposite_sign"
     assert "route_lateral_error_opposes_simple_lat_lateral_error" in _types(report)
     assert report["correlation_summary"]["apollo_simple_lat_lateral_error_abs"]["p95"] > 0.60
+
+
+def test_run_dir_merges_apollo_control_raw_simple_lat_fields_with_inferred_sim_time(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["sim_time"] = 10.0 + index * 0.5
+        row["route_s"] = index * 2.0
+        row["cross_track_error"] = [0.05, 0.60, 0.70, 0.80][index]
+        row["heading_error"] = [0.01, 0.10, 0.12, 0.14][index]
+        row["apollo_steer_raw"] = 0.25
+        row["bridge_steer_mapped"] = 0.0625
+        row["carla_steer_applied"] = 0.0625
+    _write_rows(run_dir / "timeseries.csv", rows)
+    (artifacts / "control_apply_trace.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "schema_version": "control_apply_trace.v1",
+                    "sim_time": sim_time,
+                    "apollo_control": {
+                        "header_timestamp_sec": header_timestamp,
+                        "header_sequence_num": sequence,
+                    },
+                    "apollo_raw": {"steer": 0.25},
+                    "bridge_mapped": {"mapped_carla_steer_cmd": 0.0625},
+                    "carla_applied": {"steer": 0.0625},
+                    "vehicle_response": {"yaw_rate_rad_s": 0.01},
+                }
+            )
+            for sim_time, header_timestamp, sequence in ((10.0, 1000.0, 10), (11.0, 1001.0, 20))
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifacts / "apollo_control_raw.jsonl").write_text(
+        json.dumps(
+            {
+                "ts_sec": 123.0,
+                "apollo_control_raw": {
+                    "control_header_timestamp_sec": 1000.5,
+                    "control_header_sequence_num": 15,
+                    "steering_target": 99.0,
+                    "debug_simple_lat_lateral_error": -0.60,
+                    "debug_simple_lat_heading_error": -0.10,
+                    "debug_simple_lat_curvature": 0.0,
+                    "debug_simple_lat_current_target_point_kappa": 0.0,
+                    "debug_simple_lat_current_target_point_s": -1.2,
+                    "debug_simple_lat_current_target_point_x": 10.0,
+                    "debug_simple_lat_current_target_point_y": 5.0,
+                    "debug_simple_lon_current_station": -1.0,
+                    "debug_simple_lon_station_reference": 0.0,
+                    "debug_simple_lon_current_matched_point_s": 0.0,
+                    "debug_simple_lon_current_matched_point_x": 11.0,
+                    "debug_simple_lon_current_matched_point_y": 5.0,
+                    "debug_simple_lon_current_reference_point_x": 10.5,
+                    "debug_simple_lon_current_reference_point_y": 5.0,
+                    "debug_simple_lon_preview_reference_point_x": 12.0,
+                    "debug_simple_lon_preview_reference_point_y": 5.0,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+
+    assert any(str(path).endswith("artifacts/apollo_control_raw.jsonl") for path in report["source"]["control_trace"])
+    assert report["resolved_fields"]["apollo_simple_lat_lateral_error"] in {
+        "apollo_simple_lat_lateral_error",
+        "apollo_debug_simple_lat_lateral_error_m",
+    }
+    assert report["correlation_summary"]["apollo_simple_lat_lateral_error_abs"]["count"] > 0
+    assert report["correlation_summary"]["apollo_steer_raw_abs"]["max"] == 0.25
+    first_high = report["drift_window_summary"]["phase_samples"]["first_high_lateral"]
+    assert first_high["sim_time"] == 10.5
+    assert first_high["apollo_simple_lat_lateral_error"] == -0.60
+    assert first_high["apollo_simple_lat_target_point_s"] == -1.2
+    assert first_high["apollo_simple_lon_matched_point_s"] == 0.0
 
 
 def test_route_simple_lat_opposite_sign_matching_magnitude_is_convention_candidate(
