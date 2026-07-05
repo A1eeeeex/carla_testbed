@@ -17,6 +17,8 @@ DEFAULT_SPEED_WARN_MPS = 0.50
 DEFAULT_SPEED_FAIL_MPS = 2.00
 DEFAULT_GAP_WARN_MS = 250.0
 DEFAULT_GAP_FAIL_MS = 1000.0
+DEFAULT_STEER_FEEDBACK_WARN = 0.25
+DEFAULT_STEER_FEEDBACK_FAIL = 0.75
 
 ALIASES = {
     "chassis_speed_mps": ["chassis_speed_mps", "chassis_speed", "vehicle_speed_mps"],
@@ -46,9 +48,15 @@ ALIASES = {
         "steer_feedback",
         "measured_steer",
         "measured_steer_pct",
+        "chassis_carla_steering_percentage",
+        "carla_steering_percentage",
+        "carla_steer_feedback",
+    ],
+    "apollo_steer_feedback": [
         "chassis_steering_percentage",
         "steering_percentage",
     ],
+    "steering_sign": ["steering_sign", "steer_sign", "chassis_steering_feedback_sign"],
 }
 
 
@@ -121,7 +129,7 @@ def analyze_chassis_gt_contract(
 
     channel = _analyze_channel(channel_stats, missing_fields, warnings, blocking_reasons)
     speed = _speed_consistency(rows, missing_fields, warnings, blocking_reasons)
-    feedback = _control_feedback(rows, warnings)
+    feedback = _control_feedback(rows, warnings, blocking_reasons)
     state = _state_consistency(rows, missing_fields, warnings, blocking_reasons)
     if not rows:
         missing_fields.append("timeseries")
@@ -280,24 +288,65 @@ def _speed_consistency(
     }
 
 
-def _control_feedback(rows: Sequence[Mapping[str, Any]], warnings: list[str]) -> dict[str, Any]:
+def _control_feedback(
+    rows: Sequence[Mapping[str, Any]],
+    warnings: list[str],
+    blocking_reasons: list[str],
+) -> dict[str, Any]:
     result: dict[str, Any] = {}
+    status = "pass"
     for axis in ("throttle", "brake", "steer"):
         applied_key = f"{axis}_applied"
         feedback_key = f"{axis}_feedback"
         deltas: list[float] = []
         for row in rows:
             applied = _alias_number(row, applied_key)
-            feedback = _alias_number(row, feedback_key)
+            feedback = (
+                _steer_feedback_in_carla_frame(row, warnings)
+                if axis == "steer"
+                else _alias_number(row, feedback_key)
+            )
             if applied is None or feedback is None:
                 continue
             deltas.append(abs(_normalize_control_value(applied) - _normalize_control_value(feedback)))
         result[f"{axis}_feedback_available"] = bool(deltas)
-        result[f"{axis}_applied_feedback_delta_p95"] = _percentile(deltas, 95.0)
+        p95 = _percentile(deltas, 95.0)
+        result[f"{axis}_applied_feedback_delta_p95"] = p95
         if not deltas:
             warnings.append(f"{axis}_feedback_missing")
-    result["status"] = "warn" if any(not result.get(f"{axis}_feedback_available") for axis in ("throttle", "brake", "steer")) else "pass"
+            status = "warn" if status == "pass" else status
+        elif axis == "steer":
+            result["steer_feedback_warn_threshold"] = DEFAULT_STEER_FEEDBACK_WARN
+            result["steer_feedback_fail_threshold"] = DEFAULT_STEER_FEEDBACK_FAIL
+            if p95 is not None and p95 > DEFAULT_STEER_FEEDBACK_FAIL:
+                blocking_reasons.append("chassis_steer_feedback_mismatch_high")
+                status = "fail"
+            elif p95 is not None and p95 > DEFAULT_STEER_FEEDBACK_WARN and status == "pass":
+                warnings.append("chassis_steer_feedback_mismatch_warn")
+                status = "warn"
+    result["status"] = status
     return result
+
+
+def _steer_feedback_in_carla_frame(
+    row: Mapping[str, Any],
+    warnings: list[str],
+) -> float | None:
+    carla_feedback = _alias_number(row, "steer_feedback")
+    if carla_feedback is not None:
+        return carla_feedback
+    apollo_feedback = _alias_number(row, "apollo_steer_feedback")
+    if apollo_feedback is None:
+        return None
+    steering_sign = _alias_number(row, "steering_sign")
+    if steering_sign is None:
+        warnings.append("steering_sign_missing_for_chassis_steer_feedback")
+        steering_sign = 1.0
+    sign = -1.0 if steering_sign < 0.0 else 1.0
+    # Bridge maps Apollo steer into CARLA steer as apollo * steering_sign.
+    # Chassis feedback is Apollo-frame for Apollo Control, so convert it back
+    # before comparing with CARLA applied steer.
+    return _normalize_control_value(apollo_feedback) * sign
 
 
 def _state_consistency(

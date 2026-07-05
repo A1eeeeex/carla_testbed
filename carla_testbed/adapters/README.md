@@ -1,10 +1,11 @@
 # carla_testbed.adapters
 
-Canonical adapter boundary for external autonomous-driving stacks.
+Target lifecycle adapter boundary for external autonomous-driving stacks.
 
-The core runner/harness should depend on `carla_testbed.adapters.base.ADStackBackend`
-or on neutral contracts, not on ROS2, CyberRT, Apollo protobufs, or Autoware
-messages directly.
+The active Phase 1 execution facade is `carla_testbed.backends.base.StackBackend`
+plus `LaunchPlan`. Runtime code migrated into this namespace should implement
+`carla_testbed.adapters.base.ADStackBackend` or neutral contracts, not ROS2,
+CyberRT, Apollo protobufs, or Autoware messages directly.
 
 Current status:
 

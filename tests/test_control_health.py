@@ -1103,6 +1103,57 @@ def test_control_health_applied_throttle_brake_switching_fails(tmp_path: Path) -
     assert report["metrics"]["oscillation_decomposition"]["dominant_oscillation_layer"] == "carla_applied_command"
 
 
+def test_control_health_uses_control_apply_trace_for_command_switch_verdict(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    csv_path = run_dir / "timeseries.csv"
+    rows = _read_csv(csv_path)
+    while len(rows) < 12:
+        rows.append(dict(rows[-1]))
+    rows = rows[:12]
+    for index, row in enumerate(rows):
+        row["sim_time"] = str(index * 0.05)
+        throttle = "0.8" if index % 2 == 0 else "0.0"
+        brake = "0.0" if index % 2 == 0 else "0.7"
+        row["throttle_raw"] = throttle
+        row["brake_raw"] = brake
+        row["throttle_mapped"] = throttle
+        row["brake_mapped"] = brake
+        row["bridge_steer_mapped"] = "0.0"
+        row["throttle_applied"] = throttle
+        row["brake_applied"] = brake
+        row["carla_steer_applied"] = "0.0"
+    _write_csv(csv_path, rows)
+
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    payloads = [
+        {
+            "schema_version": "control_apply_trace.v1",
+            "timestamp": 10.0 + index * 0.1,
+            "apollo_control": {"header_sequence_num": index + 1},
+            "apollo_raw": {"throttle": 0.4, "brake": 0.0, "steer": 0.0},
+            "bridge_mapped": {"throttle": 0.4, "brake": 0.0, "steer": 0.0},
+            "carla_applied": {"throttle": 0.4, "brake": 0.0, "steer": 0.0},
+        }
+        for index in range(3)
+    ]
+    (artifact_dir / "control_apply_trace.jsonl").write_text(
+        "\n".join(json.dumps(payload) for payload in payloads) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+
+    assert report["failure_reason"] != "applied_actuation_oscillation"
+    assert report["metrics"]["applied_throttle_brake_switch_count"] == 0
+    assert report["metrics"]["applied_throttle_brake_switch_source"] == "control_apply_trace.jsonl"
+    layers = report["metrics"]["oscillation_decomposition"]["layers"]
+    assert layers["carla_applied_command"]["source"] == "control_apply_trace.jsonl"
+    assert layers["carla_applied_command"]["status"] == "pass"
+
+
 def test_control_health_defers_applied_oscillation_until_upstream_contracts_nonblocking(
     tmp_path: Path,
 ) -> None:

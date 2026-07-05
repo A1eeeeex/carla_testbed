@@ -13,12 +13,19 @@ class CarlaDirectBackend(ApolloCyberRTBackend):
             backend=self.name,
             starts_carla=base.starts_carla,
             starts_external_stack=base.starts_external_stack,
+            backend_type=base.backend_type,
             middleware=base.middleware,
-            required_inputs=base.required_inputs,
-            expected_outputs=base.expected_outputs,
-            required_recorders=base.required_recorders,
+            input_contract=base.input_contract,
+            adapter_path=base.adapter_path,
+            available_truth_fields=list(base.available_truth_fields),
+            output_control_mode=base.output_control_mode,
+            transport_mode="carla_direct",
+            required_inputs=list(base.required_inputs),
+            expected_outputs=list(base.expected_outputs),
+            required_recorders=list(base.required_recorders),
             needs_local_carla=base.needs_local_carla,
             needs_local_apollo=base.needs_local_apollo,
+            needs_local_autoware=base.needs_local_autoware,
         )
 
     def preflight(self, plan=None) -> BackendPreflightResult:
@@ -42,8 +49,10 @@ class CarlaDirectBackend(ApolloCyberRTBackend):
             expected_artifacts=base.expected_artifacts,
             shutdown_hooks=base.shutdown_hooks,
             postprocess_commands=base.postprocess_commands,
+            runtime_completion_markers=base.runtime_completion_markers,
             starts_runtime=base.starts_runtime,
             compatibility_source=base.compatibility_source,
+            minimum_runtime_timeout_s=base.minimum_runtime_timeout_s,
             warnings=[
                 "carla_direct is experimental and must not be treated as the default backend.",
                 *base.warnings,

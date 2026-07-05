@@ -137,7 +137,7 @@ algo:
       steer_sign: 1.0
       throttle_scale: 1.5
       brake_scale: 1.0
-      steering_percent_normalization: angle_degree_at_select
+      steering_percent_normalization: single_percent_at_select
       apollo_max_steer_angle_deg: 30.0
       terminal_stop_hold:
         enabled: true

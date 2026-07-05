@@ -61,6 +61,7 @@ def _write_complete_run(run_dir: Path) -> None:
                 "brake_feedback": 0.0,
                 "carla_steer_applied": 0.01,
                 "chassis_steering_percentage": 0.01,
+                "steering_sign": 1.0,
             }
             for index in range(20)
         ],
@@ -188,6 +189,106 @@ def test_chassis_gt_contract_speed_mismatch_fails(tmp_path: Path) -> None:
 
     assert report["status"] == "fail"
     assert "chassis_speed_mismatch_high" in report["blocking_reasons"]
+
+
+def test_chassis_gt_contract_steer_feedback_mismatch_fails(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_complete_run(run_dir)
+    _write_timeseries(
+        run_dir / "artifacts/debug_timeseries.csv",
+        [
+            {
+                "sim_time": index * 0.05,
+                "chassis_speed_mps": 7.0,
+                "localization_speed_mps": 7.0,
+                "driving_mode": "COMPLETE_AUTO_DRIVE",
+                "gear_location": "GEAR_DRIVE",
+                "chassis_error_code": "NO_ERROR",
+                "commanded_throttle": 0.20,
+                "measured_throttle": 0.20,
+                "commanded_brake": 0.0,
+                "measured_brake": 0.0,
+                "carla_steer_applied": 1.0,
+                "chassis_steering_percentage": -80.0,
+            }
+            for index in range(20)
+        ],
+    )
+
+    report = analyze_chassis_gt_contract_files(run_dir=run_dir)
+
+    assert report["status"] == "fail"
+    assert report["claim_grade"] is False
+    assert "chassis_steer_feedback_mismatch_high" in report["blocking_reasons"]
+    assert report["control_feedback"]["steer_applied_feedback_delta_p95"] == 1.8
+
+
+def test_chassis_gt_contract_converts_apollo_frame_steer_feedback_with_steering_sign(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_complete_run(run_dir)
+    _write_timeseries(
+        run_dir / "artifacts/debug_timeseries.csv",
+        [
+            {
+                "sim_time": index * 0.05,
+                "chassis_speed_mps": 7.0,
+                "localization_speed_mps": 7.0,
+                "driving_mode": "COMPLETE_AUTO_DRIVE",
+                "gear_location": "GEAR_DRIVE",
+                "chassis_error_code": "NO_ERROR",
+                "commanded_throttle": 0.20,
+                "measured_throttle": 0.20,
+                "commanded_brake": 0.0,
+                "measured_brake": 0.0,
+                "carla_steer_applied": -0.50,
+                "chassis_steering_percentage": 50.0,
+                "steering_sign": -1.0,
+            }
+            for index in range(20)
+        ],
+    )
+
+    report = analyze_chassis_gt_contract_files(run_dir=run_dir)
+
+    assert report["status"] == "pass"
+    assert report["claim_grade"] is True
+    assert report["control_feedback"]["steer_applied_feedback_delta_p95"] == 0.0
+
+
+def test_chassis_gt_contract_prefers_explicit_carla_steer_feedback_over_apollo_frame(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_complete_run(run_dir)
+    _write_timeseries(
+        run_dir / "artifacts/debug_timeseries.csv",
+        [
+            {
+                "sim_time": index * 0.05,
+                "chassis_speed_mps": 7.0,
+                "localization_speed_mps": 7.0,
+                "driving_mode": "COMPLETE_AUTO_DRIVE",
+                "gear_location": "GEAR_DRIVE",
+                "chassis_error_code": "NO_ERROR",
+                "commanded_throttle": 0.20,
+                "measured_throttle": 0.20,
+                "commanded_brake": 0.0,
+                "measured_brake": 0.0,
+                "carla_steer_applied": -0.50,
+                "chassis_steering_percentage": 50.0,
+                "chassis_carla_steering_percentage": -50.0,
+            }
+            for index in range(20)
+        ],
+    )
+
+    report = analyze_chassis_gt_contract_files(run_dir=run_dir)
+
+    assert report["status"] == "pass"
+    assert report["claim_grade"] is True
+    assert report["control_feedback"]["steer_applied_feedback_delta_p95"] == 0.0
 
 
 def test_chassis_gt_contract_report_writer(tmp_path: Path) -> None:

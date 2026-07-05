@@ -399,20 +399,28 @@ def _select_non_hidden_candidate(candidates: list[Path]) -> Path | None:
 _CONTROL_TRACE_OVERLAY_FIELDS = {
     "apollo_steer_raw": ("apollo_steer_raw", "apollo_raw.steer"),
     "bridge_steer_mapped": (
+        "bridge_mapped.mapped_carla_steer_cmd",
+        "mapped_carla_steer_cmd",
         "bridge_steer_mapped",
         "bridge_mapped.steer",
-        "bridge_mapped.mapped_carla_steer_cmd",
     ),
+    "bridge_steer_pre_policy": ("bridge_steer_pre_policy", "bridge_mapped.steer_pre_policy"),
     "carla_steer_applied": ("carla_steer_applied", "carla_applied.steer"),
     "throttle_raw": ("throttle_raw", "apollo_raw.throttle"),
     "throttle_mapped": (
+        "bridge_mapped.mapped_throttle_cmd",
+        "mapped_throttle_cmd",
         "throttle_mapped",
         "bridge_mapped.throttle",
-        "bridge_mapped.mapped_throttle_cmd",
     ),
     "throttle_applied": ("throttle_applied", "carla_applied.throttle"),
     "brake_raw": ("brake_raw", "apollo_raw.brake"),
-    "brake_mapped": ("brake_mapped", "bridge_mapped.brake", "bridge_mapped.mapped_brake_cmd"),
+    "brake_mapped": (
+        "bridge_mapped.mapped_brake_cmd",
+        "mapped_brake_cmd",
+        "brake_mapped",
+        "bridge_mapped.brake",
+    ),
     "brake_applied": ("brake_applied", "carla_applied.brake"),
     "control_latency_ms": ("control_latency_ms",),
 }

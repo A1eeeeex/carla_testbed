@@ -178,11 +178,14 @@ These reports make ScenarioComparison evaluability explicit. They do not
 convert Apollo timeout, lane invasion, collision, or other behavior failures
 into success.
 
-Fresh online validation of this artifact surface is
-`runs/phase1_p0_matrix/phase1_p0_auto_artifacts_20260625_153515`: all five P0
-pairs are comparable with zero invalid pairs after automatic normalization.
-The same evidence still reports behavior failures (`lane_invasion`, `timeout`,
-and `collision`) as failures.
+Historical online validation of this artifact-normalization surface is
+`runs/phase1_p0_matrix/phase1_p0_auto_artifacts_20260625_153515`: it proved
+that automatic normalization could make the older five-P0 rows comparable with
+zero invalid pairs. It is not the current Phase 1 behavior matrix and should
+not be cited as fresh online validation. Current Phase 1 status should cite
+`runs/phase1_p0_matrix/phase1_p0_behavior_default_20260701_030213` only when
+the exact matrix manifest, pair manifests, comparison summaries, and run
+artifacts are attached to the evidence package.
 
 ## Phase 1 Scenario Comparison Artifacts
 
@@ -197,6 +200,10 @@ Additional run-local artifacts:
   - schema: `phase1_carla_session.v1`
   - records requested CARLA root/town/args, readiness status, launcher
     diagnostics, CARLA client probe interpreter, and stop status.
+  - if the launcher reused an already-running CARLA server, normal cleanup
+    records `stop.status=left_running_reused` and leaves that server running
+    for the next online validation. Only a server owned by the current run is
+    stopped automatically.
   - startup/session evidence is environment evidence only. It does not prove
     map identity, backend behavior, Apollo no-assist operation, or natural
     driving.

@@ -44,6 +44,12 @@ DEGRADED_REASONS = {
     "unstable_control",
     "degraded_gap_method",
 }
+ROUTE_HEALTH_FAILURE_CODES = {
+    "LATERAL_METRICS",
+    "MAX_SPEED_MPS",
+    "ROUTE_COMPLETION_RATIO",
+    "ROUTE_DISTANCE_ACHIEVED_M",
+}
 
 
 def classify_phase1_run(run_dir: str | Path) -> dict[str, Any]:
@@ -850,6 +856,7 @@ def _derived_blocker_evidence(root: Path) -> dict[str, Any]:
 
 _ROUTE_HEALTH_LINK_BLOCKER_LAYERS = {
     "apollo_lateral_semantics",
+    "apollo_source_control_semantics",
     "planning_reference_line",
     "routing_planning_control_handoff",
     "control_mapping_apply",
@@ -3446,6 +3453,13 @@ def _backend_not_ready(summary: Mapping[str, Any], manifest: Mapping[str, Any]) 
     reason = _normalized_reason(summary)
     if reason == "backend_not_ready":
         return True
+    dispatch = summary.get("dispatch")
+    if isinstance(dispatch, Mapping):
+        command = dispatch.get("command")
+        if isinstance(command, Mapping) and command.get("status") == "missing_command":
+            return True
+        if dispatch.get("status") == "missing_command":
+            return True
     return manifest.get("backend_ready") is False
 
 
@@ -3578,7 +3592,7 @@ def _failed_reason(root: Path, summary: Mapping[str, Any], v_t_gap: Mapping[str,
     reason = _normalized_reason(summary)
     if reason == "timeout":
         return reason
-    if _nested_route_health_failed(root):
+    if _nested_route_health_failed(root) or _summary_route_health_failed(summary):
         return "route_health_failed"
     if reason in FAILED_REASONS:
         return reason
@@ -3624,6 +3638,15 @@ def _nested_route_health_failed(root: Path) -> bool:
     if nested_summary.get("summary_status") != "finalized":
         return False
     return nested_summary.get("success") is False or bool(_nested_failure_codes(nested_summary))
+
+
+def _summary_route_health_failed(summary: Mapping[str, Any]) -> bool:
+    reason = _normalized_reason(summary)
+    if reason.upper() in ROUTE_HEALTH_FAILURE_CODES:
+        return True
+    if any(_summary_has_failure_code(summary, code) for code in ROUTE_HEALTH_FAILURE_CODES):
+        return True
+    return str(summary.get("route_health_label") or "") == "route_established_but_behavior_unhealthy"
 
 
 def _source_brake_indicates_handoff_missing(reason: Any) -> bool:

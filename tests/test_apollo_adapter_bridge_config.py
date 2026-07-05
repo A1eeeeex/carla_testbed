@@ -150,6 +150,10 @@ def test_nominal_lane_keep_profile_keeps_artifact_io_out_of_gt_publish_hot_path(
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     bridge = payload["algo"]["apollo"]["bridge"]
     apollo = payload["algo"]["apollo"]
+    route_health = payload["scenario"]["route_health"]
+    control_mapping = payload["algo"]["apollo"]["control_mapping"]
+    control_lqr = payload["algo"]["apollo"]["control_lqr"]
+    control_lon = payload["algo"]["apollo"]["control_lon"]
 
     assert bridge["artifact_flush_interval_s"] == 0.0
     assert bridge["artifact_flush_max_pending_rows"] == 0
@@ -163,8 +167,21 @@ def test_nominal_lane_keep_profile_keeps_artifact_io_out_of_gt_publish_hot_path(
     assert bridge["claim_evidence_artifact_sample_stride"] == 10
     acceleration_filter = bridge["localization_acceleration_filter"]
     assert acceleration_filter["enabled"] is True
-    assert acceleration_filter["alpha"] == 0.35
-    assert acceleration_filter["max_abs_mps2"] == 4.0
-    assert acceleration_filter["max_delta_mps2"] == 1.0
+    assert acceleration_filter["alpha"] == 0.15
+    assert acceleration_filter["max_abs_mps2"] == 0.8
+    assert acceleration_filter["max_delta_mps2"] == 0.15
     assert acceleration_filter["alpha"] < 0.5
+    assert control_mapping["steer_sign"] == -1.0
+    assert control_mapping["steer_scale"] == 1.0
+    assert control_mapping["steering_percent_normalization"] == "single_percent_at_select"
+    assert control_lqr["enabled"] is True
+    assert control_lqr["enable_reverse_leadlag_compensation"] is False
+    assert control_lqr["enable_look_ahead_back_control"] is False
+    assert control_lqr["minimum_speed_protection"] == 1.0
+    assert control_lqr["matrix_q"] == [0.15, 0.0, 1.0, 0.0]
+    assert control_lon["enabled"] is True
+    assert route_health["align_spawn_to_route_start"] is True
+    planning = payload["algo"]["apollo"]["planning"]
+    assert planning["enable_reference_line_stitching"] is False
+    assert planning["enable_trajectory_stitcher"] is False
     assert "control_runtime" not in apollo

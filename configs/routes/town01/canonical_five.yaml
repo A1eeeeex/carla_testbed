@@ -85,7 +85,9 @@ routes:
     stable_id: town01_rh_spawn217_goal048
     map: Town01
     route_class: curve
-    curve_class: sharper_curve_diagnostic
+    curve_class: terminal_turn_curve_diagnostic
+    curve_claim_boundary: terminal_short_turn_only
+    post_turn_lookahead_m: 5.82
     spawn_ref: town01_spawn217
     goal_ref: town01_goal048
     route_ref: placeholder:town01_route_corpus/town01_rh_spawn217_goal048
@@ -104,13 +106,15 @@ routes:
       - timeseries.csv
       - analysis/route_health/route_health.json
     gate_role: diagnostic_gate
-    notes: "Curve diagnostic route; do not treat as promotion hard gate."
+    notes: "Terminal-turn diagnostic route with only about 5.8 m after the lane transition; do not treat as clean curve lane-follow evidence."
 
   - route_id: curve213
     stable_id: town01_rh_spawn213_goal059
     map: Town01
     route_class: curve
-    curve_class: gentle_or_mild_curve_diagnostic
+    curve_class: terminal_turn_curve_diagnostic
+    curve_claim_boundary: terminal_short_turn_only
+    post_turn_lookahead_m: 11.77
     spawn_ref: town01_spawn213
     goal_ref: town01_goal059
     route_ref: placeholder:town01_route_corpus/town01_rh_spawn213_goal059
@@ -129,4 +133,4 @@ routes:
       - timeseries.csv
       - analysis/route_health/route_health.json
     gate_role: diagnostic_gate
-    notes: "Curve diagnostic route; current evidence must not be read as solved."
+    notes: "Terminal-turn diagnostic route with only about 11.8 m after the lane transition; do not treat as clean curve lane-follow evidence."

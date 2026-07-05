@@ -1,0 +1,31 @@
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml
+
+run:
+  id: town01_apollo_lane_keep_097_steer_sign_inverted_diagnostic
+  profile_name: town01_apollo_lane_keep_097_steer_sign_inverted_diagnostic
+  capability_profile: town01_lane_keep_lateral_semantics_diagnostic_steer_sign_ab
+
+algo:
+  apollo:
+    control_mapping:
+      # Diagnostic A/B only. The latest no-guard lane_keep_097 sample shows
+      # Apollo HDMap projection_l growing after mapped/applied steer is
+      # delivered consistently to CARLA.  This profile tests steering sign
+      # semantics without changing steer_scale, PID, physical mapping, or
+      # lateral guard behavior.
+      steer_sign: -1.0
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists:
+    - steering_sign_diagnostic_override
+  blocking_assists:
+    - steering_sign_diagnostic_override
+  non_blocking_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Town01 lane_keep_097 steer-sign diagnostic A/B for Apollo lateral/reference-line semantics.
+    - This is not a default backend profile, not a natural-driving or no-interference claim, and not permission to change steer_scale or physical mapping.
+    - If this improves projection_l convergence, promote only after replacing the diagnostic override with a verified control/calibration contract and fresh no-assist evidence.

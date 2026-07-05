@@ -66,7 +66,9 @@ python -m carla_testbed plan \
   --show-launch
 ```
 
-Compile a suite matrix:
+Compile a legacy/experimental suite matrix. The Town01 natural-driving suite is
+an Apollo+Autoware diagnostic planning surface, not the current Phase 1 five-P0
+ApolloBackend-vs-PlanningControlBackend matrix:
 
 ```bash
 python -m carla_testbed plan \
@@ -195,6 +197,13 @@ timeout or nested process contaminating later P0 rows in the same matrix. In
 start CARLA. The session artifact is startup/environment evidence only; it is
 not backend behavior evidence and it does not make Apollo or `carla_builtin`
 pass a scenario.
+
+When `phase1 run-pair --start-carla` attaches to an already-running CARLA
+server, cleanup leaves that reused server running and records
+`carla_session.stop.status=left_running_reused`. This supports repeated online
+debug cycles without forcing a CARLA restart after every run. The runner should
+only stop CARLA automatically when it launched and owns that server, or when
+startup fails before a usable session exists.
 
 The launcher may be invoked from a Python that cannot import the CARLA client
 module, for example the project default Python 3.13 while CARLA 0.9.16 provides
@@ -480,9 +489,9 @@ reports after normalization. These reports are evidence routing only: timeout
 remains timeout, lane invasion remains lane invasion, and Apollo behavior
 success is not inferred from artifact normalization.
 
-Fresh online validation of this path is
+Historical online validation of this path is
 `runs/phase1_p0_matrix/phase1_p0_auto_artifacts_20260625_153515`: all five P0
-pairs are comparable and all five have
-`comparison_target_status=apollo_vs_planning_control_evaluable`. The same
-artifact also shows the remaining behavior failures: Apollo `lane_invasion` on
-the three Baguang rows and Apollo `timeout` on the two Town01 route-only rows.
+pairs were comparable under the older artifact-normalization surface. The newer
+Phase 1 behavior-default matrix supersedes it for current status claims and
+must be attached with exact run artifacts before external review treats it as
+independently verified.

@@ -1,5 +1,9 @@
 schema_version: suite.v1
 suite_id: town01_natural_driving_platform_p0
+# Legacy/experimental Apollo+Autoware diagnostic planning surface.
+# Current Phase 1 P0 delivery uses:
+#   python -m carla_testbed phase1 run-p0-matrix --dry-run
+# Do not treat this suite as the five-case ApolloBackend vs PlanningControlBackend matrix.
 seed: 1
 max_ticks: 700
 output_root: runs

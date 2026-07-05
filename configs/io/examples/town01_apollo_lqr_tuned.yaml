@@ -266,7 +266,7 @@ algo:
       throttle_scale: 1.5
       brake_scale: 1.0
       steer_scale: 1.0
-      steering_percent_normalization: angle_degree_at_select
+      steering_percent_normalization: single_percent_at_select
       apollo_max_steer_angle_deg: 30.0
       brake_deadzone: 0.05
       actuator_mapping_mode: legacy

@@ -2872,8 +2872,11 @@ class CyberRTBackend(Backend):
             "enable_reverse_leadlag_compensation": True,
             "lookahead_station": 1.4224,
             "lookback_station": 2.8448,
+            "enable_look_ahead_back_control": True,
             "switch_speed": 2.0,
             "switch_speed_window": 0.5,
+            "query_relative_time": 0.3,
+            "query_time_nearest_point_only": False,
         }
         merged = dict(defaults)
         merged.update(cfg)
@@ -2903,21 +2906,27 @@ class CyberRTBackend(Backend):
         lines.append(f"max_lateral_acceleration: {float(merged['max_lateral_acceleration']):.4f}")
         lines.append(f"enable_reverse_leadlag_compensation: {'true' if bool(merged.get('enable_reverse_leadlag_compensation', True)) else 'false'}")
         lines.append("enable_steer_mrac_control: false")
-        lines.append("enable_look_ahead_back_control: true")
+        lines.append(
+            "enable_look_ahead_back_control: "
+            f"{'true' if bool(merged.get('enable_look_ahead_back_control', True)) else 'false'}"
+        )
         lines.append(f"lookahead_station: {float(merged['lookahead_station']):.4f}")
         lines.append(f"lookback_station: {float(merged['lookback_station']):.4f}")
         lines.append(f"lookahead_station_high_speed: {float(merged['lookahead_station']):.4f}")
         lines.append(f"lookback_station_high_speed: {float(merged['lookback_station']):.4f}")
         lines.append(f"switch_speed: {float(merged['switch_speed']):.4f}")
         lines.append(f"switch_speed_window: {float(merged['switch_speed_window']):.4f}")
-        lines.append("query_relative_time: 0.3")
+        lines.append(f"query_relative_time: {float(merged['query_relative_time']):.4f}")
         lines.append("enable_navigation_mode_position_update: true")
         lines.append("trajectory_transform_to_com_reverse: true")
         lines.append("trajectory_transform_to_com_drive: true")
         lines.append(f"enable_feedback_augment_on_high_speed: {'true' if bool(merged.get('enable_feedback_augment_on_high_speed', False)) else 'false'}")
         lines.append("enable_maximum_steer_rate_limit: false")
         lines.append("lock_steer_speed: -0.081")
-        lines.append("query_time_nearest_point_only: false")
+        lines.append(
+            "query_time_nearest_point_only: "
+            f"{'true' if bool(merged.get('query_time_nearest_point_only', False)) else 'false'}"
+        )
         lines.append("enable_navigation_mode_error_filter: false")
         lines.append("reverse_feedforward_ratio: 1.4")
         lines.append("reverse_use_dynamic_model: false")
@@ -3002,8 +3011,6 @@ class CyberRTBackend(Backend):
                 enabled=False,
             )
 
-        # Only override use_speed_itfc; keep all other LonController defaults.
-        content = "use_speed_itfc: true\n"
         overlay_path = (
             "/apollo_workspace/conf_overlay/modules/control/controllers/"
             "lon_based_pid_controller/conf/controller_conf.pb.txt"
@@ -3017,9 +3024,24 @@ class CyberRTBackend(Backend):
             "python3 -c "
             + shlex.quote(
                 "from pathlib import Path; "
+                "import re; "
+                "cands=["
+                "'/apollo/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt.carla_testbed.bak',"
+                "'/apollo/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt',"
+                "'/opt/apollo/neo/share/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt',"
+                "'/opt/apollo/neo/src/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt'"
+                "]; "
+                "src=next((cand for cand in cands if Path(cand).is_file() and not Path(cand).is_symlink()), ''); "
+                "raise_msg='Apollo LonController base config missing; refusing to write partial control_lon overlay'; "
+                "import sys; "
+                "text=Path(src).read_text() if src else sys.exit(raise_msg); "
+                "text=re.sub(r'(?m)^\\s*use_speed_itfc\\s*:\\s*(true|false)\\s*$', 'use_speed_itfc: true', text); "
+                "text=text if re.search(r'(?m)^\\s*use_speed_itfc\\s*:', text) else text.rstrip()+'\\nuse_speed_itfc: true\\n'; "
+                "m=re.search(r'(?m)^\\s*ts\\s*:\\s*([0-9.eE+-]+)\\s*$', text); "
+                "sys.exit('Apollo LonController overlay would remove positive ts') if (not m or float(m.group(1)) <= 0.0) else None; "
                 f"p=Path({overlay_path!r}); "
                 "p.parent.mkdir(parents=True, exist_ok=True); "
-                f"p.write_text({content!r})"
+                "p.write_text(text if text.endswith('\\n') else text+'\\n')"
             )
             + "; "
             + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)

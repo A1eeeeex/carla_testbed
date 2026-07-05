@@ -2637,6 +2637,7 @@ def main():
                 max_goal_attempts=int(route_health_cfg.get("max_goal_attempts", 5) or 5),
                 route_id=str(route_health_cfg.get("route_id", "") or ""),
                 route_corpus_path=str(route_health_cfg.get("route_corpus_path", "") or ""),
+                align_spawn_to_route_start=bool(route_health_cfg.get("align_spawn_to_route_start", False)),
                 ego_offset_x_m=float(route_health_cfg.get("ego_offset_x_m", args.ego_offset_x_m)),
                 ego_offset_y_m=float(route_health_cfg.get("ego_offset_y_m", args.ego_offset_y_m)),
                 ego_offset_z_m=float(route_health_cfg.get("ego_offset_z_m", args.ego_offset_z_m)),

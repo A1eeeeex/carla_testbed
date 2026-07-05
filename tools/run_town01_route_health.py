@@ -664,6 +664,23 @@ def _best_effort_stop_launcher(launcher: Any) -> None:
         pass
 
 
+def _stop_carla_launcher_and_cleanup_owned(launcher: Any) -> bool:
+    """Stop CARLA only when this launcher owns the process.
+
+    CarlaLauncher.stop() intentionally leaves a reused external CARLA running
+    when stop_reused_on_exit=False. The legacy global cleanup sweep is broader
+    than the launcher and must not run for reused sessions.
+    """
+
+    launcher_reused = bool(getattr(launcher, "reused", False))
+    try:
+        launcher.stop()
+    finally:
+        if not launcher_reused:
+            _cleanup_carla_processes()
+    return not launcher_reused
+
+
 def _prestart_carla(args: argparse.Namespace, batch_root: Path) -> CarlaLauncher:
     from tbio.carla.launcher import CarlaLauncher
 
@@ -772,8 +789,7 @@ def _prestart_carla(args: argparse.Namespace, batch_root: Path) -> CarlaLauncher
                 attempt_row["retry_decision_reason"] = retry_reason
                 _write_probe()
                 if retry_allowed:
-                    launcher.stop()
-                    _cleanup_carla_processes()
+                    _stop_carla_launcher_and_cleanup_owned(launcher)
                     time.sleep(3.0)
                     continue
                 _best_effort_stop_launcher(launcher)
@@ -834,8 +850,7 @@ def _prestart_carla(args: argparse.Namespace, batch_root: Path) -> CarlaLauncher
                         flush=True,
                     )
                 if retry_allowed:
-                    launcher.stop()
-                    _cleanup_carla_processes()
+                    _stop_carla_launcher_and_cleanup_owned(launcher)
                     time.sleep(retry_delay_s)
                     continue
                 _best_effort_stop_launcher(launcher)
@@ -854,11 +869,7 @@ def _prestart_carla(args: argparse.Namespace, batch_root: Path) -> CarlaLauncher
             attempt_row["retry_decision_reason"] = retry_reason
             _write_probe()
             if retry_allowed:
-                try:
-                    launcher.stop()
-                except Exception:
-                    pass
-                _cleanup_carla_processes()
+                _stop_carla_launcher_and_cleanup_owned(launcher)
                 time.sleep(retry_delay_s)
                 continue
             _best_effort_stop_launcher(launcher)
@@ -1972,8 +1983,7 @@ def _run_mainline(args: argparse.Namespace) -> None:
         print(f"[town01-route-health] batch completed -> {batch_root}")
     finally:
         if launcher is not None and args.stop_carla_on_exit:
-            launcher.stop()
-            _cleanup_carla_processes()
+            _stop_carla_launcher_and_cleanup_owned(launcher)
 
 
 def _run_analyze(args: argparse.Namespace) -> None:

@@ -527,6 +527,47 @@ def test_path_fallback_future_segment_metric_overrides_expired_prefix_mismatch()
     ] == pytest.approx(0.01)
 
 
+def test_path_fallback_zero_length_future_segment_mismatch_is_not_reliable() -> None:
+    rows = [
+        {
+            "localization": {"heading": 0.0},
+            "planning": {
+                "trajectory_point_count": 20,
+                "trajectory_type": "PATH_FALLBACK",
+                "first_trajectory_point_theta": 0.01,
+                "reference_line_count": 1,
+                "routing_segment_count": 1,
+                "trajectory_total_path_length": 0.0,
+            },
+            "routing": {"routing_segment_count": 1},
+            "computed": {
+                "localization_to_planning_first_heading_error_rad": 0.05,
+                "trajectory_first_theta_vs_segment_heading_p95_rad": 0.01,
+                "trajectory_first_nonexpired_theta_vs_future_segment_heading_rad": 3.14,
+                "planning_reference_available": True,
+                "control_reference_available": False,
+            },
+        }
+    ]
+
+    report = analyze_apollo_reference_line_contract(rows)
+    planning_contract = report["contracts"]["planning_trajectory"]
+
+    assert planning_contract["status"] == "warn"
+    assert "planning_path_fallback_segment_heading_mismatch" not in planning_contract["blocking_reasons"]
+    assert "planning_path_fallback_heading_error_high" not in planning_contract["blocking_reasons"]
+    assert planning_contract["key_metrics"][
+        "path_fallback_segment_heading_metric_source"
+    ] == "first_theta_vs_first_segment"
+    assert planning_contract["key_metrics"][
+        "path_fallback_first_nonexpired_theta_vs_future_segment_heading_p95_rad"
+    ] is None
+    assert planning_contract["key_metrics"][
+        "path_fallback_total_path_length_lt_1m_ratio"
+    ] == pytest.approx(1.0)
+    assert "planning_path_fallback_total_path_length_short" in planning_contract["warnings"]
+
+
 def test_path_fallback_lookahead_metric_overrides_short_segment_mismatch() -> None:
     rows = [
         {
@@ -564,7 +605,7 @@ def test_path_fallback_lookahead_metric_overrides_short_segment_mismatch() -> No
     ] == pytest.approx(0.01)
 
 
-def test_path_fallback_lookahead_mismatch_gets_specific_blocker() -> None:
+def test_path_fallback_short_lookahead_mismatch_does_not_override_segment_alignment() -> None:
     rows = [
         {
             "localization": {"heading": 0.0},
@@ -591,10 +632,14 @@ def test_path_fallback_lookahead_mismatch_gets_specific_blocker() -> None:
     planning_contract = report["contracts"]["planning_trajectory"]
 
     assert planning_contract["status"] == "fail"
-    assert "planning_path_fallback_segment_heading_mismatch" in planning_contract["blocking_reasons"]
+    assert "planning_path_fallback_segment_heading_mismatch" not in planning_contract["blocking_reasons"]
+    assert "planning_path_fallback_heading_error_high" in planning_contract["blocking_reasons"]
     assert planning_contract["key_metrics"][
         "path_fallback_segment_heading_metric_source"
-    ] == "first_nonexpired_theta_vs_future_lookahead"
+    ] == "first_nonexpired_theta_vs_future_segment"
+    assert planning_contract["key_metrics"][
+        "path_fallback_future_lookahead_heading_metric_reliable"
+    ] is False
     assert planning_contract["key_metrics"][
         "path_fallback_future_lookahead_distance_p95_m"
     ] == pytest.approx(0.42)
@@ -606,6 +651,45 @@ def test_path_fallback_lookahead_mismatch_gets_specific_blocker() -> None:
     ] == pytest.approx(1.0)
     assert "planning_path_fallback_lookahead_reverse_heading_present" in planning_contract["warnings"]
     assert "planning_path_fallback_lookahead_distance_short" in planning_contract["warnings"]
+
+
+def test_path_fallback_reliable_lookahead_mismatch_gets_specific_blocker() -> None:
+    rows = [
+        {
+            "localization": {"heading": 0.0},
+            "planning": {
+                "trajectory_point_count": 20,
+                "trajectory_type": "PATH_FALLBACK",
+                "first_trajectory_point_theta": 1.57,
+                "reference_line_count": 1,
+                "routing_segment_count": 1,
+                "trajectory_future_lookahead_distance_m": 2.5,
+            },
+            "routing": {"routing_segment_count": 1},
+            "computed": {
+                "localization_to_planning_first_heading_error_rad": 0.89,
+                "trajectory_first_nonexpired_theta_vs_future_segment_heading_rad": 0.01,
+                "trajectory_first_nonexpired_theta_vs_future_lookahead_heading_rad": 3.14,
+                "planning_reference_available": True,
+                "control_reference_available": False,
+            },
+        }
+    ]
+
+    report = analyze_apollo_reference_line_contract(rows)
+    planning_contract = report["contracts"]["planning_trajectory"]
+
+    assert planning_contract["status"] == "fail"
+    assert "planning_path_fallback_segment_heading_mismatch" in planning_contract["blocking_reasons"]
+    assert planning_contract["key_metrics"][
+        "path_fallback_segment_heading_metric_source"
+    ] == "first_nonexpired_theta_vs_future_lookahead"
+    assert planning_contract["key_metrics"][
+        "path_fallback_future_lookahead_heading_metric_reliable"
+    ] is True
+    assert planning_contract["key_metrics"][
+        "path_fallback_future_lookahead_distance_p95_m"
+    ] == pytest.approx(2.5)
 
 
 def test_normal_trajectory_heading_error_keeps_generic_reference_line_blocker() -> None:
@@ -637,7 +721,7 @@ def test_normal_trajectory_heading_error_keeps_generic_reference_line_blocker() 
     assert "planning_path_fallback_heading_error_high" not in planning_contract["blocking_reasons"]
 
 
-def test_ego_heading_divergence_gets_specific_blocker_when_planning_segment_is_aligned() -> None:
+def test_ego_heading_divergence_is_downstream_warning_when_planning_segment_is_aligned() -> None:
     rows = [
         {
             "localization": {"heading": 0.68},
@@ -663,8 +747,9 @@ def test_ego_heading_divergence_gets_specific_blocker_when_planning_segment_is_a
     report = analyze_apollo_reference_line_contract(rows)
     planning_contract = report["contracts"]["planning_trajectory"]
 
-    assert planning_contract["status"] == "fail"
-    assert "ego_heading_diverged_from_aligned_planning_reference" in planning_contract["blocking_reasons"]
+    assert planning_contract["status"] == "warn"
+    assert "ego_heading_diverged_from_aligned_planning_reference" in planning_contract["warnings"]
+    assert "ego_heading_diverged_from_aligned_planning_reference" not in planning_contract["blocking_reasons"]
     assert "planning_reference_heading_error_high" not in planning_contract["blocking_reasons"]
     assert planning_contract["key_metrics"]["trajectory_reference_heading_self_consistent"] is True
 
@@ -690,6 +775,59 @@ def test_missing_control_reference_is_separate_contract_insufficient_data() -> N
     report = analyze_apollo_reference_line_contract(rows)
 
     assert report["contracts"]["planning_trajectory"]["status"] == "pass"
+    assert report["contracts"]["control_reference"]["status"] == "insufficient_data"
+    assert "control_reference.control_reference_debug" in report["warnings"]
+
+
+def test_planning_and_hdmap_evaluable_with_missing_control_reference_is_warn() -> None:
+    rows = [
+        {
+            "timestamp": 0.0,
+            "localization": {"heading": 0.0},
+            "planning": {
+                "trajectory_point_count": 20,
+                "first_trajectory_point_theta": 0.01,
+                "trajectory_first_segment_heading": 0.0,
+                "lane_ids": ["15_1_1"],
+                "target_lane_ids": ["15_1_1"],
+                "reference_line_count": 1,
+                "reference_line_provider_status": "ready",
+                "routing_segment_count": 1,
+            },
+            "computed": {
+                "localization_to_planning_first_heading_error_rad": 0.01,
+                "trajectory_first_theta_vs_segment_heading_p95_rad": 0.01,
+                "planning_reference_available": True,
+                "control_reference_available": False,
+            },
+        }
+    ]
+    hdmap_rows = [
+        {
+            "timestamp": float(index) * 0.1,
+            "source": "apollo_hdmap_api",
+            "status": "ok",
+            "sample_type": "route",
+            "route_s": float(index),
+            "projection_s": float(index),
+            "nearest_lane_id": "15_1_1",
+            "heading_error_rad": 0.01,
+            "lateral_error_m": 0.05,
+        }
+        for index in range(50)
+    ]
+
+    report = analyze_apollo_reference_line_contract(
+        rows,
+        hdmap_projection_rows=hdmap_rows,
+        hdmap_projection_artifact_exists=True,
+        route_contract={"status": "pass"},
+    )
+
+    assert report["status"] == "warn"
+    assert report["contracts"]["planning_trajectory"]["status"] == "pass"
+    assert report["contracts"]["apollo_hdmap_projection"]["status"] == "pass"
+    assert report["contracts"]["apollo_hdmap_projection_lane_compatibility"]["status"] == "pass"
     assert report["contracts"]["control_reference"]["status"] == "insufficient_data"
     assert "control_reference.control_reference_debug" in report["warnings"]
 

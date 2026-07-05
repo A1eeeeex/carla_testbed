@@ -7,11 +7,13 @@ truths, interface contracts, and verified findings still live under
 
 ## Current Goal
 
-The repository is a CARLA-based simulation harness for autonomous driving
-experiments, currently prioritizing a CARLA + Apollo ground-truth MVP closed
-loop. The immediate engineering target is not a polished demo; it is a
-repeatable platform where CARLA state, scenario intent, backend inputs/outputs,
-control application, artifacts, and metrics have explicit boundaries.
+The repository is a CARLA-based multi-backend simulation harness for autonomous
+driving experiments, currently prioritizing Phase 1 fixed-scenario delivery:
+same-scenario pairs for ApolloBackend and the PlanningControlBackend category
+across the five P0 cases. The immediate engineering target is not a polished
+demo or an Apollo natural-driving claim; it is a repeatable platform where
+CARLA state, scenario intent, backend inputs/outputs, control application,
+artifacts, and metrics have explicit boundaries.
 
 Current support is intentionally layered:
 
@@ -19,9 +21,9 @@ Current support is intentionally layered:
   control contracts, recording, metrics, and run artifacts.
 - Baseline/demo: follow-stop remains a legacy baseline for smoke checks and
   demonstrations.
-- External backend: ROS2/`tbio` is transitional; Apollo/CyberRT has an MVP mock
-  backend and a lazy CyberRT skeleton, but real Apollo closed-loop promotion
-  still requires local runtime evidence.
+- External backend: ROS2/`tbio` is transitional; Apollo/CyberRT is the current
+  reference AD-stack backend for Phase 1, but real Apollo capability promotion
+  still requires local runtime evidence and no-assist artifacts.
 
 Autoware remains legacy experimental support and is not the current equal
 priority target.
@@ -111,14 +113,25 @@ compatibility, but new platform behavior should not be added to
 
 ## Backend Boundary
 
-The canonical external-stack boundary is:
+The active Phase 1 execution boundary is:
+
+```text
+carla_testbed/backends/base.py
+StackBackend + StackContract + LaunchPlan
+```
+
+`compile_run_plan`, `execute_run_plan`, the Phase 1 pair runner, and the P0
+matrix use this facade today. It records metadata, launch commands, and claim
+boundaries without importing CARLA/Apollo/Autoware runtime modules.
+
+The longer-term external-stack lifecycle adapter target is:
 
 ```text
 carla_testbed/adapters/base.py
 ADStackBackend
 ```
 
-The core runner should depend on this neutral lifecycle:
+Runtime migrations should eventually depend on this neutral lifecycle:
 
 1. `prepare(context)`
 2. `start()`

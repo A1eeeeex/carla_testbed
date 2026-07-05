@@ -345,6 +345,10 @@ def analyze_control_health_run_dir(
     timeseries_latency = _percentile(_series(rows, "control_latency_ms"), 0.95)
     decode_latency = _num(control_decode_debug.get("control_latency_p95_ms"))
     control_latency_p95_ms = _first_number(summary_latency, timeseries_latency, decode_latency)
+    applied_switch_metrics = _prefer_decoded_applied_switch_metrics(
+        _applied_throttle_brake_switch_metrics(rows),
+        control_decode_debug,
+    )
     report_metrics = {
         "control_latency_p95_ms": control_latency_p95_ms,
         "control_latency_source": _control_latency_source(
@@ -356,7 +360,7 @@ def analyze_control_health_run_dir(
         **control_apply_delay,
         **_route_progress_metrics(rows),
         "brake_throttle_conflict_frames": _brake_throttle_conflicts(rows),
-        **_applied_throttle_brake_switch_metrics(rows),
+        **applied_switch_metrics,
         "mapped_applied_steer_abs_error_p95": steer_error["best_lag_abs_error_p95"],
         "mapped_applied_steer_abs_error_p95_zero_lag": steer_error["zero_lag_abs_error_p95"],
         "mapped_applied_steer_best_lag_frames": steer_error["best_lag_frames"],
@@ -841,6 +845,16 @@ def _oscillation_decomposition(
         decoded=control_decode_debug.get("bridge_mapped_command_layer"),
         source_name=trace_source_name,
     )
+    decoded_applied = control_decode_debug.get("carla_applied_command_layer")
+    if isinstance(decoded_applied, Mapping) and decoded_applied.get("status") != "insufficient_data":
+        applied = dict(decoded_applied)
+        applied["source"] = trace_source_name
+    else:
+        applied = _prefer_decode_layer(
+            current=applied,
+            decoded=decoded_applied,
+            source_name=trace_source_name,
+        )
     cadence = _bridge_apply_cadence_layer(control_bridge_log, thresholds)
     layers = {
         "apollo_raw_command": raw,
@@ -2162,7 +2176,32 @@ def _applied_throttle_brake_switch_metrics(rows: Sequence[Mapping[str, Any]]) ->
         "applied_throttle_frames": states.count("throttle"),
         "applied_brake_frames": states.count("brake"),
         "applied_throttle_brake_conflict_frames": states.count("conflict"),
+        "applied_throttle_brake_switch_source": "timeseries",
     }
+
+
+def _prefer_decoded_applied_switch_metrics(
+    current: Mapping[str, Any],
+    control_decode_debug: Mapping[str, Any],
+) -> dict[str, Any]:
+    metrics = dict(current)
+    layer = control_decode_debug.get("carla_applied_command_layer")
+    if not isinstance(layer, Mapping):
+        return metrics
+    if layer.get("status") == "insufficient_data":
+        return metrics
+    switch_count = _num(layer.get("throttle_brake_switch_count"))
+    conflict_frames = _num(layer.get("throttle_brake_conflict_frames"))
+    sample_count = _num(layer.get("sample_count"))
+    if switch_count is None and conflict_frames is None:
+        return metrics
+    if switch_count is not None:
+        metrics["applied_throttle_brake_switch_count"] = switch_count
+    if conflict_frames is not None:
+        metrics["applied_throttle_brake_conflict_frames"] = conflict_frames
+    metrics["applied_throttle_brake_switch_source"] = _trace_source_name(control_decode_debug)
+    metrics["applied_throttle_brake_switch_sample_count"] = sample_count
+    return metrics
 
 
 def _control_application_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -2865,6 +2904,14 @@ def _analyze_control_decode_debug(
         steer_fields=("bridge_steer_mapped", "mapped_carla_steer_cmd", "commanded_steer"),
         max_switch_count=DEFAULT_THRESHOLDS["max_mapped_throttle_brake_switch_count"],
     )
+    applied_layer = _command_oscillation_layer(
+        trace_rows,
+        layer="carla_applied_command",
+        throttle_fields=("throttle_applied",),
+        brake_fields=("brake_applied",),
+        steer_fields=("carla_steer_applied",),
+        max_switch_count=DEFAULT_THRESHOLDS["max_applied_throttle_brake_switch_count"],
+    )
     nonzero_mapped = sum(
         1
         for row in trace_rows
@@ -2906,6 +2953,7 @@ def _analyze_control_decode_debug(
         "first_nonzero_mapped_control_ts_sec": first_nonzero_mapped_ts,
         "apollo_raw_command_layer": raw_layer,
         "bridge_mapped_command_layer": mapped_layer,
+        "carla_applied_command_layer": applied_layer,
         "throttle_brake_mutual_exclusion_applied_count": sum(
             1 for row in trace_rows if _parse_bool(row.get("throttle_brake_mutual_exclusion_applied")) is True
         ),
@@ -3087,26 +3135,26 @@ def _control_decode_payload_to_trace_row(payload: Mapping[str, Any]) -> dict[str
         ),
         "throttle_mapped": _first_number(
             payload.get("mapped_throttle_cmd"),
-            bridge_mapped_map.get("throttle"),
             bridge_mapped_map.get("mapped_throttle_cmd"),
             output_map.get("mapped_throttle_cmd"),
+            bridge_mapped_map.get("throttle"),
             payload.get("commanded_throttle"),
             output_map.get("throttle"),
         ),
         "brake_mapped": _first_number(
             payload.get("mapped_brake_cmd"),
-            bridge_mapped_map.get("brake"),
             bridge_mapped_map.get("mapped_brake_cmd"),
             output_map.get("mapped_brake_cmd"),
+            bridge_mapped_map.get("brake"),
             payload.get("commanded_brake"),
             output_map.get("brake"),
         ),
         "bridge_steer_mapped": _first_number(
             payload.get("mapped_carla_steer_cmd"),
-            bridge_mapped_map.get("steer"),
             bridge_mapped_map.get("mapped_carla_steer_cmd"),
             output_map.get("mapped_carla_steer_cmd"),
             payload.get("commanded_steer"),
+            bridge_mapped_map.get("steer"),
             output_map.get("steer"),
         ),
         "throttle_applied": _first_number(
@@ -3422,7 +3470,7 @@ def _steering_mapping_saturation(rows: Sequence[Mapping[str, Any]]) -> dict[str,
             "raw_steer",
             "steering_normalized_for_mapping",
         )
-        mapped = _first_row_number(row, "bridge_steer_mapped", "mapped_carla_steer_cmd")
+        mapped = _first_row_number(row, "mapped_carla_steer_cmd", "bridge_steer_mapped")
         applied = _first_row_number(row, "carla_steer_applied")
         if normalized is not None:
             normalized_values.append(float(normalized))

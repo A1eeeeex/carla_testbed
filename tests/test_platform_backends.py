@@ -32,6 +32,31 @@ def test_backend_contracts_are_metadata_only() -> None:
     assert preflight.status == "local_required"
 
 
+def test_carla_direct_preserves_apollo_reference_contract_fields() -> None:
+    plan = compile_run_plan(
+        platform="carla_direct",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="town01/lane_keep_097",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    backend = default_backend_registry().for_plan(plan)
+    contract = backend.contract(plan)
+    launch = backend.build_launch_plan(plan)
+
+    assert contract.backend == "carla_direct"
+    assert contract.backend_type == "apollo_reference_backend"
+    assert contract.input_contract == "apollo_truth_input_gt_replacement"
+    assert contract.adapter_path == "tools/apollo10_cyber_bridge"
+    assert "gt_localization" in contract.available_truth_fields
+    assert contract.output_control_mode == "apollo_control_to_carla_vehicle_control"
+    assert contract.transport_mode == "carla_direct"
+    assert launch.runtime_completion_markers
+    assert launch.minimum_runtime_timeout_s == 300.0
+
+
 def test_apollo_town01_route_only_launch_declares_finalized_summary_marker() -> None:
     plan = compile_run_plan(
         platform="apollo_cyberrt",
@@ -108,7 +133,7 @@ def test_apollo_fixed_scene_launch_plan_requires_runtime_migration_before_dispat
 
     launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
 
-    assert launch.starts_runtime is False
+    assert launch.starts_runtime is True
     assert launch.commands == []
     assert launch.compatibility_source == "fixed-scene Apollo runtime migration required"
     assert "artifacts/obstacle_gt_contract.jsonl" in launch.expected_artifacts

@@ -48,6 +48,34 @@ def test_execute_run_plan_without_runtime_command_completes_offline_backend(tmp_
     assert summary["preflight"]["backend"] == "dummy"
 
 
+def test_unsupported_apollo_fixed_scene_materializes_backend_not_ready(tmp_path: Path) -> None:
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm="apollo/apollo10_carla_gt",
+        scenario="baguang/cut_in_35kph_left_to_right_10m",
+        recording="none",
+        gate="claim_natural_driving",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    result = execute_run_plan(plan, run_dir=tmp_path / "apollo_unsupported", dry_run=False)
+
+    assert result.status == "missing_command"
+    assert result.exit_code == 2
+    assert result.dispatch["command"]["warnings"] == ["launch plan starts runtime but has no command"]
+    phase1_status = json.loads(
+        (
+            tmp_path
+            / "apollo_unsupported"
+            / "analysis"
+            / "phase1_status"
+            / "phase1_status.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert phase1_status["status"] == "invalid"
+    assert phase1_status["failure_reason"] == "backend_not_ready"
+
+
 def test_cli_run_plan_default_uses_executor_instead_of_not_implemented(tmp_path: Path) -> None:
     plan = compile_run_plan(
         platform="dummy",

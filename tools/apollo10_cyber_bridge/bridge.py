@@ -34,7 +34,10 @@ from carla_testbed.adapters.apollo.vehicle_reference import (
     resolve_localization_back_offset_m as resolve_vehicle_reference_localization_back_offset_m,
 )
 from carla_testbed.analysis.apollo_reference_line_contract import build_reference_line_contract_event
-from tools.apollo10_cyber_bridge.control_apply_trace import build_control_apply_trace_payload
+from tools.apollo10_cyber_bridge.control_apply_trace import (
+    ControlCriticalWindowRecorder,
+    build_control_apply_trace_payload,
+)
 
 # Apollo 10.0 shipped pb2 files are not compatible with protobuf>=4 C++ descriptors.
 # Force the pure-Python runtime inside the bridge process so planning/traffic-light
@@ -1705,6 +1708,9 @@ class ApolloGtBridge:
         self.topic_publish_stats_path = self.artifacts_dir / "topic_publish_stats.jsonl"
         self.publish_gap_trace_path = self.artifacts_dir / "publish_gap_trace.jsonl"
         self.control_apply_trace_path = self.artifacts_dir / "control_apply_trace.jsonl"
+        self.control_critical_window_trace_path = (
+            self.artifacts_dir / "control_critical_window_trace.jsonl"
+        )
         self.obstacle_gt_contract_path = self.artifacts_dir / "obstacle_gt_contract.jsonl"
         self.obstacle_contract_debug_path = self.obstacle_gt_contract_path
         self._front_actor_dimension_cache: Dict[int, Dict[str, float]] = {}
@@ -1770,6 +1776,33 @@ class ApolloGtBridge:
             1,
             int(bridge_cfg.get("claim_evidence_artifact_sample_stride", 1) or 1),
         )
+        critical_trace_cfg = bridge_cfg.get("control_critical_window_trace", {}) or {}
+        self.control_critical_window_trace_enabled = bool(
+            critical_trace_cfg.get(
+                "enabled",
+                bridge_cfg.get("control_critical_window_trace_enabled", True),
+            )
+        )
+        self._control_critical_window_recorder = ControlCriticalWindowRecorder(
+            enabled=self.control_critical_window_trace_enabled,
+            pre_samples=int(critical_trace_cfg.get("pre_samples", 20) or 20),
+            post_samples=int(critical_trace_cfg.get("post_samples", 40) or 40),
+            max_windows=int(critical_trace_cfg.get("max_windows", 3) or 3),
+            max_rows=int(critical_trace_cfg.get("max_rows", 240) or 240),
+            route_lateral_error_threshold_m=float(
+                critical_trace_cfg.get("route_lateral_error_threshold_m", 0.5) or 0.5
+            ),
+            simple_lat_lateral_error_threshold_m=float(
+                critical_trace_cfg.get("simple_lat_lateral_error_threshold_m", 0.5) or 0.5
+            ),
+            raw_steer_threshold=float(critical_trace_cfg.get("raw_steer_threshold", 0.85) or 0.85),
+            matched_point_distance_threshold_m=float(
+                critical_trace_cfg.get("matched_point_distance_threshold_m", 8.0) or 8.0
+            ),
+            target_point_distance_threshold_m=float(
+                critical_trace_cfg.get("target_point_distance_threshold_m", 8.0) or 8.0
+            ),
+        )
         self._stage5_debug_artifact_sample_counters: Counter[str] = Counter()
         self._reference_debug_artifact_sample_counters: Counter[str] = Counter()
         self._control_debug_artifact_sample_counters: Counter[str] = Counter()
@@ -1809,6 +1842,7 @@ class ApolloGtBridge:
             "claim_evidence_artifact_seen_counts": {},
             "claim_evidence_artifact_sampled_out_counts": {},
             "claim_evidence_artifact_written_counts": {},
+            "control_critical_window_trace": self._control_critical_window_recorder.stats(),
             "flush_count": 0,
         }
         self._start_artifact_writer()
@@ -3324,12 +3358,26 @@ class ApolloGtBridge:
 
     def _record_control_apply_trace(self, row: Dict[str, Any], measured: Dict[str, Any]) -> None:
         path = getattr(self, "control_apply_trace_path", None)
-        if path is None:
-            return
-        if not self._should_write_claim_evidence_artifact("control_apply_trace"):
+        should_write_sampled = bool(path is not None) and self._should_write_claim_evidence_artifact(
+            "control_apply_trace"
+        )
+        critical_recorder = getattr(self, "_control_critical_window_recorder", None)
+        critical_enabled = bool(
+            critical_recorder is not None
+            and getattr(critical_recorder, "enabled", False)
+            and getattr(self, "control_critical_window_trace_path", None) is not None
+        )
+        if not should_write_sampled and not critical_enabled:
             return
         payload = build_control_apply_trace_payload(row, measured, self.stats)
-        self._append_jsonl(Path(path), payload)
+        if critical_enabled:
+            critical_rows = critical_recorder.observe(payload)
+            buffering = self.stats.setdefault("artifact_buffering", {})
+            buffering["control_critical_window_trace"] = critical_recorder.stats()
+            for critical_row in critical_rows:
+                self._append_jsonl(Path(self.control_critical_window_trace_path), critical_row)
+        if should_write_sampled:
+            self._append_jsonl(Path(path), payload)
 
     def _gt_sample_key_from_odom(
         self,
@@ -7808,7 +7856,15 @@ class ApolloGtBridge:
         desired = self.stats.get("last_control_out", {}) or {}
         throttle_cmd_pct = float(desired.get("throttle", 0.0)) * 100.0
         brake_cmd_pct = float(desired.get("brake", 0.0)) * 100.0
-        steer_cmd_pct = float(desired.get("steer", 0.0)) * 100.0
+        steer_sign = float(desired.get("steer_sign", self.steer_sign) or 1.0)
+        steer_feedback_sign = -1.0 if steer_sign < 0.0 else 1.0
+        carla_steer_cmd_pct = float(desired.get("steer", 0.0)) * 100.0
+        apollo_steer_cmd = desired.get("steering_normalized_for_mapping")
+        if apollo_steer_cmd is None:
+            apollo_steer_cmd = desired.get("steering_selected_normalized")
+        if apollo_steer_cmd is None:
+            apollo_steer_cmd = float(desired.get("steer", 0.0)) * steer_feedback_sign
+        steer_cmd_pct = float(apollo_steer_cmd) * 100.0
         measured = measured_control or {}
         throttle_pct = (
             float(measured.get("throttle", 0.0)) * 100.0
@@ -7821,23 +7877,35 @@ class ApolloGtBridge:
             else 0.0
         )
         if measured.get("available") and measured.get("steer_feedback_pct") is not None:
-            steer_pct = float(measured.get("steer_feedback_pct", 0.0))
+            carla_steer_pct = float(measured.get("steer_feedback_pct", 0.0))
         else:
-            steer_pct = (
+            carla_steer_pct = (
                 float(measured.get("steer", 0.0)) * 100.0
                 if measured.get("available")
                 else 0.0
             )
+        # Apollo Chassis steering feedback is consumed by Apollo Control in
+        # Apollo control-command sign semantics. CARLA applied steer remains in
+        # CARLA sign semantics and is preserved separately for artifacts.
+        steer_pct = carla_steer_pct * steer_feedback_sign
         self.stats["last_control_feedback"] = {
             "desired": {
                 "throttle_pct": throttle_cmd_pct,
                 "brake_pct": brake_cmd_pct,
                 "steer_pct": steer_cmd_pct,
+                "carla_steer_pct": carla_steer_cmd_pct,
+                "steering_percentage_frame": "apollo_control",
+                "carla_steering_percentage_frame": "carla_control",
+                "steer_feedback_sign": steer_feedback_sign,
             },
             "measured": {
                 "throttle_pct": throttle_pct,
                 "brake_pct": brake_pct,
                 "steer_pct": steer_pct,
+                "carla_steer_pct": carla_steer_pct,
+                "steering_percentage_frame": "apollo_control",
+                "carla_steering_percentage_frame": "carla_control",
+                "steer_feedback_sign": steer_feedback_sign,
                 "available": bool(measured.get("available", False)),
                 "source": measured.get("source", "unavailable"),
                 "steer_angle_deg": measured.get("steer_feedback_deg"),
@@ -7884,9 +7952,15 @@ class ApolloGtBridge:
             "throttle_percentage": throttle_pct,
             "brake_percentage": brake_pct,
             "steering_percentage": steer_pct,
+            "steering_percentage_frame": "apollo_control",
+            "carla_steering_percentage": carla_steer_pct,
+            "carla_steering_percentage_frame": "carla_control",
+            "steering_feedback_sign": steer_feedback_sign,
             "throttle_percentage_cmd": throttle_cmd_pct,
             "brake_percentage_cmd": brake_cmd_pct,
             "steering_percentage_cmd": steer_cmd_pct,
+            "carla_steering_percentage_cmd": carla_steer_cmd_pct,
+            "steering_percentage_cmd_frame": "apollo_control",
             "feedback_source": measured.get("source", "unavailable"),
             "feedback_available": bool(measured.get("available", False)),
         }
@@ -8833,7 +8907,8 @@ class ApolloGtBridge:
             "selected_signed_acceleration_field": base_mapping.get("selected_signed_acceleration_field", ""),
             "mapped_throttle_cmd": base_mapping.get("mapped_throttle_cmd", throttle_cmd),
             "mapped_brake_cmd": base_mapping.get("mapped_brake_cmd", brake_cmd),
-            "mapped_carla_steer_cmd": base_mapping.get("mapped_carla_steer_cmd", steer),
+            "base_mapped_carla_steer_cmd": base_mapping.get("mapped_carla_steer_cmd"),
+            "mapped_carla_steer_cmd": steer,
             "straight_lane_zero_steer_applied": straight_lane_zero_steer_applied,
             "low_speed_steer_guard_applied": low_speed_steer_guard_applied,
             "low_speed_sustained_guard_enabled": self.low_speed_sustained_guard_enabled,
@@ -9151,6 +9226,8 @@ class ApolloGtBridge:
                 {
                     "ts_sec": control_ts,
                     "mapping_mode": self.actuator_mapping_mode,
+                    "steer_scale": self.stats["last_control_out"].get("steer_scale", self.steer_scale),
+                    "steering_sign": self.stats["last_control_out"].get("steer_sign", self.steer_sign),
                     "selected_steering_field": steer_source,
                     "steering_field_priority": self.stats["last_control_in"].get("steering_field_priority", []),
                     "steering_normalization_mode": steer_normalization_mode,
@@ -12208,6 +12285,33 @@ class ApolloGtBridge:
                             "chassis_feedback.steering_percentage",
                             "publish_row",
                         ),
+                        "chassis_steering_percentage_frame": chassis_feedback.get(
+                            "steering_percentage_frame", ""
+                        ),
+                        "chassis_carla_steering_percentage": self._coerce_float(
+                            chassis_feedback.get("carla_steering_percentage"),
+                            float("nan"),
+                            "chassis_feedback.carla_steering_percentage",
+                            "publish_row",
+                        ),
+                        "chassis_steering_feedback_sign": self._coerce_float(
+                            chassis_feedback.get("steering_feedback_sign"),
+                            float("nan"),
+                            "chassis_feedback.steering_feedback_sign",
+                            "publish_row",
+                        ),
+                        "chassis_steering_percentage_cmd": self._coerce_float(
+                            chassis_feedback.get("steering_percentage_cmd"),
+                            float("nan"),
+                            "chassis_feedback.steering_percentage_cmd",
+                            "publish_row",
+                        ),
+                        "chassis_carla_steering_percentage_cmd": self._coerce_float(
+                            chassis_feedback.get("carla_steering_percentage_cmd"),
+                            float("nan"),
+                            "chassis_feedback.carla_steering_percentage_cmd",
+                            "publish_row",
+                        ),
                         "localization_timestamp": ts_sec,
                         "chassis_timestamp": ts_sec,
                         "planning_timestamp": self._coerce_float(
@@ -12281,6 +12385,12 @@ class ApolloGtBridge:
                         ),
                         "mapped_carla_steer_cmd": self._coerce_float(
                             desired_out.get("mapped_carla_steer_cmd"), float("nan"), "desired_out.mapped_carla_steer_cmd", "publish_row"
+                        ),
+                        "base_mapped_carla_steer_cmd": self._coerce_float(
+                            desired_out.get("base_mapped_carla_steer_cmd"),
+                            float("nan"),
+                            "desired_out.base_mapped_carla_steer_cmd",
+                            "publish_row",
                         ),
                         "target_accel_mps2": self._coerce_float(
                             desired_out.get("target_accel_mps2"), float("nan"), "desired_out.target_accel_mps2", "publish_row"

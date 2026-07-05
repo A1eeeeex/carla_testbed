@@ -173,7 +173,11 @@ def _ensure_phase1_status_after_attempt(
 
     if dry_run:
         return {}
-    if not adapter_result.command.command:
+    if (
+        not adapter_result.command.command
+        and adapter_result.command.status == "completed"
+        and adapter_result.exit_code == 0
+    ):
         return {}
     status_path = run_dir / "analysis" / "phase1_status" / "phase1_status.json"
     if status_path.exists() and not _phase1_status_needs_refresh(status_path, artifact_normalization):

@@ -76,3 +76,30 @@ def test_cli_suite_dry_run_writes_manifest_and_matrix(tmp_path: Path) -> None:
     assert (tmp_path / "suite_manifest.json").exists()
     assert (tmp_path / "run_matrix.csv").exists()
     assert len(list((tmp_path / "plans").glob("*.plan.resolved.yaml"))) == 16
+
+
+def test_cli_suite_run_legacy_dispatch_does_not_report_runtime_success(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "carla_testbed",
+            "suite",
+            "run",
+            "--suite",
+            "configs/suites/town01_natural_driving.platform.yaml",
+            "--out",
+            str(tmp_path),
+            "--legacy-dispatch",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "real RunPlan suite dispatch is not implemented" in result.stderr
+    manifest = json.loads((tmp_path / "suite_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["action"] == "run"
+    assert manifest["dry_run"] is True
+    assert manifest["starts_runtime"] is False

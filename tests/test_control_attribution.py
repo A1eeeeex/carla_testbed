@@ -36,12 +36,25 @@ def _write_rows(path: Path, rows: list[dict[str, object]]) -> Path:
         "steering_sign",
         "actuator_mapping_mode",
         "calibration_profile_id",
+        "throttle_brake_mutual_exclusion_applied",
+        "throttle_brake_hysteresis_held",
+        "startup_boost_applied",
+        "terminal_stop_hold_active",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+    return path
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
     return path
 
 
@@ -70,6 +83,10 @@ def _base_rows() -> list[dict[str, object]]:
                 "steering_sign": 1,
                 "actuator_mapping_mode": "legacy",
                 "calibration_profile_id": "control_actuation_draft",
+                "throttle_brake_mutual_exclusion_applied": False,
+                "throttle_brake_hysteresis_held": False,
+                "startup_boost_applied": False,
+                "terminal_stop_hold_active": False,
             }
         )
     return rows
@@ -110,6 +127,31 @@ def test_source_control_semantics_strange_is_attributed_to_source(tmp_path: Path
     report = _analyze(tmp_path, rows)
     assert report["attribution"]["dominant_breakpoint"] == "source_control_semantics"
     assert report["verdict"]["status"] == "fail"
+
+
+def test_high_amplitude_raw_steer_sign_switching_is_source_control_semantics(
+    tmp_path: Path,
+) -> None:
+    rows = _base_rows()
+    raw_values = [0.52, -0.50, 0.56, -0.48, 0.51, -0.46]
+    rows = (rows * 2)[: len(raw_values)]
+    for row, raw in zip(rows, raw_values):
+        row["apollo_steer_raw"] = raw
+        row["steer_scale"] = 1.0
+        row["steering_sign"] = -1.0
+        row["bridge_steer_mapped"] = -raw
+        row["carla_steer_applied"] = -raw
+        row["ego_yaw_rate"] = -raw * 0.2
+
+    report = _analyze(tmp_path, rows)
+
+    source = report["attribution"]["source_control_semantics"]
+    assert report["attribution"]["dominant_breakpoint"] == "source_control_semantics"
+    assert report["verdict"]["failure_reason"] == "source_control_semantics"
+    assert source["reason"] == "source_steer_high_amplitude_sign_switching"
+    assert source["apollo_steer_raw_sign_switch_count"] == 5
+    assert report["attribution"]["raw_to_mapped_steer_consistency"]["status"] == "pass"
+    assert report["attribution"]["mapped_to_applied_steer_consistency"]["status"] == "pass"
 
 
 def test_raw_ok_mapped_wrong_is_bridge_mapping(tmp_path: Path) -> None:
@@ -177,6 +219,91 @@ def test_longitudinal_raw_mapped_mismatch_is_bridge_mapping(tmp_path: Path) -> N
     assert report["attribution"]["dominant_breakpoint"] == "bridge_mapping"
     assert report["attribution"]["throttle_raw_mapped_applied_consistency"]["status"] == "fail"
     assert report["verdict"]["status"] == "fail"
+
+
+def test_longitudinal_raw_mapped_mismatch_with_policy_is_longitudinal_policy(tmp_path: Path) -> None:
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["throttle_raw"] = 0.2
+        row["throttle_mapped"] = 0.6
+        row["throttle_applied"] = 0.6
+        row["ego_yaw_rate"] = 0.04
+        row["throttle_brake_mutual_exclusion_applied"] = index < 2
+        row["throttle_brake_hysteresis_held"] = index < 2
+    report = _analyze(tmp_path, rows)
+    assert report["attribution"]["dominant_breakpoint"] == "bridge_longitudinal_policy"
+    assert report["attribution"]["control_policy_intervention"]["status"] == "active"
+    assert report["attribution"]["control_policy_intervention"]["source"] == "control_trace"
+    assert report["attribution"]["control_policy_intervention"]["row_policy_count"] == 4
+    assert report["verdict"]["failure_reason"] == "bridge_longitudinal_policy"
+
+
+def test_async_control_apply_trace_uses_auxiliary_decode_for_longitudinal_mapping(tmp_path: Path) -> None:
+    primary = _write_jsonl(
+        tmp_path / "control_apply_trace.jsonl",
+        [
+            {
+                "apollo_raw": {"throttle": 0.2, "brake": 0.0, "steer": 0.1},
+                "bridge_mapped": {
+                    "mapped_throttle_cmd": 0.0,
+                    "mapped_brake_cmd": 0.145,
+                    "mapped_carla_steer_cmd": 0.1,
+                    "throttle_brake_mutual_exclusion_applied": True,
+                    "throttle_brake_hysteresis_held": True,
+                },
+                "carla_steer_applied": 0.1,
+                "ego_yaw_rate": 0.02,
+                "throttle_applied": 0.0,
+                "brake_applied": 0.145,
+                "steer_scale": 1.0,
+                "steering_sign": 1.0,
+                "throttle_scale": 1.5,
+                "brake_scale": 1.0,
+                "brake_deadzone": 0.05,
+            }
+        ],
+    )
+    auxiliary = _write_jsonl(
+        tmp_path / "control_decode_debug.jsonl",
+        [
+            {
+                "parsed_control": {"throttle": 0.2, "brake": 0.0, "steer": 0.1},
+                "output_to_carla": {
+                    "throttle_before_mutual_exclusion": 0.3,
+                    "brake_before_mutual_exclusion": 0.0,
+                    "mapped_throttle_cmd": 0.3,
+                    "mapped_brake_cmd": 0.0,
+                    "mapped_carla_steer_cmd": 0.1,
+                    "throttle_brake_mutual_exclusion_applied": False,
+                    "throttle_brake_hysteresis_held": False,
+                },
+                "steer_scale": 1.0,
+                "steering_sign": 1.0,
+                "throttle_scale": 1.5,
+                "brake_scale": 1.0,
+                "brake_deadzone": 0.05,
+            }
+        ],
+    )
+    bridge_health = tmp_path / "bridge_health_summary.json"
+    bridge_health.write_text(json.dumps({"control_apply_path": "ros2_control_bridge"}), encoding="utf-8")
+
+    report = analyze_control_attribution(
+        primary,
+        bridge_health_json=bridge_health,
+        auxiliary_control_decode_json=auxiliary,
+    )
+
+    assert report["attribution"]["dominant_breakpoint"] == "none"
+    assert report["verdict"]["status"] == "warn"
+    assert "throttle_raw_to_mapped_consistency_from_auxiliary_control_decode" in report["warnings"]
+    policy = report["attribution"]["control_policy_intervention"]
+    assert policy["status"] == "none"
+    assert policy["primary_async_observation"]["status"] == "active"
+    throttle = report["attribution"]["throttle_raw_mapped_applied_consistency"]
+    assert throttle["source"] == "auxiliary_control_decode"
+    assert throttle["primary_trace_status"] == "fail"
+    assert throttle["raw_to_mapped_status"] == "pass"
 
 
 def test_applied_ok_yaw_rate_no_response_is_vehicle_response(tmp_path: Path) -> None:
@@ -619,7 +746,7 @@ def test_run_dir_prefers_control_apply_trace_over_sparse_timeseries(tmp_path: Pa
 
     assert report["source"]["control_input_path"].endswith("artifacts/control_apply_trace.jsonl")
     assert report["resolved_fields"]["apollo_steer_raw"] == "apollo_raw.steer"
-    assert report["resolved_fields"]["bridge_steer_mapped"] == "bridge_mapped.steer"
+    assert report["resolved_fields"]["bridge_steer_mapped"] == "bridge_mapped.mapped_carla_steer_cmd"
     assert report["control_chain_status"] == "apollo_control_attributed"
     assert report["verdict"]["status"] == "pass"
 
@@ -665,4 +792,148 @@ def test_ros2_control_apply_trace_marks_same_row_applied_longitudinal_diagnostic
     throttle = report["attribution"]["throttle_raw_mapped_applied_consistency"]
     assert throttle["status"] == "pass"
     assert throttle["mapped_to_applied_status"] == "diagnostic_only_async_ros2_control_bridge"
+    assert report["attribution"]["dominant_breakpoint"] == "none"
+
+
+def test_control_apply_trace_uses_final_carla_command_not_stale_flat_mapped_field(tmp_path: Path) -> None:
+    trace = tmp_path / "control_apply_trace.jsonl"
+    rows = []
+    for index in range(3):
+        rows.append(
+            {
+                "schema_version": "control_apply_trace.v1",
+                "timestamp": 20.0 + index,
+                "apollo_steer_raw": 0.2,
+                # Legacy traces can contain a stale flat value if live bridge
+                # stats updated while the row snapshot was being serialized.
+                "bridge_steer_mapped": -1.0,
+                "carla_steer_applied": 0.31,
+                "ego_yaw_rate": 0.02,
+                "steer_scale": 1.0,
+                "steering_sign": -1.0,
+                "bridge_mapped": {
+                    "steer_pre_policy": -0.2,
+                    "steer": -1.0,
+                    "mapped_carla_steer_cmd": 0.31,
+                },
+                "carla_applied": {"steer": 0.31},
+                "apollo_raw": {"steer": 0.2, "throttle": 0.1, "brake": 0.0},
+                "throttle_raw": 0.1,
+                "throttle_mapped": 0.1,
+                "throttle_applied": 0.1,
+                "brake_raw": 0.0,
+                "brake_mapped": 0.0,
+                "brake_applied": 0.0,
+            }
+        )
+    trace.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    report = analyze_control_attribution(trace)
+
+    assert report["resolved_fields"]["bridge_steer_pre_policy"] == "bridge_mapped.steer_pre_policy"
+    assert report["resolved_fields"]["bridge_steer_mapped"] == "bridge_mapped.mapped_carla_steer_cmd"
+    assert report["attribution"]["raw_to_mapped_steer_consistency"]["status"] == "pass"
+    assert report["attribution"]["mapped_to_applied_steer_consistency"]["status"] == "pass"
+    assert report["attribution"]["dominant_breakpoint"] == "none"
+
+
+def test_bridge_control_decode_honors_recorded_steering_sign(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    rows = []
+    for index in range(4):
+        rows.append(
+            {
+                "ts_sec": 30.0 + index,
+                "raw_steer": -0.2,
+                "commanded_steer_pre_lateral_guards": 0.2,
+                "commanded_steer": 0.2,
+                "mapped_carla_steer_cmd": 0.2,
+                "carla_steer_applied": 0.2,
+                "ego_yaw_rate": 0.02,
+                "raw_throttle": 0.1,
+                "mapped_throttle_cmd": 0.1,
+                "throttle_applied": 0.1,
+                "raw_brake": 0.0,
+                "mapped_brake_cmd": 0.0,
+                "brake_applied": 0.0,
+                "steer_scale": 1.0,
+                "steering_sign": -1.0,
+            }
+        )
+    (artifacts / "bridge_control_decode.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(json.dumps({"control_source": "/apollo/control"}), encoding="utf-8")
+
+    report = analyze_control_attribution_run_dir(run_dir)
+
+    assert report["source"]["control_input_path"].endswith("artifacts/bridge_control_decode.jsonl")
+    assert report["steer_scale"] == 1.0
+    assert report["steering_sign"] == -1.0
+    assert report["attribution"]["raw_to_mapped_steer_consistency"]["status"] == "pass"
+    assert report["attribution"]["mapped_to_applied_steer_consistency"]["status"] == "pass"
+    assert report["attribution"]["dominant_breakpoint"] == "none"
+
+
+def test_run_dir_uses_bridge_decode_for_raw_to_mapped_when_apply_trace_is_misaligned(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "control_apply_trace.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "schema_version": "control_apply_trace.v1",
+                    "timestamp": 40.0 + index,
+                    "apollo_steer_raw": -0.05,
+                    "bridge_steer_pre_policy": 0.45,
+                    "bridge_steer_mapped": 0.45,
+                    "carla_steer_applied": 0.45,
+                    "ego_yaw_rate": 0.02,
+                    "steer_scale": 1.0,
+                    "steering_sign": -1.0,
+                    "throttle_raw": 0.1,
+                    "throttle_mapped": 0.1,
+                    "throttle_applied": 0.1,
+                    "brake_raw": 0.0,
+                    "brake_mapped": 0.0,
+                    "brake_applied": 0.0,
+                }
+            )
+            for index in range(4)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifacts / "bridge_control_decode.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "ts_sec": 40.0 + index,
+                    "raw_steer": -0.45,
+                    "commanded_steer_pre_lateral_guards": 0.45,
+                    "mapped_carla_steer_cmd": 0.45,
+                    "steer_scale": 1.0,
+                    "steering_sign": -1.0,
+                }
+            )
+            for index in range(4)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(json.dumps({"control_source": "/apollo/control"}), encoding="utf-8")
+
+    report = analyze_control_attribution_run_dir(run_dir)
+
+    raw_to_mapped = report["attribution"]["raw_to_mapped_steer_consistency"]
+    assert report["source"]["control_input_path"].endswith("artifacts/control_apply_trace.jsonl")
+    assert report["source"]["auxiliary_control_decode_path"].endswith("artifacts/bridge_control_decode.jsonl")
+    assert raw_to_mapped["status"] == "pass"
+    assert raw_to_mapped["source"] == "auxiliary_bridge_control_decode"
+    assert raw_to_mapped["primary_trace_status"] == "fail"
+    assert report["attribution"]["mapped_to_applied_steer_consistency"]["status"] == "pass"
     assert report["attribution"]["dominant_breakpoint"] == "none"

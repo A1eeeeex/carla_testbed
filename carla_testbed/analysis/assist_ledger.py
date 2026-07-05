@@ -22,6 +22,7 @@ ASSIST_NAMES = {
     "route_follower",
     "direct_autopilot",
     "manual_intervention",
+    "steering_sign_diagnostic_override",
 }
 
 DEFAULT_BLOCKING_ASSISTS = {
@@ -37,6 +38,7 @@ DEFAULT_BLOCKING_ASSISTS = {
     "route_follower",
     "direct_autopilot",
     "manual_intervention",
+    "steering_sign_diagnostic_override",
 }
 
 NON_BLOCKING_ASSISTS = {

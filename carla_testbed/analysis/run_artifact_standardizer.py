@@ -416,8 +416,8 @@ def _debug_row_to_timeseries(
             "apollo_steer_raw": _first_float(row, "apollo_steer_raw", "raw_steer", "apollo_desired_steer"),
             "bridge_steer_mapped": _first_float(
                 row,
-                "bridge_steer_mapped",
                 "mapped_carla_steer_cmd",
+                "bridge_steer_mapped",
                 "commanded_steer",
             ),
             "carla_steer_applied": _first_float(row, "carla_steer_applied", "measured_steer", "applied_steer"),

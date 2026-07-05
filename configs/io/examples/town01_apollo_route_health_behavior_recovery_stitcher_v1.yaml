@@ -1,8 +1,8 @@
 # -----------------------------------------------------------------------------
 # Apollo Town01 Route Health: behavior_recovery_stitcher_v1
 # 用途：在 `behavior_recovery` 已经恢复 097/217/031 全链闭环的前提下，
-#      仅打开 planning trajectory stitcher，验证它能否减少 097 late-stage
-#      PATH_FALLBACK 并提升 lane_keep 097 的持续前进质量。
+#      保持 reference-line / trajectory stitching 均关闭，避免 Town01 GT
+#      lane-follow 中 stale target / matched-point 放大导致 PATH_FALLBACK。
 # 说明：
 # - 保持 Dreamview-on + planning_ready + dag + legacy control runtime overlay；
 # - 不改横向增益、不改 routing 速度，只改 planning stitcher 语义；
@@ -77,6 +77,12 @@ scenario:
     goal_reject_junction: true
     max_spawn_candidates: 80
     max_goal_attempts: 6
+    # Align the ego actor's initial pose to the first point of the claim route
+    # trace, not to the raw CARLA spawn point. Online route-start probes showed
+    # spawn097 is about 0.51 m lateral from the route centerline; compensating
+    # that offset removed early lane invasion without adding a route follower or
+    # changing control semantics.
+    align_spawn_to_route_start: true
 io:
   mode: ros2_native
   ros:
@@ -160,6 +166,19 @@ algo:
       # localization/chassis sim-gap failures. Keep claim evidence sampled
       # enough for p95/route-progress analysis, but do not write every 2 frames.
       claim_evidence_artifact_sample_stride: 10
+      # Bounded diagnostic window around first lateral/control anomalies. This
+      # keeps raw/mapped/applied/yaw-rate evidence without enabling full-trace IO.
+      control_critical_window_trace:
+        enabled: true
+        pre_samples: 20
+        post_samples: 40
+        max_windows: 3
+        max_rows: 240
+        route_lateral_error_threshold_m: 0.5
+        simple_lat_lateral_error_threshold_m: 0.5
+        raw_steer_threshold: 0.85
+        matched_point_distance_threshold_m: 8.0
+        target_point_distance_threshold_m: 8.0
       claim_grade:
         enabled: true
         stale_world_frame_policy: skip
@@ -170,12 +189,16 @@ algo:
       localization_back_offset_m: 1.4235
       localization_acceleration_filter:
         # Conservative GT input-quality filter. It limits physically implausible
-        # finite-difference acceleration spikes before Apollo simple_lon consumes
-        # localization, without smoothing bridge mapped/applied control.
+        # finite-difference acceleration spikes before Apollo Planning/Control
+        # consumes localization, without smoothing bridge mapped/applied control.
+        # Online lane_keep_097 probes on 2026-07-02 showed the previous
+        # 4.0 m/s^2 cap still drove Apollo Planning start-point acceleration
+        # clipping and PiecewiseJerkSpeed fallback. These values are a GT input
+        # contract fix, not a steer/PID/control-actuation tuning.
         enabled: true
-        alpha: 0.35
-        max_abs_mps2: 4.0
-        max_delta_mps2: 1.0
+        alpha: 0.15
+        max_abs_mps2: 0.8
+        max_delta_mps2: 0.15
       map_file: ${APOLLO_MAP_ROOT}/carla_town01/base_map.txt
       debug_dump_control_raw: true
       front_obstacle_behavior:
@@ -193,11 +216,18 @@ algo:
       disable_destination_rule: true
       disable_traffic_light_rule: true
       lane_follow_only_scenario: true
-      # P1 修复: 禁用 stitching，每次从 scratch 生成参考线，绕过
-      # LaneInfo::GetProjection heading filter (90°) 导致的
-      # "Vehicle current point not on previous reference line" 问题。
+      # Online evidence:
+      # - reference-line stitching must stay disabled because previous-line
+      #   projection can reject the current point.
+      # - trajectory stitcher must stay disabled for the current Town01
+      #   lane-follow profile. The 2026-07-03 no-guard long-window sample with
+      #   trajectory stitching disabled reached Phase 1 success over ~224.6m
+      #   with zero lane invasion/collision, while the stitcher-on no-guard
+      #   repeat hit matched-point PATH_FALLBACK, lane invasion, and collision.
+      #   This does not claim natural driving; source-control oscillation and
+      #   GT state cadence remain the next blockers.
       enable_reference_line_stitching: false
-      enable_trajectory_stitcher: true
+      enable_trajectory_stitcher: false
       default_cruise_speed_mps: 16.67
     routing:
       enable: true
@@ -247,23 +277,66 @@ algo:
       policy: ignore
       publish_hz: 10.0
       ignore_roll_enabled: false
+    # Keep the validated low-speed Apollo Control semantic fix on the nominal
+    # Town01 lane-follow profile. Without this overlay, online no-guard samples
+    # can re-enter the known LQR/leadlag raw-steer saturation failure before the
+    # reference-line/target-kappa hypothesis is cleanly testable.
+    control_lqr:
+      enabled: true
+      cf: 155494.663
+      cr: 155494.663
+      mass_fl: 424
+      mass_fr: 424
+      mass_rl: 424
+      mass_rr: 424
+      matrix_q:
+        - 0.15
+        - 0.0
+        - 1.0
+        - 0.0
+      enable_reverse_leadlag_compensation: false
+      reverse_leadlag_conf:
+        innerstate_saturation_level: 3000
+        alpha: 1.0
+        beta: 1.0
+        tau: 0.0
+      lat_err_gain_scheduler_speed: [0.5, 2.0, 4.0, 8.0, 12.0, 20.0, 25.0]
+      lat_err_gain_scheduler_ratio: [0.05, 0.15, 1.0, 0.6, 0.2, 0.1, 0.05]
+      heading_err_gain_scheduler_speed: [0.5, 2.0, 4.0, 8.0, 12.0, 20.0, 25.0]
+      heading_err_gain_scheduler_ratio: [0.05, 0.15, 1.0, 0.6, 0.4, 0.2, 0.1]
+      query_relative_time: 0.3
+      # Apollo LQR ignores query_relative_time unless this is true; false makes
+      # lateral target selection fall back to nearest-by-position and can select
+      # stale/behind trajectory points in GT lane-follow diagnostics.
+      query_time_nearest_point_only: true
+      # GT lane-follow diagnostics showed Apollo's lookahead/back lateral
+      # feedback path can amplify source steering oscillation on this bridge
+      # profile. Keep it disabled for evidence collection; this is not a
+      # substitute for route/reference-line/control-attribution gates.
+      enable_look_ahead_back_control: false
+      minimum_speed_protection: 1.0
+    control_lon:
+      enabled: true
     control_mapping:
       max_steer_angle: 0.6
       speed_gain: 10.0
       brake_gain: 5.0
-      steer_sign: 1.0
+      # 2026-07-01 root-cause candidate fix:
+      # no-guard Town01 lane_keep_097 and curve217 samples showed raw->mapped
+      # and mapped->applied steering were internally consistent, but CARLA
+      # lateral error grew when steer_sign=+1.  A diagnostic steer_sign=-1 run
+      # substantially reduced lane_keep_097 cross-track error without changing
+      # steer_scale, PID, physical mapping, or lateral guards.  Keep this as an
+      # explicit control-semantics fix; remaining failures still require
+      # reference-line/path-bound evidence before any behavior claim.
+      steer_sign: -1.0
       throttle_scale: 1.5
       brake_scale: 1.0
       steer_scale: 1.0
-      steering_percent_normalization: angle_degree_at_select
-      # Apollo steering_target is an angle in degrees (not a percentage).
-      # angle_degree_at_select normalizes: steering_target_deg / apollo_max_steer_angle_deg.
-      # steer_scale=1.0 means normalized angle maps 1:1 to CARLA steer command:
-      #   5° Apollo output → 5/30 ≈ 0.167 CARLA steer (gentle correction)
-      #  15° Apollo output → 15/30 = 0.5 CARLA steer (moderate correction)
-      #  30° Apollo output → 30/30 = 1.0 CARLA steer (full lock)
-      # Previous steer_scale=0.25 was too conservative; small Apollo corrections
-      # (5-10°) produced near-zero CARLA steer, delaying lane-error recovery.
+      steering_percent_normalization: single_percent_at_select
+      # Apollo 10 ControlCommand.steering_target is percentage of full scale
+      # [-100, 100], not a physical steering angle in degrees.  Decode it once
+      # to normalized CARLA steering, then apply explicit sign/scale below.
       apollo_max_steer_angle_deg: 30.0
       brake_deadzone: 0.05
       throttle_brake_mutual_exclusion_enabled: true

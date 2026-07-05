@@ -10,7 +10,10 @@ from types import SimpleNamespace
 import pytest
 
 import carla_testbed.platform.phase1_p0_matrix as matrix_mod
+from carla_testbed.backends.registry import default_backend_registry
+from carla_testbed.platform.compiler import compile_run_plan
 from carla_testbed.platform.phase1_p0_matrix import DEFAULT_PHASE1_P0_SCENARIOS, run_phase1_p0_matrix
+from carla_testbed.platform.registry import PlatformRegistry
 
 
 def test_phase1_p0_matrix_dry_run_materializes_five_pairs(tmp_path: Path) -> None:
@@ -95,6 +98,36 @@ def test_phase1_p0_matrix_pair_outputs_keep_backend_contract_boundary(tmp_path: 
         assert payload["backend_contract"]["backend"] in {"carla_builtin", "apollo_cyberrt"}
         assert payload["claim_boundary"]["schema_version"] == "phase1_claim_boundary.v1"
         assert payload["backend_type"] in {"planning_control_backend", "apollo_reference_backend"}
+
+
+def test_phase1_p0_profiles_compile_to_both_backend_contracts() -> None:
+    registry = PlatformRegistry(repo_root=".")
+    backend_registry = default_backend_registry()
+
+    for item in DEFAULT_PHASE1_P0_SCENARIOS:
+        planning = compile_run_plan(
+            platform="carla_builtin",
+            algorithm="builtin/simple_acc_route_follower",
+            scenario=item.scenario,
+            recording="metrics",
+            gate="scenario_validation",
+            registry=registry,
+        )
+        apollo = compile_run_plan(
+            platform="apollo_cyberrt_town01_behavior_recovery",
+            algorithm="apollo/apollo10_carla_gt",
+            scenario=item.scenario,
+            recording="metrics",
+            gate="scenario_validation",
+            registry=registry,
+        )
+
+        planning_contract = backend_registry.for_plan(planning).contract(planning)
+        apollo_contract = backend_registry.for_plan(apollo).contract(apollo)
+        assert planning_contract.backend_type == "planning_control_backend", item.scenario
+        assert apollo_contract.backend_type == "apollo_reference_backend", item.scenario
+        assert planning.scenario.scenario_id
+        assert apollo.scenario.scenario_id
 
 
 def test_phase1_p0_matrix_surfaces_backend_behavior_blockers(
@@ -218,11 +251,21 @@ def test_phase1_p0_matrix_start_carla_dry_run_records_matrix_session(tmp_path: P
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["carla_session"]["requested"] is True
     assert manifest["carla_session"]["status"] == "dry_run_not_started"
-    assert manifest["carla_session"]["town"] == "straight_road_for_baguang"
+    assert manifest["carla_session"]["town"] == "mixed_map_matrix"
+    assert manifest["carla_session"]["is_mixed_map_matrix"] is True
+    assert manifest["carla_session"]["towns"] == ["Town01", "straight_road_for_baguang"]
+    assert manifest["carla_session"]["towns_by_case"] == {
+        "cut_in_simple": "straight_road_for_baguang",
+        "follow_stop_static": "straight_road_for_baguang",
+        "lane_keep_curve": "Town01",
+        "lane_keep_straight": "Town01",
+        "lead_decel_accel": "straight_road_for_baguang",
+    }
     session_path = Path(manifest["carla_session"]["path"])
     assert session_path.exists()
     session_payload = json.loads(session_path.read_text(encoding="utf-8"))
     assert session_payload["status"] == "dry_run_not_started"
+    assert session_payload["matrix_map_scope"]["is_mixed_map_matrix"] is True
     assert all(row["status"] == "dry_run" for row in result.rows)
 
 

@@ -27,3 +27,17 @@ def test_direct_candidate_apollo_warmup_fits_short_light_artifact_canary() -> No
 
     warmup_s = cfg["algo"]["apollo"]["routing"]["startup_apollo_warmup_sec"]
     assert warmup_s == 0.0
+
+
+def test_direct_candidate_keeps_town01_control_sign_consistent_with_baseline() -> None:
+    cfg = yaml.safe_load(DIRECT_CANDIDATE_CONFIG.read_text(encoding="utf-8"))
+
+    assert cfg["algo"]["apollo"]["control_mapping"]["steer_sign"] == -1.0
+
+
+def test_direct_candidate_keeps_planning_stitcher_semantics_consistent_with_baseline() -> None:
+    cfg = yaml.safe_load(DIRECT_CANDIDATE_CONFIG.read_text(encoding="utf-8"))
+    planning = cfg["algo"]["apollo"]["planning"]
+
+    assert planning["enable_reference_line_stitching"] is False
+    assert planning["enable_trajectory_stitcher"] is False

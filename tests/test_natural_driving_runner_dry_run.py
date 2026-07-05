@@ -81,7 +81,8 @@ def test_dry_run_matrix_includes_all_suite_scenarios(tmp_path: Path) -> None:
         for row in rows
     )
     assert all(
-        row["online_config_path"] == "configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml"
+        row["online_config_path"]
+        == "configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml"
         for row in rows
     )
     assert all(
@@ -269,8 +270,14 @@ def test_index_run_artifacts_updates_nested_online_chain_paths(tmp_path: Path) -
     manifest = json.loads((actual / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["algorithm_variant_id"] == "apollo_10_0_carla_gt_town01_reference"
     assert manifest["transport_mode"] == "ros2_gt"
-    assert manifest["online_config_path"] == "configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml"
-    assert manifest["online_config_profile_name"] == "town01_apollo_route_health_behavior_recovery_stitcher_v1"
+    assert (
+        manifest["online_config_path"]
+        == "configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml"
+    )
+    assert (
+        manifest["online_config_profile_name"]
+        == "town01_apollo_route_health_behavior_recovery_stitcher_v1"
+    )
     assert manifest["transport_mode_source"] == "online_config.scenario.publish_ros2_gt"
     assert manifest["backend"] == "apollo_cyberrt"
     assert manifest["truth_input"] is True
@@ -290,7 +297,10 @@ def test_manifest_records_analysis_command_and_no_default_direct_claim(tmp_path:
     assert manifest["schema_version"] == "natural_driving_suite_manifest.v1"
     assert manifest["mode"]["algorithm_variant_id"] == "apollo_10_0_carla_gt_town01_reference"
     assert manifest["mode"]["algorithm_variant_manifest_path"] == "configs/algorithms/apollo_variant.carla_gt.example.yaml"
-    assert manifest["online_config"]["path"] == "configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml"
+    assert (
+        manifest["online_config"]["path"]
+        == "configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml"
+    )
     assert manifest["online_config"]["transport_mode"] == "ros2_gt"
     assert manifest["online_config"]["transport_mode_source"] == "online_config.scenario.publish_ros2_gt"
     assert manifest["mode"]["truth_input"] is True

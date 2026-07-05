@@ -105,13 +105,28 @@ def run_phase1_p0_matrix(
     pairs_dir.mkdir(parents=True, exist_ok=True)
     resolved_scenarios = list(scenarios or DEFAULT_PHASE1_P0_SCENARIOS)
     registry = registry or PlatformRegistry(repo_root=".")
-    resolved_carla_town = carla_town or _infer_matrix_carla_town(resolved_scenarios)
+    matrix_map_scope = _matrix_map_scope(resolved_scenarios, requested_town=carla_town)
+    resolved_carla_town = (
+        carla_town
+        or (
+            "mixed_map_matrix"
+            if matrix_map_scope["is_mixed_map_matrix"]
+            else str((matrix_map_scope["towns"] or ["Town01"])[0])
+        )
+    )
     carla_session = dry_run_carla_session_payload(
         requested=bool(start_carla),
         carla_root=carla_root,
         town=resolved_carla_town,
         extra_args=carla_extra_args,
     )
+    carla_session = {
+        **dict(carla_session),
+        "matrix_map_scope": matrix_map_scope,
+        "towns": list(matrix_map_scope["towns"]),
+        "towns_by_case": dict(matrix_map_scope["towns_by_case"]),
+        "is_mixed_map_matrix": bool(matrix_map_scope["is_mixed_map_matrix"]),
+    }
     if start_carla and not dry_run:
         carla_session = {
             **dict(carla_session),
@@ -400,6 +415,39 @@ def _slug(value: str) -> str:
     return "_".join(part for part in cleaned.split("_") if part) or "phase1"
 
 
+def _matrix_map_scope(
+    scenarios: Sequence[Phase1P0Scenario],
+    *,
+    requested_town: str | None,
+) -> dict[str, Any]:
+    towns_by_case = {item.canonical_case: _scenario_carla_town(item) for item in scenarios}
+    towns = sorted({town for town in towns_by_case.values() if town})
+    is_mixed = len(towns) > 1
+    return {
+        "schema_version": "phase1_matrix_map_scope.v1",
+        "requested_town": requested_town,
+        "towns": towns,
+        "towns_by_case": towns_by_case,
+        "is_mixed_map_matrix": is_mixed,
+        "scalar_town_semantics": (
+            "explicit_operator_override"
+            if requested_town
+            else "mixed_matrix_requires_per_pair_isolated_carla_sessions"
+            if is_mixed
+            else "single_map_matrix"
+        ),
+    }
+
+
+def _scenario_carla_town(item: Phase1P0Scenario) -> str:
+    value = item.scenario.lower()
+    if "baguang" in value:
+        return "straight_road_for_baguang"
+    if "town01" in value:
+        return "Town01"
+    return "unknown"
+
+
 def _read_comparison_summary(path: str | None) -> dict[str, Any]:
     if not path:
         return {}
@@ -456,12 +504,3 @@ def _read_comparison_summary(path: str | None) -> dict[str, Any]:
         "evaluable_run_count": len(payload.get("evaluable_runs") or []),
         "invalid_run_count": len(payload.get("invalid_runs") or []),
     }
-
-
-def _infer_matrix_carla_town(scenarios: Sequence[Phase1P0Scenario]) -> str:
-    lowered = " ".join(item.scenario.lower() for item in scenarios)
-    if "baguang" in lowered:
-        return "straight_road_for_baguang"
-    if "town01" in lowered:
-        return "Town01"
-    return "Town01"

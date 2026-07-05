@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 APOLLO_LATERAL_SEMANTICS_SCHEMA_VERSION = "apollo_lateral_semantics.v1"
-CONTROL_TRACE_MERGE_MAX_DT_S = 0.075
+# Apollo control debug artifacts can be materially lower-rate than route
+# timeseries rows. Keep this tight enough for attribution windows while not
+# dropping simple_lat evidence sampled at roughly 2 Hz.
+CONTROL_TRACE_MERGE_MAX_DT_S = 0.30
 CONTROL_TRACE_HEADER_EXTRAPOLATE_MAX_DT_S = 1.5
 
 FIELD_ALIASES = {
@@ -18,11 +21,14 @@ FIELD_ALIASES = {
         "steering_target",
         "source_steer",
         "control_steer_raw",
+        "raw_steer",
         "steering_normalized_for_mapping",
     ],
     "bridge_steer_mapped": [
-        "bridge_steer_mapped",
+        "bridge_mapped.mapped_carla_steer_cmd",
         "mapped_carla_steer_cmd",
+        "output_to_carla.mapped_carla_steer_cmd",
+        "bridge_steer_mapped",
         "mapped_steer",
         "control_steer_mapped",
         "commanded_steer",
@@ -39,7 +45,9 @@ FIELD_ALIASES = {
         "apollo_target_point_kappa",
         "target_point_kappa",
         "apollo_debug_simple_lat_target_point_kappa",
+        "apollo_debug_simple_mpc_preview_reference_point_kappa",
         "debug_simple_lat_target_point_kappa",
+        "debug_simple_mpc_preview_reference_point_kappa",
     ],
     "apollo_planning_first_kappa": [
         "apollo_planning_first_kappa",
@@ -55,6 +63,8 @@ FIELD_ALIASES = {
         "debug_simple_lat_curvature",
         "debug_simple_lon_current_reference_point_kappa",
         "debug_simple_lon_preview_reference_point_kappa",
+        "debug_simple_mpc_current_reference_point_kappa",
+        "debug_simple_mpc_preview_reference_point_kappa",
         "target_curvature",
     ],
     "route_curvature": ["route_curvature", "curvature_at_nearest"],
@@ -94,14 +104,70 @@ FIELD_ALIASES = {
         "apollo_simple_lat_target_point_s",
         "apollo_debug_simple_lat_target_point_s",
         "debug_simple_lat_target_point_s",
+        "debug_simple_lat_current_target_point_s",
         "debug_simple_lon_preview_reference_point_s_m",
+        "apollo_debug_simple_mpc_preview_reference_point_s",
+        "debug_simple_mpc_preview_reference_point_s",
         "apollo_target_point_s",
+    ],
+    "apollo_simple_lat_target_point_relative_time": [
+        "apollo_simple_lat_target_point_relative_time",
+        "apollo_debug_simple_lat_target_point_relative_time_sec",
+        "debug_simple_lat_target_point_relative_time_sec",
+        "debug_simple_lat_current_target_point_relative_time",
+        "apollo_debug_simple_mpc_preview_reference_point_relative_time_sec",
+        "debug_simple_mpc_preview_reference_point_relative_time",
+        "apollo_target_point_relative_time",
+    ],
+    "apollo_control_trajectory_fraction": [
+        "apollo_control_trajectory_fraction",
+        "trajectory_fraction",
+        "control_trajectory_fraction",
+    ],
+    "apollo_control_command_speed_mps": [
+        "apollo_control_command_speed_mps",
+        "control_command_speed_mps",
+        "control_speed_mps",
+        "speed_mps",
+    ],
+    "apollo_control_internal_current_speed_mps": [
+        "apollo_control_internal_current_speed_mps",
+        "debug_simple_lon_current_speed_mps",
+        "debug_simple_lon_current_speed",
+        "apollo_debug_simple_lon_current_speed_mps",
+        "apollo_debug_simple_lon_current_speed",
+    ],
+    "apollo_simple_lat_ref_speed_mps": [
+        "apollo_simple_lat_ref_speed_mps",
+        "debug_simple_lat_ref_speed_mps",
+        "debug_simple_lat_ref_speed",
+        "apollo_debug_simple_lat_ref_speed_mps",
+        "apollo_debug_simple_lat_ref_speed",
+    ],
+    "apollo_simple_lat_target_point_v_mps": [
+        "apollo_simple_lat_target_point_v_mps",
+        "debug_simple_lat_current_target_point_v_mps",
+        "debug_simple_lat_current_target_point_v",
+        "apollo_debug_simple_lat_target_point_v_mps",
+        "apollo_debug_simple_lat_target_point_v",
+        "apollo_debug_simple_mpc_preview_reference_point_v_mps",
+        "debug_simple_mpc_preview_reference_point_v",
+    ],
+    "apollo_control_speed_mps": [
+        "apollo_control_speed_mps",
+        "control_speed_mps",
+        "speed_mps",
+        "debug_simple_lon_current_speed_mps",
+        "debug_simple_lon_current_speed",
     ],
     "apollo_simple_lon_matched_point_s": [
         "apollo_simple_lon_matched_point_s",
         "apollo_debug_simple_lon_matched_point_s",
         "debug_simple_lon_matched_point_s",
         "debug_simple_lon_current_matched_point_s_m",
+        "apollo_debug_simple_mpc_matched_point_s",
+        "debug_simple_mpc_matched_point_s",
+        "debug_simple_mpc_current_matched_point_s",
         "apollo_matched_point_s",
     ],
     "ego_x": ["ego_x", "localization_x", "apollo_localization_x"],
@@ -122,22 +188,30 @@ FIELD_ALIASES = {
     ],
     "apollo_current_reference_point_x": [
         "apollo_debug_simple_lat_current_reference_point_x",
+        "apollo_debug_simple_mpc_current_reference_point_x",
         "debug_simple_lat_current_reference_point_x",
+        "debug_simple_mpc_current_reference_point_x",
         "debug_simple_lon_current_reference_point_x",
     ],
     "apollo_current_reference_point_y": [
         "apollo_debug_simple_lat_current_reference_point_y",
+        "apollo_debug_simple_mpc_current_reference_point_y",
         "debug_simple_lat_current_reference_point_y",
+        "debug_simple_mpc_current_reference_point_y",
         "debug_simple_lon_current_reference_point_y",
     ],
     "apollo_target_point_x": [
         "apollo_debug_simple_lat_target_point_x",
+        "apollo_debug_simple_mpc_preview_reference_point_x",
         "debug_simple_lon_preview_reference_point_x",
+        "debug_simple_mpc_preview_reference_point_x",
         "apollo_target_point_x",
     ],
     "apollo_target_point_y": [
         "apollo_debug_simple_lat_target_point_y",
+        "apollo_debug_simple_mpc_preview_reference_point_y",
         "debug_simple_lon_preview_reference_point_y",
+        "debug_simple_mpc_preview_reference_point_y",
         "apollo_target_point_y",
     ],
     "heading_error": [
@@ -187,6 +261,9 @@ DEFAULT_THRESHOLDS = {
     "drift_context_window_route_s_m": 10.0,
     "critical_window_pre_s": 0.50,
     "critical_window_post_s": 1.50,
+    "critical_window_response_s": 1.0,
+    "critical_window_response_change_epsilon_m": 0.05,
+    "critical_window_projection_match_max_dt_s": 0.25,
     "critical_window_max_samples": 16,
     "simple_lat_lateral_error_low_abs_p95_m": 0.05,
     "route_s_station_delta_high_p95_m": 20.0,
@@ -200,6 +277,13 @@ DEFAULT_THRESHOLDS = {
     "station_lane_s_alignment_p95_m": 2.0,
     "station_local_frame_offset_min_p95_m": 5.0,
     "station_target_current_alignment_p95_m": 2.0,
+    "target_point_relative_time_past_s": -0.05,
+    "target_point_past_ratio_high": 0.50,
+    "target_point_behind_station_margin_m": 0.10,
+    "target_point_behind_ratio_high": 0.50,
+    "trajectory_fraction_near_zero_max": 0.01,
+    "trajectory_fraction_near_zero_ratio_high": 0.80,
+    "source_steer_saturation_ratio_high": 0.50,
 }
 
 DRIFT_WINDOW_FIELD_ALIASES = {
@@ -213,6 +297,7 @@ ROUTE_LATERAL_ERROR_ALIASES = [
     "lateral_error",
     "route_cross_track_error",
     "route_lateral_error",
+    "e_y_m",
 ]
 
 
@@ -245,6 +330,14 @@ def analyze_apollo_lateral_semantics_run_dir(
         control_trace=[
             path
             for path in (
+                _find_first_deep(root, ["artifacts/bridge_control_decode.jsonl", "bridge_control_decode.jsonl"]),
+                _find_first_deep(
+                    root,
+                    [
+                        "artifacts/control_critical_window_trace.jsonl",
+                        "control_critical_window_trace.jsonl",
+                    ],
+                ),
                 _find_first_deep(root, ["artifacts/control_apply_trace.jsonl", "control_apply_trace.jsonl"]),
                 _find_first_deep(root, ["artifacts/control_decode_debug.jsonl", "control_decode_debug.jsonl"]),
                 _find_first_deep(root, ["artifacts/apollo_control_raw.jsonl", "apollo_control_raw.jsonl"]),
@@ -366,6 +459,19 @@ def analyze_apollo_lateral_semantics(
         "apollo_simple_lat_lateral_error_abs": _stats_abs(values["apollo_simple_lat_lateral_error"]),
         "apollo_simple_lon_current_station_abs": _stats_abs(values["apollo_simple_lon_current_station"]),
         "apollo_simple_lat_target_point_s_abs": _stats_abs(values["apollo_simple_lat_target_point_s"]),
+        "apollo_simple_lat_target_point_relative_time_abs": _stats_abs(
+            values["apollo_simple_lat_target_point_relative_time"]
+        ),
+        "apollo_control_trajectory_fraction_abs": _stats_abs(values["apollo_control_trajectory_fraction"]),
+        "apollo_control_command_speed_abs": _stats_abs(values["apollo_control_command_speed_mps"]),
+        "apollo_control_internal_current_speed_abs": _stats_abs(
+            values["apollo_control_internal_current_speed_mps"]
+        ),
+        "apollo_simple_lat_ref_speed_abs": _stats_abs(values["apollo_simple_lat_ref_speed_mps"]),
+        "apollo_simple_lat_target_point_v_abs": _stats_abs(
+            values["apollo_simple_lat_target_point_v_mps"]
+        ),
+        "apollo_control_speed_abs": _stats_abs(values["apollo_control_speed_mps"]),
         "apollo_simple_lon_matched_point_s_abs": _stats_abs(values["apollo_simple_lon_matched_point_s"]),
         "route_s_vs_apollo_current_station_abs_delta": _paired_abs_delta_stats(
             rows,
@@ -442,7 +548,10 @@ def analyze_apollo_lateral_semantics(
         rows,
         active_thresholds,
         reference_line_contract=reference_line_contract_payload,
+        hdmap_projection_rows=hdmap_projection_rows,
     )
+    control_target_point_summary = _control_target_point_summary(rows, active_thresholds)
+    kappa_response_summary = _kappa_response_summary(stats, active_thresholds, critical_window_samples)
     anomalies = _anomalies(
         values,
         stats,
@@ -451,6 +560,9 @@ def analyze_apollo_lateral_semantics(
         hdmap_route_lateral_consistency=hdmap_route_lateral_consistency,
         reference_debug_summary=reference_debug_summary,
         lateral_sign_alignment=lateral_sign_alignment,
+        critical_window_samples=critical_window_samples,
+        control_target_point_summary=control_target_point_summary,
+        kappa_response_summary=kappa_response_summary,
     )
     control_attribution_summary = _control_attribution_summary(control_attribution_payload)
     anomalies, suppressed_control_mapping_anomalies = _suppress_control_mapping_anomalies(
@@ -499,6 +611,11 @@ def analyze_apollo_lateral_semantics(
         "drift_window_summary": drift_window_summary,
         "lateral_sign_alignment": lateral_sign_alignment,
         "critical_window_samples": critical_window_samples,
+        "critical_window_event_table": critical_window_samples.get("event_table")
+        if isinstance(critical_window_samples, Mapping)
+        else None,
+        "control_target_point_summary": control_target_point_summary,
+        "kappa_response_summary": kappa_response_summary,
         "suspected_layer": suspected_layer,
         "confidence": confidence,
         "missing_fields": sorted(set(missing_fields)),
@@ -603,6 +720,63 @@ def _write_projection_pairing_csv(report: Mapping[str, Any], path: Path) -> bool
     return True
 
 
+def _kappa_response_summary(
+    stats: Mapping[str, Any],
+    thresholds: Mapping[str, float],
+    critical_window_samples: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    route_max = _stat(stats, "route_curvature_abs", "max")
+    ref_max = _stat(stats, "reference_lane_curvature_abs", "max")
+    planning_max = _stat(stats, "apollo_planning_first_kappa_abs", "max")
+    target_max = _stat(stats, "apollo_target_point_kappa_abs", "max")
+    straight_route = route_max is not None and route_max <= thresholds["straight_curvature_abs_max"]
+    straight_ref = ref_max is not None and ref_max <= thresholds["straight_curvature_abs_max"]
+    high_planning_kappa = planning_max is not None and planning_max >= thresholds["high_kappa_abs"]
+    high_target_kappa = target_max is not None and target_max >= thresholds["target_kappa_spike_abs"]
+    response_after = (
+        critical_window_samples.get("response_after")
+        if isinstance(critical_window_samples, Mapping)
+        and isinstance(critical_window_samples.get("response_after"), Mapping)
+        else {}
+    )
+    convergence = str(response_after.get("convergence") or "unknown")
+    primary_frame = response_after.get("primary_lateral_frame")
+    primary_delta = _num(response_after.get("primary_lateral_abs_error_delta_m"))
+    if not (straight_route or straight_ref):
+        classification = "not_straight_route_or_reference"
+    elif not (high_planning_kappa or high_target_kappa):
+        classification = "no_high_kappa"
+    elif convergence == "improved":
+        classification = "high_kappa_with_lateral_error_improving"
+    elif convergence == "worsened":
+        classification = "high_kappa_with_lateral_error_worsening"
+    elif convergence == "unchanged":
+        classification = "high_kappa_with_lateral_error_unchanged"
+    else:
+        classification = "high_kappa_response_unknown"
+    return {
+        "available": bool(response_after),
+        "classification": classification,
+        "route_curvature_max_abs": route_max,
+        "reference_curvature_max_abs": ref_max,
+        "planning_first_kappa_max_abs": planning_max,
+        "target_point_kappa_max_abs": target_max,
+        "straight_route": straight_route,
+        "straight_reference": straight_ref,
+        "high_planning_kappa": high_planning_kappa,
+        "high_target_kappa": high_target_kappa,
+        "critical_window_convergence": convergence,
+        "critical_window_primary_lateral_frame": primary_frame,
+        "critical_window_primary_lateral_abs_error_delta_m": primary_delta,
+        "interpretation_boundary": (
+            "High kappa on a near-straight claim route is a blocker only when "
+            "the same critical-window evidence does not show lateral-error "
+            "improvement. Improving lateral error indicates corrective trajectory "
+            "curvature and should not be used alone as a reference-line failure."
+        ),
+    }
+
+
 def _anomalies(
     values: Mapping[str, list[float]],
     stats: Mapping[str, Any],
@@ -612,6 +786,9 @@ def _anomalies(
     hdmap_route_lateral_consistency: Mapping[str, Any] | None = None,
     reference_debug_summary: Mapping[str, Any] | None = None,
     lateral_sign_alignment: Mapping[str, Any] | None = None,
+    critical_window_samples: Mapping[str, Any] | None = None,
+    control_target_point_summary: Mapping[str, Any] | None = None,
+    kappa_response_summary: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     anomalies: list[dict[str, Any]] = []
     route_max = _stat(stats, "route_curvature_abs", "max")
@@ -624,15 +801,42 @@ def _anomalies(
     matched_max = _stat(stats, "matched_point_distance_abs", "max")
     straight_route = route_max is not None and route_max <= thresholds["straight_curvature_abs_max"]
     straight_ref = ref_max is not None and ref_max <= thresholds["straight_curvature_abs_max"]
-    if (straight_route or straight_ref) and planning_max is not None and planning_max >= thresholds["high_kappa_abs"]:
+    kappa_response_summary = (
+        kappa_response_summary if isinstance(kappa_response_summary, Mapping) else {}
+    )
+    high_kappa_is_lateral_corrective = (
+        kappa_response_summary.get("classification") == "high_kappa_with_lateral_error_improving"
+    )
+    kappa_response_classification = str(kappa_response_summary.get("classification") or "")
+    high_lateral_error_present = (
+        cte_p95 is not None and cte_p95 >= thresholds["high_cross_track_error_abs_p95_m"]
+    )
+    high_kappa_has_adverse_lateral_evidence = kappa_response_classification in {
+        "high_kappa_with_lateral_error_worsening",
+        "high_kappa_with_lateral_error_unchanged",
+    } or (
+        kappa_response_classification == "high_kappa_response_unknown"
+        and high_lateral_error_present
+    )
+    if (
+        (straight_route or straight_ref)
+        and planning_max is not None
+        and planning_max >= thresholds["high_kappa_abs"]
+        and not high_kappa_is_lateral_corrective
+        and high_kappa_has_adverse_lateral_evidence
+    ):
         anomalies.append(
             _anomaly(
                 "route_straight_but_planning_kappa_high",
-                "planning kappa is high while route/reference curvature is near zero",
+                (
+                    "planning kappa is high while route/reference curvature is near zero, "
+                    "with high lateral error or non-converging critical-window evidence"
+                ),
                 "reference_line_semantics",
                 route_curvature_max_abs=route_max,
                 reference_curvature_max_abs=ref_max,
                 planning_first_kappa_max_abs=planning_max,
+                kappa_response_summary=kappa_response_summary,
             )
         )
     hdmap_route_lateral_consistency = (
@@ -660,13 +864,130 @@ def _anomalies(
                 alignment_mode=hdmap_route_lateral_consistency.get("alignment_mode"),
             )
         )
-    if target_max is not None and target_max >= thresholds["target_kappa_spike_abs"]:
+    if (
+        target_max is not None
+        and target_max >= thresholds["target_kappa_spike_abs"]
+        and not high_kappa_is_lateral_corrective
+        and high_kappa_has_adverse_lateral_evidence
+    ):
         anomalies.append(
             _anomaly(
                 "target_kappa_spike",
-                "target point kappa exceeds threshold",
+                (
+                    "target point kappa exceeds threshold and critical-window response "
+                    "does not show lateral-error improvement"
+                ),
                 "target_point_semantics",
                 target_point_kappa_max_abs=target_max,
+                kappa_response_summary=kappa_response_summary,
+            )
+        )
+    min_samples = int(thresholds["sign_alignment_min_samples"])
+    control_target_point_summary = (
+        control_target_point_summary if isinstance(control_target_point_summary, Mapping) else {}
+    )
+    target_time_summary = control_target_point_summary.get("target_point_relative_time")
+    target_station_summary = control_target_point_summary.get("target_point_station_delta")
+    trajectory_fraction_summary = control_target_point_summary.get("trajectory_fraction")
+    high_steer_summary = control_target_point_summary.get("source_steer_saturation")
+    target_time_summary = target_time_summary if isinstance(target_time_summary, Mapping) else {}
+    target_station_summary = target_station_summary if isinstance(target_station_summary, Mapping) else {}
+    trajectory_fraction_summary = trajectory_fraction_summary if isinstance(trajectory_fraction_summary, Mapping) else {}
+    high_steer_summary = high_steer_summary if isinstance(high_steer_summary, Mapping) else {}
+    past_ratio = _num(target_time_summary.get("past_ratio"))
+    behind_current_ratio = _num(target_station_summary.get("behind_current_station_ratio"))
+    near_zero_fraction_ratio = _num(trajectory_fraction_summary.get("near_zero_ratio"))
+    steer_saturation_ratio = _num(high_steer_summary.get("saturation_ratio"))
+    target_time_count = int(_num(target_time_summary.get("count")) or 0)
+    target_station_count = int(_num(target_station_summary.get("count")) or 0)
+    trajectory_fraction_count = int(_num(trajectory_fraction_summary.get("count")) or 0)
+    stale_target_point_correlated = bool(
+        (
+            past_ratio is not None
+            and past_ratio >= thresholds["target_point_past_ratio_high"]
+            and target_time_count >= min_samples
+        )
+        or (
+            behind_current_ratio is not None
+            and behind_current_ratio >= thresholds["target_point_behind_ratio_high"]
+            and target_station_count >= min_samples
+        )
+    )
+    if (
+        past_ratio is not None
+        and past_ratio >= thresholds["target_point_past_ratio_high"]
+        and target_time_count >= min_samples
+    ):
+        anomalies.append(
+            _anomaly(
+                "control_target_point_in_past",
+                (
+                    "Apollo simple_lat current target point has negative relative_time in "
+                    "a high fraction of control samples; inspect trajectory time alignment "
+                    "before changing steering gain or apply mapping"
+                ),
+                "target_point_semantics",
+                target_point_relative_time=target_time_summary,
+            )
+        )
+    if (
+        behind_current_ratio is not None
+        and behind_current_ratio >= thresholds["target_point_behind_ratio_high"]
+        and target_station_count >= min_samples
+    ):
+        anomalies.append(
+            _anomaly(
+                "control_target_point_behind_ego",
+                (
+                    "Apollo simple_lat target point station is behind the current station "
+                    "in a high fraction of control samples"
+                ),
+                "target_point_semantics",
+                target_point_station_delta=target_station_summary,
+            )
+        )
+    if (
+        near_zero_fraction_ratio is not None
+        and near_zero_fraction_ratio >= thresholds["trajectory_fraction_near_zero_ratio_high"]
+        and trajectory_fraction_count >= min_samples
+        and stale_target_point_correlated
+    ):
+        anomalies.append(
+            _anomaly(
+                "control_trajectory_fraction_stuck_at_start",
+                (
+                    "Apollo control trajectory_fraction remains near zero while direct "
+                    "target time/station evidence is stale or behind the ego; this "
+                    "combination indicates target selection stuck at the start of the "
+                    "trajectory"
+                ),
+                "target_point_semantics",
+                trajectory_fraction=trajectory_fraction_summary,
+            )
+        )
+    if (
+        steer_saturation_ratio is not None
+        and steer_saturation_ratio >= thresholds["source_steer_saturation_ratio_high"]
+        and (
+            (past_ratio is not None and past_ratio >= thresholds["target_point_past_ratio_high"])
+            or (
+                behind_current_ratio is not None
+                and behind_current_ratio >= thresholds["target_point_behind_ratio_high"]
+            )
+        )
+    ):
+        anomalies.append(
+            _anomaly(
+                "source_steer_saturated_with_stale_target_point",
+                (
+                    "Source steer is frequently saturated while Apollo target points are "
+                    "past-dated or behind the current station; treat this as a target-point "
+                    "time/station semantics blocker, not an actuation tuning problem"
+                ),
+                "target_point_semantics",
+                source_steer_saturation=high_steer_summary,
+                target_point_relative_time=target_time_summary,
+                target_point_station_delta=target_station_summary,
             )
         )
     reference_debug_summary = reference_debug_summary if isinstance(reference_debug_summary, Mapping) else {}
@@ -704,6 +1025,7 @@ def _anomalies(
             )
         )
     lateral_sign_alignment = lateral_sign_alignment if isinstance(lateral_sign_alignment, Mapping) else {}
+    critical_window_samples = critical_window_samples if isinstance(critical_window_samples, Mapping) else {}
     source_vs_route = lateral_sign_alignment.get("source_steer_vs_route_lateral_error")
     source_vs_simple_lat = lateral_sign_alignment.get("source_steer_vs_simple_lat_lateral_error")
     mapped_vs_route = lateral_sign_alignment.get("mapped_steer_vs_route_lateral_error")
@@ -711,6 +1033,11 @@ def _anomalies(
     route_vs_simple_lat = lateral_sign_alignment.get("route_lateral_error_vs_simple_lat_lateral_error")
     first_high_alignment = lateral_sign_alignment.get("first_high_lateral_sample")
     route_lateral_provenance = lateral_sign_alignment.get("route_lateral_provenance")
+    route_lateral_field_semantics = lateral_sign_alignment.get("route_lateral_field_semantics")
+    route_sign_sensitive_allowed = (
+        isinstance(route_lateral_field_semantics, Mapping)
+        and route_lateral_field_semantics.get("sign_sensitive_gate_allowed") is True
+    )
     source_route_same = _num(source_vs_route.get("same_sign_ratio")) if isinstance(source_vs_route, Mapping) else None
     source_simple_same = (
         _num(source_vs_simple_lat.get("same_sign_ratio")) if isinstance(source_vs_simple_lat, Mapping) else None
@@ -722,6 +1049,10 @@ def _anomalies(
     first_high_source_same = (
         isinstance(first_high_alignment, Mapping)
         and first_high_alignment.get("source_steer_vs_route_lateral_error") == "same_sign"
+    )
+    first_high_source_simple_same = (
+        isinstance(first_high_alignment, Mapping)
+        and first_high_alignment.get("source_steer_vs_simple_lat_lateral_error") == "same_sign"
     )
     route_simple_opposite = (
         _num(route_vs_simple_lat.get("opposite_sign_ratio")) if isinstance(route_vs_simple_lat, Mapping) else None
@@ -752,7 +1083,7 @@ def _anomalies(
                 first_high_lateral_sample=first_high_alignment,
             )
         )
-    if (
+    if route_sign_sensitive_allowed and (
         (route_simple_opposite is not None and route_simple_opposite >= high_ratio and route_simple_count >= min_samples)
         or first_high_route_simple_opposite
     ):
@@ -766,35 +1097,59 @@ def _anomalies(
                 ),
                 "reference_line_semantics",
                 route_lateral_error_vs_simple_lat_lateral_error=route_vs_simple_lat,
+                route_lateral_field_semantics=route_lateral_field_semantics,
                 first_high_lateral_sample=first_high_alignment,
             )
         )
-    if (
+    source_same_against_trusted_route = route_sign_sensitive_allowed and (
         (source_route_same is not None and source_route_same >= high_ratio and source_route_count >= min_samples)
-        or (
-            source_simple_same is not None
-            and source_simple_same >= high_ratio
-            and source_simple_count >= min_samples
-        )
         or first_high_source_same
-    ):
+    )
+    source_same_against_simple_lat = (
+        source_simple_same is not None
+        and source_simple_same >= high_ratio
+        and source_simple_count >= min_samples
+    ) or first_high_source_simple_same
+    if source_same_against_trusted_route or source_same_against_simple_lat:
         anomalies.append(
             _anomaly(
                 "source_steer_same_sign_as_lateral_error",
                 (
-                    "Apollo source steer has the same sign as route/simple_lat lateral error "
+                    "Apollo source steer has the same sign as a trusted route or Apollo simple_lat lateral error "
                     "during active lateral-error samples; this is a sign-convention/semantics "
                     "sense check, not proof of a steering-sign bug by itself"
                 ),
                 "reference_line_semantics",
                 source_steer_vs_route_lateral_error=source_vs_route,
                 source_steer_vs_simple_lat_lateral_error=source_vs_simple_lat,
+                route_lateral_field_semantics=route_lateral_field_semantics,
                 route_lateral_error_vs_simple_lat_lateral_error=route_vs_simple_lat,
                 mapped_steer_vs_route_lateral_error=mapped_vs_route,
                 applied_steer_vs_route_lateral_error=applied_vs_route,
                 first_high_lateral_sample=first_high_alignment,
             )
         )
+    response_after = critical_window_samples.get("response_after")
+    if isinstance(response_after, Mapping):
+        primary_delta = _num(response_after.get("primary_lateral_abs_error_delta_m"))
+        primary_frame = str(response_after.get("primary_lateral_frame") or "")
+        if (
+            response_after.get("convergence") == "worsened"
+            and primary_delta is not None
+            and primary_frame in {"apollo_hdmap_projection_l", "apollo_simple_lat_lateral_error"}
+        ):
+            anomalies.append(
+                _anomaly(
+                    "apollo_lateral_frame_error_worsens_after_applied_steer",
+                    (
+                        "After the critical steering sample, Apollo-frame lateral error grows "
+                        "instead of converging. Treat this as a reference-line/control semantics "
+                        "closure failure before tuning steering scale or PID."
+                    ),
+                    "reference_line_semantics",
+                    response_after=response_after,
+                )
+            )
     applied_p95 = _stat(stats, "carla_steer_applied_abs", "p95")
     simple_lat_lateral_p95 = _stat(stats, "apollo_simple_lat_lateral_error_abs", "p95")
     route_station_delta_p95 = _stat(stats, "route_s_vs_apollo_current_station_abs_delta", "p95")
@@ -912,7 +1267,11 @@ def _anomalies(
             )
         )
     target_jump = _max_abs_delta(values["target_point_distance"])
-    if target_jump is not None and target_jump > thresholds["target_point_jump_m"]:
+    if (
+        target_jump is not None
+        and target_jump > thresholds["target_point_jump_m"]
+        and high_lateral_error_present
+    ):
         anomalies.append(
             _anomaly(
                 "target_point_jump",
@@ -1063,6 +1422,13 @@ def _merge_control_trace_fields(
         "apollo_simple_lon_current_station",
         "apollo_simple_lon_station_reference",
         "apollo_simple_lat_target_point_s",
+        "apollo_simple_lat_target_point_relative_time",
+        "apollo_control_trajectory_fraction",
+        "apollo_control_command_speed_mps",
+        "apollo_control_internal_current_speed_mps",
+        "apollo_simple_lat_ref_speed_mps",
+        "apollo_simple_lat_target_point_v_mps",
+        "apollo_control_speed_mps",
         "apollo_simple_lon_matched_point_s",
         "heading_error",
         "reference_lane_curvature",
@@ -1098,6 +1464,24 @@ def _infer_control_trace_sim_times(rows: Sequence[Mapping[str, Any]]) -> list[di
     if not rows:
         return []
     normalized = [dict(row) for row in rows]
+    header_by_observed_ts: dict[float, float] = {}
+    for row in normalized:
+        observed_ts = _num(row.get("ts_sec"))
+        header_timestamp = _row_value(row, ["control_header_timestamp_sec"])
+        if observed_ts is not None and header_timestamp is not None:
+            header_by_observed_ts[float(observed_ts)] = float(header_timestamp)
+    if header_by_observed_ts:
+        for row in normalized:
+            if _row_value(row, ["control_header_timestamp_sec"]) is not None:
+                continue
+            observed_ts = _num(row.get("ts_sec"))
+            if observed_ts is None:
+                continue
+            header_timestamp = header_by_observed_ts.get(float(observed_ts))
+            if header_timestamp is None:
+                continue
+            row["control_header_timestamp_sec"] = header_timestamp
+            row["_control_header_timestamp_inferred_from"] = "ts_sec_matched_control_raw"
     anchors: list[tuple[float, float]] = []
     for row in normalized:
         sim_time = _num(row.get("sim_time"))
@@ -1278,6 +1662,194 @@ def _route_health_route_id(payload: Mapping[str, Any]) -> str | None:
     return None if value in {None, ""} else str(value)
 
 
+def _control_target_point_summary(
+    rows: Sequence[Mapping[str, Any]],
+    thresholds: Mapping[str, float],
+) -> dict[str, Any]:
+    target_relative_times: list[float] = []
+    target_minus_current_station: list[float] = []
+    target_minus_matched_station: list[float] = []
+    trajectory_fractions: list[float] = []
+    control_command_speeds: list[float] = []
+    internal_current_speeds: list[float] = []
+    simple_lat_ref_speeds: list[float] = []
+    simple_lat_target_point_speeds: list[float] = []
+    source_steers: list[float] = []
+    input_trajectory_header_age_s: list[float] = []
+    latest_replan_header_age_s: list[float] = []
+    high_steer_rows_with_stale_target = 0
+    high_steer_rows_with_target_evidence = 0
+
+    past_threshold = float(thresholds["target_point_relative_time_past_s"])
+    behind_margin_m = float(thresholds["target_point_behind_station_margin_m"])
+    fraction_near_zero_max = float(thresholds["trajectory_fraction_near_zero_max"])
+    high_source_steer = float(thresholds["high_source_steer_abs"])
+
+    for row in rows:
+        target_time = _row_value(row, FIELD_ALIASES["apollo_simple_lat_target_point_relative_time"])
+        target_station = _row_value(row, FIELD_ALIASES["apollo_simple_lat_target_point_s"])
+        current_station = _row_value(row, FIELD_ALIASES["apollo_simple_lon_current_station"])
+        matched_station = _row_value(row, FIELD_ALIASES["apollo_simple_lon_matched_point_s"])
+        trajectory_fraction = _row_value(row, FIELD_ALIASES["apollo_control_trajectory_fraction"])
+        control_command_speed = _row_value(row, FIELD_ALIASES["apollo_control_command_speed_mps"])
+        internal_current_speed = _row_value(
+            row,
+            FIELD_ALIASES["apollo_control_internal_current_speed_mps"],
+        )
+        simple_lat_ref_speed = _row_value(row, FIELD_ALIASES["apollo_simple_lat_ref_speed_mps"])
+        simple_lat_target_point_speed = _row_value(
+            row,
+            FIELD_ALIASES["apollo_simple_lat_target_point_v_mps"],
+        )
+        source_steer = _row_value(row, FIELD_ALIASES["apollo_steer_raw"])
+        control_header_timestamp = _row_value(row, ["control_header_timestamp_sec"])
+        input_trajectory_header = _row_value(row, ["debug_input_trajectory_header_timestamp_sec"])
+        latest_replan_header = _row_value(row, ["debug_input_latest_replan_trajectory_header_timestamp_sec"])
+
+        target_is_stale = False
+        target_evidence_available = False
+        if target_time is not None:
+            target_relative_times.append(float(target_time))
+            target_evidence_available = True
+            if float(target_time) <= past_threshold:
+                target_is_stale = True
+        if target_station is not None and current_station is not None:
+            delta = float(target_station) - float(current_station)
+            target_minus_current_station.append(delta)
+            target_evidence_available = True
+            if delta <= -behind_margin_m:
+                target_is_stale = True
+        if target_station is not None and matched_station is not None:
+            target_minus_matched_station.append(float(target_station) - float(matched_station))
+        if trajectory_fraction is not None:
+            trajectory_fractions.append(float(trajectory_fraction))
+        if control_command_speed is not None:
+            control_command_speeds.append(float(control_command_speed))
+        if internal_current_speed is not None:
+            internal_current_speeds.append(float(internal_current_speed))
+        if simple_lat_ref_speed is not None:
+            simple_lat_ref_speeds.append(float(simple_lat_ref_speed))
+        if simple_lat_target_point_speed is not None:
+            simple_lat_target_point_speeds.append(float(simple_lat_target_point_speed))
+        if source_steer is not None:
+            source_steers.append(float(source_steer))
+        if control_header_timestamp is not None and input_trajectory_header is not None:
+            input_trajectory_header_age_s.append(
+                float(control_header_timestamp) - float(input_trajectory_header)
+            )
+        if (
+            control_header_timestamp is not None
+            and latest_replan_header is not None
+            and float(latest_replan_header) > 0.0
+        ):
+            latest_replan_header_age_s.append(
+                float(control_header_timestamp) - float(latest_replan_header)
+            )
+        if target_evidence_available and source_steer is not None and abs(float(source_steer)) >= high_source_steer:
+            high_steer_rows_with_target_evidence += 1
+            if target_is_stale:
+                high_steer_rows_with_stale_target += 1
+
+    past_count = sum(1 for value in target_relative_times if value <= past_threshold)
+    behind_current_count = sum(
+        1 for value in target_minus_current_station if value <= -behind_margin_m
+    )
+    near_zero_fraction_count = sum(
+        1 for value in trajectory_fractions if abs(value) <= fraction_near_zero_max
+    )
+    saturated_steer_count = sum(1 for value in source_steers if abs(value) >= high_source_steer)
+    trajectory_fraction_has_direct_target_stale_evidence = bool(
+        (
+            _ratio(past_count, len(target_relative_times)) is not None
+            and _ratio(past_count, len(target_relative_times)) >= thresholds["target_point_past_ratio_high"]
+        )
+        or (
+            _ratio(behind_current_count, len(target_minus_current_station)) is not None
+            and _ratio(behind_current_count, len(target_minus_current_station))
+            >= thresholds["target_point_behind_ratio_high"]
+        )
+    )
+    available = any(
+        (
+            target_relative_times,
+            target_minus_current_station,
+            trajectory_fractions,
+            source_steers,
+        )
+    )
+    return {
+        "available": bool(available),
+        "status": "available" if available else "insufficient_data",
+        "target_point_relative_time": {
+            **_stats_signed(target_relative_times),
+            "past_threshold_s": past_threshold,
+            "past_count": past_count,
+            "past_ratio": _ratio(past_count, len(target_relative_times)),
+        },
+        "target_point_station_delta": {
+            "count": len(target_minus_current_station),
+            "target_minus_current_station_m": _stats_signed(target_minus_current_station),
+            "target_minus_matched_station_m": _stats_signed(target_minus_matched_station),
+            "behind_current_station_margin_m": behind_margin_m,
+            "behind_current_station_count": behind_current_count,
+            "behind_current_station_ratio": _ratio(
+                behind_current_count,
+                len(target_minus_current_station),
+            ),
+        },
+        "trajectory_fraction": {
+            **_stats_signed(trajectory_fractions),
+            "near_zero_max": fraction_near_zero_max,
+            "near_zero_count": near_zero_fraction_count,
+            "near_zero_ratio": _ratio(near_zero_fraction_count, len(trajectory_fractions)),
+            "claim_grade_blocker_allowed": trajectory_fraction_has_direct_target_stale_evidence,
+            "interpretation": (
+                "diagnostic_only_unless_correlated_with_target_time_or_station"
+                if not trajectory_fraction_has_direct_target_stale_evidence
+                else "correlated_with_stale_or_behind_target_point"
+            ),
+        },
+        "speed_evidence": {
+            "control_command_speed_mps": _stats_signed(control_command_speeds),
+            "internal_current_speed_mps": _stats_signed(internal_current_speeds),
+            "simple_lat_ref_speed_mps": _stats_signed(simple_lat_ref_speeds),
+            "simple_lat_target_point_v_mps": _stats_signed(simple_lat_target_point_speeds),
+            "interpretation": (
+                "ControlCommand.speed is an output command field and may be default/unpopulated; "
+                "Apollo internal current/ref/target speed debug fields are stronger evidence for "
+                "control computation speed."
+            ),
+        },
+        "source_steer_saturation": {
+            "count": len(source_steers),
+            "threshold_abs": high_source_steer,
+            "saturated_count": saturated_steer_count,
+            "saturation_ratio": _ratio(saturated_steer_count, len(source_steers)),
+        },
+        "trajectory_header_age": {
+            "control_header_minus_input_trajectory_header_s": _stats_signed(
+                input_trajectory_header_age_s
+            ),
+            "control_header_minus_latest_replan_header_s": _stats_signed(
+                latest_replan_header_age_s
+            ),
+        },
+        "high_steer_with_stale_target": {
+            "sample_count": high_steer_rows_with_target_evidence,
+            "count": high_steer_rows_with_stale_target,
+            "ratio": _ratio(
+                high_steer_rows_with_stale_target,
+                high_steer_rows_with_target_evidence,
+            ),
+        },
+        "interpretation_boundary": (
+            "These fields are read from Apollo Control debug output when available. "
+            "They indicate target-point time/station semantics, not CARLA actuation "
+            "failure by themselves."
+        ),
+    }
+
+
 def _drift_window_summary(
     rows: Sequence[Mapping[str, Any]],
     thresholds: Mapping[str, float],
@@ -1347,6 +1919,13 @@ def _drift_samples(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, float]]:
         "apollo_simple_lon_current_station",
         "apollo_simple_lon_station_reference",
         "apollo_simple_lat_target_point_s",
+        "apollo_simple_lat_target_point_relative_time",
+        "apollo_control_trajectory_fraction",
+        "apollo_control_command_speed_mps",
+        "apollo_control_internal_current_speed_mps",
+        "apollo_simple_lat_ref_speed_mps",
+        "apollo_simple_lat_target_point_v_mps",
+        "apollo_control_speed_mps",
         "apollo_simple_lon_matched_point_s",
         "heading_error",
         "apollo_steer_raw",
@@ -1359,6 +1938,13 @@ def _drift_samples(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, float]]:
         "reference_lane_curvature",
         "route_curvature",
         "ego_yaw_rate",
+        "apollo_hdmap_projection_l",
+        "apollo_hdmap_projection_s",
+        "apollo_hdmap_projection_match_dt_s",
+        "_control_trace_merge_dt_s",
+        "apollo_hdmap_projection_lane_id",
+        "lane_invasion_count",
+        "lane_invasion",
     ]
     for row in rows:
         sample = {
@@ -1408,6 +1994,13 @@ def _sample_snapshot(sample: Mapping[str, float] | None) -> dict[str, float | No
         "apollo_simple_lon_current_station",
         "apollo_simple_lon_station_reference",
         "apollo_simple_lat_target_point_s",
+        "apollo_simple_lat_target_point_relative_time",
+        "apollo_control_trajectory_fraction",
+        "apollo_control_command_speed_mps",
+        "apollo_control_internal_current_speed_mps",
+        "apollo_simple_lat_ref_speed_mps",
+        "apollo_simple_lat_target_point_v_mps",
+        "apollo_control_speed_mps",
         "apollo_simple_lon_matched_point_s",
         "heading_error",
         "apollo_steer_raw",
@@ -1420,6 +2013,7 @@ def _sample_snapshot(sample: Mapping[str, float] | None) -> dict[str, float | No
         "reference_lane_curvature",
         "route_curvature",
         "ego_yaw_rate",
+        "_control_trace_merge_dt_s",
     ]
     return {field: sample.get(field) for field in fields if field in sample}
 
@@ -1456,6 +2050,9 @@ def _drift_context(
         "apollo_simple_lon_current_station",
         "apollo_simple_lon_station_reference",
         "apollo_simple_lat_target_point_s",
+        "apollo_simple_lat_target_point_relative_time",
+        "apollo_control_trajectory_fraction",
+        "apollo_control_speed_mps",
         "apollo_simple_lon_matched_point_s",
         "heading_error",
         "apollo_steer_raw",
@@ -1486,8 +2083,14 @@ def _critical_window_samples(
     thresholds: Mapping[str, float],
     *,
     reference_line_contract: Mapping[str, Any] | None = None,
+    hdmap_projection_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     samples = _drift_samples(rows)
+    samples = _samples_with_projection_lateral(
+        samples,
+        hdmap_projection_rows or [],
+        max_dt_s=float(thresholds["critical_window_projection_match_max_dt_s"]),
+    )
     if not samples:
         return {
             "available": False,
@@ -1557,6 +2160,11 @@ def _critical_window_samples(
             "high_source_steer_abs": source_steer_high,
             "high_lateral_threshold_m": lateral_min,
             "samples": [],
+            "event_table": _critical_window_event_table(
+                samples,
+                thresholds,
+                reference_line_contract=reference_line_contract or {},
+            ),
         }
 
     anchor = samples[anchor_index]
@@ -1578,6 +2186,14 @@ def _critical_window_samples(
         window = [anchor]
 
     limited = _limit_evenly(window, int(thresholds["critical_window_max_samples"]))
+    response_after = _critical_window_response_after(
+        samples,
+        anchor_index=anchor_index,
+        response_s=float(thresholds["critical_window_response_s"]),
+        epsilon_m=float(thresholds["critical_window_response_change_epsilon_m"]),
+        lateral_min_abs=sign_lateral_min,
+        steer_min_abs=steer_min,
+    )
     report = {
         "available": True,
         "status": "available",
@@ -1591,6 +2207,7 @@ def _critical_window_samples(
             _critical_window_sample(sample, lateral_min_abs=sign_lateral_min, steer_min_abs=steer_min)
             for sample in limited
         ],
+        "response_after": response_after,
         "interpretation_boundary": (
             "This is a same-window diagnostic slice only. It aligns route lateral error, "
             "Apollo simple_lat lateral error, source steer, mapped steer, and applied steer; "
@@ -1600,6 +2217,11 @@ def _critical_window_samples(
     report["reference_line_context"] = _critical_reference_line_context(
         reference_line_contract or {},
         anchor,
+    )
+    report["event_table"] = _critical_window_event_table(
+        samples,
+        thresholds,
+        reference_line_contract=reference_line_contract or {},
     )
     return report
 
@@ -1612,6 +2234,7 @@ def _critical_window_sample(
 ) -> dict[str, Any]:
     cross_track = sample.get("cross_track_error")
     simple_lat = sample.get("apollo_simple_lat_lateral_error")
+    projection_l = sample.get("apollo_hdmap_projection_l")
     source_steer = sample.get("apollo_steer_raw")
     mapped_steer = sample.get("bridge_steer_mapped")
     applied_steer = sample.get("carla_steer_applied")
@@ -1620,13 +2243,25 @@ def _critical_window_sample(
         {
             "source_steer_vs_route_lateral_error": _sign_relation(cross_track, source_steer, steer_min_abs),
             "source_steer_vs_simple_lat_lateral_error": _sign_relation(simple_lat, source_steer, steer_min_abs),
+            "source_steer_vs_projection_lateral": _sign_relation(projection_l, source_steer, steer_min_abs),
             "route_lateral_error_vs_simple_lat_lateral_error": _sign_relation(
                 cross_track,
                 simple_lat,
                 lateral_min_abs,
             ),
+            "route_lateral_error_vs_projection_lateral": _sign_relation(
+                cross_track,
+                projection_l,
+                lateral_min_abs,
+            ),
+            "projection_lateral_vs_simple_lat_lateral_error": _sign_relation(
+                projection_l,
+                simple_lat,
+                lateral_min_abs,
+            ),
             "mapped_steer_vs_route_lateral_error": _sign_relation(cross_track, mapped_steer, steer_min_abs),
             "applied_steer_vs_route_lateral_error": _sign_relation(cross_track, applied_steer, steer_min_abs),
+            "applied_steer_vs_projection_lateral": _sign_relation(projection_l, applied_steer, steer_min_abs),
             "route_simple_lat_abs_magnitude_delta_m": (
                 abs(abs(float(cross_track)) - abs(float(simple_lat)))
                 if cross_track is not None and simple_lat is not None
@@ -1635,6 +2270,451 @@ def _critical_window_sample(
         }
     )
     return snapshot
+
+
+def _samples_with_projection_lateral(
+    samples: Sequence[Mapping[str, float]],
+    projection_rows: Sequence[Mapping[str, Any]],
+    *,
+    max_dt_s: float,
+) -> list[dict[str, float]]:
+    if not samples or not projection_rows:
+        return [dict(sample) for sample in samples]
+    candidates: list[tuple[float, Mapping[str, Any]]] = []
+    for row in projection_rows:
+        if row.get("source") != "apollo_hdmap_api":
+            continue
+        status = row.get("status") or row.get("projection_status")
+        if status not in {None, "", "ok", "pass"}:
+            continue
+        timestamp = _row_value(row, ["sim_time", "timestamp", "apollo_time"])
+        projection_l = _row_value(row, ["projection_l", "lateral_error_m"])
+        if timestamp is None or projection_l is None:
+            continue
+        candidates.append((float(timestamp), row))
+    if not candidates:
+        return [dict(sample) for sample in samples]
+    candidates.sort(key=lambda item: item[0])
+    times = [item[0] for item in candidates]
+    annotated: list[dict[str, float]] = []
+    for sample in samples:
+        current = dict(sample)
+        sim_time = sample.get("sim_time")
+        if sim_time is None:
+            annotated.append(current)
+            continue
+        insert_at = bisect_left(times, float(sim_time))
+        nearest = [
+            candidates[index]
+            for index in (insert_at - 1, insert_at, insert_at + 1)
+            if 0 <= index < len(candidates)
+        ]
+        if not nearest:
+            annotated.append(current)
+            continue
+        projection_time, projection = min(nearest, key=lambda item: abs(item[0] - float(sim_time)))
+        dt = abs(projection_time - float(sim_time))
+        if dt <= max_dt_s:
+            projection_l = _row_value(projection, ["projection_l", "lateral_error_m"])
+            projection_s = _row_value(projection, ["projection_s", "s"])
+            if projection_l is not None:
+                current["apollo_hdmap_projection_l"] = float(projection_l)
+            if projection_s is not None:
+                current["apollo_hdmap_projection_s"] = float(projection_s)
+            current["apollo_hdmap_projection_match_dt_s"] = float(dt)
+            lane_id = projection.get("nearest_lane_id")
+            if lane_id not in {None, ""}:
+                current["apollo_hdmap_projection_lane_id"] = str(lane_id)  # type: ignore[assignment]
+        annotated.append(current)
+    return annotated
+
+
+def _critical_window_response_after(
+    samples: Sequence[Mapping[str, float]],
+    *,
+    anchor_index: int,
+    response_s: float,
+    epsilon_m: float,
+    lateral_min_abs: float,
+    steer_min_abs: float,
+) -> dict[str, Any]:
+    if not samples or anchor_index < 0 or anchor_index >= len(samples):
+        return {"available": False, "status": "insufficient_data", "reason": "missing_anchor"}
+    anchor = samples[anchor_index]
+    anchor_time = anchor.get("sim_time")
+    after_index: int | None = None
+    target_time = None if anchor_time is None else float(anchor_time) + float(response_s)
+    if target_time is not None:
+        for index in range(anchor_index + 1, len(samples)):
+            sample_time = samples[index].get("sim_time")
+            if sample_time is not None and float(sample_time) >= target_time:
+                after_index = index
+                break
+    if after_index is None and anchor_index + 1 < len(samples):
+        after_index = min(len(samples) - 1, anchor_index + max(1, int(round(response_s / 0.1))))
+    if after_index is None:
+        return {
+            "available": False,
+            "status": "insufficient_data",
+            "reason": "missing_post_anchor_sample",
+            "response_s": response_s,
+            "anchor": _critical_window_sample(
+                anchor,
+                lateral_min_abs=lateral_min_abs,
+                steer_min_abs=steer_min_abs,
+            ),
+        }
+    after = samples[after_index]
+    primary_field = _primary_lateral_response_field(anchor, after)
+    anchor_value = _num(anchor.get(primary_field)) if primary_field else None
+    after_value = _num(after.get(primary_field)) if primary_field else None
+    abs_delta = (
+        abs(float(after_value)) - abs(float(anchor_value))
+        if anchor_value is not None and after_value is not None
+        else None
+    )
+    if abs_delta is None:
+        convergence = "unknown"
+    elif abs_delta > epsilon_m:
+        convergence = "worsened"
+    elif abs_delta < -epsilon_m:
+        convergence = "improved"
+    else:
+        convergence = "unchanged"
+    source_steer = anchor.get("apollo_steer_raw")
+    applied_steer = anchor.get("carla_steer_applied")
+    return {
+        "available": True,
+        "status": "available",
+        "response_s": response_s,
+        "target_time_s": target_time,
+        "actual_dt_s": (
+            float(after["sim_time"]) - float(anchor_time)
+            if anchor_time is not None and after.get("sim_time") is not None
+            else None
+        ),
+        "primary_lateral_frame": _critical_response_field_label(primary_field),
+        "primary_lateral_anchor_m": anchor_value,
+        "primary_lateral_after_m": after_value,
+        "primary_lateral_abs_error_delta_m": abs_delta,
+        "convergence": convergence,
+        "epsilon_m": epsilon_m,
+        "source_steer_vs_primary_lateral_error": _sign_relation(
+            anchor_value,
+            source_steer,
+            steer_min_abs,
+        ),
+        "applied_steer_vs_primary_lateral_error": _sign_relation(
+            anchor_value,
+            applied_steer,
+            steer_min_abs,
+        ),
+        "route_lateral_abs_error_delta_m": _abs_error_delta(
+            anchor.get("cross_track_error"),
+            after.get("cross_track_error"),
+        ),
+        "simple_lat_abs_error_delta_m": _abs_error_delta(
+            anchor.get("apollo_simple_lat_lateral_error"),
+            after.get("apollo_simple_lat_lateral_error"),
+        ),
+        "projection_lateral_abs_error_delta_m": _abs_error_delta(
+            anchor.get("apollo_hdmap_projection_l"),
+            after.get("apollo_hdmap_projection_l"),
+        ),
+        "anchor": _critical_window_sample(
+            anchor,
+            lateral_min_abs=lateral_min_abs,
+            steer_min_abs=steer_min_abs,
+        ),
+        "after": _critical_window_sample(
+            after,
+            lateral_min_abs=lateral_min_abs,
+            steer_min_abs=steer_min_abs,
+        ),
+        "interpretation_boundary": (
+            "This response slice checks whether lateral error shrinks after the critical "
+            "steering sample. It is diagnostic and must be interpreted with reference-line "
+            "and projection evidence before changing runtime control semantics."
+        ),
+    }
+
+
+def _critical_window_event_table(
+    samples: Sequence[Mapping[str, float]],
+    thresholds: Mapping[str, float],
+    *,
+    reference_line_contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not samples:
+        return {"available": False, "status": "insufficient_data", "events": []}
+    response_s = float(thresholds["critical_window_response_s"])
+    epsilon_m = float(thresholds["critical_window_response_change_epsilon_m"])
+    lateral_min_abs = float(thresholds["lateral_sign_active_abs_m"])
+    steer_min_abs = float(thresholds["steer_sign_active_abs"])
+    high_steer = float(thresholds["high_source_steer_abs"])
+    events: list[dict[str, Any]] = []
+    specs: list[tuple[str, int | None, str]] = [
+        (
+            "first_route_cte_abs_ge_0_5m",
+            _first_sample_index(
+                samples,
+                lambda sample: _abs_ge(sample.get("cross_track_error"), 0.5),
+            ),
+            "first sample where absolute CARLA route cross-track error reaches 0.5m",
+        ),
+        (
+            "first_raw_steer_saturation",
+            _first_sample_index(
+                samples,
+                lambda sample: _abs_ge(sample.get("apollo_steer_raw"), high_steer),
+            ),
+            "first sample where Apollo raw steering reaches the high-steer threshold",
+        ),
+        (
+            "first_route_cte_abs_ge_1_0m",
+            _first_sample_index(
+                samples,
+                lambda sample: _abs_ge(sample.get("cross_track_error"), 1.0),
+            ),
+            "first sample where absolute CARLA route cross-track error reaches 1.0m",
+        ),
+        (
+            "first_path_fallback",
+            _path_fallback_sample_index(samples, reference_line_contract),
+            "first PATH_FALLBACK onset from reference-line contract, matched to nearest sample",
+        ),
+        (
+            "first_lane_invasion",
+            _first_sample_index(samples, _sample_has_lane_invasion),
+            "first lane invasion sample when lane event fields are present",
+        ),
+    ]
+    for event_name, index, description in specs:
+        if index is None:
+            events.append(
+                {
+                    "event": event_name,
+                    "available": False,
+                    "status": "not_observed",
+                    "description": description,
+                }
+            )
+            continue
+        response = _critical_window_response_after(
+            samples,
+            anchor_index=index,
+            response_s=response_s,
+            epsilon_m=epsilon_m,
+            lateral_min_abs=lateral_min_abs,
+            steer_min_abs=steer_min_abs,
+        )
+        anchor = samples[index]
+        events.append(
+            {
+                "event": event_name,
+                "available": True,
+                "status": "available",
+                "description": description,
+                "anchor": _critical_window_sample(
+                    anchor,
+                    lateral_min_abs=lateral_min_abs,
+                    steer_min_abs=steer_min_abs,
+                ),
+                "sign_table": _critical_window_sign_table(anchor),
+                "response_after_1s": {
+                    "available": response.get("available"),
+                    "primary_lateral_frame": response.get("primary_lateral_frame"),
+                    "convergence": response.get("convergence"),
+                    "primary_lateral_abs_error_delta_m": response.get(
+                        "primary_lateral_abs_error_delta_m"
+                    ),
+                    "route_cte_abs_error_delta_m": response.get(
+                        "route_lateral_abs_error_delta_m"
+                    ),
+                    "simple_lat_abs_error_delta_m": response.get(
+                        "simple_lat_abs_error_delta_m"
+                    ),
+                    "projection_lateral_abs_error_delta_m": response.get(
+                        "projection_lateral_abs_error_delta_m"
+                    ),
+                    "actual_dt_s": response.get("actual_dt_s"),
+                },
+                "fallback_delay_s": _path_fallback_delay_s(anchor, reference_line_contract),
+                "path_bound_violation_margin_m": _path_bound_violation_margin_m(
+                    reference_line_contract
+                ),
+            }
+        )
+    return {
+        "available": True,
+        "observed_event_available": any(event.get("available") for event in events),
+        "status": "available",
+        "events": events,
+        "interpretation_boundary": (
+            "This table aligns event anchors across route CTE, Apollo simple_lat, raw/mapped/applied steer, "
+            "yaw-rate, path fallback, and lane events. It is diagnostic evidence; it does not by itself "
+            "justify changing steering scale, PID, guards, or route followers."
+        ),
+    }
+
+
+def _critical_window_sign_table(sample: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "route_cte_sign": _sign_label(sample.get("cross_track_error")),
+        "apollo_simple_lat_lateral_error_sign": _sign_label(
+            sample.get("apollo_simple_lat_lateral_error")
+        ),
+        "apollo_hdmap_projection_l_sign": _sign_label(sample.get("apollo_hdmap_projection_l")),
+        "raw_steer_sign": _sign_label(sample.get("apollo_steer_raw")),
+        "mapped_steer_sign": _sign_label(sample.get("bridge_steer_mapped")),
+        "applied_steer_sign": _sign_label(sample.get("carla_steer_applied")),
+        "yaw_rate_sign": _sign_label(sample.get("ego_yaw_rate")),
+        "route_cte_vs_simple_lat": _sign_relation(
+            sample.get("cross_track_error"),
+            sample.get("apollo_simple_lat_lateral_error"),
+            0.0,
+        ),
+        "raw_steer_vs_route_cte": _sign_relation(
+            sample.get("cross_track_error"),
+            sample.get("apollo_steer_raw"),
+            0.0,
+        ),
+        "raw_steer_vs_simple_lat": _sign_relation(
+            sample.get("apollo_simple_lat_lateral_error"),
+            sample.get("apollo_steer_raw"),
+            0.0,
+        ),
+        "mapped_steer_vs_applied_steer": _sign_relation(
+            sample.get("bridge_steer_mapped"),
+            sample.get("carla_steer_applied"),
+            0.0,
+        ),
+        "applied_steer_vs_yaw_rate": _sign_relation(
+            sample.get("carla_steer_applied"),
+            sample.get("ego_yaw_rate"),
+            0.0,
+        ),
+    }
+
+
+def _first_sample_index(
+    samples: Sequence[Mapping[str, Any]],
+    predicate: Any,
+) -> int | None:
+    for index, sample in enumerate(samples):
+        if predicate(sample):
+            return index
+    return None
+
+
+def _abs_ge(value: Any, threshold: float) -> bool:
+    number = _num(value)
+    return number is not None and abs(float(number)) >= threshold
+
+
+def _sample_has_lane_invasion(sample: Mapping[str, Any]) -> bool:
+    for field in ("lane_invasion", "lane_invasion_count"):
+        value = _num(sample.get(field))
+        if value is not None and float(value) > 0.0:
+            return True
+    return False
+
+
+def _path_fallback_sample_index(
+    samples: Sequence[Mapping[str, Any]],
+    reference_line_contract: Mapping[str, Any],
+) -> int | None:
+    onset_time = _path_fallback_onset_time(reference_line_contract)
+    if onset_time is None:
+        return None
+    candidates: list[tuple[float, int]] = []
+    for index, sample in enumerate(samples):
+        sim_time = _num(sample.get("sim_time"))
+        if sim_time is not None:
+            candidates.append((abs(float(sim_time) - float(onset_time)), index))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[0])[1]
+
+
+def _path_fallback_delay_s(
+    anchor: Mapping[str, Any],
+    reference_line_contract: Mapping[str, Any],
+) -> float | None:
+    onset_time = _path_fallback_onset_time(reference_line_contract)
+    anchor_time = _num(anchor.get("sim_time"))
+    if onset_time is None or anchor_time is None:
+        return None
+    return float(onset_time) - float(anchor_time)
+
+
+def _path_fallback_onset_time(reference_line_contract: Mapping[str, Any]) -> float | None:
+    metrics = reference_line_contract.get("metrics")
+    if not isinstance(metrics, Mapping):
+        metrics = _nested(reference_line_contract, "planning_trajectory_contract.key_metrics")
+    metrics = metrics if isinstance(metrics, Mapping) else {}
+    onset = metrics.get("path_fallback_onset")
+    if not isinstance(onset, Mapping):
+        return None
+    return _num(onset.get("sim_time_sec"))
+
+
+def _path_bound_violation_margin_m(reference_line_contract: Mapping[str, Any]) -> float | None:
+    path_bound = _nested(
+        reference_line_contract,
+        "planning_info_log_reference_line_evidence.planning_info_log_path_bound_evidence",
+    )
+    if not isinstance(path_bound, Mapping):
+        return None
+    first_violation = path_bound.get("first_fallback_path_bound_violation")
+    if isinstance(first_violation, Mapping):
+        margin = _num(first_violation.get("margin_m"))
+        if margin is not None:
+            return margin
+    return _num(path_bound.get("fallback_self_opt_l_out_of_bounds_max_margin_m"))
+
+
+def _sign_label(value: Any) -> str:
+    number = _num(value)
+    if number is None:
+        return "missing"
+    if float(number) > 0.0:
+        return "positive"
+    if float(number) < 0.0:
+        return "negative"
+    return "zero"
+
+
+def _primary_lateral_response_field(
+    anchor: Mapping[str, Any],
+    after: Mapping[str, Any],
+) -> str | None:
+    for field in (
+        "apollo_hdmap_projection_l",
+        "apollo_simple_lat_lateral_error",
+        "cross_track_error",
+    ):
+        if _num(anchor.get(field)) is not None and _num(after.get(field)) is not None:
+            return field
+    return None
+
+
+def _critical_response_field_label(field: str | None) -> str | None:
+    if field == "apollo_hdmap_projection_l":
+        return "apollo_hdmap_projection_l"
+    if field == "apollo_simple_lat_lateral_error":
+        return "apollo_simple_lat_lateral_error"
+    if field == "cross_track_error":
+        return "route_cross_track_error"
+    return None
+
+
+def _abs_error_delta(start: Any, end: Any) -> float | None:
+    start_num = _num(start)
+    end_num = _num(end)
+    if start_num is None or end_num is None:
+        return None
+    return abs(float(end_num)) - abs(float(start_num))
 
 
 def _limit_evenly(items: Sequence[Mapping[str, float]], max_count: int) -> list[Mapping[str, float]]:
@@ -2018,6 +3098,24 @@ def _route_lateral_field_semantics_recommendation(
         contract_classification
         == "timeseries_route_lateral_matches_projection_route_samples"
     )
+    timeseries_projection_pair = projection_contract.get(
+        "timeseries_lateral_vs_projection_route_sample_signed_lateral"
+    )
+    if not isinstance(timeseries_projection_pair, Mapping):
+        timeseries_projection_pair = {}
+    projection_thresholds = projection_contract.get("thresholds")
+    if not isinstance(projection_thresholds, Mapping):
+        projection_thresholds = {}
+    pair_sample_count = _num(timeseries_projection_pair.get("sample_count")) or 0.0
+    pair_min_samples = _num(projection_thresholds.get("min_samples")) or 3.0
+    pair_high_ratio = _num(projection_thresholds.get("high_ratio")) or 0.80
+    pair_same_ratio = _num(timeseries_projection_pair.get("same_sign_ratio"))
+    pair_opposite_ratio = _num(timeseries_projection_pair.get("opposite_sign_ratio"))
+    if pair_sample_count >= pair_min_samples:
+        if pair_same_ratio is not None and pair_same_ratio >= pair_high_ratio:
+            projection_same = True
+        if pair_opposite_ratio is not None and pair_opposite_ratio >= pair_high_ratio:
+            projection_confirmed = True
     if projection_confirmed:
         status = "available"
         classification = "route_lateral_field_opposite_signed_to_apollo_projection"
@@ -3495,6 +4593,37 @@ def _stats_abs(values: Sequence[float]) -> dict[str, Any]:
     }
 
 
+def _stats_signed(values: Sequence[float]) -> dict[str, Any]:
+    finite = [float(value) for value in values if math.isfinite(float(value))]
+    if not finite:
+        return {
+            "count": 0,
+            "mean": None,
+            "min": None,
+            "p05": None,
+            "p50": None,
+            "p95": None,
+            "max": None,
+            "abs_p95": None,
+        }
+    return {
+        "count": len(finite),
+        "mean": sum(finite) / len(finite),
+        "min": min(finite),
+        "p05": _percentile(finite, 0.05),
+        "p50": _percentile(finite, 0.50),
+        "p95": _percentile(finite, 0.95),
+        "max": max(finite),
+        "abs_p95": _percentile([abs(value) for value in finite], 0.95),
+    }
+
+
+def _ratio(count: int, total: int) -> float | None:
+    if total <= 0:
+        return None
+    return float(count) / float(total)
+
+
 def _paired_abs_delta_stats(
     rows: Sequence[Mapping[str, Any]],
     left_aliases: Sequence[str],
@@ -3549,8 +4678,10 @@ def _read_rows(path: str | Path | Sequence[str | Path] | None) -> list[dict[str,
         return []
     if resolved.suffix == ".jsonl":
         rows = _read_jsonl(resolved)
-        if "control_apply_trace" in resolved.name:
+        if "control_apply_trace" in resolved.name or "control_critical_window_trace" in resolved.name:
             return [_normalize_control_apply_trace_row(row) for row in rows]
+        if "bridge_control_decode" in resolved.name:
+            return [_normalize_bridge_control_decode_row(row) for row in rows]
         if "control_decode_debug" in resolved.name:
             return [_normalize_control_decode_debug_row(row) for row in rows]
         if "apollo_control_raw" in resolved.name:
@@ -3563,7 +4694,19 @@ def _read_rows(path: str | Path | Sequence[str | Path] | None) -> list[dict[str,
             return [dict(item) for item in rows if isinstance(item, Mapping)]
         return [payload] if payload else []
     with resolved.open(encoding="utf-8", newline="") as handle:
-        return [dict(row) for row in csv.DictReader(handle)]
+        rows = [dict(row) for row in csv.DictReader(handle)]
+    if resolved.name == "debug_timeseries.csv":
+        return [_normalize_debug_timeseries_row(row) for row in rows]
+    return rows
+
+
+def _normalize_debug_timeseries_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    if _numeric_group_is_default_zero(normalized, _NORMALIZED_SIMPLE_LAT_DEBUG_KEYS):
+        _drop_inactive_simple_lat_fields(normalized)
+    if _numeric_group_is_default_zero(normalized, _NORMALIZED_SIMPLE_LON_DEBUG_KEYS):
+        _drop_inactive_simple_lon_fields(normalized)
+    return normalized
 
 
 def _normalize_control_apply_trace_row(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -3594,8 +4737,11 @@ def _normalize_control_apply_trace_row(row: Mapping[str, Any]) -> dict[str, Any]
         normalized,
         "bridge_steer_mapped",
         _first_numeric_value(
-            row.get("bridge_steer_mapped"),
             bridge_mapped.get("mapped_carla_steer_cmd"),
+            row.get("mapped_carla_steer_cmd"),
+            row.get("commanded_steer"),
+            row.get("carla_steer_applied"),
+            row.get("bridge_steer_mapped"),
             bridge_mapped.get("steer"),
         ),
     )
@@ -3611,6 +4757,9 @@ def _normalize_control_apply_trace_row(row: Mapping[str, Any]) -> dict[str, Any]
     )
     _set_if_numeric(normalized, "steer_scale", row.get("steer_scale"))
     _set_if_numeric(normalized, "steering_sign", row.get("steering_sign"))
+    if _control_apply_trace_reference_debug_is_default_zero(row):
+        for key in _CONTROL_APPLY_TRACE_REFERENCE_DEBUG_KEYS:
+            normalized.pop(key, None)
     return normalized
 
 
@@ -3619,6 +4768,9 @@ def _normalize_control_decode_debug_row(row: Mapping[str, Any]) -> dict[str, Any
     parsed = row.get("parsed_control") if isinstance(row.get("parsed_control"), Mapping) else {}
     raw = row.get("raw_control_msg_dump") if isinstance(row.get("raw_control_msg_dump"), Mapping) else {}
     output = row.get("output_to_carla") if isinstance(row.get("output_to_carla"), Mapping) else {}
+    simple_lat_inactive = _control_decode_simple_lat_debug_is_default_zero(parsed, raw)
+    simple_lon_inactive = _control_decode_simple_lon_debug_is_default_zero(parsed, raw)
+    mpc_scalar_inactive = _simple_mpc_scalar_debug_is_default_zero(raw)
     _set_if_numeric(normalized, "sim_time", _first_numeric_value(output.get("gt_state_sim_time_sec")))
     _set_if_numeric(
         normalized,
@@ -3629,6 +4781,22 @@ def _normalize_control_decode_debug_row(row: Mapping[str, Any]) -> dict[str, Any
         normalized,
         "control_header_sequence_num",
         _first_numeric_value(raw.get("control_header_sequence_num"), parsed.get("control_header_sequence_num")),
+    )
+    _set_if_numeric(
+        normalized,
+        "debug_input_trajectory_header_timestamp_sec",
+        _first_numeric_value(
+            raw.get("debug_input_trajectory_header_timestamp_sec"),
+            parsed.get("debug_input_trajectory_header_timestamp_sec"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "debug_input_latest_replan_trajectory_header_timestamp_sec",
+        _first_numeric_value(
+            raw.get("debug_input_latest_replan_trajectory_header_timestamp_sec"),
+            parsed.get("debug_input_latest_replan_trajectory_header_timestamp_sec"),
+        ),
     )
     _set_if_numeric(normalized, "apollo_steer_raw", _first_numeric_value(parsed.get("steer")))
     _set_if_numeric(
@@ -3693,6 +4861,56 @@ def _normalize_control_decode_debug_row(row: Mapping[str, Any]) -> dict[str, Any
     )
     _set_if_numeric(
         normalized,
+        "apollo_debug_simple_lat_target_point_relative_time_sec",
+        _first_numeric_value(
+            parsed.get("debug_simple_lat_target_point_relative_time_sec"),
+            raw.get("debug_simple_lat_current_target_point_relative_time"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "trajectory_fraction",
+        _first_numeric_value(parsed.get("trajectory_fraction"), raw.get("trajectory_fraction")),
+    )
+    _set_if_numeric(
+        normalized,
+        "control_speed_mps",
+        _first_numeric_value(parsed.get("speed_mps"), raw.get("speed_mps")),
+    )
+    _set_if_numeric(
+        normalized,
+        "control_command_speed_mps",
+        _first_numeric_value(parsed.get("speed_mps"), raw.get("speed_mps")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lon_current_speed_mps",
+        _first_numeric_value(
+            parsed.get("debug_simple_lon_current_speed_mps"),
+            parsed.get("debug_simple_lon_current_speed"),
+            raw.get("debug_simple_lon_current_speed"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_ref_speed_mps",
+        _first_numeric_value(
+            parsed.get("debug_simple_lat_ref_speed_mps"),
+            parsed.get("debug_simple_lat_ref_speed"),
+            raw.get("debug_simple_lat_ref_speed"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_target_point_v_mps",
+        _first_numeric_value(
+            parsed.get("debug_simple_lat_target_point_v_mps"),
+            parsed.get("debug_simple_lat_current_target_point_v"),
+            raw.get("debug_simple_lat_current_target_point_v"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
         "apollo_debug_simple_lat_current_reference_point_x",
         _first_numeric_value(parsed.get("debug_simple_lat_current_reference_point_x")),
     )
@@ -3729,12 +4947,435 @@ def _normalize_control_decode_debug_row(row: Mapping[str, Any]) -> dict[str, Any
         "apollo_debug_simple_lon_matched_point_y",
         _first_numeric_value(parsed.get("debug_simple_lon_matched_point_y"), raw.get("debug_simple_lon_current_matched_point_y")),
     )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_matched_point_s",
+        None
+        if mpc_scalar_inactive
+        else _first_numeric_value(
+            parsed.get("debug_simple_mpc_matched_point_s"),
+            raw.get("debug_simple_mpc_current_matched_point_s"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_matched_point_x",
+        _first_numeric_value(
+            parsed.get("debug_simple_mpc_matched_point_x"),
+            raw.get("debug_simple_mpc_current_matched_point_x"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_matched_point_y",
+        _first_numeric_value(
+            parsed.get("debug_simple_mpc_matched_point_y"),
+            raw.get("debug_simple_mpc_current_matched_point_y"),
+        ),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_current_reference_point_x",
+        _first_numeric_value(raw.get("debug_simple_mpc_current_reference_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_current_reference_point_y",
+        _first_numeric_value(raw.get("debug_simple_mpc_current_reference_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_s",
+        None if mpc_scalar_inactive else _first_numeric_value(raw.get("debug_simple_mpc_preview_reference_point_s")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_x",
+        _first_numeric_value(raw.get("debug_simple_mpc_preview_reference_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_y",
+        _first_numeric_value(raw.get("debug_simple_mpc_preview_reference_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_kappa",
+        None if mpc_scalar_inactive else _first_numeric_value(raw.get("debug_simple_mpc_preview_reference_point_kappa")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_relative_time_sec",
+        None
+        if mpc_scalar_inactive
+        else _first_numeric_value(raw.get("debug_simple_mpc_preview_reference_point_relative_time")),
+    )
+    if simple_lat_inactive:
+        _drop_inactive_simple_lat_fields(normalized)
+    if simple_lon_inactive:
+        _drop_inactive_simple_lon_fields(normalized)
     return normalized
+
+
+def _normalize_bridge_control_decode_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    simple_lat_inactive = _bridge_decode_simple_lat_debug_is_default_zero(row)
+    simple_lon_inactive = _bridge_decode_simple_lon_debug_is_default_zero(row)
+    mpc_scalar_inactive = _simple_mpc_scalar_debug_is_default_zero(row)
+    if simple_lat_inactive:
+        for key in _BRIDGE_DECODE_SIMPLE_LAT_DEBUG_KEYS:
+            normalized.pop(key, None)
+    _set_if_numeric(normalized, "apollo_steer_raw", _first_numeric_value(row.get("raw_steer")))
+    _set_if_numeric(
+        normalized,
+        "bridge_steer_mapped",
+        _first_numeric_value(row.get("mapped_carla_steer_cmd"), row.get("commanded_steer")),
+    )
+    _set_if_numeric(normalized, "steer_scale", row.get("steer_scale"))
+    _set_if_numeric(normalized, "steering_sign", row.get("steering_sign"))
+    if not simple_lat_inactive:
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_lateral_error_m",
+            _first_numeric_value(row.get("debug_simple_lat_lateral_error")),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_heading_error_rad",
+            _first_numeric_value(row.get("debug_simple_lat_heading_error")),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_curvature",
+            _first_numeric_value(row.get("debug_simple_lat_curvature")),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_target_point_kappa",
+            _first_numeric_value(row.get("debug_simple_lat_current_target_point_kappa")),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_target_point_s",
+            _first_numeric_value(row.get("debug_simple_lat_current_target_point_s")),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_target_point_x",
+            _first_numeric_value(row.get("debug_simple_lat_current_target_point_x")),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_target_point_y",
+            _first_numeric_value(row.get("debug_simple_lat_current_target_point_y")),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_target_point_relative_time_sec",
+            _first_numeric_value(row.get("debug_simple_lat_current_target_point_relative_time")),
+        )
+    _set_if_numeric(normalized, "trajectory_fraction", row.get("trajectory_fraction"))
+    _set_if_numeric(normalized, "control_command_speed_mps", row.get("control_speed_mps"))
+    if not simple_lat_inactive:
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_ref_speed_mps",
+            _first_numeric_value(row.get("debug_simple_lat_ref_speed")),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_target_point_v_mps",
+            _first_numeric_value(row.get("debug_simple_lat_current_target_point_v")),
+        )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_matched_point_s",
+        None if mpc_scalar_inactive else _first_numeric_value(row.get("debug_simple_mpc_current_matched_point_s")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_matched_point_x",
+        _first_numeric_value(row.get("debug_simple_mpc_current_matched_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_matched_point_y",
+        _first_numeric_value(row.get("debug_simple_mpc_current_matched_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_current_reference_point_x",
+        _first_numeric_value(row.get("debug_simple_mpc_current_reference_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_current_reference_point_y",
+        _first_numeric_value(row.get("debug_simple_mpc_current_reference_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_s",
+        None if mpc_scalar_inactive else _first_numeric_value(row.get("debug_simple_mpc_preview_reference_point_s")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_x",
+        _first_numeric_value(row.get("debug_simple_mpc_preview_reference_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_y",
+        _first_numeric_value(row.get("debug_simple_mpc_preview_reference_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_kappa",
+        None if mpc_scalar_inactive else _first_numeric_value(row.get("debug_simple_mpc_preview_reference_point_kappa")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_relative_time_sec",
+        None
+        if mpc_scalar_inactive
+        else _first_numeric_value(row.get("debug_simple_mpc_preview_reference_point_relative_time")),
+    )
+    if simple_lon_inactive:
+        _drop_inactive_simple_lon_fields(normalized)
+    return normalized
+
+
+def _bridge_decode_simple_lat_debug_is_default_zero(row: Mapping[str, Any]) -> bool:
+    values = [
+        _first_numeric_value(row.get(key))
+        for key in _BRIDGE_DECODE_SIMPLE_LAT_DEBUG_KEYS
+    ]
+    present = [value for value in values if value is not None]
+    return bool(present) and all(abs(value) <= 1e-12 for value in present)
+
+
+def _control_decode_simple_lat_debug_is_default_zero(
+    parsed: Mapping[str, Any],
+    raw: Mapping[str, Any],
+) -> bool:
+    values = [
+        _first_numeric_value(parsed.get(parsed_key), raw.get(raw_key))
+        for parsed_key, raw_key in _CONTROL_DECODE_SIMPLE_LAT_DEBUG_KEY_PAIRS
+    ]
+    present = [value for value in values if value is not None]
+    return bool(present) and all(abs(value) <= 1e-12 for value in present)
+
+
+def _bridge_decode_simple_lon_debug_is_default_zero(row: Mapping[str, Any]) -> bool:
+    values = [
+        _first_numeric_value(row.get(key))
+        for key in _BRIDGE_DECODE_SIMPLE_LON_DEBUG_KEYS
+    ]
+    present = [value for value in values if value is not None]
+    return bool(present) and all(abs(value) <= 1e-12 for value in present)
+
+
+def _control_decode_simple_lon_debug_is_default_zero(
+    parsed: Mapping[str, Any],
+    raw: Mapping[str, Any],
+) -> bool:
+    values = [
+        _first_numeric_value(parsed.get(parsed_key), raw.get(raw_key))
+        for parsed_key, raw_key in _CONTROL_DECODE_SIMPLE_LON_DEBUG_KEY_PAIRS
+    ]
+    present = [value for value in values if value is not None]
+    return bool(present) and all(abs(value) <= 1e-12 for value in present)
+
+
+def _apollo_control_raw_simple_lat_debug_is_default_zero(raw: Mapping[str, Any]) -> bool:
+    values = [
+        _first_numeric_value(raw.get(key))
+        for key in _APOLLO_CONTROL_RAW_SIMPLE_LAT_DEBUG_KEYS
+    ]
+    present = [value for value in values if value is not None]
+    return bool(present) and all(abs(value) <= 1e-12 for value in present)
+
+
+def _apollo_control_raw_simple_lon_debug_is_default_zero(raw: Mapping[str, Any]) -> bool:
+    values = [
+        _first_numeric_value(raw.get(key))
+        for key in _APOLLO_CONTROL_RAW_SIMPLE_LON_DEBUG_KEYS
+    ]
+    present = [value for value in values if value is not None]
+    return bool(present) and all(abs(value) <= 1e-12 for value in present)
+
+
+def _control_apply_trace_reference_debug_is_default_zero(row: Mapping[str, Any]) -> bool:
+    values = [
+        _first_numeric_value(row.get(key))
+        for key in _CONTROL_APPLY_TRACE_REFERENCE_DEBUG_KEYS
+    ]
+    present = [value for value in values if value is not None]
+    return bool(present) and all(abs(value) <= 1e-12 for value in present)
+
+
+def _simple_mpc_scalar_debug_is_default_zero(row: Mapping[str, Any]) -> bool:
+    return _numeric_group_is_default_zero(row, _SIMPLE_MPC_SCALAR_DEBUG_KEYS)
+
+
+def _numeric_group_is_default_zero(row: Mapping[str, Any], keys: Sequence[str]) -> bool:
+    values = [_first_numeric_value(row.get(key)) for key in keys]
+    present = [value for value in values if value is not None]
+    return bool(present) and all(abs(value) <= 1e-12 for value in present)
+
+
+def _drop_inactive_simple_lat_fields(payload: dict[str, Any]) -> None:
+    for key in _NORMALIZED_SIMPLE_LAT_DEBUG_KEYS:
+        payload.pop(key, None)
+
+
+def _drop_inactive_simple_lon_fields(payload: dict[str, Any]) -> None:
+    for key in _NORMALIZED_SIMPLE_LON_DEBUG_KEYS:
+        payload.pop(key, None)
+
+
+_BRIDGE_DECODE_SIMPLE_LAT_DEBUG_KEYS = (
+    "debug_simple_lat_lateral_error",
+    "debug_simple_lat_heading_error",
+    "debug_simple_lat_curvature",
+    "debug_simple_lat_current_target_point_s",
+    "debug_simple_lat_current_target_point_x",
+    "debug_simple_lat_current_target_point_y",
+    "debug_simple_lat_current_target_point_relative_time",
+    "debug_simple_lat_current_target_point_kappa",
+    "debug_simple_lat_current_target_point_v",
+)
+
+
+_BRIDGE_DECODE_SIMPLE_LON_DEBUG_KEYS = (
+    "debug_simple_lon_current_speed",
+    "debug_simple_lon_current_station",
+    "debug_simple_lon_station_reference",
+    "debug_simple_lon_current_matched_point_s",
+    "debug_simple_lon_current_matched_point_x",
+    "debug_simple_lon_current_matched_point_y",
+)
+
+
+_CONTROL_DECODE_SIMPLE_LAT_DEBUG_KEY_PAIRS = (
+    ("debug_simple_lat_lateral_error_m", "debug_simple_lat_lateral_error"),
+    ("debug_simple_lat_heading_error_rad", "debug_simple_lat_heading_error"),
+    ("debug_simple_lat_curvature", "debug_simple_lat_curvature"),
+    ("debug_simple_lat_target_point_s", "debug_simple_lat_current_target_point_s"),
+    ("debug_simple_lat_target_point_x", "debug_simple_lat_current_target_point_x"),
+    ("debug_simple_lat_target_point_y", "debug_simple_lat_current_target_point_y"),
+    ("debug_simple_lat_target_point_relative_time_sec", "debug_simple_lat_current_target_point_relative_time"),
+    ("debug_simple_lat_target_point_kappa", "debug_simple_lat_current_target_point_kappa"),
+    ("debug_simple_lat_current_target_point_v", "debug_simple_lat_current_target_point_v"),
+)
+
+
+_CONTROL_DECODE_SIMPLE_LON_DEBUG_KEY_PAIRS = (
+    ("debug_simple_lon_current_speed_mps", "debug_simple_lon_current_speed"),
+    ("debug_simple_lon_current_station_m", "debug_simple_lon_current_station"),
+    ("debug_simple_lon_station_reference_m", "debug_simple_lon_station_reference"),
+    ("debug_simple_lon_matched_point_s", "debug_simple_lon_current_matched_point_s"),
+    ("debug_simple_lon_matched_point_x", "debug_simple_lon_current_matched_point_x"),
+    ("debug_simple_lon_matched_point_y", "debug_simple_lon_current_matched_point_y"),
+)
+
+
+_APOLLO_CONTROL_RAW_SIMPLE_LAT_DEBUG_KEYS = (
+    "debug_simple_lat_lateral_error",
+    "debug_simple_lat_heading_error",
+    "debug_simple_lat_curvature",
+    "debug_simple_lat_current_target_point_s",
+    "debug_simple_lat_current_target_point_x",
+    "debug_simple_lat_current_target_point_y",
+    "debug_simple_lat_current_target_point_relative_time",
+    "debug_simple_lat_current_target_point_kappa",
+    "debug_simple_lat_current_target_point_v",
+)
+
+
+_APOLLO_CONTROL_RAW_SIMPLE_LON_DEBUG_KEYS = (
+    "debug_simple_lon_current_speed",
+    "debug_simple_lon_current_station",
+    "debug_simple_lon_station_reference",
+    "debug_simple_lon_current_matched_point_s",
+    "debug_simple_lon_current_matched_point_x",
+    "debug_simple_lon_current_matched_point_y",
+)
+
+
+_CONTROL_APPLY_TRACE_REFERENCE_DEBUG_KEYS = (
+    "debug_simple_lon_current_matched_point_s_m",
+    "debug_simple_lon_current_matched_point_x",
+    "debug_simple_lon_current_matched_point_y",
+    "debug_simple_lon_current_reference_point_x",
+    "debug_simple_lon_current_reference_point_y",
+    "debug_simple_lon_current_reference_point_kappa",
+    "debug_simple_lon_preview_reference_point_s_m",
+    "debug_simple_lon_preview_reference_point_x",
+    "debug_simple_lon_preview_reference_point_y",
+    "debug_simple_lon_preview_reference_point_kappa",
+    "debug_simple_mpc_current_matched_point_s",
+    "debug_simple_mpc_current_matched_point_x",
+    "debug_simple_mpc_current_matched_point_y",
+    "debug_simple_mpc_current_reference_point_x",
+    "debug_simple_mpc_current_reference_point_y",
+    "debug_simple_mpc_current_reference_point_kappa",
+    "debug_simple_mpc_preview_reference_point_s",
+    "debug_simple_mpc_preview_reference_point_x",
+    "debug_simple_mpc_preview_reference_point_y",
+    "debug_simple_mpc_preview_reference_point_kappa",
+    "debug_simple_mpc_preview_reference_point_relative_time",
+    "debug_simple_mpc_preview_reference_point_v",
+)
+
+
+_SIMPLE_MPC_SCALAR_DEBUG_KEYS = (
+    "debug_simple_mpc_current_matched_point_s",
+    "debug_simple_mpc_current_reference_point_kappa",
+    "debug_simple_mpc_preview_reference_point_s",
+    "debug_simple_mpc_preview_reference_point_kappa",
+    "debug_simple_mpc_preview_reference_point_relative_time",
+    "debug_simple_mpc_preview_reference_point_v",
+)
+
+
+_NORMALIZED_SIMPLE_LAT_DEBUG_KEYS = (
+    "apollo_debug_simple_lat_lateral_error_m",
+    "apollo_debug_simple_lat_heading_error_rad",
+    "apollo_debug_simple_lat_curvature",
+    "apollo_debug_simple_lat_target_point_kappa",
+    "apollo_debug_simple_lat_target_point_s",
+    "apollo_debug_simple_lat_target_point_x",
+    "apollo_debug_simple_lat_target_point_y",
+    "apollo_debug_simple_lat_target_point_relative_time_sec",
+    "apollo_debug_simple_lat_ref_speed_mps",
+    "apollo_debug_simple_lat_target_point_v_mps",
+    "apollo_debug_simple_lat_current_reference_point_x",
+    "apollo_debug_simple_lat_current_reference_point_y",
+)
+
+
+_NORMALIZED_SIMPLE_LON_DEBUG_KEYS = (
+    "apollo_debug_simple_lon_current_speed_mps",
+    "apollo_debug_simple_lon_current_station_m",
+    "apollo_debug_simple_lon_station_reference_m",
+    "apollo_debug_simple_lon_matched_point_s",
+    "apollo_debug_simple_lon_matched_point_x",
+    "apollo_debug_simple_lon_matched_point_y",
+    "debug_simple_lon_current_reference_point_x",
+    "debug_simple_lon_current_reference_point_y",
+    "debug_simple_lon_current_reference_point_kappa",
+    "debug_simple_lon_preview_reference_point_x",
+    "debug_simple_lon_preview_reference_point_y",
+    "debug_simple_lon_preview_reference_point_kappa",
+)
 
 
 def _normalize_apollo_control_raw_row(row: Mapping[str, Any]) -> dict[str, Any]:
     normalized = dict(row)
     raw = row.get("apollo_control_raw") if isinstance(row.get("apollo_control_raw"), Mapping) else row
+    simple_lat_inactive = _apollo_control_raw_simple_lat_debug_is_default_zero(raw)
+    simple_lon_inactive = _apollo_control_raw_simple_lon_debug_is_default_zero(raw)
+    mpc_scalar_inactive = _simple_mpc_scalar_debug_is_default_zero(raw)
     _set_if_numeric(
         normalized,
         "control_header_timestamp_sec",
@@ -3764,6 +5405,26 @@ def _normalize_apollo_control_raw_row(row: Mapping[str, Any]) -> dict[str, Any]:
         normalized,
         "apollo_debug_simple_lat_target_point_kappa",
         _first_numeric_value(raw.get("debug_simple_lat_current_target_point_kappa")),
+    )
+    _set_if_numeric(
+        normalized,
+        "control_command_speed_mps",
+        _first_numeric_value(raw.get("speed_mps"), raw.get("speed")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lon_current_speed_mps",
+        _first_numeric_value(raw.get("debug_simple_lon_current_speed")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_ref_speed_mps",
+        _first_numeric_value(raw.get("debug_simple_lat_ref_speed")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_lat_target_point_v_mps",
+        _first_numeric_value(raw.get("debug_simple_lat_current_target_point_v")),
     )
     _set_if_numeric(
         normalized,
@@ -3845,6 +5506,74 @@ def _normalize_apollo_control_raw_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "debug_simple_lon_preview_reference_point_kappa",
         _first_numeric_value(raw.get("debug_simple_lon_preview_reference_point_kappa")),
     )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_matched_point_s",
+        None if mpc_scalar_inactive else _first_numeric_value(raw.get("debug_simple_mpc_current_matched_point_s")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_matched_point_x",
+        _first_numeric_value(raw.get("debug_simple_mpc_current_matched_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_matched_point_y",
+        _first_numeric_value(raw.get("debug_simple_mpc_current_matched_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_current_reference_point_x",
+        _first_numeric_value(raw.get("debug_simple_mpc_current_reference_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_current_reference_point_y",
+        _first_numeric_value(raw.get("debug_simple_mpc_current_reference_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_current_reference_point_kappa",
+        None
+        if mpc_scalar_inactive
+        else _first_numeric_value(raw.get("debug_simple_mpc_current_reference_point_kappa")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_s",
+        None if mpc_scalar_inactive else _first_numeric_value(raw.get("debug_simple_mpc_preview_reference_point_s")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_x",
+        _first_numeric_value(raw.get("debug_simple_mpc_preview_reference_point_x")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_y",
+        _first_numeric_value(raw.get("debug_simple_mpc_preview_reference_point_y")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_kappa",
+        None if mpc_scalar_inactive else _first_numeric_value(raw.get("debug_simple_mpc_preview_reference_point_kappa")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_relative_time_sec",
+        None
+        if mpc_scalar_inactive
+        else _first_numeric_value(raw.get("debug_simple_mpc_preview_reference_point_relative_time")),
+    )
+    _set_if_numeric(
+        normalized,
+        "apollo_debug_simple_mpc_preview_reference_point_v_mps",
+        None if mpc_scalar_inactive else _first_numeric_value(raw.get("debug_simple_mpc_preview_reference_point_v")),
+    )
+    if simple_lat_inactive:
+        _drop_inactive_simple_lat_fields(normalized)
+    if simple_lon_inactive:
+        _drop_inactive_simple_lon_fields(normalized)
     return normalized
 
 
@@ -4033,8 +5762,10 @@ def _markdown(report: Mapping[str, Any]) -> str:
             f"- status: `{_nested(report, 'critical_window_samples.status')}`",
             f"- anchor_reason: `{_nested(report, 'critical_window_samples.anchor_reason')}`",
             f"- anchor: `{_nested(report, 'critical_window_samples.anchor')}`",
+            f"- response_after: `{_nested(report, 'critical_window_samples.response_after')}`",
             f"- returned_sample_count: `{_nested(report, 'critical_window_samples.returned_sample_count')}`",
             f"- reference_line_context: `{_nested(report, 'critical_window_samples.reference_line_context')}`",
+            f"- event_table: `{report.get('critical_window_event_table')}`",
             "",
             "## Lateral Sign Alignment",
             "",

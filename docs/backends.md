@@ -3,16 +3,29 @@
 This repository separates the CARLA testbed core from external autonomous
 driving stack runtimes.
 
-## Canonical Boundary
+## Phase 1 Backend Boundary
 
-The canonical backend contract starts at:
+The active Phase 1 execution facade is:
+
+- `carla_testbed/backends/base.py`
+- `StackBackend`
+- `StackContract`
+- `LaunchPlan`
+
+This is the boundary used by `compile_run_plan`, `execute_run_plan`, the
+Phase 1 pair runner, and the P0 matrix. It is metadata/dry-run safe and must
+not import CARLA, ROS2, CyberRT, Apollo protobufs, or Autoware packages.
+
+## Target Adapter Boundary
+
+The target long-term runtime lifecycle adapter contract starts at:
 
 - `carla_testbed/adapters/base.py`
 - `ADStackBackend`
 
-The core runner should depend on this neutral contract and core data models. It
-should not directly depend on ROS2, CyberRT, Apollo protobufs, Autoware message
-packages, or stack-specific launch details.
+New migrated runtime adapters should eventually implement this neutral contract
+and core data models. Current Phase 1 delivery code should still implement the
+`StackBackend` facade unless a task explicitly migrates runtime lifecycle code.
 
 The minimal backend lifecycle is:
 
@@ -27,7 +40,8 @@ The minimal backend lifecycle is:
 
 | Surface | Status | Role |
 | --- | --- | --- |
-| `carla_testbed/adapters/base.py` | canonical contract | New backend-facing code should start here. |
+| `carla_testbed/backends/base.py` | Phase 1 execution facade | New Phase 1 platform code should start here. |
+| `carla_testbed/adapters/base.py` | target lifecycle adapter contract | Use when migrating real runtime lifecycle code behind an adapter. |
 | `tbio/` | transition implementation layer | Still used by current runnable ROS2/native and backend launch paths. |
 | `carla_testbed.ros2` | transitional ROS2 support | Existing ROS2 GT publisher and utilities; not platform core. |
 | `carla_builtin` backend facade | diagnostic CARLA-only backend | Runs fixed scenes with the built-in ego controller; not Apollo/Autoware evidence. |

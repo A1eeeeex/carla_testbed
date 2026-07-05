@@ -40,7 +40,7 @@ from tools.run_town01_capability_online_pack import (
     startup_profile_note,
     startup_profile_role,
 )
-from tools.run_town01_route_health import _cleanup_carla_processes, _prestart_carla
+from tools.run_town01_route_health import _cleanup_carla_processes, _prestart_carla, _probe_existing_carla_world
 
 
 DEFAULT_CHAIN_PROFILES = (
@@ -227,6 +227,7 @@ def build_online_chain_plan(
     world_ready_timeout_sec: float,
     retry_delay_sec: float,
     keep_carla_alive_at_end: bool,
+    preserve_existing_carla_at_end: bool = False,
     prewarmed_carla: bool = False,
     enable_lateral: bool | None = None,
     enable_guard: bool | None = None,
@@ -238,15 +239,16 @@ def build_online_chain_plan(
         raise ValueError(f"unsupported startup_profile: {startup_profile}")
     resolved_steps = list(route_steps) or _resolved_route_steps([], capability_profiles)
     last_index = len(resolved_steps) - 1
+    effective_keep_carla_alive_at_end = bool(keep_carla_alive_at_end or preserve_existing_carla_at_end)
     for index, (capability_profile, route_id_override) in enumerate(resolved_steps):
         entry = load_manifest_entry(manifest_path, capability_profile)
-        stop_carla_on_exit = not keep_carla_alive_at_end and index == last_index
+        stop_carla_on_exit = not effective_keep_carla_alive_at_end and index == last_index
         # The first step defines the CARLA process shape for the whole chain.
         # Force a fresh start whenever the requested startup profile is one of
         # the curated low-memory/offscreen shapes so we do not silently reuse a
         # stale display-path server and misreport the active startup mode.
         force_fresh_start = False
-        if not prewarmed_carla:
+        if not prewarmed_carla and not preserve_existing_carla_at_end:
             force_fresh_start = (
                 startup_profile in {"render_offscreen_no_ros2", "lowres_low_quality", "render_offscreen", "lowres_no_ros"}
                 and index == 0
@@ -301,12 +303,94 @@ def build_online_chain_plan(
                 "enable_guard": resolved_enable_guard,
                 "force_fresh_start": force_fresh_start,
                 "prewarmed_carla": bool(prewarmed_carla),
+                "preserve_existing_carla_at_end": bool(preserve_existing_carla_at_end),
                 "stop_carla_on_exit": stop_carla_on_exit,
                 "command_argv": argv,
                 "command": " ".join(shlex.quote(item) for item in argv),
             }
         )
     return plan
+
+
+def _detect_existing_ready_carla(*, host: str = "127.0.0.1", port: int = 2000) -> Dict[str, Any]:
+    probe = _probe_existing_carla_world(host, int(port), timeout_s=3.0)
+    if bool(probe.get("ready")):
+        return {
+            "host": host,
+            "port": int(port),
+            "ready": True,
+            "town": str(probe.get("town") or ""),
+            "error": str(probe.get("error") or ""),
+            "probe_source": "in_process",
+        }
+    fallback = _detect_existing_ready_carla_with_carla16(host=host, port=int(port))
+    if bool(fallback.get("ready")):
+        return fallback
+    return {
+        "host": host,
+        "port": int(port),
+        "ready": bool(probe.get("ready")),
+        "town": str(probe.get("town") or ""),
+        "error": str(probe.get("error") or ""),
+        "probe_source": "in_process",
+        "fallback_error": str(fallback.get("error") or ""),
+    }
+
+
+def _detect_existing_ready_carla_with_carla16(*, host: str, port: int) -> Dict[str, Any]:
+    code = (
+        "import json, carla; "
+        f"c=carla.Client({host!r},{int(port)}); "
+        "c.set_timeout(3.0); "
+        "w=c.get_world(); "
+        "town=str(w.get_map().name or '').split('/')[-1]; "
+        "print(json.dumps({'ready': town == 'Town01', 'town': town}))"
+    )
+    try:
+        completed = subprocess.run(
+            ["/home/ubuntu/miniconda3/bin/conda", "run", "-n", "carla16", "python", "-c", code],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=8.0,
+        )
+    except Exception as exc:
+        return {
+            "host": host,
+            "port": int(port),
+            "ready": False,
+            "town": "",
+            "error": repr(exc),
+            "probe_source": "carla16_subprocess",
+        }
+    if completed.returncode != 0:
+        return {
+            "host": host,
+            "port": int(port),
+            "ready": False,
+            "town": "",
+            "error": (completed.stderr or completed.stdout or "").strip(),
+            "probe_source": "carla16_subprocess",
+        }
+    try:
+        payload = json.loads((completed.stdout or "").strip().splitlines()[-1])
+    except Exception as exc:
+        return {
+            "host": host,
+            "port": int(port),
+            "ready": False,
+            "town": "",
+            "error": f"invalid_carla16_probe_output: {exc!r}",
+            "probe_source": "carla16_subprocess",
+        }
+    return {
+        "host": host,
+        "port": int(port),
+        "ready": bool(payload.get("ready")),
+        "town": str(payload.get("town") or ""),
+        "error": "",
+        "probe_source": "carla16_subprocess",
+    }
 
 
 def _build_prewarm_route_health_args(
@@ -379,6 +463,12 @@ def _prewarm_carla_session(
         flush=True,
     )
     return launcher
+
+
+def _should_skip_prewarm_for_existing_carla(
+    *, prewarm_carla: bool, preserve_existing_carla_at_end: bool
+) -> bool:
+    return bool(prewarm_carla and preserve_existing_carla_at_end)
 
 
 def estimate_online_chain_time_budget(
@@ -765,6 +855,107 @@ def _analyze_batch_root(batch_root: Path) -> int:
     return subprocess.run(analyze_cmd, cwd=str(REPO_ROOT), check=False).returncode
 
 
+def _candidate_phase1_run_dirs(batch_root: Path) -> List[Path]:
+    candidates: List[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path | str | None) -> None:
+        if path in {None, ""}:
+            return
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = batch_root / candidate
+        key = str(_safe_resolve_path(candidate))
+        if key in seen:
+            return
+        seen.add(key)
+        if candidate.exists() and (candidate / "summary.json").exists():
+            candidates.append(candidate)
+
+    latest_path = batch_root / "LATEST.txt"
+    if latest_path.exists():
+        try:
+            add(latest_path.read_text(encoding="utf-8").strip())
+        except Exception:
+            pass
+
+    manifest = _load_json_if_exists(batch_root / "artifacts" / "town01_route_health_run_manifest.json")
+    for item in manifest.get("runs") or []:
+        if not isinstance(item, dict):
+            continue
+        for key in ("effective_run_dir", "run_dir", "redirected_run_dir", "output_run_dir"):
+            add(item.get(key))
+
+    for summary_path in sorted(batch_root.glob("*/summary.json")):
+        add(summary_path.parent)
+    return candidates
+
+
+def _postprocess_phase1_runs_for_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    batch_root = _batch_root_for_item(item)
+    if batch_root is None or not batch_root.exists():
+        return {
+            "status": "skipped",
+            "reason": "batch_root_missing",
+            "run_count": 0,
+            "reports": [],
+        }
+    run_dirs = _candidate_phase1_run_dirs(batch_root)
+    if not run_dirs:
+        return {
+            "status": "skipped",
+            "reason": "run_dirs_missing",
+            "batch_root": str(batch_root),
+            "run_count": 0,
+            "reports": [],
+        }
+    reports: List[Dict[str, Any]] = []
+    from carla_testbed.analysis.phase1_postprocess import run_phase1_postprocess
+
+    for run_dir in run_dirs:
+        try:
+            report = run_phase1_postprocess(run_dir)
+            reports.append(
+                {
+                    "run_dir": str(run_dir),
+                    "postprocess_status": "pass",
+                    "phase1_status": report.get("phase1_status"),
+                    "apollo_hdmap_projection_status": report.get("apollo_hdmap_projection_status"),
+                    "apollo_hdmap_projection_auto_export_status": report.get(
+                        "apollo_hdmap_projection_auto_export_status"
+                    ),
+                    "apollo_reference_line_contract_status": report.get(
+                        "apollo_reference_line_contract_status"
+                    ),
+                    "apollo_link_health_primary_blocker": report.get("apollo_link_health_primary_blocker"),
+                }
+            )
+        except Exception as exc:  # pragma: no cover - defensive for online finalization only
+            reports.append(
+                {
+                    "run_dir": str(run_dir),
+                    "postprocess_status": "failed",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+    failed = [item for item in reports if item.get("postprocess_status") == "failed"]
+    status = "failed" if failed else "pass"
+    payload = {
+        "status": status,
+        "batch_root": str(batch_root),
+        "run_count": len(run_dirs),
+        "reports": reports,
+    }
+    artifacts_dir = batch_root / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "online_chain_phase1_postprocess.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return payload
+
+
 def _render_progress_line(
     *,
     item: Dict[str, Any],
@@ -831,6 +1022,13 @@ def main() -> int:
     batch_root_parent = args.batch_root_parent or (
         REPO_ROOT / "runs" / f"town01_capability_online_chain_{timestamp}"
     )
+    preexisting_carla = (
+        {"ready": False, "town": "", "error": "dry_run_not_probed", "host": "127.0.0.1", "port": 2000}
+        if args.dry_run
+        else _detect_existing_ready_carla()
+    )
+    preserve_existing_carla_at_end = bool(preexisting_carla.get("ready"))
+    effective_keep_carla_alive_at_end = bool(args.keep_carla_alive_at_end or preserve_existing_carla_at_end)
     first_attempt_ctx = startup_attempt_context(
         batch_root_parent,
         args.comparison_label_suffix,
@@ -852,6 +1050,7 @@ def main() -> int:
         world_ready_timeout_sec=args.carla_world_ready_timeout_sec,
         retry_delay_sec=args.carla_retry_delay_sec,
         keep_carla_alive_at_end=args.keep_carla_alive_at_end,
+        preserve_existing_carla_at_end=preserve_existing_carla_at_end,
         prewarmed_carla=bool(args.prewarm_carla),
         extra_overrides=list(args.override or []),
         carla_ignore_memory_preflight=bool(args.carla_ignore_memory_preflight),
@@ -891,6 +1090,9 @@ def main() -> int:
     print("# enable_guard:", str(bool(resolved_enable_guard)).lower())
     print("# prewarm_carla:", str(bool(args.prewarm_carla)).lower())
     print("# prewarm_carla_launch_attempts:", max(int(args.prewarm_carla_launch_attempts), 1))
+    print("# preexisting_carla_ready:", str(bool(preexisting_carla.get("ready"))).lower())
+    print("# preexisting_carla_town:", str(preexisting_carla.get("town") or ""))
+    print("# effective_keep_carla_alive_at_end:", str(effective_keep_carla_alive_at_end).lower())
 
     last_exit_code = 0
     chain_started_at = time.monotonic()
@@ -918,6 +1120,7 @@ def main() -> int:
                 world_ready_timeout_sec=args.carla_world_ready_timeout_sec,
                 retry_delay_sec=args.carla_retry_delay_sec,
                 keep_carla_alive_at_end=args.keep_carla_alive_at_end,
+                preserve_existing_carla_at_end=preserve_existing_carla_at_end,
                 prewarmed_carla=bool(args.prewarm_carla),
                 enable_lateral=resolved_enable_lateral,
                 enable_guard=resolved_enable_guard,
@@ -950,7 +1153,16 @@ def main() -> int:
             exit_code = 0
             failed_step_index: int | None = None
             try:
-                if args.prewarm_carla:
+                if _should_skip_prewarm_for_existing_carla(
+                    prewarm_carla=bool(args.prewarm_carla),
+                    preserve_existing_carla_at_end=bool(preserve_existing_carla_at_end),
+                ):
+                    print(
+                        "[online-chain] prewarm skipped because an existing CARLA world is ready; "
+                        "preserving the user-owned session",
+                        flush=True,
+                    )
+                elif args.prewarm_carla:
                     try:
                         prewarm_launcher = _prewarm_carla_session(
                             startup_profile=startup_profile,
@@ -1098,6 +1310,25 @@ def main() -> int:
                                 f"profile={item['capability_profile']} route_id={item.get('route_id') or '<manifest>'}",
                                 flush=True,
                             )
+                        postprocess_report = _postprocess_phase1_runs_for_item(item)
+                        print(
+                            "[online-chain] phase1 postprocess "
+                            f"status={postprocess_report.get('status')} "
+                            f"runs={postprocess_report.get('run_count')}",
+                            flush=True,
+                        )
+                        for report_item in postprocess_report.get("reports") or []:
+                            print(
+                                "[online-chain] phase1 postprocess run "
+                                f"postprocess={report_item.get('postprocess_status')} "
+                                f"phase1={report_item.get('phase1_status')} "
+                                f"hdmap={report_item.get('apollo_hdmap_projection_status')} "
+                                f"hdmap_export={report_item.get('apollo_hdmap_projection_auto_export_status')} "
+                                f"ref={report_item.get('apollo_reference_line_contract_status')} "
+                                f"blocker={report_item.get('apollo_link_health_primary_blocker')} "
+                                f"run_dir={report_item.get('run_dir')}",
+                                flush=True,
+                            )
                         if step_returncode != 0:
                             exit_code = step_returncode
                             failed_step_index = int(item["step_index"])
@@ -1116,7 +1347,7 @@ def main() -> int:
                             ):
                                 break
             finally:
-                if prewarm_launcher is not None and not args.keep_carla_alive_at_end:
+                if prewarm_launcher is not None and not effective_keep_carla_alive_at_end:
                     try:
                         prewarm_launcher.stop()
                     except Exception:
@@ -1140,7 +1371,7 @@ def main() -> int:
             return 0
         return last_exit_code
     finally:
-        if not args.dry_run and not args.keep_carla_alive_at_end:
+        if not args.dry_run and not effective_keep_carla_alive_at_end:
             _cleanup_carla_processes()
 
 

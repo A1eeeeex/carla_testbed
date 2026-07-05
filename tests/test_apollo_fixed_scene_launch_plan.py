@@ -433,6 +433,27 @@ def test_apollo_dynamic_sidecar_steer_sign_inverted_profile_is_diagnostic_only()
     assert any("not a default backend profile" in note for note in payload["assist_ledger"]["notes"])
 
 
+def test_town01_lane_keep_steer_sign_inverted_profile_is_diagnostic_only() -> None:
+    payload = yaml.safe_load(
+        Path("configs/io/examples/town01_apollo_lane_keep_097_steer_sign_inverted_diagnostic.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert payload["extends"] == "town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml"
+    assert "steer_sign_inverted_diagnostic" in payload["run"]["profile_name"]
+    assert (
+        payload["run"]["capability_profile"]
+        == "town01_lane_keep_lateral_semantics_diagnostic_steer_sign_ab"
+    )
+    assert payload["algo"]["apollo"]["control_mapping"]["steer_sign"] == -1.0
+    assert payload["assist_ledger"]["active_assists"] == ["steering_sign_diagnostic_override"]
+    assert payload["assist_ledger"]["blocking_assists"] == ["steering_sign_diagnostic_override"]
+    assert payload["assist_ledger"]["can_claim_unassisted_natural_driving"] is False
+    assert any("diagnostic A/B" in note for note in payload["assist_ledger"]["notes"])
+    assert any("not a default backend profile" in note for note in payload["assist_ledger"]["notes"])
+
+
 def test_apollo_static_follow_stop_default_overlay_profile_declares_runtime_overlay() -> None:
     payload = yaml.safe_load(
         Path("configs/io/examples/phase1_baguang_apollo_followstop_static_control_overlay_paced_compat.yaml").read_text(

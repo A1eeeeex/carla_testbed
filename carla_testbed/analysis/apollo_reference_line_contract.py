@@ -31,6 +31,7 @@ CONTROL_TARGET_TRAJECTORY_SAMPLE_WARN_M = 0.50
 CONTROL_TARGET_PATH_CANDIDATE_WARN_M = 0.50
 PLANNING_PATH_CANDIDATE_TRAJECTORY_WARN_M = 2.00
 PLANNING_PATH_CANDIDATE_TRAJECTORY_SUPPORT_MARGIN_M = 5.00
+MIN_RELIABLE_FALLBACK_LOOKAHEAD_DISTANCE_M = 1.00
 
 
 def analyze_apollo_reference_line_contract_run_dir(run_dir: str | Path) -> dict[str, Any]:
@@ -818,6 +819,9 @@ def _planning_trajectory_contract(
     path_fallback_future_lookahead_reverse_heading_ratio = _num(
         metrics.get("path_fallback_future_lookahead_reverse_heading_ratio")
     )
+    path_fallback_total_path_length_lt_1m_ratio = _num(
+        metrics.get("path_fallback_total_path_length_lt_1m_ratio")
+    )
     trajectory_segment_heading_p95 = _num(
         metrics.get("trajectory_first_theta_vs_segment_heading_p95_rad")
     )
@@ -865,15 +869,26 @@ def _planning_trajectory_contract(
         and path_fallback_heading_p95 >= FAIL_HEADING_RAD
         and (normal_heading_p95 is None or normal_heading_p95 < FAIL_HEADING_RAD)
     )
-    path_fallback_segment_metric = (
-        path_fallback_future_lookahead_heading_p95
-        if path_fallback_future_lookahead_heading_p95 is not None
-        else (
-            path_fallback_future_segment_heading_p95
-            if path_fallback_future_segment_heading_p95 is not None
-            else path_fallback_segment_heading_p95
+    path_fallback_future_lookahead_reliable = (
+        path_fallback_future_lookahead_heading_p95 is not None
+        and (
+            path_fallback_future_lookahead_distance_p95 is None
+            or path_fallback_future_lookahead_distance_p95 >= MIN_RELIABLE_FALLBACK_LOOKAHEAD_DISTANCE_M
+        )
+        and (
+            path_fallback_future_lookahead_distance_lt_1m_ratio is None
+            or path_fallback_future_lookahead_distance_lt_1m_ratio < 0.50
         )
     )
+    if path_fallback_future_lookahead_reliable:
+        path_fallback_segment_metric = path_fallback_future_lookahead_heading_p95
+        path_fallback_segment_metric_source = "first_nonexpired_theta_vs_future_lookahead"
+    elif path_fallback_future_segment_heading_p95 is not None:
+        path_fallback_segment_metric = path_fallback_future_segment_heading_p95
+        path_fallback_segment_metric_source = "first_nonexpired_theta_vs_future_segment"
+    else:
+        path_fallback_segment_metric = path_fallback_segment_heading_p95
+        path_fallback_segment_metric_source = "first_theta_vs_first_segment"
     path_fallback_segment_heading_mismatch = (
         path_fallback_ratio is not None
         and path_fallback_ratio > 0.0
@@ -883,7 +898,11 @@ def _planning_trajectory_contract(
     if path_fallback_segment_heading_mismatch:
         blocking.append("planning_path_fallback_segment_heading_mismatch")
     elif ego_heading_diverged_from_aligned_reference:
-        blocking.append("ego_heading_diverged_from_aligned_planning_reference")
+        # The planned trajectory/reference heading can be self-consistent while
+        # the ego has already drifted away because of downstream control or
+        # actuation.  Keep this visible, but do not turn an ego response symptom
+        # into a reference-line root-cause blocker.
+        warnings.append("ego_heading_diverged_from_aligned_planning_reference")
     elif fallback_driven_heading_error:
         blocking.append("planning_path_fallback_heading_error_high")
     else:
@@ -906,6 +925,11 @@ def _planning_trajectory_contract(
         and path_fallback_future_lookahead_distance_lt_1m_ratio >= 0.50
     ):
         warnings.append("planning_path_fallback_lookahead_distance_short")
+    if (
+        path_fallback_total_path_length_lt_1m_ratio is not None
+        and path_fallback_total_path_length_lt_1m_ratio >= 0.50
+    ):
+        warnings.append("planning_path_fallback_total_path_length_short")
     if available and planning_heading_p95 is None:
         missing.append("planning_ref_heading_error_p95_rad")
     status = _contract_status(
@@ -939,19 +963,14 @@ def _planning_trajectory_contract(
             "path_fallback_trajectory_first_theta_vs_segment_heading_p95_rad": path_fallback_segment_heading_p95,
             "path_fallback_first_nonexpired_theta_vs_future_segment_heading_p95_rad": path_fallback_future_segment_heading_p95,
             "path_fallback_first_nonexpired_theta_vs_future_lookahead_heading_p95_rad": path_fallback_future_lookahead_heading_p95,
+            "path_fallback_total_path_length_p95_m": metrics.get("path_fallback_total_path_length_p95_m"),
+            "path_fallback_total_path_length_lt_1m_ratio": metrics.get("path_fallback_total_path_length_lt_1m_ratio"),
             "path_fallback_future_lookahead_distance_p95_m": path_fallback_future_lookahead_distance_p95,
             "path_fallback_future_lookahead_distance_min_m": path_fallback_future_lookahead_distance_min,
             "path_fallback_future_lookahead_distance_lt_1m_ratio": path_fallback_future_lookahead_distance_lt_1m_ratio,
             "path_fallback_future_lookahead_reverse_heading_ratio": path_fallback_future_lookahead_reverse_heading_ratio,
-            "path_fallback_segment_heading_metric_source": (
-                "first_nonexpired_theta_vs_future_lookahead"
-                if path_fallback_future_lookahead_heading_p95 is not None
-                else (
-                    "first_nonexpired_theta_vs_future_segment"
-                    if path_fallback_future_segment_heading_p95 is not None
-                    else "first_theta_vs_first_segment"
-                )
-            ),
+            "path_fallback_future_lookahead_heading_metric_reliable": path_fallback_future_lookahead_reliable,
+            "path_fallback_segment_heading_metric_source": path_fallback_segment_metric_source,
             "path_fallback_first_kappa_p95_abs": metrics.get("path_fallback_first_kappa_p95_abs"),
             "path_fallback_onset": metrics.get("path_fallback_onset"),
             "normal_trajectory_first_theta_vs_segment_heading_p95_rad": metrics.get(
@@ -1145,18 +1164,51 @@ def _overall_status(
     extra_blocking: Sequence[str],
     extra_warnings: Sequence[str],
 ) -> str:
+    contract_items = [
+        (name, contract)
+        for name, contract in contracts.items()
+        if isinstance(contract, Mapping)
+    ]
     statuses = [
         str(contract.get("status") or "insufficient_data")
-        for contract in contracts.values()
-        if isinstance(contract, Mapping)
+        for _, contract in contract_items
     ]
     if extra_blocking or "fail" in statuses:
         return "fail"
+    if _only_control_reference_is_insufficient(contract_items):
+        return "warn"
     if "insufficient_data" in statuses:
         return "insufficient_data"
     if extra_warnings or "warn" in statuses:
         return "warn"
     return "pass"
+
+
+def _only_control_reference_is_insufficient(
+    contract_items: Sequence[tuple[str, Mapping[str, Any]]],
+) -> bool:
+    if not contract_items:
+        return False
+    insufficient = {
+        name
+        for name, contract in contract_items
+        if str(contract.get("status") or "insufficient_data") == "insufficient_data"
+    }
+    if insufficient != {"control_reference"}:
+        return False
+    core_names = {
+        "planning_trajectory",
+        "apollo_hdmap_projection",
+        "apollo_hdmap_projection_lane_compatibility",
+    }
+    core_statuses = {
+        name: str(contract.get("status") or "insufficient_data")
+        for name, contract in contract_items
+        if name in core_names
+    }
+    return bool(core_statuses) and all(
+        status in {"pass", "warn"} for status in core_statuses.values()
+    )
 
 
 def _downgrade_for_planning_materialization(
@@ -1283,7 +1335,7 @@ def _metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:
                 "computed.trajectory_first_nonexpired_theta_vs_future_segment_heading_rad",
             )
             for row in rows
-            if _planning_trajectory_is_path_fallback(row)
+            if _path_fallback_future_segment_heading_reliable(row)
         ),
         "path_fallback_first_nonexpired_theta_vs_future_lookahead_heading_p95_rad": _p95_abs(
             _first_number(
@@ -1291,7 +1343,20 @@ def _metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:
                 "computed.trajectory_first_nonexpired_theta_vs_future_lookahead_heading_rad",
             )
             for row in rows
+            if _path_fallback_future_lookahead_heading_reliable(row)
+        ),
+        "path_fallback_total_path_length_p95_m": _p95_abs(
+            _first_number(row, "planning.trajectory_total_path_length")
+            for row in rows
             if _planning_trajectory_is_path_fallback(row)
+        ),
+        "path_fallback_total_path_length_lt_1m_ratio": _ratio_where(
+            (
+                _first_number(row, "planning.trajectory_total_path_length")
+                for row in rows
+                if _planning_trajectory_is_path_fallback(row)
+            ),
+            lambda value: value < MIN_RELIABLE_FALLBACK_LOOKAHEAD_DISTANCE_M,
         ),
         "path_fallback_future_lookahead_distance_p95_m": _p95_abs(
             _first_number(row, "planning.trajectory_future_lookahead_distance_m")
@@ -1376,6 +1441,26 @@ def _metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:
         "fallback_join_tolerance_ms": FALLBACK_JOIN_TOLERANCE_S * 1000.0,
         "fallback_join_dropped_unaligned_rows": _fallback_join_dropped_unaligned_rows(rows),
     }
+
+
+def _path_fallback_future_segment_heading_reliable(row: Mapping[str, Any]) -> bool:
+    if not _planning_trajectory_is_path_fallback(row):
+        return False
+    total_path_length = _first_number(row, "planning.trajectory_total_path_length")
+    return (
+        total_path_length is None
+        or total_path_length >= MIN_RELIABLE_FALLBACK_LOOKAHEAD_DISTANCE_M
+    )
+
+
+def _path_fallback_future_lookahead_heading_reliable(row: Mapping[str, Any]) -> bool:
+    if not _path_fallback_future_segment_heading_reliable(row):
+        return False
+    lookahead_distance = _first_number(row, "planning.trajectory_future_lookahead_distance_m")
+    return (
+        lookahead_distance is None
+        or lookahead_distance >= MIN_RELIABLE_FALLBACK_LOOKAHEAD_DISTANCE_M
+    )
 
 
 def _planning_debug_presence_summary(

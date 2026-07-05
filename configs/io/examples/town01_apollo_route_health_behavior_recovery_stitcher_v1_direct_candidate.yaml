@@ -143,11 +143,12 @@ algo:
       disable_destination_rule: true
       disable_traffic_light_rule: true
       lane_follow_only_scenario: true
-      # P1 修复: 禁用 stitching，每次从 scratch 生成参考线，绕过
-      # LaneInfo::GetProjection heading filter (90°) 导致的
-      # "Vehicle current point not on previous reference line" 问题。
+      # Keep Planning semantics identical to the ros2_gt recovery baseline:
+      # both reference-line stitching and trajectory stitching are disabled.
+      # Online evidence 2026-07-01 showed trajectory stitching produced stale
+      # trajectory prefixes and Control target points in the past on lane_keep_097.
       enable_reference_line_stitching: false
-      enable_trajectory_stitcher: true
+      enable_trajectory_stitcher: false
       default_cruise_speed_mps: 16.67
     routing:
       enable: true
@@ -200,11 +201,14 @@ algo:
       max_steer_angle: 0.6
       speed_gain: 10.0
       brake_gain: 5.0
-      steer_sign: 1.0
+      # Keep transport A/B comparable with the active Town01 Apollo control
+      # sign candidate.  The candidate differs by transport/direct apply mode,
+      # not by steering-sign semantics.
+      steer_sign: -1.0
       throttle_scale: 1.5
       brake_scale: 1.0
       steer_scale: 1.0
-      steering_percent_normalization: angle_degree_at_select
+      steering_percent_normalization: single_percent_at_select
       apollo_max_steer_angle_deg: 30.0
       brake_deadzone: 0.05
       actuator_mapping_mode: legacy

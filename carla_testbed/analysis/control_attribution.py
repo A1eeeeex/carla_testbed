@@ -18,6 +18,9 @@ DEFAULT_THRESHOLDS = {
     "max_longitudinal_error_p95": 0.08,
     "source_steer_abs_p95_high": 0.90,
     "source_steer_saturation_ratio_high": 0.50,
+    "source_steer_oscillation_abs_p95_high": 0.35,
+    "source_steer_sign_switch_count_high": 4,
+    "source_steer_sign_switch_ratio_high": 0.10,
     "applied_steer_active_threshold": 0.05,
     "yaw_rate_response_min_abs_p95": 0.005,
     "brake_throttle_conflict_threshold": 0.05,
@@ -31,6 +34,7 @@ CONTROL_FIELD_ALIASES = {
         "apollo_desired_steer",
         "steering_target",
         "raw_control_msg_dump.steering_target",
+        "raw_steer",
         "source_steer",
         "control_steer_raw",
         "steering_normalized_for_mapping",
@@ -38,16 +42,25 @@ CONTROL_FIELD_ALIASES = {
         "output_to_carla.steering_normalized_for_mapping",
     ],
     "bridge_steer_mapped": [
-        "bridge_steer_mapped",
-        "bridge_mapped.steer",
         "bridge_mapped.mapped_carla_steer_cmd",
         "mapped_carla_steer_cmd",
         "output_to_carla.mapped_carla_steer_cmd",
+        "bridge_steer_mapped",
+        "bridge_mapped.steer",
         "mapped_steer",
         "control_steer_mapped",
         "commanded_steer",
         "cmd_steer",
         "clamped_steer",
+    ],
+    "bridge_steer_pre_policy": [
+        "bridge_steer_pre_policy",
+        "bridge_mapped.steer_pre_policy",
+        "commanded_steer_pre_lateral_guards",
+        "steer_before_lateral_guards",
+        "commanded_steer_pre_clamp",
+        "steer_pre_clamp",
+        "bridge_mapped.steer",
     ],
     "carla_steer_applied": [
         "carla_steer_applied",
@@ -63,28 +76,50 @@ CONTROL_FIELD_ALIASES = {
         "yaw_rate",
         "vehicle_yaw_rate",
     ],
-    "throttle_raw": ["throttle_raw", "apollo_raw.throttle", "parsed_control.throttle", "apollo_desired_throttle"],
+    "throttle_raw": [
+        "throttle_raw",
+        "raw_throttle",
+        "apollo_raw.throttle",
+        "parsed_control.throttle",
+        "apollo_desired_throttle",
+    ],
     "throttle_mapped": [
-        "throttle_mapped",
-        "bridge_mapped.throttle",
         "bridge_mapped.mapped_throttle_cmd",
         "mapped_throttle_cmd",
+        "commanded_throttle",
         "output_to_carla.mapped_throttle_cmd",
+        "throttle_mapped",
+        "bridge_mapped.throttle",
         "commanded_throttle",
         "cmd_throttle",
         "clamped_throttle",
     ],
+    "throttle_pre_policy": [
+        "throttle_pre_policy",
+        "bridge_mapped.throttle",
+        "throttle_before_boost",
+        "throttle_before_mutual_exclusion",
+        "commanded_throttle_pre_policy",
+    ],
     "throttle_applied": ["throttle_applied", "carla_applied.throttle", "measured_throttle", "applied_throttle"],
-    "brake_raw": ["brake_raw", "apollo_raw.brake", "parsed_control.brake", "apollo_desired_brake"],
+    "brake_raw": ["brake_raw", "raw_brake", "apollo_raw.brake", "parsed_control.brake", "apollo_desired_brake"],
     "brake_mapped": [
-        "brake_mapped",
-        "bridge_mapped.brake",
         "bridge_mapped.mapped_brake_cmd",
         "mapped_brake_cmd",
+        "commanded_brake",
         "output_to_carla.mapped_brake_cmd",
+        "brake_mapped",
+        "bridge_mapped.brake",
         "commanded_brake",
         "cmd_brake",
         "clamped_brake",
+    ],
+    "brake_pre_policy": [
+        "brake_pre_policy",
+        "bridge_mapped.brake",
+        "brake_before_deadzone",
+        "brake_before_mutual_exclusion",
+        "commanded_brake_pre_policy",
     ],
     "brake_applied": ["brake_applied", "carla_applied.brake", "measured_brake", "applied_brake"],
     "control_latency_ms": ["control_latency_ms"],
@@ -103,6 +138,7 @@ def analyze_control_attribution_run_dir(
 ) -> dict[str, Any]:
     """Analyze a run directory, preferring rich debug control traces when present."""
     root = Path(run_dir).expanduser()
+    bridge_decode_path = _find_first(root, ["artifacts/bridge_control_decode.jsonl", "bridge_control_decode.jsonl"])
     control_input = _find_first(
         root,
         [
@@ -111,6 +147,7 @@ def analyze_control_attribution_run_dir(
             "timeseries.csv",
             "timeseries.jsonl",
             "artifacts/control_decode_debug.jsonl",
+            "artifacts/bridge_control_decode.jsonl",
         ],
     ) or root / "timeseries.csv"
     return analyze_control_attribution(
@@ -127,6 +164,9 @@ def analyze_control_attribution_run_dir(
         ),
         bridge_health_json=_find_first(root, ["artifacts/bridge_health_summary.json"]),
         cyber_bridge_stats_json=_find_first(root, ["artifacts/cyber_bridge_stats.json"]),
+        auxiliary_control_decode_json=(
+            bridge_decode_path if bridge_decode_path is not None and bridge_decode_path != control_input else None
+        ),
         thresholds=thresholds,
     )
 
@@ -140,6 +180,7 @@ def analyze_control_attribution(
     control_handoff_json: str | Path | None = None,
     bridge_health_json: str | Path | None = None,
     cyber_bridge_stats_json: str | Path | None = None,
+    auxiliary_control_decode_json: str | Path | None = None,
     thresholds: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """Attribute control-chain breakpoints from offline control trace rows."""
@@ -151,13 +192,15 @@ def analyze_control_attribution(
     control_handoff = _read_json(Path(control_handoff_json).expanduser()) if control_handoff_json else {}
     bridge_health = _read_json(Path(bridge_health_json).expanduser()) if bridge_health_json else {}
     cyber_bridge_stats = _read_json(Path(cyber_bridge_stats_json).expanduser()) if cyber_bridge_stats_json else {}
+    auxiliary_path = Path(auxiliary_control_decode_json).expanduser() if auxiliary_control_decode_json else None
+    auxiliary_rows = _read_rows(auxiliary_path) if auxiliary_path else []
     active_thresholds = dict(DEFAULT_THRESHOLDS)
     active_thresholds.update(thresholds or {})
 
     missing_fields: list[str] = []
     warnings: list[str] = []
-    raw_available = _has_field(rows, "apollo_steer_raw")
-    mapped_available = _has_field(rows, "bridge_steer_mapped")
+    raw_available = _has_field(rows, "apollo_steer_raw") or _has_field(auxiliary_rows, "apollo_steer_raw")
+    mapped_available = _has_field(rows, "bridge_steer_mapped") or _has_field(auxiliary_rows, "bridge_steer_mapped")
     applied_available = _has_field(rows, "carla_steer_applied")
     yaw_available = _has_field(rows, "ego_yaw_rate")
     throttle_available = all(_has_field(rows, field) for field in ("throttle_raw", "throttle_mapped", "throttle_applied"))
@@ -189,7 +232,40 @@ def analyze_control_attribution(
         steering_sign=steering_sign,
         thresholds=active_thresholds,
     )
+    auxiliary_raw_to_mapped = _auxiliary_raw_to_mapped_steer_consistency(
+        auxiliary_rows,
+        fallback_steer_scale=steer_scale,
+        fallback_steering_sign=steering_sign,
+        thresholds=active_thresholds,
+    )
+    primary_raw_to_mapped_status = raw_to_mapped.get("status")
+    if _should_use_auxiliary_raw_to_mapped(raw_to_mapped, auxiliary_raw_to_mapped):
+        raw_to_mapped = dict(auxiliary_raw_to_mapped)
+        raw_to_mapped["primary_trace_status"] = primary_raw_to_mapped_status
+        raw_to_mapped["source"] = "auxiliary_bridge_control_decode"
+        warnings.append("raw_to_mapped_steer_consistency_from_auxiliary_bridge_control_decode")
+    async_ros2_control_apply_trace = _is_async_ros2_control_apply_trace(input_path, bridge_health)
     steer_guard_intervention = _steer_guard_intervention(rows, cyber_bridge_stats)
+    control_policy_intervention = _control_policy_intervention(rows, cyber_bridge_stats)
+    auxiliary_policy_intervention = _control_policy_intervention(auxiliary_rows, {}) if auxiliary_rows else {}
+    if _should_use_auxiliary_policy_intervention(
+        control_policy_intervention,
+        auxiliary_policy_intervention,
+        async_ros2_control_apply_trace=async_ros2_control_apply_trace,
+    ):
+        primary_policy_observation = dict(control_policy_intervention)
+        control_policy_intervention = dict(auxiliary_policy_intervention)
+        control_policy_intervention["primary_async_observation"] = primary_policy_observation
+        control_policy_intervention["source"] = (
+            "auxiliary_control_decode"
+            if control_policy_intervention.get("source") == "none"
+            else control_policy_intervention.get("source")
+        )
+        control_policy_intervention["interpretation"] = (
+            "Longitudinal policy status was evaluated from synchronized control decode rows. "
+            "The primary control_apply_trace policy flags are retained as async applied observations only."
+        )
+        warnings.append("control_policy_intervention_from_auxiliary_control_decode")
     raw_to_mapped["guard_intervention_likely"] = steer_guard_intervention.get("active")
     raw_to_mapped["guard_intervention_status"] = steer_guard_intervention.get("status")
     mapped_to_applied = _pair_consistency(
@@ -198,7 +274,6 @@ def analyze_control_attribution(
         "carla_steer_applied",
         max_error_p95=active_thresholds["max_mapped_applied_steer_error_p95"],
     )
-    async_ros2_control_apply_trace = _is_async_ros2_control_apply_trace(input_path, bridge_health)
     throttle_consistency = _longitudinal_triple_consistency(
         rows,
         "throttle_raw",
@@ -219,6 +294,46 @@ def analyze_control_attribution(
         max_error_p95=active_thresholds["max_longitudinal_error_p95"],
         ignore_mapped_applied_error=async_ros2_control_apply_trace,
     )
+    auxiliary_throttle_consistency = _longitudinal_triple_consistency(
+        auxiliary_rows,
+        "throttle_raw",
+        "throttle_mapped",
+        "throttle_applied",
+        scale=throttle_scale,
+        deadzone=None,
+        max_error_p95=active_thresholds["max_longitudinal_error_p95"],
+        ignore_mapped_applied_error=True,
+    )
+    auxiliary_brake_consistency = _longitudinal_triple_consistency(
+        auxiliary_rows,
+        "brake_raw",
+        "brake_mapped",
+        "brake_applied",
+        scale=brake_scale,
+        deadzone=brake_deadzone,
+        max_error_p95=active_thresholds["max_longitudinal_error_p95"],
+        ignore_mapped_applied_error=True,
+    )
+    if _should_use_auxiliary_longitudinal_consistency(
+        throttle_consistency,
+        auxiliary_throttle_consistency,
+        async_ros2_control_apply_trace=async_ros2_control_apply_trace,
+    ):
+        primary_throttle_status = throttle_consistency.get("status")
+        throttle_consistency = dict(auxiliary_throttle_consistency)
+        throttle_consistency["primary_trace_status"] = primary_throttle_status
+        throttle_consistency["source"] = "auxiliary_control_decode"
+        warnings.append("throttle_raw_to_mapped_consistency_from_auxiliary_control_decode")
+    if _should_use_auxiliary_longitudinal_consistency(
+        brake_consistency,
+        auxiliary_brake_consistency,
+        async_ros2_control_apply_trace=async_ros2_control_apply_trace,
+    ):
+        primary_brake_status = brake_consistency.get("status")
+        brake_consistency = dict(auxiliary_brake_consistency)
+        brake_consistency["primary_trace_status"] = primary_brake_status
+        brake_consistency["source"] = "auxiliary_control_decode"
+        warnings.append("brake_raw_to_mapped_consistency_from_auxiliary_control_decode")
     vehicle_response = _applied_steer_to_yaw_response(rows, thresholds=active_thresholds)
     source_semantics = _source_control_semantics(rows, thresholds=active_thresholds)
     latency_p95 = _percentile(_series(rows, "control_latency_ms"), 0.95)
@@ -273,10 +388,12 @@ def analyze_control_attribution(
         vehicle_response=vehicle_response,
         source_semantics=source_semantics,
         steer_guard_intervention=steer_guard_intervention,
+        control_policy_intervention=control_policy_intervention,
     )
     attribution = {
         "raw_to_mapped_steer_consistency": raw_to_mapped,
         "steer_guard_intervention": steer_guard_intervention,
+        "control_policy_intervention": control_policy_intervention,
         "mapped_to_applied_steer_consistency": mapped_to_applied,
         "applied_steer_to_yaw_rate_response": vehicle_response,
         "throttle_raw_mapped_applied_consistency": throttle_consistency,
@@ -301,6 +418,7 @@ def analyze_control_attribution(
         "source_control_semantics",
         "bridge_mapping",
         "bridge_guard_intervention",
+        "bridge_longitudinal_policy",
         "carla_apply",
         "vehicle_response",
     }:
@@ -352,6 +470,7 @@ def analyze_control_attribution(
             "control_handoff_path": str(control_handoff_json) if control_handoff_json else None,
             "bridge_health_path": str(bridge_health_json) if bridge_health_json else None,
             "cyber_bridge_stats_path": str(cyber_bridge_stats_json) if cyber_bridge_stats_json else None,
+            "auxiliary_control_decode_path": str(auxiliary_path) if auxiliary_path else None,
         },
     }
 
@@ -492,6 +611,7 @@ def _dominant_breakpoint(
     vehicle_response: Mapping[str, Any],
     source_semantics: Mapping[str, Any],
     steer_guard_intervention: Mapping[str, Any],
+    control_policy_intervention: Mapping[str, Any],
 ) -> str:
     if not raw_available:
         return "insufficient_data"
@@ -509,6 +629,7 @@ def _dominant_breakpoint(
         throttle_consistency,
         brake_consistency,
         thresholds=thresholds,
+        control_policy_intervention=control_policy_intervention,
     )
     if longitudinal_breakpoint is not None:
         return longitudinal_breakpoint
@@ -524,6 +645,7 @@ def _longitudinal_dominant_breakpoint(
     brake_consistency: Mapping[str, Any],
     *,
     thresholds: Mapping[str, float],
+    control_policy_intervention: Mapping[str, Any],
 ) -> str | None:
     threshold = float(thresholds["max_longitudinal_error_p95"])
     for consistency in (throttle_consistency, brake_consistency):
@@ -532,6 +654,8 @@ def _longitudinal_dominant_breakpoint(
         raw_to_mapped = _num(consistency.get("raw_to_mapped_error_p95"))
         mapped_to_applied = _num(consistency.get("mapped_to_applied_error_p95"))
         if raw_to_mapped is not None and raw_to_mapped > threshold:
+            if control_policy_intervention.get("active") is True:
+                return "bridge_longitudinal_policy"
             return "bridge_mapping"
         if mapped_to_applied is not None and mapped_to_applied > threshold:
             return "carla_apply"
@@ -604,6 +728,82 @@ def _steer_guard_intervention(
     }
 
 
+def _control_policy_intervention(
+    rows: Sequence[Mapping[str, Any]],
+    cyber_bridge_stats: Mapping[str, Any],
+) -> dict[str, Any]:
+    row_policy_fields = [
+        "throttle_brake_mutual_exclusion_applied",
+        "throttle_brake_hysteresis_held",
+        "startup_boost_applied",
+        "startup_brake_suppression_applied",
+        "terminal_stop_hold_active",
+        "straight_acc_override_applied",
+        "longitudinal_override_applied",
+        "zero_hold_applied",
+        "force_throttle_applied",
+        "force_brake_applied",
+    ]
+    stats_policy_keys = [
+        "throttle_brake_mutual_exclusion_apply_count",
+        "throttle_brake_hysteresis_hold_count",
+        "startup_boost_apply_count",
+        "startup_brake_suppression_apply_count",
+        "terminal_stop_hold.engaged_count",
+        "straight_acc_override.apply_count",
+        "straight_acc_override_apply_count",
+        "longitudinal_override_apply_count",
+        "zero_hold_apply_count",
+        "force_throttle_apply_count",
+        "force_brake_apply_count",
+    ]
+    row_counts = {
+        field: sum(1 for row in rows if _truthy_suffix(row, field))
+        for field in row_policy_fields
+    }
+    row_policy_count = sum(row_counts.values())
+    flat_stats = _flatten_mapping(cyber_bridge_stats) if cyber_bridge_stats else {}
+    stats_counts = {
+        key: int(value)
+        for key in stats_policy_keys
+        if (value := _num(_value_from_flat(flat_stats, key))) is not None and value > 0
+    }
+    terminal_stop_active = _truthy_flat(flat_stats, "terminal_stop_hold.active")
+    if terminal_stop_active and "terminal_stop_hold.active" not in stats_counts:
+        stats_counts["terminal_stop_hold.active"] = 1
+    stats_policy_count = sum(stats_counts.values())
+    active = row_policy_count > 0 or stats_policy_count > 0
+    control_count = (
+        _num(_value_from_flat(flat_stats, "control_tx_count"))
+        or _num(_value_from_flat(flat_stats, "control_apply_count"))
+        or _num(_value_from_flat(flat_stats, "mapping_and_apply.apply_control_count"))
+    )
+    denominator = float(control_count or len(rows) or 0)
+    ratio = None if denominator <= 0.0 else max(row_policy_count, stats_policy_count) / denominator
+    source = "none"
+    if row_policy_count > 0:
+        source = "control_trace"
+    elif stats_policy_count > 0:
+        source = "cyber_bridge_stats"
+    return {
+        "status": "active" if active else "none",
+        "active": active,
+        "source": source,
+        "row_policy_count": row_policy_count,
+        "stats_policy_count": stats_policy_count,
+        "policy_apply_count": max(row_policy_count, stats_policy_count),
+        "policy_apply_ratio": ratio,
+        "row_policy_counts": {key: value for key, value in row_counts.items() if value > 0},
+        "stats_policy_counts": stats_counts,
+        "interpretation": (
+            "Throttle/brake commands were changed by explicit bridge policy logic; "
+            "raw-to-mapped longitudinal mismatch is not pure scale/deadzone mapping."
+            if active
+            else "No explicit longitudinal control policy intervention was observed."
+        ),
+    }
+
+
 def _raw_to_mapped_steer_consistency(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -621,7 +821,9 @@ def _raw_to_mapped_steer_consistency(
     values: list[float] = []
     for row in rows:
         raw = _value_for_field(row, "apollo_steer_raw")
-        mapped = _value_for_field(row, "bridge_steer_mapped")
+        mapped = _value_for_field(row, "bridge_steer_pre_policy")
+        if mapped is None:
+            mapped = _value_for_field(row, "bridge_steer_mapped")
         if raw is None or mapped is None:
             continue
         expected = _clamp(raw * steer_scale * steering_sign, -1.0, 1.0)
@@ -630,10 +832,88 @@ def _raw_to_mapped_steer_consistency(
     status = _error_status(error, thresholds["max_raw_mapped_steer_error_p95"])
     return {
         "status": status,
-        "expected_mapping": "bridge_steer_mapped ~= clamp(apollo_steer_raw * steer_scale * steering_sign, -1, 1)",
+        "expected_mapping": (
+            "bridge_steer_pre_policy ~= clamp(apollo_steer_raw * steer_scale * steering_sign, -1, 1); "
+            "final bridge_steer_mapped may include post-policy/actuator mapping"
+        ),
         "error_p95": error,
         "sample_count": len(values),
     }
+
+
+def _auxiliary_raw_to_mapped_steer_consistency(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    fallback_steer_scale: float | None,
+    fallback_steering_sign: float,
+    thresholds: Mapping[str, float],
+) -> dict[str, Any]:
+    if not rows:
+        return {"status": "not_available", "sample_count": 0}
+    steer_scale = _first_number_from_sources("steer_scale", rows)
+    if steer_scale is None:
+        steer_scale = fallback_steer_scale
+    steering_sign = _first_number_from_sources("steering_sign", rows)
+    if steering_sign is None:
+        steering_sign = fallback_steering_sign
+    result = _raw_to_mapped_steer_consistency(
+        rows,
+        steer_scale=steer_scale,
+        steering_sign=steering_sign,
+        thresholds=thresholds,
+    )
+    result["steer_scale"] = steer_scale
+    result["steering_sign"] = steering_sign
+    result["source"] = "auxiliary_bridge_control_decode"
+    return result
+
+
+def _should_use_auxiliary_raw_to_mapped(
+    primary: Mapping[str, Any],
+    auxiliary: Mapping[str, Any],
+) -> bool:
+    aux_status = auxiliary.get("status")
+    aux_count = int(_num(auxiliary.get("sample_count")) or 0)
+    if aux_count <= 0 or aux_status not in {"pass", "warn"}:
+        return False
+    primary_status = primary.get("status")
+    if primary_status in {"fail", "insufficient_data"}:
+        return True
+    primary_count = int(_num(primary.get("sample_count")) or 0)
+    return primary_count <= 0
+
+
+def _should_use_auxiliary_policy_intervention(
+    primary: Mapping[str, Any],
+    auxiliary: Mapping[str, Any],
+    *,
+    async_ros2_control_apply_trace: bool,
+) -> bool:
+    if not async_ros2_control_apply_trace or not auxiliary:
+        return False
+    primary_row_count = int(_num(primary.get("row_policy_count")) or 0)
+    primary_stats_count = int(_num(primary.get("stats_policy_count")) or 0)
+    if primary_row_count <= 0 or primary_stats_count > 0:
+        return False
+    auxiliary_count = int(_num(auxiliary.get("policy_apply_count")) or 0)
+    auxiliary_source = str(auxiliary.get("source") or "")
+    return auxiliary_count > 0 or auxiliary_source == "none"
+
+
+def _should_use_auxiliary_longitudinal_consistency(
+    primary: Mapping[str, Any],
+    auxiliary: Mapping[str, Any],
+    *,
+    async_ros2_control_apply_trace: bool,
+) -> bool:
+    if not async_ros2_control_apply_trace:
+        return False
+    aux_count = int(_num(auxiliary.get("raw_to_mapped_sample_count")) or _num(auxiliary.get("sample_count")) or 0)
+    if aux_count <= 0 or auxiliary.get("raw_to_mapped_status") not in {"pass", "warn"}:
+        return False
+    if primary.get("raw_to_mapped_status") in {"fail", "insufficient_data"}:
+        return True
+    return int(_num(primary.get("raw_to_mapped_sample_count")) or 0) <= 0
 
 
 def _pair_consistency(
@@ -699,15 +979,19 @@ def _longitudinal_triple_consistency(
     mapped_applied_errors: list[float] = []
     effective_scale = 1.0 if scale is None else float(scale)
     effective_deadzone = 0.0 if deadzone is None else max(0.0, float(deadzone))
+    pre_policy_field = _pre_policy_field_for(mapped_field)
     for row in rows:
         raw = _value_for_field(row, raw_field)
+        mapped_for_raw = _value_for_field(row, pre_policy_field) if pre_policy_field else None
         mapped = _value_for_field(row, mapped_field)
         applied = _value_for_field(row, applied_field)
-        if raw is not None and mapped is not None:
+        if mapped_for_raw is None:
+            mapped_for_raw = mapped
+        if raw is not None and mapped_for_raw is not None:
             expected = _clamp(raw * effective_scale, 0.0, 1.0)
             if expected <= effective_deadzone:
                 expected = 0.0
-            raw_mapped_errors.append(abs(expected - mapped))
+            raw_mapped_errors.append(abs(expected - mapped_for_raw))
         if mapped is not None and applied is not None:
             mapped_applied_errors.append(abs(mapped - applied))
     raw_mapped_error = _percentile(raw_mapped_errors, 0.95)
@@ -735,9 +1019,11 @@ def _longitudinal_triple_consistency(
             if ignore_mapped_applied_error
             else mapped_applied_status
         ),
-        "sample_count": min(len(raw_mapped_errors), len(mapped_applied_errors)),
+        "sample_count": len(raw_mapped_errors) if ignore_mapped_applied_error else min(len(raw_mapped_errors), len(mapped_applied_errors)),
+        "raw_to_mapped_sample_count": len(raw_mapped_errors),
+        "mapped_to_applied_sample_count": len(mapped_applied_errors),
         "expected_raw_to_mapped": (
-            f"{mapped_field} ~= clamp({raw_field} * scale, 0, 1)"
+            f"{pre_policy_field or mapped_field} ~= clamp({raw_field} * scale, 0, 1)"
             + (" with deadzone" if effective_deadzone > 0.0 else "")
         ),
         "scale": scale,
@@ -748,6 +1034,14 @@ def _longitudinal_triple_consistency(
             else "same_row"
         ),
     }
+
+
+def _pre_policy_field_for(mapped_field: str) -> str | None:
+    if mapped_field == "throttle_mapped":
+        return "throttle_pre_policy"
+    if mapped_field == "brake_mapped":
+        return "brake_pre_policy"
+    return None
 
 
 def _applied_steer_to_yaw_response(
@@ -802,6 +1096,10 @@ def _source_control_semantics(rows: Sequence[Mapping[str, Any]], *, thresholds: 
     raw_abs_p95 = _percentile(raw_abs, 0.95)
     high_count = sum(1 for value in raw_abs if value >= thresholds["source_steer_abs_p95_high"])
     saturation_ratio = None if not raw_abs else high_count / len(raw_abs)
+    sign_switch = _sign_switch_summary(
+        raw,
+        active_threshold=thresholds["applied_steer_active_threshold"],
+    )
     status = "pass"
     reason = None
     if raw_abs_p95 is None:
@@ -813,12 +1111,41 @@ def _source_control_semantics(rows: Sequence[Mapping[str, Any]], *, thresholds: 
     ):
         status = "fail"
         reason = "source_steer_high_or_saturated"
+    elif (
+        raw_abs_p95 >= thresholds["source_steer_oscillation_abs_p95_high"]
+        and sign_switch["switch_count"] >= int(thresholds["source_steer_sign_switch_count_high"])
+        and sign_switch["switch_ratio"] >= thresholds["source_steer_sign_switch_ratio_high"]
+    ):
+        status = "fail"
+        reason = "source_steer_high_amplitude_sign_switching"
     return {
         "status": status,
         "reason": reason,
         "apollo_steer_raw_abs_p95": raw_abs_p95,
         "apollo_steer_raw_saturation_ratio": saturation_ratio,
+        "apollo_steer_raw_sign_switch_count": sign_switch["switch_count"],
+        "apollo_steer_raw_sign_switch_ratio": sign_switch["switch_ratio"],
+        "apollo_steer_raw_active_sample_count": sign_switch["active_sample_count"],
         "sample_count": len(raw),
+    }
+
+
+def _sign_switch_summary(values: Sequence[float], *, active_threshold: float) -> dict[str, Any]:
+    signs: list[int] = []
+    threshold = abs(float(active_threshold))
+    for value in values:
+        if abs(value) < threshold:
+            continue
+        signs.append(1 if value > 0.0 else -1)
+    switch_count = 0
+    for left, right in zip(signs[:-1], signs[1:]):
+        if left != right:
+            switch_count += 1
+    denominator = max(len(signs) - 1, 1)
+    return {
+        "active_sample_count": len(signs),
+        "switch_count": switch_count,
+        "switch_ratio": float(switch_count) / float(denominator),
     }
 
 
@@ -1011,6 +1338,25 @@ def _truthy_suffix(row: Mapping[str, Any], suffix: str) -> bool:
     return False
 
 
+def _truthy_flat(flat: Mapping[str, Any], suffix: str) -> bool:
+    candidates = [flat.get(suffix)]
+    candidates.extend(value for key, value in flat.items() if key.endswith(f".{suffix}"))
+    for value in candidates:
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            if value.strip().lower() in {"true", "yes", "y", "1"}:
+                return True
+            if value.strip().lower() in {"false", "no", "n", "0"}:
+                continue
+        number = _num(value)
+        if number is not None and abs(number) > 0.0:
+            return True
+    return False
+
+
 def _resolved_fields(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     resolved: dict[str, str] = {}
     flat_rows = [_flatten_mapping(row) for row in rows]
@@ -1126,6 +1472,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
     for key in (
         "raw_to_mapped_steer_consistency",
         "steer_guard_intervention",
+        "control_policy_intervention",
         "mapped_to_applied_steer_consistency",
         "applied_steer_to_yaw_rate_response",
         "throttle_raw_mapped_applied_consistency",

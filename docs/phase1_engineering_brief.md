@@ -1016,14 +1016,15 @@ Executor update, 2026-06-25:
   `blocking_assists=[]`. This proves the route-only artifact-surface fix on a
   new online run, but it is still not a full fresh five-P0 matrix rerun and
   not Apollo behavior success.
-- Fresh full-matrix validation
+- Historical full-matrix validation
   `runs/phase1_p0_matrix/phase1_p0_auto_artifacts_20260625_153515` confirms the
-  same automatic artifact-surface path across all five P0 rows. The matrix
+  older automatic artifact-surface path across all five P0 rows. That matrix
   command materialized five comparable pairs with
   `comparison_target_status=apollo_vs_planning_control_evaluable` for every
   row and left no matching CARLA / Apollo / bridge process running after
-  completion. This closes the Phase 1 P0 delivery/comparison-surface blocker.
-  It does not prove Apollo behavior: Apollo remains `failed/lane_invasion` on
+  completion. It is historical evidence and has been superseded for current
+  Phase 1 status by the behavior-default matrix noted above. It does not prove
+  Apollo behavior: Apollo remains `failed/lane_invasion` on
   the three Baguang rows and `failed/timeout` on the two Town01 route-only rows.
 - This is runtime lifecycle and artifact-surface hardening only. It does not
   prove Apollo success or no-interference natural driving.
@@ -1205,6 +1206,36 @@ Delivery-first update, 2026-06-23:
   The next highest-value Apollo investigation is lateral semantics /
   reference-line / lane-event context for the dynamic Baguang case, not stale
   control handoff.
+
+- 2026-07-01 Town01 lane-follow root-cause status: no-guard `lane_keep_097`
+  and `curve217` online samples now agree on the first confirmed control-chain
+  defect.  Apollo routing/planning/control are materialized, raw-to-mapped and
+  mapped-to-applied steering are internally consistent, and vehicle yaw-rate
+  responds to the applied CARLA steer.  With the old `steer_sign=+1.0`, however,
+  applied steering has the same sign as CARLA route cross-track error and the
+  lateral error grows; the diagnostic `steer_sign=-1.0` probe substantially
+  reduced `lane_keep_097` cross-track p95.  The active Phase 1 Apollo Town01
+  config is therefore switched to
+  `configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml`,
+  where `control_mapping.steer_sign=-1.0`; steer scale, PID, physical mapping,
+  and lateral guards are unchanged.  This is a control-semantics root-cause
+  candidate fix, not lane-keeping completion: the same evidence still
+  shows Planning reference-line/path-bound and target-point anomalies, so fresh
+  no-guard straight, guarded straight, and curve runs must pass the usual
+  route-health, reference-line, lateral-semantics, control-attribution,
+  link-health, and Phase 1 status gates before any behavior claim.
+  Fresh no-guard validation after the config change confirms the first-layer
+  improvement but not behavior success:
+  `phase1_lane_keep097_control_sign_fix_no_guard_20260701_125023` reduces
+  `lane_keep_097` cross-track-error p95 to about `0.84m`, and
+  `phase1_curve217_control_sign_fix_no_guard_20260701_125835` reduces
+  `curve217` cross-track-error p95 to about `0.94m`.  Both still fail
+  route-health / Phase 1 status, and both continue to report
+  `control_attribution.dominant_breakpoint=source_control_semantics` with
+  Apollo raw steer p95 at saturation plus reference-line or target-point
+  semantics warnings.  The next repair target is therefore Apollo target-point /
+  reference-line / path-bound semantics, not bridge apply, steer scale, PID, or
+  guard policy.
 
 Current local accepted comparison-surface catalog status using
 `tools/phase1_scenario_catalog.py --repo . --evidence-root runs`:

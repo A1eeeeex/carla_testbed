@@ -1014,6 +1014,32 @@ def test_backend_not_ready_takes_priority_over_missing_timeseries(tmp_path) -> N
     assert report["status"] == "invalid"
     assert report["failure_reason"] == "backend_not_ready"
     assert report["invalid_reasons"] == ["backend_not_ready"]
+
+
+def test_missing_runtime_command_is_backend_not_ready(tmp_path) -> None:
+    run_dir = tmp_path / "missing_command"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": "missing_command", "backend": "apollo_cyberrt"}),
+        encoding="utf-8",
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "run_id": "missing_command",
+                "backend": "apollo_cyberrt",
+                "success": False,
+                "dispatch": {"command": {"status": "missing_command"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run_dir)
+
+    assert report["status"] == "invalid"
+    assert report["failure_reason"] == "backend_not_ready"
+    assert report["invalid_reasons"] == ["backend_not_ready"]
     assert report["evaluable"] is False
 
 
@@ -2193,7 +2219,6 @@ def test_route_establishment_latency_is_evaluable_route_only_failure(tmp_path) -
         ),
         encoding="utf-8",
     )
-
     report = classify_phase1_run(run)
 
     assert report["status"] == "failed"
@@ -2204,6 +2229,108 @@ def test_route_establishment_latency_is_evaluable_route_only_failure(tmp_path) -
     assert report["original_failure_reason"] == "ROUTE_ESTABLISHMENT_LATENCY_SEC"
     assert report["scenario_case"] == "town01_curve217_diagnostic"
     assert report["target_actor_contract"]["status"] == "not_required"
+
+
+def test_root_route_health_acceptance_failure_is_evaluable_behavior_failure(tmp_path) -> None:
+    run = tmp_path / "apollo_curve_root_summary"
+    run.mkdir()
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "apollo_curve_root_summary",
+                "scenario_case": "town01_curve217_diagnostic",
+                "scenario_id": "curve_lane_follow_town01_rh_spawn217_goal048",
+                "scenario_class": "curve_diagnostic",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+                "target_actor_contract": {
+                    "status": "not_required",
+                    "source": "scenario_class_not_required",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "exit_reason": "max_steps_reached",
+                "fail_reason": "ROUTE_DISTANCE_ACHIEVED_M",
+                "route_health_label": "route_established_but_behavior_unhealthy",
+                "route_distance_achieved_m": 26.85,
+                "route_completion_ratio": 0.112,
+                "acceptance": {
+                    "success": False,
+                    "fail_reason": "ROUTE_DISTANCE_ACHIEVED_M",
+                    "failure_codes": [
+                        "ROUTE_DISTANCE_ACHIEVED_M",
+                        "ROUTE_COMPLETION_RATIO",
+                        "MAX_SPEED_MPS",
+                        "LATERAL_METRICS",
+                    ],
+                    "checks": {
+                        "routing_request_count": {"actual": 1, "ok": True},
+                        "planning_nonzero_ratio": {"actual": 0.99, "ok": True},
+                        "route_distance_achieved_m": {"actual": 26.85, "ok": False},
+                        "route_completion_ratio": {"actual": 0.112, "ok": False},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text(
+        "sim_time,ego_speed_mps,route_s,control_source\n"
+        "0.0,0.0,0.0,apollo_control\n"
+        "1.0,2.0,26.85,apollo_control\n",
+        encoding="utf-8",
+    )
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "not_applicable",
+                "target_actor_contract": {
+                    "status": "not_required",
+                    "scenario_class": "curve_diagnostic",
+                    "source": "scenario_class_not_required",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    link_out = run / "analysis" / "apollo_link_health"
+    link_out.mkdir(parents=True)
+    (link_out / "apollo_link_health_report.json").write_text(
+        json.dumps(
+            {
+                "available": True,
+                "primary_blocker": "apollo_source_control_semantics:source_control_semantics",
+                "phase1_relevant_primary_blocker": "apollo_source_control_semantics:source_control_semantics",
+                "path": str(link_out / "apollo_link_health_report.json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "route_health_failed"
+    assert report["failed_reasons"] == ["route_health_failed"]
+    assert report["invalid_reasons"] == []
+    assert report["evaluable"] is True
+    assert report["counts_as_backend_loss_for_target_scenario"] is True
+    assert report["original_failure_reason"] == "ROUTE_DISTANCE_ACHIEVED_M"
+    assert report["target_actor_contract"]["status"] == "not_required"
+    assert report["primary_behavior_blocker"] == "source_control_semantics"
+    assert report["behavior_blocker_layer"] == "apollo_source_control_semantics"
+    assert (
+        report["behavior_blocker_evidence"]["phase1_relevant_apollo_link_blocker"]
+        == "apollo_source_control_semantics:source_control_semantics"
+    )
 
 
 def test_legacy_apollo_lane_invasion_exit_reason_is_evaluable_failure(tmp_path) -> None:

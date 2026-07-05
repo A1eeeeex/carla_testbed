@@ -63,6 +63,7 @@ from carla_testbed.analysis.route_start_alignment import (
     analyze_route_start_alignment_run_dir,
     write_route_start_alignment_report,
 )
+from carla_testbed.analysis.route_health_report import analyze_route_health_run_dir
 from carla_testbed.analysis.scenario_actor_contract import (
     analyze_scenario_actor_contract_run_dir,
     write_scenario_actor_contract_report,
@@ -129,6 +130,8 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     scenario_actor_contract_paths: dict[str, str] | None = None
     route_start_alignment_report: dict[str, Any] | None = None
     route_start_alignment_paths: dict[str, str] | None = None
+    route_health_report: dict[str, Any] | None = None
+    route_health_paths: dict[str, str] | None = None
     phase1_scenario_binding_report = _ensure_phase1_scenario_binding(root)
     is_apollo_phase1_target_run = _is_apollo_phase1_target_run(root)
     is_apollo_fixed_scene_target_run = _is_apollo_fixed_scene_target_run(root)
@@ -141,6 +144,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
     fixed_scene_contract_report, fixed_scene_contract_paths = _write_fixed_scene_contract(root)
     scenario_actor_contract_report, scenario_actor_contract_paths = _write_scenario_actor_contract(root)
     route_start_alignment_report, route_start_alignment_paths = _write_route_start_alignment(root)
+    route_health_report, route_health_paths = _write_route_health(root)
 
     if is_apollo_phase1_target_run:
         apollo_control_handoff_report, apollo_control_handoff_paths = _write_apollo_control_handoff(root)
@@ -199,6 +203,11 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
         ),
         "route_start_alignment_status": (
             route_start_alignment_report.get("status") if route_start_alignment_report else None
+        ),
+        "route_health_status": (
+            (route_health_report.get("verdict") or {}).get("status")
+            if route_health_report
+            else None
         ),
         "baguang_lane_event_contract_status": (
             baguang_lane_event_report.get("status") if baguang_lane_event_report else None
@@ -297,6 +306,7 @@ def run_phase1_postprocess(run_dir: str | Path) -> dict[str, Any]:
             **({"apollo_link_health": apollo_link_health_paths} if apollo_link_health_paths else {}),
             **({"fixed_scene_contract": fixed_scene_contract_paths} if fixed_scene_contract_paths else {}),
             **({"route_start_alignment": route_start_alignment_paths} if route_start_alignment_paths else {}),
+            **({"route_health": route_health_paths} if route_health_paths else {}),
             **(
                 {"scenario_actor_contract": scenario_actor_contract_paths}
                 if scenario_actor_contract_paths
@@ -322,6 +332,26 @@ def _write_route_start_alignment(root: Path) -> tuple[dict[str, Any], dict[str, 
     report = analyze_route_start_alignment_run_dir(root)
     paths = write_route_start_alignment_report(report, root / "analysis" / "route_start_alignment")
     return report, paths
+
+
+def _write_route_health(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    if not _route_health_raw_exists(root):
+        return None, None
+    result = analyze_route_health_run_dir(root)
+    return result.get("report"), result.get("outputs")
+
+
+def _route_health_raw_exists(root: Path) -> bool:
+    return any(
+        path.exists()
+        for path in (
+            root / "route.json",
+            root / "timeseries.csv",
+            root / "timeseries.jsonl",
+            root / "artifacts" / "debug_timeseries.csv",
+            root / "debug_timeseries.csv",
+        )
+    )
 
 
 def _write_fixed_scene_contract(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:

@@ -213,6 +213,7 @@ CAPABILITY_BLOCKED_TAGS = {
 _CANONICAL_COMPARISON_SET_CACHE: Optional[Tuple[Dict[str, Any], ...]] = None
 _RANDOM_REGRESSION_POOL_CACHE: Optional[Tuple[Dict[str, Any], ...]] = None
 ROUTE_HEALTH_PROMOTION_LABELS = {"route_health_candidate", "route_health_pass"}
+CURVE_LANE_FOLLOW_MIN_POST_TRANSITION_LENGTH_M = 25.0
 
 
 def safe_float(value: Any) -> Optional[float]:
@@ -1123,11 +1124,34 @@ def _is_lane_keep_candidate(route: Dict[str, Any]) -> bool:
     )
 
 
+def _curve_lane_follow_post_transition_length_m(route: Dict[str, Any]) -> Optional[float]:
+    values = [
+        safe_float(route.get("post_last_lane_transition_length_m")),
+        safe_float(route.get("post_last_road_transition_length_m")),
+        safe_float(route.get("post_first_lane_transition_length_m")),
+        safe_float(route.get("post_first_road_transition_length_m")),
+    ]
+    available = [float(value) for value in values if value is not None]
+    return min(available) if available else None
+
+
+def _is_terminal_short_turn_curve(route: Dict[str, Any]) -> bool:
+    explicit = safe_bool(route.get("terminal_short_turn_like"))
+    if explicit is True:
+        return True
+    post_transition_length = _curve_lane_follow_post_transition_length_m(route)
+    return bool(
+        post_transition_length is not None
+        and post_transition_length < CURVE_LANE_FOLLOW_MIN_POST_TRANSITION_LENGTH_M
+    )
+
+
 def _is_curve_lane_follow_candidate(route: Dict[str, Any]) -> bool:
     route_length = safe_float(route.get("route_length_m"))
     road_transition_count = safe_int(route.get("road_transition_count"))
     lane_transition_count = safe_int(route.get("lane_transition_count"))
     abs_heading_delta = _route_abs_heading_delta_deg(route)
+    post_transition_length = _curve_lane_follow_post_transition_length_m(route)
     return bool(
         route_length is not None
         and abs_heading_delta is not None
@@ -1135,6 +1159,11 @@ def _is_curve_lane_follow_candidate(route: Dict[str, Any]) -> bool:
         and lane_transition_count == 1
         and 220.0 <= float(route_length) <= 320.0
         and 20.0 <= float(abs_heading_delta) < 80.0
+        and not _is_terminal_short_turn_curve(route)
+        and (
+            post_transition_length is None
+            or post_transition_length >= CURVE_LANE_FOLLOW_MIN_POST_TRANSITION_LENGTH_M
+        )
     )
 
 

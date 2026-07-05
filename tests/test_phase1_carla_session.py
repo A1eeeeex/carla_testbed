@@ -67,3 +67,59 @@ def test_start_phase1_carla_session_stops_launcher_when_not_ready(
     assert payload["status"] == "not_ready"
     assert payload["ready"] is False
     assert payload["stop"]["status"] == "stopped_after_startup_failure"
+
+
+def test_phase1_carla_session_stop_leaves_reused_server_running(tmp_path: Path) -> None:
+    from carla_testbed.platform.carla_session import Phase1CarlaSession
+
+    class FakeLauncher:
+        reused = True
+        stop_reused_on_exit = False
+
+        def __init__(self) -> None:
+            self.stop_called = False
+
+        def stop(self) -> None:
+            self.stop_called = True
+
+    launcher = FakeLauncher()
+    status_path = tmp_path / "phase1_carla_session.json"
+    session = Phase1CarlaSession(
+        session_dir=tmp_path,
+        status_path=status_path,
+        launcher=launcher,
+        payload={"schema_version": "phase1_carla_session.v1", "status": "ready"},
+    )
+
+    payload = session.stop()
+
+    assert launcher.stop_called is True
+    assert payload["stop"]["status"] == "left_running_reused"
+    assert payload["stop"]["reused"] is True
+    assert payload["stop"]["stop_reused_on_exit"] is False
+    written = json.loads(status_path.read_text(encoding="utf-8"))
+    assert written["stop"]["status"] == "left_running_reused"
+
+
+def test_phase1_carla_session_stop_marks_owned_server_stopped(tmp_path: Path) -> None:
+    from carla_testbed.platform.carla_session import Phase1CarlaSession
+
+    class FakeLauncher:
+        reused = False
+        stop_reused_on_exit = False
+
+        def stop(self) -> None:
+            return None
+
+    status_path = tmp_path / "phase1_carla_session.json"
+    session = Phase1CarlaSession(
+        session_dir=tmp_path,
+        status_path=status_path,
+        launcher=FakeLauncher(),
+        payload={"schema_version": "phase1_carla_session.v1", "status": "ready"},
+    )
+
+    payload = session.stop()
+
+    assert payload["stop"]["status"] == "stopped"
+    assert payload["stop"]["reused"] is False

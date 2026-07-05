@@ -68,6 +68,7 @@ class Town01RouteHealthConfig:
     max_goal_attempts: int = 6
     route_id: str = ""
     route_corpus_path: str = ""
+    align_spawn_to_route_start: bool = False
     ego_offset_x_m: float = 0.0
     ego_offset_y_m: float = 0.0
     ego_offset_z_m: float = 0.0
@@ -435,6 +436,83 @@ class Town01RouteHealthScenario(Scenario):
         return None, "route_trace_length_unavailable"
 
     @staticmethod
+    def _route_trace_start_pose(points: Sequence[Mapping[str, Any]]) -> Optional[Dict[str, float]]:
+        rows = [row for row in points if isinstance(row, Mapping)]
+        if not rows:
+            return None
+        first = rows[0]
+        x = _safe_float(first.get("x"))
+        y = _safe_float(first.get("y"))
+        if x is None or y is None:
+            return None
+        pose: Dict[str, float] = {"x": float(x), "y": float(y)}
+        z = _safe_float(first.get("z"))
+        if z is not None:
+            pose["z"] = float(z)
+        heading_rad = _safe_float(first.get("heading"))
+        if heading_rad is not None:
+            pose["yaw_deg"] = _wrap_deg(math.degrees(float(heading_rad)))
+        return pose
+
+    @staticmethod
+    def _route_transition_metrics(trace: Sequence[carla.Waypoint], *, end_index: int) -> Dict[str, Any]:
+        selected = list(trace)[: max(0, int(end_index)) + 1]
+        metrics: Dict[str, Any] = {
+            "route_trace_length_m": None,
+            "road_transition_index_first": None,
+            "road_transition_index_last": None,
+            "lane_transition_index_first": None,
+            "lane_transition_index_last": None,
+            "post_first_road_transition_length_m": None,
+            "post_last_road_transition_length_m": None,
+            "post_first_lane_transition_length_m": None,
+            "post_last_lane_transition_length_m": None,
+            "terminal_short_turn_like": False,
+        }
+        if len(selected) < 2:
+            return metrics
+        cumulative_s: List[float] = [0.0]
+        for previous, current in zip(selected, selected[1:]):
+            prev_loc = previous.transform.location
+            loc = current.transform.location
+            dx = float(loc.x - prev_loc.x)
+            dy = float(loc.y - prev_loc.y)
+            dz = float(loc.z - prev_loc.z)
+            cumulative_s.append(cumulative_s[-1] + math.sqrt((dx * dx) + (dy * dy) + (dz * dz)))
+        road_transitions: List[int] = []
+        lane_transitions: List[int] = []
+        for index, (previous, current) in enumerate(zip(selected, selected[1:]), start=1):
+            if int(previous.road_id) != int(current.road_id):
+                road_transitions.append(index)
+            if (int(previous.road_id), int(previous.section_id), int(previous.lane_id)) != (
+                int(current.road_id),
+                int(current.section_id),
+                int(current.lane_id),
+            ):
+                lane_transitions.append(index)
+        total = float(cumulative_s[-1])
+        metrics["route_trace_length_m"] = total
+        if road_transitions:
+            first = int(road_transitions[0])
+            last = int(road_transitions[-1])
+            metrics["road_transition_index_first"] = first
+            metrics["road_transition_index_last"] = last
+            metrics["post_first_road_transition_length_m"] = float(total - cumulative_s[first])
+            metrics["post_last_road_transition_length_m"] = float(total - cumulative_s[last])
+        if lane_transitions:
+            first = int(lane_transitions[0])
+            last = int(lane_transitions[-1])
+            metrics["lane_transition_index_first"] = first
+            metrics["lane_transition_index_last"] = last
+            metrics["post_first_lane_transition_length_m"] = float(total - cumulative_s[first])
+            metrics["post_last_lane_transition_length_m"] = float(total - cumulative_s[last])
+        post_transition = metrics.get("post_last_lane_transition_length_m")
+        if post_transition is None:
+            post_transition = metrics.get("post_last_road_transition_length_m")
+        metrics["terminal_short_turn_like"] = bool(post_transition is not None and float(post_transition) < 25.0)
+        return metrics
+
+    @staticmethod
     def route_id_for(spawn_idx: int, goal_trace_index: int) -> str:
         return f"town01_rh_spawn{int(spawn_idx):03d}_goal{int(goal_trace_index):03d}"
 
@@ -616,6 +694,7 @@ class Town01RouteHealthScenario(Scenario):
                 continue
             road_ids = [int(item.road_id) for item in forward_trace[: idx + 1]]
             lane_ids = [int(item.lane_id) for item in forward_trace[: idx + 1]]
+            transition_metrics = self._route_transition_metrics(forward_trace, end_index=idx)
             goals.append(
                 {
                     "goal_waypoint": cand_wp,
@@ -626,6 +705,7 @@ class Town01RouteHealthScenario(Scenario):
                     "goal_trace_index": int(idx),
                     "road_transition_count": max(0, len(set(road_ids)) - 1),
                     "lane_transition_count": max(0, len(set(lane_ids)) - 1),
+                    **transition_metrics,
                 }
             )
         return goals, attempts
@@ -902,6 +982,12 @@ class Town01RouteHealthScenario(Scenario):
         if selected_spawn is None or selected_goal is None:
             raise RuntimeError("Failed to sample a valid spawn/goal pair for town01 route health scene")
 
+        route_trace = self._route_trace_points(
+            list(selected_spawn.get("forward_trace") or []),
+            end_index=int(selected_goal["goal_trace_index"]),
+        )
+        route_trace_start_pose = self._route_trace_start_pose(route_trace)
+
         veh_bp = self._select_blueprint(bp_lib)
         for key in ["role_name", "ros_name"]:
             try:
@@ -925,7 +1011,23 @@ class Town01RouteHealthScenario(Scenario):
             if ego is None:
                 raise RuntimeError("Town01 route health spawn_with_retry failed")
 
-        base_tf = self._stable_actor_transform(ego, fallback_transform=spawns[used_idx])
+        raw_spawn_tf = self._stable_actor_transform(ego, fallback_transform=spawns[used_idx])
+        base_tf = raw_spawn_tf
+        spawn_alignment_mode = "carla_spawn_point"
+        if bool(self.cfg.align_spawn_to_route_start) and route_trace_start_pose is not None:
+            base_tf = carla.Transform(
+                carla.Location(
+                    x=float(route_trace_start_pose["x"]),
+                    y=float(route_trace_start_pose["y"]),
+                    z=float(base_tf.location.z),
+                ),
+                carla.Rotation(
+                    pitch=float(base_tf.rotation.pitch),
+                    yaw=float(route_trace_start_pose.get("yaw_deg", base_tf.rotation.yaw)),
+                    roll=float(base_tf.rotation.roll),
+                ),
+            )
+            spawn_alignment_mode = "route_trace_start"
         target_tf = self._offset_transform(
             base_tf,
             offset_x_m=self.cfg.ego_offset_x_m,
@@ -935,17 +1037,13 @@ class Town01RouteHealthScenario(Scenario):
         )
         ego.set_transform(target_tf)
         ego.set_simulate_physics(True)
-        stable_tf = self._stable_actor_transform(ego, fallback_transform=target_tf)
+        pre_tick_observed_tf = self._stable_actor_transform(ego, fallback_transform=target_tf)
 
         goal_tf: carla.Transform = selected_goal["goal_transform"]
         goal_wp: carla.Waypoint = selected_goal["goal_waypoint"]
         route_id = (
             str((selected_route_record or {}).get("route_id") or "")
             or self.route_id_for(int(selected_spawn["spawn_idx"]), int(selected_goal["goal_trace_index"]))
-        )
-        route_trace = self._route_trace_points(
-            list(selected_spawn.get("forward_trace") or []),
-            end_index=int(selected_goal["goal_trace_index"]),
         )
         route_trace_length_m, route_trace_length_source = self._route_trace_length_from_points(route_trace)
         legacy_route_length_m = float(selected_goal["route_length_m"])
@@ -979,7 +1077,17 @@ class Town01RouteHealthScenario(Scenario):
             "requested_spawn_idx": int(requested_idx),
             "used_spawn_idx": int(used_idx),
             "strict_spawn": bool(self.cfg.strict_spawn),
-            "spawn": self._pose_dict(stable_tf),
+            "spawn_alignment_mode": spawn_alignment_mode,
+            "align_spawn_to_route_start": bool(self.cfg.align_spawn_to_route_start),
+            "spawn_alignment_route_trace_start": route_trace_start_pose,
+            "carla_spawn_before_alignment": self._pose_dict(raw_spawn_tf),
+            "spawn_commanded_after_alignment": self._pose_dict(target_tf),
+            "spawn_observed_before_next_tick": self._pose_dict(pre_tick_observed_tf),
+            "spawn_actual_after_set_transform": self._pose_dict(target_tf),
+            "spawn_actual_after_set_transform_source": (
+                "commanded_target_transform; CARLA immediate actor reads can lag until the next sync tick"
+            ),
+            "spawn": self._pose_dict(target_tf),
             "spawn_lane": {
                 "road_id": int(selected_spawn["road_id"]),
                 "section_id": int(selected_spawn["section_id"]),

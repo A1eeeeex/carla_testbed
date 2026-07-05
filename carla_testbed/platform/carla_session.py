@@ -23,9 +23,14 @@ class Phase1CarlaSession:
     payload: dict[str, Any]
 
     def stop(self) -> dict[str, Any]:
+        reused = bool(getattr(self.launcher, "reused", False))
+        stop_reused_on_exit = bool(getattr(self.launcher, "stop_reused_on_exit", False))
         try:
             self.launcher.stop()
-            stop_status = "stopped"
+            if reused and not stop_reused_on_exit:
+                stop_status = "left_running_reused"
+            else:
+                stop_status = "stopped"
             error = None
         except Exception as exc:  # pragma: no cover - defensive runtime path
             stop_status = "stop_failed"
@@ -34,6 +39,8 @@ class Phase1CarlaSession:
             "status": stop_status,
             "wall_time_s": time.time(),
             "error": error,
+            "reused": reused,
+            "stop_reused_on_exit": stop_reused_on_exit,
         }
         _write_json(self.status_path, self.payload)
         return dict(self.payload)

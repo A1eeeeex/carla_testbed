@@ -320,8 +320,7 @@ def build_online_command(
         argv.append("--carla-ignore-memory-preflight")
     if enable_lateral:
         argv.append("--enable-lateral")
-    if enable_guard:
-        argv.append("--enable-guard")
+    argv.append("--enable-guard" if enable_guard else "--no-enable-guard")
     if startup_profile == "lowres_low_quality":
         argv.extend(
             [

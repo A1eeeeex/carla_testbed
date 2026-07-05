@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from carla_testbed.scenarios.town01_route_health import Town01RouteHealthScenario
@@ -28,3 +30,27 @@ def test_route_trace_length_falls_back_to_polyline_when_s_missing() -> None:
 
     assert length == pytest.approx(17.0)
     assert source == "route_trace_xyz_polyline"
+
+
+def test_route_trace_start_pose_extracts_route_origin_and_heading() -> None:
+    pose = Town01RouteHealthScenario._route_trace_start_pose(
+        [
+            {
+                "x": 2.0,
+                "y": 249.5,
+                "z": 0.0,
+                "heading": 1.5 * math.pi,
+            }
+        ]
+    )
+
+    assert pose == {
+        "x": 2.0,
+        "y": 249.5,
+        "z": 0.0,
+        "yaw_deg": pytest.approx(-90.0),
+    }
+
+
+def test_route_trace_start_pose_requires_xy() -> None:
+    assert Town01RouteHealthScenario._route_trace_start_pose([{"x": 1.0}]) is None

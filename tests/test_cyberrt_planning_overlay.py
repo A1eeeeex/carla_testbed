@@ -280,6 +280,141 @@ def test_control_runtime_overlays_default_do_not_touch_control_runtime_files() -
     assert "--control_period=" not in backend._control_flags_overlay_shell()
 
 
+def test_control_lon_overlay_preserves_base_pid_config(tmp_path) -> None:
+    src = tmp_path / "controller_conf.pb.txt"
+    src.write_text(
+        "ts: 0.01\n"
+        "preview_window: 20.0\n"
+        "use_speed_itfc: false\n"
+        "station_pid_conf {\n"
+        "  kp: 0.2\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.pb.txt"
+    backend = CyberRTBackend({"algo": {"apollo": {"control_lon": {"enabled": True}}}})
+    script = _extract_python_overlay_script(backend._control_lon_overlay_shell())
+    script = script.replace(
+        "'/apollo/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt.carla_testbed.bak'",
+        repr(str(tmp_path / "missing-backup.pb.txt")),
+    )
+    script = script.replace(
+        "'/apollo/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt'",
+        repr(str(src)),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/share/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt'",
+        repr(str(tmp_path / "missing-share.pb.txt")),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/src/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt'",
+        repr(str(tmp_path / "missing-src.pb.txt")),
+    )
+    script = script.replace(
+        "p=Path('/apollo_workspace/conf_overlay/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt'); ",
+        f"p=Path({str(out)!r}); ",
+    )
+
+    subprocess.run(["python3", "-c", script], check=True, text=True, capture_output=True)
+
+    text = out.read_text(encoding="utf-8")
+    assert "use_speed_itfc: true" in text
+    assert "use_speed_itfc: false" not in text
+    assert "ts: 0.01" in text
+    assert "preview_window: 20.0" in text
+    assert "station_pid_conf" in text
+    assert text.count("use_speed_itfc:") == 1
+
+
+def test_control_lon_overlay_refuses_partial_config_without_positive_ts(tmp_path) -> None:
+    src = tmp_path / "controller_conf.pb.txt"
+    src.write_text("use_speed_itfc: false\n", encoding="utf-8")
+    out = tmp_path / "out.pb.txt"
+    backend = CyberRTBackend({"algo": {"apollo": {"control_lon": {"enabled": True}}}})
+    script = _extract_python_overlay_script(backend._control_lon_overlay_shell())
+    script = script.replace(
+        "'/apollo/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt.carla_testbed.bak'",
+        repr(str(tmp_path / "missing-backup.pb.txt")),
+    )
+    script = script.replace(
+        "'/apollo/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt'",
+        repr(str(src)),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/share/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt'",
+        repr(str(tmp_path / "missing-share.pb.txt")),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/src/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt'",
+        repr(str(tmp_path / "missing-src.pb.txt")),
+    )
+    script = script.replace(
+        "p=Path('/apollo_workspace/conf_overlay/modules/control/controllers/lon_based_pid_controller/conf/controller_conf.pb.txt'); ",
+        f"p=Path({str(out)!r}); ",
+    )
+
+    completed = subprocess.run(["python3", "-c", script], text=True, capture_output=True)
+
+    assert completed.returncode != 0
+    assert "positive ts" in completed.stderr
+    assert not out.exists()
+
+
+def test_control_lqr_overlay_keeps_query_relative_time_configurable(tmp_path) -> None:
+    out = tmp_path / "controller_conf.pb.txt"
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "control_lqr": {
+                        "enabled": True,
+                        "query_relative_time": 0.18,
+                        "query_time_nearest_point_only": True,
+                    }
+                }
+            }
+        }
+    )
+    script = _extract_python_overlay_script(backend._control_lqr_overlay_shell())
+    script = script.replace(
+        "p=Path('/apollo_workspace/conf_overlay/modules/control/controllers/"
+        "lat_based_lqr_controller/conf/controller_conf.pb.txt'); ",
+        f"p=Path({str(out)!r}); ",
+    )
+
+    subprocess.run(["python3", "-c", script], check=True, text=True, capture_output=True)
+
+    text = out.read_text(encoding="utf-8")
+    assert "query_relative_time: 0.1800" in text
+    assert "query_time_nearest_point_only: true" in text
+
+
+def test_control_lqr_overlay_keeps_lookahead_back_control_configurable(tmp_path) -> None:
+    out = tmp_path / "controller_conf.pb.txt"
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "control_lqr": {
+                        "enabled": True,
+                        "enable_look_ahead_back_control": False,
+                    }
+                }
+            }
+        }
+    )
+    script = _extract_python_overlay_script(backend._control_lqr_overlay_shell())
+    script = script.replace(
+        "p=Path('/apollo_workspace/conf_overlay/modules/control/controllers/"
+        "lat_based_lqr_controller/conf/controller_conf.pb.txt'); ",
+        f"p=Path({str(out)!r}); ",
+    )
+
+    subprocess.run(["python3", "-c", script], check=True, text=True, capture_output=True)
+
+    assert "enable_look_ahead_back_control: false" in out.read_text(encoding="utf-8")
+
+
 def test_deferred_control_survival_keeps_5s_sample_when_control_exits_by_10s(tmp_path, monkeypatch) -> None:
     backend = _planning_ready_backend()
     status_rows = iter(

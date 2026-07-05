@@ -722,7 +722,15 @@ def _control_row_level_artifact_is_sampled(
     seen = _int_or_zero(seen_counts.get(artifact_name))
     written = _int_or_zero(written_counts.get(artifact_name))
     rows = _int_or_zero(entry.get("message_count"))
-    return seen > written > 0 and rows == written
+    if not (seen > written > 0 and rows > 0):
+        return False
+    # Async writers can flush a final diagnostic row after the sampled writer
+    # count was captured. Treat small count drift as sampled when the source
+    # stream is still orders of magnitude larger than the row-level artifact.
+    written_slack = max(2, int(round(written * 0.1)))
+    rows_match_written = rows <= written + written_slack
+    rows_are_sparse = seen > max(rows * 2, rows + stride)
+    return rows_match_written and rows_are_sparse
 
 
 def _control_debug_sample_stride(bridge_stats: Mapping[str, Any] | None) -> int | None:

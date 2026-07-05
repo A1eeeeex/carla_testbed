@@ -47,12 +47,13 @@ Inspect a run directory:
 python -m carla_testbed inspect-run runs/smoke
 ```
 
-Compile platform RunPlans without starting CARLA/Apollo/Autoware:
+Compile the current Phase 1 P0 ApolloBackend vs PlanningControlBackend matrix
+without starting CARLA/Apollo:
 
 ```bash
-python -m carla_testbed suite dry-run \
-  --suite configs/suites/town01_natural_driving.platform.yaml \
-  --out /tmp/town01_platform_suite
+python -m carla_testbed phase1 run-p0-matrix \
+  --out /tmp/phase1_p0_matrix_dry \
+  --dry-run
 ```
 
 Build evidence/gate summaries from existing artifacts:
@@ -60,12 +61,16 @@ Build evidence/gate summaries from existing artifacts:
 ```bash
 python -m carla_testbed analyze \
   --run-dir runs/<run_id> \
-  --plan /tmp/town01_platform_suite/plans/<run_id>.plan.resolved.yaml
+  --plan /tmp/phase1_p0_matrix_dry/pairs/<case>/plans/<run_id>.plan.resolved.yaml
 ```
 
 These platform commands are planning and evidence-indexing surfaces. They do
 not make an Apollo natural-driving pass claim without the required reports such
 as `natural_driving_report.json`.
+
+The older `configs/suites/town01_natural_driving.platform.yaml` suite remains a
+legacy/experimental Apollo+Autoware planning surface for route-health and
+natural-driving diagnostics. It is not the Phase 1 five-P0 pair matrix.
 
 Lightweight examples:
 

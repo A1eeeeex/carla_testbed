@@ -846,8 +846,12 @@ def _cmd_suite(args: argparse.Namespace) -> int:
                 }
             )
     print(json.dumps(manifest, indent=2, sort_keys=True))
-    if args.action == "run" and not (args.dry_run or args.legacy_dispatch):
-        print("[suite] real RunPlan suite dispatch is not implemented; dry-run artifacts were written", file=sys.stderr)
+    if args.action == "run":
+        print(
+            "[suite] real RunPlan suite dispatch is not implemented; dry-run artifacts were written. "
+            "Use `python -m carla_testbed phase1 run-p0-matrix` for Phase 1 P0 runtime.",
+            file=sys.stderr,
+        )
         return 2
     return 0
 

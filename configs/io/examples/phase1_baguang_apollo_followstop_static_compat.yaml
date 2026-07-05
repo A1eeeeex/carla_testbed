@@ -135,7 +135,7 @@ algo:
       steer_sign: 1.0
       throttle_scale: 1.5
       brake_scale: 1.0
-      steering_percent_normalization: angle_degree_at_select
+      steering_percent_normalization: single_percent_at_select
       apollo_max_steer_angle_deg: 30.0
       terminal_stop_hold:
         enabled: true
@@ -144,7 +144,7 @@ algo:
         hold_brake: 0.18
     # P1: LQR 调优 — 通过 conf_overlay 调整 Apollo LQR 参数
     # 禁用 leadlag 增强器、降低 matrix_q、增大 minimum_speed_protection
-    # 配合 steer_scale=1.0 + angle_degree_at_select 归一化
+    # 配合 steer_scale=1.0 + single_percent_at_select 归一化
     control_lqr:
       enabled: true
       cf: 155494.663

@@ -85,6 +85,7 @@ from tools.run_town01_route_health import (
     _startup_probe_payload,
     _startup_retry_decision,
     _startup_retry_policy_payload,
+    _stop_carla_launcher_and_cleanup_owned,
 )
 from tools.run_unified_calibration_pipeline import (
     _emit_replay_input_contract_artifacts,
@@ -114,6 +115,8 @@ from tools.run_town01_capability_online_pack import (
 )
 from tools.run_town01_capability_online_chain import (
     _build_parser as _build_online_chain_parser,
+    _detect_existing_ready_carla,
+    _should_skip_prewarm_for_existing_carla,
     build_online_chain_plan,
     estimate_online_chain_time_budget,
 )
@@ -2483,6 +2486,138 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
         self.assertTrue(plan[0]["enable_lateral"])
         self.assertTrue(plan[1]["enable_lateral"])
         self.assertTrue(plan[2]["enable_lateral"])
+
+    def test_build_online_chain_plan_preserves_preexisting_carla_at_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = Path(tmpdir) / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "entries": [
+                            {
+                                "capability_profile": "lane_keep",
+                                "source_subset_name": "lane_keep_focus_pack",
+                                "seed_route_id": "lane_seed",
+                                "seed_route_ids_file": "/tmp/lane.seed.route_ids.json",
+                                "seed_comparison_label": "lane__seed",
+                                "route_ids_file": "/tmp/lane.full.route_ids.json",
+                                "comparison_label": "lane__full",
+                                "overrides_file": "/tmp/lane.overrides.txt",
+                                "ticks": 320,
+                                "missing_history_routes": ["lane_seed"],
+                            },
+                            {
+                                "capability_profile": "curve_lane_follow",
+                                "source_subset_name": "curve_lane_follow_proxy_pack",
+                                "seed_route_id": "curve_seed",
+                                "seed_route_ids_file": "/tmp/curve.seed.route_ids.json",
+                                "seed_comparison_label": "curve__seed",
+                                "route_ids_file": "/tmp/curve.full.route_ids.json",
+                                "comparison_label": "curve__full",
+                                "overrides_file": "/tmp/curve.overrides.txt",
+                                "ticks": 320,
+                                "missing_history_routes": ["curve_seed"],
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            plan = build_online_chain_plan(
+                manifest_path=manifest_path,
+                route_steps=[
+                    ("lane_keep", "town01_rh_spawn097_goal046"),
+                    ("curve_lane_follow", "town01_rh_spawn217_goal048"),
+                ],
+                capability_profiles=[],
+                mode="seed",
+                config_path=None,
+                batch_root_parent=Path("/tmp/online_chain"),
+                comparison_label_suffix="manual_online_chain",
+                startup_profile="default",
+                ticks_override=None,
+                post_fail_steps_override=None,
+                launch_attempts=1,
+                world_ready_timeout_sec=90.0,
+                retry_delay_sec=2.0,
+                keep_carla_alive_at_end=False,
+                preserve_existing_carla_at_end=True,
+            )
+
+        self.assertEqual(len(plan), 2)
+        self.assertTrue(plan[0]["preserve_existing_carla_at_end"])
+        self.assertTrue(plan[1]["preserve_existing_carla_at_end"])
+        self.assertFalse(plan[0]["stop_carla_on_exit"])
+        self.assertFalse(plan[1]["stop_carla_on_exit"])
+        self.assertNotIn("--stop-carla-on-exit", plan[0]["command"])
+        self.assertNotIn("--stop-carla-on-exit", plan[1]["command"])
+
+    def test_stop_carla_launcher_skips_global_cleanup_for_reused_launcher(self) -> None:
+        class FakeLauncher:
+            reused = True
+
+            def __init__(self) -> None:
+                self.stop_called = False
+
+            def stop(self) -> None:
+                self.stop_called = True
+
+        launcher = FakeLauncher()
+        with mock.patch("tools.run_town01_route_health._cleanup_carla_processes") as cleanup:
+            stopped_owned = _stop_carla_launcher_and_cleanup_owned(launcher)
+
+        self.assertFalse(stopped_owned)
+        self.assertTrue(launcher.stop_called)
+        cleanup.assert_not_called()
+
+    def test_stop_carla_launcher_cleans_owned_launcher(self) -> None:
+        class FakeLauncher:
+            reused = False
+
+            def __init__(self) -> None:
+                self.stop_called = False
+
+            def stop(self) -> None:
+                self.stop_called = True
+
+        launcher = FakeLauncher()
+        with mock.patch("tools.run_town01_route_health._cleanup_carla_processes") as cleanup:
+            stopped_owned = _stop_carla_launcher_and_cleanup_owned(launcher)
+
+        self.assertTrue(stopped_owned)
+        self.assertTrue(launcher.stop_called)
+        cleanup.assert_called_once_with()
+
+    def test_detect_existing_ready_carla_uses_world_probe(self) -> None:
+        with mock.patch(
+            "tools.run_town01_capability_online_chain._probe_existing_carla_world",
+            return_value={"ready": True, "town": "Town01", "error": ""},
+        ) as probe:
+            result = _detect_existing_ready_carla()
+
+        probe.assert_called_once_with("127.0.0.1", 2000, timeout_s=3.0)
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["town"], "Town01")
+
+    def test_prewarm_skips_when_existing_carla_should_be_preserved(self) -> None:
+        self.assertTrue(
+            _should_skip_prewarm_for_existing_carla(
+                prewarm_carla=True,
+                preserve_existing_carla_at_end=True,
+            )
+        )
+        self.assertFalse(
+            _should_skip_prewarm_for_existing_carla(
+                prewarm_carla=True,
+                preserve_existing_carla_at_end=False,
+            )
+        )
+        self.assertFalse(
+            _should_skip_prewarm_for_existing_carla(
+                prewarm_carla=False,
+                preserve_existing_carla_at_end=True,
+            )
+        )
 
     def test_build_online_chain_plan_reuses_prewarmed_carla_from_first_step(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

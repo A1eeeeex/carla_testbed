@@ -214,6 +214,13 @@ class ApolloCyberRTBackend:
         if runtime_python:
             env.setdefault("CARLA_TESTBED_CARLA_PYTHON", runtime_python)
             env.setdefault("CARLA16_PYTHON", runtime_python)
+        unsupported_fixed_scene = fixed_scene_enabled and not fixed_scene_compat and dynamic_sidecar_config is None
+        runtime_expected = (
+            (not fixed_scene_enabled)
+            or fixed_scene_compat
+            or dynamic_sidecar_config is not None
+            or unsupported_fixed_scene
+        )
         return LaunchPlan(
             backend=self.name,
             mode="legacy_apollo_cyberrt_compat",
@@ -241,7 +248,7 @@ class ApolloCyberRTBackend:
                 if (not fixed_scene_enabled) and command
                 else []
             ),
-            starts_runtime=(not fixed_scene_enabled) or fixed_scene_compat or dynamic_sidecar_config is not None,
+            starts_runtime=runtime_expected,
             compatibility_source=(
                 "phase1_static_follow_stop_legacy_transition"
                 if fixed_scene_compat

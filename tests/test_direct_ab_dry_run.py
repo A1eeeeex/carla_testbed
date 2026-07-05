@@ -100,7 +100,10 @@ def test_online_commands_target_chain_runner_without_transport_ab_only_flags(tmp
 
     assert "tools/run_town01_capability_online_chain.py" in command
     assert "--step lane_keep:town01_rh_spawn097_goal046" in command
-    assert "--config configs/io/examples/town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml" in command
+    assert (
+        "--config configs/io/examples/"
+        "town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml"
+    ) in command
     assert "--backend" not in command
     assert "--out" not in command
     assert "--route-set" not in command

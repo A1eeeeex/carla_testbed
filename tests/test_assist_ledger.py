@@ -68,6 +68,22 @@ def test_legacy_and_manual_assists_block_unassisted_claims() -> None:
     assert ledger["can_claim_unassisted_natural_driving"] is False
 
 
+def test_steering_sign_diagnostic_override_blocks_unassisted_claims() -> None:
+    ledger = build_assist_ledger(
+        config={
+            "assist_ledger": {
+                "active_assists": ["steering_sign_diagnostic_override"],
+                "assist_confidence": "explicit",
+            }
+        }
+    )
+
+    assert ledger["active_assists"] == ["steering_sign_diagnostic_override"]
+    assert ledger["blocking_assists"] == ["steering_sign_diagnostic_override"]
+    assert ledger["can_claim_unassisted_natural_driving"] is False
+    assert ledger["assist_confidence"] == "explicit"
+
+
 def test_runtime_count_fields_infer_blocking_assists() -> None:
     ledger = build_assist_ledger(
         bridge_stats={

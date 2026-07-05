@@ -1,0 +1,12 @@
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml
+
+algo:
+  apollo:
+    bridge:
+      # Diagnostic-only evidence mode. This increases artifact volume so the
+      # control chain can be inspected frame-by-frame after lane-invasion or
+      # oscillation failures; it does not change Apollo control behavior.
+      stage5_debug_artifact_sample_stride: 1
+      reference_debug_artifact_sample_stride: 1
+      control_debug_artifact_sample_stride: 1
+      claim_evidence_artifact_sample_stride: 1
