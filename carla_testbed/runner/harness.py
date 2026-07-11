@@ -44,6 +44,7 @@ from carla_testbed.schemas import ControlCommand, Event, FramePacket, GroundTrut
 from carla_testbed.sensors import CollisionEventSource, LaneInvasionEventSource, SensorRig
 from carla_testbed.sim import tick_world
 from carla_testbed.runner.hooks import FrameContext, RunHook
+from carla_testbed.runner.route_termination import evaluate_nominal_route_completion
 from carla_testbed.runner.tick_loop import (
     HookDispatcher,
     adapt_tick_callbacks,
@@ -1070,6 +1071,13 @@ class TestHarness:
                     row[f"dbg_{k}"] = vdbg
                 ts_rec.write_row(row)
 
+                route_completion = evaluate_nominal_route_completion(
+                    scenario_metadata,
+                    ego_x=route_curve_row.get("ego_x"),
+                    ego_y=route_curve_row.get("ego_y"),
+                    route_s=route_curve_row.get("route_s"),
+                )
+
                 fail_now = self._check_fail(collisions, invasions)
                 if fail_cap:
                     fail_cap.capture()
@@ -1097,6 +1105,22 @@ class TestHarness:
                         if self.state.continued_steps_after_failure >= self.cfg.post_fail_steps:
                             break
                         # else continue running
+                if route_completion["reached"]:
+                    self.state.success = True
+                    artifact_events.append(
+                        {
+                            "event_type": "route_completed",
+                            "frame": frame_id,
+                            "t": timestamp,
+                            "step": step,
+                            "route_s": route_completion["route_s"],
+                            "route_length_m": route_completion["route_length_m"],
+                            "route_completion_ratio": route_completion["route_completion_ratio"],
+                            "goal_distance_m": route_completion["goal_distance_m"],
+                            "goal_tolerance_m": route_completion["goal_tolerance_m"],
+                        }
+                    )
+                    break
                 # success condition: stopped near front with small speed and valid gap
                 if v < 0.2:
                     stopped_counter += 1

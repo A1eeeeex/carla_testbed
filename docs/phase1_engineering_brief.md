@@ -99,9 +99,25 @@ Layered progress status:
   CTE p95 from about 0.798m to 0.158m but still covered only about 106.5m,
   proving that calibrated steering and trajectory continuity close different
   failure mechanisms.
+- A second clean no-guard `lane_keep_097` repeat reached about 218.6m / 95.0%
+  with zero collision and lane invasion, CTE p95 about 0.174m, and heading
+  error p95 about 0.0104rad. This closes the single-route repeat check but not
+  calibration portability or the five-P0 matrix.
+- The first full-window calibrated `curve217` run reached the scenario goal,
+  then continued beyond the declared route because the legacy harness only
+  had a follow-stop success condition. The extra post-goal motion produced
+  four lane invasions and a false curve failure. The harness now terminates
+  no-lead lane/curve cases only when route progress is at least 95% and ego is
+  within the declared goal tolerance. The same online configuration then
+  produced `route_completion_ratio=0.9922`, zero collision/lane invasion,
+  reference-line contract `pass`, control-health `warn`, and Phase 1
+  `success` in
+  `runs/phase1_online_pairs/phase1_curve217_route_completion_fix_20260711`.
+  This is evidence for the scenario termination contract and this calibrated
+  curve sample; it is not a natural-driving claim.
 - This is a diagnostic candidate, not default physical-mapping promotion. It
-  uses a local calibration artifact and one Town01 route sample; repeat 097 and
-  curve/junction no-regression gates remain outstanding. The tracked physical
+  uses a local calibration artifact; junction and full five-P0 no-regression
+  gates remain outstanding. The tracked physical
   candidate config now extends the current reference profile, disables all
   lateral guards, forbids silent legacy fallback, and maps only steering.
 
