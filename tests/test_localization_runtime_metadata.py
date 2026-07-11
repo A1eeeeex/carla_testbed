@@ -77,6 +77,36 @@ def test_runtime_localization_timestamp_forced_sim_time_fallback_is_explicit() -
     assert time_base == "sim_time_missing_cyber_time_fallback"
 
 
+def test_cyber_time_cannot_be_promoted_to_claim_grade_by_claim_profile() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+
+    enabled, reason = bridge._resolve_claim_grade_enabled(
+        {"enabled": False},
+        claim_profile_enabled=True,
+        localization_time_source="cyber_time",
+    )
+
+    assert enabled is False
+    assert reason == "cyber_time_diagnostic_not_claim_grade"
+
+
+def test_explicit_claim_grade_false_wins_over_materialization_profile() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+
+    enabled, reason = bridge._resolve_claim_grade_enabled(
+        {"enabled": False},
+        claim_profile_enabled=True,
+        localization_time_source="sim_time",
+    )
+
+    assert enabled is False
+    assert reason is None
+
+
 def test_runtime_rfu_quaternion_decodes_forward_heading() -> None:
     _install_fake_protobuf()
     _install_fake_carla()

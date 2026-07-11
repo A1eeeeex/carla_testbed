@@ -1,0 +1,36 @@
+# Diagnostic Apollo reference-runtime candidate.
+#
+# This profile keeps the current Town01 GT/control contract but combines the
+# timing/stitching settings that produced the most stable diagnostic sample.
+# It is intentionally not a claim-grade or default profile: Apollo Cyber uses
+# wall-clock time here while CARLA localization remains a diagnostic bridge
+# input, so natural-driving claims must stay disabled.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml
+
+run:
+  profile_name: town01_apollo_route_health_reference_runtime_cybertime_stitcher_v1
+  claim_profile: false
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Apollo reference-runtime diagnostic candidate; not a claim-grade profile.
+    - Cyber-time localization is used to align Apollo trajectory timing during diagnosis.
+    - This profile does not enable a route follower, lateral guard, or physical mapping.
+
+algo:
+  apollo:
+    bridge:
+      localization_time_source: cyber_time
+      claim_grade:
+        enabled: false
+        stale_world_frame_policy: republish_debug
+        localization_publish_policy: allow_cached_republish
+        chassis_publish_policy: allow_cached_republish
+    planning:
+      enable_trajectory_stitcher: true
+      enable_reference_line_stitching: false

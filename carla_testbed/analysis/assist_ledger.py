@@ -409,12 +409,22 @@ def build_assist_ledger(
     explicit_sources: set[str] = set()
     explicit_seen = False
     inferred_seen = False
+    explicit_claim_disabled = False
     for source, payload in (
         ("manifest", _as_mapping(manifest)),
         ("summary", _as_mapping(summary)),
         ("bridge_stats", _as_mapping(bridge_stats)),
         ("config", _as_mapping(config)),
     ):
+        declared_ledger = _as_mapping(payload).get("assist_ledger")
+        if (
+            isinstance(declared_ledger, Mapping)
+            and declared_ledger.get("can_claim_unassisted_natural_driving") is False
+        ):
+            # A single explicit no-claim declaration must survive later
+            # manifest/summary regeneration; runtime evidence can only narrow
+            # the claim boundary, never widen it.
+            explicit_claim_disabled = True
         source_explicit = _collect_explicit_assists(
             payload,
             active=active,
@@ -448,6 +458,8 @@ def build_assist_ledger(
         notes.append("carla_direct_transport is recorded as a non-blocking transport candidate")
     if confidence == "unknown":
         notes.append("no assist declaration found; ledger assumes no active assists for offline analysis")
+    if explicit_claim_disabled:
+        notes.append("explicit runtime claim boundary disables unassisted natural-driving claims")
     source_artifact = _source_artifact(assist_sources)
     if source_artifact == "unknown" and explicit_sources:
         source_artifact = _source_artifact({source: source for source in explicit_sources})
@@ -459,7 +471,9 @@ def build_assist_ledger(
         "assist_sources": {name: assist_sources.get(name, "unknown") for name in classified["active_assists"]},
         "assist_confidence": confidence,
         "source_artifact": source_artifact,
-        "can_claim_unassisted_natural_driving": classified["can_claim_unassisted_natural_driving"],
+        "can_claim_unassisted_natural_driving": bool(
+            classified["can_claim_unassisted_natural_driving"] and not explicit_claim_disabled
+        ),
         "notes": notes,
     }
 

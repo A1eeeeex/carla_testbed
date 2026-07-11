@@ -154,3 +154,42 @@ def test_effective_config_assist_ledger_prevents_placeholder_dummy_false_positiv
     analyzed = read_assist_ledger_from_run_dir(tmp_path)
     assert analyzed["active_assists"] == []
     assert analyzed["assist_confidence"] == "explicit"
+
+
+def test_explicit_disabled_claim_boundary_survives_manifest_and_summary_rebuild(tmp_path: Path) -> None:
+    store = RunArtifactStore(tmp_path).ensure()
+    store.write_resolved_config(
+        {
+            "assist_ledger": {
+                "schema_version": "assist_ledger.v1",
+                "active_assists": [],
+                "assist_confidence": "explicit",
+                "source_artifact": "config",
+                "can_claim_unassisted_natural_driving": False,
+            }
+        }
+    )
+
+    store.write_manifest(
+        build_manifest(
+            run_id="diagnostic_candidate",
+            backend_name="apollo_cyberrt",
+        )
+    )
+    store.write_summary(
+        build_summary(
+            success=True,
+            exit_reason="ok",
+            frames=10,
+            sim_duration_s=0.5,
+            wall_duration_s=0.6,
+        )
+    )
+
+    manifest = _read_json(tmp_path / "manifest.json")
+    summary = _read_json(tmp_path / "summary.json")
+    assert manifest["assist_ledger"]["can_claim_unassisted_natural_driving"] is False
+    assert summary["assist_ledger"]["can_claim_unassisted_natural_driving"] is False
+    assert "explicit runtime claim boundary disables unassisted natural-driving claims" in summary[
+        "assist_ledger"
+    ]["notes"]

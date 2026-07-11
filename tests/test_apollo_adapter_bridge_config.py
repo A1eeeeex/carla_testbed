@@ -388,3 +388,30 @@ def test_town01_physical_candidate_inherits_reference_runtime_without_guards() -
     assert physical["map_steering"] is True
     assert physical["map_longitudinal"] is False
     assert config.assist_ledger["can_claim_unassisted_natural_driving"] is False
+
+
+def test_town01_cybertime_stitcher_reference_candidate_is_explicit() -> None:
+    config = load_config(
+        Path(
+            "configs/io/examples/"
+            "town01_apollo_route_health_reference_runtime_cybertime_stitcher_v1.yaml"
+        )
+    )
+    apollo = config.backend.params["legacy_algo"]["apollo"]
+    bridge = apollo["bridge"]
+    planning = apollo["planning"]
+    mapping = apollo["control_mapping"]
+    legacy_run = config.backend.params["legacy_run"]
+
+    assert legacy_run["profile_name"] == (
+        "town01_apollo_route_health_reference_runtime_cybertime_stitcher_v1"
+    )
+    assert config.run.claim_profile is False
+    assert bridge["localization_time_source"] == "cyber_time"
+    assert bridge["claim_grade"]["enabled"] is False
+    assert planning["enable_trajectory_stitcher"] is True
+    assert planning["enable_reference_line_stitching"] is False
+    assert mapping["steer_sign"] == -1.0
+    assert mapping["steer_scale"] == 1.0
+    assert mapping["actuator_mapping_mode"] == "legacy"
+    assert config.assist_ledger["can_claim_unassisted_natural_driving"] is False

@@ -244,6 +244,28 @@ def _clamp(val: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, val))
 
 
+def _resolve_claim_grade_enabled(
+    claim_grade_cfg: Mapping[str, Any],
+    *,
+    claim_profile_enabled: bool,
+    localization_time_source: str,
+) -> Tuple[bool, Optional[str]]:
+    """Resolve the evidence boundary independently from runtime materialization.
+
+    ``run.claim_profile`` also enables routing/materialization behavior in the
+    online harness, so it must not override an explicit claim-grade setting.
+    Cyber time is always diagnostic because Apollo Planning uses Cyber's wall
+    clock for trajectory timing.
+    """
+
+    source = str(localization_time_source or "auto").strip().lower()
+    if source == "cyber_time":
+        return False, "cyber_time_diagnostic_not_claim_grade"
+    if "enabled" in claim_grade_cfg:
+        return bool(claim_grade_cfg.get("enabled")), None
+    return bool(claim_profile_enabled), None
+
+
 def _quat_to_yaw(qx: float, qy: float, qz: float, qw: float) -> float:
     siny_cosp = 2.0 * (qw * qz + qx * qy)
     cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
@@ -1600,8 +1622,10 @@ class ApolloGtBridge:
             == "typed_apollo_claim_runtime"
         )
         claim_grade_cfg = bridge_cfg.get("claim_grade", {}) or {}
-        self.claim_grade_enabled = bool(
-            claim_grade_cfg.get("enabled", False) or self.claim_profile_enabled
+        self.claim_grade_enabled, self.claim_grade_disabled_reason = _resolve_claim_grade_enabled(
+            claim_grade_cfg,
+            claim_profile_enabled=self.claim_profile_enabled,
+            localization_time_source=self.localization_time_source,
         )
         self.gt_stale_sample_policy = str(
             claim_grade_cfg.get(
@@ -1635,6 +1659,7 @@ class ApolloGtBridge:
             "enabled": self.claim_grade_enabled,
             "claim_profile_enabled": self.claim_profile_enabled,
             "materialization_probe_enabled": self.materialization_probe_enabled,
+            "disabled_reason": self.claim_grade_disabled_reason,
             "localization_publish_policy": self.localization_publish_policy,
             "chassis_publish_policy": self.chassis_publish_policy,
         }
