@@ -328,10 +328,11 @@ algo:
       heading_err_gain_scheduler_speed: [0.5, 2.0, 4.0, 8.0, 12.0, 20.0, 25.0]
       heading_err_gain_scheduler_ratio: [0.05, 0.15, 1.0, 0.6, 0.4, 0.2, 0.1]
       query_relative_time: 0.3
-      # Apollo LQR ignores query_relative_time unless this is true; false makes
-      # lateral target selection fall back to nearest-by-position and can select
-      # stale/behind trajectory points in GT lane-follow diagnostics.
-      query_time_nearest_point_only: true
+      # Town01 GT lane-keep A/B showed that absolute-time target selection
+      # introduced raw-steer oscillation and route CTE growth. Use the
+      # position-nearest target for this canonical profile; query_relative_time
+      # remains available for explicitly diagnosed profiles.
+      query_time_nearest_point_only: false
       # GT lane-follow diagnostics showed Apollo's lookahead/back lateral
       # feedback path can amplify source steering oscillation on this bridge
       # profile. Keep it disabled for evidence collection; this is not a

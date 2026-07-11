@@ -348,6 +348,7 @@ def test_nominal_lane_keep_profile_keeps_artifact_io_out_of_gt_publish_hot_path(
     assert control_lqr["enabled"] is True
     assert control_lqr["enable_reverse_leadlag_compensation"] is False
     assert control_lqr["enable_look_ahead_back_control"] is False
+    assert control_lqr["query_time_nearest_point_only"] is False
     assert control_lqr["minimum_speed_protection"] == 1.0
     assert control_lqr["matrix_q"] == [0.15, 0.0, 1.0, 0.0]
     assert control_lon["enabled"] is True
