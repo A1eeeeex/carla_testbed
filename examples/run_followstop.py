@@ -285,6 +285,7 @@ def _phase1_fixed_scene_runtime_settings(effective_cfg: Dict[str, Any]) -> Dict[
         "start_gate": str(runtime_cfg.get("start_gate") or "none"),
         "start_delay_s": float(runtime_cfg.get("start_delay_s") or 0.0),
         "defer_role_spawn_until_arm": bool(runtime_cfg.get("defer_role_spawn_until_arm", False)),
+        "reset_ego_pose_on_arm": bool(runtime_cfg.get("reset_ego_pose_on_arm", False)),
         "ego_speed_ready_mps": float(runtime_cfg.get("ego_speed_ready_mps") or 0.0),
         "ego_speed_ready_hold_ticks": int(runtime_cfg.get("ego_speed_ready_hold_ticks") or 1),
         "source": "runtime.fixed_scene_player" if runtime_cfg else "phase1_scenario_path",
@@ -2716,6 +2717,9 @@ def main():
                 start_delay_s=float(fixed_scene_runtime_settings["start_delay_s"]),
                 defer_role_spawn_until_arm=bool(
                     fixed_scene_runtime_settings["defer_role_spawn_until_arm"]
+                ),
+                reset_ego_pose_on_arm=bool(
+                    fixed_scene_runtime_settings["reset_ego_pose_on_arm"]
                 ),
                 ego_speed_ready_mps=float(fixed_scene_runtime_settings["ego_speed_ready_mps"]),
                 ego_speed_ready_hold_ticks=int(

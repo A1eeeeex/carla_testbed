@@ -393,6 +393,49 @@ def test_fixed_scene_runtime_hook_defers_target_spawn_until_ego_speed_ready(tmp_
     hook.close()
 
 
+def test_fixed_scene_runtime_hook_resets_ego_before_deferred_target_spawn(tmp_path) -> None:
+    initial = _Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0))
+    ego = _FakeActor(actor_id=1, transform=initial)
+    world = _FakeMaterializingWorld(
+        ego=ego,
+        materialized_transform=_Transform(_Location(100.0, 0.0, 0.0), _Rotation(yaw=0.0)),
+    )
+    template_path = tmp_path / "lead_accel.yaml"
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml")
+    template["roles"]["lead_vehicle"]["spawn"]["feasibility"]["require_waypoint"] = False
+    template_path.write_text(json.dumps(template), encoding="utf-8")
+    hook = setup_fixed_scene_runtime_hook(
+        world=world,
+        ego_actor=ego,
+        run_dir=tmp_path,
+        artifact_dir=tmp_path / "artifacts",
+        scenario_path=template_path,
+        start_gate="ego_speed_ready",
+        defer_role_spawn_until_arm=True,
+        reset_ego_pose_on_arm=True,
+        ego_speed_ready_mps=18.0,
+        ego_speed_ready_hold_ticks=1,
+    )
+    ego.transform = _Transform(_Location(200.0, 0.0, 0.0), _Rotation(yaw=0.0))
+    ego.velocity = _Vector(18.5, 0.0, 0.0)
+    armed = type("FrameContext", (), {"frame_id": 11, "sim_time_s": 40.0, "step": 1, "metadata": {}})()
+
+    hook.after_world_tick(armed)
+
+    assert hook.armed is True
+    assert math.isclose(ego.transform.location.x, 100.0)
+    assert math.isclose(world.spawned[0].transform.location.x, 120.0)
+    report = json.loads(
+        (tmp_path / "artifacts" / "ego_initial_pose_materialization.json").read_text(encoding="utf-8")
+    )
+    assert report["status"] == "pass"
+    assert report["pose_before"]["x"] == 200.0
+    assert report["target_pose"]["x"] == 100.0
+    assert report["pose_after"]["x"] == 100.0
+
+    hook.close()
+
+
 def test_carla_runtime_spawn_feasibility_blocks_required_waypoint_fallback(tmp_path) -> None:
     world = _FakeWorld()
     ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))

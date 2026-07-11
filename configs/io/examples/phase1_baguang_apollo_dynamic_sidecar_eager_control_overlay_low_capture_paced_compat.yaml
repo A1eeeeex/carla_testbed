@@ -6,13 +6,18 @@ run:
 
 runtime:
   fixed_scene_player:
-    # Let Apollo establish and accelerate on the unobstructed route first.
-    # Spawn the dynamic target only when ego speed is stable enough to satisfy
-    # the scenario's 70kph initial-state contract.
+    # Wait only until Apollo demonstrates sustained motion control. The
+    # scenario's 70kph initial state is materialized at arm; waiting for 18m/s
+    # here would consume half the short Baguang road and force a large
+    # Planning matched-point jump when the canonical start pose is restored.
     start_gate: ego_speed_ready
-    ego_speed_ready_mps: 18.0
+    ego_speed_ready_mps: 2.0
     ego_speed_ready_hold_ticks: 10
     defer_role_spawn_until_arm: true
+    # Restore the canonical scenario start once after Apollo warmup. Without
+    # this reset a deferred 18s profile starts mid-road and reaches the real
+    # Baguang road end before the speed change can complete.
+    reset_ego_pose_on_arm: true
 
 algo:
   apollo:

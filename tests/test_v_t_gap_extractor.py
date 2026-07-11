@@ -63,7 +63,8 @@ def test_v_t_gap_prefers_actor_trace_longitudinal_gap_when_dimensions_missing(tm
     assert report["rows"][0]["gap_degraded"] is True
     assert report["rows"][0]["gap_degraded_reason"] == "missing_actor_bbox_or_length"
     assert report["rows"][0]["validity"] == "degraded"
-    assert report["degraded_reason_counts"]["actor_trace_longitudinal_gap_degraded"] == 2
+    assert report["degraded_reason_counts"]["actor_trace_longitudinal_gap_degraded"] == 1
+    assert report["trace_overlap_filter"]["rows_after_filter"] == 1
 
 
 def test_v_t_gap_degrades_longitudinal_projection_when_lateral_offset_is_large(tmp_path) -> None:
@@ -361,10 +362,50 @@ def test_v_t_gap_aligns_relative_actor_trace_to_absolute_apollo_timeseries(tmp_p
     assert report["time_alignment"]["status"] == "applied"
     assert report["time_alignment"]["source"] == "fixed_scene_runtime_hook.start_sim_time_s"
     assert report["time_alignment"]["offset_s"] == 100.0
+    assert report["trace_overlap_filter"]["status"] == "applied"
     assert report["target_activation_filter"]["activation_start_s"] == 105.0
     assert [row["sim_time_s"] for row in report["rows"]] == [105.0, 106.0]
     assert report["rows"][0]["longitudinal_center_gap_m"] == 14.0
     assert report["rows"][0]["gap_m"] == 10.0
+
+
+def test_v_t_gap_excludes_warmup_rows_before_deferred_actor_trace(tmp_path) -> None:
+    run = _write_cut_in_run_fixture(tmp_path)
+    resolved_path = run / "artifacts" / "fixed_scene_resolved.json"
+    resolved = json.loads(resolved_path.read_text(encoding="utf-8"))
+    resolved["target_actor_contract"]["activation"] = {
+        "activation_semantics": "active_from_scenario_start",
+        "active_after_phase": None,
+    }
+    resolved_path.write_text(json.dumps(resolved), encoding="utf-8")
+    (run / "manifest.json").write_text(
+        json.dumps({"fixed_scene_runtime_hook": {"start_sim_time_s": 100.0}}),
+        encoding="utf-8",
+    )
+    with (run / "timeseries.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["sim_time", "ego_speed_mps", "ego_x", "ego_y", "ego_yaw_rad", "ego_length_m", "ego_width_m"],
+        )
+        writer.writeheader()
+        for sim_time, ego_x in [(80.0, 200.0), (100.0, 0.0), (105.0, 5.0), (106.0, 6.0)]:
+            writer.writerow(
+                {
+                    "sim_time": sim_time,
+                    "ego_speed_mps": 10.0,
+                    "ego_x": ego_x,
+                    "ego_y": 0.0,
+                    "ego_yaw_rad": 0.0,
+                    "ego_length_m": 4.0,
+                    "ego_width_m": 2.0,
+                }
+            )
+
+    report = extract_v_t_gap(run_dir=run)
+
+    assert [row["sim_time_s"] for row in report["rows"]] == [100.0, 105.0, 106.0]
+    assert report["trace_overlap_filter"]["excluded_before_trace"] == 1
+    assert min(row["gap_m"] for row in report["rows"]) >= 0.0
 
 
 def test_v_t_gap_invalid_when_activation_phase_has_no_timestamp(tmp_path) -> None:

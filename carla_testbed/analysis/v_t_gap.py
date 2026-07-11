@@ -136,6 +136,7 @@ def extract_v_t_gap(
             for row in ts_rows
             if (_float_value(row, "sim_time", "sim_time_s", "time") or 0.0) >= activation_start
         ]
+    ts_rows, trace_overlap_filter = _filter_timeseries_to_trace_overlap(ts_rows, target_rows)
     extracted = _extract_rows(ts_rows, target_rows, target_role=str(target_role))
     status = "pass"
     if not extracted:
@@ -164,6 +165,7 @@ def extract_v_t_gap(
         invalid_reason=None if extracted else "no_v_t_gap_rows",
         target_activation_filter=activation_filter,
         time_alignment=time_alignment,
+        trace_overlap_filter=trace_overlap_filter,
     )
 
 
@@ -513,6 +515,7 @@ def _report(
     invalid_reason: str | None = None,
     target_activation_filter: Mapping[str, Any] | None = None,
     time_alignment: Mapping[str, Any] | None = None,
+    trace_overlap_filter: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_files = {
         "timeseries": str(timeseries_path) if timeseries_path else None,
@@ -548,6 +551,7 @@ def _report(
         "target_actor_contract": dict(target_contract),
         "target_activation_filter": dict(target_activation_filter or _default_activation_filter(target_contract)),
         "time_alignment": dict(time_alignment or {"status": "not_evaluated"}),
+        "trace_overlap_filter": dict(trace_overlap_filter or {"status": "not_applied"}),
         "target_actor_role": target_contract.get("target_actor_role"),
         "target_actor_id": target_ids[0] if target_ids else target_contract.get("target_actor_id"),
         "row_count": len(rows),
@@ -559,6 +563,44 @@ def _report(
         "missing_fields": missing_fields,
         "warnings": warnings,
     }
+
+
+def _filter_timeseries_to_trace_overlap(
+    timeseries_rows: list[dict[str, Any]],
+    target_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    trace_min, trace_max = _time_range(target_rows)
+    report = {
+        "status": "not_applied",
+        "trace_start_s": trace_min,
+        "trace_end_s": trace_max,
+        "rows_before_filter": len(timeseries_rows),
+        "rows_after_filter": len(timeseries_rows),
+    }
+    if trace_min is None or trace_max is None:
+        return timeseries_rows, report
+    filtered = []
+    for row in timeseries_rows:
+        sim_time = _float_value(row, "sim_time", "sim_time_s", "time")
+        if sim_time is not None and trace_min - 1e-3 <= sim_time <= trace_max + 1e-3:
+            filtered.append(row)
+    report.update(
+        {
+            "status": "applied",
+            "rows_after_filter": len(filtered),
+            "excluded_before_trace": sum(
+                1
+                for row in timeseries_rows
+                if (_float_value(row, "sim_time", "sim_time_s", "time") or 0.0) < trace_min - 1e-3
+            ),
+            "excluded_after_trace": sum(
+                1
+                for row in timeseries_rows
+                if (_float_value(row, "sim_time", "sim_time_s", "time") or 0.0) > trace_max + 1e-3
+            ),
+        }
+    )
+    return filtered, report
 
 
 def _apply_target_activation_filter(

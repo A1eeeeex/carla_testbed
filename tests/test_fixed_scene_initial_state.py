@@ -1,7 +1,28 @@
 import json
 import math
 
-from carla_testbed.scenario_player.initial_state import materialize_ego_initial_speed
+from carla_testbed.scenario_player.initial_state import (
+    materialize_ego_initial_pose,
+    materialize_ego_initial_speed,
+)
+
+
+def test_materialize_ego_initial_pose_restores_setup_transform(tmp_path):
+    initial = _Transform(_Rotation(yaw=0.0), x=1.0)
+    ego = _FakeActor(_Transform(_Rotation(yaw=0.0), x=20.0))
+
+    report = materialize_ego_initial_pose(
+        ego_actor=ego,
+        initial_transform=initial,
+        artifact_dir=tmp_path,
+    )
+
+    assert report["status"] == "pass"
+    assert report["pose_before"]["x"] == 20.0
+    assert report["pose_after"]["x"] == 1.0
+    assert report["position_error_m"] == 0.0
+    assert report["linear_velocity_reset"] is True
+    assert (tmp_path / "ego_initial_pose_materialization.json").exists()
 
 
 def test_materialize_ego_initial_speed_applies_forward_velocity_and_writes_artifact(tmp_path):
@@ -70,10 +91,14 @@ class _FakeActor:
     def set_target_velocity(self, velocity):
         self.target_velocity = velocity
 
+    def set_transform(self, transform):
+        self.transform = transform
+
 
 class _Transform:
-    def __init__(self, rotation):
+    def __init__(self, rotation, *, x=0.0, y=0.0, z=0.0):
         self.rotation = rotation
+        self.location = _Vector(x, y, z)
 
 
 class _Rotation:

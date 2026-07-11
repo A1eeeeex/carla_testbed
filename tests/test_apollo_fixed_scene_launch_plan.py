@@ -440,9 +440,10 @@ def test_apollo_dynamic_sidecar_default_profile_starts_control_eagerly() -> None
     assert "dynamic_sidecar_eager_control" in payload["run"]["profile_name"]
     runtime = payload["runtime"]["fixed_scene_player"]
     assert runtime["start_gate"] == "ego_speed_ready"
-    assert runtime["ego_speed_ready_mps"] == 18.0
+    assert runtime["ego_speed_ready_mps"] == 2.0
     assert runtime["ego_speed_ready_hold_ticks"] == 10
     assert runtime["defer_role_spawn_until_arm"] is True
+    assert runtime["reset_ego_pose_on_arm"] is True
     planning_cfg = payload["algo"]["apollo"]["planning"]
     assert planning_cfg["default_cruise_speed_mps"] == 19.44
     assert planning_cfg["planning_upper_speed_limit_mps"] == 23.61

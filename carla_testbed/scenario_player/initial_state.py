@@ -5,7 +5,74 @@ import math
 from pathlib import Path
 from typing import Any, Mapping
 
-from carla_testbed.scenario_player.carla_runtime import _float_attr, _make_vector
+from carla_testbed.scenario_player.carla_runtime import (
+    _float_attr,
+    _make_vector,
+    _tick_world_if_available,
+)
+
+
+def materialize_ego_initial_pose(
+    *,
+    ego_actor: Any,
+    initial_transform: Any,
+    world: Any | None = None,
+    artifact_dir: str | Path | None = None,
+    enabled: bool = True,
+    source: str = "runtime.fixed_scene_player.materialize_ego_initial_pose",
+) -> dict[str, Any]:
+    """Restore the setup pose once before a deferred fixed scene starts."""
+    report: dict[str, Any] = {
+        "schema_version": "ego_initial_pose_materialization.v1",
+        "status": "disabled" if not enabled else "not_applicable",
+        "source": source,
+        "enabled": bool(enabled),
+        "pose_before": _transform_dict(_safe_call(ego_actor, "get_transform")),
+        "target_pose": _transform_dict(initial_transform),
+        "pose_after": None,
+        "position_tolerance_m": 1.5,
+        "linear_velocity_reset": False,
+        "angular_velocity_reset": False,
+        "warnings": [],
+        "errors": [],
+        "claim_boundary": (
+            "This artifact records a one-shot Phase 1 scenario setup reset. "
+            "It is not ongoing ego control and not autonomy capability evidence."
+        ),
+    }
+    if not enabled:
+        return _write_named_report(report, artifact_dir, "ego_initial_pose_materialization.json")
+    setter = getattr(ego_actor, "set_transform", None)
+    if initial_transform is None:
+        report["status"] = "fail"
+        report["errors"].append("ego_initial_transform_missing")
+    elif not callable(setter):
+        report["status"] = "fail"
+        report["errors"].append("ego_set_transform_missing")
+    else:
+        try:
+            velocity_setter = getattr(ego_actor, "set_target_velocity", None)
+            if callable(velocity_setter):
+                velocity_setter(_make_vector(x=0.0, y=0.0, z=0.0))
+                report["linear_velocity_reset"] = True
+            angular_setter = getattr(ego_actor, "set_target_angular_velocity", None)
+            if callable(angular_setter):
+                angular_setter(_make_vector(x=0.0, y=0.0, z=0.0))
+                report["angular_velocity_reset"] = True
+            setter(initial_transform)
+        except Exception as exc:  # pragma: no cover - defensive CARLA runtime path
+            report["status"] = "fail"
+            report["errors"].append(f"ego_set_transform_failed:{type(exc).__name__}")
+        else:
+            _tick_world_if_available(world)
+            report["status"] = "pass"
+            report["pose_after"] = _transform_dict(_safe_call(ego_actor, "get_transform"))
+            error_m = _pose_distance_m(report["target_pose"], report["pose_after"])
+            report["position_error_m"] = error_m
+            if error_m is None or error_m > float(report["position_tolerance_m"]):
+                report["status"] = "fail"
+                report["errors"].append("ego_initial_pose_not_materialized")
+    return _write_named_report(report, artifact_dir, "ego_initial_pose_materialization.json")
 
 
 def materialize_ego_initial_speed(
@@ -120,11 +187,43 @@ def _safe_call(obj: Any, name: str) -> Any | None:
 
 
 def _write_report(report: dict[str, Any], artifact_dir: str | Path | None) -> dict[str, Any]:
+    return _write_named_report(report, artifact_dir, "ego_initial_state_materialization.json")
+
+
+def _write_named_report(
+    report: dict[str, Any], artifact_dir: str | Path | None, filename: str
+) -> dict[str, Any]:
     if artifact_dir is None:
         return report
     root = Path(artifact_dir).expanduser()
     root.mkdir(parents=True, exist_ok=True)
-    path = root / "ego_initial_state_materialization.json"
+    path = root / filename
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     report["artifact_path"] = str(path)
     return report
+
+
+def _transform_dict(transform: Any) -> dict[str, Any] | None:
+    if transform is None:
+        return None
+    location = getattr(transform, "location", None)
+    rotation = getattr(transform, "rotation", None)
+    return {
+        "x": _float_attr(location, "x", None),
+        "y": _float_attr(location, "y", None),
+        "z": _float_attr(location, "z", None),
+        "roll_deg": _float_attr(rotation, "roll", None),
+        "pitch_deg": _float_attr(rotation, "pitch", None),
+        "yaw_deg": _float_attr(rotation, "yaw", None),
+    }
+
+
+def _pose_distance_m(left: Any, right: Any) -> float | None:
+    if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+        return None
+    try:
+        return math.sqrt(
+            sum((float(left[key]) - float(right[key])) ** 2 for key in ("x", "y", "z"))
+        )
+    except (KeyError, TypeError, ValueError):
+        return None

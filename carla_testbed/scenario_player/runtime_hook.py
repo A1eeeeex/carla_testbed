@@ -7,7 +7,10 @@ from typing import Any, Mapping
 from carla_testbed.runner.hooks import FrameContext, RunHook
 from carla_testbed.scenario_player.carla_runtime import CarlaFixedSceneRuntime, CarlaFixedSceneRuntimeState
 from carla_testbed.scenario_player.compiler import compile_fixed_scene_template
-from carla_testbed.scenario_player.initial_state import materialize_ego_initial_speed
+from carla_testbed.scenario_player.initial_state import (
+    materialize_ego_initial_pose,
+    materialize_ego_initial_speed,
+)
 from carla_testbed.scenario_player.schema import load_fixed_scene_template
 
 
@@ -32,6 +35,8 @@ class FixedSceneRuntimeHook(RunHook):
     start_delay_s: float = 0.0
     gate_wait_start_sim_time_s: float | None = None
     defer_role_spawn_until_arm: bool = False
+    reset_ego_pose_on_arm: bool = False
+    initial_ego_transform: Any = None
     ego_speed_ready_mps: float = 0.0
     ego_speed_ready_hold_ticks: int = 1
     ego_speed_ready_count: int = 0
@@ -86,6 +91,17 @@ class FixedSceneRuntimeHook(RunHook):
             }
             if not self.readiness.get("ready"):
                 return
+            pose_report = materialize_ego_initial_pose(
+                ego_actor=self.ego_actor,
+                initial_transform=self.initial_ego_transform,
+                world=self.world,
+                artifact_dir=self.artifact_dir,
+                enabled=self.reset_ego_pose_on_arm,
+                source="runtime.fixed_scene_player.deferred_scene_arm",
+            )
+            if pose_report.get("status") == "fail":
+                self.errors.extend(str(item) for item in pose_report.get("errors", []))
+                return
             if self.defer_role_spawn_until_arm:
                 self.runtime.spawn_roles(materialize_initial_speeds=False)
             self.runtime.materialize_role_initial_speeds()
@@ -124,6 +140,7 @@ class FixedSceneRuntimeHook(RunHook):
             "start_gate": self.start_gate,
             "readiness": dict(self.readiness),
             "defer_role_spawn_until_arm": self.defer_role_spawn_until_arm,
+            "reset_ego_pose_on_arm": self.reset_ego_pose_on_arm,
             "start_delay_s": self.start_delay_s,
         }
         if result.get("stopped"):
@@ -188,6 +205,7 @@ def setup_fixed_scene_runtime_hook(
     materialize_ego_initial_speed_on_arm: bool = False,
     start_delay_s: float = 0.0,
     defer_role_spawn_until_arm: bool = False,
+    reset_ego_pose_on_arm: bool = False,
     ego_speed_ready_mps: float = 0.0,
     ego_speed_ready_hold_ticks: int = 1,
 ) -> FixedSceneRuntimeHook:
@@ -208,6 +226,10 @@ def setup_fixed_scene_runtime_hook(
         },
         storyboard,
     )
+    # setup() advances CARLA once so the actor's true spawn pose is
+    # materialized. Capture only after that tick; pre-setup transforms may be
+    # placeholder values from the freshly spawned actor.
+    initial_ego_transform = _safe_actor_transform(ego_actor)
     return FixedSceneRuntimeHook(
         runtime=fixed_runtime,
         world=world,
@@ -221,9 +243,21 @@ def setup_fixed_scene_runtime_hook(
         armed=armed,
         start_delay_s=max(0.0, float(start_delay_s)),
         defer_role_spawn_until_arm=bool(defer_role_spawn_until_arm),
+        reset_ego_pose_on_arm=bool(reset_ego_pose_on_arm),
+        initial_ego_transform=initial_ego_transform,
         ego_speed_ready_mps=max(0.0, float(ego_speed_ready_mps)),
         ego_speed_ready_hold_ticks=max(1, int(ego_speed_ready_hold_ticks)),
     )
+
+
+def _safe_actor_transform(actor: Any) -> Any | None:
+    getter = getattr(actor, "get_transform", None)
+    if not callable(getter):
+        return None
+    try:
+        return getter()
+    except Exception:
+        return None
 
 
 def _actor_speed_mps(actor: Any) -> float | None:
