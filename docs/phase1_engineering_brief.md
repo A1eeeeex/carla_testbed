@@ -72,7 +72,7 @@ Layered progress status:
 - Code-level platform delivery estimate: about `88-90%`
 - Current repo independently provable completion: about `82-86%`
 - Platform skeleton estimate: about `90%`
-- Apollo reference runtime estimate: about `70-75%`
+- Apollo reference runtime estimate: about `72-78%`
 - Five-P0 online pair matrix estimate: `DONE for evaluable comparison surface; behavior failures remain`
 - Local accepted comparison-surface catalog: `PARTIAL after verifier hardening`
 - Package-level acceptance surface: `PARTIAL until rebuilt from verifier-passed bundles`
@@ -95,6 +95,24 @@ Layered progress status:
   `14.99m/s`. The run is still invalid for the dynamic case because ego did
   not reach the explicit 18m/s scene-arm threshold before a high-speed lane
   invasion. This proves the map-speed repair, not lead-decel-accel success.
+- A follow-up Baguang `lead_decel_accel` steering-only calibrated A/B reached
+  `19.54m/s` with maximum observed cross-track error about `0.046m` and zero
+  lane invasions, compared with the legacy-mapping repeat that invaded near
+  `14.99m/s` with maximum cross-track error about `0.825m`. This is strong
+  evidence that the existing steering calibration candidate removes the
+  reproduced high-speed lateral blocker on this straight sample. It does not
+  promote physical mapping to the default: the run used an explicit override
+  and still requires calibration portability and five-P0 no-regression.
+- The same calibrated run exposed the next dynamic-lifecycle blocker. The
+  target was deferred until Apollo sustained the scene-arm speed, then spawned
+  near absolute route position `180m`; the scenario's absolute road-end stop
+  remained `300m`, so the target reached it after only `6.35s` and could not
+  complete the configured `18s` 70-to-40-to-70kph profile. After correcting a
+  one-frame obstacle-probe synchronization false failure, postprocess marks
+  the Apollo row `evaluable=true` and `degraded / large_final_gap`, not
+  invalid and not successful. The next Phase 1 runtime task is to reconcile
+  deferred activation with road-end ownership without inventing extra road
+  length or weakening the scenario gate.
 - Prediction-trigger pacing is now explicit: localization/chassis remain at
   20 Hz while GT obstacles trigger native Prediction/Planning at 10 Hz. In the
   stitcher diagnostic this reduced early sub-80ms Planning cycles from 225 to

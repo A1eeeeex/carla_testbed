@@ -428,6 +428,68 @@ def test_fixed_scene_probe_row_must_be_published_to_apollo_obstacles(tmp_path: P
     assert report["fixed_scene_actor_linkage"]["status"] == "pass"
 
 
+def test_fixed_scene_probe_leading_publish_warmup_is_not_run_failure(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "fixed_scene_runtime_state.json").write_text(
+        json.dumps({"schema_version": "fixed_scene_runtime_state.v1", "actor_roles": {"lead_vehicle": 101}}),
+        encoding="utf-8",
+    )
+    warmup = _obstacle(
+        carla_actor_id="101",
+        apollo_perception_id="lead_vehicle_101",
+        front_obstacle_actor_found=True,
+        front_obstacle_visible=True,
+        published_obstacle_count=0,
+    )
+    published = _obstacle(
+        carla_actor_id="101",
+        apollo_perception_id="lead_vehicle_101",
+        front_obstacle_actor_found=True,
+        front_obstacle_visible=True,
+        published_obstacle_count=1,
+    )
+    (artifacts / "obstacle_gt_contract.jsonl").write_text(
+        json.dumps(warmup) + "\n" + json.dumps(published) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="follow_stop")
+
+    assert report["status"] == "warn"
+    assert "fixed_scene_actor_probe_not_published_to_apollo_obstacles" not in report["errors"]
+    assert "fixed_scene_actor_probe_publish_warmup_transient" in report["warnings"]
+    assert report["object_results"][0]["status"] == "warn"
+
+
+def test_fixed_scene_probe_drop_after_publish_remains_failure(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "fixed_scene_runtime_state.json").write_text(
+        json.dumps({"schema_version": "fixed_scene_runtime_state.v1", "actor_roles": {"lead_vehicle": 101}}),
+        encoding="utf-8",
+    )
+    published = _obstacle(
+        carla_actor_id="101",
+        apollo_perception_id="lead_vehicle_101",
+        front_obstacle_actor_found=True,
+        front_obstacle_visible=True,
+        published_obstacle_count=1,
+    )
+    dropped = dict(published, published_obstacle_count=0)
+    (artifacts / "obstacle_gt_contract.jsonl").write_text(
+        json.dumps(published) + "\n" + json.dumps(dropped) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="follow_stop")
+
+    assert report["status"] == "fail"
+    assert "fixed_scene_actor_probe_not_published_to_apollo_obstacles" in report["errors"]
+
+
 def test_background_vehicle_from_traffic_flow_must_appear_in_obstacle_gt(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     artifacts = run_dir / "artifacts"

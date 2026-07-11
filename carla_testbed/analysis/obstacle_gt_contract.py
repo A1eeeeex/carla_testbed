@@ -215,6 +215,8 @@ def analyze_obstacle_gt_contract_records(
             warnings.extend(result["warnings"])
             missing_fields.extend(result["missing_fields"])
 
+    _downgrade_leading_probe_publish_warmup(object_results, errors, warnings)
+
     if pedestrian_required and valid_records and not pedestrian_results:
         errors.append("pedestrian_obstacle_section_missing")
     observed_carla_actor_ids = {
@@ -754,6 +756,49 @@ def _front_obstacle_probe_not_published(obstacle: Mapping[str, Any]) -> bool:
     published_count = _num(obstacle.get("published_obstacle_count"))
     published_empty = published_count is not None and published_count <= 0
     return visible_false or published_empty
+
+
+def _downgrade_leading_probe_publish_warmup(
+    object_results: Sequence[dict[str, Any]],
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    """Do not fail a run for the actor-discovery frame before first publish."""
+    error = "fixed_scene_actor_probe_not_published_to_apollo_obstacles"
+    by_actor: dict[str, list[dict[str, Any]]] = {}
+    for result in object_results:
+        actor_id = _optional_text(result.get("carla_actor_id"))
+        if actor_id:
+            by_actor.setdefault(actor_id, []).append(result)
+
+    downgraded = 0
+    for results in by_actor.values():
+        first_published_index = next(
+            (index for index, result in enumerate(results) if error not in result.get("errors", [])),
+            None,
+        )
+        if first_published_index is None:
+            continue
+        for result in results[:first_published_index]:
+            result_errors = result.get("errors", [])
+            if error not in result_errors:
+                continue
+            result_errors.remove(error)
+            result.setdefault("warnings", []).append(
+                "fixed_scene_actor_probe_publish_warmup_transient"
+            )
+            result["status"] = (
+                "insufficient_data"
+                if result.get("missing_fields")
+                else "warn"
+            )
+            downgraded += 1
+
+    for _ in range(downgraded):
+        if error in errors:
+            errors.remove(error)
+    if downgraded:
+        warnings.append("fixed_scene_actor_probe_publish_warmup_transient")
 
 
 def _fixed_scene_actor_roles_from_records(
