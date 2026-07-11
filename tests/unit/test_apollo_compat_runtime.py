@@ -230,6 +230,7 @@ def test_typed_transition_backend_materializes_typed_bridge_diagnostic_fields(
                 "    transport_mode: ros2_gt",
                 "    bridge:",
                 "      localization_time_source: cyber_time",
+                "      obstacle_publish_rate_hz: 10.0",
                 "",
             ]
         ),
@@ -249,6 +250,7 @@ def test_typed_transition_backend_materializes_typed_bridge_diagnostic_fields(
     )
 
     assert effective["algo"]["apollo"]["bridge"]["localization_time_source"] == "cyber_time"
+    assert effective["algo"]["apollo"]["bridge"]["obstacle_publish_rate_hz"] == 10.0
 
 
 def test_typed_transition_backend_allows_platform_lifecycle_preseed(

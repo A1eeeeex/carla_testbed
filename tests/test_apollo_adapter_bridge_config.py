@@ -180,6 +180,7 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
                 "bridge": {
                     "map_file": "configs/io/maps/Town01/base_map.txt",
                     "localization_time_source": "cyber_time",
+                    "obstacle_publish_rate_hz": 10.0,
                     "artifact_async_write_enabled": True,
                     "artifact_async_queue_max_rows": 8192,
                     "artifact_async_queue_soft_limit_rows": 4096,
@@ -233,6 +234,7 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
     assert bridge["claim_profile"] is True
     assert bridge["materialization_probe"] is True
     assert bridge["localization_time_source"] == "cyber_time"
+    assert bridge["obstacle_publish_rate_hz"] == 10.0
     assert bridge["artifact_async_write_enabled"] is True
     assert bridge["artifact_async_queue_max_rows"] == 8192
     assert bridge["artifact_async_queue_soft_limit_rows"] == 4096

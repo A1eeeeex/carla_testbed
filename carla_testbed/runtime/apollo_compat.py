@@ -556,7 +556,7 @@ def _legacy_effective_config_from_typed(
     _copy_typed_apollo_bridge_fields(
         payload,
         resolved_config,
-        field_names=("localization_time_source",),
+        field_names=("localization_time_source", "obstacle_publish_rate_hz"),
     )
     return payload
 

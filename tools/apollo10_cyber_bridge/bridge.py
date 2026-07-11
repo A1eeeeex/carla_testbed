@@ -1564,6 +1564,15 @@ class ApolloGtBridge:
             heading_offset_deg=float(tf_cfg.get("heading_offset_deg", 0.0)),
         )
         self.publish_rate_hz = float(bridge_cfg.get("publish_rate_hz", 20.0))
+        self.obstacle_publish_rate_hz = float(
+            bridge_cfg.get("obstacle_publish_rate_hz", self.publish_rate_hz)
+        )
+        self._last_obstacle_publish_sim_time: Optional[float] = None
+        self.stats["obstacle_publish_rate_policy"] = {
+            "configured_hz": self.obstacle_publish_rate_hz,
+            "time_base": "simulation_time",
+            "reason": "align_prediction_triggered_planning_with_planning_loop_rate",
+        }
         self.localization_time_source = str(
             bridge_cfg.get("localization_time_source", "auto") or "auto"
         ).strip().lower()
@@ -3514,6 +3523,18 @@ class ApolloGtBridge:
             self.stats.get("gt_stale_sample_republish_count", 0) or 0
         ) + 1
         return True, key, "stale_sample_republished_for_debug"
+
+    def _should_publish_obstacles(self, sim_time_sec: float) -> bool:
+        period_s = 1.0 / max(float(self.obstacle_publish_rate_hz), 1e-3)
+        previous = self._last_obstacle_publish_sim_time
+        if (
+            previous is None
+            or sim_time_sec < previous
+            or (sim_time_sec - previous) >= period_s - 1e-6
+        ):
+            self._last_obstacle_publish_sim_time = float(sim_time_sec)
+            return True
+        return False
 
     def _write_csv_row(self, path: Path, row: Dict[str, Any]) -> None:
         if self._enqueue_artifact_write("csv", path, row):
@@ -11783,47 +11804,55 @@ class ApolloGtBridge:
                     }
                     ex = float(pose_info["map_x"])
                     ey = float(pose_info["map_y"])
-                    phase_start_wall_s = time.time()
-                    obs_msg, obs_count = self._objects_to_obstacles(snapshot, ts_sec, (ex, ey))
-                    self._record_publish_phase_timing(
-                        "objects_to_obstacles",
-                        start_wall_s=phase_start_wall_s,
-                        end_wall_s=time.time(),
-                        target_period_s=period,
-                    )
-                    phase_start_wall_s = time.time()
-                    self.obs_writer.write(obs_msg)
-                    self._record_publish_phase_timing(
-                        "cyber_write_obstacles",
-                        start_wall_s=phase_start_wall_s,
-                        end_wall_s=time.time(),
-                        target_period_s=period,
-                    )
-                    self.stats["obstacle_message_count"] = int(
-                        self.stats.get("obstacle_message_count", 0) or 0
-                    ) + 1
-                    self.stats["obstacle_object_count"] = int(
-                        self.stats.get("obstacle_object_count", 0) or 0
-                    ) + int(obs_count)
-                    if int(obs_count) <= 0:
-                        self.stats["obstacle_empty_message_count"] = int(
-                            self.stats.get("obstacle_empty_message_count", 0) or 0
+                    if self._should_publish_obstacles(ts_sec):
+                        obstacle_period = 1.0 / max(self.obstacle_publish_rate_hz, 1e-3)
+                        phase_start_wall_s = time.time()
+                        obs_msg, obs_count = self._objects_to_obstacles(snapshot, ts_sec, (ex, ey))
+                        self._record_publish_phase_timing(
+                            "objects_to_obstacles",
+                            start_wall_s=phase_start_wall_s,
+                            end_wall_s=time.time(),
+                            target_period_s=obstacle_period,
+                        )
+                        phase_start_wall_s = time.time()
+                        self.obs_writer.write(obs_msg)
+                        self._record_publish_phase_timing(
+                            "cyber_write_obstacles",
+                            start_wall_s=phase_start_wall_s,
+                            end_wall_s=time.time(),
+                            target_period_s=obstacle_period,
+                        )
+                        self.stats["obstacle_message_count"] = int(
+                            self.stats.get("obstacle_message_count", 0) or 0
                         ) + 1
-                    self.stats["obstacles_count"] = int(self.stats.get("obstacle_object_count", 0) or 0)
-                    self.stats["last_obstacles_count"] = int(obs_count)
-                    self._record_topic_publish_stats(
-                        channel=self.obstacles_channel,
-                        msg=obs_msg,
-                        sim_time_sec=ts_sec,
-                        payload_count=int(obs_count),
-                        source="bridge_writer",
-                        extra={
-                            "obstacle_count": int(obs_count),
-                            "empty_message": int(obs_count) <= 0,
-                            "fresh_sample": sample_reason == "fresh_sample",
-                            "sample_reason": sample_reason,
-                        },
-                    )
+                        self.stats["obstacle_object_count"] = int(
+                            self.stats.get("obstacle_object_count", 0) or 0
+                        ) + int(obs_count)
+                        if int(obs_count) <= 0:
+                            self.stats["obstacle_empty_message_count"] = int(
+                                self.stats.get("obstacle_empty_message_count", 0) or 0
+                            ) + 1
+                        self.stats["obstacles_count"] = int(
+                            self.stats.get("obstacle_object_count", 0) or 0
+                        )
+                        self.stats["last_obstacles_count"] = int(obs_count)
+                        self._record_topic_publish_stats(
+                            channel=self.obstacles_channel,
+                            msg=obs_msg,
+                            sim_time_sec=ts_sec,
+                            payload_count=int(obs_count),
+                            source="bridge_writer",
+                            extra={
+                                "obstacle_count": int(obs_count),
+                                "empty_message": int(obs_count) <= 0,
+                                "fresh_sample": sample_reason == "fresh_sample",
+                                "sample_reason": sample_reason,
+                            },
+                        )
+                    else:
+                        self.stats["obstacle_publish_rate_limited_skip_count"] = int(
+                            self.stats.get("obstacle_publish_rate_limited_skip_count", 0) or 0
+                        ) + 1
                     loop_published_gt = True
                     debug_row_build_start_wall_s = time.time()
                     desired_in = self.stats.get("last_control_in", {}) or {}
@@ -12997,6 +13026,7 @@ def _default_config() -> Dict[str, Any]:
         },
         "bridge": {
             "publish_rate_hz": 20.0,
+            "obstacle_publish_rate_hz": 10.0,
             "max_obstacles": 64,
             "radius_m": 120.0,
             "localization_back_offset_m": "auto",

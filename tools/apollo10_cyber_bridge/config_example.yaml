@@ -19,6 +19,9 @@ cyber:
   planning_channel: /apollo/planning
 bridge:
   publish_rate_hz: 20.0
+  # Native Prediction triggers Planning. Keep this aligned with Apollo's
+  # default planning_loop_rate=10 while localization/chassis remain at 20 Hz.
+  obstacle_publish_rate_hz: 10.0
   # auto: use odom sim_time when present, falling back to Cyber/wall time.
   # cyber_time is diagnostic-only for timing A/B; do not use it as claim-grade
   # GT localization evidence unless the localization contract is updated.

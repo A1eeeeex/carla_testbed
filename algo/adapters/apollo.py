@@ -930,6 +930,10 @@ PY
         direct_bridge_cfg = dict(apollo_cfg.get("direct_bridge", {}) or {})
         if "publish_rate_hz" in apollo_bridge_cfg:
             bridge["publish_rate_hz"] = float(apollo_bridge_cfg["publish_rate_hz"])
+        if "obstacle_publish_rate_hz" in apollo_bridge_cfg:
+            bridge["obstacle_publish_rate_hz"] = float(
+                apollo_bridge_cfg["obstacle_publish_rate_hz"]
+            )
         if "localization_time_source" in apollo_bridge_cfg:
             bridge["localization_time_source"] = str(apollo_bridge_cfg["localization_time_source"])
         if "max_obstacles" in apollo_bridge_cfg:

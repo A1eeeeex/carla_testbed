@@ -144,6 +144,10 @@ algo:
       auto_calib: false
     bridge:
       publish_rate_hz: 20.0
+      # Planning is prediction-triggered while trajectory stitching assumes
+      # Apollo's configured 10 Hz planning cycle. Keep localization/chassis at
+      # 20 Hz and pace obstacle -> Prediction triggers independently.
+      obstacle_publish_rate_hz: 10.0
       artifact_async_write_enabled: true
       artifact_async_queue_max_rows: 8192
       artifact_async_queue_soft_limit_rows: 4096

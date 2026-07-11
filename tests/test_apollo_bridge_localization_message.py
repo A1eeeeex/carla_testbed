@@ -909,6 +909,20 @@ def test_bridge_extracts_lateral_steer_decomposition_for_control_attribution() -
     assert raw["debug_simple_lat_steer_angle_heading_rate_contribution"] == pytest.approx(-2.0)
 
 
+def test_bridge_obstacle_publish_rate_uses_simulation_time() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.obstacle_publish_rate_hz = 10.0
+    adapter._last_obstacle_publish_sim_time = None
+
+    assert adapter._should_publish_obstacles(1.0) is True
+    assert adapter._should_publish_obstacles(1.05) is False
+    assert adapter._should_publish_obstacles(1.10) is True
+    assert adapter._should_publish_obstacles(0.0) is True
+
+
 def _install_fake_protobuf() -> None:
     google = sys.modules.setdefault("google", types.ModuleType("google"))
     protobuf = sys.modules.setdefault("google.protobuf", types.ModuleType("google.protobuf"))
