@@ -12,6 +12,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import yaml
 
+from carla_testbed.evaluation import safety_failures_from_summary
+
 
 CORE_ACCEPTANCE_POLICY: Dict[str, Any] = {
     "routing_request_count_min": 1,
@@ -6496,6 +6498,10 @@ def finalize_town01_run(run_dir: Path, *, flags: Optional[Dict[str, Any]] = None
         planning_summary,
         route_established_ts=route_established_ts,
     )
+    safety_failures = safety_failures_from_summary(summary_data)
+    safety_failure_codes = [failure.code for failure in safety_failures]
+    safety_failure_details = [failure.detail for failure in safety_failures]
+    safety_ok = not safety_failures
 
     checks: Dict[str, Any] = {
         "bridge_runtime_import": {
@@ -6592,6 +6598,16 @@ def finalize_town01_run(run_dir: Path, *, flags: Optional[Dict[str, Any]] = None
             "ok": True,
             "status": "unavailable",
         },
+        "safety": {
+            "actual": {
+                "exit_reason": summary_data.get("exit_reason"),
+                "collision_count": safe_int(summary_data.get("collision_count")) or 0,
+                "lane_invasion_count": safe_int(summary_data.get("lane_invasion_count")) or 0,
+            },
+            "ok": safety_ok,
+            "failure_codes": safety_failure_codes,
+            "failure_details": safety_failure_details,
+        },
     }
     checks["planning_nonzero_ratio"]["ok"] = (
         checks["planning_nonzero_ratio"]["actual"] is not None
@@ -6669,7 +6685,7 @@ def finalize_town01_run(run_dir: Path, *, flags: Optional[Dict[str, Any]] = None
         route_health_label = "route_not_established"
     elif not control_ready or not cruise_active:
         route_health_label = "route_established_but_no_control_progress"
-    elif not core_ok or not lat_ok or not guard_ok or not recording_ok:
+    elif not core_ok or not lat_ok or not guard_ok or not recording_ok or not safety_ok:
         route_health_label = "route_established_but_behavior_unhealthy"
     elif (safe_float(route_metrics.get("route_completion_ratio")) or 0.0) >= CORE_ACCEPTANCE_POLICY["route_health_pass_completion_ratio_min"]:
         route_health_label = "route_health_pass"
@@ -6677,15 +6693,25 @@ def finalize_town01_run(run_dir: Path, *, flags: Optional[Dict[str, Any]] = None
         route_health_label = "route_health_candidate"
 
     acceptance = {
-        "success": bool(core_ok and lat_ok and guard_ok and recording_ok and manifest_completeness_before >= 1.0),
+        "success": bool(
+            core_ok
+            and lat_ok
+            and guard_ok
+            and recording_ok
+            and safety_ok
+            and manifest_completeness_before >= 1.0
+        ),
         "fail_reason": None,
-        "failure_codes": [],
+        "failure_codes": list(safety_failure_codes),
+        "failure_details": list(safety_failure_details),
         "failure_stage": failure_stage,
         "checks": checks,
         "route_health_label": route_health_label,
         "materialization_status": materialization_status,
     }
     for key, value in checks.items():
+        if key == "safety":
+            continue
         if isinstance(value, dict) and value.get("ok") is False:
             acceptance["failure_codes"].append(key.upper())
     if not lat_ok:
