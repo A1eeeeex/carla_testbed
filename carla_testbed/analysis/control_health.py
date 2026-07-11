@@ -604,7 +604,14 @@ def _effective_materialization_evidence(
 
     handoff = summary_handoff
     handoff_source = "summary.control_handoff_status" if summary_handoff is not None else None
-    stale_handoff_values = {None, "", "planning_not_materialized", "planning_missing", "not_materialized"}
+    stale_handoff_values = {
+        None,
+        "",
+        "control_missing",
+        "planning_not_materialized",
+        "planning_missing",
+        "not_materialized",
+    }
     if (
         handoff_artifact == EXPECTED_HANDOFF_STATUS
         and summary_handoff != EXPECTED_HANDOFF_STATUS

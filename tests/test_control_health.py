@@ -113,6 +113,9 @@ def test_control_health_reports_lane_event_vehicle_response_context(tmp_path: Pa
 
 def test_control_health_bad_handoff_fails(tmp_path: Path) -> None:
     run_dir = _copy_run(tmp_path)
+    handoff_report = run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json"
+    if handoff_report.exists():
+        handoff_report.unlink()
     summary_path = run_dir / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     summary["control_handoff_status"] = "control_missing"
@@ -193,6 +196,39 @@ def test_control_health_uses_artifact_materialization_when_summary_is_stale(tmp_
     assert materialization["control_handoff_artifact_value"] == "control_consuming_with_nonzero_planning"
     assert "summary_routing_materialized_false_overridden_by_artifact" in report["warnings"]
     assert "summary_planning_materialized_false_overridden_by_artifact" in report["warnings"]
+    assert "summary_control_handoff_status_overridden_by_apollo_handoff_report" in report["warnings"]
+
+
+def test_control_health_overrides_stale_control_missing_with_handoff_artifact(tmp_path: Path) -> None:
+    run_dir = _copy_run(tmp_path)
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["control_handoff_status"] = "control_missing"
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    handoff_report = run_dir / "analysis/apollo_control_handoff/apollo_control_handoff_report.json"
+    handoff_report.parent.mkdir(parents=True, exist_ok=True)
+    handoff_report.write_text(
+        json.dumps(
+            {
+                "schema_version": "apollo_control_handoff.v1",
+                "verdict": "warn",
+                "failure_stage": "none",
+                "blocking_reasons": [],
+                "bridge_receive": {"control_rx_count": 100},
+                "mapping_and_apply": {"apply_control_count": 50},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+
+    assert report["control_handoff_status"] == "control_consuming_with_nonzero_planning"
+    materialization = report["metrics"]["materialization_evidence"]
+    assert materialization["control_handoff_summary_value"] == "control_missing"
+    assert materialization["control_handoff_artifact_value"] == "control_consuming_with_nonzero_planning"
     assert "summary_control_handoff_status_overridden_by_apollo_handoff_report" in report["warnings"]
 
 

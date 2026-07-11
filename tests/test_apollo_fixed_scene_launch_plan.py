@@ -440,6 +440,26 @@ def test_apollo_dynamic_sidecar_default_profile_starts_control_eagerly() -> None
     assert "dynamic_sidecar_eager_control" in payload["run"]["profile_name"]
 
 
+def test_apollo_static_spawn2m_profile_uses_fixed_scene_actor_without_legacy_assist() -> None:
+    from carla_testbed.config.rig_loader import load_rig_file
+
+    payload = load_rig_file(
+        "configs/io/examples/"
+        "phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
+    )
+
+    assert payload["scenario"]["spawn_legacy_front"] is False
+    runtime = payload["runtime"]["fixed_scene_player"]
+    assert runtime["enabled"] is True
+    assert runtime["replace_legacy_front"] is True
+    assert runtime["require_setup_success"] is True
+    assert runtime["scenario_path"].endswith("follow_stop_static_300m_spawn2m.yaml")
+    ledger = payload["assist_ledger"]
+    assert ledger["active_assists"] == ["apollo_control_runtime_overlay"]
+    assert ledger["blocking_assists"] == []
+    assert "legacy_followstop" not in ledger["active_assists"]
+
+
 def test_apollo_dynamic_sidecar_steer_sign_inverted_profile_is_diagnostic_only() -> None:
     payload = yaml.safe_load(
         Path(

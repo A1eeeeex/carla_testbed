@@ -8,9 +8,33 @@ run:
     target_interval_s: 0.05
     max_sleep_s: 0.05
 
+scenario:
+  # The fixed-scene player owns the stopped lead actor. The legacy scenario
+  # still supplies the ego spawn/runtime shell, but must not spawn or control a
+  # second front actor.
+  spawn_legacy_front: false
+
+runtime:
+  fixed_scene_player:
+    enabled: true
+    scenario_path: configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml
+    replace_legacy_front: true
+    require_setup_success: true
+    materialize_ego_initial_speed: true
+
 assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists:
+    - apollo_control_runtime_overlay
+  blocking_assists: []
+  non_blocking_assists:
+    - apollo_control_runtime_overlay
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
   notes:
-    - Phase 1 Apollo fixed-scene compatibility path uses legacy follow-stop transition; diagnostic only.
+    - Phase 1 Apollo fixed-scene compatibility uses the legacy transition shell, but the fixed-scene player owns the stopped lead and the harness ego controller remains disabled.
+    - The control runtime overlay remains diagnostic and prevents promotion of this profile to the default Apollo backend.
     - Ego spawn is shifted 2m downstream to test the Baguang road-start lane-invasion mitigation under Apollo compatibility.
     - Control runtime overlay currently uses the full selected runtime refresh set; smaller smoke-positive subsets did not preserve control output in full online runs, so this remains diagnostic only and must not be promoted to default without separate no-regression evidence.
     - Low-capture variant disables legacy rig sensor capture to test whether CARLA tick wall cadence / GT publish cadence is driving Apollo raw throttle-brake oscillation; it is not a capability or no-interference claim profile.

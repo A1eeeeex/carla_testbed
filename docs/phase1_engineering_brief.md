@@ -113,6 +113,8 @@ Layered progress status:
   reference-line contract `pass`, control-health `warn`, and Phase 1
   `success` in
   `runs/phase1_online_pairs/phase1_curve217_route_completion_fix_20260711`.
+  The route metrics are recorded in the run's
+  `analysis/route_health/route_health.json`.
   This is evidence for the scenario termination contract and this calibrated
   curve sample; it is not a natural-driving claim.
 - This is a diagnostic candidate, not default physical-mapping promotion. It
@@ -139,6 +141,23 @@ Layered progress status:
   bound rows all fell to zero. The shortest trajectory returned to 111 points
   over 7.1 seconds, terminal speed stayed above about 3.06 m/s, and route
   completion reached about 83.6% without collision or lane invasion.
+- The P0 static follow-stop pair
+  `runs/phase1_online_pairs/phase1_p0_follow_stop_static_sidecar_pair_20260711`
+  is now evaluable for both backends. The Apollo row uses the fixed-scene
+  player for the stopped lead, records `legacy_controller_applied=false`,
+  receives/applies Apollo control, and stops from an initial 295.1m bumper gap
+  at about 6.26m with final ego speed about 0.054m/s and zero collision/lane
+  invasion. Routing succeeded once, 579 of 660 Planning messages were
+  non-empty, and fixed-scene, obstacle-GT, and v-t-gap reports pass. The pair
+  comparison is `comparable` / `apollo_vs_planning_control_evaluable`.
+- The same run exposed stale summary precedence: `summary.json` retained
+  `control_handoff_status=control_missing` even though
+  `analysis/apollo_control_handoff/apollo_control_handoff_report.json` was a
+  non-blocking warn with more than ten thousand bridge control receives. The
+  control-health analyzer now allows that stronger artifact to override the
+  stale value, changing this run from false `fail` to `warn`. The control
+  runtime overlay remains a diagnostic condition, so this is Phase 1 scenario
+  evidence rather than default-backend or natural-driving promotion.
 - The straight lateral regression run
   `runs/longitudinal_map_speed_contract_fix_lateral_regression_20260711/lane_keep097_map_speed_complete_unified_stitcher__town01_rh_spawn097_goal046`
   recorded no collision or lane invasion, cross-track-error p95 about 0.144 m,
