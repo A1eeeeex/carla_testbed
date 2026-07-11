@@ -19,6 +19,10 @@ cyber:
   planning_channel: /apollo/planning
 bridge:
   publish_rate_hz: 20.0
+  # auto: use odom sim_time when present, falling back to Cyber/wall time.
+  # cyber_time is diagnostic-only for timing A/B; do not use it as claim-grade
+  # GT localization evidence unless the localization contract is updated.
+  localization_time_source: auto
   # Keep high-volume diagnostics from back-pressuring claim-grade GT channels.
   # 0 means do not explicitly flush from the 20 Hz publish hot path; buffers
   # are still force-flushed on normal shutdown.
@@ -58,6 +62,9 @@ bridge:
     alpha: 1.0
     max_abs_mps2: 0.0
     max_delta_mps2: 0.0
+    # Set to the Planning cycle (normally 0.1s) in GT claim profiles. A value
+    # of 0 keeps legacy behavior and disables this feasibility constraint.
+    nonnegative_speed_prediction_horizon_s: 0.0
   map_file: ""
   map_bounds_file: ""
   debug_pose_print: false
@@ -168,6 +175,10 @@ bridge:
     physical:
       calibration_file: artifacts/carla_actuator_calibration.json
       allow_legacy_fallback: true
+      map_steering: true
+      map_longitudinal: true
+      map_throttle: true
+      map_brake: true
       apollo_max_steer_angle_deg: 8.2030
       apollo_max_accel_mps2: 4.0
       apollo_max_decel_mps2: 6.0

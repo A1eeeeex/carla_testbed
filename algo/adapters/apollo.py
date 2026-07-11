@@ -16,6 +16,128 @@ from carla_testbed.adapters.apollo.vehicle_reference import LOCALIZATION_BACK_OF
 from tbio.backends.cyberrt import CyberRTBackend
 
 
+_TEXTPROTO_NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+_LANE_START_PATTERN = re.compile(r"^(?P<indent>\s*)lane\s*\{")
+_LANE_SPEED_LIMIT_PATTERN = re.compile(
+    rf"^(?P<prefix>\s*speed_limit\s*:\s*)(?P<value>{_TEXTPROTO_NUMBER})"
+)
+
+
+def _textproto_brace_delta(line: str) -> int:
+    """Count structural braces while ignoring quoted text and comments."""
+
+    delta = 0
+    in_string = False
+    escaped = False
+    for char in line:
+        if escaped:
+            escaped = False
+            continue
+        if in_string and char == "\\":
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if not in_string and char == "#":
+            break
+        if not in_string and char == "{":
+            delta += 1
+        elif not in_string and char == "}":
+            delta -= 1
+    return delta
+
+
+def _rewrite_apollo_lane_speed_limits(
+    map_text: str,
+    *,
+    replace_existing_mps: float | None,
+    fill_missing: bool,
+    missing_default_mps: float,
+) -> tuple[str, Dict[str, Any]]:
+    """Rewrite only top-level Apollo HDMap lane speed-limit fields."""
+
+    lines = map_text.splitlines(keepends=True)
+    rewritten: list[str] = []
+    lane_count = 0
+    explicit_before = 0
+    missing_before = 0
+    replaced_count = 0
+    inserted_count = 0
+    old_values: list[float] = []
+    depth = 0
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        lane_match = _LANE_START_PATTERN.match(line) if depth == 0 else None
+        if lane_match is None:
+            rewritten.append(line)
+            depth += _textproto_brace_delta(line)
+            index += 1
+            continue
+
+        lane_count += 1
+        block = [line]
+        block_depth = _textproto_brace_delta(line)
+        index += 1
+        while block_depth > 0 and index < len(lines):
+            block_line = lines[index]
+            block.append(block_line)
+            block_depth += _textproto_brace_delta(block_line)
+            index += 1
+        if block_depth != 0:
+            raise ValueError("unterminated top-level lane block in Apollo HDMap textproto")
+
+        direct_speed_indices: list[int] = []
+        local_depth = 0
+        for block_index, block_line in enumerate(block):
+            depth_before = local_depth
+            if depth_before == 1 and _LANE_SPEED_LIMIT_PATTERN.match(block_line):
+                direct_speed_indices.append(block_index)
+            local_depth += _textproto_brace_delta(block_line)
+
+        if direct_speed_indices:
+            explicit_before += len(direct_speed_indices)
+            for block_index in direct_speed_indices:
+                speed_match = _LANE_SPEED_LIMIT_PATTERN.match(block[block_index])
+                if speed_match is None:
+                    continue
+                old_values.append(float(speed_match.group("value")))
+                if replace_existing_mps is not None:
+                    value_start, value_end = speed_match.span("value")
+                    block[block_index] = (
+                        block[block_index][:value_start]
+                        + f"{replace_existing_mps:.12f}"
+                        + block[block_index][value_end:]
+                    )
+                    replaced_count += 1
+        else:
+            missing_before += 1
+            if fill_missing:
+                closing_line = block[-1]
+                newline = "\r\n" if closing_line.endswith("\r\n") else "\n"
+                block.insert(
+                    len(block) - 1,
+                    f"{lane_match.group('indent')}  speed_limit: {missing_default_mps:.12f}{newline}",
+                )
+                inserted_count += 1
+
+        rewritten.extend(block)
+
+    stats: Dict[str, Any] = {
+        "lane_count": lane_count,
+        "explicit_speed_limit_count_before": explicit_before,
+        "missing_lane_speed_limit_count_before": missing_before,
+        "inserted_missing_lane_speed_limit_count": inserted_count,
+        "existing_speed_limit_replaced_count": replaced_count,
+        "explicit_speed_limit_count_after": explicit_before + inserted_count,
+        "missing_lane_speed_limit_count_after": missing_before - inserted_count,
+        "old_unique_speed_limits_mps": sorted(set(old_values)),
+    }
+    return "".join(rewritten), stats
+
+
 class ApolloAdapter(Adapter):
     def __init__(self):
         self.repo_root = Path(__file__).resolve().parents[2]
@@ -808,6 +930,8 @@ PY
         direct_bridge_cfg = dict(apollo_cfg.get("direct_bridge", {}) or {})
         if "publish_rate_hz" in apollo_bridge_cfg:
             bridge["publish_rate_hz"] = float(apollo_bridge_cfg["publish_rate_hz"])
+        if "localization_time_source" in apollo_bridge_cfg:
+            bridge["localization_time_source"] = str(apollo_bridge_cfg["localization_time_source"])
         if "max_obstacles" in apollo_bridge_cfg:
             bridge["max_obstacles"] = int(apollo_bridge_cfg["max_obstacles"])
         if "radius_m" in apollo_bridge_cfg:
@@ -1063,6 +1187,7 @@ PY
             "brake_scale",
             "steer_scale",
             "brake_deadzone",
+            "throttle_brake_min_command",
             "actuator_mapping_mode",
             "steering_percent_normalization",
             "apollo_max_steer_angle_deg",
@@ -1115,6 +1240,7 @@ PY
             "sustained_lateral_guard_enabled",
             "trajectory_contract_lateral_guard_enabled",
             "force_zero_steer_output",
+            "throttle_brake_mutual_exclusion_enabled",
         ):
             if key in ctrl_cfg:
                 ctrl_map[key] = bool(ctrl_cfg[key])
@@ -1125,6 +1251,7 @@ PY
             "low_speed_sustained_saturation_guard_release_frames",
             "sustained_lateral_guard_trigger_frames",
             "sustained_lateral_guard_release_frames",
+            "throttle_brake_hysteresis_frames",
         ):
             if key in ctrl_cfg:
                 ctrl_map[key] = int(ctrl_cfg[key])
@@ -1231,7 +1358,9 @@ PY
         speed_cfg = apollo_cfg.setdefault("map_speed_limit", {})
         enabled = bool(speed_cfg.get("enabled", False))
         restore_original = bool(speed_cfg.get("restore_original", False))
+        fill_missing = bool(speed_cfg.get("fill_missing_lane_speed_limits", False))
         target_mps = float(speed_cfg.get("override_mps", 23.61) or 23.61)
+        missing_default_raw = speed_cfg.get("missing_lane_default_mps", "inherit_existing")
         artifacts = run_dir / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
         report_path = artifacts / "apollo_map_speed_limit_patch.json"
@@ -1241,11 +1370,13 @@ PY
         # When speed patch is disabled and no restore is requested, skip map
         # file probing entirely so host-mode Apollo can still start even if the
         # legacy modules/map_data path is absent on this machine.
-        if not enabled and not restore_original:
+        if not enabled and not restore_original and not fill_missing:
             report = {
                 "enabled": enabled,
                 "restore_original": restore_original,
+                "fill_missing_lane_speed_limits": fill_missing,
                 "target_speed_limit_mps": target_mps,
+                "missing_lane_default_mps_config": missing_default_raw,
                 "map_file": str(map_file) if map_file is not None else "",
                 "backup_file": "",
                 "ok": True,
@@ -1261,6 +1392,7 @@ PY
                     {
                         "enabled": enabled,
                         "restore_original": restore_original,
+                        "fill_missing_lane_speed_limits": fill_missing,
                         "ok": False,
                         "reason": "map_file_missing",
                     },
@@ -1276,7 +1408,9 @@ PY
         report: Dict[str, Any] = {
             "enabled": enabled,
             "restore_original": restore_original,
+            "fill_missing_lane_speed_limits": fill_missing,
             "target_speed_limit_mps": target_mps,
+            "missing_lane_default_mps_config": missing_default_raw,
             "map_file": str(map_file),
             "backup_file": str(backup_path),
         }
@@ -1292,7 +1426,7 @@ PY
         else:
             report["restored_from_backup"] = False
 
-        if not enabled:
+        if not enabled and not fill_missing:
             report["ok"] = True
             report["patched"] = False
             report_path.write_text(json.dumps(report, indent=2))
@@ -1302,24 +1436,76 @@ PY
         original_text = map_file.read_text()
         if not backup_path.exists():
             backup_path.write_text(original_text)
-        speed_pattern = re.compile(r"(\bspeed_limit:\s*)([0-9]+(?:\.[0-9]+)?)")
-        old_values = [float(v) for _, v in speed_pattern.findall(original_text)]
-        patched_text, count = speed_pattern.subn(
-            lambda m: f"{m.group(1)}{target_mps:.12f}",
+        _, inspection = _rewrite_apollo_lane_speed_limits(
             original_text,
+            replace_existing_mps=None,
+            fill_missing=False,
+            missing_default_mps=target_mps,
         )
-        if count <= 0:
+        inherit_missing_default = str(missing_default_raw or "").strip().lower() in {
+            "",
+            "inherit_existing",
+            "inherit_existing_min",
+        }
+        if inherit_missing_default:
+            if enabled:
+                missing_default_mps = target_mps
+                missing_default_source = "override_mps"
+            else:
+                positive_existing_limits = [
+                    float(value)
+                    for value in inspection["old_unique_speed_limits_mps"]
+                    if float(value) > 0.0
+                ]
+                if not positive_existing_limits:
+                    report.update(inspection)
+                    report["ok"] = False
+                    report["reason"] = "cannot_inherit_missing_lane_speed_limit_without_positive_existing_limit"
+                    report_path.write_text(json.dumps(report, indent=2))
+                    raise RuntimeError(
+                        "Cannot fill missing Apollo lane speed limits because the map has no "
+                        f"positive explicit lane speed_limit: {map_file}"
+                    )
+                missing_default_mps = min(positive_existing_limits)
+                missing_default_source = "minimum_positive_existing_lane_speed_limit"
+        else:
+            missing_default_mps = float(missing_default_raw)
+            if missing_default_mps <= 0.0:
+                raise ValueError("missing_lane_default_mps must be positive")
+            missing_default_source = "configured_numeric_value"
+        report["missing_lane_default_mps"] = missing_default_mps
+        report["missing_lane_default_mps_effective"] = missing_default_mps
+        report["missing_lane_default_source"] = missing_default_source
+        patched_text, stats = _rewrite_apollo_lane_speed_limits(
+            original_text,
+            replace_existing_mps=target_mps if enabled else None,
+            fill_missing=fill_missing,
+            missing_default_mps=missing_default_mps,
+        )
+        report.update(stats)
+        report["map_sha256_before"] = hashlib.sha256(original_text.encode("utf-8")).hexdigest()
+        if int(stats["lane_count"]) <= 0:
+            report["ok"] = False
+            report["reason"] = "lane_block_not_found"
+            report_path.write_text(json.dumps(report, indent=2))
+            raise RuntimeError(f"No top-level lane block found in Apollo map file: {map_file}")
+        if enabled and int(stats["explicit_speed_limit_count_before"]) <= 0 and not fill_missing:
             report["ok"] = False
             report["reason"] = "speed_limit_field_not_found"
             report_path.write_text(json.dumps(report, indent=2))
-            raise RuntimeError(f"No speed_limit field found in Apollo map file: {map_file}")
+            raise RuntimeError(f"No lane speed_limit field found in Apollo map file: {map_file}")
 
-        map_file.write_text(patched_text)
+        changed = patched_text != original_text
+        if changed:
+            map_file.write_text(patched_text)
         report["ok"] = True
-        report["patched"] = True
-        report["patched_count"] = count
-        report["old_unique_speed_limits_mps"] = sorted(set(old_values))
-        report["new_speed_limit_mps"] = target_mps
+        report["patched"] = changed
+        report["patched_count"] = int(stats["existing_speed_limit_replaced_count"]) + int(
+            stats["inserted_missing_lane_speed_limit_count"]
+        )
+        report["new_speed_limit_mps"] = target_mps if enabled else None
+        report["map_sha256_after"] = hashlib.sha256(patched_text.encode("utf-8")).hexdigest()
+        report["reason"] = "patched" if changed else "already_complete"
         report_path.write_text(json.dumps(report, indent=2))
         speed_cfg["effective_map_file"] = str(map_file)
 
@@ -1352,6 +1538,8 @@ PY
         map_speed_cfg.setdefault("enabled", False)
         map_speed_cfg.setdefault("override_mps", 23.61)
         map_speed_cfg.setdefault("restore_original", False)
+        map_speed_cfg.setdefault("fill_missing_lane_speed_limits", False)
+        map_speed_cfg.setdefault("missing_lane_default_mps", "inherit_existing")
 
         bridge_cfg = self._ensure_bridge_config(profile, run_path)
         self._patch_apollo_map_speed_limit(profile, bridge_cfg, run_path)

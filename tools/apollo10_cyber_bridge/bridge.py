@@ -34,6 +34,7 @@ from carla_testbed.adapters.apollo.vehicle_reference import (
     resolve_localization_back_offset_m as resolve_vehicle_reference_localization_back_offset_m,
 )
 from carla_testbed.analysis.apollo_reference_line_contract import build_reference_line_contract_event
+from carla_testbed.sim.vehicle_geometry import wheelbase_from_world_positions
 from tools.apollo10_cyber_bridge.control_apply_trace import (
     ControlCriticalWindowRecorder,
     build_control_apply_trace_payload,
@@ -386,6 +387,28 @@ def _filter_localization_acceleration(
     if not changed:
         return raw_acceleration
     return out[0], out[1], out[2]
+
+
+def _limit_forward_acceleration_for_nonnegative_speed_prediction(
+    speed_mps: float,
+    forward_acceleration_mps2: float,
+    prediction_horizon_s: float,
+) -> Tuple[float, bool, Optional[float]]:
+    """Keep the GT kinematic state feasible for Apollo's replan model."""
+    speed = float(speed_mps)
+    acceleration = float(forward_acceleration_mps2)
+    horizon = float(prediction_horizon_s)
+    if (
+        not math.isfinite(speed)
+        or not math.isfinite(acceleration)
+        or not math.isfinite(horizon)
+        or horizon <= 0.0
+    ):
+        return acceleration, False, None
+    minimum_acceleration = -max(speed, 0.0) / horizon
+    if acceleration >= minimum_acceleration:
+        return acceleration, False, minimum_acceleration
+    return minimum_acceleration, True, minimum_acceleration
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -1159,26 +1182,42 @@ class CarlaFeedbackClient:
                     ]
                 )
             scale = self._maybe_metric_scale(raw_positions) if raw_positions else 1.0
-            wheel_x_positions: List[float] = []
+            wheel_positions: List[Tuple[float, float, float]] = []
             wheel_radius_candidates: List[float] = []
             max_steer_candidates: List[float] = []
             for wheel in wheels:
                 pos = getattr(wheel, "position", None)
                 if pos is not None:
-                    wheel_x_positions.append(float(getattr(pos, "x", 0.0)) * scale)
+                    wheel_positions.append(
+                        (
+                            float(getattr(pos, "x", 0.0)),
+                            float(getattr(pos, "y", 0.0)),
+                            float(getattr(pos, "z", 0.0)),
+                        )
+                    )
                 radius = float(getattr(wheel, "radius", 0.0) or 0.0)
                 if radius > 0.0:
                     wheel_radius_candidates.append(radius * (0.01 if radius > 5.0 else 1.0))
                 max_steer = float(getattr(wheel, "max_steer_angle", 0.0) or 0.0)
                 if abs(max_steer) > 1e-6:
                     max_steer_candidates.append(abs(max_steer))
-            wheel_base = None
-            if len(wheel_x_positions) >= 2:
-                xs = sorted(wheel_x_positions)
-                front_x = sum(xs[-2:]) / min(2, len(xs[-2:]))
-                rear_x = sum(xs[:2]) / min(2, len(xs[:2]))
-                if front_x > rear_x:
-                    wheel_base = front_x - rear_x
+            transform = actor.get_transform()
+            actor_location = getattr(transform, "location", None)
+            actor_forward = transform.get_forward_vector()
+            wheel_base = wheelbase_from_world_positions(
+                wheel_positions,
+                actor_location=(
+                    float(getattr(actor_location, "x", 0.0)),
+                    float(getattr(actor_location, "y", 0.0)),
+                    float(getattr(actor_location, "z", 0.0)),
+                ),
+                actor_forward=(
+                    float(getattr(actor_forward, "x", 0.0)),
+                    float(getattr(actor_forward, "y", 0.0)),
+                    float(getattr(actor_forward, "z", 0.0)),
+                ),
+                position_scale=scale,
+            )
             max_steer_angle_deg = max(max_steer_candidates) if max_steer_candidates else None
             min_turn_radius = None
             if wheel_base and max_steer_angle_deg and max_steer_angle_deg > 1e-3:
@@ -1205,6 +1244,8 @@ class CarlaFeedbackClient:
                 "drag_coefficient": float(getattr(physics, "drag_coefficient", 0.0) or 0.0),
                 "physics_wheel_count": len(wheels),
                 "physics_position_scale": scale,
+                "wheel_position_frame": "carla_world",
+                "wheelbase_method": "world_positions_projected_onto_actor_forward",
             }
             self._vehicle_characteristics = dict(out)
             self._vehicle_characteristics_actor_id = actor_id
@@ -1523,6 +1564,17 @@ class ApolloGtBridge:
             heading_offset_deg=float(tf_cfg.get("heading_offset_deg", 0.0)),
         )
         self.publish_rate_hz = float(bridge_cfg.get("publish_rate_hz", 20.0))
+        self.localization_time_source = str(
+            bridge_cfg.get("localization_time_source", "auto") or "auto"
+        ).strip().lower()
+        if self.localization_time_source not in {"auto", "sim_time", "cyber_time"}:
+            self.localization_time_source = "auto"
+        self.stats["localization_time_source_policy"] = {
+            "configured": self.localization_time_source,
+            "boundary": (
+                "sim_time_is_claim_grade_gt_time_base; cyber_time_is_diagnostic_only"
+            ),
+        }
         run_cfg = (cfg.get("run", {}) or {})
         typed_runtime_cfg = (cfg.get("typed_runtime", {}) or {})
         reports_cfg = (cfg.get("reports", {}) or {})
@@ -1588,12 +1640,24 @@ class ApolloGtBridge:
         self.localization_acceleration_filter_max_delta_mps2 = (
             _safe_float(accel_filter_cfg.get("max_delta_mps2"), 0.0) or None
         )
+        self.localization_acceleration_nonnegative_speed_prediction_horizon_s = max(
+            0.0,
+            _safe_float(
+                accel_filter_cfg.get("nonnegative_speed_prediction_horizon_s"),
+                0.0,
+            ),
+        )
+        self._localization_acceleration_nonnegative_speed_correction_count = 0
         self._last_localization_acceleration_sample: Optional[Tuple[float, float, float]] = None
         self.stats["localization_acceleration_filter"] = {
             "enabled": self.localization_acceleration_filter_enabled,
             "alpha": self.localization_acceleration_filter_alpha,
             "max_abs_mps2": self.localization_acceleration_filter_max_abs_mps2,
             "max_delta_mps2": self.localization_acceleration_filter_max_delta_mps2,
+            "nonnegative_speed_prediction_horizon_s": (
+                self.localization_acceleration_nonnegative_speed_prediction_horizon_s
+            ),
+            "nonnegative_speed_correction_count": 0,
             "source": "finite_difference_filter",
             "claim_boundary": "gt_input_quality_only_not_control_smoothing",
         }
@@ -1956,6 +2020,14 @@ class ApolloGtBridge:
         )
         self._actuator_calibration = load_actuator_calibration(self._actuator_calibration_path)
         self.physical_allow_legacy_fallback = bool(physical_cfg.get("allow_legacy_fallback", True))
+        self.physical_map_steering = bool(physical_cfg.get("map_steering", True))
+        self.physical_map_longitudinal = bool(physical_cfg.get("map_longitudinal", True))
+        self.physical_map_throttle = bool(
+            physical_cfg.get("map_throttle", self.physical_map_longitudinal)
+        )
+        self.physical_map_brake = bool(
+            physical_cfg.get("map_brake", self.physical_map_longitudinal)
+        )
         self.physical_apollo_max_steer_angle_deg = _safe_float(
             physical_cfg.get("apollo_max_steer_angle_deg"),
             _safe_float(ctrl_map.get("apollo_max_steer_angle_deg"), 8.2030),
@@ -1997,6 +2069,10 @@ class ApolloGtBridge:
             "steer_scale": self.steer_scale,
             "steer_sign": self.steer_sign,
             "allow_legacy_fallback": self.physical_allow_legacy_fallback,
+            "map_steering": self.physical_map_steering,
+            "map_longitudinal": self.physical_map_longitudinal,
+            "map_throttle": self.physical_map_throttle,
+            "map_brake": self.physical_map_brake,
             "apollo_max_steer_angle_deg": self.physical_apollo_max_steer_angle_deg,
             "apollo_max_accel_mps2": self.physical_apollo_max_accel_mps2,
             "apollo_max_decel_mps2": self.physical_apollo_max_decel_mps2,
@@ -3496,7 +3572,14 @@ class ApolloGtBridge:
         *,
         fallback_wall_time_sec: float,
     ) -> Tuple[float, str]:
+        source = str(getattr(self, "localization_time_source", "auto") or "auto").lower()
+        if source == "cyber_time":
+            return float(fallback_wall_time_sec), "cyber_time_diagnostic"
         sim_time_sec = self._extract_ros_stamp_sec(odom)
+        if source == "sim_time":
+            if sim_time_sec is not None:
+                return float(sim_time_sec), "sim_time"
+            return float(fallback_wall_time_sec), "sim_time_missing_cyber_time_fallback"
         if sim_time_sec is not None:
             return float(sim_time_sec), "sim_time"
         return float(fallback_wall_time_sec), "cyber_time_fallback"
@@ -6981,6 +7064,10 @@ class ApolloGtBridge:
             physical_use_lon_debug=bool(self.physical_use_lon_debug),
             physical_steer_field_priority=tuple(self.physical_steer_field_priority),
             physical_acceleration_field_priority=tuple(self.physical_acceleration_field_priority),
+            physical_map_steering=bool(self.physical_map_steering),
+            physical_map_longitudinal=bool(self.physical_map_longitudinal),
+            physical_map_throttle=bool(self.physical_map_throttle),
+            physical_map_brake=bool(self.physical_map_brake),
         )
 
     def _legacy_map_base_controls(
@@ -7754,11 +7841,38 @@ class ApolloGtBridge:
                 else None
             ),
         )
+        acceleration_right_vrf = s_yaw * ax - c_yaw * ay
+        acceleration_forward_vrf = c_yaw * ax + s_yaw * ay
+        acceleration_forward_vrf_unconstrained = acceleration_forward_vrf
+        localization_speed_mps = math.sqrt(vx * vx + vy * vy + vz * vz)
+        (
+            acceleration_forward_vrf,
+            acceleration_nonnegative_speed_prediction_limited,
+            acceleration_nonnegative_speed_prediction_min_mps2,
+        ) = _limit_forward_acceleration_for_nonnegative_speed_prediction(
+            localization_speed_mps,
+            acceleration_forward_vrf,
+            getattr(
+                self,
+                "localization_acceleration_nonnegative_speed_prediction_horizon_s",
+                0.0,
+            ),
+        )
+        if acceleration_nonnegative_speed_prediction_limited:
+            # Preserve the lateral/right component and only repair the
+            # longitudinal GT state that Apollo's replan model consumes.
+            ax = s_yaw * acceleration_right_vrf + c_yaw * acceleration_forward_vrf
+            ay = -c_yaw * acceleration_right_vrf + s_yaw * acceleration_forward_vrf
+            acceleration_source = (
+                f"{acceleration_source}_nonnegative_speed_prediction_limited"
+            )
+            self._localization_acceleration_nonnegative_speed_correction_count += 1
+            self.stats["localization_acceleration_filter"][
+                "nonnegative_speed_correction_count"
+            ] = self._localization_acceleration_nonnegative_speed_correction_count
         if acceleration_source != "stale_timestamp_republish":
             self._last_localization_velocity_sample = (header_ts_sec, vx, vy, vz)
             self._last_localization_acceleration_sample = (ax, ay, az)
-        acceleration_right_vrf = s_yaw * ax - c_yaw * ay
-        acceleration_forward_vrf = c_yaw * ax + s_yaw * ay
         angular_velocity_source = (
             "carla_direct_odom_twist" if self.transport_mode == "carla_direct" else "ros2_odom_twist"
         )
@@ -7792,6 +7906,20 @@ class ApolloGtBridge:
                 "acceleration_semantics": "finite_difference_or_physical",
                 "localization_acceleration_filter_enabled": getattr(
                     self, "localization_acceleration_filter_enabled", False
+                ),
+                "acceleration_forward_vrf_unconstrained_mps2": (
+                    acceleration_forward_vrf_unconstrained
+                ),
+                "acceleration_nonnegative_speed_prediction_limited": (
+                    acceleration_nonnegative_speed_prediction_limited
+                ),
+                "acceleration_nonnegative_speed_prediction_min_mps2": (
+                    acceleration_nonnegative_speed_prediction_min_mps2
+                ),
+                "acceleration_nonnegative_speed_prediction_horizon_s": getattr(
+                    self,
+                    "localization_acceleration_nonnegative_speed_prediction_horizon_s",
+                    0.0,
                 ),
             },
         )
@@ -7835,6 +7963,20 @@ class ApolloGtBridge:
                 "acceleration_source": acceleration_source,
                 "localization_acceleration_filter_enabled": getattr(
                     self, "localization_acceleration_filter_enabled", False
+                ),
+                "acceleration_forward_vrf_unconstrained_mps2": (
+                    acceleration_forward_vrf_unconstrained
+                ),
+                "acceleration_nonnegative_speed_prediction_limited": (
+                    acceleration_nonnegative_speed_prediction_limited
+                ),
+                "acceleration_nonnegative_speed_prediction_min_mps2": (
+                    acceleration_nonnegative_speed_prediction_min_mps2
+                ),
+                "acceleration_nonnegative_speed_prediction_horizon_s": getattr(
+                    self,
+                    "localization_acceleration_nonnegative_speed_prediction_horizon_s",
+                    0.0,
                 ),
                 "uncertainty_policy": localization_debug["localization_uncertainty_policy"],
                 "msf_status_policy": localization_debug["localization_msf_status_policy"],

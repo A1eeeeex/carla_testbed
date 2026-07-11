@@ -204,6 +204,53 @@ def test_typed_transition_backend_uses_resolved_config_and_preserves_reports(
     assert routing["lane_segment_count"] == 1
 
 
+def test_typed_transition_backend_materializes_typed_bridge_diagnostic_fields(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "town01_apollo_timing_probe.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "run:",
+                "  id: timing_probe",
+                "  max_ticks: 3",
+                "  fixed_dt_s: 0.05",
+                f"  output_root: {tmp_path.as_posix()}",
+                "sim:",
+                "  town: Town01",
+                "scenario:",
+                "  name: carla_town01_route_health",
+                "  params:",
+                "    driver: carla_town01_route_health",
+                "backend:",
+                "  name: apollo_cyberrt",
+                "algo:",
+                "  stack: apollo",
+                "  apollo:",
+                "    transport_mode: ros2_gt",
+                "    bridge:",
+                "      localization_time_source: cyber_time",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_config(config_path)
+
+    effective = apollo_compat._legacy_effective_config_from_typed(
+        cfg,
+        dataclasses.asdict(cfg),
+        run_dir=tmp_path / "timing_probe_run",
+        metadata=apollo_compat._metadata_from_config(
+            cfg,
+            config_path=config_path,
+            run_dir=tmp_path / "timing_probe_run",
+        ),
+    )
+
+    assert effective["algo"]["apollo"]["bridge"]["localization_time_source"] == "cyber_time"
+
+
 def test_typed_transition_backend_allows_platform_lifecycle_preseed(
     tmp_path: Path,
     monkeypatch,

@@ -8991,6 +8991,59 @@ class Town01RouteHealthMainlineTests(unittest.TestCase):
         self.assertFalse(summary["reentered_path_fallback_after_recovery"])
         self.assertEqual(summary["path_fallback_count_after_first_recovery"], 0)
 
+    def test_planning_trajectory_type_summary_separates_debug_fallback_from_published_fallback(self) -> None:
+        summary = _compute_planning_trajectory_type_summary(
+            [
+                {
+                    "planning_header_sequence_num": 30,
+                    "trajectory_type": "NORMAL",
+                    "trajectory_point_count": 111,
+                    "trajectory_total_path_length": 24.0,
+                    "planning_debug_path_fallback_used": True,
+                },
+                {
+                    "planning_header_sequence_num": 31,
+                    "trajectory_type": "NORMAL",
+                    "trajectory_point_count": 111,
+                    "trajectory_total_path_length": 44.0,
+                    "planning_debug_path_fallback_used": True,
+                },
+            ]
+        )
+
+        self.assertEqual(summary["path_fallback_count"], 0)
+        self.assertEqual(summary["speed_fallback_count"], 0)
+        self.assertEqual(summary["short_published_trajectory_under_20m_count"], 0)
+        self.assertEqual(summary["planning_debug_path_fallback_used_count"], 2)
+        self.assertEqual(summary["normal_with_debug_path_fallback_used_count"], 2)
+        self.assertTrue(summary["debug_path_fallback_without_published_path_fallback"])
+        self.assertAlmostEqual(summary["published_trajectory_path_length_min"], 24.0)
+        self.assertAlmostEqual(summary["published_trajectory_path_length_p50"], 34.0)
+
+    def test_planning_trajectory_type_summary_counts_speed_fallback_and_short_published_trajectory(self) -> None:
+        summary = _compute_planning_trajectory_type_summary(
+            [
+                {
+                    "planning_header_sequence_num": 40,
+                    "trajectory_type": "NORMAL",
+                    "trajectory_point_count": 111,
+                    "trajectory_total_path_length": 32.0,
+                },
+                {
+                    "planning_header_sequence_num": 41,
+                    "trajectory_type": "SPEED_FALLBACK",
+                    "trajectory_point_count": 69,
+                    "trajectory_total_path_length": 12.0,
+                },
+            ]
+        )
+
+        self.assertEqual(summary["path_fallback_count"], 0)
+        self.assertEqual(summary["speed_fallback_count"], 1)
+        self.assertEqual(summary["published_trajectory_count"], 2)
+        self.assertEqual(summary["short_published_trajectory_under_20m_count"], 1)
+        self.assertFalse(summary["debug_path_fallback_without_published_path_fallback"])
+
     def test_planning_trajectory_type_summary_tracks_relapse_after_recovery(self) -> None:
         summary = _compute_planning_trajectory_type_summary(
             [

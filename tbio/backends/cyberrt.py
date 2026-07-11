@@ -18,6 +18,10 @@ from typing import Any, Dict, Optional
 import yaml
 
 from carla_testbed.adapters.apollo.cyber_gt_bridge import default_apollo_cyber_gt_bridge_entrypoint
+from carla_testbed.sim.vehicle_geometry import (
+    steering_wheel_angle_rad_from_tire_angle_deg,
+    wheelbase_from_world_positions,
+)
 
 from .base import Backend
 
@@ -2157,9 +2161,6 @@ class CyberRTBackend(Backend):
                 value = payload.get(key)
                 if value is not None:
                     overrides[key] = float(value)
-            max_steer_deg = payload.get("max_steer_angle_deg")
-            if max_steer_deg is not None:
-                overrides["max_steer_angle"] = float(max_steer_deg)
             if overrides:
                 return overrides, str(path)
         return {}, ""
@@ -2293,37 +2294,65 @@ class CyberRTBackend(Backend):
                     ]
                 )
             scale = self._carla_scale_to_m(raw_positions) if raw_positions else 1.0
-            wheel_x_positions: list[float] = []
+            wheel_positions: list[tuple[float, float, float]] = []
             wheel_radius_candidates: list[float] = []
             max_steer_candidates: list[float] = []
             for wheel in wheels:
                 pos = getattr(wheel, "position", None)
                 if pos is not None:
-                    wheel_x_positions.append(float(getattr(pos, "x", 0.0)) * scale)
+                    wheel_positions.append(
+                        (
+                            float(getattr(pos, "x", 0.0)),
+                            float(getattr(pos, "y", 0.0)),
+                            float(getattr(pos, "z", 0.0)),
+                        )
+                    )
                 radius = float(getattr(wheel, "radius", 0.0) or 0.0)
                 if radius > 0.0:
                     wheel_radius_candidates.append(radius * (0.01 if radius > 5.0 else 1.0))
                 max_steer = float(getattr(wheel, "max_steer_angle", 0.0) or 0.0)
                 if abs(max_steer) > 1e-6:
                     max_steer_candidates.append(abs(max_steer))
-            if len(wheel_x_positions) >= 2:
-                xs = sorted(wheel_x_positions)
-                front_x = sum(xs[-2:]) / min(2, len(xs[-2:]))
-                rear_x = sum(xs[:2]) / min(2, len(xs[:2]))
-                if front_x > rear_x:
-                    overrides["wheel_base"] = front_x - rear_x
+            transform = actor.get_transform()
+            actor_location = getattr(transform, "location", None)
+            actor_forward = transform.get_forward_vector()
+            wheel_base = wheelbase_from_world_positions(
+                wheel_positions,
+                actor_location=(
+                    float(getattr(actor_location, "x", 0.0)),
+                    float(getattr(actor_location, "y", 0.0)),
+                    float(getattr(actor_location, "z", 0.0)),
+                ),
+                actor_forward=(
+                    float(getattr(actor_forward, "x", 0.0)),
+                    float(getattr(actor_forward, "y", 0.0)),
+                    float(getattr(actor_forward, "z", 0.0)),
+                ),
+                position_scale=scale,
+            )
+            if wheel_base is not None:
+                overrides["wheel_base"] = wheel_base
             if max_steer_candidates:
-                max_steer_angle = max(max_steer_candidates)
-                overrides["max_steer_angle"] = max_steer_angle
-                wheel_base = float(overrides.get("wheel_base", 0.0) or 0.0)
-                if wheel_base > 0.0 and max_steer_angle > 1e-3:
-                    overrides["min_turn_radius"] = wheel_base / max(math.tan(math.radians(max_steer_angle)), 1e-6)
+                max_tire_angle_deg = max(max_steer_candidates)
+                steer_ratio = float(cfg.get("steer_ratio", 16.0) or 16.0)
+                overrides["max_steer_angle"] = steering_wheel_angle_rad_from_tire_angle_deg(
+                    max_tire_angle_deg,
+                    steer_ratio=steer_ratio,
+                )
+                if wheel_base is not None and max_tire_angle_deg > 1e-3:
+                    overrides["min_turn_radius"] = wheel_base / max(
+                        math.tan(math.radians(max_tire_angle_deg)),
+                        1e-6,
+                    )
             if wheel_radius_candidates:
                 overrides["wheel_rolling_radius"] = sum(wheel_radius_candidates) / len(wheel_radius_candidates)
             payload["ok"] = True
             payload["actor_id"] = int(getattr(actor, "id", 0) or 0)
             payload["role_name"] = ((getattr(actor, "attributes", {}) or {}).get("role_name", "") or "").strip()
             payload["type_id"] = str(getattr(actor, "type_id", "") or "")
+            payload["wheel_position_frame"] = "carla_world"
+            payload["wheelbase_method"] = "world_positions_projected_onto_actor_forward"
+            payload["max_steer_angle_semantics"] = "apollo_steering_wheel_radians"
             payload["overrides"] = overrides
             out_path.write_text(json.dumps(payload, indent=2))
             return overrides
@@ -3213,28 +3242,69 @@ class CyberRTBackend(Backend):
         cfg_keys = {
             "speed_bounds_decider_lowest_speed_mps",
             "speed_bounds_decider_enable_nudge_slowdown",
+            "speed_bounds_decider_max_centric_acceleration_mps2",
         }
         overlay_path = "/apollo_workspace/conf_overlay/modules/planning/tasks/speed_bounds_decider/conf/default_conf.pb.txt"
         target_path = "/apollo/modules/planning/tasks/speed_bounds_decider/conf/default_conf.pb.txt"
         if not any(key in planning_cfg for key in cfg_keys):
             return self._managed_overlay_link_shell(overlay_path, target_path, enabled=False)
-        lines: list[str] = []
+
+        replacements: list[tuple[str, str]] = []
         if "speed_bounds_decider_lowest_speed_mps" in planning_cfg:
-            lines.append(
-                f"lowest_speed: {float(planning_cfg.get('speed_bounds_decider_lowest_speed_mps', 0.1)):.3f}"
+            replacements.append(
+                (
+                    "lowest_speed",
+                    f"{float(planning_cfg['speed_bounds_decider_lowest_speed_mps']):.3f}",
+                )
             )
         if "speed_bounds_decider_enable_nudge_slowdown" in planning_cfg:
             enabled = "true" if bool(planning_cfg.get("speed_bounds_decider_enable_nudge_slowdown")) else "false"
-            lines.append(f"enable_nudge_slowdown: {enabled}")
-        content = "\n".join(lines) + "\n"
+            replacements.append(("enable_nudge_slowdown", enabled))
+        if "speed_bounds_decider_max_centric_acceleration_mps2" in planning_cfg:
+            max_centric_acceleration = float(
+                planning_cfg["speed_bounds_decider_max_centric_acceleration_mps2"]
+            )
+            if max_centric_acceleration <= 0.0:
+                raise ValueError(
+                    "speed_bounds_decider_max_centric_acceleration_mps2 must be positive"
+                )
+            replacements.append(
+                ("max_centric_acceleration_limit", f"{max_centric_acceleration:.3f}")
+            )
+
+        script_parts = [
+            "from pathlib import Path; ",
+            "import re,sys; ",
+            "cands=[",
+            "'/apollo/modules/planning/tasks/speed_bounds_decider/conf/default_conf.pb.txt.carla_testbed.bak',",
+            "'/apollo/modules/planning/tasks/speed_bounds_decider/conf/default_conf.pb.txt',",
+            "'/opt/apollo/neo/share/modules/planning/tasks/speed_bounds_decider/conf/default_conf.pb.txt',",
+            "'/opt/apollo/neo/src/modules/planning/tasks/speed_bounds_decider/conf/default_conf.pb.txt'",
+            "]; ",
+            "src=next((cand for cand in cands if Path(cand).is_file() and not Path(cand).is_symlink()), ''); ",
+            "sys.exit('Apollo SpeedBoundsDecider base config missing; refusing to write partial overlay') if not src else None; ",
+            "text=Path(src).read_text(); ",
+        ]
+        for field, value in replacements:
+            pattern = rf"(?m)^\s*{field}\s*:\s*[^\n#]+(?:\s*#.*)?$"
+            replacement = f"{field}: {value}"
+            script_parts.extend(
+                [
+                    f"text,count=re.subn({pattern!r}, {replacement!r}, text); ",
+                    f"sys.exit('Apollo SpeedBoundsDecider base config has duplicate {field}') if count > 1 else None; ",
+                    f"text=text if count else text.rstrip()+'\\n'+{replacement!r}+'\\n'; ",
+                ]
+            )
+        script_parts.extend(
+            [
+                f"p=Path({overlay_path!r}); ",
+                "p.parent.mkdir(parents=True, exist_ok=True); ",
+                "p.write_text(text if text.endswith('\\n') else text+'\\n')",
+            ]
+        )
         return (
             "python3 -c "
-            + shlex.quote(
-                "from pathlib import Path; "
-                f"p=Path({overlay_path!r}); "
-                "p.parent.mkdir(parents=True, exist_ok=True); "
-                f"p.write_text({content!r})"
-            )
+            + shlex.quote("".join(script_parts))
             + "; "
             + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)
         )

@@ -4233,6 +4233,33 @@ def _compute_planning_trajectory_type_summary(
         for row in first_path_fallback_precurrent_time_smaller_rows
         if safe_float(row.get("trajectory_total_path_length")) is not None
     ]
+    published_trajectory_rows = [
+        row
+        for row in planning_rows
+        if str(row.get("trajectory_type") or "").strip()
+        and str(row.get("trajectory_type") or "").strip() != "UNKNOWN"
+        and (safe_int(row.get("trajectory_point_count")) or 0) > 0
+    ]
+    published_trajectory_path_lengths = [
+        safe_float(row.get("trajectory_total_path_length"))
+        for row in published_trajectory_rows
+        if safe_float(row.get("trajectory_total_path_length")) is not None
+    ]
+    short_published_trajectory_under_20m_count = sum(
+        1 for value in published_trajectory_path_lengths if float(value) < 20.0
+    )
+    planning_debug_path_fallback_used_count = sum(
+        1 for row in planning_rows if safe_bool(row.get("planning_debug_path_fallback_used")) is True
+    )
+    normal_with_debug_path_fallback_used_count = sum(
+        1
+        for row in planning_rows
+        if str(row.get("trajectory_type") or "").strip() == "NORMAL"
+        and safe_bool(row.get("planning_debug_path_fallback_used")) is True
+    )
+    debug_path_fallback_without_published_path_fallback = bool(
+        planning_debug_path_fallback_used_count > 0 and type_counts.get("PATH_FALLBACK", 0) == 0
+    )
     first_path_fallback_bridge_prev_normal_is_replan = safe_bool(
         (first_path_fallback_bridge_prev_normal_row or {}).get("is_replan")
     )
@@ -4453,6 +4480,21 @@ def _compute_planning_trajectory_type_summary(
         "finalized_from_event_stream": True,
         "trajectory_type_counts": type_counts,
         "path_fallback_count": int(type_counts.get("PATH_FALLBACK", 0)),
+        "speed_fallback_count": int(type_counts.get("SPEED_FALLBACK", 0)),
+        "published_trajectory_count": int(len(published_trajectory_rows)),
+        "short_published_trajectory_under_20m_count": int(short_published_trajectory_under_20m_count),
+        "published_trajectory_path_length_min": (
+            min(published_trajectory_path_lengths) if published_trajectory_path_lengths else None
+        ),
+        "published_trajectory_path_length_p50": _interpolated_percentile(
+            published_trajectory_path_lengths,
+            0.50,
+        )
+        if published_trajectory_path_lengths
+        else None,
+        "planning_debug_path_fallback_used_count": int(planning_debug_path_fallback_used_count),
+        "normal_with_debug_path_fallback_used_count": int(normal_with_debug_path_fallback_used_count),
+        "debug_path_fallback_without_published_path_fallback": debug_path_fallback_without_published_path_fallback,
         "first_path_fallback_seq": first_path_fallback_seq,
         "first_path_fallback_timestamp": safe_float((first_path_fallback_row or {}).get("timestamp")),
         "first_path_fallback_point_count": safe_int((first_path_fallback_row or {}).get("trajectory_point_count")),

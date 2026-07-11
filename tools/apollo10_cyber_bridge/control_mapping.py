@@ -60,6 +60,10 @@ class ControlMappingConfig:
     physical_use_lon_debug: bool
     physical_steer_field_priority: Tuple[str, ...]
     physical_acceleration_field_priority: Tuple[str, ...]
+    physical_map_steering: bool = True
+    physical_map_longitudinal: bool = True
+    physical_map_throttle: bool = True
+    physical_map_brake: bool = True
 
 
 def select_steering_field(
@@ -357,16 +361,24 @@ def physical_map_base_controls(
     out = dict(legacy)
     out["mode"] = "physical"
     out["physical_fallback_reason"] = ""
-    target_front_wheel_angle_deg = float(raw_steer) * float(config.physical_apollo_max_steer_angle_deg)
-    mapped_steer = calibration.steering_cmd_for_angle(target_front_wheel_angle_deg)
-    if mapped_steer is None and config.physical_allow_legacy_fallback:
-        out["steer_source"] = "legacy_scale_fallback"
-        out["physical_fallback_reason"] = "steering_inverse_missing"
-    elif mapped_steer is not None:
-        out["steer"] = _clamp(float(mapped_steer), -1.0, 1.0)
-        out["steer_pre_clamp"] = float(mapped_steer)
-        out["steer_clamped"] = abs(float(mapped_steer)) > 1.0
-        out["steer_source"] = "physical_inverse_front_wheel_angle"
+    target_front_wheel_angle_deg = None
+    if config.physical_map_steering:
+        target_front_wheel_angle_deg = (
+            float(raw_steer)
+            * float(config.steer_sign)
+            * float(config.physical_apollo_max_steer_angle_deg)
+        )
+        mapped_steer = calibration.steering_cmd_for_angle(target_front_wheel_angle_deg)
+        if mapped_steer is None and config.physical_allow_legacy_fallback:
+            out["steer_source"] = "legacy_scale_fallback"
+            out["physical_fallback_reason"] = "steering_inverse_missing"
+        elif mapped_steer is not None:
+            out["steer"] = _clamp(float(mapped_steer), -1.0, 1.0)
+            out["steer_pre_clamp"] = float(mapped_steer)
+            out["steer_clamped"] = abs(float(mapped_steer)) > 1.0
+            out["steer_source"] = "physical_inverse_front_wheel_angle"
+    else:
+        out["steer_source"] = "legacy_scale_component_disabled"
     targets = derive_longitudinal_targets(
         raw_fields=raw_fields,
         raw_throttle=raw_throttle,
@@ -376,34 +388,67 @@ def physical_map_base_controls(
     speed_mps = max(0.0, float(latest_speed_mps))
     target_accel = float(targets["target_accel_mps2"])
     target_decel = float(targets["target_decel_mps2"])
-    throttle_mapping = calibration.throttle_mapping_for_accel(
-        target_accel,
-        speed_mps=speed_mps,
-        target_accel_max_mps2=config.physical_apollo_max_accel_mps2,
-    )
-    brake_mapping = calibration.brake_mapping_for_decel(target_decel, speed_mps=speed_mps)
-    mapped_throttle = throttle_mapping.get("cmd")
-    mapped_brake = brake_mapping.get("cmd")
-    if mapped_throttle is None and config.physical_allow_legacy_fallback:
-        out["throttle_source"] = "legacy_scale_fallback"
-        if not out["physical_fallback_reason"]:
-            out["physical_fallback_reason"] = "throttle_inverse_missing"
-    elif mapped_throttle is not None:
-        out["throttle"] = apply_zero_hold(_clamp(float(mapped_throttle), 0.0, 1.0), out["brake"], now_sec)
-        out["throttle_source"] = str(throttle_mapping.get("source") or "physical_inverse_accel")
-    if mapped_brake is None and config.physical_allow_legacy_fallback:
-        out["brake_source"] = "legacy_scale_fallback"
-        if not out["physical_fallback_reason"]:
-            out["physical_fallback_reason"] = "brake_inverse_missing"
-    elif mapped_brake is not None:
-        out["brake"] = _clamp(float(mapped_brake), 0.0, 1.0)
-        out["brake_before_deadzone"] = out["brake"]
-        out["brake_after_deadzone"] = out["brake"]
-        out["brake_source"] = str(brake_mapping.get("source") or "physical_inverse_decel")
-    if out["brake"] > 0.0 and target_decel > target_accel:
-        out["throttle"] = 0.0
+    if config.physical_map_throttle and target_decel <= 0.0:
+        throttle_mapping = calibration.throttle_mapping_for_accel(
+            target_accel,
+            speed_mps=speed_mps,
+            target_accel_max_mps2=config.physical_apollo_max_accel_mps2,
+        )
+        mapped_throttle = throttle_mapping.get("cmd")
+        if mapped_throttle is None and config.physical_allow_legacy_fallback:
+            out["throttle_source"] = "legacy_scale_fallback"
+            if not out["physical_fallback_reason"]:
+                out["physical_fallback_reason"] = "throttle_inverse_missing"
+        elif mapped_throttle is not None:
+            out["throttle"] = apply_zero_hold(_clamp(float(mapped_throttle), 0.0, 1.0), out["brake"], now_sec)
+            out["throttle_source"] = str(throttle_mapping.get("source") or "physical_inverse_accel")
+        elif mapped_throttle is None:
+            out["throttle"] = 0.0
+            out["throttle_source"] = "physical_inverse_unavailable_no_fallback"
+            out["physical_fallback_reason"] = "throttle_inverse_missing_no_fallback"
+    else:
+        out["throttle_source"] = "legacy_scale_component_disabled"
+    if config.physical_map_brake and target_decel > 0.0:
+        decel_mapping = calibration.decel_actuation_mapping(target_decel, speed_mps=speed_mps)
+        mapped_decel_throttle = decel_mapping.get("throttle_cmd")
+        mapped_brake = decel_mapping.get("brake_cmd")
+        if mapped_decel_throttle is not None and float(mapped_decel_throttle) > 0.0:
+            out["throttle"] = _clamp(float(mapped_decel_throttle), 0.0, 1.0)
+            out["brake"] = 0.0
+            out["throttle_source"] = str(
+                decel_mapping.get("source") or "physical_inverse_signed_accel_throttle"
+            )
+            out["brake_source"] = "physical_decel_via_throttle"
+        elif mapped_brake is not None:
+            out["throttle"] = 0.0
+            out["brake"] = _clamp(float(mapped_brake), 0.0, 1.0)
+            out["brake_before_deadzone"] = out["brake"]
+            out["brake_after_deadzone"] = out["brake"]
+            out["brake_source"] = str(decel_mapping.get("source") or "physical_inverse_decel")
+        elif config.physical_allow_legacy_fallback:
+            out["brake_source"] = "legacy_scale_fallback"
+            if not out["physical_fallback_reason"]:
+                out["physical_fallback_reason"] = "decel_inverse_missing"
+        else:
+            out["throttle"] = 0.0
+            out["brake"] = 0.0
+            out["brake_before_deadzone"] = 0.0
+            out["brake_after_deadzone"] = 0.0
+            out["brake_source"] = "physical_inverse_unavailable_no_fallback"
+            out["physical_fallback_reason"] = "decel_inverse_missing_no_fallback"
+    elif config.physical_map_brake:
+        out["brake"] = 0.0
+        out["brake_before_deadzone"] = 0.0
+        out["brake_after_deadzone"] = 0.0
+        out["brake_source"] = "zero_request"
+    else:
+        out["brake_source"] = "legacy_scale_component_disabled"
     out.update(targets)
     out["target_front_wheel_angle_deg"] = target_front_wheel_angle_deg
+    out["physical_map_steering"] = bool(config.physical_map_steering)
+    out["physical_map_longitudinal"] = bool(config.physical_map_longitudinal)
+    out["physical_map_throttle"] = bool(config.physical_map_throttle)
+    out["physical_map_brake"] = bool(config.physical_map_brake)
     out["mapped_throttle_cmd"] = out["throttle"]
     out["mapped_brake_cmd"] = out["brake"]
     out["mapped_carla_steer_cmd"] = out["steer"]

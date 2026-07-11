@@ -56,6 +56,45 @@ def _interp_pairs(pairs: Sequence[Tuple[float, float]], query: float) -> Optiona
     return float(pairs[-1][1])
 
 
+def _output_is_monotonic_non_decreasing(
+    pairs: Sequence[Tuple[float, float]],
+    *,
+    tolerance: float = 1e-6,
+) -> bool:
+    return all(
+        float(right[1]) + float(tolerance) >= float(left[1])
+        for left, right in zip(pairs[:-1], pairs[1:])
+    )
+
+
+def _monotonic_inverse_table_from_records(
+    records: Sequence[Dict[str, Any]],
+    *,
+    measured_key: str,
+    command_key: str,
+    tolerance: float = 1e-6,
+) -> "AxisTable":
+    """Build a measured-response inverse without preserving noisy reversals."""
+
+    command_response: List[Tuple[float, float]] = []
+    for item in records:
+        command = _safe_float(item.get(command_key))
+        measured = _safe_float(item.get(measured_key))
+        if command is None or measured is None:
+            continue
+        command_response.append((float(command), float(measured)))
+    command_response.sort(key=lambda pair: pair[0])
+
+    inverse_pairs: List[Tuple[float, float]] = []
+    best_response = float("-inf")
+    for command, measured in command_response:
+        if measured <= best_response + float(tolerance):
+            continue
+        inverse_pairs.append((measured, command))
+        best_response = measured
+    return AxisTable(pairs=_dedupe_pairs(inverse_pairs))
+
+
 def _records_to_pairs(
     records: Sequence[Dict[str, Any]],
     *,
@@ -175,6 +214,8 @@ class ActuatorCalibration:
             input_key="target_accel_mps2",
             output_key="throttle_cmd",
         )
+        self._signed_throttle_bins = self._build_signed_throttle_bins()
+        self._signed_throttle_crawl_sections = self._build_signed_throttle_crawl_sections()
         self._throttle_low_speed_launch = self._build_simple_table_from_measurements(
             ("throttle", "low_speed", "launch", "inverse", "target_speed_at_eval_mps_to_throttle_cmd"),
             input_key="target_speed_at_eval_mps",
@@ -215,6 +256,7 @@ class ActuatorCalibration:
             inverse_key="target_decel_mps2_to_brake_cmd",
             input_key="target_decel_mps2",
             output_key="brake_cmd",
+            require_reliable=True,
         )
         self._brake_low_speed_hold = self._build_simple_table_from_measurements(
             ("brake", "low_speed", "hold", "measurements"),
@@ -287,9 +329,13 @@ class ActuatorCalibration:
         inverse_key: str,
         input_key: str,
         output_key: str,
+        require_reliable: bool = False,
     ) -> List[SpeedBin]:
         bins: List[SpeedBin] = []
         for item in self._nested_list(keys):
+            quality = item.get("quality", {}) if isinstance(item.get("quality"), dict) else {}
+            if require_reliable and quality.get("reliable") is False:
+                continue
             inverse_rows = item.get("inverse", {}) if isinstance(item.get("inverse"), dict) else {}
             rows = inverse_rows.get(inverse_key) if isinstance(inverse_rows, dict) else None
             if not isinstance(rows, list):
@@ -308,6 +354,99 @@ class ActuatorCalibration:
                 )
             )
         return bins
+
+    def _build_signed_throttle_bins(self) -> List[SpeedBin]:
+        bins: List[SpeedBin] = []
+        items = self._nested_list(("throttle", "signed_speed_bins"))
+        if not items:
+            items = self._nested_list(("throttle", "speed_bins"))
+        for item in items:
+            speed_min = _safe_float(item.get("speed_min_mps"))
+            speed_max = _safe_float(item.get("speed_max_mps"))
+            measurements = item.get("measurements")
+            if speed_min is None or speed_max is None or not isinstance(measurements, list):
+                continue
+            table = _monotonic_inverse_table_from_records(
+                [row for row in measurements if isinstance(row, dict)],
+                measured_key="forward_accel_mps2",
+                command_key="throttle_cmd",
+            )
+            if len(table.pairs) < 2:
+                continue
+            bins.append(
+                SpeedBin(
+                    speed_min_mps=float(speed_min),
+                    speed_max_mps=float(speed_max),
+                    table=table,
+                    metadata=dict(item),
+                )
+            )
+        return bins
+
+    def _build_signed_throttle_crawl_sections(self) -> List[SectionTable]:
+        sections: List[SectionTable] = []
+        for item in self._nested_list(("throttle", "low_speed", "crawl")):
+            quality = item.get("quality", {}) if isinstance(item.get("quality"), dict) else {}
+            if quality.get("reliable") is False:
+                continue
+            entry_speed = _safe_float(item.get("entry_speed_mps"))
+            measurements = item.get("measurements")
+            if entry_speed is None or not isinstance(measurements, list):
+                continue
+            probe = item.get("probe", {}) if isinstance(item.get("probe"), dict) else {}
+            section_eval_sec = (
+                _safe_float(item.get("effective_accel_window_sec"))
+                or _safe_float(probe.get("effective_accel_window_sec"))
+                or _safe_float(probe.get("eval_sec"))
+            )
+            rows: List[Dict[str, Any]] = []
+            response_sources: set[str] = set()
+            for measurement in measurements:
+                if not isinstance(measurement, dict) or measurement.get("entry_reached") is False:
+                    continue
+                effective_accel = _safe_float(measurement.get("effective_accel_mps2"))
+                response_source = "effective_accel_mps2"
+                if effective_accel is None:
+                    effective_accel = _safe_float(measurement.get("crawl_accel_mps2"))
+                    response_source = "crawl_accel_mps2"
+                eval_sec = (
+                    _safe_float(measurement.get("effective_accel_window_sec"))
+                    or section_eval_sec
+                )
+                if effective_accel is None and eval_sec is not None and eval_sec > 0.0:
+                    delta_speed = _safe_float(measurement.get("delta_speed_mps"))
+                    if delta_speed is not None:
+                        effective_accel = float(delta_speed) / float(eval_sec)
+                        response_source = "delta_speed_over_explicit_window"
+                if effective_accel is None:
+                    continue
+                response_sources.add(response_source)
+                rows.append(
+                    {
+                        "throttle_cmd": measurement.get("throttle_cmd"),
+                        "effective_accel_mps2": effective_accel,
+                    }
+                )
+            table = _monotonic_inverse_table_from_records(
+                rows,
+                measured_key="effective_accel_mps2",
+                command_key="throttle_cmd",
+            )
+            if len(table.pairs) < 2:
+                continue
+            metadata = dict(item)
+            metadata["signed_response_source"] = (
+                next(iter(response_sources)) if len(response_sources) == 1 else "mixed"
+            )
+            metadata["signed_response_eval_sec"] = section_eval_sec
+            sections.append(
+                SectionTable(
+                    entry_speed_mps=float(entry_speed),
+                    table=table,
+                    metadata=metadata,
+                )
+            )
+        return sections
 
     def _build_section_tables(
         self,
@@ -359,6 +498,8 @@ class ActuatorCalibration:
             "steering_pairs": len(self._steering_angle_table.pairs),
             "steering_curvature_pairs": len(self._steering_curvature_table.pairs),
             "throttle_speed_bins": len(self._throttle_bins),
+            "signed_throttle_speed_bins": len(self._signed_throttle_bins),
+            "signed_throttle_low_speed_sections": len(self._signed_throttle_crawl_sections),
             "throttle_low_speed_launch_pairs": len(self._throttle_low_speed_launch.pairs),
             "throttle_low_speed_launch_boost_pairs": len(self._throttle_low_speed_launch_boost.pairs),
             "throttle_low_speed_crawl_sections": len(self._throttle_low_speed_crawl),
@@ -441,6 +582,13 @@ class ActuatorCalibration:
         if target_accel_mps2 <= 0.0:
             return {"cmd": 0.0, "source": "zero_request"}
         speed = max(0.0, float(speed_mps))
+        if speed >= 1.0:
+            signed = self.throttle_mapping_for_signed_accel(
+                float(target_accel_mps2),
+                speed_mps=speed,
+            )
+            if signed.get("cmd") is not None:
+                return signed
         target_accel_max = max(float(target_accel_max_mps2 or target_accel_mps2), float(target_accel_mps2))
         crawl_hold_speed_limit = 8.0
         crawl_boost_speed_limit = 10.0
@@ -504,6 +652,109 @@ class ActuatorCalibration:
     def throttle_cmd_for_accel(self, target_accel_mps2: float, *, speed_mps: float) -> Optional[float]:
         return self.throttle_mapping_for_accel(target_accel_mps2, speed_mps=speed_mps).get("cmd")
 
+    def throttle_mapping_for_signed_accel(
+        self,
+        target_accel_mps2: float,
+        *,
+        speed_mps: float,
+        lower_clamp_tolerance_mps2: float = 0.15,
+        upper_clamp_tolerance_mps2: float = 0.15,
+    ) -> Dict[str, Any]:
+        speed = max(0.0, float(speed_mps))
+        crawl_section = self._select_signed_throttle_crawl_section(speed)
+        if crawl_section is not None:
+            result = self._bounded_signed_throttle_lookup(
+                crawl_section.table,
+                float(target_accel_mps2),
+                source_prefix="physical_inverse_signed_accel_crawl",
+                lower_clamp_tolerance_mps2=lower_clamp_tolerance_mps2,
+                upper_clamp_tolerance_mps2=upper_clamp_tolerance_mps2,
+            )
+            if result.get("cmd") is not None:
+                result["calibration_entry_speed_mps"] = crawl_section.entry_speed_mps
+                result["calibration_response_source"] = crawl_section.metadata.get(
+                    "signed_response_source"
+                )
+                return result
+        speed_bin = self._select_speed_bin(self._signed_throttle_bins, speed_mps)
+        if speed_bin is None or not speed_bin.table.pairs:
+            return {"cmd": None, "source": "missing_signed_throttle_speed_bin"}
+        return self._bounded_signed_throttle_lookup(
+            speed_bin.table,
+            float(target_accel_mps2),
+            source_prefix="physical_inverse_signed_accel",
+            lower_clamp_tolerance_mps2=lower_clamp_tolerance_mps2,
+            upper_clamp_tolerance_mps2=upper_clamp_tolerance_mps2,
+        )
+
+    def _select_signed_throttle_crawl_section(self, speed_mps: float) -> Optional[SectionTable]:
+        if speed_mps < 1.0 or not self._signed_throttle_crawl_sections:
+            return None
+        section = self._select_section(self._signed_throttle_crawl_sections, speed_mps)
+        if section is None:
+            return None
+        entry_speeds = sorted(item.entry_speed_mps for item in self._signed_throttle_crawl_sections)
+        distances = [
+            abs(section.entry_speed_mps - value)
+            for value in entry_speeds
+            if abs(section.entry_speed_mps - value) > 1e-9
+        ]
+        coverage = max(1.0, 0.5 * min(distances)) if distances else 1.0
+        if abs(float(speed_mps) - section.entry_speed_mps) > coverage + 1e-9:
+            return None
+        return section
+
+    @staticmethod
+    def _bounded_signed_throttle_lookup(
+        table: AxisTable,
+        target: float,
+        *,
+        source_prefix: str,
+        lower_clamp_tolerance_mps2: float,
+        upper_clamp_tolerance_mps2: float,
+    ) -> Dict[str, Any]:
+        if not table.pairs:
+            return {"cmd": None, "source": "missing_signed_throttle_inverse"}
+        target = float(target)
+        lower = float(table.pairs[0][0])
+        upper = float(table.pairs[-1][0])
+        if target < lower:
+            if lower - target <= max(0.0, float(lower_clamp_tolerance_mps2)):
+                return {
+                    "cmd": clamp(float(table.pairs[0][1]), 0.0, 1.0),
+                    "source": f"{source_prefix}_low_clamp",
+                    "calibrated_accel_mps2": lower,
+                }
+            return {
+                "cmd": None,
+                "source": "signed_accel_below_calibrated_range",
+                "calibrated_accel_min_mps2": lower,
+            }
+        if target > upper:
+            if target - upper <= max(0.0, float(upper_clamp_tolerance_mps2)):
+                return {
+                    "cmd": clamp(float(table.pairs[-1][1]), 0.0, 1.0),
+                    "source": f"{source_prefix}_high_clamp",
+                    "calibrated_accel_mps2": upper,
+                }
+            return {
+                "cmd": None,
+                "source": "signed_accel_above_calibrated_range",
+                "calibrated_accel_max_mps2": upper,
+            }
+        mapped = table.lookup(target)
+        if mapped is None:
+            return {"cmd": None, "source": "missing_signed_throttle_inverse"}
+        return {
+            "cmd": clamp(float(mapped), 0.0, 1.0),
+            "source": (
+                "physical_inverse_signed_accel_throttle"
+                if source_prefix == "physical_inverse_signed_accel"
+                else f"{source_prefix}_throttle"
+            ),
+            "calibrated_accel_mps2": target,
+        }
+
     def brake_mapping_for_decel(self, target_decel_mps2: float, *, speed_mps: float) -> Dict[str, Any]:
         if target_decel_mps2 <= 0.0:
             return {"cmd": 0.0, "source": "zero_request"}
@@ -515,7 +766,7 @@ class ActuatorCalibration:
             if section is not None:
                 eval_sec = _safe_float(((section.metadata.get("probe", {}) or {}).get("eval_sec"))) or 0.3
                 target_drop = max(0.0, float(target_decel_mps2) * float(eval_sec))
-                mapped = section.table.lookup(float(target_drop))
+                mapped = self._lookup_if_in_range(section.table, float(target_drop))
                 if mapped is not None:
                     return {
                         "cmd": clamp(float(mapped), 0.0, 1.0),
@@ -524,10 +775,36 @@ class ActuatorCalibration:
         speed_bin = self._select_speed_bin(self._brake_bins, speed)
         if speed_bin is None:
             return {"cmd": None, "source": "missing_speed_bin"}
-        mapped = speed_bin.table.lookup(float(target_decel_mps2))
+        mapped = self._lookup_if_in_range(speed_bin.table, float(target_decel_mps2))
         if mapped is None:
-            return {"cmd": None, "source": "missing_inverse"}
+            return {"cmd": None, "source": "decel_below_calibrated_brake_range"}
         return {"cmd": clamp(float(mapped), 0.0, 1.0), "source": "physical_inverse_decel"}
+
+    def decel_actuation_mapping(self, target_decel_mps2: float, *, speed_mps: float) -> Dict[str, Any]:
+        if target_decel_mps2 <= 0.0:
+            return {
+                "throttle_cmd": 0.0,
+                "brake_cmd": 0.0,
+                "source": "zero_request",
+            }
+        signed = self.throttle_mapping_for_signed_accel(
+            -abs(float(target_decel_mps2)),
+            speed_mps=speed_mps,
+        )
+        if signed.get("cmd") is not None:
+            return {
+                "throttle_cmd": clamp(float(signed["cmd"]), 0.0, 1.0),
+                "brake_cmd": 0.0,
+                "source": str(signed.get("source") or "physical_inverse_signed_accel_throttle"),
+                "calibrated_accel_mps2": signed.get("calibrated_accel_mps2"),
+            }
+        brake = self.brake_mapping_for_decel(target_decel_mps2, speed_mps=speed_mps)
+        return {
+            "throttle_cmd": 0.0,
+            "brake_cmd": brake.get("cmd"),
+            "source": str(brake.get("source") or signed.get("source") or "missing_decel_mapping"),
+            "signed_throttle_unavailable_reason": str(signed.get("source") or ""),
+        }
 
     def brake_cmd_for_decel(self, target_decel_mps2: float, *, speed_mps: float) -> Optional[float]:
         return self.brake_mapping_for_decel(target_decel_mps2, speed_mps=speed_mps).get("cmd")

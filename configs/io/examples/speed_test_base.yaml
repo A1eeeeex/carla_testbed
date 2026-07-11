@@ -1,0 +1,56 @@
+# Speed test base config — extends behavior_recovery_stitcher_v1
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1_control_fulltrace.yaml
+
+run:
+  seed: 1
+  ticks: 900
+  fixed_delta_seconds: 0.05
+  wall_time_pacing:
+    enabled: true
+    target_interval_s: 0.05
+    max_sleep_s: 0.05
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: true
+
+scenario:
+  driver: carla_town01_route_health
+  traffic_lights:
+    force_green: false
+    freeze: true
+  publish_ros2_native: false
+  publish_ros2_gt: true
+  route_health:
+    align_spawn_to_route_start: true
+
+algo:
+  apollo:
+    # Speed sweeps must make their high-speed map variant explicit instead of
+    # depending on a map file left patched by an earlier run.
+    map_speed_limit:
+      enabled: true
+      override_mps: 23.61
+      fill_missing_lane_speed_limits: true
+      missing_lane_default_mps: 23.61
+      restore_original: false
+    # Opt-in speed diagnostics use the calibrated steering inverse and the
+    # signed-acceleration deceleration component. This is intentionally not a
+    # repository-wide physical-mapping default.
+    control_mapping:
+      actuator_mapping_mode: physical
+      physical:
+        calibration_file: artifacts/actuator_calibration_library/e969a34a5f43fd25/carla_actuator_calibration.json
+        allow_legacy_fallback: false
+        map_steering: true
+        map_longitudinal: false
+        map_throttle: false
+        map_brake: true
+    bridge:
+      # Speed probes should stress Apollo Planning, not silent fallback from
+      # CARLA sim_time to Cyber/wall time. cyber_time remains available only as
+      # an explicit diagnostic A/B override.
+      localization_time_source: sim_time

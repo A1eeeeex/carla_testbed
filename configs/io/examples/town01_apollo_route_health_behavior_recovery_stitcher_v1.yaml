@@ -155,6 +155,11 @@ algo:
       # Periodic stats flush so run_followstop.py can read control_rx_count
       # before bridge exits (bridge exit can lag behind summary write by >60s).
       artifact_stats_flush_interval_s: 2.0
+      # Claim-grade GT localization must stay on CARLA simulation time.
+      # Online timing A/B on 2026-07-08 showed Cyber/wall time can trigger
+      # transient SPEED_FALLBACK and zero-length published trajectories at
+      # 60 kph curve speed, while sim_time did not reproduce that failure.
+      localization_time_source: sim_time
       # Primary route/reference-line artifacts stay per-event; duplicate stage5
       # debug streams are sampled to reduce publish-loop IO pressure.
       stage5_debug_artifact_sample_stride: 50
@@ -199,6 +204,11 @@ algo:
         alpha: 0.15
         max_abs_mps2: 0.8
         max_delta_mps2: 0.15
+        # Apollo reinitializes a trajectory with a one-cycle constant-
+        # acceleration prediction when |a| >= 0.4 m/s^2. Near standstill, a
+        # lagging negative finite-difference acceleration can otherwise make
+        # the predicted speed negative while PiecewiseJerk enforces v >= 0.
+        nonnegative_speed_prediction_horizon_s: 0.1
       map_file: ${APOLLO_MAP_ROOT}/carla_town01/base_map.txt
       debug_dump_control_raw: true
       front_obstacle_behavior:
@@ -206,6 +216,15 @@ algo:
         # CARLA actor probes so GT localization/chassis cadence is not coupled
         # to obstacle diagnostics.
         actor_probe_enabled: false
+    map_speed_limit:
+      # Some Town01 connector lane blocks omit speed_limit. Apollo protobuf
+      # defaults those fields to zero and Planning converts that into a
+      # 0.1 m/s bound, which can make PiecewiseJerkSpeed infeasible mid-route.
+      # Fill only missing lane fields; never overwrite explicit map limits.
+      enabled: false
+      fill_missing_lane_speed_limits: true
+      missing_lane_default_mps: inherit_existing
+      restore_original: false
     planning:
       acc_only_mode: false
       longitudinal_only_pipeline: false

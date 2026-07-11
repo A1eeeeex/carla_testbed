@@ -280,6 +280,96 @@ def test_control_runtime_overlays_default_do_not_touch_control_runtime_files() -
     assert "--control_period=" not in backend._control_flags_overlay_shell()
 
 
+def _run_speed_bounds_overlay(tmp_path, planning: dict[str, object]) -> str:
+    src = tmp_path / "default_conf.pb.txt"
+    src.write_text(
+        "total_time: 7.0\n"
+        "boundary_buffer: 0.25\n"
+        "max_centric_acceleration_limit: 0.8\n"
+        "lowest_speed: 0.1\n"
+        "enable_nudge_slowdown: true\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.pb.txt"
+    backend = CyberRTBackend({"algo": {"apollo": {"planning": planning}}})
+    script = _extract_python_overlay_script(backend._speed_bounds_decider_overlay_shell())
+    script = script.replace(
+        "'/apollo/modules/planning/tasks/speed_bounds_decider/conf/default_conf.pb.txt.carla_testbed.bak'",
+        repr(str(tmp_path / "missing-backup.pb.txt")),
+    )
+    script = script.replace(
+        "'/apollo/modules/planning/tasks/speed_bounds_decider/conf/default_conf.pb.txt'",
+        repr(str(src)),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/share/modules/planning/tasks/speed_bounds_decider/conf/default_conf.pb.txt'",
+        repr(str(tmp_path / "missing-share.pb.txt")),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/src/modules/planning/tasks/speed_bounds_decider/conf/default_conf.pb.txt'",
+        repr(str(tmp_path / "missing-src.pb.txt")),
+    )
+    script = script.replace(
+        "p=Path('/apollo_workspace/conf_overlay/modules/planning/tasks/speed_bounds_decider/conf/default_conf.pb.txt'); ",
+        f"p=Path({str(out)!r}); ",
+    )
+
+    subprocess.run(["python3", "-c", script], check=True, text=True, capture_output=True)
+    return out.read_text(encoding="utf-8")
+
+
+def test_speed_bounds_overlay_replaces_curve_limit_and_preserves_base_config(tmp_path) -> None:
+    text = _run_speed_bounds_overlay(
+        tmp_path,
+        {"speed_bounds_decider_max_centric_acceleration_mps2": 0.4},
+    )
+
+    assert "max_centric_acceleration_limit: 0.400" in text
+    assert "max_centric_acceleration_limit: 0.8" not in text
+    assert text.count("max_centric_acceleration_limit:") == 1
+    assert "total_time: 7.0" in text
+    assert "boundary_buffer: 0.25" in text
+    assert "lowest_speed: 0.1" in text
+    assert "enable_nudge_slowdown: true" in text
+
+
+def test_speed_bounds_overlay_preserves_curve_limit_when_overriding_other_fields(tmp_path) -> None:
+    text = _run_speed_bounds_overlay(
+        tmp_path,
+        {
+            "speed_bounds_decider_lowest_speed_mps": 0.2,
+            "speed_bounds_decider_enable_nudge_slowdown": False,
+        },
+    )
+
+    assert "lowest_speed: 0.200" in text
+    assert "enable_nudge_slowdown: false" in text
+    assert "max_centric_acceleration_limit: 0.8" in text
+    assert "total_time: 7.0" in text
+    assert "boundary_buffer: 0.25" in text
+
+
+def test_speed_bounds_overlay_rejects_nonpositive_curve_limit() -> None:
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "planning": {
+                        "speed_bounds_decider_max_centric_acceleration_mps2": 0.0,
+                    }
+                }
+            }
+        }
+    )
+
+    try:
+        backend._speed_bounds_decider_overlay_shell()
+    except ValueError as exc:
+        assert "must be positive" in str(exc)
+    else:
+        raise AssertionError("nonpositive curve acceleration limit must be rejected")
+
+
 def test_control_lon_overlay_preserves_base_pid_config(tmp_path) -> None:
     src = tmp_path / "controller_conf.pb.txt"
     src.write_text(

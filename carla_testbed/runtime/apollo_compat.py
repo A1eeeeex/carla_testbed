@@ -553,7 +553,39 @@ def _legacy_effective_config_from_typed(
             "legacy_fallback_used": False,
         }
     )
+    _copy_typed_apollo_bridge_fields(
+        payload,
+        resolved_config,
+        field_names=("localization_time_source",),
+    )
     return payload
+
+
+def _copy_typed_apollo_bridge_fields(
+    legacy_payload: dict[str, Any],
+    resolved_config: Mapping[str, Any],
+    *,
+    field_names: Sequence[str],
+) -> None:
+    """Propagate typed Apollo bridge fields into the legacy bridge config.
+
+    The transition backend consumes the legacy-shaped top-level
+    ``algo.apollo.bridge`` payload. Keeping diagnostic bridge fields only in
+    ``typed_runtime.resolved_config_snapshot`` makes online A/B configs look
+    selected while the bridge still runs with defaults.
+    """
+
+    algo_cfg = _mapping(resolved_config.get("algo"))
+    apollo_cfg = _mapping(algo_cfg.get("apollo"))
+    bridge_cfg = _mapping(apollo_cfg.get("bridge"))
+    if not bridge_cfg:
+        return
+    legacy_bridge = legacy_payload.setdefault("algo", {}).setdefault("apollo", {}).setdefault("bridge", {})
+    if not isinstance(legacy_bridge, dict):
+        return
+    for field_name in field_names:
+        if field_name in bridge_cfg:
+            legacy_bridge[field_name] = _json_safe(bridge_cfg[field_name])
 
 
 def _invoke_tbio_transition_backend(legacy_effective_path: Path, run_dir: Path) -> int:

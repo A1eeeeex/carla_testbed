@@ -1,6 +1,6 @@
 # Phase 1 Engineering Brief
 
-Last reviewed: 2026-07-01
+Last reviewed: 2026-07-11
 
 This brief freezes the Phase 1 engineering target for `carla_testbed`. It is a
 scope and status document, not a capability announcement. Status labels below
@@ -54,29 +54,66 @@ success means:
 
 ## Current Phase 1 Progress Snapshot
 
-Latest reviewed snapshot: `2026-07-01`, after the GPT Pro audit of commit
-`bd228a8683033e0d98cfe1019666ca2f3ce6dc89`, the follow-up Town01
-`lane_keep_097` online validations, and the fresh default-entry P0 matrix
-`runs/phase1_p0_matrix/phase1_p0_behavior_default_20260701_030213`. The audit
-accepts that Phase 1 has real platform progress, but still rejects a completion
-claim because ApolloBackend behavior remains failed across all five P0 rows.
-The acceptance/verifier/catalog layer is now treated as frozen unless it
-demonstrably blocks a real valid run.
+Latest reviewed snapshot: `2026-07-11`. The latest complete five-P0 matrix is
+still
+`runs/phase1_p0_matrix/phase1_p0_behavior_default_20260701_030213`; therefore
+its matrix-level result remains authoritative until all five rows are rerun.
+Since that matrix, targeted Town01 online runs have materially improved the
+Apollo reference backend: no-guard lane-follow samples can remain laterally
+bounded, and a junction longitudinal Planning failure was traced to missing
+Apollo HDMap lane speed-limit fields and removed in clean-map A/B validation.
+These are backend improvements, not a replacement five-P0 acceptance matrix
+and not an Apollo natural-driving claim. The acceptance/verifier/catalog layer
+remains frozen unless it demonstrably blocks a real valid run.
 
 Layered progress status:
 
 - Phase 1 overall: `PARTIAL`
-- Code-level platform delivery estimate: about `85-88%`
-- Current repo independently provable completion: about `80-85%`
+- Code-level platform delivery estimate: about `88-90%`
+- Current repo independently provable completion: about `82-86%`
 - Platform skeleton estimate: about `90%`
-- Apollo reference runtime estimate: about `60%`
+- Apollo reference runtime estimate: about `65-70%`
 - Five-P0 online pair matrix estimate: `DONE for evaluable comparison surface; behavior failures remain`
 - Local accepted comparison-surface catalog: `PARTIAL after verifier hardening`
 - Package-level acceptance surface: `PARTIAL until rebuilt from verifier-passed bundles`
 - Latest external Pro-audit completion verdict: `PARTIAL / Phase 1 done claim rejected`
 - Phase 1 completion gate: `PARTIAL`
-- Representative Apollo behavior capability: `PARTIAL / failing samples remain`
+- Representative Apollo behavior capability: `PARTIAL / targeted Town01 lane-follow and longitudinal improvements; full P0 rerun pending`
 - Apollo natural-driving or no-interference capability claim: `NOT_CLAIMED`
+
+2026-07-11 targeted online evidence:
+
+- The unfilled-map junction baseline
+  `runs/longitudinal_unified_signed_stitcher_031_20260711/junction031_unified_signed_stitcher_no_guard__town01_rh_spawn031_goal056`
+  reproduced 13 Piecewise Jerk optimizer infeasibilities and 13 speed
+  fallbacks. Its shortest Planning trajectory was 72 points over 3.2 seconds,
+  with terminal speed falling to about 0.047 m/s.
+- Source inspection and map audit found 202 top-level lane blocks in the
+  Town01 Apollo `base_map.txt`, but only 52 explicit `speed_limit` fields.
+  Missing connector-lane fields reached Planning as zero-valued limits and
+  were floored to a 0.1 m/s speed bound, making the optimizer constraints
+  infeasible at the current vehicle speed.
+- The clean-map repeat
+  `runs/longitudinal_map_speed_contract_cleanmap_031_20260711/junction031_cleanmap_inherit_signed_stitcher__town01_rh_spawn031_goal056`
+  restored the original map, filled only the 150 missing fields by inheriting
+  the existing 11.176 m/s map limit, and preserved all 52 explicit limits.
+  Optimizer infeasibility, speed fallback, zero speed-limit rows, and 0.1 m/s
+  bound rows all fell to zero. The shortest trajectory returned to 111 points
+  over 7.1 seconds, terminal speed stayed above about 3.06 m/s, and route
+  completion reached about 83.6% without collision or lane invasion.
+- The straight lateral regression run
+  `runs/longitudinal_map_speed_contract_fix_lateral_regression_20260711/lane_keep097_map_speed_complete_unified_stitcher__town01_rh_spawn097_goal046`
+  recorded no collision or lane invasion, cross-track-error p95 about 0.144 m,
+  and heading-error p95 about 0.0153 rad. This supports that the map-contract
+  repair did not regress the frozen straight-lane lateral behavior.
+- A frozen-stitcher curve observation remained laterally bounded over its
+  observed 214.7 m, but did not reach the final turn. A separate stitcher-on
+  full-curve run still invaded a lane near route_s 237.6 m. Full curve
+  completion therefore remains unproven, and trajectory stitching stays off
+  in the frozen mainline configuration.
+- Residual longitudinal-difference replans in the clean-map repeat generated
+  full 111-point NORMAL trajectories immediately. They remain diagnostic but
+  are not the reproduced fallback/short-trajectory mechanism.
 
 Current P0 delivery and behavior blockers:
 

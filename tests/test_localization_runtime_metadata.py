@@ -40,6 +40,43 @@ def test_runtime_localization_timestamp_prefers_odom_sim_time() -> None:
     assert time_base == "sim_time"
 
 
+def test_runtime_localization_timestamp_can_force_cyber_time_for_diagnostic_ab() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.localization_time_source = "cyber_time"
+    odom = OdometryShim()
+    odom.header.stamp.sec = 42
+    odom.header.stamp.nanosec = 500_000_000
+
+    timestamp_sec, time_base = adapter._localization_time_from_odom(
+        odom,
+        fallback_wall_time_sec=1234.0,
+    )
+
+    assert timestamp_sec == pytest.approx(1234.0)
+    assert time_base == "cyber_time_diagnostic"
+
+
+def test_runtime_localization_timestamp_forced_sim_time_fallback_is_explicit() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.localization_time_source = "sim_time"
+    odom = OdometryShim()
+    odom.header.stamp = None
+
+    timestamp_sec, time_base = adapter._localization_time_from_odom(
+        odom,
+        fallback_wall_time_sec=1234.0,
+    )
+
+    assert timestamp_sec == pytest.approx(1234.0)
+    assert time_base == "sim_time_missing_cyber_time_fallback"
+
+
 def test_runtime_rfu_quaternion_decodes_forward_heading() -> None:
     _install_fake_protobuf()
     _install_fake_carla()
@@ -101,3 +138,58 @@ def test_runtime_localization_acceleration_filter_limits_finite_difference_spike
 
     assert (ax, ay, az) == pytest.approx((0.0, 1.0, 0.0))
     assert source == "finite_difference_filtered"
+
+
+def test_runtime_localization_acceleration_keeps_replan_speed_nonnegative() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+
+    acceleration, limited, minimum = (
+        bridge._limit_forward_acceleration_for_nonnegative_speed_prediction(
+            0.001,
+            -0.7,
+            0.1,
+        )
+    )
+
+    assert acceleration == pytest.approx(-0.01)
+    assert limited is True
+    assert minimum == pytest.approx(-0.01)
+    assert 0.001 + acceleration * 0.1 == pytest.approx(0.0)
+
+
+def test_runtime_localization_acceleration_preserves_normal_deceleration() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+
+    acceleration, limited, minimum = (
+        bridge._limit_forward_acceleration_for_nonnegative_speed_prediction(
+            3.5,
+            -0.8,
+            0.1,
+        )
+    )
+
+    assert acceleration == pytest.approx(-0.8)
+    assert limited is False
+    assert minimum == pytest.approx(-35.0)
+
+
+def test_runtime_localization_acceleration_constraint_can_be_disabled() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+
+    acceleration, limited, minimum = (
+        bridge._limit_forward_acceleration_for_nonnegative_speed_prediction(
+            0.001,
+            -0.7,
+            0.0,
+        )
+    )
+
+    assert acceleration == pytest.approx(-0.7)
+    assert limited is False
+    assert minimum is None

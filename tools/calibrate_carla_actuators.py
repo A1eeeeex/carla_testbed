@@ -783,10 +783,13 @@ def calibrate_low_speed_throttle(probe: CarlaProbe, args: argparse.Namespace) ->
                 continue
             start_speed = _safe_float(samples[0].get("speed_mps"), 0.0)
             eval_speed = _value_at_elapsed(samples, args.low_speed_crawl_eval_sec, "speed_mps", default=start_speed)
+            eval_sec = max(float(args.low_speed_crawl_eval_sec), 1e-6)
             row = {
                 "entry_speed_mps": float(entry_speed),
                 "throttle_cmd": float(cmd),
                 "delta_speed_mps": float(eval_speed - start_speed),
+                "effective_accel_mps2": float((eval_speed - start_speed) / eval_sec),
+                "effective_accel_window_sec": eval_sec,
                 "speed_retained_mps": float(eval_speed),
                 "speed_at_eval_mps": float(eval_speed),
                 "crawl_accel_mps2": float(_effective_throttle_accel(samples, window_sec=float(args.low_speed_crawl_eval_sec))),
@@ -816,6 +819,10 @@ def calibrate_low_speed_throttle(probe: CarlaProbe, args: argparse.Namespace) ->
         crawl_sections.append(
             {
                 "entry_speed_mps": float(entry_speed),
+                "probe": {
+                    "sample_sec": float(args.low_speed_crawl_sample_sec),
+                    "eval_sec": float(args.low_speed_crawl_eval_sec),
+                },
                 "measurements": section_rows,
                 "inverse": {"target_speed_retained_mps_to_throttle_cmd": inverse},
                 "quality": quality,
@@ -1028,6 +1035,7 @@ def calibrate_throttle(probe: CarlaProbe, args: argparse.Namespace) -> Dict[str,
     speed_bins = _parse_speed_edges(args.speed_bins)
     target_bins = _speed_bin_targets(speed_bins)
     rows: List[Dict[str, Any]] = []
+    signed_rows: List[Dict[str, Any]] = []
     boost_sections: List[Dict[str, Any]] = []
     raw_series: List[Dict[str, Any]] = []
     for speed_min, speed_max, target_speed in target_bins:
@@ -1065,6 +1073,29 @@ def calibrate_throttle(probe: CarlaProbe, args: argparse.Namespace) -> Dict[str,
                 samples,
                 window_sec=float(args.throttle_effective_window_sec),
             )
+            effective_window_sec = max(float(args.throttle_effective_window_sec), 1e-6)
+            start_speed = _safe_float(samples[0].get("speed_mps"), 0.0)
+            speed_at_effective_window = _value_at_elapsed(
+                samples,
+                effective_window_sec,
+                "speed_mps",
+                default=start_speed,
+            )
+            signed_effective_accel = (
+                float(speed_at_effective_window) - float(start_speed)
+            ) / effective_window_sec
+            signed_entry_valid = bool(
+                entry_reached
+                and (
+                    target_speed <= 0.15
+                    or _within_speed_bin(
+                        start_speed,
+                        speed_min=speed_min,
+                        speed_max=speed_max,
+                        tolerance=float(args.longitudinal_entry_speed_tolerance_mps),
+                    )
+                )
+            )
             boost_rows.append(
                 {
                     "entry_speed_mps": float(target_speed),
@@ -1078,6 +1109,21 @@ def calibrate_throttle(probe: CarlaProbe, args: argparse.Namespace) -> Dict[str,
                     "prep": prep,
                 }
             )
+            if signed_entry_valid:
+                signed_rows.append(
+                    {
+                        "speed_min_mps": float(speed_min),
+                        "speed_max_mps": float(speed_max),
+                        "throttle_cmd": float(cmd),
+                        "forward_accel_mps2": float(signed_effective_accel),
+                        "sample_count": len(samples),
+                        "response_delay_sec": delay,
+                        "observed_speed_mps": float(start_speed),
+                        "target_entry_speed_mps": float(target_speed),
+                        "entry_reached": signed_entry_valid,
+                        "effective_accel_window_sec": effective_window_sec,
+                    }
+                )
             if (not entry_reached) or (
                 target_speed > 0.15
                 and not _within_speed_bin(
@@ -1156,6 +1202,16 @@ def calibrate_throttle(probe: CarlaProbe, args: argparse.Namespace) -> Dict[str,
         target_key="target_accel_mps2",
     )
     _annotate_axis_reliability(aggregated, axis="throttle")
+    signed_aggregated = _aggregate_speed_bins(
+        signed_rows,
+        command_key="throttle_cmd",
+        value_key="forward_accel_mps2",
+        target_key="target_accel_mps2",
+    )
+    _annotate_axis_reliability(signed_aggregated, axis="throttle")
+    for bucket in signed_aggregated:
+        bucket["response_metric"] = "delta_speed_over_effective_window"
+        bucket["effective_accel_window_sec"] = float(args.throttle_effective_window_sec)
     return {
         "probe": {
             "settle_sec": float(args.throttle_settle_sec),
@@ -1167,6 +1223,7 @@ def calibrate_throttle(probe: CarlaProbe, args: argparse.Namespace) -> Dict[str,
             "speed_bins": [{"min": float(lo), "max": float(hi)} for lo, hi in speed_bins],
         },
         "speed_bins": aggregated,
+        "signed_speed_bins": signed_aggregated,
         "mid_speed_boost": boost_sections,
         "raw_series": raw_series[: args.max_raw_series_per_axis],
     }
@@ -1303,11 +1360,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--steering-probe-throttle", type=float, default=0.25)
     ap.add_argument("--steering-settle-sec", type=float, default=1.0)
     ap.add_argument("--steering-sample-sec", type=float, default=1.5)
-    ap.add_argument("--throttle-commands", default="0.1,0.2,0.3,0.4,0.5,0.6,0.7")
+    ap.add_argument("--throttle-commands", default="0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7")
     ap.add_argument("--throttle-settle-sec", type=float, default=0.8)
     ap.add_argument("--throttle-sample-sec", type=float, default=2.5)
     ap.add_argument("--throttle-effective-window-sec", type=float, default=0.8)
-    ap.add_argument("--low-speed-throttle-commands", default="0.05,0.08,0.1,0.12,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.6,0.7")
+    ap.add_argument("--low-speed-throttle-commands", default="0.0,0.05,0.08,0.1,0.12,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.6,0.7")
     ap.add_argument("--low-speed-launch-sample-sec", type=float, default=1.5)
     ap.add_argument("--low-speed-launch-eval-sec", type=float, default=0.8)
     ap.add_argument("--low-speed-crawl-entry-speeds", default="2.0,4.0,6.0")
