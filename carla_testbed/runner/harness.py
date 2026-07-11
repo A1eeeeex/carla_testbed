@@ -1121,8 +1121,28 @@ class TestHarness:
                         }
                     )
                     break
+                hook_termination = frame_ctx.metadata.get("run_termination_request")
+                if isinstance(hook_termination, dict):
+                    self.state.success = True
+                    artifact_events.append(
+                        {
+                            "event_type": "scenario_completed",
+                            "frame": frame_id,
+                            "t": timestamp,
+                            "step": step,
+                            **hook_termination,
+                        }
+                    )
+                    break
                 # success condition: stopped near front with small speed and valid gap
-                if v < 0.2:
+                fixed_scene_runtime_meta = frame_ctx.metadata.get("fixed_scene_runtime")
+                fixed_scene_waiting_for_start = bool(
+                    isinstance(fixed_scene_runtime_meta, dict)
+                    and fixed_scene_runtime_meta.get("armed") is False
+                )
+                if fixed_scene_waiting_for_start:
+                    stopped_counter = 0
+                elif v < 0.2:
                     stopped_counter += 1
                 else:
                     stopped_counter = 0
@@ -1131,6 +1151,7 @@ class TestHarness:
                 gap_valid = last_debug.get("gap_s_valid")
                 if (
                     stopped_counter >= hold_steps
+                    and not fixed_scene_waiting_for_start
                     and self.state.fail_reason is None
                     and step > hold_steps
                     and gap_valid

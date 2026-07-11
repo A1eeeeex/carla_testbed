@@ -158,6 +158,22 @@ Layered progress status:
   stale value, changing this run from false `fail` to `warn`. The control
   runtime overlay remains a diagnostic condition, so this is Phase 1 scenario
   evidence rather than default-backend or natural-driving promotion.
+- The P0 dynamic lead-speed pair
+  `runs/phase1_online_pairs/phase1_p0_lead_decel_accel_preroll_20260711`
+  now has an explicit Apollo pre-roll and storyboard-owned termination. The
+  Apollo fixed-scene trace starts after a 12s diagnostic warm-up, contains 352
+  native rows, and completes the 70-to-40-to-70kph lead profile at scene time
+  17.55s. This removes the previous 65s post-scene tail that made a dynamic
+  run look like a successful static stop.
+- The corrected pair is evaluable but Apollo is `degraded`, not successful:
+  after scenario activation ego speed reaches about 6.82m/s at 1s and then
+  remains roughly 5-7m/s while the lead executes its configured speed profile;
+  the final gap is about 184m. Routing succeeds, Planning is materialized,
+  control handoff is non-blocking warn, control health is warn, and there are
+  no collisions or lane invasions. The next capability blocker is therefore
+  the Apollo Planning longitudinal speed reference in the valid scenario
+  window, not fixed-scene playback or CARLA control application. The pre-roll
+  remains diagnostic and is not natural-driving evidence.
 - The straight lateral regression run
   `runs/longitudinal_map_speed_contract_fix_lateral_regression_20260711/lane_keep097_map_speed_complete_unified_stitcher__town01_rh_spawn097_goal046`
   recorded no collision or lane invasion, cross-track-error p95 about 0.144 m,

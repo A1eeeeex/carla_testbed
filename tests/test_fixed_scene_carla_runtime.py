@@ -285,6 +285,71 @@ def test_fixed_scene_runtime_hook_uses_relative_scene_time(tmp_path) -> None:
     hook.close()
 
 
+def test_fixed_scene_runtime_hook_requests_run_termination_after_storyboard_stop(tmp_path) -> None:
+    world = _FakeWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    template_path = tmp_path / "lead_accel.yaml"
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml")
+    template["roles"]["lead_vehicle"]["spawn"]["feasibility"]["require_waypoint"] = False
+    template["params"]["duration_s"] = 1.0
+    template_path.write_text(json.dumps(template), encoding="utf-8")
+    hook = setup_fixed_scene_runtime_hook(
+        world=world,
+        ego_actor=ego,
+        run_dir=tmp_path,
+        artifact_dir=tmp_path / "artifacts",
+        scenario_path=template_path,
+    )
+
+    first = type("FrameContext", (), {"frame_id": 10, "sim_time_s": 40.0, "step": 0, "metadata": {}})()
+    final = type("FrameContext", (), {"frame_id": 11, "sim_time_s": 41.0, "step": 1, "metadata": {}})()
+    hook.after_world_tick(first)
+    hook.after_world_tick(final)
+
+    assert "run_termination_request" not in first.metadata
+    assert final.metadata["fixed_scene_runtime"]["stopped"] is True
+    assert final.metadata["run_termination_request"] == {
+        "source": "fixed_scene_runtime",
+        "reason": "fixed_scene_storyboard_completed",
+        "scene_id": "baguang_lead_accel_40_to_70_20m",
+        "scene_sim_time_s": 1.0,
+    }
+
+    hook.close()
+
+
+def test_fixed_scene_runtime_hook_supports_explicit_warmup_preroll(tmp_path) -> None:
+    world = _FakeWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    template_path = tmp_path / "lead_accel.yaml"
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml")
+    template["roles"]["lead_vehicle"]["spawn"]["feasibility"]["require_waypoint"] = False
+    template_path.write_text(json.dumps(template), encoding="utf-8")
+    hook = setup_fixed_scene_runtime_hook(
+        world=world,
+        ego_actor=ego,
+        run_dir=tmp_path,
+        artifact_dir=tmp_path / "artifacts",
+        scenario_path=template_path,
+        start_gate="apollo_warmup_delay",
+        start_delay_s=12.0,
+        materialize_ego_initial_speed_on_arm=True,
+    )
+    waiting = type("FrameContext", (), {"frame_id": 10, "sim_time_s": 40.0, "step": 0, "metadata": {}})()
+    armed = type("FrameContext", (), {"frame_id": 11, "sim_time_s": 52.0, "step": 1, "metadata": {}})()
+
+    hook.after_world_tick(waiting)
+    hook.after_world_tick(armed)
+
+    assert waiting.metadata["fixed_scene_runtime"]["armed"] is False
+    assert hook.armed is True
+    assert hook.start_sim_time_s == 52.0
+    assert armed.metadata["fixed_scene_runtime"]["scene_sim_time_s"] == 0.0
+    assert armed.metadata["fixed_scene_runtime"]["readiness"]["source"] == "configured_sim_time_preroll"
+
+    hook.close()
+
+
 def test_carla_runtime_spawn_feasibility_blocks_required_waypoint_fallback(tmp_path) -> None:
     world = _FakeWorld()
     ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))

@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from carla_testbed.runner.hooks import FrameContext, RunHook
 from carla_testbed.scenario_player.carla_runtime import CarlaFixedSceneRuntime, CarlaFixedSceneRuntimeState
 from carla_testbed.scenario_player.compiler import compile_fixed_scene_template
+from carla_testbed.scenario_player.initial_state import materialize_ego_initial_speed
 from carla_testbed.scenario_player.schema import load_fixed_scene_template
 
 
@@ -24,12 +25,58 @@ class FixedSceneRuntimeHook(RunHook):
     name: str = "fixed_scene_runtime"
     tick_count: int = 0
     start_sim_time_s: float | None = None
+    start_gate: str = "none"
+    materialize_ego_initial_speed_on_arm: bool = False
+    armed: bool = True
+    readiness: dict[str, Any] = field(default_factory=dict)
+    start_delay_s: float = 0.0
+    gate_wait_start_sim_time_s: float | None = None
     errors: list[str] = field(default_factory=list)
     last_tick_result: dict[str, Any] = field(default_factory=dict)
     _closed: bool = False
 
     def after_world_tick(self, frame_context: FrameContext) -> None:
         current_sim_time = float(frame_context.sim_time_s)
+        if not self.armed:
+            if self.gate_wait_start_sim_time_s is None:
+                self.gate_wait_start_sim_time_s = current_sim_time
+            gate_elapsed_s = current_sim_time - self.gate_wait_start_sim_time_s
+            if self.start_gate == "apollo_warmup_delay":
+                self.readiness = {
+                    "ready": gate_elapsed_s >= self.start_delay_s,
+                    "gate_elapsed_s": gate_elapsed_s,
+                    "required_delay_s": self.start_delay_s,
+                    "source": "configured_sim_time_preroll",
+                }
+            else:
+                self.readiness = {
+                    "ready": False,
+                    "source": "unsupported_start_gate",
+                    "start_gate": self.start_gate,
+                }
+            frame_context.metadata["fixed_scene_runtime"] = {
+                "tick_count": self.tick_count,
+                "scene_sim_time_s": None,
+                "world_sim_time_s": current_sim_time,
+                "active_roles": self.runtime.active_roles(),
+                "current_phase": None,
+                "applied_roles": [],
+                "stopped": False,
+                "armed": False,
+                "start_gate": self.start_gate,
+                "readiness": dict(self.readiness),
+            }
+            if not self.readiness.get("ready"):
+                return
+            self.runtime.materialize_role_initial_speeds()
+            materialize_ego_initial_speed(
+                ego_actor=self.ego_actor,
+                storyboard=self.storyboard,
+                artifact_dir=self.artifact_dir,
+                enabled=self.materialize_ego_initial_speed_on_arm,
+                source="runtime.fixed_scene_player.apollo_control_ready_arm",
+            )
+            self.armed = True
         if self.start_sim_time_s is None:
             self.start_sim_time_s = current_sim_time
         scene_sim_time = max(0.0, current_sim_time - float(self.start_sim_time_s))
@@ -52,7 +99,19 @@ class FixedSceneRuntimeHook(RunHook):
             "active_roles": self.runtime.active_roles(),
             "current_phase": result.get("current_phase"),
             "applied_roles": sorted((result.get("applied_controls") or {}).keys()),
+            "stopped": bool(result.get("stopped")),
+            "armed": self.armed,
+            "start_gate": self.start_gate,
+            "readiness": dict(self.readiness),
+            "start_delay_s": self.start_delay_s,
         }
+        if result.get("stopped"):
+            frame_context.metadata["run_termination_request"] = {
+                "source": self.name,
+                "reason": "fixed_scene_storyboard_completed",
+                "scene_id": self.storyboard.get("scene_id"),
+                "scene_sim_time_s": scene_sim_time,
+            }
 
     def close(self) -> None:
         if self._closed:
@@ -73,6 +132,10 @@ class FixedSceneRuntimeHook(RunHook):
             "scene_id": self.storyboard.get("scene_id"),
             "tick_count": self.tick_count,
             "start_sim_time_s": self.start_sim_time_s,
+            "start_gate": self.start_gate,
+            "start_delay_s": self.start_delay_s,
+            "armed": self.armed,
+            "readiness": dict(self.readiness),
             "active_roles": self.runtime.active_roles(),
             "target_actor_role": target_actor_role_from_storyboard(self.storyboard),
             "setup_state": self.setup_state.to_dict(),
@@ -97,17 +160,23 @@ def setup_fixed_scene_runtime_hook(
     scenario_path: str | Path,
     artifact_dir: str | Path | None = None,
     runtime: CarlaFixedSceneRuntime | None = None,
+    start_gate: str = "none",
+    materialize_ego_initial_speed_on_arm: bool = False,
+    start_delay_s: float = 0.0,
 ) -> FixedSceneRuntimeHook:
     root = Path(run_dir).expanduser()
     artifacts = Path(artifact_dir).expanduser() if artifact_dir is not None else root / "artifacts"
     storyboard = load_phase1_fixed_scene_storyboard(scenario_path)
     fixed_runtime = runtime or CarlaFixedSceneRuntime()
+    normalized_gate = str(start_gate or "none").strip().lower()
+    armed = normalized_gate in {"", "none"}
     state = fixed_runtime.setup(
         {
             "world": world,
             "ego_actor": ego_actor,
             "run_dir": root,
             "artifact_dir": artifacts,
+            "materialize_role_initial_speeds": armed,
         },
         storyboard,
     )
@@ -119,6 +188,10 @@ def setup_fixed_scene_runtime_hook(
         artifact_dir=artifacts,
         storyboard=storyboard,
         setup_state=state,
+        start_gate=normalized_gate or "none",
+        materialize_ego_initial_speed_on_arm=bool(materialize_ego_initial_speed_on_arm),
+        armed=armed,
+        start_delay_s=max(0.0, float(start_delay_s)),
     )
 
 

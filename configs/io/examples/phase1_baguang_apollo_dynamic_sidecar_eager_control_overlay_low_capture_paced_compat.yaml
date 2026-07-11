@@ -4,6 +4,14 @@ run:
   id: phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat
   profile_name: phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat
 
+runtime:
+  fixed_scene_player:
+    # Bridge planning/control event streams are finalized after the legacy
+    # harness exits, so they cannot arm the scene online. Keep this pre-roll
+    # explicit and diagnostic rather than pretending final stats are live.
+    start_gate: apollo_warmup_delay
+    start_delay_s: 12.0
+
 algo:
   apollo:
     docker:

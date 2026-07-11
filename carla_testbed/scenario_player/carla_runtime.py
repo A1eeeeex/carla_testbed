@@ -84,6 +84,9 @@ class CarlaFixedSceneRuntime:
         resolved = dict(storyboard)
         validate_fixed_scene_storyboard(resolved)
         self.storyboard = resolved
+        materialize_role_initial_speeds = bool(
+            _context_attr(context, "materialize_role_initial_speeds", True)
+        )
         self._artifact_dir = _artifact_dir(context)
         paths = self._write_setup_artifacts(resolved)
         self.player = FixedScenePlayer(
@@ -110,7 +113,14 @@ class CarlaFixedSceneRuntime:
         for role, role_cfg in dict(resolved.get("roles", {})).items():
             if role == "ego":
                 continue
-            actor = self._spawn_role_actor(world=world, ego=ego, role=role, role_cfg=role_cfg, state=state)
+            actor = self._spawn_role_actor(
+                world=world,
+                ego=ego,
+                role=role,
+                role_cfg=role_cfg,
+                state=state,
+                materialize_initial_speed=materialize_role_initial_speeds,
+            )
             if actor is None:
                 continue
             self.actors[role] = actor
@@ -119,6 +129,17 @@ class CarlaFixedSceneRuntime:
         self.state = state
         self._write_runtime_state()
         return state
+
+    def materialize_role_initial_speeds(self) -> None:
+        roles = self.storyboard.get("roles", {}) if self.storyboard else {}
+        for role, actor in self.actors.items():
+            role_cfg = roles.get(role) if isinstance(roles, Mapping) else None
+            if not isinstance(role_cfg, Mapping):
+                continue
+            spawn_cfg = role_cfg.get("spawn") if isinstance(role_cfg.get("spawn"), Mapping) else {}
+            transform = _safe_call(actor, "get_transform") or getattr(actor, "transform", None)
+            if transform is not None:
+                _set_actor_initial_speed(actor, transform, _initial_speed_from_role(role_cfg, spawn_cfg))
 
     def tick(self, context: Any) -> dict[str, Any]:
         if self.storyboard is None or self.player is None:
@@ -234,6 +255,7 @@ class CarlaFixedSceneRuntime:
         role: str,
         role_cfg: Mapping[str, Any],
         state: CarlaFixedSceneRuntimeState,
+        materialize_initial_speed: bool = True,
     ) -> Any | None:
         blueprint_id = str(role_cfg.get("blueprint") or "vehicle.lincoln.mkz_2020")
         blueprint = _find_blueprint(world, blueprint_id)
@@ -250,7 +272,8 @@ class CarlaFixedSceneRuntime:
         if actor is None:
             state.errors.append(f"spawn_failed:{role}")
             return None
-        _set_actor_initial_speed(actor, selection.transform, _initial_speed_from_role(role_cfg, spawn_cfg))
+        if materialize_initial_speed:
+            _set_actor_initial_speed(actor, selection.transform, _initial_speed_from_role(role_cfg, spawn_cfg))
         _tick_world_if_available(world)
         feasibility = _spawn_feasibility(
             world=world,

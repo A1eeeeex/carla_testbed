@@ -282,6 +282,8 @@ def _phase1_fixed_scene_runtime_settings(effective_cfg: Dict[str, Any]) -> Dict[
         "require_setup_success": bool(runtime_cfg.get("require_setup_success", True)),
         "replace_legacy_front": bool(runtime_cfg.get("replace_legacy_front", enabled)),
         "materialize_ego_initial_speed": bool(runtime_cfg.get("materialize_ego_initial_speed", False)),
+        "start_gate": str(runtime_cfg.get("start_gate") or "none"),
+        "start_delay_s": float(runtime_cfg.get("start_delay_s") or 0.0),
         "source": "runtime.fixed_scene_player" if runtime_cfg else "phase1_scenario_path",
     }
 
@@ -2704,13 +2706,21 @@ def main():
                 run_dir=out_run_dir,
                 artifact_dir=out_run_dir / "artifacts",
                 scenario_path=scenario_path,
+                start_gate=fixed_scene_runtime_settings["start_gate"],
+                materialize_ego_initial_speed_on_arm=bool(
+                    fixed_scene_runtime_settings["materialize_ego_initial_speed"]
+                ),
+                start_delay_s=float(fixed_scene_runtime_settings["start_delay_s"]),
             )
             cleanup_state["fixed_scene_runtime_hook"] = fixed_scene_runtime_hook
             ego_initial_state_materialization = materialize_ego_initial_speed(
                 ego_actor=ego,
                 storyboard=fixed_scene_runtime_hook.storyboard,
                 artifact_dir=out_run_dir / "artifacts",
-                enabled=bool(fixed_scene_runtime_settings["materialize_ego_initial_speed"]),
+                enabled=(
+                    bool(fixed_scene_runtime_settings["materialize_ego_initial_speed"])
+                    and fixed_scene_runtime_settings["start_gate"] == "none"
+                ),
             )
             try:
                 (out_run_dir / "artifacts" / "fixed_scene_runtime_hook.json").write_text(
