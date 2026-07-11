@@ -2134,10 +2134,18 @@ def main():
     adapter_started = False
     adapter_fail_reason = None
     carla_stop_hook = None
-    autoware_stack_cfg = ((effective_cfg.get("algo", {}) or {}).get("autoware", {}) or {}) if effective_cfg else {}
+    algo_cfg = (effective_cfg.get("algo", {}) or {}) if effective_cfg else {}
+    autoware_stack_cfg = (algo_cfg.get("autoware", {}) or {})
+    apollo_stack_cfg = (algo_cfg.get("apollo", {}) or {})
     defer_adapter_start_until_scenario_spawn = (
-        str(stack or "").strip().lower() == "autoware"
-        and _config_bool(autoware_stack_cfg.get("start_after_scenario_spawn"), default=True)
+        (
+            str(stack or "").strip().lower() == "autoware"
+            and _config_bool(autoware_stack_cfg.get("start_after_scenario_spawn"), default=True)
+        )
+        or (
+            str(stack or "").strip().lower() == "apollo"
+            and _config_bool(apollo_stack_cfg.get("start_after_scenario_spawn"), default=False)
+        )
     )
 
     def _start_stack_adapter(start_reason: str) -> None:
@@ -2701,6 +2709,11 @@ def main():
         front = actors.front
         fixed_scene_runtime_hook = None
         fixed_scene_runtime_settings = _phase1_fixed_scene_runtime_settings(effective_cfg)
+        apollo_prestarted_fixed_scene = bool(
+            stack == "apollo"
+            and defer_adapter_start_until_scenario_spawn
+            and fixed_scene_runtime_settings["enabled"]
+        )
         if fixed_scene_runtime_settings["enabled"]:
             scenario_path = fixed_scene_runtime_settings["scenario_path"]
             if not scenario_path:
@@ -2716,16 +2729,24 @@ def main():
                 run_dir=out_run_dir,
                 artifact_dir=out_run_dir / "artifacts",
                 scenario_path=scenario_path,
-                start_gate=fixed_scene_runtime_settings["start_gate"],
+                start_gate=(
+                    "prestarted_scene_pending"
+                    if apollo_prestarted_fixed_scene
+                    else fixed_scene_runtime_settings["start_gate"]
+                ),
                 materialize_ego_initial_speed_on_arm=bool(
                     fixed_scene_runtime_settings["materialize_ego_initial_speed"]
                 ),
                 start_delay_s=float(fixed_scene_runtime_settings["start_delay_s"]),
-                defer_role_spawn_until_arm=bool(
-                    fixed_scene_runtime_settings["defer_role_spawn_until_arm"]
+                defer_role_spawn_until_arm=(
+                    False
+                    if apollo_prestarted_fixed_scene
+                    else bool(fixed_scene_runtime_settings["defer_role_spawn_until_arm"])
                 ),
-                reset_ego_pose_on_arm=bool(
-                    fixed_scene_runtime_settings["reset_ego_pose_on_arm"]
+                reset_ego_pose_on_arm=(
+                    False
+                    if apollo_prestarted_fixed_scene
+                    else bool(fixed_scene_runtime_settings["reset_ego_pose_on_arm"])
                 ),
                 post_reset_ego_speed_ready_mps=float(
                     fixed_scene_runtime_settings["post_reset_ego_speed_ready_mps"]
@@ -2769,7 +2790,7 @@ def main():
                 raise RuntimeError("fixed_scene_runtime_setup_failed:" + ",".join(setup_errors))
             if (
                 bool(fixed_scene_runtime_settings["replace_legacy_front"])
-                and not bool(fixed_scene_runtime_settings["defer_role_spawn_until_arm"])
+                and bool(fixed_scene_runtime_hook.runtime.active_roles())
             ):
                 target_actor = fixed_scene_runtime_hook.target_actor()
                 if target_actor is not None:
@@ -2894,6 +2915,13 @@ def main():
                 front_actor_id=int(getattr(front, "id", 0) or 0) if front is not None else 0,
             )
             _start_stack_adapter("post_scenario_spawn")
+            if apollo_prestarted_fixed_scene and fixed_scene_runtime_hook is not None:
+                readiness = fixed_scene_runtime_hook.arm_prestarted_scene()
+                _write_startup_stage(
+                    "apollo_fixed_scene_armed_before_harness",
+                    readiness=readiness,
+                    active_roles=fixed_scene_runtime_hook.runtime.active_roles(),
+                )
 
         ros2_runner = _build_ros2_runner(effective_cfg, adapter_started)
 

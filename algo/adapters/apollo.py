@@ -1245,6 +1245,7 @@ PY
             "trajectory_contract_lateral_guard_enabled",
             "force_zero_steer_output",
             "throttle_brake_mutual_exclusion_enabled",
+            "require_valid_planning_before_first_publish",
         ):
             if key in ctrl_cfg:
                 ctrl_map[key] = bool(ctrl_cfg[key])

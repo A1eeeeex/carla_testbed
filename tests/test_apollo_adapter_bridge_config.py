@@ -216,6 +216,7 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
                     "throttle_brake_mutual_exclusion_enabled": True,
                     "throttle_brake_hysteresis_frames": 3,
                     "throttle_brake_min_command": 0.02,
+                    "require_valid_planning_before_first_publish": True,
                 },
             }
         },
@@ -257,6 +258,7 @@ def test_apollo_adapter_preserves_steering_percent_normalization_in_bridge_confi
     assert control_mapping["throttle_brake_mutual_exclusion_enabled"] is True
     assert control_mapping["throttle_brake_hysteresis_frames"] == 3
     assert control_mapping["throttle_brake_min_command"] == 0.02
+    assert control_mapping["require_valid_planning_before_first_publish"] is True
     assert claim_grade["enabled"] is True
     assert claim_grade["stale_world_frame_policy"] == "skip"
     direct_bridge = bridge_cfg["algo"]["apollo"]["direct_bridge"]

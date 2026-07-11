@@ -2856,6 +2856,34 @@ PARTIAL findings:
   `degraded/large_final_gap` with 69.53m final gap. The remaining blocker is
   Apollo's longitudinal planning response, not target spawn speed, gap
   materialization, bridge guard behavior, or the frozen lateral configuration.
+- The scenario-first v10/v11/v13 sequence isolates the remaining startup
+  boundary. In v10, the complete fixed scene exists before Apollo starts, but
+  eager Control publishes its default brake while Planning is still empty;
+  the run avoids collision only after that startup brake enlarges the gap. v11
+  delays the complete Control module and collides, proving that subscriber
+  startup must remain eager. The retained implementation therefore leaves
+  Control subscribed and adds a one-shot bridge publication latch: raw Apollo
+  Control remains recorded, CARLA publication waits for the first valid
+  Planning trajectory, and the latch never closes on later fallback.
+- The online v13 pair at
+  `runs/phase1_online_pairs/phase1_p0_lead_decel_accel_scenario_first_publish_gate_v13_20260711/`
+  proves that latch is materialized at runtime (`skip_count=875`, then open),
+  preserves the 20.008m initial bumper gap, and removes startup default braking
+  as a hidden gap-building assist. It also exposes a real evaluable Apollo
+  behavior failure: Planning produces only 1 non-empty message out of 83,
+  CARLA publication opens after the lead's five-second deceleration trigger,
+  and the run collides with final bumper gap about -0.02m. This is not an
+  improvement claim; it moves the blocker to Apollo readiness versus dynamic
+  scenario activation and subsequent planning continuity.
+- v14/v15 tested but rejected a continuous-speed readiness preroll. v14 waited
+  on a stats artifact that is only finalized during cleanup and never armed;
+  v15 used the live control log and armed correctly, but the warmup consumed
+  roughly 170m of road before scene time zero, leaving only about 5.4s of the
+  intended 18s profile. That preroll is not retained as the default. The next
+  lifecycle design must establish backend readiness without consuming formal
+  scenario distance or presenting physically inconsistent pose/velocity, then
+  revalidate the same pair without changing Planning, Control, longitudinal
+  mapping, or the frozen lateral configuration.
 
 NOT_YET findings:
 

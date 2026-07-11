@@ -23,21 +23,27 @@ runtime:
 
 algo:
   apollo:
+    # Spawn the complete fixed scene before Apollo starts. Initial velocities
+    # are assigned after adapter startup but before the harness's first tick,
+    # so Planning never transitions from an empty world to a sudden lead.
+    start_after_scenario_spawn: true
     planning:
       # Keep the scenario cruise contract explicit. Runtime speed remains
       # bounded by the effective Apollo base-map lane speed limit.
       default_cruise_speed_mps: 19.44
       planning_upper_speed_limit_mps: 23.61
     docker:
-      # Dynamic fixed-scene samples observed a one-frame non-empty Planning
-      # window. Starting Control after that window is too late, and even
-      # route-established gating can be late when routing success and non-empty
-      # Planning arrive together. Keep Control warm from module startup.
+      # Keep Control subscribed from startup, but gate CARLA publication below
+      # until the first valid Planning trajectory. Delaying the whole module
+      # can miss the dynamic-scene handoff window.
       defer_control_until_planning_ready: false
       control_start_gate: none
+      control_planning_ready_require_routing_success: true
+    control_mapping:
+      require_valid_planning_before_first_publish: true
 
 assist_ledger:
   notes:
     - Phase 1 Apollo dynamic fixed-scene sidecar eager-control profile; diagnostic only.
-    - Control starts with the Apollo module set so it can subscribe before short dynamic-scene Planning windows.
+    - Control subscribes from startup, while bridge publication stays closed until the first valid Planning trajectory; the complete target scene is present before Apollo startup.
     - This remains a legacy follow-stop sidecar transition with control-runtime overlay and cannot support natural-driving or no-interference capability claims.

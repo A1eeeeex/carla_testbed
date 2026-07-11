@@ -480,6 +480,36 @@ def test_fixed_scene_runtime_hook_resets_ego_before_deferred_target_spawn(tmp_pa
     hook.close()
 
 
+def test_fixed_scene_runtime_hook_arms_prestarted_scene_before_first_harness_tick(tmp_path) -> None:
+    ego = _FakeActor(
+        actor_id=1,
+        transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)),
+    )
+    world = _FakeWorld()
+    hook = setup_fixed_scene_runtime_hook(
+        world=world,
+        ego_actor=ego,
+        run_dir=tmp_path,
+        artifact_dir=tmp_path / "artifacts",
+        scenario_path="configs/scenarios/baguang/lead_decel_accel_70_40_70_20m.yaml",
+        start_gate="prestarted_scene_pending",
+        defer_role_spawn_until_arm=False,
+    )
+
+    readiness = hook.arm_prestarted_scene()
+
+    assert hook.armed is True
+    assert hook.start_gate == "prestarted_scene"
+    assert hook.tick_count == 0
+    assert readiness["source"] == "pre_harness_atomic_initial_state_assignment"
+    assert readiness["ego_initial_speed_assignment"]["status"] == "pass"
+    assert set(hook.runtime.actors) == {"lead_vehicle"}
+    assert ego.target_velocity is not None
+    assert hook.runtime.actors["lead_vehicle"].target_velocity is not None
+
+    hook.close()
+
+
 def test_carla_runtime_spawn_feasibility_blocks_required_waypoint_fallback(tmp_path) -> None:
     world = _FakeWorld()
     ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))

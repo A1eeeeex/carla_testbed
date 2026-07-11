@@ -229,6 +229,37 @@ class FixedSceneRuntimeHook(RunHook):
             return None
         return self.runtime.actors.get(role)
 
+    def arm_prestarted_scene(self) -> dict[str, Any]:
+        """Arm a fully spawned scene immediately before the harness owns ticks."""
+
+        if self.armed:
+            return dict(self.readiness)
+        self.runtime.materialize_role_initial_speeds()
+        ego_report = materialize_ego_initial_speed(
+            ego_actor=self.ego_actor,
+            storyboard=self.storyboard,
+            artifact_dir=self.artifact_dir,
+            enabled=True,
+            source="runtime.fixed_scene_player.pre_harness_atomic_initial_state",
+        )
+        role_readiness = _role_initial_speed_readiness(self.runtime, self.storyboard)
+        self.readiness = {
+            "ready": ego_report.get("status") != "fail",
+            "ego_initial_speed_assignment": ego_report,
+            "role_speeds": role_readiness["role_speeds"],
+            "role_speed_observation_pending_first_world_tick": not role_readiness["ready"],
+            "source": "pre_harness_atomic_initial_state_assignment",
+        }
+        if ego_report.get("status") == "fail":
+            self.errors.extend(str(item) for item in ego_report.get("errors", []))
+            return dict(self.readiness)
+        self.start_gate = "prestarted_scene"
+        self.reset_ego_pose_on_arm = False
+        self.post_reset_speed_gate_pending = False
+        self.role_speed_gate_pending = False
+        self.armed = True
+        return dict(self.readiness)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": "fixed_scene_runtime_hook.v1",

@@ -97,6 +97,57 @@ def test_bridge_chassis_steering_feedback_uses_apollo_sign_and_preserves_carla_s
     assert feedback["chassis"]["carla_steering_percentage_cmd"] == pytest.approx(-50.0)
 
 
+def test_startup_control_publish_gate_latches_after_first_valid_planning() -> None:
+    _install_fake_runtime_modules()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.require_valid_planning_before_first_publish = True
+    adapter._valid_planning_publish_gate_open = False
+    adapter.stats = {}
+
+    assert not adapter._allow_control_publish_after_startup(
+        planning_valid=False,
+        planning_reason="zero_trajectory_points",
+        timestamp_sec=1.0,
+    )
+    gate = adapter.stats["control_startup_publish_gate"]
+    assert gate["skip_count"] == 1
+    assert gate["last_skip_reason"] == "zero_trajectory_points"
+    assert not gate["open"]
+
+    assert adapter._allow_control_publish_after_startup(
+        planning_valid=True,
+        planning_reason="",
+        timestamp_sec=1.1,
+    )
+    assert gate["open"]
+    assert gate["first_open_timestamp_sec"] == pytest.approx(1.1)
+
+    assert adapter._allow_control_publish_after_startup(
+        planning_valid=False,
+        planning_reason="trajectory_all_points_expired",
+        timestamp_sec=1.2,
+    )
+    assert gate["skip_count"] == 1
+    assert gate["open"]
+
+
+def test_startup_control_publish_gate_disabled_does_not_suppress() -> None:
+    _install_fake_runtime_modules()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.require_valid_planning_before_first_publish = False
+    adapter._valid_planning_publish_gate_open = True
+    adapter.stats = {}
+
+    assert adapter._allow_control_publish_after_startup(
+        planning_valid=False,
+        planning_reason="no_recent_planning_message",
+        timestamp_sec=1.0,
+    )
+    assert adapter.stats["control_startup_publish_gate"]["skip_count"] == 0
+
+
 def test_control_apply_trace_falls_back_to_latest_control_cache() -> None:
     stats = {
         "last_control_raw": {

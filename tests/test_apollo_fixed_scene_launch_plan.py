@@ -426,7 +426,7 @@ def test_apollo_dynamic_sidecar_profile_starts_control_after_route_established()
     assert "dynamic_sidecar_route_established" in payload["run"]["profile_name"]
 
 
-def test_apollo_dynamic_sidecar_default_profile_starts_control_eagerly() -> None:
+def test_apollo_dynamic_sidecar_default_profile_gates_first_publish_on_planning() -> None:
     payload = yaml.safe_load(
         Path(
             "configs/io/examples/"
@@ -435,8 +435,13 @@ def test_apollo_dynamic_sidecar_default_profile_starts_control_eagerly() -> None
     )
 
     docker_cfg = payload["algo"]["apollo"]["docker"]
+    assert payload["algo"]["apollo"]["start_after_scenario_spawn"] is True
     assert docker_cfg["defer_control_until_planning_ready"] is False
     assert docker_cfg["control_start_gate"] == "none"
+    assert docker_cfg["control_planning_ready_require_routing_success"] is True
+    assert payload["algo"]["apollo"]["control_mapping"][
+        "require_valid_planning_before_first_publish"
+    ] is True
     assert "dynamic_sidecar_eager_control" in payload["run"]["profile_name"]
     runtime = payload["runtime"]["fixed_scene_player"]
     assert runtime["start_gate"] == "ego_speed_ready"
@@ -449,6 +454,10 @@ def test_apollo_dynamic_sidecar_default_profile_starts_control_eagerly() -> None
     planning_cfg = payload["algo"]["apollo"]["planning"]
     assert planning_cfg["default_cruise_speed_mps"] == 19.44
     assert planning_cfg["planning_upper_speed_limit_mps"] == 23.61
+
+    runner = Path("examples/run_followstop.py").read_text(encoding="utf-8")
+    assert 'apollo_stack_cfg.get("start_after_scenario_spawn")' in runner
+    assert "apollo_fixed_scene_armed_before_harness" in runner
 
 
 def test_apollo_static_spawn2m_profile_uses_fixed_scene_actor_without_legacy_assist() -> None:

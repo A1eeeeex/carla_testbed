@@ -1985,6 +1985,21 @@ class ApolloGtBridge:
             "snap_right_angle": self.auto_calib_snap_right_angle,
         }
         ctrl_map = bridge_cfg.get("control_mapping", {}) or {}
+        self.require_valid_planning_before_first_publish = bool(
+            ctrl_map.get("require_valid_planning_before_first_publish", False)
+        )
+        self._valid_planning_publish_gate_open = not self.require_valid_planning_before_first_publish
+        self.stats["control_startup_publish_gate"] = {
+            "enabled": self.require_valid_planning_before_first_publish,
+            "open": self._valid_planning_publish_gate_open,
+            "skip_count": 0,
+            "first_open_timestamp_sec": None,
+            "last_skip_reason": "",
+            "claim_boundary": (
+                "startup_handoff_only; raw Apollo Control remains recorded and the gate never "
+                "closes after the first valid Planning trajectory"
+            ),
+        }
         self.debug_dump_control_raw = bool(bridge_cfg.get("debug_dump_control_raw", False))
         self.control_decode_dump_path = self.artifacts_dir / "control_decode_debug.jsonl"
         self.steer_sign_suggestion_path = self.artifacts_dir / "steer_sign_suggestion.json"
@@ -7097,6 +7112,44 @@ class ApolloGtBridge:
             physical_map_brake=bool(self.physical_map_brake),
         )
 
+    def _allow_control_publish_after_startup(
+        self,
+        *,
+        planning_valid: bool,
+        planning_reason: str,
+        timestamp_sec: float,
+    ) -> bool:
+        """Latch CARLA publication open after the first valid Planning trajectory."""
+
+        enabled = bool(getattr(self, "require_valid_planning_before_first_publish", False))
+        gate_open = bool(getattr(self, "_valid_planning_publish_gate_open", not enabled))
+        gate = self.stats.setdefault(
+            "control_startup_publish_gate",
+            {
+                "enabled": enabled,
+                "open": gate_open,
+                "skip_count": 0,
+                "first_open_timestamp_sec": None,
+                "last_skip_reason": "",
+                "claim_boundary": (
+                    "startup_handoff_only; raw Apollo Control remains recorded and the gate never "
+                    "closes after the first valid Planning trajectory"
+                ),
+            },
+        )
+        if not enabled or gate_open:
+            gate["open"] = True
+            return True
+        if planning_valid:
+            self._valid_planning_publish_gate_open = True
+            gate["open"] = True
+            gate["first_open_timestamp_sec"] = float(timestamp_sec)
+            gate["last_skip_reason"] = ""
+            return True
+        gate["skip_count"] = int(gate.get("skip_count", 0) or 0) + 1
+        gate["last_skip_reason"] = str(planning_reason or "planning_not_valid")
+        return False
+
     def _legacy_map_base_controls(
         self,
         *,
@@ -9545,6 +9598,24 @@ class ApolloGtBridge:
                     steer,
                 )
             )
+        publish_allowed = self._allow_control_publish_after_startup(
+            planning_valid=planning_lateral_contract_valid,
+            planning_reason=planning_lateral_contract_reason,
+            timestamp_sec=control_ts,
+        )
+        startup_gate = self.stats.get("control_startup_publish_gate", {}) or {}
+        self.stats["last_control_out"].update(
+            {
+                "startup_publish_gate_enabled": bool(startup_gate.get("enabled", False)),
+                "startup_publish_gate_open": bool(startup_gate.get("open", True)),
+                "startup_publish_suppressed": not publish_allowed,
+                "startup_publish_suppress_reason": (
+                    str(startup_gate.get("last_skip_reason") or "") if not publish_allowed else ""
+                ),
+            }
+        )
+        if not publish_allowed:
+            return
         if self.node.control_out_type == "ackermann":
             speed_cmd = (
                 -brake_cmd * self.brake_gain

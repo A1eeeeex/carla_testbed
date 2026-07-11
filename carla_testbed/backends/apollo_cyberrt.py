@@ -292,7 +292,7 @@ class ApolloCyberRTBackend:
                         "Apollo dynamic fixed-scene command uses a guarded sidecar hook in the legacy follow-stop runner; it is a migration path, not completed online evidence.",
                         "The sidecar must produce fixed_scene_runtime_state, scenario_actor_trace, scenario_phase_events, obstacle GT, v-t-gap, and phase1_status before the run is evaluable.",
                         "The sidecar uses the diagnostic control-runtime overlay and wall-time pacing path because the non-overlay Apollo control process crashes before producing /apollo/control on current Baguang compatibility runs.",
-                        "The default dynamic sidecar profile starts Apollo Control eagerly so it can subscribe before short dynamic-scene Planning windows; this is a diagnostic startup hypothesis, not a behavior claim.",
+                        "The default dynamic sidecar profile materializes the complete scene before Apollo startup, keeps Control subscribed eagerly, and suppresses CARLA publication only until the first valid Planning trajectory; this is a startup-handoff diagnostic, not a behavior claim.",
                     ]
                     if dynamic_sidecar_config is not None
                     else []
