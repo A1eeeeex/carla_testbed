@@ -72,7 +72,7 @@ Layered progress status:
 - Code-level platform delivery estimate: about `88-90%`
 - Current repo independently provable completion: about `82-86%`
 - Platform skeleton estimate: about `90%`
-- Apollo reference runtime estimate: about `65-70%`
+- Apollo reference runtime estimate: about `70-75%`
 - Five-P0 online pair matrix estimate: `DONE for evaluable comparison surface; behavior failures remain`
 - Local accepted comparison-surface catalog: `PARTIAL after verifier hardening`
 - Package-level acceptance surface: `PARTIAL until rebuilt from verifier-passed bundles`
@@ -82,6 +82,28 @@ Layered progress status:
 - Apollo natural-driving or no-interference capability claim: `NOT_CLAIMED`
 
 2026-07-11 targeted online evidence:
+
+- Prediction-trigger pacing is now explicit: localization/chassis remain at
+  20 Hz while GT obstacles trigger native Prediction/Planning at 10 Hz. In the
+  stitcher diagnostic this reduced early sub-80ms Planning cycles from 225 to
+  29, time-before-first-point replans from 41 to 5, fallback from 10 to 1, and
+  lane invasions from 6 to 2. The no-stitch 10 Hz repeat retained zero
+  collision/lane-invasion and slightly increased distance from 101.7m to
+  107.6m, so the pacing change is not stitcher-only behavior tuning.
+- A steering-only calibrated mapping diagnostic isolated the remaining
+  straight-lane oscillation from Planning geometry. With the same 10 Hz
+  Prediction pacing and trajectory stitching, route distance improved from
+  187.9m to 217.1m, completion from 81.7% to 94.4%, lane invasions from 2 to
+  0, CTE p95 from about 0.892m to 0.030m, and heading-error p95 from about
+  0.147rad to 0.0053rad. The corresponding calibrated no-stitch run reduced
+  CTE p95 from about 0.798m to 0.158m but still covered only about 106.5m,
+  proving that calibrated steering and trajectory continuity close different
+  failure mechanisms.
+- This is a diagnostic candidate, not default physical-mapping promotion. It
+  uses a local calibration artifact and one Town01 route sample; repeat 097 and
+  curve/junction no-regression gates remain outstanding. The tracked physical
+  candidate config now extends the current reference profile, disables all
+  lateral guards, forbids silent legacy fallback, and maps only steering.
 
 - The unfilled-map junction baseline
   `runs/longitudinal_unified_signed_stitcher_031_20260711/junction031_unified_signed_stitcher_no_guard__town01_rh_spawn031_goal056`

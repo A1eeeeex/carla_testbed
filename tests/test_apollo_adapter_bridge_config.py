@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from algo.adapters.apollo import ApolloAdapter, _rewrite_apollo_lane_speed_limits
+from carla_testbed.config.loader import load_config
 
 
 def test_apollo_lane_speed_limit_fill_preserves_existing_and_is_idempotent() -> None:
@@ -359,3 +360,28 @@ def test_nominal_lane_keep_profile_keeps_artifact_io_out_of_gt_publish_hot_path(
     assert planning["enable_reference_line_stitching"] is False
     assert planning["enable_trajectory_stitcher"] is False
     assert "control_runtime" not in apollo
+
+
+def test_town01_physical_candidate_inherits_reference_runtime_without_guards() -> None:
+    config = load_config(
+        Path(
+            "configs/io/examples/"
+            "town01_apollo_route_health_behavior_recovery_stitcher_physical_v1.yaml"
+        )
+    )
+    apollo = config.backend.params["legacy_algo"]["apollo"]
+    mapping = apollo["control_mapping"]
+    physical = mapping["physical"]
+
+    assert apollo["bridge"]["obstacle_publish_rate_hz"] == 10.0
+    assert apollo["planning"]["enable_trajectory_stitcher"] is True
+    assert mapping["steer_sign"] == -1.0
+    assert mapping["low_speed_steer_guard_enabled"] is False
+    assert mapping["sustained_lateral_guard_enabled"] is False
+    assert mapping["trajectory_contract_lateral_guard_enabled"] is False
+    assert mapping["actuator_mapping_mode"] == "physical"
+    assert physical["apollo_max_steer_angle_deg"] == 30.0
+    assert physical["allow_legacy_fallback"] is False
+    assert physical["map_steering"] is True
+    assert physical["map_longitudinal"] is False
+    assert config.assist_ledger["can_claim_unassisted_natural_driving"] is False
