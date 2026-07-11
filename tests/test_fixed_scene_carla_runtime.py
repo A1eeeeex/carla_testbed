@@ -350,6 +350,49 @@ def test_fixed_scene_runtime_hook_supports_explicit_warmup_preroll(tmp_path) -> 
     hook.close()
 
 
+def test_fixed_scene_runtime_hook_defers_target_spawn_until_ego_speed_ready(tmp_path) -> None:
+    world = _FakeWorld()
+    ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))
+    template_path = tmp_path / "lead_accel.yaml"
+    template = load_fixed_scene_template("configs/scenarios/baguang/lead_accel_40_to_70_20m.yaml")
+    template["roles"]["lead_vehicle"]["spawn"]["feasibility"]["require_waypoint"] = False
+    template_path.write_text(json.dumps(template), encoding="utf-8")
+    hook = setup_fixed_scene_runtime_hook(
+        world=world,
+        ego_actor=ego,
+        run_dir=tmp_path,
+        artifact_dir=tmp_path / "artifacts",
+        scenario_path=template_path,
+        start_gate="ego_speed_ready",
+        defer_role_spawn_until_arm=True,
+        ego_speed_ready_mps=18.0,
+        ego_speed_ready_hold_ticks=2,
+    )
+    waiting = type("FrameContext", (), {"frame_id": 10, "sim_time_s": 40.0, "step": 0, "metadata": {}})()
+
+    hook.after_world_tick(waiting)
+
+    assert hook.runtime.actors == {}
+    assert hook.tick_count == 0
+    assert waiting.metadata["fixed_scene_runtime"]["armed"] is False
+
+    ego.velocity = _Vector(18.5, 0.0, 0.0)
+    first_ready = type("FrameContext", (), {"frame_id": 11, "sim_time_s": 40.05, "step": 1, "metadata": {}})()
+    armed = type("FrameContext", (), {"frame_id": 12, "sim_time_s": 40.1, "step": 2, "metadata": {}})()
+    hook.after_world_tick(first_ready)
+    hook.after_world_tick(armed)
+
+    assert hook.armed is True
+    assert hook.tick_count == 1
+    assert hook.start_sim_time_s == 40.1
+    assert set(hook.runtime.actors) == {"lead_vehicle"}
+    assert hook.setup_state.spawned_count == 1
+    assert armed.metadata["fixed_scene_runtime"]["scene_sim_time_s"] == 0.0
+    assert armed.metadata["fixed_scene_runtime"]["readiness"]["source"] == "carla_ego_state"
+
+    hook.close()
+
+
 def test_carla_runtime_spawn_feasibility_blocks_required_waypoint_fallback(tmp_path) -> None:
     world = _FakeWorld()
     ego = _FakeActor(actor_id=1, transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)))

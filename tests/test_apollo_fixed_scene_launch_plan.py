@@ -438,8 +438,14 @@ def test_apollo_dynamic_sidecar_default_profile_starts_control_eagerly() -> None
     assert docker_cfg["defer_control_until_planning_ready"] is False
     assert docker_cfg["control_start_gate"] == "none"
     assert "dynamic_sidecar_eager_control" in payload["run"]["profile_name"]
-    assert payload["runtime"]["fixed_scene_player"]["start_gate"] == "apollo_warmup_delay"
-    assert payload["runtime"]["fixed_scene_player"]["start_delay_s"] == 12.0
+    runtime = payload["runtime"]["fixed_scene_player"]
+    assert runtime["start_gate"] == "ego_speed_ready"
+    assert runtime["ego_speed_ready_mps"] == 18.0
+    assert runtime["ego_speed_ready_hold_ticks"] == 10
+    assert runtime["defer_role_spawn_until_arm"] is True
+    planning_cfg = payload["algo"]["apollo"]["planning"]
+    assert planning_cfg["default_cruise_speed_mps"] == 19.44
+    assert planning_cfg["planning_upper_speed_limit_mps"] == 23.61
 
 
 def test_apollo_static_spawn2m_profile_uses_fixed_scene_actor_without_legacy_assist() -> None:

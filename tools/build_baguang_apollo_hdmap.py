@@ -85,6 +85,15 @@ def main() -> int:
             "Can be repeated. Defaults are measured from CARLA 0.9.16 for this map."
         ),
     )
+    parser.add_argument(
+        "--speed-limit-mps",
+        type=float,
+        default=23.61,
+        help=(
+            "Target Apollo lane speed in m/s. The converter writes km/h into "
+            "RoadRunner XML because Apollo's XML parser converts that field to m/s."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -120,6 +129,7 @@ def main() -> int:
         extend_driving_lane_ends_m=float(args.extend_driving_lane_ends_m),
         lane_y_alignment_lines=lane_y_lines,
         lane_y_shifts=lane_y_shifts,
+        lane_speed_limit_mps=float(args.speed_limit_mps),
     )
     print(f"[hdmap] converted coordinate scale: x={scale.x_scale:.9f}, y={scale.y_scale:.9f}")
     print(f"[hdmap] reverse_driving_lane_points={not args.no_reverse_driving_lanes}")
@@ -127,6 +137,7 @@ def main() -> int:
     print(f"[hdmap] carla_lane_y_alignment_enabled={not args.no_carla_lane_y_alignment}")
     print(f"[hdmap] lane_y_lines={json.dumps(_lane_y_lines_json(lane_y_lines), sort_keys=True)}")
     print(f"[hdmap] lane_y_shifts={json.dumps(lane_y_shifts, sort_keys=True)}")
+    print(f"[hdmap] speed_limit_mps={float(args.speed_limit_mps):.6f}")
 
     container_tmp = Path(f"/tmp/carla_testbed_hdmap_{int(time.time())}")
     _run(
@@ -209,8 +220,22 @@ def main() -> int:
         if src.exists():
             src.unlink()
 
+    base_summary = summarize_text_map(host_map_dir / "base_map.txt")
+    sim_summary = summarize_text_map(host_map_dir / "sim_map.txt")
+    expected_speed_limits = [float(args.speed_limit_mps)]
+    if base_summary["driving_lane_speed_limits_mps"] != expected_speed_limits:
+        raise RuntimeError(
+            "generated base_map driving-lane speed limits do not match target: "
+            f"{base_summary['driving_lane_speed_limits_mps']} != {expected_speed_limits}"
+        )
+    if sim_summary["driving_lane_speed_limits_mps"] != expected_speed_limits:
+        raise RuntimeError(
+            "generated sim_map driving-lane speed limits do not match target: "
+            f"{sim_summary['driving_lane_speed_limits_mps']} != {expected_speed_limits}"
+        )
+
     report = {
-        "schema_version": "baguang_apollo_hdmap_build.v1",
+        "schema_version": "baguang_apollo_hdmap_build.v2",
         "host_map_dir": str(host_map_dir),
         "container_map_dir": str(args.container_map_dir),
         "source_xml": str(source_xml),
@@ -221,8 +246,9 @@ def main() -> int:
         "carla_lane_y_alignment_enabled": not args.no_carla_lane_y_alignment,
         "lane_y_alignment_lines": _lane_y_lines_json(lane_y_lines),
         "lane_y_shifts": lane_y_shifts,
-        "base_map": summarize_text_map(host_map_dir / "base_map.txt"),
-        "sim_map": summarize_text_map(host_map_dir / "sim_map.txt"),
+        "speed_limit_mps": float(args.speed_limit_mps),
+        "base_map": base_summary,
+        "sim_map": sim_summary,
         "routing_map": summarize_text_map(host_map_dir / "routing_map.txt"),
     }
     report_path = host_map_dir / "baguang_apollo_hdmap_build_report.json"

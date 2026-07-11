@@ -6,14 +6,21 @@ run:
 
 runtime:
   fixed_scene_player:
-    # Bridge planning/control event streams are finalized after the legacy
-    # harness exits, so they cannot arm the scene online. Keep this pre-roll
-    # explicit and diagnostic rather than pretending final stats are live.
-    start_gate: apollo_warmup_delay
-    start_delay_s: 12.0
+    # Let Apollo establish and accelerate on the unobstructed route first.
+    # Spawn the dynamic target only when ego speed is stable enough to satisfy
+    # the scenario's 70kph initial-state contract.
+    start_gate: ego_speed_ready
+    ego_speed_ready_mps: 18.0
+    ego_speed_ready_hold_ticks: 10
+    defer_role_spawn_until_arm: true
 
 algo:
   apollo:
+    planning:
+      # Keep the scenario cruise contract explicit. Runtime speed remains
+      # bounded by the effective Apollo base-map lane speed limit.
+      default_cruise_speed_mps: 19.44
+      planning_upper_speed_limit_mps: 23.61
     docker:
       # Dynamic fixed-scene samples observed a one-frame non-empty Planning
       # window. Starting Control after that window is too late, and even

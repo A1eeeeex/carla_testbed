@@ -83,6 +83,18 @@ Layered progress status:
 
 2026-07-11 targeted online evidence:
 
+- The Baguang dynamic-scene speed ceiling was traced to inconsistent Apollo
+  map derivatives, not an unloaded Planning flag. Apollo selects
+  `base_map.bin` before `base_map.txt`; the old binary and `sim_map.*` encoded
+  `4.9671m/s`, while a later text-only patch showed `23.61m/s`. The RoadRunner
+  converter now writes the km/h value expected by Apollo's XML parser before
+  atomically generating base/sim/routing outputs, and the build fails if the
+  generated driving-lane speeds differ from the requested value. In the
+  matched online repeat, Planning `speed_limit_from_ref` changed from
+  `4.9671` to `23.61m/s` and ego peak speed changed from about `5.00` to
+  `14.99m/s`. The run is still invalid for the dynamic case because ego did
+  not reach the explicit 18m/s scene-arm threshold before a high-speed lane
+  invasion. This proves the map-speed repair, not lead-decel-accel success.
 - Prediction-trigger pacing is now explicit: localization/chassis remain at
   20 Hz while GT obstacles trigger native Prediction/Planning at 10 Hz. In the
   stitcher diagnostic this reduced early sub-80ms Planning cycles from 225 to

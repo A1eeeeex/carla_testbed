@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+import re
 from typing import Mapping
 import xml.etree.ElementTree as ET
 
@@ -54,6 +55,7 @@ def convert_roadrunner_apollo_xml_to_metric(
     extend_driving_lane_ends_m: float = 0.0,
     lane_y_alignment_lines: dict[str, LaneYLine] | None = None,
     lane_y_shifts: dict[str, float] | None = None,
+    lane_speed_limit_mps: float | None = None,
 ) -> HeaderScale:
     """Convert RoadRunner Apollo XML coordinates to CARLA local meters.
 
@@ -99,11 +101,35 @@ def convert_roadrunner_apollo_xml_to_metric(
         apply_lane_y_alignment_lines(root, lane_y_alignment_lines)
     if lane_y_shifts:
         apply_lane_y_shifts(root, lane_y_shifts)
+    if lane_speed_limit_mps is not None:
+        set_apollo_xml_lane_speed_limits(root, lane_speed_limit_mps)
 
     output_xml.parent.mkdir(parents=True, exist_ok=True)
     ET.indent(root, space="    ")
     tree.write(output_xml, encoding="UTF-8", xml_declaration=True)
     return scale
+
+
+def set_apollo_xml_lane_speed_limits(root: ET.Element, speed_limit_mps: float) -> int:
+    """Write lane speed values in the km/h units expected by Apollo's XML parser."""
+
+    speed_mps = float(speed_limit_mps)
+    if speed_mps <= 0.0:
+        raise ValueError("lane_speed_limit_mps must be positive")
+    speed_kph = _format_float(speed_mps * 3.6)
+    updated = 0
+    for lane in root.findall(".//lane"):
+        if lane.attrib.get("type") != "driving":
+            continue
+        speed = lane.find("speed")
+        if speed is None:
+            speed = ET.SubElement(lane, "speed")
+        speed.set("min", speed_kph)
+        speed.set("max", speed_kph)
+        updated += 1
+    if updated == 0:
+        raise ValueError("Apollo XML contains no driving lanes for speed-limit assignment")
+    return updated
 
 
 def apply_lane_y_alignment_lines(
@@ -305,8 +331,22 @@ def _extend_point_set(points: list[ET.Element], extend_m: float) -> None:
         points[-1].set("y", _format_float(last_y + (end_dy / end_norm) * extend_m))
 
 
-def summarize_text_map(map_txt: str | Path) -> dict[str, int]:
+def summarize_text_map(map_txt: str | Path) -> dict[str, object]:
     text = Path(map_txt).read_text(errors="ignore")
+    speed_limits = sorted(
+        {float(value) for value in re.findall(r"(?m)^\s*speed_limit:\s*([0-9.eE+-]+)\s*$", text)}
+    )
+    driving_speed_limits: set[float] = set()
+    for lane_match in re.finditer(r"(?ms)^lane \{(.*?)(?=^lane \{|^road \{|\Z)", text):
+        lane_block = lane_match.group(1)
+        if not re.search(r"(?m)^\s*type:\s*CITY_DRIVING\s*$", lane_block):
+            continue
+        speed_match = re.search(
+            r"(?m)^\s*speed_limit:\s*([0-9.eE+-]+)\s*$",
+            lane_block,
+        )
+        if speed_match:
+            driving_speed_limits.add(float(speed_match.group(1)))
     return {
         "lane_blocks": text.count("\nlane {"),
         "road_blocks": text.count("\nroad {"),
@@ -320,6 +360,8 @@ def summarize_text_map(map_txt: str | Path) -> dict[str, int]:
         "right_neighbor_reverse": text.count("right_neighbor_reverse_lane_id"),
         "predecessors": text.count("predecessor_id"),
         "successors": text.count("successor_id"),
+        "speed_limits_mps": speed_limits,
+        "driving_lane_speed_limits_mps": sorted(driving_speed_limits),
     }
 
 

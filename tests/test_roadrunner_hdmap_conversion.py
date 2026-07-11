@@ -6,6 +6,8 @@ from carla_testbed.apollo.roadrunner_hdmap import (
     apply_lane_y_alignment_lines,
     apply_lane_y_shifts,
     convert_roadrunner_apollo_xml_to_metric,
+    set_apollo_xml_lane_speed_limits,
+    summarize_text_map,
 )
 
 
@@ -124,6 +126,57 @@ def test_roadrunner_apollo_xml_can_reverse_driving_lane_points(tmp_path: Path) -
     geometry = root.find(".//right/lane/centerLine/geometry")
     assert geometry is not None
     assert float(geometry.attrib["x"]) == 3.0
+
+
+def test_roadrunner_apollo_xml_speed_is_written_in_parser_kph_units(tmp_path: Path) -> None:
+    root = ET.fromstring(
+        """<OpenDRIVE><road><lanes><laneSection><right>
+        <lane id="-1" type="driving"><speed min="17.88" max="17.88"/></lane>
+        <lane id="-2" type="driving"/>
+        <lane id="0" type="none"/>
+        </right></laneSection></lanes></road></OpenDRIVE>"""
+    )
+
+    updated = set_apollo_xml_lane_speed_limits(root, 23.61)
+
+    assert updated == 2
+    speeds = root.findall(".//lane[@type='driving']/speed")
+    assert [float(speed.attrib["max"]) for speed in speeds] == [84.996, 84.996]
+    assert root.find(".//lane[@type='none']/speed") is None
+
+
+def test_roadrunner_apollo_xml_speed_rejects_nonpositive_value() -> None:
+    root = ET.fromstring('<OpenDRIVE><lane type="driving"/></OpenDRIVE>')
+
+    try:
+        set_apollo_xml_lane_speed_limits(root, 0.0)
+    except ValueError as exc:
+        assert str(exc) == "lane_speed_limit_mps must be positive"
+    else:
+        raise AssertionError("expected nonpositive speed limit to be rejected")
+
+
+def test_text_map_summary_separates_driving_lane_speed_limits(tmp_path: Path) -> None:
+    map_path = tmp_path / "base_map.txt"
+    map_path.write_text(
+        """lane {
+  id { id: "driving" }
+  type: CITY_DRIVING
+  speed_limit: 23.61
+}
+lane {
+  id { id: "shoulder" }
+  type: SHOULDER
+  speed_limit: 4.967098765432098
+}
+""",
+        encoding="utf-8",
+    )
+
+    summary = summarize_text_map(map_path)
+
+    assert summary["speed_limits_mps"] == [4.967098765432098, 23.61]
+    assert summary["driving_lane_speed_limits_mps"] == [23.61]
 
 
 def test_roadrunner_apollo_xml_can_extend_driving_lane_ends(tmp_path: Path) -> None:

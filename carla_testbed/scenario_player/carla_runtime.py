@@ -79,6 +79,8 @@ class CarlaFixedSceneRuntime:
         self._trajectory_progress_m: dict[str, float] = {}
         self._trajectory_last_xy: dict[str, tuple[float, float]] = {}
         self._trajectory_initial_gap_m: dict[str, float] = {}
+        self._world: Any | None = None
+        self._ego_actor: Any | None = None
 
     def setup(self, context: Any, storyboard: Mapping[str, Any]) -> CarlaFixedSceneRuntimeState:
         resolved = dict(storyboard)
@@ -96,8 +98,11 @@ class CarlaFixedSceneRuntime:
         self.player.setup({}, resolved)
         state = CarlaFixedSceneRuntimeState(scene_id=str(resolved["scene_id"]), artifact_paths=paths)
         state.lane_change_runtime = _lane_change_runtime_metadata(resolved)
+        self.state = state
         world = _context_attr(context, "world")
         ego = _ego_actor(context)
+        self._world = world
+        self._ego_actor = ego
         if world is None:
             state.errors.append("world_missing")
         if ego is None:
@@ -110,25 +115,32 @@ class CarlaFixedSceneRuntime:
         # pose, otherwise short-gap scenarios can place the target hundreds of
         # meters away from the actual ego pose.
         _tick_world_if_available(world)
-        for role, role_cfg in dict(resolved.get("roles", {})).items():
-            if role == "ego":
+        if not bool(_context_attr(context, "defer_role_spawn", False)):
+            self.spawn_roles(materialize_initial_speeds=materialize_role_initial_speeds)
+        state.spawned_count = len(self.actors)
+        self._write_runtime_state()
+        return state
+
+    def spawn_roles(self, *, materialize_initial_speeds: bool = True) -> None:
+        if self.storyboard is None or self.state is None or self._world is None or self._ego_actor is None:
+            raise RuntimeError("CarlaFixedSceneRuntime.setup() must complete before spawning roles")
+        for role, role_cfg in dict(self.storyboard.get("roles", {})).items():
+            if role == "ego" or role in self.actors:
                 continue
             actor = self._spawn_role_actor(
-                world=world,
-                ego=ego,
+                world=self._world,
+                ego=self._ego_actor,
                 role=role,
                 role_cfg=role_cfg,
-                state=state,
-                materialize_initial_speed=materialize_role_initial_speeds,
+                state=self.state,
+                materialize_initial_speed=materialize_initial_speeds,
             )
             if actor is None:
                 continue
             self.actors[role] = actor
-            state.actor_roles[role] = getattr(actor, "id", None)
-        state.spawned_count = len(self.actors)
-        self.state = state
+            self.state.actor_roles[role] = getattr(actor, "id", None)
+        self.state.spawned_count = len(self.actors)
         self._write_runtime_state()
-        return state
 
     def materialize_role_initial_speeds(self) -> None:
         roles = self.storyboard.get("roles", {}) if self.storyboard else {}
@@ -190,6 +202,8 @@ class CarlaFixedSceneRuntime:
         self._trajectory_progress_m.clear()
         self._trajectory_last_xy.clear()
         self._trajectory_initial_gap_m.clear()
+        self._world = None
+        self._ego_actor = None
         if self.player is not None:
             self.player.teardown()
         if self.state is not None:

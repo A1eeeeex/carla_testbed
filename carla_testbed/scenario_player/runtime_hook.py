@@ -31,6 +31,10 @@ class FixedSceneRuntimeHook(RunHook):
     readiness: dict[str, Any] = field(default_factory=dict)
     start_delay_s: float = 0.0
     gate_wait_start_sim_time_s: float | None = None
+    defer_role_spawn_until_arm: bool = False
+    ego_speed_ready_mps: float = 0.0
+    ego_speed_ready_hold_ticks: int = 1
+    ego_speed_ready_count: int = 0
     errors: list[str] = field(default_factory=list)
     last_tick_result: dict[str, Any] = field(default_factory=dict)
     _closed: bool = False
@@ -47,6 +51,20 @@ class FixedSceneRuntimeHook(RunHook):
                     "gate_elapsed_s": gate_elapsed_s,
                     "required_delay_s": self.start_delay_s,
                     "source": "configured_sim_time_preroll",
+                }
+            elif self.start_gate == "ego_speed_ready":
+                ego_speed = _actor_speed_mps(self.ego_actor)
+                if ego_speed is not None and ego_speed >= self.ego_speed_ready_mps:
+                    self.ego_speed_ready_count += 1
+                else:
+                    self.ego_speed_ready_count = 0
+                self.readiness = {
+                    "ready": self.ego_speed_ready_count >= self.ego_speed_ready_hold_ticks,
+                    "ego_speed_mps": ego_speed,
+                    "required_ego_speed_mps": self.ego_speed_ready_mps,
+                    "ready_hold_ticks": self.ego_speed_ready_count,
+                    "required_hold_ticks": self.ego_speed_ready_hold_ticks,
+                    "source": "carla_ego_state",
                 }
             else:
                 self.readiness = {
@@ -68,6 +86,8 @@ class FixedSceneRuntimeHook(RunHook):
             }
             if not self.readiness.get("ready"):
                 return
+            if self.defer_role_spawn_until_arm:
+                self.runtime.spawn_roles(materialize_initial_speeds=False)
             self.runtime.materialize_role_initial_speeds()
             materialize_ego_initial_speed(
                 ego_actor=self.ego_actor,
@@ -103,6 +123,7 @@ class FixedSceneRuntimeHook(RunHook):
             "armed": self.armed,
             "start_gate": self.start_gate,
             "readiness": dict(self.readiness),
+            "defer_role_spawn_until_arm": self.defer_role_spawn_until_arm,
             "start_delay_s": self.start_delay_s,
         }
         if result.get("stopped"):
@@ -134,6 +155,9 @@ class FixedSceneRuntimeHook(RunHook):
             "start_sim_time_s": self.start_sim_time_s,
             "start_gate": self.start_gate,
             "start_delay_s": self.start_delay_s,
+            "defer_role_spawn_until_arm": self.defer_role_spawn_until_arm,
+            "ego_speed_ready_mps": self.ego_speed_ready_mps,
+            "ego_speed_ready_hold_ticks": self.ego_speed_ready_hold_ticks,
             "armed": self.armed,
             "readiness": dict(self.readiness),
             "active_roles": self.runtime.active_roles(),
@@ -163,6 +187,9 @@ def setup_fixed_scene_runtime_hook(
     start_gate: str = "none",
     materialize_ego_initial_speed_on_arm: bool = False,
     start_delay_s: float = 0.0,
+    defer_role_spawn_until_arm: bool = False,
+    ego_speed_ready_mps: float = 0.0,
+    ego_speed_ready_hold_ticks: int = 1,
 ) -> FixedSceneRuntimeHook:
     root = Path(run_dir).expanduser()
     artifacts = Path(artifact_dir).expanduser() if artifact_dir is not None else root / "artifacts"
@@ -177,6 +204,7 @@ def setup_fixed_scene_runtime_hook(
             "run_dir": root,
             "artifact_dir": artifacts,
             "materialize_role_initial_speeds": armed,
+            "defer_role_spawn": bool(defer_role_spawn_until_arm and not armed),
         },
         storyboard,
     )
@@ -192,7 +220,28 @@ def setup_fixed_scene_runtime_hook(
         materialize_ego_initial_speed_on_arm=bool(materialize_ego_initial_speed_on_arm),
         armed=armed,
         start_delay_s=max(0.0, float(start_delay_s)),
+        defer_role_spawn_until_arm=bool(defer_role_spawn_until_arm),
+        ego_speed_ready_mps=max(0.0, float(ego_speed_ready_mps)),
+        ego_speed_ready_hold_ticks=max(1, int(ego_speed_ready_hold_ticks)),
     )
+
+
+def _actor_speed_mps(actor: Any) -> float | None:
+    try:
+        velocity = actor.get_velocity()
+    except Exception:
+        return None
+    length = getattr(velocity, "length", None)
+    if callable(length):
+        try:
+            return float(length())
+        except Exception:
+            return None
+    try:
+        x, y, z = float(velocity.x), float(velocity.y), float(velocity.z)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return (x * x + y * y + z * z) ** 0.5
 
 
 def target_actor_role_from_storyboard(storyboard: Mapping[str, Any]) -> str | None:
