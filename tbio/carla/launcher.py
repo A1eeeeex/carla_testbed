@@ -400,6 +400,7 @@ class CarlaLauncher:
         self._display_probe: Optional[Dict[str, Any]] = None
         self._launch_started_at: Optional[float] = None
         self._systemd_scope_unit: Optional[str] = None
+        self._listener_pending_after_recovery_window_recorded = False
 
     def _server_tail_flags(self, launch_record: Optional[Dict[str, Any]] = None) -> Dict[str, bool]:
         tail: list[str] = []
@@ -1025,15 +1026,23 @@ class CarlaLauncher:
                         launch_started_at = time.time()
                         continue
                     if self.enable_auto_recovery and not any_port_open:
-                        if self._launch_records:
-                            self._launch_records[-1]["early_fail_reason"] = "rpc_listener_missing_after_hang"
-                            self._launch_records[-1]["elapsed_before_early_fail_sec"] = round(elapsed_s, 3)
-                        print(
-                            "[carla][WARN] startup remained listener-dead past the recovery window; "
-                            "fail fast so outer retry can classify this launch"
-                        )
-                        print(self.diagnose_tail())
-                        return False
+                        # The recovery window selects when to try alternate launch modes;
+                        # it is not the caller's startup timeout. Custom maps and cold
+                        # shader/cache starts can legitimately expose the RPC listener
+                        # later, and Phase1CarlaSession has no outer launch retry.
+                        if not self._listener_pending_after_recovery_window_recorded:
+                            self._listener_pending_after_recovery_window_recorded = True
+                            if self._launch_records:
+                                self._launch_records[-1][
+                                    "listener_pending_after_recovery_window"
+                                ] = True
+                                self._launch_records[-1][
+                                    "listener_pending_elapsed_sec"
+                                ] = round(elapsed_s, 3)
+                            print(
+                                "[carla][WARN] startup remains listener-dead after the "
+                                "recovery window; continue waiting until the configured timeout"
+                            )
                     if self.enable_auto_recovery and self._launch_tail_contains_stream_eof(launch_record):
                         if self._launch_records:
                             self._launch_records[-1]["early_fail_reason"] = "rpc_handshake_dead_with_eof_alive"
