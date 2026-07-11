@@ -35,7 +35,7 @@ from carla_testbed.platform.phase1_p0_matrix import (
     DEFAULT_PHASE1_P0_APOLLO_PLATFORM,
     run_phase1_p0_matrix,
 )
-from carla_testbed.platform.phase1_pair_runner import run_phase1_pair
+from carla_testbed.platform.phase1_pair_runner import DEFAULT_PHASE1_APOLLO_PLATFORM, run_phase1_pair
 from carla_testbed.platform.plan import RunPlan
 from carla_testbed.platform.registry import PlatformRegistry, PlatformRegistryError
 from carla_testbed.record import RunArtifactStore, build_manifest, build_summary
@@ -165,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     pair_p.add_argument("--pair-id", default=None)
     pair_p.add_argument("--apollo-profile", default="apollo/apollo10_carla_gt")
     pair_p.add_argument("--planning-profile", default="builtin/simple_acc_route_follower")
-    pair_p.add_argument("--apollo-platform", default="apollo_cyberrt")
+    pair_p.add_argument("--apollo-platform", default=DEFAULT_PHASE1_APOLLO_PLATFORM)
     pair_p.add_argument("--planning-platform", default="carla_builtin")
     pair_p.add_argument(
         "--apollo-override",

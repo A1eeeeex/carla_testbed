@@ -24,6 +24,7 @@ from .runtime_context import RuntimeContext, write_runtime_context_artifacts
 
 
 PAIR_RUNNER_SCHEMA_VERSION = "phase1_pair_run.v1"
+DEFAULT_PHASE1_APOLLO_PLATFORM = "apollo_cyberrt_town01_behavior_recovery"
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,7 @@ def run_phase1_pair(
     out_dir: str | Path,
     apollo_profile: str = "apollo/apollo10_carla_gt",
     planning_profile: str = "builtin/simple_acc_route_follower",
-    apollo_platform: str = "apollo_cyberrt",
+    apollo_platform: str = DEFAULT_PHASE1_APOLLO_PLATFORM,
     planning_platform: str = "carla_builtin",
     recording: str = "metrics",
     gate: str = "scenario_validation",

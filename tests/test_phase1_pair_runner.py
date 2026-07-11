@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from carla_testbed.platform.phase1_pair_runner import run_phase1_pair
+from carla_testbed.platform.phase1_pair_runner import (
+    DEFAULT_PHASE1_APOLLO_PLATFORM,
+    run_phase1_pair,
+)
 
 
 def test_phase1_pair_runner_dry_run_writes_plans_runs_and_comparison(tmp_path: Path) -> None:
@@ -308,3 +311,17 @@ def test_phase1_pair_runner_start_carla_failure_materializes_invalid_runs(
         assert phase1_status["failure_reason"] == "backend_not_ready"
         platform_result = json.loads((run_dir / "platform_execution_result.json").read_text(encoding="utf-8"))
         assert platform_result["status"] == "blocked_by_carla_startup"
+
+
+def test_phase1_pair_defaults_to_reference_runtime_platform(tmp_path: Path) -> None:
+    result = run_phase1_pair(
+        scenario="town01/lane_keep_097",
+        out_dir=tmp_path / "pair",
+        dry_run=True,
+    )
+
+    apollo_plan = yaml.safe_load(result.plan_paths[1].read_text(encoding="utf-8"))
+    assert apollo_plan["platform"]["name"] == DEFAULT_PHASE1_APOLLO_PLATFORM
+    assert apollo_plan["platform"]["params"]["town01_route_health_config"].endswith(
+        "town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml"
+    )

@@ -8,12 +8,16 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .carla_session import dry_run_carla_session_payload, write_phase1_carla_session_payload
-from .phase1_pair_runner import Phase1PairRunResult, run_phase1_pair
+from .phase1_pair_runner import (
+    DEFAULT_PHASE1_APOLLO_PLATFORM,
+    Phase1PairRunResult,
+    run_phase1_pair,
+)
 from .registry import PlatformRegistry
 
 
 PHASE1_P0_MATRIX_SCHEMA_VERSION = "phase1_p0_matrix.v1"
-DEFAULT_PHASE1_P0_APOLLO_PLATFORM = "apollo_cyberrt_town01_behavior_recovery"
+DEFAULT_PHASE1_P0_APOLLO_PLATFORM = DEFAULT_PHASE1_APOLLO_PLATFORM
 DEFAULT_PHASE1_P0_PLANNING_PLATFORM = "carla_builtin"
 
 
