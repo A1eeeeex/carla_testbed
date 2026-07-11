@@ -2811,6 +2811,27 @@ PARTIAL findings:
   route/Frenet target-gap evidence across lane transitions.
 - Phase 1 summary semantics, event vocabulary, and docs claim consistency are
   partially defined but not yet a complete evaluator contract.
+- The Baguang combined lead-decelerate/accelerate Apollo pair now has an
+  evaluable initial-state synchronization sequence. In
+  `runs/phase1_online_pairs/phase1_p0_lead_decel_accel_joint_initial_state_settle_v7_20260711/`,
+  the fixed-scene hook first restores the canonical ego pose, observes the ego
+  at the declared initial speed for 10 ticks, then spawns the lead and observes
+  both actors at 19.44m/s for another 10 ticks before scene time starts. The
+  run records `initial_speed_materialization_count=20`,
+  `role_speed_ready_count=10`, and a passing scenario actor contract. This
+  removes the v6 startup artifact where the lead appeared at 0.49m/s for the
+  first scene frame while the ego was already at 19.45m/s. The v7 Apollo run is
+  evaluable Phase 1 `success`, with no collision/lane-invasion failure, but it
+  is not natural-driving evidence: pre-scene state materialization is explicit
+  scenario setup and stops at scene time zero.
+- The same v7 evidence exposes the next longitudinal contract issue rather
+  than proving natural following quality. `s_offset_m=20.0` places actor
+  centers about 19.03m apart, while bbox-aware `v-t-gap` reports only 14.14m
+  bumper clearance at 70kph. Apollo still brakes sharply during the first
+  second and the gap grows to 77.28m before ending at 57.37m. The next change
+  must define whether scenario `initial_gap_m=20.0` means center distance or
+  bumper clearance and make spawn feasibility verify that declaration; it
+  must not tune Apollo longitudinal control around an ambiguous setup.
 
 NOT_YET findings:
 

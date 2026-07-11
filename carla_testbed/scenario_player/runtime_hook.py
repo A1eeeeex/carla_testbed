@@ -40,12 +40,81 @@ class FixedSceneRuntimeHook(RunHook):
     ego_speed_ready_mps: float = 0.0
     ego_speed_ready_hold_ticks: int = 1
     ego_speed_ready_count: int = 0
+    post_reset_ego_speed_ready_mps: float = 0.0
+    post_reset_ego_speed_ready_hold_ticks: int = 1
+    post_reset_ego_speed_ready_count: int = 0
+    post_reset_speed_gate_pending: bool = False
+    role_speed_gate_pending: bool = False
+    role_speed_ready_count: int = 0
+    initial_speed_materialization_count: int = 0
     errors: list[str] = field(default_factory=list)
     last_tick_result: dict[str, Any] = field(default_factory=dict)
     _closed: bool = False
 
+    def before_tick(self, frame_context: FrameContext) -> None:
+        if not (self.post_reset_speed_gate_pending or self.role_speed_gate_pending):
+            return
+        report = materialize_ego_initial_speed(
+            ego_actor=self.ego_actor,
+            storyboard=self.storyboard,
+            artifact_dir=self.artifact_dir,
+            enabled=True,
+            source="runtime.fixed_scene_player.post_reset_before_tick",
+        )
+        self.initial_speed_materialization_count += 1
+        if report.get("status") == "fail":
+            self.errors.extend(str(item) for item in report.get("errors", []))
+        if self.role_speed_gate_pending:
+            self.runtime.materialize_role_initial_speeds()
+
     def after_world_tick(self, frame_context: FrameContext) -> None:
         current_sim_time = float(frame_context.sim_time_s)
+        if self.post_reset_speed_gate_pending:
+            ego_speed = _actor_speed_mps(self.ego_actor)
+            if ego_speed is not None and ego_speed >= self.post_reset_ego_speed_ready_mps:
+                self.post_reset_ego_speed_ready_count += 1
+            else:
+                self.post_reset_ego_speed_ready_count = 0
+            ready = self.post_reset_ego_speed_ready_count >= self.post_reset_ego_speed_ready_hold_ticks
+            self.readiness = {
+                "ready": ready,
+                "ego_speed_mps": ego_speed,
+                "required_ego_speed_mps": self.post_reset_ego_speed_ready_mps,
+                "ready_hold_ticks": self.post_reset_ego_speed_ready_count,
+                "required_hold_ticks": self.post_reset_ego_speed_ready_hold_ticks,
+                "source": "post_reset_initial_speed_observation",
+            }
+            if not ready:
+                self._write_waiting_metadata(frame_context, current_sim_time)
+                return
+            self.post_reset_speed_gate_pending = False
+            self._begin_role_speed_settle()
+            self._write_waiting_metadata(frame_context, current_sim_time)
+            return
+        if self.role_speed_gate_pending:
+            role_readiness = _role_initial_speed_readiness(self.runtime, self.storyboard)
+            ego_speed = _actor_speed_mps(self.ego_actor)
+            ego_ready = ego_speed is not None and ego_speed >= self.post_reset_ego_speed_ready_mps
+            if role_readiness["ready"] and ego_ready:
+                self.role_speed_ready_count += 1
+            else:
+                self.role_speed_ready_count = 0
+            ready = self.role_speed_ready_count >= self.post_reset_ego_speed_ready_hold_ticks
+            self.readiness = {
+                "ready": ready,
+                "ego_speed_mps": ego_speed,
+                "ego_speed_ready": ego_ready,
+                "required_ego_speed_mps": self.post_reset_ego_speed_ready_mps,
+                "role_speeds": role_readiness["role_speeds"],
+                "ready_hold_ticks": self.role_speed_ready_count,
+                "required_hold_ticks": self.post_reset_ego_speed_ready_hold_ticks,
+                "source": "post_spawn_joint_initial_speed_observation",
+            }
+            if not ready:
+                self._write_waiting_metadata(frame_context, current_sim_time)
+                return
+            self.role_speed_gate_pending = False
+            self.armed = True
         if not self.armed:
             if self.gate_wait_start_sim_time_s is None:
                 self.gate_wait_start_sim_time_s = current_sim_time
@@ -102,17 +171,11 @@ class FixedSceneRuntimeHook(RunHook):
             if pose_report.get("status") == "fail":
                 self.errors.extend(str(item) for item in pose_report.get("errors", []))
                 return
-            if self.defer_role_spawn_until_arm:
-                self.runtime.spawn_roles(materialize_initial_speeds=False)
-            self.runtime.materialize_role_initial_speeds()
-            materialize_ego_initial_speed(
-                ego_actor=self.ego_actor,
-                storyboard=self.storyboard,
-                artifact_dir=self.artifact_dir,
-                enabled=self.materialize_ego_initial_speed_on_arm,
-                source="runtime.fixed_scene_player.apollo_control_ready_arm",
-            )
-            self.armed = True
+            if self.reset_ego_pose_on_arm and self.post_reset_ego_speed_ready_mps > 0.0:
+                self.post_reset_speed_gate_pending = True
+                self._write_waiting_metadata(frame_context, current_sim_time)
+                return
+            self._complete_arm()
         if self.start_sim_time_s is None:
             self.start_sim_time_s = current_sim_time
         scene_sim_time = max(0.0, current_sim_time - float(self.start_sim_time_s))
@@ -141,6 +204,8 @@ class FixedSceneRuntimeHook(RunHook):
             "readiness": dict(self.readiness),
             "defer_role_spawn_until_arm": self.defer_role_spawn_until_arm,
             "reset_ego_pose_on_arm": self.reset_ego_pose_on_arm,
+            "post_reset_speed_gate_pending": self.post_reset_speed_gate_pending,
+            "role_speed_gate_pending": self.role_speed_gate_pending,
             "start_delay_s": self.start_delay_s,
         }
         if result.get("stopped"):
@@ -175,6 +240,13 @@ class FixedSceneRuntimeHook(RunHook):
             "defer_role_spawn_until_arm": self.defer_role_spawn_until_arm,
             "ego_speed_ready_mps": self.ego_speed_ready_mps,
             "ego_speed_ready_hold_ticks": self.ego_speed_ready_hold_ticks,
+            "post_reset_ego_speed_ready_mps": self.post_reset_ego_speed_ready_mps,
+            "post_reset_ego_speed_ready_hold_ticks": self.post_reset_ego_speed_ready_hold_ticks,
+            "post_reset_ego_speed_ready_count": self.post_reset_ego_speed_ready_count,
+            "post_reset_speed_gate_pending": self.post_reset_speed_gate_pending,
+            "role_speed_gate_pending": self.role_speed_gate_pending,
+            "role_speed_ready_count": self.role_speed_ready_count,
+            "initial_speed_materialization_count": self.initial_speed_materialization_count,
             "armed": self.armed,
             "readiness": dict(self.readiness),
             "active_roles": self.runtime.active_roles(),
@@ -186,6 +258,41 @@ class FixedSceneRuntimeHook(RunHook):
                 "This hook controls non-ego fixed-scene actors only. It does not "
                 "prove Apollo/Autoware ego capability."
             ),
+        }
+
+    def _complete_arm(self) -> None:
+        if self.defer_role_spawn_until_arm:
+            self.runtime.spawn_roles(materialize_initial_speeds=False)
+        self.runtime.materialize_role_initial_speeds()
+        materialize_ego_initial_speed(
+            ego_actor=self.ego_actor,
+            storyboard=self.storyboard,
+            artifact_dir=self.artifact_dir,
+            enabled=self.materialize_ego_initial_speed_on_arm,
+            source="runtime.fixed_scene_player.apollo_control_ready_arm",
+        )
+        self.armed = True
+
+    def _begin_role_speed_settle(self) -> None:
+        if self.defer_role_spawn_until_arm:
+            self.runtime.spawn_roles(materialize_initial_speeds=False)
+        self.runtime.materialize_role_initial_speeds()
+        self.role_speed_gate_pending = True
+
+    def _write_waiting_metadata(self, frame_context: FrameContext, current_sim_time: float) -> None:
+        frame_context.metadata["fixed_scene_runtime"] = {
+            "tick_count": self.tick_count,
+            "scene_sim_time_s": None,
+            "world_sim_time_s": current_sim_time,
+            "active_roles": self.runtime.active_roles(),
+            "current_phase": None,
+            "applied_roles": [],
+            "stopped": False,
+            "armed": False,
+            "start_gate": self.start_gate,
+            "readiness": dict(self.readiness),
+            "post_reset_speed_gate_pending": self.post_reset_speed_gate_pending,
+            "role_speed_gate_pending": self.role_speed_gate_pending,
         }
 
 
@@ -206,6 +313,8 @@ def setup_fixed_scene_runtime_hook(
     start_delay_s: float = 0.0,
     defer_role_spawn_until_arm: bool = False,
     reset_ego_pose_on_arm: bool = False,
+    post_reset_ego_speed_ready_mps: float = 0.0,
+    post_reset_ego_speed_ready_hold_ticks: int = 1,
     ego_speed_ready_mps: float = 0.0,
     ego_speed_ready_hold_ticks: int = 1,
 ) -> FixedSceneRuntimeHook:
@@ -245,6 +354,8 @@ def setup_fixed_scene_runtime_hook(
         defer_role_spawn_until_arm=bool(defer_role_spawn_until_arm),
         reset_ego_pose_on_arm=bool(reset_ego_pose_on_arm),
         initial_ego_transform=initial_ego_transform,
+        post_reset_ego_speed_ready_mps=max(0.0, float(post_reset_ego_speed_ready_mps)),
+        post_reset_ego_speed_ready_hold_ticks=max(1, int(post_reset_ego_speed_ready_hold_ticks)),
         ego_speed_ready_mps=max(0.0, float(ego_speed_ready_mps)),
         ego_speed_ready_hold_ticks=max(1, int(ego_speed_ready_hold_ticks)),
     )
@@ -276,6 +387,39 @@ def _actor_speed_mps(actor: Any) -> float | None:
     except (AttributeError, TypeError, ValueError):
         return None
     return (x * x + y * y + z * z) ** 0.5
+
+
+def _role_initial_speed_readiness(
+    runtime: CarlaFixedSceneRuntime,
+    storyboard: Mapping[str, Any],
+    *,
+    tolerance_mps: float = 0.5,
+) -> dict[str, Any]:
+    role_configs = storyboard.get("roles")
+    if not isinstance(role_configs, Mapping):
+        role_configs = {}
+    role_speeds: dict[str, dict[str, Any]] = {}
+    ready = True
+    for role, actor in runtime.actors.items():
+        role_cfg = role_configs.get(role)
+        if not isinstance(role_cfg, Mapping):
+            continue
+        spawn_cfg = role_cfg.get("spawn")
+        if not isinstance(spawn_cfg, Mapping):
+            spawn_cfg = {}
+        expected = role_cfg.get("initial_speed_mps", spawn_cfg.get("initial_speed_mps"))
+        if expected is None:
+            continue
+        expected_speed = max(0.0, float(expected))
+        observed_speed = _actor_speed_mps(actor)
+        role_ready = observed_speed is not None and abs(observed_speed - expected_speed) <= tolerance_mps
+        ready = ready and role_ready
+        role_speeds[str(role)] = {
+            "expected_speed_mps": expected_speed,
+            "observed_speed_mps": observed_speed,
+            "ready": role_ready,
+        }
+    return {"ready": ready, "role_speeds": role_speeds}
 
 
 def target_actor_role_from_storyboard(storyboard: Mapping[str, Any]) -> str | None:

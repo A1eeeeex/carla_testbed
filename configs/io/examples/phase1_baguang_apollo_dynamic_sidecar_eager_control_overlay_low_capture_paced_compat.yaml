@@ -18,6 +18,8 @@ runtime:
     # this reset a deferred 18s profile starts mid-road and reaches the real
     # Baguang road end before the speed change can complete.
     reset_ego_pose_on_arm: true
+    post_reset_ego_speed_ready_mps: 18.0
+    post_reset_ego_speed_ready_hold_ticks: 10
 
 algo:
   apollo:

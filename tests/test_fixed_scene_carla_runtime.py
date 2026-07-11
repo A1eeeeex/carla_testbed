@@ -413,6 +413,8 @@ def test_fixed_scene_runtime_hook_resets_ego_before_deferred_target_spawn(tmp_pa
         start_gate="ego_speed_ready",
         defer_role_spawn_until_arm=True,
         reset_ego_pose_on_arm=True,
+        post_reset_ego_speed_ready_mps=18.0,
+        post_reset_ego_speed_ready_hold_ticks=2,
         ego_speed_ready_mps=18.0,
         ego_speed_ready_hold_ticks=1,
     )
@@ -422,9 +424,46 @@ def test_fixed_scene_runtime_hook_resets_ego_before_deferred_target_spawn(tmp_pa
 
     hook.after_world_tick(armed)
 
-    assert hook.armed is True
+    assert hook.armed is False
+    assert hook.post_reset_speed_gate_pending is True
     assert math.isclose(ego.transform.location.x, 100.0)
+    assert world.spawned == []
+    settle = type("FrameContext", (), {"frame_id": 12, "sim_time_s": 40.05, "step": 2, "metadata": {}})()
+    hook.before_tick(settle)
+    ego.velocity = _Vector(19.0, 0.0, 0.0)
+    hook.after_world_tick(settle)
+
+    assert hook.armed is False
+    second_settle = type(
+        "FrameContext", (), {"frame_id": 13, "sim_time_s": 40.1, "step": 3, "metadata": {}}
+    )()
+    hook.before_tick(second_settle)
+    ego.velocity = _Vector(19.0, 0.0, 0.0)
+    hook.after_world_tick(second_settle)
+
+    assert hook.armed is False
+    assert hook.role_speed_gate_pending is True
     assert math.isclose(world.spawned[0].transform.location.x, 120.0)
+    first_joint = type(
+        "FrameContext", (), {"frame_id": 14, "sim_time_s": 40.15, "step": 4, "metadata": {}}
+    )()
+    hook.before_tick(first_joint)
+    ego.velocity = _Vector(19.0, 0.0, 0.0)
+    world.spawned[0].velocity = world.spawned[0].target_velocity
+    hook.after_world_tick(first_joint)
+    assert hook.armed is False
+    second_joint = type(
+        "FrameContext", (), {"frame_id": 15, "sim_time_s": 40.2, "step": 5, "metadata": {}}
+    )()
+    hook.before_tick(second_joint)
+    ego.velocity = _Vector(19.0, 0.0, 0.0)
+    world.spawned[0].velocity = world.spawned[0].target_velocity
+    hook.after_world_tick(second_joint)
+
+    assert hook.armed is True
+    assert hook.role_speed_gate_pending is False
+    assert hook.role_speed_ready_count == 2
+    assert hook.initial_speed_materialization_count == 4
     report = json.loads(
         (tmp_path / "artifacts" / "ego_initial_pose_materialization.json").read_text(encoding="utf-8")
     )
