@@ -152,7 +152,7 @@ def _planning_debug_path_candidate_summary(
     *,
     field_inventory: Mapping[str, Any],
     max_candidates: int = 8,
-    max_items_per_candidate: int = 2,
+    max_items_per_candidate: int = 4,
 ) -> dict[str, Any]:
     candidates: list[dict[str, Any]] = []
     candidate_paths = field_inventory.get("reference_line_candidate_paths")

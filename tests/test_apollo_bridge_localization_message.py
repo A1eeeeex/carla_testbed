@@ -880,6 +880,35 @@ def test_bridge_extracts_simple_lon_debug_context_for_control_attribution() -> N
     assert raw["debug_simple_lon_is_full_stop"] is False
 
 
+def test_bridge_extracts_lateral_steer_decomposition_for_control_attribution() -> None:
+    _install_fake_protobuf()
+    _install_fake_carla()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    simple_lat_debug = types.SimpleNamespace(
+        steer_angle=12.0,
+        steer_angle_feedforward=8.0,
+        steer_angle_lateral_contribution=1.0,
+        steer_angle_lateral_rate_contribution=2.0,
+        steer_angle_heading_contribution=3.0,
+        steer_angle_heading_rate_contribution=-2.0,
+        steer_angle_feedback=4.0,
+    )
+    cmd = types.SimpleNamespace(
+        steering_target=12.0,
+        debug=types.SimpleNamespace(simple_lat_debug=simple_lat_debug),
+    )
+
+    raw = adapter._extract_raw_control_fields(cmd)
+
+    assert raw["debug_simple_lat_steer_angle_feedforward"] == pytest.approx(8.0)
+    assert raw["debug_simple_lat_steer_angle_feedback"] == pytest.approx(4.0)
+    assert raw["debug_simple_lat_steer_angle_lateral_contribution"] == pytest.approx(1.0)
+    assert raw["debug_simple_lat_steer_angle_lateral_rate_contribution"] == pytest.approx(2.0)
+    assert raw["debug_simple_lat_steer_angle_heading_contribution"] == pytest.approx(3.0)
+    assert raw["debug_simple_lat_steer_angle_heading_rate_contribution"] == pytest.approx(-2.0)
+
+
 def _install_fake_protobuf() -> None:
     google = sys.modules.setdefault("google", types.ModuleType("google"))
     protobuf = sys.modules.setdefault("google.protobuf", types.ModuleType("google.protobuf"))

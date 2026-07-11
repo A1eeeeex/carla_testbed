@@ -255,6 +255,30 @@ def test_build_planning_debug_presence_summarizes_path_candidate_points() -> Non
     ]
 
 
+def test_build_planning_debug_presence_keeps_all_four_path_stages() -> None:
+    msg = SimpleNamespace(
+        debug=SimpleNamespace(
+            planning_data=SimpleNamespace(
+                reference_line=[],
+                path=[SimpleNamespace(name=f"path_stage_{index}") for index in range(4)],
+                routing=SimpleNamespace(road=[]),
+            )
+        )
+    )
+
+    presence = build_planning_debug_presence(msg)
+
+    items = presence["planning_debug_path_candidate_summary"]["candidates"][0][
+        "item_summaries"
+    ]
+    assert [item["scalar_fields"]["name"] for item in items] == [
+        "path_stage_0",
+        "path_stage_1",
+        "path_stage_2",
+        "path_stage_3",
+    ]
+
+
 def test_build_planning_debug_presence_uses_path_geometry_fallback() -> None:
     msg = SimpleNamespace(
         debug=SimpleNamespace(
