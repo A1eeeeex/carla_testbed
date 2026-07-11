@@ -139,7 +139,11 @@ algo:
     control_mapping:
       actuator_mapping_mode: legacy
       steer_scale: 1.0
-      steer_sign: 1.0
+      # Online Baguang A/B closed the CARLA steering-direction contract:
+      # +1 made applied steer reinforce trusted route/HDMap lateral error;
+      # -1 completed 1800 ticks without lane invasion or collision. This is a
+      # sign-semantics correction, not a steer-scale or gain adjustment.
+      steer_sign: -1.0
       throttle_scale: 1.5
       brake_scale: 1.0
       steering_percent_normalization: single_percent_at_select
@@ -164,6 +168,14 @@ algo:
       lat_err_gain_scheduler_ratio: [0.05, 0.15, 1.0, 0.6, 0.2, 0.1, 0.05]
       heading_err_gain_scheduler_speed: [0.5, 2.0, 4.0, 8.0, 12.0, 20.0, 25.0]
       heading_err_gain_scheduler_ratio: [0.05, 0.15, 1.0, 0.6, 0.4, 0.2, 0.1]
+      # Apollo LQR otherwise falls back to nearest-by-position and can keep a
+      # past target at trajectory fraction zero on this GT compatibility path.
+      query_relative_time: 0.3
+      query_time_nearest_point_only: true
+      # The look-ahead/back feedback path amplified source steering after the
+      # target-time repair; disabling it reduced raw-steer and heading error in
+      # the same online A/B without changing bridge output scaling.
+      enable_look_ahead_back_control: false
       minimum_speed_protection: 1.0
     # P1: use_speed_itfc=true
     control_lon:

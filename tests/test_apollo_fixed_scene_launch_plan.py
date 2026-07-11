@@ -385,6 +385,32 @@ def test_apollo_static_follow_stop_compat_config_defers_control_until_planning_r
     assert docker_cfg["deferred_control_disable_bvar_dump"] is True
 
 
+def test_apollo_baguang_compat_profile_freezes_verified_lateral_contract() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_compat.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    apollo = payload["algo"]["apollo"]
+    assert apollo["control_mapping"]["steer_sign"] == -1.0
+    assert apollo["control_mapping"]["steer_scale"] == 1.0
+    assert apollo["control_lqr"]["query_time_nearest_point_only"] is True
+    assert apollo["control_lqr"]["enable_look_ahead_back_control"] is False
+
+    dynamic = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml"
+        ).read_text(encoding="utf-8")
+    )
+    assert (
+        dynamic["extends"]
+        == "phase1_baguang_apollo_followstop_static_spawn2m_control_overlay_low_capture_paced_compat.yaml"
+    )
+
+
 def test_apollo_dynamic_sidecar_profile_starts_control_after_route_established() -> None:
     payload = yaml.safe_load(
         Path(
@@ -429,8 +455,8 @@ def test_apollo_dynamic_sidecar_steer_sign_inverted_profile_is_diagnostic_only()
     assert "steer_sign_inverted_diagnostic" in payload["run"]["profile_name"]
     assert payload["run"]["capability_profile"] == "phase1_fixed_scene_compatibility_diagnostic_steer_sign_ab"
     assert payload["algo"]["apollo"]["control_mapping"]["steer_sign"] == -1.0
-    assert any("diagnostic A/B" in note for note in payload["assist_ledger"]["notes"])
-    assert any("not a default backend profile" in note for note in payload["assist_ledger"]["notes"])
+    assert any("compatibility alias" in note for note in payload["assist_ledger"]["notes"])
+    assert any("not a natural-driving" in note for note in payload["assist_ledger"]["notes"])
 
 
 def test_town01_lane_keep_steer_sign_inverted_profile_is_diagnostic_only() -> None:

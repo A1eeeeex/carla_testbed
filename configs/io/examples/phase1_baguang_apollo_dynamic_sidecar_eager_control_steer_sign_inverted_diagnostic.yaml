@@ -8,15 +8,12 @@ run:
 algo:
   apollo:
     control_mapping:
-      # Diagnostic A/B only. The latest dynamic lead-decel sample shows Apollo
-      # raw steer, mapped steer, CARLA applied steer, yaw-rate, and lateral
-      # departure increasing together before lane invasion. This profile tests
-      # steering sign semantics without changing steer_scale, control mode, or
-      # the default Phase 1 Apollo compatibility profile.
+      # Historical diagnostic alias retained for reproducibility. The shared
+      # Baguang compatibility baseline now uses the same verified sign, so this
+      # override is intentionally a no-op rather than a separate candidate.
       steer_sign: -1.0
 
 assist_ledger:
   notes:
-    - Phase 1 Apollo dynamic fixed-scene sidecar eager-control profile with steer_sign inverted for one-off diagnostic A/B.
-    - This is not a default backend profile, not a natural-driving or no-interference claim, and not permission to change steer_scale or physical mapping.
-    - Use only to test whether the latest lane-invasion blocker is caused by steering sign/control-semantics mismatch after route/reference-line evidence is inspected.
+    - Historical Phase 1 steering-sign diagnostic profile retained as a compatibility alias after the sign contract moved into the shared Baguang baseline.
+    - This is not a natural-driving or no-interference claim, and it is not permission to change steer_scale or physical mapping.
