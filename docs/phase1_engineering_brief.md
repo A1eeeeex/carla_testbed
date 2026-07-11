@@ -2843,6 +2843,19 @@ PARTIAL findings:
   blocker into Apollo longitudinal response to a short-headway lead; it does
   not justify relaxing the scenario evidence contract or changing the frozen
   lateral configuration.
+- The follow-up v9 pair at
+  `runs/phase1_online_pairs/phase1_p0_lead_decel_accel_atomic_target_v9_20260711/`
+  removes a second setup confounder. A moving lead is now given its initial
+  velocity before CARLA's internal spawn-materialization tick and the scene is
+  armed immediately once that observed velocity is valid. Apollo no longer
+  sees the lead while the setup hook pins ego speed: there is no pre-scene raw
+  brake or `SPEED_FALLBACK`, and the ego remains at about 19.5m/s through the
+  first 0.2s. Planning first enters `SPEED_FALLBACK` around scene time 0.25s
+  after consuming the real lead observation. The ego is still at 10.83m/s at
+  1.1s rather than v8's 3.57m/s, but the run remains evaluable
+  `degraded/large_final_gap` with 69.53m final gap. The remaining blocker is
+  Apollo's longitudinal planning response, not target spawn speed, gap
+  materialization, bridge guard behavior, or the frozen lateral configuration.
 
 NOT_YET findings:
 

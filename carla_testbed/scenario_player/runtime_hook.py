@@ -89,8 +89,9 @@ class FixedSceneRuntimeHook(RunHook):
                 return
             self.post_reset_speed_gate_pending = False
             self._begin_role_speed_settle()
-            self._write_waiting_metadata(frame_context, current_sim_time)
-            return
+            if not self.armed:
+                self._write_waiting_metadata(frame_context, current_sim_time)
+                return
         if self.role_speed_gate_pending:
             role_readiness = _role_initial_speed_readiness(self.runtime, self.storyboard)
             ego_speed = _actor_speed_mps(self.ego_actor)
@@ -281,6 +282,21 @@ class FixedSceneRuntimeHook(RunHook):
             # still stationary.
             self.runtime.spawn_roles(materialize_initial_speeds=True)
         self.runtime.materialize_role_initial_speeds()
+        role_readiness = _role_initial_speed_readiness(self.runtime, self.storyboard)
+        if role_readiness["ready"]:
+            self.role_speed_ready_count = 1
+            self.readiness = {
+                "ready": True,
+                "ego_speed_mps": _actor_speed_mps(self.ego_actor),
+                "ego_speed_ready": True,
+                "required_ego_speed_mps": self.post_reset_ego_speed_ready_mps,
+                "role_speeds": role_readiness["role_speeds"],
+                "ready_hold_ticks": 1,
+                "required_hold_ticks": 1,
+                "source": "atomic_post_spawn_initial_speed_observation",
+            }
+            self.armed = True
+            return
         self.role_speed_gate_pending = True
 
     def _write_waiting_metadata(self, frame_context: FrameContext, current_sim_time: float) -> None:
