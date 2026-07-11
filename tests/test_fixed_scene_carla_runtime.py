@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import math
 
+import pytest
+
 from carla_testbed.scenario_player.carla_runtime import CarlaFixedSceneRuntime
 from carla_testbed.scenario_player import carla_runtime as carla_runtime_module
 from carla_testbed.scenario_player.compiler import compile_fixed_scene_template
@@ -97,6 +99,27 @@ def test_carla_runtime_settles_ego_pose_before_spawning_target_actor(tmp_path) -
     assert world.tick_count == 2
     assert math.isclose(world.spawned[0].transform.location.x, 120.0)
     assert math.isclose(feasibility["actual_longitudinal_offset_m"], 20.0)
+
+
+def test_carla_runtime_verifies_declared_bumper_gap(tmp_path) -> None:
+    world = _FakeWorld()
+    ego = _FakeActor(
+        actor_id=1,
+        transform=_Transform(_Location(0.0, 0.0, 0.0), _Rotation(yaw=0.0)),
+    )
+    storyboard = compile_fixed_scene_template(
+        load_fixed_scene_template("configs/scenarios/baguang/lead_decel_accel_70_40_70_20m.yaml")
+    )
+    runtime = CarlaFixedSceneRuntime()
+
+    state = runtime.setup({"world": world, "ego_actor": ego, "artifact_dir": tmp_path}, storyboard)
+
+    feasibility = state.spawn_feasibility["lead_vehicle"]
+    assert state.errors == []
+    assert feasibility["gap_reference"] == "bumper_to_bumper"
+    assert feasibility["expected_bumper_gap_m"] == 20.0
+    assert feasibility["actual_bumper_gap_m"] == pytest.approx(20.5)
+    assert feasibility["blocking_reasons"] == []
 
 
 def test_carla_runtime_falls_back_when_preferred_waypoint_has_gross_distance_mismatch(tmp_path) -> None:

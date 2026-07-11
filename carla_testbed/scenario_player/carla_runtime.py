@@ -564,6 +564,7 @@ def _spawn_feasibility(
     longitudinal = None
     lateral = None
     euclidean = None
+    actual_bumper_gap_m = None
     blocking: list[str] = []
     warnings: list[str] = []
     if ego_tf is not None and actor_tf is not None:
@@ -576,6 +577,10 @@ def _spawn_feasibility(
             getattr(ego_tf, "location", None),
             getattr(actor_tf, "location", None),
         )
+        ego_extent = _actor_longitudinal_half_extent(ego, ego_tf)
+        actor_extent = _actor_longitudinal_half_extent(actor, ego_tf)
+        if longitudinal is not None and ego_extent is not None and actor_extent is not None:
+            actual_bumper_gap_m = longitudinal - ego_extent - actor_extent
     else:
         warnings.append("spawn_feasibility_pose_missing")
     route_ahead_selection = selection.source == "carla_waypoint_next" and spawn_cfg.get("lane") == "same"
@@ -599,6 +604,16 @@ def _spawn_feasibility(
         blocking.append("lateral_offset_out_of_tolerance")
     if require_waypoint and selection.source != "carla_waypoint_next":
         blocking.append("waypoint_spawn_required_but_fallback_used")
+    gap_reference = str(spawn_cfg.get("gap_reference") or "center_to_center")
+    expected_bumper_gap_m = _optional_float(spawn_cfg.get("expected_bumper_gap_m"))
+    gap_tolerance_m = float(feasibility_cfg.get("gap_tolerance_m", tolerance_m) or tolerance_m)
+    if gap_reference == "bumper_to_bumper":
+        if actual_bumper_gap_m is None:
+            blocking.append("bumper_gap_unavailable")
+        elif expected_bumper_gap_m is None:
+            blocking.append("expected_bumper_gap_missing")
+        elif abs(actual_bumper_gap_m - expected_bumper_gap_m) > gap_tolerance_m:
+            blocking.append("bumper_gap_out_of_tolerance")
     lane_check = _same_lane_check(world, ego_tf, actor_tf, spawn_cfg)
     if route_ahead_selection and lane_check.get("status") == "fail":
         lane_check = {
@@ -617,6 +632,10 @@ def _spawn_feasibility(
         "actual_longitudinal_offset_m": longitudinal,
         "actual_lateral_offset_m": lateral,
         "actual_euclidean_offset_m": euclidean,
+        "gap_reference": gap_reference,
+        "expected_bumper_gap_m": expected_bumper_gap_m,
+        "actual_bumper_gap_m": actual_bumper_gap_m,
+        "gap_tolerance_m": gap_tolerance_m,
         "route_ahead_selection": route_ahead_selection,
         "route_distance_m": selection.route_distance_m,
         "waypoint_candidate_count": selection.waypoint_candidate_count,
@@ -630,6 +649,21 @@ def _spawn_feasibility(
         "blocking_reasons": blocking,
         "warnings": warnings,
     }
+
+
+def _actor_longitudinal_half_extent(actor: Any, reference_transform: Any) -> float | None:
+    extent = getattr(getattr(actor, "bounding_box", None), "extent", None)
+    actor_transform = _safe_call(actor, "get_transform") or getattr(actor, "transform", None)
+    if extent is None or actor_transform is None or reference_transform is None:
+        return None
+    extent_x = _optional_float(getattr(extent, "x", None))
+    extent_y = _optional_float(getattr(extent, "y", None))
+    if extent_x is None or extent_y is None:
+        return None
+    actor_yaw = _float_attr(getattr(actor_transform, "rotation", None), "yaw", 0.0) or 0.0
+    reference_yaw = _float_attr(getattr(reference_transform, "rotation", None), "yaw", 0.0) or 0.0
+    relative_yaw = math.radians(float(actor_yaw) - float(reference_yaw))
+    return abs(math.cos(relative_yaw)) * extent_x + abs(math.sin(relative_yaw)) * extent_y
 
 
 def _relative_longitudinal_lateral(ego_location: Any, actor_location: Any, ego_yaw_deg: float) -> tuple[float, float]:

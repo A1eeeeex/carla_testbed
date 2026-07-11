@@ -275,7 +275,11 @@ class FixedSceneRuntimeHook(RunHook):
 
     def _begin_role_speed_settle(self) -> None:
         if self.defer_role_spawn_until_arm:
-            self.runtime.spawn_roles(materialize_initial_speeds=False)
+            # spawn_roles() advances CARLA once to materialize the actor. Give
+            # moving roles their declared speed before that tick so the ego
+            # cannot consume the configured initial gap while the target is
+            # still stationary.
+            self.runtime.spawn_roles(materialize_initial_speeds=True)
         self.runtime.materialize_role_initial_speeds()
         self.role_speed_gate_pending = True
 

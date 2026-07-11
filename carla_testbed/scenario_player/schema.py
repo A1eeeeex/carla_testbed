@@ -96,6 +96,22 @@ def validate_fixed_scene_template(cfg: Mapping[str, Any]) -> None:
             errors.append("roles.lead_vehicle is required")
     if not isinstance(cfg.get("params"), Mapping):
         errors.append("params mapping is required")
+    if isinstance(cfg.get("roles"), Mapping):
+        for role, role_cfg in cfg["roles"].items():
+            if not isinstance(role_cfg, Mapping):
+                continue
+            spawn = role_cfg.get("spawn")
+            if not isinstance(spawn, Mapping):
+                continue
+            gap_reference = spawn.get("gap_reference")
+            if gap_reference not in {None, "center_to_center", "bumper_to_bumper"}:
+                errors.append(
+                    f"roles.{role}.spawn.gap_reference must be center_to_center or bumper_to_bumper"
+                )
+            if gap_reference == "bumper_to_bumper" and spawn.get("expected_bumper_gap_m") is None:
+                errors.append(
+                    f"roles.{role}.spawn.expected_bumper_gap_m is required for bumper_to_bumper"
+                )
     if "success_criteria" in cfg and not isinstance(cfg["success_criteria"], Mapping):
         errors.append("success_criteria must be a mapping")
     if errors:

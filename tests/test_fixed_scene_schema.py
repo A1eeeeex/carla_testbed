@@ -43,6 +43,21 @@ def test_template_requires_supported_template() -> None:
         )
 
 
+def test_bumper_gap_spawn_requires_explicit_expected_gap() -> None:
+    with pytest.raises(ValueError, match="expected_bumper_gap_m is required"):
+        validate_fixed_scene_template(
+            {
+                "schema_version": "fixed_scene_template.v1",
+                "template": "lead_vehicle_accel_decel",
+                "roles": {
+                    "ego": {},
+                    "lead_vehicle": {"spawn": {"gap_reference": "bumper_to_bumper"}},
+                },
+                "params": {},
+            }
+        )
+
+
 def test_trigger_dsl_aliases_match_proposed_yaml_shape() -> None:
     actors = ScenarioActorRegistry()
     actors.update(

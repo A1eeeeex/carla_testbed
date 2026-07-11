@@ -106,6 +106,10 @@ def test_baguang_lead_decel_accel_profile_matches_canonical_case_name() -> None:
     assert storyboard["params"]["lead_decel_target_speed_mps"] == 11.11
     assert storyboard["params"]["lead_final_speed_mps"] == 19.44
     assert storyboard["target_actor_contract"]["target_actor_role"] == "lead_vehicle"
+    spawn = storyboard["roles"]["lead_vehicle"]["spawn"]
+    assert spawn["gap_reference"] == "bumper_to_bumper"
+    assert spawn["expected_bumper_gap_m"] == 20.0
+    assert spawn["s_offset_m"] == 24.9
 
 
 def test_baguang_lead_hard_brake_profile_matches_70_to_stop() -> None:

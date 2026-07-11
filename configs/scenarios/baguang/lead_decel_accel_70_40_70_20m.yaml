@@ -25,11 +25,17 @@ fixed_scene:
       spawn:
         relative_to: ego
         lane: same
-        s_offset_m: 20.0
+        # s_offset is center-to-center; 24.9m yields the declared 20m
+        # bumper-to-bumper gap for the configured Lincoln MKZ pair. Runtime
+        # bbox evidence below is authoritative and blocks a bad spawn.
+        s_offset_m: 24.9
+        gap_reference: bumper_to_bumper
+        expected_bumper_gap_m: 20.0
         prefer_waypoint: false
         feasibility:
           enabled: true
           s_offset_tolerance_m: 3.0
+          gap_tolerance_m: 1.0
           max_lateral_m: 2.5
           require_waypoint: false
   params:

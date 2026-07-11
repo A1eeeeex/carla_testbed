@@ -2832,6 +2832,17 @@ PARTIAL findings:
   must define whether scenario `initial_gap_m=20.0` means center distance or
   bumper clearance and make spawn feasibility verify that declaration; it
   must not tune Apollo longitudinal control around an ambiguous setup.
+- That ambiguity is closed by the v8 pair at
+  `runs/phase1_online_pairs/phase1_p0_lead_decel_accel_bumper_gap_v8_20260711/`.
+  The scenario now declares `gap_reference=bumper_to_bumper`; runtime bbox
+  feasibility measures 20.008m against the requested 20.0m and passes. Both
+  actors start the scene at about 19.44m/s. Apollo remains evaluable but
+  `degraded/large_final_gap`: it slows to 3.50m/s during the first second and
+  ends at 66.99m gap. The builtin baseline also slows for the roughly 1.03s
+  initial headway, but ends at 22.29m. This comparison moves the primary
+  blocker into Apollo longitudinal response to a short-headway lead; it does
+  not justify relaxing the scenario evidence contract or changing the frozen
+  lateral configuration.
 
 NOT_YET findings:
 
