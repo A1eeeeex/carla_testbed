@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "calibration_id": "carla_0_9_16__vehicle.lincoln.mkz_2020__steering_front_wheel_v1",
+  "scope": {
+    "simulator": "CARLA",
+    "simulator_version": "0.9.16",
+    "actuator": "steering",
+    "input_semantics": "target_front_wheel_angle_deg",
+    "output_semantics": "carla_steer_cmd"
+  },
+  "provenance": {
+    "source_library_entry_id": "e969a34a5f43fd25",
+    "source_calibration_sha256": "2c2b09db185bf61d4258883de93bd9125fd3e34e28bb8ff24519ee0ea72ff0be",
+    "source_created_at": "20260317_112621",
+    "source_map": "Town01"
+  },
+  "vehicle": {
+    "type_id": "vehicle.lincoln.mkz_2020",
+    "length": 4.89238166809082,
+    "width": 1.8367133140563965,
+    "height": 1.490277647972107,
+    "mass_kg": 1696.0,
+    "max_steer_angle_deg": 69.99999237060547
+  },
+  "steering": {
+    "inverse": {
+      "target_front_wheel_angle_deg_to_carla_cmd": [
+        {
+          "target_front_wheel_angle_deg": 0.0,
+          "carla_steer_cmd": 0.0
+        },
+        {
+          "target_front_wheel_angle_deg": 13.167906522750854,
+          "carla_steer_cmd": 0.2
+        },
+        {
+          "target_front_wheel_angle_deg": 13.172813653945923,
+          "carla_steer_cmd": 0.2
+        },
+        {
+          "target_front_wheel_angle_deg": 25.141672134399414,
+          "carla_steer_cmd": 0.4
+        },
+        {
+          "target_front_wheel_angle_deg": 25.150734901428223,
+          "carla_steer_cmd": 0.4
+        },
+        {
+          "target_front_wheel_angle_deg": 36.46246862411499,
+          "carla_steer_cmd": 0.6
+        },
+        {
+          "target_front_wheel_angle_deg": 36.4736704826355,
+          "carla_steer_cmd": 0.6
+        },
+        {
+          "target_front_wheel_angle_deg": 47.526851654052734,
+          "carla_steer_cmd": 0.8
+        },
+        {
+          "target_front_wheel_angle_deg": 47.534563064575195,
+          "carla_steer_cmd": 0.8
+        },
+        {
+          "target_front_wheel_angle_deg": 58.18940734863281,
+          "carla_steer_cmd": 1.0
+        },
+        {
+          "target_front_wheel_angle_deg": 58.67182540893555,
+          "carla_steer_cmd": 1.0
+        }
+      ]
+    }
+  }
+}

@@ -17,6 +17,7 @@ INVALID_REASONS = {
     "apollo_obstacle_gt_contract_insufficient_data",
     "missing_required_artifact",
     "backend_not_ready",
+    "bridge_runtime_failed",
     "no_timeseries",
     "fixed_scene_failed",
     "config_invalid",
@@ -50,6 +51,18 @@ ROUTE_HEALTH_FAILURE_CODES = {
     "ROUTE_COMPLETION_RATIO",
     "ROUTE_DISTANCE_ACHIEVED_M",
 }
+SPEED_PROFILE_COMPLETION_BLOCKERS = {
+    "speed_profile_not_fully_executed",
+    "lead_speed_decel_target_not_reached",
+    "lead_speed_final_target_not_reached",
+    "lead_speed_final_target_not_restored",
+}
+DEFAULT_STOP_SPEED_TOLERANCE_MPS = 0.3
+CLAIM_VALID_BUMPER_GAP_METHODS = {
+    "bumper_to_bumper_longitudinal_projection",
+    "route_s_bumper_gap",
+    "trajectory_progress_bumper_gap",
+}
 
 
 def classify_phase1_run(run_dir: str | Path) -> dict[str, Any]:
@@ -66,6 +79,8 @@ def classify_phase1_run(run_dir: str | Path) -> dict[str, Any]:
         return _status(root, manifest, summary, "invalid", "setup_failed", [], v_t_gap, required_artifacts)
     if _backend_not_ready(summary, manifest):
         return _status(root, manifest, summary, "invalid", "backend_not_ready", [], v_t_gap, required_artifacts)
+    if _fixed_scene_never_armed(root):
+        return _status(root, manifest, summary, "invalid", "setup_failed", [], v_t_gap, required_artifacts)
     fixed_scene_status = _fixed_scene_status(root, summary)
     if fixed_scene_status is not None:
         status, reason = fixed_scene_status
@@ -76,6 +91,20 @@ def classify_phase1_run(run_dir: str | Path) -> dict[str, Any]:
         return _status(root, manifest, summary, "invalid", "missing_required_artifact", missing, v_t_gap, required_artifacts)
     if required_artifacts["timeseries"] == "missing":
         return _status(root, manifest, summary, "invalid", "no_timeseries", missing, v_t_gap, required_artifacts)
+    if (
+        _backend_type(manifest, summary) == "apollo_reference_backend"
+        and _bridge_runtime_failure_evidence(root).get("failed")
+    ):
+        return _status(
+            root,
+            manifest,
+            summary,
+            "invalid",
+            "bridge_runtime_failed",
+            [],
+            v_t_gap,
+            required_artifacts,
+        )
 
     target_contract = _target_contract(root, v_t_gap, manifest)
     if target_contract.get("status") == "missing":
@@ -386,10 +415,12 @@ def _status(
         v_t_gap=v_t_gap,
     )
     derived_blocker_evidence = _derived_blocker_evidence(root)
+    stop_gap_contract = _stop_gap_contract(root, v_t_gap)
     behavior_blocker = _primary_behavior_blocker(
         status=status,
         reason=reason,
         derived_blocker_evidence=derived_blocker_evidence,
+        stop_gap_contract=stop_gap_contract,
     )
     setup_blocker = _primary_setup_blocker(
         status=status,
@@ -443,6 +474,7 @@ def _status(
         "artifact_contract_version": manifest.get("artifact_contract_version"),
         "phase1_metrics": {
             **_phase1_metrics(v_t_gap),
+            "stop_gap_contract": stop_gap_contract,
             "initial_condition_materialization": _initial_condition_materialization(root, v_t_gap),
             "safety_event_evidence": _safety_event_evidence(root, summary),
             "control_motion": _control_motion_metrics(root),
@@ -477,7 +509,12 @@ def _phase1_evaluability(
 ) -> dict[str, Any]:
     run_evaluable = status != "invalid"
     target_required = _target_required(target_contract, manifest)
-    fixed_interaction = _fixed_scene_interaction_evidence(root)
+    fixed_interaction = _fixed_scene_interaction_evidence(
+        root,
+        status=status,
+        reason=reason,
+        target_contract=target_contract,
+    )
     initial_condition = _initial_condition_materialization(root, v_t_gap)
     if not run_evaluable:
         scenario_interaction_evaluable = False
@@ -555,7 +592,13 @@ def _target_required(target_contract: Mapping[str, Any], manifest: Mapping[str, 
     return scenario_class not in {"lane_keep", "lane_keep_straight", "curve_diagnostic", "junction"}
 
 
-def _fixed_scene_interaction_evidence(root: Path) -> dict[str, Any]:
+def _fixed_scene_interaction_evidence(
+    root: Path,
+    *,
+    status: str,
+    reason: str | None,
+    target_contract: Mapping[str, Any],
+) -> dict[str, Any]:
     fixed_scene_report = _read_json(root / "analysis" / "fixed_scene_contract" / "fixed_scene_contract_report.json")
     scenario_actor_report = _read_json(
         root / "analysis" / "scenario_actor_contract" / "scenario_actor_contract_report.json"
@@ -566,6 +609,13 @@ def _fixed_scene_interaction_evidence(root: Path) -> dict[str, Any]:
     actor_status = str(scenario_actor_report.get("status") or "")
     if fixed_status == "pass" and actor_status in {"", "pass", "warn"}:
         return {"evaluable": True, "reason": None}
+    if _active_speed_profile_interaction_failed_by_backend(
+        status=status,
+        reason=reason,
+        target_contract=target_contract,
+        scenario_actor_report=scenario_actor_report,
+    ):
+        return {"evaluable": True, "reason": None}
     if _fixed_scene_duration_only_after_actor_interaction(fixed_scene_report, scenario_actor_report):
         return {"evaluable": True, "reason": None}
     if _fixed_scene_unreached_without_setup_blocker(fixed_scene_report, scenario_actor_report):
@@ -575,6 +625,36 @@ def _fixed_scene_interaction_evidence(root: Path) -> dict[str, Any]:
     if actor_status == "insufficient_data":
         return {"evaluable": False, "reason": "scenario_actor_contract_insufficient_data"}
     return {"evaluable": True, "reason": None}
+
+
+def _active_speed_profile_interaction_failed_by_backend(
+    *,
+    status: str,
+    reason: str | None,
+    target_contract: Mapping[str, Any],
+    scenario_actor_report: Mapping[str, Any],
+) -> bool:
+    if status != "failed" or reason not in {"collision", "lane_invasion"}:
+        return False
+    activation = target_contract.get("activation")
+    semantics = (
+        str(activation.get("activation_semantics") or "")
+        if isinstance(activation, Mapping)
+        else ""
+    )
+    if semantics != "active_from_scenario_start":
+        return False
+    actor_blockers = {
+        str(item) for item in scenario_actor_report.get("blocking_reasons") or []
+    }
+    if not actor_blockers or not actor_blockers.issubset(SPEED_PROFILE_COMPLETION_BLOCKERS):
+        return False
+    behavior = scenario_actor_report.get("behavior")
+    if not isinstance(behavior, Mapping):
+        return False
+    return str(behavior.get("type") or "") == "lead_vehicle_accel_decel" and int(
+        behavior.get("lead_trace_rows") or 0
+    ) > 0
 
 
 def _target_metric_evidence(
@@ -623,9 +703,46 @@ def _evidence_files(root: Path) -> list[str]:
         "artifacts/obstacle_gt_contract.jsonl",
         "artifacts/obstacle_gt_contract.json",
         "artifacts/startup_geometry_summary.json",
+        "artifacts/cyber_bridge.err.log",
         "analysis/route_start_alignment/route_start_alignment_report.json",
     ]
     return [str(root / rel) for rel in candidates if (root / rel).exists()]
+
+
+def _bridge_runtime_failure_evidence(root: Path) -> dict[str, Any]:
+    path = root / "artifacts" / "cyber_bridge.err.log"
+    if not path.is_file():
+        return {
+            "available": False,
+            "failed": False,
+            "path": None,
+            "exception": None,
+        }
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {
+            "available": False,
+            "failed": False,
+            "path": str(path),
+            "exception": None,
+        }
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    fatal_traceback = "Traceback (most recent call last):" in text and any(
+        "bridge.py" in line for line in lines
+    )
+    exception = lines[-1] if fatal_traceback and lines else None
+    return {
+        "available": True,
+        "failed": fatal_traceback,
+        "path": str(path),
+        "exception": exception,
+        "claim_boundary": (
+            "An unhandled Apollo GT bridge traceback invalidates runtime evidence. "
+            "Any subsequent watchdog actuation is platform safety behavior and must "
+            "not be attributed to Apollo scenario performance."
+        ),
+    }
 
 
 def _status_notes(status: str, reason: str | None) -> list[str]:
@@ -840,13 +957,21 @@ def _derived_blocker_evidence(root: Path) -> dict[str, Any]:
     link_health = _read_json(link_health_path)
     lane_event = _read_json(lane_event_path)
     platform_timeout = _platform_timeout_blocker_summary(root)
-    available = bool(control_health or link_health or lane_event or platform_timeout.get("available"))
+    bridge_runtime = _bridge_runtime_failure_evidence(root)
+    available = bool(
+        control_health
+        or link_health
+        or lane_event
+        or platform_timeout.get("available")
+        or bridge_runtime.get("available")
+    )
     return {
         "available": available,
         "control_health": _control_health_blocker_summary(control_health, control_health_path),
         "apollo_link_health": _apollo_link_health_blocker_summary(link_health, link_health_path),
         "baguang_lane_event_contract": _baguang_lane_event_blocker_summary(lane_event, lane_event_path),
         "platform_timeout": platform_timeout,
+        "bridge_runtime": bridge_runtime,
         "claim_boundary": (
             "Derived blocker evidence explains an evaluable Phase 1 failure. "
             "It does not override phase1 status, and it is not natural-driving capability evidence."
@@ -893,6 +1018,7 @@ def _primary_behavior_blocker(
     status: str,
     reason: str | None,
     derived_blocker_evidence: Mapping[str, Any],
+    stop_gap_contract: Mapping[str, Any],
 ) -> dict[str, Any]:
     empty = {
         "primary_behavior_blocker": None,
@@ -902,6 +1028,18 @@ def _primary_behavior_blocker(
     }
     if status != "failed" or not reason:
         return empty
+
+    if reason == "unsafe_gap" and stop_gap_contract.get("status") == "fail":
+        return {
+            "primary_behavior_blocker": "authored_min_stop_gap_violated",
+            "behavior_blocker_layer": "phase1_longitudinal_gap_contract",
+            "behavior_next_action": (
+                "Inspect the backend's stopped approach and braking behavior against the "
+                "authored minimum bumper gap. Preserve the ScenarioCase threshold and do "
+                "not reclassify this evaluable behavior failure as setup-invalid."
+            ),
+            "behavior_blocker_evidence": dict(stop_gap_contract),
+        }
 
     lane_event = (
         derived_blocker_evidence.get("baguang_lane_event_contract")
@@ -1538,6 +1676,23 @@ def _primary_setup_blocker(
         else {}
     )
     classification = platform_timeout.get("classification")
+    bridge_runtime = (
+        derived_blocker_evidence.get("bridge_runtime")
+        if isinstance(derived_blocker_evidence.get("bridge_runtime"), Mapping)
+        else {}
+    )
+    if reason == "bridge_runtime_failed":
+        return {
+            "primary_setup_blocker": "apollo_gt_bridge_runtime_failed",
+            "setup_blocker_layer": "apollo_gt_bridge_runtime",
+            "setup_next_action": (
+                "Inspect the fatal bridge traceback and restore continuous GT "
+                "localization/chassis publication before evaluating backend behavior. "
+                "Watchdog braking after bridge exit is platform safety behavior, not "
+                "Apollo scenario success."
+            ),
+            "setup_blocker_evidence": dict(bridge_runtime),
+        }
     if reason == "no_timeseries" and classification == (
         "apollo_startup_command_materialization_missing_timeout"
     ):
@@ -3487,6 +3642,16 @@ def _fixed_scene_status(root: Path, summary: Mapping[str, Any]) -> tuple[str, st
     return ("invalid", "fixed_scene_failed")
 
 
+def _fixed_scene_never_armed(root: Path) -> bool:
+    hook = _read_json(root / "artifacts" / "fixed_scene_runtime_hook.json")
+    if not hook or hook.get("armed") is not False:
+        return False
+    if hook.get("start_sim_time_s") is not None:
+        return False
+    start_gate = str(hook.get("start_gate") or "none").strip().lower()
+    return start_gate not in {"", "none", "prestarted_scene"}
+
+
 def _fixed_scene_trigger_not_reached(
     fixed_scene_report: Mapping[str, Any], scenario_actor_report: Mapping[str, Any]
 ) -> bool:
@@ -3500,7 +3665,11 @@ def _fixed_scene_trigger_not_reached(
         "fixed_scene_required_phase_not_completed",
         "stop_before_required_phase_completed",
     }
-    actor_trigger_blockers = {"lead_vehicle_never_observed_stopped", "lead_hold_stop_phase_not_observed"}
+    actor_trigger_blockers = {
+        "lead_vehicle_never_observed_stopped",
+        "lead_hold_stop_phase_not_observed",
+        *SPEED_PROFILE_COMPLETION_BLOCKERS,
+    }
     if fixed_blockers and fixed_blockers.issubset(missing_phase_blockers):
         if not actor_blockers or actor_blockers.issubset(actor_trigger_blockers):
             return True
@@ -3549,7 +3718,11 @@ def _fixed_scene_unreached_without_setup_blocker(
         "stop_before_required_phase_completed",
         "duration_policy_route_end_not_reached",
     }
-    actor_trigger_blockers = {"lead_vehicle_never_observed_stopped", "lead_hold_stop_phase_not_observed"}
+    actor_trigger_blockers = {
+        "lead_vehicle_never_observed_stopped",
+        "lead_hold_stop_phase_not_observed",
+        *SPEED_PROFILE_COMPLETION_BLOCKERS,
+    }
     if fixed_blockers and fixed_blockers.issubset(phase_or_duration_blockers):
         return not actor_blockers or actor_blockers.issubset(actor_trigger_blockers)
     return False
@@ -3611,6 +3784,8 @@ def _failed_reason(root: Path, summary: Mapping[str, Any], v_t_gap: Mapping[str,
     ]
     gaps = [gap for gap in gaps if gap is not None]
     if gaps and min(gaps) < 0.0:
+        return "unsafe_gap"
+    if _stop_gap_contract(root, v_t_gap).get("status") == "fail":
         return "unsafe_gap"
     return None
 
@@ -3695,6 +3870,138 @@ def _final_gap(rows: Any) -> float | None:
             if gap is not None:
                 return gap
     return None
+
+
+def _stop_gap_contract(root: Path, v_t_gap: Mapping[str, Any]) -> dict[str, Any]:
+    storyboard_path = root / "artifacts" / "fixed_scene_resolved.json"
+    storyboard = _read_json(storyboard_path)
+    criteria = (
+        storyboard.get("success_criteria")
+        if isinstance(storyboard.get("success_criteria"), Mapping)
+        else {}
+    )
+    minimum_gap_m = _to_float(criteria.get("min_stop_gap_m"))
+    claim_boundary = (
+        "This contract evaluates an authored minimum stopped bumper gap from valid, "
+        "non-degraded v-t-gap rows. A fail is an evaluable backend behavior result, "
+        "not a setup-invalid result or natural-driving claim."
+    )
+    base = {
+        "status": "not_applicable",
+        "reason": "min_stop_gap_not_declared",
+        "criterion_source": str(storyboard_path) if storyboard else None,
+        "minimum_required_gap_m": minimum_gap_m,
+        "stop_speed_tolerance_mps": None,
+        "stopped_window_row_count": 0,
+        "stopped_window_start_sim_time_s": None,
+        "stopped_window_end_sim_time_s": None,
+        "stopped_window_duration_s": None,
+        "observed_min_gap_m": None,
+        "observed_final_gap_m": None,
+        "final_ego_speed_mps": None,
+        "final_target_speed_mps": None,
+        "gap_methods": [],
+        "claim_boundary": claim_boundary,
+    }
+    if minimum_gap_m is None:
+        return base
+    if minimum_gap_m < 0.0:
+        return {
+            **base,
+            "status": "insufficient_data",
+            "reason": "min_stop_gap_invalid",
+        }
+    speed_tolerance_mps = _to_float(criteria.get("stop_speed_tolerance_mps"))
+    if speed_tolerance_mps is None:
+        speed_tolerance_mps = DEFAULT_STOP_SPEED_TOLERANCE_MPS
+    configured = {
+        **base,
+        "status": "insufficient_data",
+        "reason": "stopped_bumper_gap_not_observed",
+        "stop_speed_tolerance_mps": speed_tolerance_mps,
+    }
+    if speed_tolerance_mps < 0.0:
+        return {
+            **configured,
+            "reason": "stop_speed_tolerance_invalid",
+        }
+    rows = v_t_gap.get("rows") if isinstance(v_t_gap.get("rows"), list) else []
+    rows = [row for row in rows if isinstance(row, Mapping)]
+    if not rows:
+        return configured
+
+    def observed(row: Mapping[str, Any]) -> tuple[float, float, float] | None:
+        if not _row_gap_is_claim_valid(row):
+            return None
+        if str(row.get("gap_method") or "") not in CLAIM_VALID_BUMPER_GAP_METHODS:
+            return None
+        gap_m = _to_float(row.get("gap_m"))
+        ego_speed_mps = _to_float(row.get("ego_speed_mps"))
+        target_speed_mps = _to_float(row.get("target_speed_mps"))
+        if gap_m is None or ego_speed_mps is None or target_speed_mps is None:
+            return None
+        return gap_m, ego_speed_mps, target_speed_mps
+
+    final_observation = observed(rows[-1])
+    if final_observation is None:
+        return configured
+    final_gap_m, final_ego_speed_mps, final_target_speed_mps = final_observation
+    final_state = {
+        **configured,
+        "observed_final_gap_m": final_gap_m,
+        "final_ego_speed_mps": final_ego_speed_mps,
+        "final_target_speed_mps": final_target_speed_mps,
+    }
+    if (
+        abs(final_ego_speed_mps) > speed_tolerance_mps
+        or abs(final_target_speed_mps) > speed_tolerance_mps
+    ):
+        return {
+            **final_state,
+            "status": "not_observed",
+            "reason": "final_pair_not_stopped",
+        }
+
+    stopped_tail: list[tuple[Mapping[str, Any], tuple[float, float, float]]] = []
+    for row in reversed(rows):
+        values = observed(row)
+        if values is None:
+            break
+        _, ego_speed_mps, target_speed_mps = values
+        if (
+            abs(ego_speed_mps) > speed_tolerance_mps
+            or abs(target_speed_mps) > speed_tolerance_mps
+        ):
+            break
+        stopped_tail.append((row, values))
+    stopped_tail.reverse()
+    gaps = [values[0] for _, values in stopped_tail]
+    observed_min_gap_m = min(gaps)
+    start_time_s = _to_float(stopped_tail[0][0].get("sim_time_s"))
+    end_time_s = _to_float(stopped_tail[-1][0].get("sim_time_s"))
+    duration_s = (
+        end_time_s - start_time_s
+        if start_time_s is not None and end_time_s is not None
+        else None
+    )
+    failed = observed_min_gap_m < minimum_gap_m
+    return {
+        **final_state,
+        "status": "fail" if failed else "pass",
+        "reason": (
+            "authored_min_stop_gap_violated"
+            if failed
+            else "authored_min_stop_gap_satisfied"
+        ),
+        "stopped_window_row_count": len(stopped_tail),
+        "stopped_window_start_sim_time_s": start_time_s,
+        "stopped_window_end_sim_time_s": end_time_s,
+        "stopped_window_duration_s": duration_s,
+        "observed_min_gap_m": observed_min_gap_m,
+        "gap_methods": sorted(
+            {str(row.get("gap_method")) for row, _ in stopped_tail}
+        ),
+    }
 
 
 def _row_gap_is_claim_valid(row: Mapping[str, Any]) -> bool:

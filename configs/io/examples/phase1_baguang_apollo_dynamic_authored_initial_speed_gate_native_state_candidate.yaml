@@ -1,0 +1,45 @@
+# Default-off startup-input candidate for the canonical dynamic Baguang case.
+# Keep the minimal authored-speed handover contract, while making the one-shot
+# initial-state transition explicit to Apollo's native Localization and
+# Prediction inputs.  This profile does not change Planning constraints,
+# actuation mapping, steering, or the ScenarioCase.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_minimal_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_candidate
+
+algo:
+  apollo:
+    bridge:
+      localization_time_source: sim_time
+      cyber_clock:
+        enabled: true
+        mode: mock
+        channel: /clock
+      localization_acceleration_source: carla_feedback
+      localization_acceleration_filter:
+        enabled: false
+        alpha: 1.0
+        max_abs_mps2: 0.0
+        max_delta_mps2: 0.0
+        nonnegative_speed_prediction_horizon_s: 0.0
+      localization_authored_initial_state_transition:
+        mode: marker_zero_once
+        marker_path: fixed_scene_gate_initial_state_materialization.json
+        required_status: pass
+        max_world_frame_delta: 2
+        max_sim_time_delta_s: 0.11
+        speed_tolerance_mps: 0.5
+    prediction:
+      enable_interactive_tag: false
+      vehicle_on_lane_caution_mode: cost_move_sequence_current_state
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only native-state startup candidate for the authored 70kph initial condition; this is not Apollo acceleration from rest.
+    - Routing and fresh multi-point NORMAL Planning still precede the one-shot ego/lead speed materialization; fallback trajectories remain rejected.
+    - CARLA physical acceleration is published without filtering, except that the marker-bounded authored speed discontinuity is zeroed exactly once.
+    - Native COST_EVALUATOR plus MOVE_SEQUENCE_PREDICTOR starts the truthful lead prediction from its current state without fabricating obstacle history.
+    - Handover still requires two distinct current-speed-compatible NORMAL trajectories; Planning constraints, steering, mapping, guards, and the ScenarioCase are unchanged.

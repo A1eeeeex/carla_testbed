@@ -30,6 +30,38 @@ def test_missing_timeseries_is_invalid_not_backend_failure(tmp_path) -> None:
     assert "invalid_run_is_setup_or_evidence_failure_not_backend_loss" in report["notes"]
 
 
+def test_apollo_bridge_traceback_is_invalid_runtime_evidence_not_success(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    _write_manifest(
+        run,
+        {
+            "backend": "apollo_cyberrt",
+            "backend_type": "apollo_reference_backend",
+        },
+    )
+    artifacts = run / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "cyber_bridge.err.log").write_text(
+        "Traceback (most recent call last):\n"
+        "  File \"bridge.py\", line 1, in run\n"
+        "RuntimeError: dictionary changed size during iteration\n",
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "invalid"
+    assert report["failure_reason"] == "bridge_runtime_failed"
+    assert report["invalid_reasons"] == ["bridge_runtime_failed"]
+    assert report["run_evaluable"] is False
+    assert report["counts_as_backend_loss_for_target_scenario"] is False
+    assert report["primary_setup_blocker"] == "apollo_gt_bridge_runtime_failed"
+    assert report["setup_blocker_layer"] == "apollo_gt_bridge_runtime"
+    assert report["setup_blocker_evidence"]["exception"].endswith(
+        "dictionary changed size during iteration"
+    )
+
+
 def test_missing_timeseries_with_apollo_startup_artifacts_reports_setup_blocker(tmp_path) -> None:
     run = tmp_path / "run"
     artifacts = run / "legacy_nested" / "actual" / "artifacts"
@@ -1076,6 +1108,182 @@ def test_negative_gap_is_failed_unsafe_gap(tmp_path) -> None:
     assert report["evaluable"] is True
 
 
+def test_authored_min_stop_gap_is_evaluable_unsafe_gap_failure(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    artifacts = run / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "fixed_scene_resolved.json").write_text(
+        json.dumps(
+            {
+                "scenario_class": "follow_stop_static",
+                "template": "static_lead_stop",
+                "success_criteria": {
+                    "min_stop_gap_m": 8.0,
+                    "stop_speed_tolerance_mps": 0.3,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "pass",
+                "target_actor_contract": {"status": "resolved"},
+                "rows": [
+                    {
+                        "sim_time_s": 0.0,
+                        "gap_m": 295.1,
+                        "ego_speed_mps": 0.0,
+                        "target_speed_mps": 0.0,
+                        "gap_method": "bumper_to_bumper_longitudinal_projection",
+                        "validity": "valid",
+                    },
+                    {
+                        "sim_time_s": 20.0,
+                        "gap_m": 120.0,
+                        "ego_speed_mps": 17.7,
+                        "target_speed_mps": 0.0,
+                        "gap_method": "bumper_to_bumper_longitudinal_projection",
+                        "validity": "valid",
+                    },
+                    {
+                        "sim_time_s": 42.5,
+                        "gap_m": 6.229,
+                        "ego_speed_mps": 0.047,
+                        "target_speed_mps": 0.0,
+                        "gap_method": "bumper_to_bumper_longitudinal_projection",
+                        "validity": "valid",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "unsafe_gap"
+    assert report["failed_reasons"] == ["unsafe_gap"]
+    assert report["invalid_reasons"] == []
+    assert report["evaluable"] is True
+    assert report["counts_as_backend_loss_for_target_scenario"] is True
+    assert report["primary_behavior_blocker"] == "authored_min_stop_gap_violated"
+    assert report["behavior_blocker_layer"] == "phase1_longitudinal_gap_contract"
+    contract = report["phase1_metrics"]["stop_gap_contract"]
+    assert contract["status"] == "fail"
+    assert contract["reason"] == "authored_min_stop_gap_violated"
+    assert contract["minimum_required_gap_m"] == 8.0
+    assert contract["stop_speed_tolerance_mps"] == 0.3
+    assert contract["observed_min_gap_m"] == 6.229
+    assert contract["stopped_window_row_count"] == 1
+
+
+def test_authored_min_stop_gap_passes_at_exact_threshold(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    _write_min_stop_gap_storyboard(run, minimum_gap_m=8.0)
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "pass",
+                "target_actor_contract": {"status": "resolved"},
+                "rows": [
+                    {
+                        "sim_time_s": 42.5,
+                        "gap_m": 8.0,
+                        "ego_speed_mps": 0.1,
+                        "target_speed_mps": 0.0,
+                        "gap_method": "route_s_bumper_gap",
+                        "validity": "valid",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "success"
+    contract = report["phase1_metrics"]["stop_gap_contract"]
+    assert contract["status"] == "pass"
+    assert contract["observed_min_gap_m"] == 8.0
+
+
+def test_authored_min_stop_gap_waits_for_stopped_final_pair(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    _write_min_stop_gap_storyboard(run, minimum_gap_m=8.0)
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "pass",
+                "target_actor_contract": {"status": "resolved"},
+                "rows": [
+                    {
+                        "sim_time_s": 20.0,
+                        "gap_m": 6.0,
+                        "ego_speed_mps": 5.0,
+                        "target_speed_mps": 0.0,
+                        "gap_method": "trajectory_progress_bumper_gap",
+                        "validity": "valid",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "success"
+    contract = report["phase1_metrics"]["stop_gap_contract"]
+    assert contract["status"] == "not_observed"
+    assert contract["reason"] == "final_pair_not_stopped"
+
+
+def test_authored_min_stop_gap_does_not_hard_fail_degraded_gap(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    _write_min_stop_gap_storyboard(run, minimum_gap_m=8.0)
+    out = run / "analysis" / "v_t_gap"
+    out.mkdir(parents=True)
+    (out / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "warn",
+                "gap_method_counts": {
+                    "bumper_to_bumper_longitudinal_projection_lateral_degraded": 1
+                },
+                "target_actor_contract": {"status": "resolved"},
+                "rows": [
+                    {
+                        "sim_time_s": 42.5,
+                        "gap_m": 6.0,
+                        "ego_speed_mps": 0.0,
+                        "target_speed_mps": 0.0,
+                        "gap_method": "bumper_to_bumper_longitudinal_projection_lateral_degraded",
+                        "gap_degraded": True,
+                        "validity": "degraded",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "degraded"
+    assert report["failure_reason"] == "degraded_gap_method"
+    assert report["phase1_metrics"]["stop_gap_contract"]["status"] == "insufficient_data"
+
+
 def test_degraded_negative_gap_is_not_backend_unsafe_gap(tmp_path) -> None:
     run = _base_run(tmp_path)
     out = run / "analysis" / "v_t_gap"
@@ -1254,6 +1462,44 @@ def test_early_lane_invasion_before_phase_activation_is_evaluable_failure(tmp_pa
     assert report["target_metric_evaluable"] is False
     assert report["target_metric_status"] == "invalid"
     assert report["target_metric_reason"] == "missing_target_activation_phase"
+    assert report["counts_as_backend_loss_for_target_scenario"] is False
+
+
+def test_lane_invasion_during_fixed_scene_start_gate_is_invalid_setup(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    (run / "summary.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "exit_reason": "LANE_INVASION_HARD",
+                "lane_invasion_count": 1,
+                "collision_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    artifacts = run / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "fixed_scene_runtime_hook.json").write_text(
+        json.dumps(
+            {
+                "status": "pass",
+                "start_gate": "apollo_planning_ready",
+                "armed": False,
+                "start_sim_time_s": None,
+                "scene_preroll_active": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "invalid"
+    assert report["failure_reason"] == "setup_failed"
+    assert report["invalid_reasons"] == ["setup_failed"]
+    assert report["failed_reasons"] == []
+    assert report["evaluable"] is False
     assert report["counts_as_backend_loss_for_target_scenario"] is False
 
 
@@ -1455,6 +1701,87 @@ def test_duration_and_phase_completion_blockers_after_actor_contract_pass_are_ev
     assert report["status"] == "failed"
     assert report["failure_reason"] == "collision"
     assert report["run_evaluable"] is True
+    assert report["scenario_interaction_evaluable"] is True
+    assert report["target_metric_evaluable"] is True
+    assert report["counts_as_backend_loss_for_target_scenario"] is True
+
+
+def test_collision_during_active_speed_profile_remains_evaluable_behavior_failure(tmp_path) -> None:
+    run = _base_run(tmp_path)
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    manifest["scenario_case"] = "baguang_lead_decel_accel_70_40_70_20m"
+    manifest["scenario_id"] = "baguang_lead_decel_accel_70_40_70_20m"
+    manifest["scenario_class"] = "lead_vehicle_accel_decel"
+    manifest["target_actor_contract"] = {
+        "status": "resolved",
+        "required": True,
+        "target_actor_role": "lead_vehicle",
+        "activation": {"activation_semantics": "active_from_scenario_start"},
+        "source": "scenario_case_explicit",
+    }
+    (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (run / "summary.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "exit_reason": "COLLISION",
+                "collision_count": 1,
+                "lane_invasion_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    v_t_gap = run / "analysis" / "v_t_gap"
+    v_t_gap.mkdir(parents=True)
+    (v_t_gap / "v_t_gap_report.json").write_text(
+        json.dumps(
+            {
+                "status": "pass",
+                "rows": [{"gap_m": 5.0}],
+                "target_actor_contract": manifest["target_actor_contract"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    fixed = run / "analysis" / "fixed_scene_contract"
+    fixed.mkdir(parents=True)
+    (fixed / "fixed_scene_contract_report.json").write_text(
+        json.dumps(
+            {
+                "status": "fail",
+                "blocking_reasons": [
+                    "fixed_scene_required_phase_not_completed",
+                    "duration_policy_route_end_not_reached",
+                ],
+                "spawn_feasibility": {"lead_vehicle": {"status": "pass", "blocking_reasons": []}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    actor = run / "analysis" / "scenario_actor_contract"
+    actor.mkdir(parents=True)
+    (actor / "scenario_actor_contract_report.json").write_text(
+        json.dumps(
+            {
+                "status": "fail",
+                "blocking_reasons": [
+                    "speed_profile_not_fully_executed",
+                    "lead_speed_final_target_not_restored",
+                ],
+                "behavior": {
+                    "type": "lead_vehicle_accel_decel",
+                    "lead_trace_rows": 246,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = classify_phase1_run(run)
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "collision"
+    assert report["evaluable"] is True
     assert report["scenario_interaction_evaluable"] is True
     assert report["target_metric_evaluable"] is True
     assert report["counts_as_backend_loss_for_target_scenario"] is True
@@ -3353,6 +3680,21 @@ def _write_manifest(run, overrides):
     data = json.loads(path.read_text(encoding="utf-8"))
     data.update(overrides)
     path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _write_min_stop_gap_storyboard(run, *, minimum_gap_m):
+    artifacts = run / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "fixed_scene_resolved.json").write_text(
+        json.dumps(
+            {
+                "scenario_class": "follow_stop_static",
+                "template": "static_lead_stop",
+                "success_criteria": {"min_stop_gap_m": minimum_gap_m},
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _base_run(tmp_path):

@@ -427,6 +427,42 @@ def test_postprocess_regenerates_channel_health_when_scenario_context_is_stale(
     assert report["natural_driving"]["status"] == "pass"
 
 
+def test_postprocess_refreshes_stale_channel_report_when_normalized_stats_exist(
+    tmp_path: Path,
+) -> None:
+    suite_root = _copy_suite(tmp_path)
+    lane = suite_root / "lane_keep_097"
+    channel_path = lane / "apollo_channel_health_report.json"
+    channel = json.loads(channel_path.read_text(encoding="utf-8"))
+    channel.update(
+        {
+            "status": "insufficient_data",
+            "missing_inputs": ["channel_stats"],
+            "source": {
+                "config_path": "configs/algorithms/apollo_natural_driving_channels.yaml",
+                "stats_path": "artifacts/cyber_bridge_stats.json",
+            },
+        }
+    )
+    channel_path.write_text(json.dumps(channel, indent=2) + "\n", encoding="utf-8")
+
+    normalized_path = lane / "analysis" / "channel_stats_normalized" / "channel_stats_normalized.json"
+    normalized_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(CHANNEL_STATS, normalized_path)
+
+    report = postprocess_natural_driving_runs(suite_root, out_dir=tmp_path / "out")
+    lane_result = next(run for run in report["runs"] if run["run_id"] == "lane_keep_097")
+    regenerated = json.loads(
+        Path(lane_result["apollo_channel_health"]["path"]).read_text(encoding="utf-8")
+    )
+
+    assert lane_result["apollo_channel_health"]["status"] == "generated"
+    assert regenerated["status"] == "pass"
+    assert regenerated["source"]["stats_path"].endswith(
+        "analysis/channel_stats_normalized/channel_stats_normalized.json"
+    )
+
+
 def test_postprocess_rejects_stale_channel_health_without_raw_stats(tmp_path: Path) -> None:
     suite_root = _copy_suite(tmp_path)
     lane = suite_root / "lane_keep_097"

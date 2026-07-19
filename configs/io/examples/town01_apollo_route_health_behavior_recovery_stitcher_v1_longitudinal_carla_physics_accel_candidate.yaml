@@ -1,0 +1,26 @@
+# Diagnostic Apollo reference-runtime candidate for CARLA physical acceleration.
+#
+# The default reference profile remains finite_difference. This candidate only
+# changes the GT localization acceleration source; lateral settings, steering
+# mapping, guards, and trajectory stitching stay on the frozen baseline.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_map_speed_target16_67_candidate.yaml
+
+run:
+  profile_name: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_carla_physics_accel_candidate
+  claim_profile: false
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic CARLA physical-acceleration GT input probe; not a natural-driving claim.
+    - Reference-line and trajectory stitching remain disabled to preserve frozen lateral semantics.
+    - If CARLA feedback is unavailable, bridge records an explicit finite-difference fallback.
+
+algo:
+  apollo:
+    bridge:
+      localization_acceleration_source: carla_feedback

@@ -1,0 +1,43 @@
+# Default-off one-variable lateral A/B on the latest 639.68m drivetrain-ready
+# boundary. Keep every readiness, startup-input, map, longitudinal, and formal
+# ScenarioCase setting from the legacy sample; change only the active steering
+# mapping and feedback domains to the repository Lincoln MKZ calibration.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_physical_steering_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_physical_steering_candidate
+
+algo:
+  apollo:
+    control_mapping:
+      actuator_mapping_mode: physical
+      force_zero_steer_output_enabled: false
+      straight_lane_zero_steer_enabled: false
+      low_speed_steer_guard_enabled: false
+      low_speed_sustained_guard_enabled: false
+      sustained_lateral_guard_enabled: false
+      trajectory_contract_lateral_guard_enabled: false
+      physical:
+        calibration_file: configs/calibration/vehicles/vehicle.lincoln.mkz_2020/steering_front_wheel_v1.json
+        allow_legacy_fallback: false
+        apollo_max_steer_angle_deg: 30.0
+        preferred_steering_field: steering_target
+        steering_field_priority:
+          - steering_target
+          - steering_percentage
+          - steering
+          - steering_rate
+        map_steering: true
+        map_steering_feedback: true
+        map_longitudinal: false
+        map_throttle: false
+        map_brake: false
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic latest-gate lateral A/B; this profile is default-off, Baguang-scoped, and not a physical-mapping promotion or natural-driving claim.
+    - Routing, fresh non-fallback NORMAL Planning, authored-speed materialization, current-speed compatibility, automatic forward gear, bounded acceleration, formal actor timing, and the 639.68m matched map are unchanged from the legacy sample.
+    - Steering output and measured feedback use the same explicit 30-degree Apollo front-wheel domain through the repository Lincoln MKZ calibration; steer_scale remains 1.0 and steer_sign remains -1.0.
+    - Longitudinal throttle/brake mapping remains legacy and every lateral guard, route follower, terminal hold, and helper-control surface remains disabled.

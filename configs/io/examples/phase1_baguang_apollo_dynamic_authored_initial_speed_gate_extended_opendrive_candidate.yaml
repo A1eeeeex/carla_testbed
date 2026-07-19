@@ -1,0 +1,37 @@
+# Matched-map route-budget candidate. CARLA dynamically materializes the
+# generated 639.68m OpenDRIVE world; Apollo selects the separately generated
+# OpenDriveMap HDMap derived from the same straight-road geometry.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_physical_steering_fresh_gt_coherent_simtime_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_extended_opendrive_candidate
+  map: OpenDriveMap
+
+runtime:
+  carla:
+    launch_with_map: false
+    opendrive:
+      enabled: true
+      path: configs/io/maps/straight_road_for_baguang_extended_120m/straight_road_for_baguang_extended_120m.xodr
+      expected_map_name: OpenDriveMap
+      generation_parameters:
+        vertex_distance: 2.0
+        max_road_length: 50.0
+        wall_height: 0.0
+        additional_width: 0.6
+        smooth_junctions: true
+        enable_mesh_visibility: true
+        enable_pedestrian_navigation: false
+
+algo:
+  apollo:
+    routing:
+      scenario_goal_ahead_m: 630.0
+
+assist_ledger:
+  notes:
+    - Diagnostic matched-map route-budget candidate; it changes only the CARLA/Apollo straight-road extent and routing distance, not the authored actor profile or scoring duration.
+    - CARLA OpenDriveMap and Apollo OpenDriveMap are isolated candidate assets; the packaged straight_road_for_baguang and all Town01 maps remain unchanged.
+    - Strict apollo_planning_ready, authored-speed materialization, compatible NORMAL replan confirmation, target-ready handover, source-fresh obstacles, and coherent simulation time remain unchanged.
+    - Physical steering remains candidate-only, longitudinal mapping stays legacy, steer_scale stays 1.0, all lateral guards remain disabled, and this profile cannot support a natural-driving claim.

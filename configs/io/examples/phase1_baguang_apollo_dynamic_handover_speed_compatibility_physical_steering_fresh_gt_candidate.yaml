@@ -1,0 +1,24 @@
+# Diagnostic one-variable follow-up to the guard-free speed-compatible
+# handover. Publish Localization and Chassis at most once per new CARLA sim
+# frame so Apollo never consumes a cached GT state with a repeated timestamp.
+# This is an input-contract candidate, not a natural-driving claim profile.
+extends: phase1_baguang_apollo_dynamic_handover_speed_compatibility_physical_steering_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_handover_speed_compatibility_physical_steering_fresh_gt_candidate
+  profile_name: phase1_baguang_apollo_dynamic_handover_speed_compatibility_physical_steering_fresh_gt_candidate
+
+algo:
+  apollo:
+    bridge:
+      claim_grade:
+        enabled: true
+        stale_world_frame_policy: skip
+        localization_publish_policy: once_per_new_sim_frame
+        chassis_publish_policy: once_per_new_sim_frame
+
+assist_ledger:
+  notes:
+    - Diagnostic-only fresh-GT publication candidate; it does not change Apollo Planning or Control output.
+    - Cached Localization and Chassis samples are skipped between CARLA frames instead of being republished with duplicate timestamps.
+    - Speed-compatible setup handover, steering-only physical mapping, legacy longitudinal mapping, disabled lateral guards, formal scenario ownership, and Town01 profiles remain unchanged.

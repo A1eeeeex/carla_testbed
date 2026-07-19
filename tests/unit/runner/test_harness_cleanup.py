@@ -5,7 +5,34 @@ import pytest
 pytest.importorskip("carla")
 
 from carla_testbed.core.lifecycle import LifecycleManager
-from carla_testbed.runner.harness import _lane_invasion_artifact_event, _register_harness_cleanup_resources
+from carla_testbed.runner.harness import (
+    _failure_reason_for_scene_phase,
+    _hook_termination_outcome,
+    _lane_invasion_artifact_event,
+    _register_harness_cleanup_resources,
+)
+
+
+def test_scene_safety_failure_before_arm_is_setup_failure() -> None:
+    assert _failure_reason_for_scene_phase(
+        "LANE_INVASION_HARD",
+        {"fixed_scene_runtime": {"armed": False, "scene_sim_time_s": None}},
+    ) == "setup_failed"
+    assert _failure_reason_for_scene_phase(
+        "LANE_INVASION_HARD",
+        {"fixed_scene_runtime": {"armed": True, "scene_sim_time_s": 2.0}},
+    ) == "LANE_INVASION_HARD"
+
+
+def test_hook_termination_outcome_distinguishes_setup_failure_from_completion() -> None:
+    assert _hook_termination_outcome({"reason": "fixed_scene_storyboard_completed"}) == (
+        True,
+        None,
+        "scenario_completed",
+    )
+    assert _hook_termination_outcome(
+        {"success": False, "fail_reason": "setup_failed", "reason": "preroll_timeout"}
+    ) == (False, "setup_failed", "scenario_setup_failed")
 
 
 class FakeResource:

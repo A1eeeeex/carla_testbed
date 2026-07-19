@@ -343,7 +343,10 @@ def test_v_t_gap_aligns_relative_actor_trace_to_absolute_apollo_timeseries(tmp_p
             fieldnames=["sim_time", "ego_speed_mps", "ego_x", "ego_y", "ego_yaw_rad", "ego_length_m", "ego_width_m"],
         )
         writer.writeheader()
-        for sim_time, ego_x in [(100.0, 0.0), (105.0, 5.0), (106.0, 6.0)]:
+        # The absolute timeseries can contain a long setup/warmup interval.
+        # Explicit runtime-start alignment must use range overlap rather than
+        # whichever trace origin happens to be closest to the first warmup row.
+        for sim_time, ego_x in [(40.0, -60.0), (100.0, 0.0), (105.0, 5.0), (106.0, 6.0)]:
             writer.writerow(
                 {
                     "sim_time": sim_time,

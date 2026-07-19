@@ -1,0 +1,21 @@
+extends: phase1_baguang_apollo_dynamic_obstacle_cybertime_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_handover_speed_compatibility_candidate
+  profile_name: phase1_baguang_apollo_dynamic_handover_speed_compatibility_candidate
+
+runtime:
+  fixed_scene_player:
+    # Diagnostic setup-only gate. The scene retains ego ownership until ten
+    # distinct NORMAL Planning messages agree with the physical rolling state
+    # both now and one second ahead. It never modifies Apollo output.
+    scene_preroll_planning_speed_gate_enabled: true
+    scene_preroll_planning_current_speed_tolerance_mps: 1.0
+    scene_preroll_planning_lookahead_speed_tolerance_mps: 2.0
+    scene_preroll_planning_compatible_min_messages: 10
+
+assist_ledger:
+  notes:
+    - Diagnostic-only setup handover compatibility candidate; not a behavior assist.
+    - Formal scenario time and Apollo behavior evidence begin only after the atomic ownership transfer.
+    - Online validation is required before this candidate can be promoted.

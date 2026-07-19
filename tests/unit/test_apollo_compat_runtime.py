@@ -42,6 +42,29 @@ def test_transition_backend_snapshots_planning_bvar_dump(tmp_path: Path) -> None
     assert meta["files"]["planning.data"]["snapshot"].endswith("apollo_planning.data")
 
 
+def test_route_health_apollo_runtime_requires_phase1_postprocess_without_scenario_file(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "route_health_run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "backend": "apollo_cyberrt",
+                "scenario_id": "carla_town01_route_health",
+                "scenario_class": "lane_keep",
+                "capability_profile": "lane_keep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "planning_topic_debug.jsonl").write_text("{}\n", encoding="utf-8")
+
+    assert apollo_compat._run_declares_phase1_scenario(run_dir) is True
+
+
 def _write_transition_config(tmp_path: Path, *, phase1_scenario_path: str | None = None) -> Path:
     config_path = tmp_path / "town01_apollo_route_only_claim_probe.yaml"
     config_path.write_text(
@@ -230,7 +253,10 @@ def test_typed_transition_backend_materializes_typed_bridge_diagnostic_fields(
                 "    transport_mode: ros2_gt",
                 "    bridge:",
                 "      localization_time_source: cyber_time",
+                "      obstacle_time_source: source_time",
                 "      obstacle_publish_rate_hz: 10.0",
+                "      obstacle_publish_policy: source_fresh",
+                "      obstacle_alignment_policy: wait_for_exact_source_time",
                 "",
             ]
         ),
@@ -250,7 +276,12 @@ def test_typed_transition_backend_materializes_typed_bridge_diagnostic_fields(
     )
 
     assert effective["algo"]["apollo"]["bridge"]["localization_time_source"] == "cyber_time"
+    assert effective["algo"]["apollo"]["bridge"]["obstacle_time_source"] == "source_time"
     assert effective["algo"]["apollo"]["bridge"]["obstacle_publish_rate_hz"] == 10.0
+    assert effective["algo"]["apollo"]["bridge"]["obstacle_publish_policy"] == "source_fresh"
+    assert effective["algo"]["apollo"]["bridge"]["obstacle_alignment_policy"] == (
+        "wait_for_exact_source_time"
+    )
 
 
 def test_typed_transition_backend_allows_platform_lifecycle_preseed(

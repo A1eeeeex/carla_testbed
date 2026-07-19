@@ -1,0 +1,24 @@
+# Default-off, Baguang-only actuator-contract A/B. The base profile maps an
+# Apollo front-wheel target through a static inverse table, while CARLA applies
+# a speed-dependent steering curve. This candidate compensates only that
+# measured target-angle tracking ratio before the same inverse lookup.
+extends: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_control_raw_full_capture_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_control_raw_full_capture_extended_opendrive_speed_compensated_steering_candidate
+  profile_name: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_control_raw_full_capture_extended_opendrive_speed_compensated_steering_candidate
+
+algo:
+  apollo:
+    control_mapping:
+      physical:
+        calibration_file: configs/calibration/vehicles/vehicle.lincoln.mkz_2020/steering_front_wheel_speed_v2.json
+        steering_speed_compensation_enabled: true
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only Baguang actuator-contract A/B; default-off and not a physical-mapping, controller-gain, or natural-driving promotion.
+    - The tracked v2 calibration retains the v1 static inverse and adds only the 32-trial CARLA-direct speed-to-front-wheel tracking ratio.
+    - Steering target, sign, steer_scale, Apollo LQR, Control cadence, Planning, readiness/handover, matched map, longitudinal mapping, guards, and Town01 remain unchanged.
+    - Runtime evidence must show the v2 calibration identity/hash, speed compensation enabled and applied, no fallback, and complete raw-to-mapped-to-applied traces.

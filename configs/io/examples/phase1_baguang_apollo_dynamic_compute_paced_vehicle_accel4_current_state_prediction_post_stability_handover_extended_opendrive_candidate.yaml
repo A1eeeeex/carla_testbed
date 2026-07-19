@@ -1,0 +1,24 @@
+# Default-off handover-boundary A/B for the v67 current-state Prediction run.
+# The initial stationary apollo_planning_ready gate remains unchanged.  After
+# the authored speed is materialized, accept two distinct fresh NORMAL
+# trajectories that agree with the stable current speed without additionally
+# requiring Apollo's trajectory-stitcher is_replan bit.
+extends: phase1_baguang_apollo_dynamic_compute_paced_vehicle_accel4_current_state_prediction_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_compute_paced_vehicle_accel4_current_state_prediction_post_stability_handover_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_compute_paced_vehicle_accel4_current_state_prediction_post_stability_handover_extended_opendrive_candidate
+
+runtime:
+  fixed_scene_player:
+    planning_ready_require_initial_replan_anchor: true
+    scene_preroll_planning_require_replan_anchor: false
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only Baguang post-stability handover A/B; it is not a natural-driving capability claim or a promoted default.
+    - The initial gate still requires Routing success and a fresh multi-point NORMAL Planning trajectory before ego or lead motion.
+    - After initial-speed materialization, speed, bumper gap, drivetrain state, and Apollo control readiness must be stable before two distinct fresh current-speed-compatible NORMAL Planning messages can transfer ownership; every fallback, stale, short, or incompatible message resets readiness.
+    - Only the second-stage is_replan-bit requirement changes from v67; COST_EVALUATOR plus MOVE_SEQUENCE_PREDICTOR, exact GT timestamps, CPU compute pacing, Planning constraints, and max_acceleration 4.0 m/s2 remain unchanged.
+    - Physical steering remains candidate-only, longitudinal output remains legacy, steer_scale stays 1.0, every guard remains disabled, and Town01 profiles are unchanged.

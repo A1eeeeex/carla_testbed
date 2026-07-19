@@ -1,0 +1,21 @@
+# Default-off diagnostic candidate for the Baguang GT publish deadline.
+# Keep the fresh-GT policy and 2 s stats snapshot interval; reduce only the
+# high-frequency control debug artifact sampling that shares the bridge process.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_physical_steering_fresh_gt_stats_flush_2s_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_physical_steering_fresh_gt_low_capture_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_physical_steering_fresh_gt_low_capture_candidate
+
+algo:
+  apollo:
+    bridge:
+      # This affects diagnostic artifact volume only; it does not alter Apollo
+      # control, CARLA actuation, steering units, signs, or any runtime guard.
+      control_debug_artifact_sample_stride: 10
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only low-capture publish-loop A/B; default-off and not a physical-mapping or natural-driving claim.
+    - Fresh Localization/Chassis publication, 2 s stats snapshots, strict planning-ready gate, native-state startup, drivetrain handover, steering calibration, longitudinal legacy mapping, and disabled lateral guards remain unchanged.

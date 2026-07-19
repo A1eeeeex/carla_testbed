@@ -1,0 +1,24 @@
+# Diagnostic longitudinal candidate for the Apollo Town01 reference runtime.
+# Keep reference-line stitching disabled because that is the frozen lateral
+# workaround; enable only trajectory stitching to preserve speed continuity.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_calibration_candidate.yaml
+
+run:
+  profile_name: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_stitcher_candidate
+  claim_profile: false
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Apollo trajectory-stitching longitudinal diagnostic candidate; not claim-grade.
+    - Reference-line stitching remains disabled to preserve the frozen lateral configuration.
+
+algo:
+  apollo:
+    planning:
+      enable_reference_line_stitching: false
+      enable_trajectory_stitcher: true

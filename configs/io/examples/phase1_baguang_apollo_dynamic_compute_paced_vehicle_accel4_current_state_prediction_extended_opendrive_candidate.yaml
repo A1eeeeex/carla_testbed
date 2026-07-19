@@ -1,0 +1,23 @@
+# Default-off Apollo Prediction A/B for the repeatable v65/v66 large-gap
+# behavior.  Native VectorNet systematically underpredicts the truthful lead's
+# three-second speed before, during, and after the authored speed transition.
+# Keep every validated runtime, Planning, vehicle, and control boundary fixed
+# while selecting Apollo's geometric current-state caution path.
+extends: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_compute_paced_vehicle_accel4_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_compute_paced_vehicle_accel4_current_state_prediction_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_compute_paced_vehicle_accel4_current_state_prediction_extended_opendrive_candidate
+
+algo:
+  apollo:
+    prediction:
+      vehicle_on_lane_caution_mode: cost_move_sequence_current_state
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only Baguang Apollo Prediction A/B; it is not a natural-driving capability claim or a promoted default.
+    - Only VEHICLE/ON_LANE/CAUTION changes to Apollo 10 COST_EVALUATOR plus MOVE_SEQUENCE_PREDICTOR; no obstacle pose, velocity, dimensions, identity, history, or authored future intent is fabricated.
+    - Exact GT timestamps, CPU compute pacing, strict Routing/NORMAL replan readiness, exact NORMAL handover, and max_acceleration 4.0 m/s2 remain unchanged from v65/v66.
+    - Physical steering remains candidate-only, longitudinal output remains legacy, steer_scale stays 1.0, every guard remains disabled, and Town01 profiles are unchanged.

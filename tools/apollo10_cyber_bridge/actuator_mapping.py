@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import dataclass
@@ -194,10 +195,22 @@ class SectionTable:
 
 
 class ActuatorCalibration:
-    def __init__(self, payload: Optional[Dict[str, Any]] = None, *, source_path: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        source_path: Optional[Path] = None,
+        source_sha256: str = "",
+    ) -> None:
         self.payload = payload or {}
         self.source_path = source_path
+        self.source_sha256 = str(source_sha256 or "")
         self.schema_version = int(self.payload.get("schema_version", 1) or 1)
+        self.calibration_id = str(self.payload.get("calibration_id") or "")
+        vehicle = self.payload.get("vehicle")
+        self.vehicle_type_id = str(
+            vehicle.get("type_id") if isinstance(vehicle, dict) else ""
+        )
         self._steering_angle_table = self._build_simple_table(
             ("steering", "inverse", "target_front_wheel_angle_deg_to_carla_cmd"),
             input_key="target_front_wheel_angle_deg",
@@ -207,6 +220,15 @@ class ActuatorCalibration:
             ("steering", "inverse", "target_curvature_to_carla_cmd"),
             input_key="target_curvature",
             output_key="carla_steer_cmd",
+        )
+        self._steering_speed_tracking_table = self._build_simple_table(
+            (
+                "steering",
+                "speed_compensation",
+                "front_wheel_target_tracking_ratio_by_speed_mps",
+            ),
+            input_key="speed_mps",
+            output_key="tracking_ratio",
         )
         self._throttle_bins = self._build_speed_bins(
             ("throttle", "speed_bins"),
@@ -268,6 +290,13 @@ class ActuatorCalibration:
         self._brake_low_speed_hold_cmd = _safe_float(
             (self._nested(("brake", "low_speed", "hold", "summary")) or {}).get("hold_cmd")
         )
+        self._brake_low_speed_stop_meta = self._nested(("brake", "low_speed", "stop"))
+        if not self._brake_low_speed_stop_meta:
+            self._brake_low_speed_stop_meta = self._brake_low_speed_hold_meta
+        stop_summary = self._nested(("brake", "low_speed", "stop", "summary"))
+        self._brake_low_speed_stop_cmd = _safe_float(stop_summary.get("stop_cmd"))
+        if self._brake_low_speed_stop_cmd is None:
+            self._brake_low_speed_stop_cmd = self._brake_low_speed_hold_cmd
         self._brake_low_speed_rolling = self._build_section_tables(
             ("brake", "low_speed", "rolling"),
             inverse_key="target_speed_drop_mps_to_brake_cmd",
@@ -494,9 +523,15 @@ class ActuatorCalibration:
         return {
             "loaded": self.loaded,
             "source_path": str(self.source_path) if self.source_path is not None else "",
+            "source_sha256": self.source_sha256,
             "schema_version": self.schema_version,
+            "calibration_id": self.calibration_id,
+            "vehicle_type_id": self.vehicle_type_id,
             "steering_pairs": len(self._steering_angle_table.pairs),
             "steering_curvature_pairs": len(self._steering_curvature_table.pairs),
+            "steering_speed_compensation_pairs": len(
+                self._steering_speed_tracking_table.pairs
+            ),
             "throttle_speed_bins": len(self._throttle_bins),
             "signed_throttle_speed_bins": len(self._signed_throttle_bins),
             "signed_throttle_low_speed_sections": len(self._signed_throttle_crawl_sections),
@@ -507,6 +542,7 @@ class ActuatorCalibration:
             "throttle_mid_speed_boost_sections": len(self._throttle_mid_speed_boost),
             "brake_speed_bins": len(self._brake_bins),
             "brake_low_speed_hold_cmd": self._brake_low_speed_hold_cmd,
+            "brake_low_speed_stop_cmd": self._brake_low_speed_stop_cmd,
             "brake_low_speed_rolling_sections": len(self._brake_low_speed_rolling),
         }
 
@@ -523,6 +559,12 @@ class ActuatorCalibration:
         if mapped is None:
             return None
         return clamp(sign * float(mapped), -1.0, 1.0)
+
+    def steering_speed_tracking_ratio(self, speed_mps: float) -> Optional[float]:
+        ratio = self._steering_speed_tracking_table.lookup(max(0.0, float(speed_mps)))
+        if ratio is None or not math.isfinite(float(ratio)) or float(ratio) <= 1e-3:
+            return None
+        return float(ratio)
 
     def _select_speed_bin(self, bins: Sequence[SpeedBin], speed_mps: float) -> Optional[SpeedBin]:
         if not bins:
@@ -759,10 +801,61 @@ class ActuatorCalibration:
         if target_decel_mps2 <= 0.0:
             return {"cmd": 0.0, "source": "zero_request"}
         speed = max(0.0, float(speed_mps))
-        if speed < 1.0 and self._safe_reliable(self._brake_low_speed_hold_meta) and self._brake_low_speed_hold_cmd is not None:
-            return {"cmd": clamp(float(self._brake_low_speed_hold_cmd), 0.0, 1.0), "source": "physical_low_speed_hold"}
+        hold_probe = (
+            self._brake_low_speed_hold_meta.get("probe", {})
+            if isinstance(self._brake_low_speed_hold_meta.get("probe"), dict)
+            else {}
+        )
+        hold_activation_speed = _safe_float(
+            hold_probe.get("activation_max_speed_mps")
+        )
+        if hold_activation_speed is None:
+            hold_activation_speed = 1.0
+        if (
+            speed <= float(hold_activation_speed)
+            and self._safe_reliable(self._brake_low_speed_hold_meta)
+            and self._brake_low_speed_hold_cmd is not None
+        ):
+            return {
+                "cmd": clamp(float(self._brake_low_speed_hold_cmd), 0.0, 1.0),
+                "source": "physical_low_speed_hold",
+            }
+        stop_probe = (
+            self._brake_low_speed_stop_meta.get("probe", {})
+            if isinstance(self._brake_low_speed_stop_meta.get("probe"), dict)
+            else {}
+        )
+        stop_activation_speed = _safe_float(
+            stop_probe.get("activation_max_speed_mps")
+        )
+        if stop_activation_speed is None:
+            stop_activation_speed = _safe_float(stop_probe.get("entry_speed_mps")) or 1.0
+        stop_request_threshold = _safe_float(
+            stop_probe.get("request_decel_threshold_mps2")
+        )
+        if stop_request_threshold is None:
+            stop_request_threshold = 0.0
+        if (
+            speed <= float(stop_activation_speed)
+            and float(target_decel_mps2) >= float(stop_request_threshold)
+            and self._safe_reliable(self._brake_low_speed_stop_meta)
+            and self._brake_low_speed_stop_cmd is not None
+        ):
+            return {
+                "cmd": clamp(float(self._brake_low_speed_stop_cmd), 0.0, 1.0),
+                "source": "physical_low_speed_stop",
+            }
         if speed < 8.0:
             section = self._select_section(self._brake_low_speed_rolling, speed)
+            if section is not None:
+                speed_min = _safe_float(section.metadata.get("speed_min_mps"))
+                speed_max = _safe_float(section.metadata.get("speed_max_mps"))
+                if (
+                    speed_min is not None
+                    and speed_max is not None
+                    and not (float(speed_min) <= speed < float(speed_max))
+                ):
+                    section = None
             if section is not None:
                 eval_sec = _safe_float(((section.metadata.get("probe", {}) or {}).get("eval_sec"))) or 0.3
                 target_drop = max(0.0, float(target_decel_mps2) * float(eval_sec))
@@ -775,10 +868,46 @@ class ActuatorCalibration:
         speed_bin = self._select_speed_bin(self._brake_bins, speed)
         if speed_bin is None:
             return {"cmd": None, "source": "missing_speed_bin"}
+        if not speed_bin.contains(speed):
+            return {
+                "cmd": None,
+                "source": "speed_outside_calibrated_brake_bins",
+                "calibrated_speed_min_mps": float(speed_bin.speed_min_mps),
+                "calibrated_speed_max_mps": float(speed_bin.speed_max_mps),
+            }
+        calibrated_max = (
+            float(speed_bin.table.pairs[-1][0])
+            if speed_bin.table.pairs
+            else None
+        )
         mapped = self._lookup_if_in_range(speed_bin.table, float(target_decel_mps2))
         if mapped is None:
             return {"cmd": None, "source": "decel_below_calibrated_brake_range"}
-        return {"cmd": clamp(float(mapped), 0.0, 1.0), "source": "physical_inverse_decel"}
+        if calibrated_max is not None and float(target_decel_mps2) > calibrated_max:
+            return {
+                "cmd": clamp(float(mapped), 0.0, 1.0),
+                "source": "physical_inverse_decel_high_clamp",
+                "calibrated_decel_mps2": calibrated_max,
+            }
+        return {
+            "cmd": clamp(float(mapped), 0.0, 1.0),
+            "source": "physical_inverse_decel",
+            "calibrated_decel_mps2": float(target_decel_mps2),
+        }
+
+    def brake_decel_range(self, *, speed_mps: float) -> Optional[Tuple[float, float]]:
+        speed = max(0.0, float(speed_mps))
+        speed_bin = self._select_speed_bin(self._brake_bins, speed)
+        if (
+            speed_bin is None
+            or not speed_bin.contains(speed)
+            or not speed_bin.table.pairs
+        ):
+            return None
+        return (
+            float(speed_bin.table.pairs[0][0]),
+            float(speed_bin.table.pairs[-1][0]),
+        )
 
     def decel_actuation_mapping(self, target_decel_mps2: float, *, speed_mps: float) -> Dict[str, Any]:
         if target_decel_mps2 <= 0.0:
@@ -843,9 +972,14 @@ def load_actuator_calibration(path: Optional[Path]) -> ActuatorCalibration:
     if path is None or not path.exists():
         return ActuatorCalibration()
     try:
-        payload = json.loads(path.read_text())
+        source_bytes = path.read_bytes()
+        payload = json.loads(source_bytes.decode("utf-8"))
     except Exception:
         return ActuatorCalibration()
     if not isinstance(payload, dict):
         return ActuatorCalibration()
-    return ActuatorCalibration(payload, source_path=path)
+    return ActuatorCalibration(
+        payload,
+        source_path=path,
+        source_sha256=hashlib.sha256(source_bytes).hexdigest(),
+    )

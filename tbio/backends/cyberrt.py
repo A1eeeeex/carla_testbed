@@ -129,6 +129,52 @@ class CyberRTBackend(Backend):
     def _docker_cfg(self) -> Dict[str, Any]:
         return (self._apollo_cfg().get("docker", {}) or {})
 
+    def _cyber_clock_cfg(self) -> Dict[str, Any]:
+        cfg = (self._apollo_cfg().get("bridge", {}) or {}).get("cyber_clock", {}) or {}
+        return cfg if isinstance(cfg, dict) else {}
+
+    def _docker_cyber_clock_prefix(self) -> str:
+        """Prepare an explicit Apollo mock-clock config without touching the image."""
+        cfg = self._cyber_clock_cfg()
+        enabled = bool(cfg.get("enabled", False))
+        mode = str(cfg.get("mode", "disabled") or "disabled").strip().lower()
+        if not enabled or mode != "mock":
+            return ""
+        overlay = "/apollo_workspace/conf_overlay/cyber/conf/cyber.pb.conf"
+        source_candidates = (
+            "/apollo/cyber/conf/cyber.pb.conf",
+            "/opt/apollo/neo/src/cyber/conf/cyber.pb.conf",
+        )
+        source_expr = (
+            "for _candidate in "
+            + " ".join(shlex.quote(path) for path in source_candidates)
+            + "; do if [ -f \"$_candidate\" ]; then "
+            "cyber_clock_source=\"$_candidate\"; break; fi; done"
+        )
+        script = (
+            "cyber_clock_source=''; "
+            f"{source_expr}; "
+            "if [ -z \"$cyber_clock_source\" ]; then "
+            "echo 'cyber clock mock requested but cyber.pb.conf is missing' >&2; exit 1; fi; "
+            "export CYBER_CLOCK_SOURCE=\"$cyber_clock_source\"; "
+            "python3 -c "
+            + shlex.quote(
+                "from pathlib import Path; "
+                "import re; "
+                "import os; "
+                "src=Path(os.environ['CYBER_CLOCK_SOURCE']); "
+                f"out=Path({overlay!r}); "
+                "text=src.read_text(); "
+                "updated=re.sub(r'(?m)^(\\s*clock_mode\\s*:\\s*)\\w+', r'\\1MODE_MOCK', text); "
+                "assert updated != text, 'clock_mode entry missing from cyber.pb.conf'; "
+                "out.parent.mkdir(parents=True, exist_ok=True); "
+                "out.write_text(updated)"
+            )
+            + " || exit 1; "
+            f"export CYBER_PATH={shlex.quote('/apollo_workspace/conf_overlay/cyber')}"
+        )
+        return script
+
     def _transport_mode(self) -> str:
         raw = str(self._apollo_cfg().get("transport_mode") or "ros2_gt").strip().lower()
         return raw or "ros2_gt"
@@ -2452,6 +2498,9 @@ class CyberRTBackend(Backend):
     def _apollo_planning_cfg(self) -> Dict[str, Any]:
         return (self._apollo_cfg().get("planning", {}) or {})
 
+    def _apollo_prediction_cfg(self) -> Dict[str, Any]:
+        return (self._apollo_cfg().get("prediction", {}) or {})
+
     def _apollo_control_pipeline_cfg(self) -> Dict[str, Any]:
         return (self._apollo_cfg().get("control_pipeline", {}) or {})
 
@@ -2535,6 +2584,67 @@ class CyberRTBackend(Backend):
             f"cp -f {shlex.quote(overlay_path)} {shlex.quote(target_path)} >/dev/null 2>&1 || true); "
             "fi; "
         )
+
+    @staticmethod
+    def _managed_module_overlay_restore_script(
+        *,
+        apollo_root: Path | str = "/apollo",
+        overlay_root: Path | str = "/apollo_workspace/conf_overlay",
+    ) -> str:
+        """Return a script that restores only links managed by config overlays."""
+        return f"""from pathlib import Path
+import json
+import os
+import shutil
+
+apollo_root = Path({str(apollo_root)!r})
+overlay_root = Path({str(overlay_root)!r}).resolve(strict=False)
+restored = []
+removed = []
+errors = []
+
+if apollo_root.exists():
+    for target in sorted(apollo_root.rglob("*")):
+        if not target.is_symlink():
+            continue
+        try:
+            resolved = target.resolve(strict=False)
+            resolved.relative_to(overlay_root)
+        except ValueError:
+            continue
+        except Exception as exc:
+            errors.append({{"target": str(target), "error": f"{{type(exc).__name__}}: {{exc}}"}})
+            continue
+
+        backup = Path(str(target) + ".carla_testbed.bak")
+        try:
+            if backup.is_file():
+                tmp_target = target.with_name(
+                    target.name + f".carla_testbed_restore_tmp.{{os.getpid()}}"
+                )
+                tmp_target.unlink(missing_ok=True)
+                shutil.copy2(backup, tmp_target)
+                os.replace(tmp_target, target)
+                restored.append({{"target": str(target), "backup": str(backup)}})
+            else:
+                target.unlink()
+                removed.append({{"target": str(target), "reason": "originally_missing"}})
+        except Exception as exc:
+            errors.append({{"target": str(target), "error": f"{{type(exc).__name__}}: {{exc}}"}})
+
+payload = {{
+    "restored": not errors,
+    "reason": "restored" if restored or removed else "no_managed_links",
+    "restored_count": len(restored),
+    "removed_count": len(removed),
+    "error_count": len(errors),
+    "restored_targets": restored,
+    "removed_targets": removed,
+    "errors": errors,
+}}
+print(json.dumps(payload, ensure_ascii=False))
+raise SystemExit(1 if errors else 0)
+"""
 
     def _lane_follow_overlay_shell(self) -> str:
         planning_cfg = self._apollo_planning_cfg()
@@ -2704,13 +2814,146 @@ class CyberRTBackend(Backend):
             + "; "
         )
 
+    def _prediction_flags_overlay_shell(self) -> str:
+        """Apply explicit, reversible Prediction gflag experiments."""
+        prediction_cfg = self._apollo_prediction_cfg()
+        interactive_tag = prediction_cfg.get("enable_interactive_tag")
+        compute_device = str(
+            prediction_cfg.get("compute_device") or "auto"
+        ).strip().lower()
+        if compute_device not in {"auto", "cpu"}:
+            raise ValueError(
+                "unsupported Apollo Prediction compute_device: "
+                f"{compute_device!r}; expected auto|cpu"
+            )
+        overlay_path = "/apollo_workspace/conf_overlay/modules/prediction/conf/prediction.conf"
+        target_path = "/apollo/modules/prediction/conf/prediction.conf"
+        if interactive_tag is None and compute_device == "auto":
+            return self._managed_overlay_link_shell(overlay_path, target_path, enabled=False)
+
+        filtered_flags = []
+        appended_flags = []
+        if interactive_tag is not None:
+            desired_interactive_tag = "true" if bool(interactive_tag) else "false"
+            filtered_flags.extend(
+                [
+                    "ln.startswith('--enable_interactive_tag=')",
+                    "ln.strip() == '--noenable_interactive_tag'",
+                ]
+            )
+            appended_flags.append(
+                f"lines.append('--enable_interactive_tag={desired_interactive_tag}'); "
+            )
+        if compute_device == "cpu":
+            filtered_flags.extend(
+                [
+                    "ln.startswith('--use_cuda=')",
+                    "ln.strip() == '--nouse_cuda'",
+                ]
+            )
+            appended_flags.append("lines.append('--use_cuda=false'); ")
+        filter_expression = " or ".join(filtered_flags)
+        script = (
+            "from pathlib import Path; "
+            "cands=["
+            "'/apollo/modules/prediction/conf/prediction.conf.carla_testbed.bak',"
+            "'/opt/apollo/neo/share/modules/prediction/conf/prediction.conf',"
+            "'/opt/apollo/neo/src/modules/prediction/conf/prediction.conf',"
+            "'/apollo/modules/prediction/conf/prediction.conf'"
+            "]; "
+            "src=next((cand for cand in cands if Path(cand).is_file() and "
+            "not (cand == '/apollo/modules/prediction/conf/prediction.conf' and "
+            "Path(cand).is_symlink())), ''); "
+            "lines=(Path(src).read_text().splitlines() if src else "
+            "['--flagfile=modules/common/data/global_flagfile.txt']); "
+            f"lines=[ln for ln in lines if not ({filter_expression})]; "
+            + "".join(appended_flags)
+            +
+            f"out=Path({overlay_path!r}); "
+            "out.parent.mkdir(parents=True, exist_ok=True); "
+            "out.write_text('\\n'.join(lines)+'\\n')"
+        )
+        return (
+            "python3 -c "
+            + shlex.quote(script)
+            + "; "
+            + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)
+        )
+
+    def _prediction_obstacle_conf_overlay_shell(self) -> str:
+        """Apply a narrowly scoped, reversible Prediction obstacle config experiment."""
+        prediction_cfg = self._apollo_prediction_cfg()
+        caution_mode = str(prediction_cfg.get("vehicle_on_lane_caution_mode") or "").strip()
+        overlay_path = (
+            "/apollo_workspace/conf_overlay/modules/prediction/conf/"
+            "prediction_conf.pb.txt"
+        )
+        target_path = "/apollo/modules/prediction/conf/prediction_conf.pb.txt"
+        if not caution_mode:
+            return self._managed_overlay_link_shell(overlay_path, target_path, enabled=False)
+        if caution_mode != "cost_move_sequence_current_state":
+            raise ValueError(
+                "unsupported Apollo Prediction vehicle_on_lane_caution_mode: "
+                f"{caution_mode!r}"
+            )
+
+        script = (
+            "from pathlib import Path; "
+            "import re; "
+            "cands=["
+            "'/apollo/modules/prediction/conf/prediction_conf.pb.txt.carla_testbed.bak',"
+            "'/opt/apollo/neo/share/modules/prediction/conf/prediction_conf.pb.txt',"
+            "'/opt/apollo/neo/src/modules/prediction/conf/prediction_conf.pb.txt',"
+            "'/apollo/modules/prediction/conf/prediction_conf.pb.txt'"
+            "]; "
+            "src=next((cand for cand in cands if Path(cand).is_file() and "
+            "not (cand == '/apollo/modules/prediction/conf/prediction_conf.pb.txt' and "
+            "Path(cand).is_symlink())), ''); "
+            "text=Path(src).read_text() if src else ''; "
+            "pattern=re.compile(r'obstacle_conf\\s*\\{[^{}]*\\}', re.MULTILINE); "
+            "matches=[m for m in pattern.finditer(text) if "
+            "re.search(r'\\bobstacle_type:\\s*VEHICLE\\b', m.group(0)) and "
+            "re.search(r'\\bobstacle_status:\\s*ON_LANE\\b', m.group(0)) and "
+            "re.search(r'\\bpriority_type:\\s*CAUTION\\b', m.group(0))]; "
+            "(_ for _ in ()).throw(RuntimeError("
+            "f'expected exactly one VEHICLE/ON_LANE/CAUTION obstacle_conf in {src}, ' "
+            "f'found {len(matches)}')) if len(matches) != 1 else None; "
+            "block=matches[0].group(0); "
+            "block,evaluator_count=re.subn("
+            "r'(?m)^(\\s*)evaluator_type:\\s*\\w+\\s*$', "
+            "r'\\1evaluator_type: COST_EVALUATOR', block); "
+            "block,predictor_count=re.subn("
+            "r'(?m)^(\\s*)predictor_type:\\s*\\w+\\s*$', "
+            "r'\\1predictor_type: MOVE_SEQUENCE_PREDICTOR', block); "
+            "(_ for _ in ()).throw(RuntimeError("
+            "f'expected evaluator and predictor in VEHICLE/ON_LANE/CAUTION ' "
+            "f'obstacle_conf, found {evaluator_count}/{predictor_count}')) if "
+            "(evaluator_count, predictor_count) != (1, 1) else None; "
+            "updated=text[:matches[0].start()]+block+text[matches[0].end():]; "
+            f"out=Path({overlay_path!r}); "
+            "out.parent.mkdir(parents=True, exist_ok=True); "
+            "out.write_text(updated)"
+        )
+        return (
+            "python3 -c "
+            + shlex.quote(script)
+            + "; "
+            + self._managed_overlay_link_shell(overlay_path, target_path, enabled=True)
+        )
+
     def _planning_flags_overlay_shell(self) -> str:
         planning_cfg = self._apollo_planning_cfg()
         stitch = planning_cfg.get("enable_reference_line_stitching")
         trajectory_stitcher = planning_cfg.get("enable_trajectory_stitcher")
         control_interactive_replan = planning_cfg.get("enable_control_interactive_replan")
+        replan_longitudinal_distance_threshold = planning_cfg.get(
+            "replan_longitudinal_distance_threshold"
+        )
         default_cruise_speed = planning_cfg.get("default_cruise_speed_mps")
         planning_upper_speed_limit = planning_cfg.get("planning_upper_speed_limit_mps")
+        min_stop_distance_obstacle = planning_cfg.get(
+            "min_stop_distance_obstacle_m"
+        )
         smoother_config_filename = self._planning_smoother_config_filename(planning_cfg)
         overlay_path = "/apollo_workspace/conf_overlay/modules/planning/planning_component/conf/planning.conf"
         target_path = "/apollo/modules/planning/planning_component/conf/planning.conf"
@@ -2718,8 +2961,10 @@ class CyberRTBackend(Backend):
             stitch is None
             and trajectory_stitcher is None
             and control_interactive_replan is None
+            and replan_longitudinal_distance_threshold is None
             and default_cruise_speed is None
             and planning_upper_speed_limit is None
+            and min_stop_distance_obstacle is None
             and smoother_config_filename is None
         ):
             return self._managed_overlay_link_shell(overlay_path, target_path, enabled=False)
@@ -2747,10 +2992,14 @@ class CyberRTBackend(Backend):
         if control_interactive_replan is not None:
             desired_control_interactive_replan = "true" if bool(control_interactive_replan) else "false"
             script_parts.append("prefixes.append('--enable_control_interactive_replan='); ")
+        if replan_longitudinal_distance_threshold is not None:
+            script_parts.append("prefixes.append('--replan_longitudinal_distance_threshold='); ")
         if default_cruise_speed is not None:
             script_parts.append("prefixes.append('--default_cruise_speed='); ")
         if planning_upper_speed_limit is not None:
             script_parts.append("prefixes.append('--planning_upper_speed_limit='); ")
+        if min_stop_distance_obstacle is not None:
+            script_parts.append("prefixes.append('--min_stop_distance_obstacle='); ")
         if smoother_config_filename is not None:
             script_parts.append("prefixes.append('--smoother_config_filename='); ")
         script_parts.append("lines=[ln for ln in lines if not any(ln.startswith(prefix) for prefix in prefixes)]; ")
@@ -2764,11 +3013,21 @@ class CyberRTBackend(Backend):
             script_parts.append(
                 f"lines.append('--enable_control_interactive_replan={desired_control_interactive_replan}'); "
             )
+        if replan_longitudinal_distance_threshold is not None:
+            script_parts.append(
+                "lines.append('--replan_longitudinal_distance_threshold="
+                f"{float(replan_longitudinal_distance_threshold):.3f}'); "
+            )
         if default_cruise_speed is not None:
             script_parts.append(f"lines.append('--default_cruise_speed={float(default_cruise_speed):.3f}'); ")
         if planning_upper_speed_limit is not None:
             script_parts.append(
                 f"lines.append('--planning_upper_speed_limit={float(planning_upper_speed_limit):.3f}'); "
+            )
+        if min_stop_distance_obstacle is not None:
+            script_parts.append(
+                "lines.append('--min_stop_distance_obstacle="
+                f"{float(min_stop_distance_obstacle):.3f}'); "
             )
         if smoother_config_filename is not None:
             script_parts.append(f"lines.append('--smoother_config_filename={smoother_config_filename}'); ")
@@ -3404,6 +3663,8 @@ class CyberRTBackend(Backend):
                 " ",
                 self._docker_sim_vehicle_param_shell(),
                 " ",
+                self._prediction_flags_overlay_shell(),
+                self._prediction_obstacle_conf_overlay_shell(),
                 self._lane_follow_overlay_shell(),
                 self._traffic_rules_pipeline_overlay_shell(),
                 self._traffic_light_rule_overlay_shell(),
@@ -3457,9 +3718,21 @@ class CyberRTBackend(Backend):
                 "; then echo 'no apollo launch files found under /apollo/modules'; exit 2; fi; ",
                 "mkdir -p /apollo_workspace/log >/dev/null 2>&1 || true; ",
                 "for lf in \"${launches[@]}\"; do "
-                "setsid -f cyber_launch start \"$lf\" >/apollo_workspace/log/$(basename \"$lf\").tb.log 2>&1; "
-                "sleep 1; "
-                "done; ",
+                + (
+                    "if [ \"$(basename \"$lf\")\" = \"prediction.launch\" ]; then "
+                    "CUDA_VISIBLE_DEVICES='' setsid -f cyber_launch start \"$lf\" "
+                    ">/apollo_workspace/log/$(basename \"$lf\").tb.log 2>&1; "
+                    "else setsid -f cyber_launch start \"$lf\" "
+                    ">/apollo_workspace/log/$(basename \"$lf\").tb.log 2>&1; fi; "
+                    if str(
+                        self._apollo_prediction_cfg().get("compute_device")
+                        or "auto"
+                    ).strip().lower()
+                    == "cpu"
+                    else "setsid -f cyber_launch start \"$lf\" >/apollo_workspace/log/$(basename \"$lf\").tb.log 2>&1; "
+                )
+                + "sleep 1; "
+                + "done; ",
                 (
                     ""
                     if defer_control_start
@@ -3634,6 +3907,50 @@ PY"""
             )
         finally:
             self._control_runtime_overlay_active = False
+
+    def _docker_restore_managed_module_overlays(
+        self,
+        artifacts: Optional[Path] = None,
+    ) -> bool:
+        if not (self._docker_enabled() and self._docker_container_name):
+            return True
+        restore_artifact = (
+            artifacts / "apollo_managed_module_overlay_restore.json"
+            if artifacts
+            else None
+        )
+        script = self._managed_module_overlay_restore_script()
+        try:
+            result = self._docker_exec(
+                "python3 -c " + shlex.quote(script),
+                capture_output=True,
+                check=False,
+                user=self._docker_module_exec_user(),
+            )
+            output = result.stdout or result.stderr or ""
+            if restore_artifact is not None:
+                restore_artifact.write_text(output)
+            if result.returncode != 0:
+                self._write_backend_startup_trace(
+                    "managed_module_overlay_restore_failed",
+                    returncode=result.returncode,
+                    output_path=str(restore_artifact) if restore_artifact else "",
+                    stderr=(result.stderr or "")[-2000:],
+                )
+                return False
+            self._write_backend_startup_trace(
+                "managed_module_overlay_restore_done",
+                output_path=str(restore_artifact) if restore_artifact else "",
+            )
+            return True
+        except Exception as exc:
+            if restore_artifact is not None:
+                restore_artifact.write_text(str(exc))
+            self._write_backend_startup_trace(
+                "managed_module_overlay_restore_failed",
+                error=str(exc),
+            )
+            return False
 
     def _docker_stage_control_runtime_overlay(self, artifacts: Path) -> None:
         source_dirs = self._docker_control_runtime_overlay_source_dirs()
@@ -4902,6 +5219,9 @@ PY"""
         parts.append(
             f'if [ -f {shlex.quote(env_script)} ]; then source {shlex.quote(env_script)}; fi'
         )
+        cyber_clock_prefix = self._docker_cyber_clock_prefix()
+        if cyber_clock_prefix:
+            parts.append(cyber_clock_prefix)
         parts.append(
             'if [ -n "${APOLLO_CONF_PATH:-}" ]; then '
             'export APOLLO_CONF_PATH="/apollo_workspace/conf_overlay:/apollo:/opt/apollo/neo/share:/opt/apollo/neo/src:${APOLLO_CONF_PATH}"; '
@@ -5781,6 +6101,9 @@ PY"""
         parts.append(
             f'if [ -f {shlex.quote(env_script)} ]; then source {shlex.quote(env_script)}; fi'
         )
+        cyber_clock_prefix = self._docker_cyber_clock_prefix()
+        if cyber_clock_prefix:
+            parts.append(cyber_clock_prefix)
         cyber_domain = self._cyber_domain_id()
         cyber_ip = self._cyber_ip()
         if cyber_domain:
@@ -5979,6 +6302,8 @@ PY"""
                 self._docker_ensure_runtime_deps(artifacts)
                 self._write_backend_startup_trace("docker_runtime_deps_done")
                 self._docker_restore_control_runtime_overlay()
+                if not self._docker_restore_managed_module_overlays(artifacts):
+                    raise RuntimeError("failed to restore stale Apollo managed module overlays")
                 self._docker_stage_control_runtime_overlay(artifacts)
                 self._docker_start_modules(artifacts)
                 self._write_backend_startup_trace("docker_start_modules_complete")
@@ -6535,6 +6860,7 @@ PY"""
                     {"container": self._docker_container_name},
                 )
         self._docker_restore_control_runtime_overlay(artifacts)
+        self._docker_restore_managed_module_overlays(artifacts)
         if self._docker_container_name and self._docker_stage_dir:
             try:
                 pattern = shlex.quote(f"{self._docker_stage_dir}/tools/apollo10_cyber_bridge/bridge.py")

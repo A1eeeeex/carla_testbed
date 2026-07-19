@@ -1,0 +1,22 @@
+# Default-off Baguang-only discrete-filter A/B. The inherited candidate changes
+# Apollo Control/LQR sampling from 10 ms to 50 ms. Preserve the original
+# cutoff_freq * ts ratio (10 Hz * 0.01 s) by using 2 Hz at ts=0.05 s; keep all
+# mapping, Planning, readiness, scenario ownership, and guard settings intact.
+extends: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_control_raw_full_capture_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_control_raw_full_capture_extended_opendrive_cutoff_preserved_candidate
+  profile_name: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_control_raw_full_capture_extended_opendrive_cutoff_preserved_candidate
+
+algo:
+  apollo:
+    control_lqr:
+      cutoff_freq: 2
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only Baguang discrete-filter A/B; default-off and not a controller-gain, mapping, guard, or natural-driving promotion.
+    - At the inherited ts=0.05 s, cutoff_freq=2 Hz preserves the original Apollo 10 Hz by 0.01 s discrete cutoff ratio instead of leaving 10 Hz at the 20 Hz sampling Nyquist boundary.
+    - Control cadence, LQR ts, Planning, strict NORMAL readiness and handover, matched road, steering-only physical calibration, legacy longitudinal mapping, and full raw Control capture remain unchanged.
+    - steer_scale=1.0, steer_sign=-1.0, every lateral guard/helper, physical-mapping defaults, and all Town01 profiles remain unchanged.

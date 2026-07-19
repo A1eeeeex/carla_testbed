@@ -1,0 +1,36 @@
+# Default-off follow_stop_static cross-scenario candidate. The scenario's
+# authored ego speed is zero, so there is no reason for the fixed-scene player
+# to accelerate or velocity-seed ego before handover. Keep the online-proven
+# strict Planning gate and portable steering calibration, then transfer ego
+# ownership directly after the compatible NORMAL Planning confirmation.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_physical_steering_fresh_gt_coherent_simtime_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_followstop_static_planning_ready_portable_physical_steering_candidate
+  profile_name: phase1_baguang_apollo_dynamic_followstop_static_planning_ready_portable_physical_steering_candidate
+
+runtime:
+  fixed_scene_player:
+    scene_preroll_materialize_initial_speeds_on_gate: false
+    scene_preroll_ego_handover_mode: planning_ready
+
+algo:
+  apollo:
+    planning:
+      # Match this scenario's authored minimum bumper-to-bumper stop gap using
+      # Apollo Planning's native static-obstacle stop decision.
+      min_stop_distance_obstacle_m: 8.0
+    control_mapping:
+      # A bridge-side terminal hold would manufacture the stopped-lead result;
+      # this candidate must preserve Apollo longitudinal ownership.
+      terminal_stop_hold:
+        enabled: false
+
+assist_ledger:
+  notes:
+    - Default-off follow_stop_static cross-scenario candidate; it is not a default mapping or natural-driving profile.
+    - The fixed scene causes no planar ego motion before readiness; after CARLA spawn settling, ego and the stopped lead are at zero speed when Routing plus a fresh multi-point NORMAL trajectory opens apollo_planning_ready.
+    - The fixed-scene player never accelerates or velocity-seeds ego; Apollo owns ego acceleration from rest immediately after the Planning-ready handover.
+    - The fixed-scene player owns only the stopped lead actor, while terminal stop hold, lateral guards, route followers, and legacy harness ego control remain disabled.
+    - This profile alone raises Apollo Planning's native static-obstacle minimum stop decision from 6 m to the scenario-authored 8 m; default and Town01 profiles remain unchanged.
+    - SPEED_FALLBACK, PATH_FALLBACK, UNKNOWN, stale, short, or speed-incompatible Planning remains rejected; steering-only physical mapping uses the repository vehicle calibration and longitudinal mapping stays legacy.

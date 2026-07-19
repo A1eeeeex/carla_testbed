@@ -1,0 +1,41 @@
+# Default-off diagnostic candidate combining the proven 639.68m matched
+# OpenDRIVE world with the native-state drivetrain-ready handover boundary.
+# The authored actor timing and formal 70kph/20m ScenarioCase remain unchanged.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_candidate
+  map: OpenDriveMap
+
+runtime:
+  carla:
+    launch_with_map: false
+    opendrive:
+      enabled: true
+      path: configs/io/maps/straight_road_for_baguang_extended_120m/straight_road_for_baguang_extended_120m.xodr
+      expected_map_name: OpenDriveMap
+      generation_parameters:
+        vertex_distance: 2.0
+        max_road_length: 50.0
+        wall_height: 0.0
+        additional_width: 0.6
+        smooth_junctions: true
+        enable_mesh_visibility: true
+        enable_pedestrian_navigation: false
+
+algo:
+  apollo:
+    routing:
+      scenario_goal_ahead_m: 630.0
+    control_mapping:
+      terminal_stop_hold:
+        enabled: false
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic matched-map candidate; the CARLA road is 639.68m and Apollo uses the separately generated, densified OpenDriveMap HDMap.
+    - Strict Routing, fresh non-fallback NORMAL Planning, current-speed compatibility, automatic forward gear, and bounded longitudinal acceleration remain mandatory before handover.
+    - The formal actor profile, 70kph/20m initial condition, Planning constraints, steering, actuator mapping mode, and Town01 profiles are unchanged; the inherited but inactive terminal stop hold is explicitly disabled.
+    - This candidate tests finite-road budget separately from Apollo natural-driving capability and remains default-off.

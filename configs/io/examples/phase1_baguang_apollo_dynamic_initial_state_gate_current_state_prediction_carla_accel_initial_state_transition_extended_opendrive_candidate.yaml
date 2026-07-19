@@ -1,0 +1,28 @@
+# Isolate the authored initial-state discontinuity from real vehicle dynamics.
+# CARLA reports the one-shot set_target_velocity jump as physical acceleration
+# for one frame; that setup-only sample must not become Apollo's replan state.
+extends: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_current_speed_handover_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_initial_state_transition_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_initial_state_transition_extended_opendrive_candidate
+
+algo:
+  apollo:
+    bridge:
+      localization_authored_initial_state_transition:
+        mode: marker_zero_once
+        marker_path: fixed_scene_gate_initial_state_materialization.json
+        required_status: pass
+        max_world_frame_delta: 2
+        max_sim_time_delta_s: 0.11
+        speed_tolerance_mps: 0.5
+
+assist_ledger:
+  notes:
+    - Diagnostic-only input-boundary A/B; the bridge may zero exactly one Localization acceleration sample after a passing authored initial-state marker and within the explicit frame and target-speed window.
+    - This does not filter, clamp, smooth, or tune real vehicle acceleration; every later CARLA physical acceleration sample is published unchanged.
+    - Strict apollo_planning_ready still requires routing success and a fresh NORMAL trajectory with at least two points before actors move; every fallback trajectory remains rejected.
+    - Target-ready handover still requires authored ego/lead speed and gap, current Planning speed compatibility, and two distinct compatible NORMAL messages.
+    - The one-shot 70kph assignment remains an authored initial condition, not an Apollo acceleration-from-rest result.
+    - Physical steering remains candidate-only, longitudinal mapping stays legacy, steer_scale stays 1.0, all guards remain disabled, and this is not natural-driving evidence.

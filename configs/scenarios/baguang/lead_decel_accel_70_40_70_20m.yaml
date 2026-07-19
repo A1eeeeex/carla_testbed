@@ -40,9 +40,11 @@ fixed_scene:
           require_waypoint: false
   params:
     duration_s: 18.0
-    duration_policy: lead_reaches_road_end
-    lead_route_end_s_m: 300.0
-    expected_lead_travel_m: 280.0
+    # This scenario is defined by the complete authored speed profile.  The
+    # Baguang driving lane continues to about s=399.68m; treating s=300m as the
+    # road end truncated Apollo runs after a setup-only rolling pre-roll.
+    duration_policy: fixed_duration
+    expected_lead_travel_m: 287.5
     ego_initial_speed_mps: 19.44
     ego_target_speed_mps: 19.44
     ego_target_speed_kph: 70.0
@@ -77,4 +79,4 @@ required_artifacts:
 claim_boundary:
   fixed_scene_playback_is_not_autonomy_evidence: true
   builtin_controller_is_diagnostic_only: true
-notes: "Baguang P0 lead-speed-change scene: both vehicles start near 70kph with a 20m gap; after 5s the lead ramps down to 40kph, holds briefly, then ramps back to 70kph before the current Baguang straight-road end. This file keeps the canonical lead_decel_accel case name semantically aligned with the actual speed profile."
+notes: "Baguang P0 lead-speed-change scene: both vehicles start near 70kph with a 20m gap; after 5s the lead ramps down to 40kph, holds briefly, then ramps back to 70kph over the complete 18s authored profile. This file keeps the canonical lead_decel_accel case name semantically aligned with the actual speed profile."

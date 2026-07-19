@@ -973,12 +973,6 @@ def _ensure_channel_health(
             "apollo_channel_health_report.json",
         ],
     )
-    if (
-        existing is not None
-        and not refresh
-        and _channel_health_report_reusable(existing, run_dir=run_dir, scenario_class=scenario_class)
-    ):
-        return {"status": "existing", "path": str(existing)}
     stats_path = _find_first(
         run_dir,
         [
@@ -987,6 +981,20 @@ def _ensure_channel_health(
             "artifacts/channel_stats.json",
         ],
     )
+    if (
+        existing is not None
+        and not refresh
+        and _channel_health_report_reusable(existing, run_dir=run_dir, scenario_class=scenario_class)
+        and (
+            stats_path is None
+            or _channel_health_report_uses_stats(
+                existing,
+                stats_path=stats_path,
+                run_dir=run_dir,
+            )
+        )
+    ):
+        return {"status": "existing", "path": str(existing)}
     generated_channel_stats = None
     if refresh and _channel_stats_refreshable(stats_path):
         regenerated = normalize_channel_stats_for_run(run_dir)
@@ -1106,6 +1114,27 @@ def _channel_health_report_reusable(
     )
 
 
+def _channel_health_report_uses_stats(
+    report_path: Path,
+    *,
+    stats_path: Path,
+    run_dir: Path,
+) -> bool:
+    report = _read_json(report_path)
+    source = report.get("source")
+    if not isinstance(source, Mapping):
+        return False
+    raw_report_stats = source.get("stats_path")
+    if raw_report_stats in {None, ""}:
+        return False
+    report_stats = _resolve_source_path(
+        str(raw_report_stats),
+        run_dir=run_dir,
+        report_path=report_path,
+    )
+    return report_stats is not None and report_stats == stats_path.expanduser().resolve()
+
+
 def _report_source_paths_resolve(
     report_path: Path,
     *,
@@ -1126,6 +1155,10 @@ def _report_source_paths_resolve(
 
 
 def _source_path_exists(raw: str, *, run_dir: Path, report_path: Path) -> bool:
+    return _resolve_source_path(raw, run_dir=run_dir, report_path=report_path) is not None
+
+
+def _resolve_source_path(raw: str, *, run_dir: Path, report_path: Path) -> Path | None:
     path = Path(raw).expanduser()
     candidates = [path]
     if not path.is_absolute():
@@ -1136,7 +1169,10 @@ def _source_path_exists(raw: str, *, run_dir: Path, report_path: Path) -> bool:
                 report_path.parent / path,
             ]
         )
-    return any(candidate.exists() for candidate in candidates)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
 
 
 def _ensure_obstacle_gt_contract_report(

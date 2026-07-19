@@ -7,8 +7,13 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from carla_testbed.apollo.roadrunner_hdmap import (
     LaneYLine,
@@ -210,7 +215,11 @@ def main() -> int:
                 f"cp {container_tmp}/out/sim_map.txt {args.container_map_dir}/sim_map.txt; "
                 f"cp {container_tmp}/out/sim_map.bin {args.container_map_dir}/sim_map.bin; "
                 f"cp {container_tmp}/out/routing_map.txt {args.container_map_dir}/routing_map.txt; "
-                f"cp {container_tmp}/out/routing_map.bin {args.container_map_dir}/routing_map.bin"
+                f"cp {container_tmp}/out/routing_map.bin {args.container_map_dir}/routing_map.bin; "
+                f"chmod a+r {args.container_map_dir}/base_map.xml "
+                f"{args.container_map_dir}/base_map.txt {args.container_map_dir}/base_map.bin "
+                f"{args.container_map_dir}/sim_map.txt {args.container_map_dir}/sim_map.bin "
+                f"{args.container_map_dir}/routing_map.txt {args.container_map_dir}/routing_map.bin"
             ),
         ]
     )

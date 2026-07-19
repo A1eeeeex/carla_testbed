@@ -1,0 +1,28 @@
+# Diagnostic one-variable follow-up to the accepted current-state Prediction
+# A/B. Preserve the authored velocity materialization and strict target-ready
+# handover, but report CARLA's physical ego acceleration to Localization so the
+# one-shot initial-state assignment is not misread as a 0-to-70kph acceleration.
+extends: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_ab_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_extended_opendrive_candidate
+
+algo:
+  apollo:
+    bridge:
+      localization_acceleration_source: carla_feedback
+      localization_acceleration_filter:
+        enabled: false
+        alpha: 1.0
+        max_abs_mps2: 0.0
+        max_delta_mps2: 0.0
+        nonnegative_speed_prediction_horizon_s: 0.0
+
+assist_ledger:
+  notes:
+    - Diagnostic-only GT input A/B; CARLA actor acceleration replaces velocity finite difference for Apollo Localization.
+    - The one-shot 70kph assignment remains an authored initial condition, not an Apollo acceleration-from-rest result, so it must not become a synthetic 379m/s2 Localization acceleration.
+    - The acceleration filter remains disabled; this candidate does not cap, smooth, or otherwise tune physical acceleration.
+    - Strict apollo_planning_ready, non-fallback rejection, source-fresh truthful obstacle activation, target-ready handover, and native Apollo Prediction remain unchanged.
+    - Physical steering remains candidate-only, longitudinal mapping stays legacy, steer_scale stays 1.0, all guards remain disabled, and this is not natural-driving evidence.

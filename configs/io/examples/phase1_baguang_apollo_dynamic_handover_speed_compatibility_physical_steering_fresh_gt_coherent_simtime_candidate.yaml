@@ -1,0 +1,25 @@
+# Diagnostic one-variable follow-up to the fresh-GT handover sample. Keep the
+# strict speed-compatible gate and once-per-frame GT publication, but put
+# Planning, Localization/Chassis, and obstacle headers on CARLA simulation
+# time through Apollo's mock Cyber clock.
+extends: phase1_baguang_apollo_dynamic_handover_speed_compatibility_physical_steering_fresh_gt_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_handover_speed_compatibility_physical_steering_fresh_gt_coherent_simtime_candidate
+  profile_name: phase1_baguang_apollo_dynamic_handover_speed_compatibility_physical_steering_fresh_gt_coherent_simtime_candidate
+
+algo:
+  apollo:
+    bridge:
+      localization_time_source: sim_time
+      obstacle_time_source: localization_time
+      cyber_clock:
+        enabled: true
+        mode: mock
+        channel: /clock
+
+assist_ledger:
+  notes:
+    - Diagnostic-only coherent-time follow-up to the fresh-GT speed-compatible handover; it does not relax readiness or fallback rejection.
+    - Apollo mock clock, Localization/Chassis, and obstacle headers use CARLA simulation time so trajectory stitching does not compare mixed time domains.
+    - Scene ownership still ends before formal time; steering-only physical mapping remains quarantined, longitudinal mapping stays legacy, and every lateral guard remains disabled.

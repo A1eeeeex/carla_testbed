@@ -1,0 +1,32 @@
+# Diagnostic initial-state activation candidate. Apollo receives localization,
+# chassis, routing, and Planning inputs while the fixed-scene target is still a
+# setup actor. The real target becomes visible to Prediction only after CARLA
+# observes both authored speeds and the authored bumper gap.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_initial_state_obstacle_gate_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_initial_state_obstacle_gate_extended_opendrive_candidate
+
+algo:
+  apollo:
+    bridge:
+      front_obstacle_behavior:
+        mode: scenario_initial_state_gate
+        actor_probe_enabled: true
+        role_names:
+          - lead_vehicle
+          - front
+        activation_marker_path: fixed_scene_obstacle_activation.json
+        activation_required_status: pass
+        min_longitudinal_m: 2.0
+        max_lateral_m: 4.0
+        cache_enabled: true
+        cache_ttl_sec: 0.5
+
+assist_ledger:
+  notes:
+    - Diagnostic-only scenario initialization boundary; it withholds the not-yet-activated target during setup and never fabricates target pose, velocity, dimensions, or identity.
+    - The activation marker is written only after CARLA observes both authored 70kph states and the authored bumper gap; visibility then remains latched for the rest of the run.
+    - Routing, Planning, Prediction, and Control processes remain live; the strict compatible NORMAL replan and confirmation gate remains authoritative for ego handover.
+    - Physical steering remains candidate-only, longitudinal mapping stays legacy, steer_scale stays 1.0, all guards remain disabled, and this profile cannot support a natural-driving claim.

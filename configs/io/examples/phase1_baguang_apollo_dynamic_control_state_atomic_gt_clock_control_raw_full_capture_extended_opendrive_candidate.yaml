@@ -1,0 +1,43 @@
+# Default-off Baguang timing-contract diagnostic. Preserve distinct 20 Hz odom
+# frames through short bridge-loop overruns, write ego state, advance Apollo's
+# mock clock, then publish the obstacle trigger. No controller, mapping, Planning,
+# readiness, scenario-ownership, or actor-motion setting changes.
+extends: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_control_raw_full_capture_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_candidate
+
+scenario:
+  gt:
+    objects_hz: 20.0
+
+algo:
+  apollo:
+    prediction:
+      # User-owned CARLA must remain running and currently leaves too little
+      # GPU memory for Apollo Prediction model warm-up. Keep this resource
+      # selection isolated and explicit; the Apollo Prediction module and
+      # configured evaluator/predictor semantics remain unchanged.
+      compute_device: cpu
+    bridge:
+      carla_feedback:
+        state_source: ros_objects_json
+      front_obstacle_behavior:
+        actor_probe_enabled: false
+      cyber_clock:
+        enabled: true
+        mode: mock
+        channel: /clock
+        publish_phase: after_state
+        odom_queue_depth: 64
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only Baguang GT/clock-delivery A/B; default-off and not a controller, mapping, guard, route-follower, or natural-driving promotion.
+    - A bounded queue preserves distinct ROS odom samples across transient bridge-loop overruns and reports any overflow instead of silently replacing the older sample.
+    - Obstacle snapshots are selected at or before the dequeued odom timestamp; Localization and Chassis are written before mock clock advance, then the obstacle-driven Prediction and Planning trigger runs in that clock domain.
+    - Ego control, physical wheel-angle feedback, acceleration, and actor state are captured by the runner's tick-aligned CARLA client and carried in the 20 Hz objects JSON stream; the bridge does not issue per-frame CARLA state RPCs in this candidate.
+    - Prediction uses Apollo's explicit CPU execution path only for this candidate because the running CARLA process leaves insufficient GPU memory; this is a disclosed online-validation variable, not a Planning or behavior promotion.
+    - The inherited strict NORMAL planning-ready and exact handover gates, matched road, physical steering calibration, legacy longitudinal mapping, Control cadence, LQR parameters, and full raw Control capture remain unchanged.

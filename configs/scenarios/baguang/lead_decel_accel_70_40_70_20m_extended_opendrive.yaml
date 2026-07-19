@@ -1,0 +1,89 @@
+schema_version: scenario_spec.v1
+scenario_id: baguang_lead_decel_accel_70_40_70_20m_extended_opendrive
+map: OpenDriveMap
+route_id: straight_road_for_baguang_extended_120m_mainline_lead_decel_accel_20m
+scenario_class: lead_vehicle_accel_decel
+gate_role: diagnostic_gate
+carla_world:
+  source: opendrive
+  opendrive:
+    path: configs/io/maps/straight_road_for_baguang_extended_120m/straight_road_for_baguang_extended_120m.xodr
+    expected_map_name: OpenDriveMap
+    generation_parameters:
+      vertex_distance: 2.0
+      max_road_length: 50.0
+      wall_height: 0.0
+      additional_width: 0.6
+      smooth_junctions: true
+      enable_mesh_visibility: true
+      enable_pedestrian_navigation: false
+target_actor:
+  required: true
+  role: lead_vehicle
+  activation:
+    activation_semantics: active_from_scenario_start
+    active_after_phase: null
+fixed_scene:
+  schema_version: fixed_scene_template.v1
+  template: lead_vehicle_accel_decel
+  roles:
+    ego:
+      control_owner: backend
+      spawn_ref: carla_spawn_index_0
+      initial_speed_mps: 19.44
+    lead_vehicle:
+      control_owner: fixed_scene_player
+      blueprint: vehicle.lincoln.mkz_2020
+      initial_speed_mps: 19.44
+      spawn:
+        relative_to: ego
+        lane: same
+        s_offset_m: 24.9
+        gap_reference: bumper_to_bumper
+        expected_bumper_gap_m: 20.0
+        prefer_waypoint: false
+        feasibility:
+          enabled: true
+          s_offset_tolerance_m: 3.0
+          gap_tolerance_m: 1.0
+          max_lateral_m: 2.5
+          require_waypoint: false
+  params:
+    duration_s: 18.0
+    duration_policy: fixed_duration
+    expected_lead_travel_m: 287.5
+    ego_initial_speed_mps: 19.44
+    ego_target_speed_mps: 19.44
+    ego_target_speed_kph: 70.0
+    lead_initial_speed_mps: 19.44
+    lead_initial_speed_kph: 70.0
+    lead_decel_target_speed_mps: 11.11
+    lead_decel_target_speed_kph: 40.0
+    lead_final_speed_mps: 19.44
+    lead_final_speed_kph: 70.0
+    lead_speed_change_time_s: 5.0
+    lead_deceleration_mps2: 2.08
+    lead_acceleration_mps2: 1.67
+    initial_gap_m: 20.0
+    speed_profile_interpolation: linear
+    speed_profile:
+      - {t: 0.0, speed_mps: 19.44}
+      - {t: 5.0, speed_mps: 19.44}
+      - {t: 9.0, speed_mps: 11.11}
+      - {t: 12.0, speed_mps: 11.11}
+      - {t: 17.0, speed_mps: 19.44}
+      - {t: 18.0, speed_mps: 19.44}
+  success_criteria:
+    speed_profile_executed: true
+    lead_speed_reaches_decel_target: true
+    lead_speed_restores_final_target: true
+required_artifacts:
+  - fixed_scene_resolved.json
+  - fixed_scene_runtime_state.json
+  - scenario_actor_trace.jsonl
+  - scenario_phase_events.jsonl
+  - ego_control_trace.jsonl
+claim_boundary:
+  fixed_scene_playback_is_not_autonomy_evidence: true
+  builtin_controller_is_diagnostic_only: true
+notes: "Diagnostic matched-map candidate: both CARLA OpenDRIVE and Apollo HDMap extend the Baguang straight by 120m at each end. Scenario timing, actor profile, readiness gate, and handover contract remain unchanged."

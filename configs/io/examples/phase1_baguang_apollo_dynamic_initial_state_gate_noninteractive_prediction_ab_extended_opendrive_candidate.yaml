@@ -1,0 +1,21 @@
+# Diagnostic A/B for Apollo Prediction cold-start attribution. This keeps the
+# truthful initial-state obstacle gate and strict NORMAL Planning readiness, but
+# disables Apollo's interactive-tag assignment so the native noninteractive
+# evaluator/predictor path handles the newly visible lead vehicle.
+extends: phase1_baguang_apollo_dynamic_initial_state_obstacle_gate_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_initial_state_gate_noninteractive_prediction_ab_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_initial_state_gate_noninteractive_prediction_ab_extended_opendrive_candidate
+
+algo:
+  apollo:
+    prediction:
+      enable_interactive_tag: false
+
+assist_ledger:
+  notes:
+    - Diagnostic-only native Apollo Prediction A/B; it disables interactive-tag assignment and does not fabricate obstacle history, pose, velocity, dimensions, or identity.
+    - The scenario_initial_state_gate, routing requirement, strict two-point non-fallback NORMAL Planning gate, and ego handover confirmation remain unchanged.
+    - This candidate tests whether the JOINTLY_PREDICTION_PLANNING_EVALUATOR cold start causes late handover; it is not a promoted Phase 1 default or natural-driving evidence.
+    - Physical steering remains candidate-only, longitudinal mapping stays legacy, steer_scale stays 1.0, and all guards remain disabled.

@@ -1,0 +1,28 @@
+# Diagnostic route-budget follow-up to the source-fresh early-handover sample.
+# The authored scenario starts at 70kph; after Routing plus a fresh multi-point
+# NORMAL trajectory, atomically materialize that initial velocity for ego and
+# lead, then retain the existing compatible-replan handover gate.
+extends: phase1_baguang_apollo_dynamic_handover_replan_confirmed_physical_steering_fresh_gt_coherent_simtime_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_physical_steering_fresh_gt_coherent_simtime_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_physical_steering_fresh_gt_coherent_simtime_candidate
+
+runtime:
+  fixed_scene_player:
+    scene_preroll_materialize_initial_speeds_on_gate: true
+    scene_preroll_ego_handover_mode: target_ready
+
+algo:
+  apollo:
+    bridge:
+      obstacle_time_source: source_time
+      obstacle_publish_policy: source_fresh
+
+assist_ledger:
+  notes:
+    - Diagnostic-only authored initial-state candidate; 70kph is the declared scenario initial condition, not an Apollo acceleration-from-rest result.
+    - Ego and lead remain stationary until Routing succeeds and a fresh multi-point NORMAL trajectory opens apollo_planning_ready.
+    - The one-shot velocity assignment occurs after that gate; setup control only maintains the authored state until a compatible NORMAL replan plus one subsequent distinct NORMAL message transfers ego ownership to Apollo.
+    - Formal scenario time starts only after Apollo publishes control; SPEED_FALLBACK, PATH_FALLBACK, UNKNOWN, stale, short, or speed-incompatible Planning remains rejected.
+    - Physical steering remains candidate-only, longitudinal mapping stays legacy, all lateral guards remain disabled, and this is not a natural-driving claim.

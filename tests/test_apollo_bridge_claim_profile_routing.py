@@ -7,6 +7,8 @@ import threading
 import types
 from pathlib import Path
 
+import pytest
+
 
 def _install_fake_protobuf() -> None:
     google = sys.modules.setdefault("google", types.ModuleType("google"))
@@ -559,3 +561,45 @@ def test_materialization_summary_uses_max_speed_not_only_final_speed(tmp_path: P
     assert summary["first_divergence_layer"] == "materialized"
     assert summary["speed_mps_last"] == 0.1
     assert summary["speed_mps_max"] == 5.3
+
+
+def test_routing_freeze_fast_path_skips_repeat_projection_work(tmp_path: Path) -> None:
+    adapter = _adapter(tmp_path)
+    adapter.auto_routing_enabled = True
+    adapter.routing_writer = _FakeWriter()
+    adapter.lane_follow_client = None
+    adapter.action_client = None
+    adapter.auto_routing_send_routing = True
+    adapter.auto_routing_send_lane_follow = False
+    adapter.auto_routing_send_action = False
+    adapter._lane_follow_disabled_runtime = False
+    adapter.auto_routing_startup_delay_sec = 0.0
+    adapter.auto_routing_startup_apollo_warmup_sec = 0.0
+    adapter._current_routing_phase = lambda *_args, **_kwargs: "long"
+    adapter.auto_routing_routing_sent = 1
+    adapter.auto_routing_long_routing_sent = True
+    adapter.auto_routing_startup_lane_follow_sent = False
+    adapter.auto_routing_long_lane_follow_sent = True
+    adapter.auto_routing_lane_follow_sent = 1
+    adapter.auto_routing_last_lane_follow_ts = 10.0
+    adapter.auto_routing_lane_follow_refresh_sec = 1.0
+    adapter.auto_routing_max_attempts = 5
+    adapter.auto_routing_last_routing_ts = 10.0
+    adapter.auto_routing_resend_sec = 1.0
+    adapter._routing_freeze_active = True
+    adapter.traffic_light_ignore_roll_enabled = False
+    adapter._first_odom_ts = 1.0
+    adapter._bridge_start_wall_sec = 0.0
+    adapter._latest_speed_mps = 0.0
+    adapter._planning_nonempty_count = 0
+    adapter._command_gate_state = {}
+    adapter.stats = {"routing_request_count": 1, "control_tx_count": 0}
+    adapter._evaluate_snap_candidate = lambda *_args, **_kwargs: pytest.fail(
+        "frozen routing should not re-enter map projection"
+    )
+
+    adapter._maybe_send_routing_request({}, None, 12.0)
+
+    assert adapter.stats["routing_freeze_fast_path_count"] == 1
+    assert adapter._command_gate_state["last_blocking_reason"] == "routing_freeze"
+    assert adapter.routing_writer.messages == []

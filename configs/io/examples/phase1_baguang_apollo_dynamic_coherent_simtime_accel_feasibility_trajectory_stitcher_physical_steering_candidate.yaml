@@ -1,0 +1,36 @@
+# Diagnostic Baguang bidirectional steering-semantics candidate. Preserve the
+# trajectory-continuity experiment, but map only steering between Apollo's
+# approximately 30-degree front-wheel domain and the CARLA Lincoln actuator.
+extends: phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_trajectory_stitcher_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_trajectory_stitcher_physical_steering_candidate
+  profile_name: phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_trajectory_stitcher_physical_steering_candidate
+
+algo:
+  apollo:
+    control_mapping:
+      actuator_mapping_mode: physical
+      physical:
+        calibration_file: configs/calibration/vehicles/vehicle.lincoln.mkz_2020/steering_front_wheel_v1.json
+        allow_legacy_fallback: false
+        apollo_max_steer_angle_deg: 30.0
+        preferred_steering_field: steering_target
+        steering_field_priority:
+          - steering_target
+          - steering_percentage
+          - steering
+          - steering_rate
+        map_steering: true
+        map_steering_feedback: true
+        # Keep the longitudinal A/B identical to the legacy baseline. Physical
+        # throttle/brake mapping is intentionally not part of this candidate.
+        map_longitudinal: false
+        map_throttle: false
+        map_brake: false
+
+assist_ledger:
+  notes:
+    - Diagnostic-only Baguang bidirectional steering-semantics candidate; not a default profile or natural-driving claim.
+    - The candidate maps Apollo steering output and measured CARLA wheel-angle feedback in the same 30-degree front-wheel domain without changing steer_scale.
+    - Longitudinal control remains on the inherited legacy mapping; reference-line stitching stays disabled and all readiness/handover gates remain strict.

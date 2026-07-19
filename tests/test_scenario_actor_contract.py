@@ -106,6 +106,13 @@ def test_speed_profile_contract_ignores_trace_tail_after_phase_completion(tmp_pa
         {
             "actor_role": "lead_vehicle",
             "phase": "lead_speed_profile",
+            "sim_time_sec": 20.0,
+            "target_speed_mps": 11.11,
+            "actual_speed_mps": 11.0,
+        },
+        {
+            "actor_role": "lead_vehicle",
+            "phase": "lead_speed_profile",
             "sim_time_sec": 25.0,
             "target_speed_mps": 11.11,
             "actual_speed_mps": 80.0,
@@ -113,7 +120,7 @@ def test_speed_profile_contract_ignores_trace_tail_after_phase_completion(tmp_pa
     ]
     events = [
         {"phase": "lead_speed_profile", "event": "phase_started", "sim_time_sec": 0.0},
-        {"phase": "lead_speed_profile", "event": "phase_completed", "sim_time_sec": 12.0},
+        {"phase": "lead_speed_profile", "event": "phase_completed", "sim_time_sec": 20.0},
     ]
     trace_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     events_path.write_text("\n".join(json.dumps(row) for row in events) + "\n", encoding="utf-8")
@@ -125,10 +132,75 @@ def test_speed_profile_contract_ignores_trace_tail_after_phase_completion(tmp_pa
     )
 
     assert report["status"] == "pass"
-    assert report["behavior"]["lead_trace_rows"] == 3
-    assert report["behavior"]["evaluated_trace_rows"] == 2
-    assert report["behavior"]["phase_completed_time_sec"] == 12.0
+    assert report["behavior"]["lead_trace_rows"] == 4
+    assert report["behavior"]["evaluated_trace_rows"] == 3
+    assert report["behavior"]["phase_completed_time_sec"] == 20.0
+    assert report["behavior"]["speed_profile_completed"] is True
     assert report["behavior"]["speed_profile_error_p95_mps"] < 0.2
+
+
+def test_speed_profile_contract_rejects_route_end_before_declared_profile(tmp_path) -> None:
+    template = load_fixed_scene_template(
+        "configs/scenarios/baguang/lead_decel_accel_70_40_70_20m.yaml"
+    )
+    storyboard = compile_fixed_scene_template(template)
+    storyboard_path = tmp_path / "fixed_scene_resolved.json"
+    trace_path = tmp_path / "scenario_actor_trace.jsonl"
+    events_path = tmp_path / "scenario_phase_events.jsonl"
+    storyboard_path.write_text(json.dumps(storyboard), encoding="utf-8")
+    rows = [
+        {
+            "actor_role": "lead_vehicle",
+            "phase": "lead_speed_profile",
+            "sim_time_sec": 0.0,
+            "target_speed_mps": 19.44,
+            "actual_speed_mps": 19.50,
+        },
+        {
+            "actor_role": "lead_vehicle",
+            "phase": "lead_speed_profile",
+            "sim_time_sec": 5.0,
+            "target_speed_mps": 19.44,
+            "actual_speed_mps": 19.45,
+        },
+        {
+            "actor_role": "lead_vehicle",
+            "phase": "lead_speed_profile",
+            "sim_time_sec": 6.65,
+            "target_speed_mps": 16.00,
+            "actual_speed_mps": 15.98,
+        },
+    ]
+    events = [
+        {"phase": "lead_speed_profile", "event": "phase_started", "sim_time_sec": 0.0},
+        {
+            "phase": "lead_speed_profile",
+            "event": "phase_completed",
+            "sim_time_sec": 6.65,
+            "reason": "stop_trigger_satisfied",
+        },
+    ]
+    trace_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    events_path.write_text("\n".join(json.dumps(row) for row in events) + "\n", encoding="utf-8")
+
+    report = analyze_scenario_actor_contract(
+        storyboard_path=storyboard_path,
+        trace_path=trace_path,
+        events_path=events_path,
+    )
+
+    assert report["status"] == "fail"
+    assert report["behavior"]["profile_end_time_sec"] == 18.0
+    assert report["behavior"]["profile_required_completion_time_sec"] == 17.0
+    assert report["behavior"]["observed_profile_end_time_sec"] == 6.65
+    assert report["behavior"]["speed_profile_completed"] is False
+    assert report["behavior"]["decel_target_reached"] is False
+    assert report["behavior"]["final_target_reached"] is False
+    assert set(report["blocking_reasons"]) == {
+        "speed_profile_not_fully_executed",
+        "lead_speed_decel_target_not_reached",
+        "lead_speed_final_target_not_restored",
+    }
 
 
 def test_cut_in_actor_contract_requires_observed_lateral_evidence_not_only_progress(tmp_path) -> None:

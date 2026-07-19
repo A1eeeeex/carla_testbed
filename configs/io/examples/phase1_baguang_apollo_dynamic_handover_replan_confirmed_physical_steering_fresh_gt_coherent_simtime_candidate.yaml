@@ -1,0 +1,19 @@
+# Diagnostic follow-up to the coherent-time setup handover. A speed-compatible
+# fresh replan anchors ownership transfer, and one subsequent distinct NORMAL
+# message confirms it. Fallback or speed mismatch resets the anchor.
+extends: phase1_baguang_apollo_dynamic_handover_speed_compatibility_physical_steering_fresh_gt_coherent_simtime_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_handover_replan_confirmed_physical_steering_fresh_gt_coherent_simtime_candidate
+  profile_name: phase1_baguang_apollo_dynamic_handover_replan_confirmed_physical_steering_fresh_gt_coherent_simtime_candidate
+
+runtime:
+  fixed_scene_player:
+    scene_preroll_planning_compatible_min_messages: 2
+    scene_preroll_planning_require_replan_anchor: true
+
+assist_ledger:
+  notes:
+    - Diagnostic-only setup handover candidate; a compatible fresh replan plus one distinct NORMAL confirmation is required.
+    - SPEED_FALLBACK, PATH_FALLBACK, UNKNOWN, stale Planning, or speed mismatch still blocks and resets handover readiness.
+    - Formal scenario time starts only after Apollo control publication; this does not claim Apollo acceleration from rest or natural driving.

@@ -1,0 +1,23 @@
+# Diagnostic-only Apollo Planning A/B candidate.
+# The observed lon_diff replan values are around 2.5-3.3 m. Do not promote
+# this threshold without proving that route/reference-line semantics are sound.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_cybertime_candidate.yaml
+
+run:
+  profile_name: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_replan_threshold_candidate
+  claim_profile: false
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only replan threshold A/B; not a natural-driving claim profile.
+    - This does not change steer scale, mapping mode, lateral guards, or route following.
+
+algo:
+  apollo:
+    planning:
+      replan_longitudinal_distance_threshold: 3.5

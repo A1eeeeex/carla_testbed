@@ -28,7 +28,7 @@ from carla_testbed.scenario_player.manifest_contract import fixed_scene_manifest
 from carla_testbed.scenario_player.schema import load_fixed_scene_template
 from carla_testbed.scenario_player.target_actor import resolve_target_actor_contract
 from carla_testbed.scenarios.followstop_geometry import select_waypoint_ahead_transform
-from carla_testbed.sim.bringup import load_world_with_retry
+from carla_testbed.sim.bringup import generate_opendrive_world_with_retry, load_world_with_retry
 
 
 def run_builtin_ego_scenario(
@@ -57,6 +57,7 @@ def run_builtin_ego_scenario(
     """
 
     scenario = _load_scenario_mapping(template_path)
+    opendrive_config = _scenario_opendrive_config(scenario)
     if isinstance(scenario.get("fixed_scene"), Mapping) or scenario.get("schema_version") == "fixed_scene_template.v1":
         return run_builtin_ego_fixed_scene(
             template_path=template_path,
@@ -74,6 +75,7 @@ def run_builtin_ego_scenario(
             spectator_height=spectator_height,
             spectator_pitch=spectator_pitch,
             realtime=realtime,
+            opendrive_config=opendrive_config,
         )
     return _run_builtin_ego_route_only(
         scenario=scenario,
@@ -92,6 +94,7 @@ def run_builtin_ego_scenario(
         spectator_height=spectator_height,
         spectator_pitch=spectator_pitch,
         realtime=realtime,
+        opendrive_config=opendrive_config,
     )
 
 
@@ -113,6 +116,7 @@ def _run_builtin_ego_route_only(
     spectator_height: float,
     spectator_pitch: float,
     realtime: bool,
+    opendrive_config: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     carla = _import_carla()
     run_root = Path(run_dir).expanduser()
@@ -132,7 +136,12 @@ def _run_builtin_ego_route_only(
     )
 
     client = carla.Client(host, int(port))
-    world = _load_world_for_builtin_runner(client, town, artifact_dir=artifacts)
+    world = _load_world_for_builtin_runner(
+        client,
+        town,
+        artifact_dir=artifacts,
+        opendrive_config=opendrive_config,
+    )
     original_settings = world.get_settings()
     sync_settings = world.get_settings()
     sync_settings.synchronous_mode = True
@@ -312,6 +321,10 @@ def _run_builtin_ego_route_only(
         "starts_autoware": False,
         "interpretation_boundary": "CARLA-only diagnostic ego controller, not an Apollo/Autoware autonomy claim.",
         "ego_spawn_source": _ego_spawn_source(spawn_s_offset_m),
+        "carla_world_source": "opendrive" if opendrive_config else "packaged_map",
+        "opendrive_evidence_path": (
+            str(artifacts / "carla_opendrive_world.json") if opendrive_config else None
+        ),
     }
     (run_root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     summary = {
@@ -381,6 +394,7 @@ def run_builtin_ego_fixed_scene(
     spectator_height: float = 5.0,
     spectator_pitch: float = -18.0,
     realtime: bool = False,
+    opendrive_config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a CARLA-only fixed scene with the diagnostic builtin ego controller."""
 
@@ -402,7 +416,12 @@ def run_builtin_ego_fixed_scene(
     )
 
     client = carla.Client(host, int(port))
-    world = _load_world_for_builtin_runner(client, town, artifact_dir=artifacts)
+    world = _load_world_for_builtin_runner(
+        client,
+        town,
+        artifact_dir=artifacts,
+        opendrive_config=opendrive_config,
+    )
     original_settings = world.get_settings()
     sync_settings = world.get_settings()
     sync_settings.synchronous_mode = True
@@ -610,6 +629,10 @@ def run_builtin_ego_fixed_scene(
         "ego_spawn_index": int(spawn_index),
         "ego_spawn_s_offset_m": float(spawn_s_offset_m),
         "ego_spawn_source": _ego_spawn_source(spawn_s_offset_m),
+        "carla_world_source": "opendrive" if opendrive_config else "packaged_map",
+        "opendrive_evidence_path": (
+            str(artifacts / "carla_opendrive_world.json") if opendrive_config else None
+        ),
         "needs_local_carla": True,
         "starts_apollo": False,
         "starts_autoware": False,
@@ -884,6 +907,22 @@ def _load_scenario_mapping(path: str | Path) -> dict[str, Any]:
     if not isinstance(data, Mapping):
         raise ValueError(f"scenario file must contain a mapping: {path}")
     return dict(data)
+
+
+def _scenario_opendrive_config(scenario: Mapping[str, Any]) -> dict[str, Any] | None:
+    carla_world = scenario.get("carla_world")
+    if not isinstance(carla_world, Mapping):
+        return None
+    source = str(carla_world.get("source") or "").strip().lower()
+    if source != "opendrive":
+        return None
+    opendrive = carla_world.get("opendrive")
+    if not isinstance(opendrive, Mapping):
+        raise ValueError("carla_world.source=opendrive requires a carla_world.opendrive mapping")
+    path = str(opendrive.get("path") or "").strip()
+    if not path:
+        raise ValueError("carla_world.opendrive.path is required")
+    return dict(opendrive)
 
 
 def _scenario_duration_s(scenario: Mapping[str, Any]) -> float | None:
@@ -1513,6 +1552,7 @@ def _load_world_for_builtin_runner(
     attempts: int = 3,
     delay_s: float = 2.0,
     timeout_s: float = 60.0,
+    opendrive_config: Mapping[str, Any] | None = None,
 ) -> Any:
     attempts_path = artifact_dir / "carla_load_world_attempts.jsonl"
 
@@ -1535,6 +1575,54 @@ def _load_world_for_builtin_runner(
                 **dict(payload),
             },
         )
+
+    if opendrive_config:
+        source = Path(str(opendrive_config.get("path") or "")).expanduser().resolve()
+        expected_map_name = str(
+            opendrive_config.get("expected_map_name") or town or "OpenDriveMap"
+        )
+        generation_parameters = opendrive_config.get("generation_parameters")
+        if generation_parameters is not None and not isinstance(generation_parameters, Mapping):
+            raise ValueError("carla_world.opendrive.generation_parameters must be a mapping")
+        rows: list[dict[str, Any]] = []
+
+        def _record_opendrive_attempt(stage: str, payload: dict[str, Any]) -> None:
+            row = {"stage": stage, **dict(payload)}
+            rows.append(row)
+            _record_attempt(stage, payload)
+
+        world = generate_opendrive_world_with_retry(
+            client,
+            source,
+            generation_parameters=generation_parameters,
+            expected_map_name=expected_map_name,
+            attempts=int(attempts),
+            delay_s=float(delay_s),
+            timeout_s=float(timeout_s),
+            restore_timeout_s=30.0,
+            attempt_callback=_record_opendrive_attempt,
+        )
+        success = next(
+            (row for row in reversed(rows) if row.get("stage") == "generate_opendrive_world_attempt_ok"),
+            {},
+        )
+        evidence = {
+            "schema_version": "carla_opendrive_world.v1",
+            "status": "materialized",
+            "configured_town": town,
+            "expected_map_name": expected_map_name,
+            "loaded_map_name": success.get("loaded_map_name"),
+            "opendrive_path": str(source),
+            "opendrive_sha256": success.get("opendrive_sha256"),
+            "opendrive_bytes": success.get("opendrive_bytes"),
+            "generation_parameters": dict(generation_parameters or {}),
+            "claim_boundary": "CARLA world materialization evidence only; not backend behavior evidence.",
+        }
+        (artifact_dir / "carla_opendrive_world.json").write_text(
+            json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return world
 
     return load_world_with_retry(
         client,

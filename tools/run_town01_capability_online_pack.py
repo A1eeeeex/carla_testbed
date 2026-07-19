@@ -79,6 +79,42 @@ def _config_run_defaults(config_path_raw: str) -> Dict[str, Any]:
     return defaults
 
 
+_CONFIG_PRECEDENCE_SPEED_KEYS = (
+    "algo.apollo.routing.target_speed_mps",
+    "algo.apollo.planning.default_cruise_speed_mps",
+)
+
+
+@lru_cache(maxsize=32)
+def _explicit_config_speed_overrides(config_path_raw: str) -> List[str]:
+    """Keep explicit profile speeds ahead of historical capability presets.
+
+    Frozen review-pack override files may contain an older target speed.  The
+    selected ``--config`` is the experiment profile, so its speed values must
+    win; explicit CLI ``--override`` entries are appended afterwards and keep
+    the highest precedence.
+    """
+    config_path = str(config_path_raw or "").strip()
+    if not config_path:
+        return []
+    try:
+        cfg = load_rig_file(config_path)
+    except Exception:
+        return []
+    overrides: List[str] = []
+    for dotted_key in _CONFIG_PRECEDENCE_SPEED_KEYS:
+        value: Any = cfg
+        for key in dotted_key.split("."):
+            if not isinstance(value, dict) or key not in value:
+                value = None
+                break
+            value = value[key]
+        if isinstance(value, bool) or value is None or isinstance(value, (dict, list, tuple)):
+            continue
+        overrides.append(f"{dotted_key}={value}")
+    return overrides
+
+
 def _default_runtime_flags_for_capability(capability_profile: str) -> Dict[str, bool]:
     normalized = str(capability_profile or "").strip()
     if normalized in {"lane_keep", "curve_lane_follow", "junction_traverse", "traffic_light_actual"}:
@@ -304,6 +340,10 @@ def build_online_command(
             comparison_label,
         ]
     )
+    for override in _explicit_config_speed_overrides(
+        str(Path(config_path).expanduser().resolve()) if config_path is not None else ""
+    ):
+        argv.extend(["--override", override])
     if post_fail_steps_override is not None:
         argv.extend(["--override", f"run.post_fail_steps={int(post_fail_steps_override)}"])
     for override in list(extra_overrides or []):

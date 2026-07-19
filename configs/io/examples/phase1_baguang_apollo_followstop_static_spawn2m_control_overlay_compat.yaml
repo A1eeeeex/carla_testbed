@@ -181,6 +181,17 @@ algo:
     control_lon:
       enabled: true
 
+    # Keep Apollo's generated vehicle_param.pb.txt consistent with the
+    # bridge control_mapping deadzones used by this compatibility profile.
+    # Without this explicit override Apollo falls back to brake_deadzone=14.5,
+    # which turns small negative acceleration commands into a fixed brake
+    # command and masks the dynamic-scene longitudinal response.
+    vehicle_param:
+      enabled: true
+      auto_from_carla: false
+      brake_deadzone: 0.05
+      throttle_deadzone: 15.7
+
 runtime:
   mode: online
   carla:

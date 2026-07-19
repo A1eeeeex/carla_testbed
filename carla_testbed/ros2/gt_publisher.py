@@ -189,6 +189,11 @@ class GroundTruthRos2Publisher:
         self._markers_pub = None
         self._objects_json_pub = None
 
+        self._ego_state_actor_id: Optional[int] = None
+        self._ego_max_steer_angle_deg: Optional[float] = None
+        self._ego_vehicle_characteristics: Optional[Dict[str, Any]] = None
+        self._ego_last_speed_sample: Optional[Tuple[float, float]] = None
+
         self._init_ros()
 
     def _warn_once(self, key: str, msg: str) -> None:
@@ -723,10 +728,192 @@ class GroundTruthRos2Publisher:
         self._stats["last_objects_count"] = object_count
         self._mark_publish("objects_markers")
 
-    def _publish_objects_json(self, elapsed_seconds: float, actors: Sequence[carla.Actor]) -> None:
+    def _ego_state_payload(self, elapsed_seconds: float, ego: carla.Vehicle) -> Optional[Dict[str, Any]]:
+        """Capture ego feedback in the runner's tick-aligned CARLA client."""
+
+        try:
+            actor_id = int(ego.id)
+            if self._ego_state_actor_id != actor_id:
+                self._ego_state_actor_id = actor_id
+                self._ego_max_steer_angle_deg = None
+                self._ego_vehicle_characteristics = None
+                self._ego_last_speed_sample = None
+
+            control = ego.get_control()
+            transform = ego.get_transform()
+            velocity = ego.get_velocity()
+            acceleration = ego.get_acceleration()
+            angular_velocity = ego.get_angular_velocity()
+            attrs = getattr(ego, "attributes", {}) or {}
+
+            physics = None
+            if self._ego_max_steer_angle_deg is None:
+                physics = ego.get_physics_control()
+                candidates = [
+                    abs(float(getattr(wheel, "max_steer_angle", 0.0) or 0.0))
+                    for wheel in list(getattr(physics, "wheels", []) or [])
+                    if abs(float(getattr(wheel, "max_steer_angle", 0.0) or 0.0)) > 1e-6
+                ]
+                self._ego_max_steer_angle_deg = max(candidates) if candidates else 0.0
+
+            vehicle_characteristics = getattr(self, "_ego_vehicle_characteristics", None)
+            if vehicle_characteristics is None:
+                try:
+                    bbox = ego.bounding_box
+                    extent = bbox.extent
+                    location = getattr(bbox, "location", None)
+                    physics = physics or ego.get_physics_control()
+                    extent_x = float(getattr(extent, "x", 0.0))
+                    extent_y = float(getattr(extent, "y", 0.0))
+                    extent_z = float(getattr(extent, "z", 0.0))
+                    offset_x = float(getattr(location, "x", 0.0)) if location is not None else 0.0
+                    offset_y = float(getattr(location, "y", 0.0)) if location is not None else 0.0
+                    vehicle_characteristics = {
+                        "actor_id": actor_id,
+                        "role_name": str(attrs.get("role_name", "") or ""),
+                        "length": max(2.0 * extent_x, 0.0),
+                        "width": max(2.0 * extent_y, 0.0),
+                        "height": max(2.0 * extent_z, 0.0),
+                        "front_edge_to_center": max(extent_x + offset_x, 0.0),
+                        "back_edge_to_center": max(extent_x - offset_x, 0.0),
+                        "left_edge_to_center": max(extent_y + offset_y, 0.0),
+                        "right_edge_to_center": max(extent_y - offset_y, 0.0),
+                        "max_steer_angle_deg": float(self._ego_max_steer_angle_deg or 0.0),
+                        "mass_kg": float(getattr(physics, "mass", 0.0) or 0.0),
+                        "drag_coefficient": float(
+                            getattr(physics, "drag_coefficient", 0.0) or 0.0
+                        ),
+                        "physics_wheel_count": len(list(getattr(physics, "wheels", []) or [])),
+                        "source": "runner_tick_aligned_gt",
+                    }
+                except Exception:
+                    vehicle_characteristics = {}
+                self._ego_vehicle_characteristics = dict(vehicle_characteristics)
+
+            x, y, z = self._loc_xyz(transform.location)
+            roll, pitch, yaw = self._rot_rpy(transform.rotation)
+            vx, vy, vz = self._vec_xyz(velocity)
+            ax, ay, az = self._vec_xyz(acceleration)
+            raw_ax = float(getattr(acceleration, "x", 0.0))
+            raw_ay = float(getattr(acceleration, "y", 0.0))
+            raw_az = float(getattr(acceleration, "z", 0.0))
+            avx_deg, avy_deg, avz_deg = self._vec_xyz(angular_velocity)
+            speed_mps = math.sqrt(vx * vx + vy * vy + vz * vz)
+            accel_mps2 = math.sqrt(ax * ax + ay * ay + az * az)
+            forward = transform.get_forward_vector()
+            right = transform.get_right_vector()
+            raw_forward_accel = (
+                raw_ax * float(getattr(forward, "x", 0.0))
+                + raw_ay * float(getattr(forward, "y", 0.0))
+                + raw_az * float(getattr(forward, "z", 0.0))
+            )
+            lateral_accel = (
+                raw_ax * float(getattr(right, "x", 0.0))
+                + raw_ay * float(getattr(right, "y", 0.0))
+                + raw_az * float(getattr(right, "z", 0.0))
+            )
+
+            dvdt_accel: Optional[float] = None
+            if self._ego_last_speed_sample is not None:
+                previous_stamp, previous_speed = self._ego_last_speed_sample
+                dt = float(elapsed_seconds) - float(previous_stamp)
+                if 1e-3 <= dt <= 0.5:
+                    dvdt_accel = (speed_mps - float(previous_speed)) / dt
+            self._ego_last_speed_sample = (float(elapsed_seconds), float(speed_mps))
+
+            throttle = float(getattr(control, "throttle", 0.0))
+            brake = float(getattr(control, "brake", 0.0))
+            forward_accel = float(raw_forward_accel)
+            low_speed = speed_mps < 3.0
+            tiny_command = throttle <= 0.05 and brake <= 0.05
+            if dvdt_accel is not None:
+                if low_speed:
+                    if abs(forward_accel - dvdt_accel) > 6.0 or abs(forward_accel) > 8.0:
+                        forward_accel = float(dvdt_accel)
+                    else:
+                        forward_accel = 0.65 * float(dvdt_accel) + 0.35 * forward_accel
+                elif tiny_command and abs(forward_accel - dvdt_accel) > 10.0:
+                    forward_accel = float(dvdt_accel)
+            if low_speed:
+                limit = 6.0 if brake > 0.1 else 5.0
+                forward_accel = max(-limit, min(limit, forward_accel))
+
+            steer = float(getattr(control, "steer", 0.0))
+            steer_feedback_deg: Optional[float] = None
+            steer_feedback_pct = steer * 100.0
+            steer_feedback_source = "carla_control"
+            get_wheel_angle = getattr(ego, "get_wheel_steer_angle", None)
+            wheel_location = getattr(carla, "VehicleWheelLocation", None)
+            max_steer_deg = float(self._ego_max_steer_angle_deg or 0.0)
+            if callable(get_wheel_angle) and wheel_location is not None and max_steer_deg > 1e-3:
+                try:
+                    fl = float(get_wheel_angle(getattr(wheel_location, "FL_Wheel")))
+                    fr = float(get_wheel_angle(getattr(wheel_location, "FR_Wheel")))
+                    steer_feedback_deg = 0.5 * (fl + fr)
+                    steer_feedback_pct = max(
+                        -100.0,
+                        min(100.0, steer_feedback_deg / max_steer_deg * 100.0),
+                    )
+                    steer_feedback_source = "wheel_angle"
+                except Exception:
+                    pass
+
+            yaw_rate_rps = math.radians(avz_deg)
+            payload: Dict[str, Any] = {
+                "stamp": float(elapsed_seconds),
+                "id": str(actor_id),
+                "role_name": str(attrs.get("role_name", "") or ""),
+                "type_id": str(getattr(ego, "type_id", "") or ""),
+                "pose": {"x": x, "y": y, "z": z, "roll": roll, "pitch": pitch, "yaw": yaw},
+                "velocity": {"x": vx, "y": vy, "z": vz},
+                "acceleration": {"x": ax, "y": ay, "z": az},
+                "angular_velocity_deg_s": {"x": avx_deg, "y": avy_deg, "z": avz_deg},
+                "control": {
+                    "throttle": throttle,
+                    "brake": brake,
+                    "steer": steer,
+                    "reverse": bool(getattr(control, "reverse", False)),
+                    "hand_brake": bool(getattr(control, "hand_brake", False)),
+                    "gear": int(getattr(control, "gear", 0) or 0),
+                },
+                "speed_mps": float(speed_mps),
+                "accel_mps2": float(accel_mps2),
+                "forward_accel_mps2": float(forward_accel),
+                "raw_forward_accel_mps2": float(raw_forward_accel),
+                "lateral_accel_mps2": float(lateral_accel),
+                "yaw_rate_rps": float(yaw_rate_rps),
+                "curvature": float(yaw_rate_rps / max(speed_mps, 1e-3)) if speed_mps > 0.3 else 0.0,
+                "steer_feedback_pct": float(steer_feedback_pct),
+                "steer_feedback_source": steer_feedback_source,
+                "max_steer_angle_deg": max_steer_deg,
+            }
+            if steer_feedback_deg is not None:
+                payload["steer_feedback_deg"] = float(steer_feedback_deg)
+            if dvdt_accel is not None:
+                payload["dvdt_forward_accel_mps2"] = float(dvdt_accel)
+            if vehicle_characteristics:
+                payload["vehicle_characteristics"] = dict(vehicle_characteristics)
+            return payload
+        except Exception as exc:
+            self._stats["last_error"] = f"ego state capture failed: {exc}"
+            self._warn_once("ego_state_capture", f"[WARN] GT ego state capture failed: {exc}")
+            return None
+
+    def _publish_objects_json(
+        self,
+        elapsed_seconds: float,
+        actors: Sequence[carla.Actor],
+        ego: carla.Vehicle,
+    ) -> None:
         if self._objects_json_pub is None:
             return
-        payload = {"stamp": elapsed_seconds, "frame_id": "odom", "objects": []}
+        payload = {
+            "schema_version": "carla_gt_state.v2",
+            "stamp": elapsed_seconds,
+            "frame_id": "odom",
+            "ego_state": self._ego_state_payload(elapsed_seconds, ego),
+            "objects": [],
+        }
         object_count = 0
         for actor in actors:
             try:
@@ -742,6 +929,8 @@ class GroundTruthRos2Publisher:
                 {
                     "id": str(actor.id),
                     "class": self._class_name(actor),
+                    "role_name": str((getattr(actor, "attributes", {}) or {}).get("role_name", "") or ""),
+                    "type_id": str(getattr(actor, "type_id", "") or ""),
                     "pose": {"x": x, "y": y, "z": z, "roll": roll, "pitch": pitch, "yaw": yaw},
                     "velocity": {"x": vx, "y": vy, "z": vz},
                     "size": {
@@ -771,11 +960,6 @@ class GroundTruthRos2Publisher:
             elapsed = float(snapshot.timestamp.elapsed_seconds)
             self._stats["last_elapsed"] = elapsed
 
-            if self.publish_odom and self._should_publish("odom", elapsed, self._period_odom):
-                self._publish_odom(elapsed, ego)
-            if self.publish_tf and self._should_publish("tf", elapsed, self._period_tf):
-                self._publish_dynamic_tf(elapsed, ego)
-
             actors = list(extra_actors or [])
             filtered = self._filtered_objects(ego, actors) if actors else []
 
@@ -783,10 +967,19 @@ class GroundTruthRos2Publisher:
                 "objects", elapsed, self._period_objects
             ):
                 self._publish_objects3d(elapsed, filtered)
-                self._publish_objects_json(elapsed, filtered)
+                self._publish_objects_json(elapsed, filtered, ego)
 
             if self._markers_pub is not None and self._should_publish("markers", elapsed, self._period_markers):
                 self._publish_markers(elapsed, filtered)
+
+            # Publish the obstacle snapshot before odom for this tick. The
+            # sidecar may synchronously wait for control after receiving odom;
+            # publishing odom first can therefore prevent the matching object
+            # frame from ever being sent.
+            if self.publish_odom and self._should_publish("odom", elapsed, self._period_odom):
+                self._publish_odom(elapsed, ego)
+            if self.publish_tf and self._should_publish("tf", elapsed, self._period_tf):
+                self._publish_dynamic_tf(elapsed, ego)
 
             try:
                 self._rclpy.spin_once(self._node, timeout_sec=0.0)

@@ -1,0 +1,29 @@
+# Default-off ownership A/B for the canonical lead_decel_accel case. Apollo
+# receives ego immediately after the initial apollo_planning_ready gate and
+# accelerates from rest during setup. The scene controls only the lead until
+# both actors satisfy the authored initial condition and Planning confirms two
+# fresh current-speed-compatible NORMAL trajectories.
+extends: phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_early_planning_handover_candidate
+  profile_name: phase1_baguang_apollo_dynamic_early_planning_handover_candidate
+
+runtime:
+  fixed_scene_player:
+    scene_preroll_ego_handover_mode: planning_ready
+    scene_preroll_planning_speed_gate_enabled: true
+    scene_preroll_planning_current_speed_tolerance_mps: 1.0
+    scene_preroll_planning_lookahead_speed_gate_enabled: false
+    scene_preroll_planning_compatible_min_messages: 2
+    scene_preroll_planning_require_replan_anchor: false
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only ownership-boundary A/B; this does not change the canonical ScenarioCase or prove Apollo acceleration capability.
+    - Ego and lead remain stationary until Routing succeeds and a fresh multi-point NORMAL trajectory opens apollo_planning_ready.
+    - Apollo receives ego on the first published Control command after that gate; setup control owns only the lead and does not assign ego speed.
+    - Formal scenario time remains closed until authored ego/lead speed and gap are ready and two distinct current-speed-compatible NORMAL Planning messages have arrived.
+    - The one-second lookahead speed remains Apollo behavior rather than a setup condition; every fallback or incompatible message resets compatibility.
+    - Prediction, map, steering, longitudinal mapping, Planning constraints, and guards remain inherited from the matched baseline.

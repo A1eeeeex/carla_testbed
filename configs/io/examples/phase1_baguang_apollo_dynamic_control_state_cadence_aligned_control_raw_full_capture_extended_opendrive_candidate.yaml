@@ -1,0 +1,21 @@
+# Default-off diagnostic that keeps the low-capture policy for redundant
+# Control debug streams while preserving every canonical Apollo Control raw
+# message needed for cycle-by-cycle LQR attribution.
+extends: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_low_capture_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_control_raw_full_capture_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_control_raw_full_capture_extended_opendrive_candidate
+
+algo:
+  apollo:
+    bridge:
+      control_debug_artifact_sample_strides:
+        apollo_control_raw: 1
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only evidence-capture A/B; no Control, Planning, mapping, guard, readiness, or scenario behavior setting changes.
+    - The canonical Apollo Control raw stream is recorded every cycle for LQR attribution; the three redundant Control debug streams retain the inherited global stride of ten.
+    - Full applied-control and critical-window evidence remain unchanged, and this candidate cannot support a natural-driving claim.

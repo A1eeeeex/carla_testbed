@@ -38,3 +38,18 @@ def test_route_health_runner_enables_heavy_control_dump_only_for_lateral_debug()
     overrides = _overrides(enable_lateral_debug=True)
 
     assert overrides.count("algo.apollo.bridge.debug_dump_control_raw=true") == 1
+
+
+def test_capability_profile_does_not_override_configured_routing_target_speed() -> None:
+    overrides = run_town01_route_health._default_capability_profile_overrides("lane_keep")
+
+    assert not any(
+        item.startswith("algo.apollo.routing.target_speed_mps=") for item in overrides
+    )
+
+    curve_overrides = run_town01_route_health._default_capability_profile_overrides(
+        "curve_lane_follow"
+    )
+    assert not any(
+        item.startswith("algo.apollo.routing.target_speed_mps=") for item in curve_overrides
+    )

@@ -1,0 +1,21 @@
+# Default-off diagnostic candidate: keep the fast authored-speed setup, but
+# delay ownership transfer until CARLA's automatic drivetrain is physically
+# coherent with Apollo's Planning acceleration bounds.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_candidate
+
+runtime:
+  fixed_scene_player:
+    scene_preroll_drivetrain_gate_enabled: true
+    scene_preroll_drivetrain_max_abs_acceleration_mps2: 2.0
+    scene_preroll_ready_hold_ticks: 4
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only Phase 1 setup gate; Routing and fresh non-fallback NORMAL Planning remain mandatory before initial-speed materialization.
+    - Formal scenario time and Apollo control start only after ego and target are in automatic forward gear and both measured longitudinal accelerations remain within 2.0 m/s^2 for four observations.
+    - No Planning output, steering scale, actuator mapping mode, fallback acceptance, or formal ScenarioCase behavior is changed.

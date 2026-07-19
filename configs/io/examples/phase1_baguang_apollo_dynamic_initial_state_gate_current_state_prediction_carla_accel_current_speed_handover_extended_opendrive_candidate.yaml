@@ -1,0 +1,24 @@
+# Follow-up to the CARLA-acceleration A/B. Keep the strict initial
+# apollo_planning_ready gate, but hand ego to Apollo as soon as two fresh
+# NORMAL trajectories agree with the materialized current speed. Apollo's
+# planned speed one second into the future is backend behavior, not a setup
+# precondition, and a NORMAL replan marker is not required for continuity.
+extends: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_current_speed_handover_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_current_speed_handover_extended_opendrive_candidate
+
+runtime:
+  fixed_scene_player:
+    scene_preroll_planning_lookahead_speed_gate_enabled: false
+    scene_preroll_planning_require_replan_anchor: false
+
+assist_ledger:
+  notes:
+    - Diagnostic-only handover A/B; the initial apollo_planning_ready gate still requires routing success and a fresh NORMAL trajectory with at least two points before actors move.
+    - Target-ready handover still requires authored ego/lead speed and gap, current Planning speed compatibility, two distinct compatible NORMAL messages, and rejects every fallback trajectory.
+    - The one-second Planning speed is intentionally observed but not used as a setup gate because it is Apollo's post-handover behavior decision, not initial-state continuity evidence.
+    - No replan flag is required; two distinct post-materialization NORMAL messages provide the continuity confirmation.
+    - The one-shot 70kph assignment remains an authored initial condition, not an Apollo acceleration-from-rest result.
+    - Physical steering remains candidate-only, longitudinal mapping stays legacy, steer_scale stays 1.0, all guards remain disabled, and this is not natural-driving evidence.

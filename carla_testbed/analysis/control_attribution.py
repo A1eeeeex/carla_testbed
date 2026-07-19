@@ -14,6 +14,8 @@ INTERPRETATION_CAVEAT = (
 
 DEFAULT_THRESHOLDS = {
     "max_raw_mapped_steer_error_p95": 0.08,
+    "max_physical_target_angle_error_deg_p95": 1.0e-6,
+    "max_physical_compensation_query_angle_error_deg_p95": 1.0e-6,
     "max_mapped_applied_steer_error_p95": 0.08,
     "max_longitudinal_error_p95": 0.08,
     "source_steer_abs_p95_high": 0.90,
@@ -61,6 +63,18 @@ CONTROL_FIELD_ALIASES = {
         "commanded_steer_pre_clamp",
         "steer_pre_clamp",
         "bridge_mapped.steer",
+    ],
+    "target_front_wheel_angle_deg": [
+        "target_front_wheel_angle_deg",
+        "output_to_carla.target_front_wheel_angle_deg",
+    ],
+    "steering_speed_tracking_ratio": [
+        "steering_speed_tracking_ratio",
+        "output_to_carla.steering_speed_tracking_ratio",
+    ],
+    "steering_calibration_query_angle_deg": [
+        "steering_calibration_query_angle_deg",
+        "output_to_carla.steering_calibration_query_angle_deg",
     ],
     "carla_steer_applied": [
         "carla_steer_applied",
@@ -226,16 +240,25 @@ def analyze_control_attribution(
     brake_scale = _first_number_from_sources("brake_scale", rows, summary, manifest, config)
     brake_deadzone = _first_number_from_sources("brake_deadzone", rows, summary, manifest, config)
 
+    actuator_mapping_mode = _first_text_from_sources(
+        "actuator_mapping_mode", rows, summary, manifest, config
+    )
     raw_to_mapped = _raw_to_mapped_steer_consistency(
         rows,
         steer_scale=steer_scale,
         steering_sign=steering_sign,
+        actuator_mapping_mode=actuator_mapping_mode,
+        cyber_bridge_stats=cyber_bridge_stats,
+        config=config,
         thresholds=active_thresholds,
     )
     auxiliary_raw_to_mapped = _auxiliary_raw_to_mapped_steer_consistency(
         auxiliary_rows,
         fallback_steer_scale=steer_scale,
         fallback_steering_sign=steering_sign,
+        fallback_actuator_mapping_mode=actuator_mapping_mode,
+        cyber_bridge_stats=cyber_bridge_stats,
+        config=config,
         thresholds=active_thresholds,
     )
     primary_raw_to_mapped_status = raw_to_mapped.get("status")
@@ -437,7 +460,7 @@ def analyze_control_attribution(
         "route_id": _first_text_from_sources("route_id", rows, summary, manifest),
         "backend": _first_text_from_sources("backend", rows, summary, manifest)
         or _first_text_from_sources("backend_name", rows, summary, manifest),
-        "actuator_mapping_mode": _first_text_from_sources("actuator_mapping_mode", rows, summary, manifest, config),
+        "actuator_mapping_mode": actuator_mapping_mode,
         "steer_scale": steer_scale,
         "steering_sign": steering_sign,
         "throttle_scale": throttle_scale,
@@ -809,8 +832,20 @@ def _raw_to_mapped_steer_consistency(
     *,
     steer_scale: float | None,
     steering_sign: float,
+    actuator_mapping_mode: str | None,
+    cyber_bridge_stats: Mapping[str, Any],
+    config: Mapping[str, Any],
     thresholds: Mapping[str, float],
 ) -> dict[str, Any]:
+    if str(actuator_mapping_mode or "").strip().lower() == "physical":
+        return _physical_raw_to_mapped_steer_consistency(
+            rows,
+            steer_scale=steer_scale,
+            steering_sign=steering_sign,
+            cyber_bridge_stats=cyber_bridge_stats,
+            config=config,
+            thresholds=thresholds,
+        )
     if steer_scale is None:
         return {
             "status": "insufficient_data",
@@ -846,6 +881,9 @@ def _auxiliary_raw_to_mapped_steer_consistency(
     *,
     fallback_steer_scale: float | None,
     fallback_steering_sign: float,
+    fallback_actuator_mapping_mode: str | None,
+    cyber_bridge_stats: Mapping[str, Any],
+    config: Mapping[str, Any],
     thresholds: Mapping[str, float],
 ) -> dict[str, Any]:
     if not rows:
@@ -856,10 +894,16 @@ def _auxiliary_raw_to_mapped_steer_consistency(
     steering_sign = _first_number_from_sources("steering_sign", rows)
     if steering_sign is None:
         steering_sign = fallback_steering_sign
+    actuator_mapping_mode = _first_text_from_sources("actuator_mapping_mode", rows)
+    if actuator_mapping_mode is None:
+        actuator_mapping_mode = fallback_actuator_mapping_mode
     result = _raw_to_mapped_steer_consistency(
         rows,
         steer_scale=steer_scale,
         steering_sign=steering_sign,
+        actuator_mapping_mode=actuator_mapping_mode,
+        cyber_bridge_stats=cyber_bridge_stats,
+        config=config,
         thresholds=thresholds,
     )
     result["steer_scale"] = steer_scale
@@ -868,16 +912,239 @@ def _auxiliary_raw_to_mapped_steer_consistency(
     return result
 
 
+def _physical_raw_to_mapped_steer_consistency(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    steer_scale: float | None,
+    steering_sign: float,
+    cyber_bridge_stats: Mapping[str, Any],
+    config: Mapping[str, Any],
+    thresholds: Mapping[str, float],
+) -> dict[str, Any]:
+    """Validate the observable physical steering contract, not a legacy line.
+
+    Physical steering is deliberately nonlinear after the Apollo front-wheel
+    target is formed.  Comparing its CARLA command with ``raw * scale * sign``
+    therefore creates a false bridge-mapping failure.  The observable contract
+    is raw percentage -> front-wheel target, a loaded calibration with no
+    legacy fallback, then mapped -> applied consistency at the caller.
+    """
+
+    flat_stats = _flatten_mapping(cyber_bridge_stats)
+    flat_config = _flatten_mapping(config)
+    max_angle_deg = _num(
+        _value_from_flat(flat_stats, "actuator_mapping.apollo_max_steer_angle_deg")
+    )
+    if max_angle_deg is None:
+        max_angle_deg = _num(
+            _value_from_flat(flat_config, "physical.apollo_max_steer_angle_deg")
+        )
+
+    calibration_loaded = _truthy_flat(flat_stats, "actuator_mapping.calibration.loaded")
+    calibration_id = _text_from_flat(
+        flat_stats, "actuator_mapping.calibration.calibration_id"
+    )
+    calibration_sha256 = _text_from_flat(
+        flat_stats, "actuator_mapping.calibration.source_sha256"
+    )
+    calibration_pair_count = _num(
+        _value_from_flat(flat_stats, "actuator_mapping.calibration.steering_pairs")
+    )
+    mapping_source = _first_nonempty_text_from_rows(rows, "steer_mapping_source")
+    if mapping_source is None:
+        mapping_source = _text_from_flat(flat_stats, "steer_mapping_source")
+    fallback_reasons = sorted(
+        {
+            value
+            for row in rows
+            if (value := _text_for_suffix(row, "physical_fallback_reason"))
+        }
+    )
+    stats_fallback_reason = _text_from_flat(flat_stats, "physical_fallback_reason")
+    if stats_fallback_reason:
+        fallback_reasons.append(stats_fallback_reason)
+        fallback_reasons = sorted(set(fallback_reasons))
+
+    speed_compensation_enabled = (
+        _truthy_flat(
+            flat_stats,
+            "actuator_mapping.steering_speed_compensation_enabled",
+        )
+        or _truthy_flat(
+            flat_config,
+            "physical.steering_speed_compensation_enabled",
+        )
+        or any(
+            _truthy_suffix(row, "steering_speed_compensation_enabled")
+            for row in rows
+        )
+    )
+    speed_compensation_pair_count = _num(
+        _value_from_flat(
+            flat_stats,
+            "actuator_mapping.calibration.steering_speed_compensation_pairs",
+        )
+    )
+
+    target_errors: list[float] = []
+    compensation_query_errors: list[float] = []
+    compensation_eligible_count = 0
+    compensation_applied_field_count = 0
+    compensation_applied_count = 0
+    compensation_ratio_count = 0
+    compensation_query_count = 0
+    mapped_sample_count = 0
+    if max_angle_deg is not None:
+        for row in rows:
+            raw = _value_for_field(row, "apollo_steer_raw")
+            target_angle_deg = _value_for_field(row, "target_front_wheel_angle_deg")
+            mapped = _value_for_field(row, "bridge_steer_mapped")
+            if raw is not None and mapped is not None:
+                mapped_sample_count += 1
+            if raw is None or target_angle_deg is None:
+                continue
+            expected_target_angle_deg = (
+                raw * float(steering_sign) * max_angle_deg
+            )
+            target_errors.append(abs(expected_target_angle_deg - target_angle_deg))
+            if not speed_compensation_enabled:
+                continue
+            compensation_eligible_count += 1
+            if _has_suffix_value(row, "steering_speed_compensation_applied"):
+                compensation_applied_field_count += 1
+                if _truthy_suffix(row, "steering_speed_compensation_applied"):
+                    compensation_applied_count += 1
+            tracking_ratio = _value_for_field(row, "steering_speed_tracking_ratio")
+            query_angle_deg = _value_for_field(
+                row, "steering_calibration_query_angle_deg"
+            )
+            if tracking_ratio is not None and tracking_ratio > 1.0e-3:
+                compensation_ratio_count += 1
+            else:
+                tracking_ratio = None
+            if query_angle_deg is not None:
+                compensation_query_count += 1
+            if tracking_ratio is not None and query_angle_deg is not None:
+                expected_query_angle_deg = target_angle_deg / tracking_ratio
+                compensation_query_errors.append(
+                    abs(expected_query_angle_deg - query_angle_deg)
+                )
+
+    target_error_p95 = _percentile(target_errors, 0.95)
+    compensation_query_error_p95 = _percentile(compensation_query_errors, 0.95)
+    blocking_reasons: list[str] = []
+    if fallback_reasons:
+        blocking_reasons.append("physical_mapping_used_legacy_fallback")
+    if mapping_source not in {"physical_inverse_front_wheel_angle"}:
+        blocking_reasons.append("physical_steer_mapping_source_not_verified")
+    if not calibration_loaded:
+        blocking_reasons.append("physical_steering_calibration_not_loaded")
+    if not calibration_id:
+        blocking_reasons.append("physical_steering_calibration_id_missing")
+    if not calibration_sha256:
+        blocking_reasons.append("physical_steering_calibration_sha256_missing")
+    if calibration_pair_count is None or calibration_pair_count <= 0:
+        blocking_reasons.append("physical_steering_calibration_pairs_missing")
+    if max_angle_deg is None:
+        blocking_reasons.append("apollo_max_steer_angle_deg_missing")
+    if mapped_sample_count <= 0:
+        blocking_reasons.append("physical_mapped_steer_samples_missing")
+    if target_error_p95 is None:
+        blocking_reasons.append("front_wheel_target_samples_missing")
+    elif target_error_p95 > thresholds["max_physical_target_angle_error_deg_p95"]:
+        blocking_reasons.append("front_wheel_target_mapping_mismatch")
+    if speed_compensation_enabled:
+        if (
+            speed_compensation_pair_count is None
+            or speed_compensation_pair_count < 2
+        ):
+            blocking_reasons.append("steering_speed_compensation_pairs_missing")
+        if compensation_eligible_count <= 0:
+            blocking_reasons.append("steering_speed_compensation_samples_missing")
+        elif compensation_applied_field_count < compensation_eligible_count:
+            blocking_reasons.append(
+                "steering_speed_compensation_applied_evidence_missing"
+            )
+        elif compensation_applied_count < compensation_eligible_count:
+            blocking_reasons.append("steering_speed_compensation_not_applied")
+        if compensation_ratio_count < compensation_eligible_count:
+            blocking_reasons.append("steering_speed_tracking_ratio_missing")
+        if compensation_query_count < compensation_eligible_count:
+            blocking_reasons.append(
+                "steering_speed_compensation_query_angle_missing"
+            )
+        if compensation_query_error_p95 is None:
+            blocking_reasons.append(
+                "steering_speed_compensation_query_samples_missing"
+            )
+        elif compensation_query_error_p95 > thresholds[
+            "max_physical_compensation_query_angle_error_deg_p95"
+        ]:
+            blocking_reasons.append(
+                "steering_speed_compensation_query_mapping_mismatch"
+            )
+
+    hard_fail_reasons = {
+        "physical_mapping_used_legacy_fallback",
+        "front_wheel_target_mapping_mismatch",
+        "steering_speed_compensation_not_applied",
+        "steering_speed_compensation_query_mapping_mismatch",
+    }
+    if any(reason in hard_fail_reasons for reason in blocking_reasons):
+        status = "fail"
+    elif blocking_reasons:
+        status = "insufficient_data"
+    else:
+        status = "pass"
+    return {
+        "status": status,
+        "expected_mapping": (
+            "target_front_wheel_angle_deg ~= apollo_steer_raw * steering_sign * "
+            "apollo_max_steer_angle_deg; when speed compensation is enabled, "
+            "steering_calibration_query_angle_deg ~= target_front_wheel_angle_deg / "
+            "steering_speed_tracking_ratio; nonlinear calibration maps the query "
+            "angle to the CARLA command"
+        ),
+        "mapping_domain": "physical_calibrated_front_wheel_angle",
+        "error_p95": target_error_p95,
+        "target_angle_error_deg_p95": target_error_p95,
+        "target_angle_sample_count": len(target_errors),
+        "sample_count": mapped_sample_count,
+        "apollo_max_steer_angle_deg": max_angle_deg,
+        "steer_mapping_source": mapping_source,
+        "calibration_loaded": calibration_loaded,
+        "calibration_id": calibration_id,
+        "calibration_source_sha256": calibration_sha256,
+        "calibration_steering_pair_count": calibration_pair_count,
+        "steering_speed_compensation_enabled": speed_compensation_enabled,
+        "steering_speed_compensation_pair_count": speed_compensation_pair_count,
+        "steering_speed_compensation_eligible_count": compensation_eligible_count,
+        "steering_speed_compensation_applied_field_count": (
+            compensation_applied_field_count
+        ),
+        "steering_speed_compensation_applied_count": compensation_applied_count,
+        "steering_speed_tracking_ratio_count": compensation_ratio_count,
+        "steering_speed_compensation_query_angle_count": compensation_query_count,
+        "steering_speed_compensation_query_angle_error_deg_p95": (
+            compensation_query_error_p95
+        ),
+        "physical_fallback_reasons": fallback_reasons,
+        "blocking_reasons": blocking_reasons,
+    }
+
+
 def _should_use_auxiliary_raw_to_mapped(
     primary: Mapping[str, Any],
     auxiliary: Mapping[str, Any],
 ) -> bool:
     aux_status = auxiliary.get("status")
     aux_count = int(_num(auxiliary.get("sample_count")) or 0)
-    if aux_count <= 0 or aux_status not in {"pass", "warn"}:
+    if aux_count <= 0 or aux_status not in {"pass", "warn", "fail"}:
         return False
     primary_status = primary.get("status")
-    if primary_status in {"fail", "insufficient_data"}:
+    if primary_status == "insufficient_data":
+        return True
+    if primary_status == "fail" and aux_status in {"pass", "warn"}:
         return True
     primary_count = int(_num(primary.get("sample_count")) or 0)
     return primary_count <= 0
@@ -1338,6 +1605,13 @@ def _truthy_suffix(row: Mapping[str, Any], suffix: str) -> bool:
     return False
 
 
+def _has_suffix_value(row: Mapping[str, Any], suffix: str) -> bool:
+    flat = _flatten_mapping(row)
+    candidates = [row.get(suffix), flat.get(suffix)]
+    candidates.extend(value for key, value in flat.items() if key.endswith(f".{suffix}"))
+    return any(value is not None and value != "" for value in candidates)
+
+
 def _truthy_flat(flat: Mapping[str, Any], suffix: str) -> bool:
     candidates = [flat.get(suffix)]
     candidates.extend(value for key, value in flat.items() if key.endswith(f".{suffix}"))
@@ -1393,6 +1667,24 @@ def _text_from_flat(payload: Mapping[str, Any], suffix: str) -> str | None:
     if value in {None, ""}:
         return None
     return str(value)
+
+
+def _text_for_suffix(payload: Mapping[str, Any], suffix: str) -> str | None:
+    flat = _flatten_mapping(payload)
+    value = _value_from_flat(flat, suffix)
+    if value in {None, ""}:
+        return None
+    return str(value).strip() or None
+
+
+def _first_nonempty_text_from_rows(
+    rows: Sequence[Mapping[str, Any]], suffix: str
+) -> str | None:
+    for row in rows:
+        value = _text_for_suffix(row, suffix)
+        if value:
+            return value
+    return None
 
 
 def _find_first(root: Path, relative_paths: Sequence[str]) -> Path | None:

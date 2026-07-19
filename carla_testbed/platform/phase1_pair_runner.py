@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from carla_testbed.analysis.scenario_comparison import compare_scenario_runs, write_scenario_comparison
 from carla_testbed.analysis.phase1_status import classify_phase1_run, write_phase1_status
 from carla_testbed.backends.registry import default_backend_registry
@@ -350,6 +352,16 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _infer_carla_town(scenario: str | Path) -> str:
+    path = Path(scenario).expanduser()
+    if path.is_file():
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            payload = {}
+        if isinstance(payload, dict):
+            configured = str(payload.get("map") or payload.get("town") or "").strip()
+            if configured:
+                return configured
     lowered = str(scenario).lower()
     if "baguang" in lowered or "straight_road_for_baguang" in lowered:
         return "straight_road_for_baguang"

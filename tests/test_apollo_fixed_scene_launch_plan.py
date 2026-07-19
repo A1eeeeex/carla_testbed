@@ -195,6 +195,39 @@ def test_apollo_static_follow_stop_spawn2m_launch_plan_uses_shifted_compat_confi
     )
 
 
+def test_apollo_static_follow_stop_explicit_dynamic_profile_uses_strict_sidecar() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_followstop_static_planning_ready_"
+        "portable_physical_steering_candidate.yaml"
+    )
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm=selected_profile,
+        scenario="baguang/follow_stop_static_300m_spawn2m",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+    command = launch.commands[0]
+    config_index = command.index("--config")
+
+    assert launch.compatibility_source == "phase1_fixed_scene_runtime_sidecar_transition"
+    assert command[config_index + 1] == selected_profile
+    assert (
+        "runtime.fixed_scene_player.scenario_path="
+        "configs/scenarios/baguang/follow_stop_static_300m_spawn2m.yaml"
+    ) in command
+    assert "runtime.fixed_scene_player.materialize_ego_initial_speed=false" in command
+    assert "artifacts/fixed_scene_runtime_hook.json" in launch.expected_artifacts
+
+
 def test_apollo_town01_route_only_launch_plan_uses_carla_python(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -270,6 +303,32 @@ def test_apollo_town01_behavior_recovery_platform_uses_explicit_diagnostic_confi
     assert launch.minimum_runtime_timeout_s == 300.0
 
 
+def test_apollo_town01_pair_forwards_selected_route_health_profile() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "town01_apollo_route_health_behavior_recovery_stitcher_v1_"
+        "longitudinal_map_speed_target16_67_candidate.yaml"
+    )
+    plan = compile_run_plan(
+        platform="apollo_cyberrt_town01_behavior_recovery",
+        algorithm=selected_profile,
+        scenario="town01/lane_keep_097",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+
+    assert "--config" in launch.commands[0]
+    config_index = launch.commands[0].index("--config")
+    assert launch.commands[0][config_index + 1] == selected_profile
+
+
 def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -> None:
     from carla_testbed.backends.registry import default_backend_registry
     from carla_testbed.platform.compiler import compile_run_plan
@@ -303,7 +362,7 @@ def test_apollo_dynamic_fixed_scene_launch_plan_uses_sidecar_runtime_command() -
     assert "run.capability_profile=phase1_fixed_scene_sidecar" in command
     assert "scenario.spawn_legacy_front=false" in command
     assert "runtime.fixed_scene_player.enabled=true" in command
-    assert "runtime.fixed_scene_player.materialize_ego_initial_speed=true" in command
+    assert "runtime.fixed_scene_player.materialize_ego_initial_speed=false" in command
     assert (
         "runtime.fixed_scene_player.scenario_path=configs/scenarios/baguang/lead_decel_70_to_40_20m.yaml"
         in command
@@ -442,22 +501,498 @@ def test_apollo_dynamic_sidecar_default_profile_gates_first_publish_on_planning(
     assert payload["algo"]["apollo"]["control_mapping"][
         "require_valid_planning_before_first_publish"
     ] is True
+    assert payload["algo"]["apollo"]["control_mapping"][
+        "require_exact_planning_match_before_first_publish"
+    ] is True
+    assert payload["algo"]["apollo"]["control_mapping"][
+        "require_nonfallback_planning_before_first_publish"
+    ] is True
+    assert payload["algo"]["apollo"]["control_mapping"][
+        "require_fixed_scene_handover_before_publish"
+    ] is True
     assert "dynamic_sidecar_eager_control" in payload["run"]["profile_name"]
     runtime = payload["runtime"]["fixed_scene_player"]
-    assert runtime["start_gate"] == "ego_speed_ready"
-    assert runtime["ego_speed_ready_mps"] == 2.0
-    assert runtime["ego_speed_ready_hold_ticks"] == 10
-    assert runtime["defer_role_spawn_until_arm"] is True
-    assert runtime["reset_ego_pose_on_arm"] is True
-    assert runtime["post_reset_ego_speed_ready_mps"] == 18.0
-    assert runtime["post_reset_ego_speed_ready_hold_ticks"] == 10
+    assert runtime["start_gate"] == "apollo_planning_ready"
+    assert runtime["planning_ready_min_nonempty_count"] == 1
+    assert runtime["planning_ready_require_routing_success"] is True
+    assert runtime["planning_ready_min_trajectory_points"] == 2
+    assert runtime["planning_ready_disallow_fallback"] is True
+    assert runtime["planning_ready_max_message_age_s"] == 0.25
+    assert runtime["materialize_ego_initial_speed"] is False
+    assert runtime["scene_preroll_enabled"] is True
+    assert runtime["scene_preroll_ready_hold_ticks"] == 2
+    assert "scene_preroll_target_speed_mps" not in runtime
+    assert runtime["defer_role_spawn_until_arm"] is False
+    assert runtime["reset_ego_pose_on_arm"] is False
+    assert payload["algo"]["apollo"]["bridge"]["artifact_stats_flush_interval_s"] == 0.1
+    assert "obstacle_time_source" not in payload["algo"]["apollo"]["bridge"]
+    assert "localization_time_source" not in payload["algo"]["apollo"]["bridge"]
+    assert payload["algo"]["apollo"]["routing"]["scenario_goal_ahead_m"] == 390.0
     planning_cfg = payload["algo"]["apollo"]["planning"]
     assert planning_cfg["default_cruise_speed_mps"] == 19.44
     assert planning_cfg["planning_upper_speed_limit_mps"] == 23.61
 
+
+def test_apollo_dynamic_obstacle_cybertime_alignment_is_quarantined_candidate() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_obstacle_cybertime_candidate.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert payload["extends"] == (
+        "phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml"
+    )
+    assert payload["run"]["profile_name"] == (
+        "phase1_baguang_apollo_dynamic_obstacle_cybertime_candidate"
+    )
+    assert payload["algo"]["apollo"]["bridge"]["obstacle_time_source"] == "cyber_time"
+
+
+def test_apollo_dynamic_handover_speed_gate_is_quarantined_candidate() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_handover_speed_compatibility_candidate.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert payload["extends"] == (
+        "phase1_baguang_apollo_dynamic_obstacle_cybertime_candidate.yaml"
+    )
+    runtime = payload["runtime"]["fixed_scene_player"]
+    assert runtime["scene_preroll_planning_speed_gate_enabled"] is True
+    assert runtime["scene_preroll_planning_current_speed_tolerance_mps"] == 1.0
+    assert runtime["scene_preroll_planning_lookahead_speed_tolerance_mps"] == 2.0
+    assert runtime["scene_preroll_planning_compatible_min_messages"] == 10
+
+
+def test_apollo_dynamic_planning_ready_early_handover_is_quarantined() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_planning_ready_early_handover_"
+            "physical_steering_fresh_gt_coherent_simtime_candidate.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert payload["extends"] == (
+        "phase1_baguang_apollo_dynamic_handover_replan_confirmed_"
+        "physical_steering_fresh_gt_coherent_simtime_candidate.yaml"
+    )
+    runtime = payload["runtime"]["fixed_scene_player"]
+    assert runtime == {
+        "scene_preroll_ego_handover_mode": "planning_ready",
+        "scene_preroll_lead_speed_headroom_mps": 0.5,
+        "scene_preroll_lead_acceleration_mps2": 0.8,
+    }
+    bridge = payload["algo"]["apollo"]["bridge"]
+    assert bridge["obstacle_time_source"] == "source_time"
+    assert bridge["obstacle_publish_policy"] == "source_fresh"
+    notes = payload["assist_ledger"]["notes"]
+    assert any("controls only the lead actor" in note for note in notes)
+    assert any("not a natural-driving claim" in note for note in notes)
+
+
+def test_apollo_dynamic_handover_physical_steering_candidate_is_quarantined() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_handover_speed_compatibility_physical_steering_candidate.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert payload["extends"] == (
+        "phase1_baguang_apollo_dynamic_handover_speed_compatibility_candidate.yaml"
+    )
+    mapping = payload["algo"]["apollo"]["control_mapping"]
+    assert mapping["actuator_mapping_mode"] == "physical"
+    assert mapping["low_speed_steer_guard_enabled"] is False
+    assert mapping["sustained_lateral_guard_enabled"] is False
+    assert mapping["trajectory_contract_lateral_guard_enabled"] is False
+    assert mapping["physical"]["map_steering"] is True
+    assert mapping["physical"]["map_steering_feedback"] is True
+    assert mapping["physical"]["map_longitudinal"] is False
+
+
+def test_apollo_dynamic_fresh_gt_coherent_time_candidate_is_quarantined() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_handover_speed_compatibility_"
+            "physical_steering_fresh_gt_coherent_simtime_candidate.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert payload["extends"] == (
+        "phase1_baguang_apollo_dynamic_handover_speed_compatibility_"
+        "physical_steering_fresh_gt_candidate.yaml"
+    )
+    bridge = payload["algo"]["apollo"]["bridge"]
+    assert bridge == {
+        "localization_time_source": "sim_time",
+        "obstacle_time_source": "localization_time",
+        "cyber_clock": {
+            "enabled": True,
+            "mode": "mock",
+            "channel": "/clock",
+        },
+    }
+
+
+def test_apollo_dynamic_handover_fresh_gt_candidate_is_quarantined() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_handover_speed_compatibility_"
+            "physical_steering_fresh_gt_candidate.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert payload["extends"] == (
+        "phase1_baguang_apollo_dynamic_handover_speed_compatibility_"
+        "physical_steering_candidate.yaml"
+    )
+    claim_grade = payload["algo"]["apollo"]["bridge"]["claim_grade"]
+    assert claim_grade == {
+        "enabled": True,
+        "stale_world_frame_policy": "skip",
+        "localization_publish_policy": "once_per_new_sim_frame",
+        "chassis_publish_policy": "once_per_new_sim_frame",
+    }
+    notes = payload["assist_ledger"]["notes"]
+    assert any("does not change Apollo Planning or Control output" in note for note in notes)
+
+
+def test_apollo_dynamic_coherent_simtime_clock_is_quarantined_candidate() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_coherent_simtime_candidate.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert payload["extends"] == (
+        "phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml"
+    )
+    bridge = payload["algo"]["apollo"]["bridge"]
+    assert bridge["localization_time_source"] == "sim_time"
+    assert bridge["obstacle_time_source"] == "localization_time"
+    assert bridge["cyber_clock"] == {
+        "enabled": True,
+        "mode": "mock",
+        "channel": "/clock",
+    }
+
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_coherent_simtime_candidate.yaml"
+    )
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm=selected_profile,
+        scenario="baguang/lead_decel_accel_70_40_70_20m",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+    command = launch.commands[0]
+    config_index = command.index("--config")
+    assert command[config_index + 1] == selected_profile
+
     runner = Path("examples/run_followstop.py").read_text(encoding="utf-8")
     assert 'apollo_stack_cfg.get("start_after_scenario_spawn")' in runner
     assert "apollo_fixed_scene_armed_before_harness" in runner
+
+
+def test_apollo_noninteractive_prediction_ab_uses_dynamic_sidecar_command() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_initial_state_gate_"
+        "noninteractive_prediction_ab_extended_opendrive_candidate.yaml"
+    )
+    plan = compile_run_plan(
+        platform="apollo_cyberrt_town01_behavior_recovery",
+        algorithm=selected_profile,
+        scenario="baguang/lead_decel_accel_70_40_70_20m_extended_opendrive",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+
+    assert launch.compatibility_source == "phase1_fixed_scene_runtime_sidecar_transition"
+    assert launch.commands
+    command = launch.commands[0]
+    config_index = command.index("--config")
+    assert command[config_index + 1] == selected_profile
+
+
+def test_apollo_current_state_prediction_ab_uses_dynamic_sidecar_command() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_initial_state_gate_"
+        "current_state_prediction_ab_extended_opendrive_candidate.yaml"
+    )
+    plan = compile_run_plan(
+        platform="apollo_cyberrt_town01_behavior_recovery",
+        algorithm=selected_profile,
+        scenario="baguang/lead_decel_accel_70_40_70_20m_extended_opendrive",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+
+    assert launch.compatibility_source == "phase1_fixed_scene_runtime_sidecar_transition"
+    assert launch.commands
+    command = launch.commands[0]
+    config_index = command.index("--config")
+    assert command[config_index + 1] == selected_profile
+
+
+def test_apollo_current_state_prediction_carla_accel_uses_dynamic_sidecar_command() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_initial_state_gate_"
+        "current_state_prediction_carla_accel_extended_opendrive_candidate.yaml"
+    )
+    plan = compile_run_plan(
+        platform="apollo_cyberrt_town01_behavior_recovery",
+        algorithm=selected_profile,
+        scenario="baguang/lead_decel_accel_70_40_70_20m_extended_opendrive",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+
+    assert launch.compatibility_source == "phase1_fixed_scene_runtime_sidecar_transition"
+    assert launch.commands
+    command = launch.commands[0]
+    config_index = command.index("--config")
+    assert command[config_index + 1] == selected_profile
+
+
+def test_apollo_current_speed_handover_uses_dynamic_sidecar_command() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_initial_state_gate_"
+        "current_state_prediction_carla_accel_current_speed_handover_"
+        "extended_opendrive_candidate.yaml"
+    )
+    plan = compile_run_plan(
+        platform="apollo_cyberrt_town01_behavior_recovery",
+        algorithm=selected_profile,
+        scenario="baguang/lead_decel_accel_70_40_70_20m_extended_opendrive",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+
+    assert launch.compatibility_source == "phase1_fixed_scene_runtime_sidecar_transition"
+    assert launch.commands
+    command = launch.commands[0]
+    config_index = command.index("--config")
+    assert command[config_index + 1] == selected_profile
+
+
+def test_apollo_initial_state_transition_uses_dynamic_sidecar_command() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_initial_state_gate_"
+        "current_state_prediction_carla_accel_initial_state_transition_"
+        "extended_opendrive_candidate.yaml"
+    )
+    plan = compile_run_plan(
+        platform="apollo_cyberrt_town01_behavior_recovery",
+        algorithm=selected_profile,
+        scenario="baguang/lead_decel_accel_70_40_70_20m_extended_opendrive",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+
+    assert launch.compatibility_source == "phase1_fixed_scene_runtime_sidecar_transition"
+    assert launch.commands
+    command = launch.commands[0]
+    config_index = command.index("--config")
+    assert command[config_index + 1] == selected_profile
+
+
+def test_apollo_initial_state_early_replan_uses_dynamic_sidecar_command() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_initial_state_gate_"
+        "current_state_prediction_carla_accel_initial_state_transition_"
+        "early_replan_extended_opendrive_candidate.yaml"
+    )
+    plan = compile_run_plan(
+        platform="apollo_cyberrt_town01_behavior_recovery",
+        algorithm=selected_profile,
+        scenario="baguang/lead_decel_accel_70_40_70_20m_extended_opendrive",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+
+    assert launch.compatibility_source == "phase1_fixed_scene_runtime_sidecar_transition"
+    assert launch.commands
+    command = launch.commands[0]
+    config_index = command.index("--config")
+    assert command[config_index + 1] == selected_profile
+
+
+def test_apollo_handover_speed_tolerance_uses_dynamic_sidecar_command() -> None:
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_initial_state_gate_"
+        "current_state_prediction_carla_accel_initial_state_transition_"
+        "handover_speed_tolerance_1p0_extended_opendrive_candidate.yaml"
+    )
+    plan = compile_run_plan(
+        platform="apollo_cyberrt_town01_behavior_recovery",
+        algorithm=selected_profile,
+        scenario="baguang/lead_decel_accel_70_40_70_20m_extended_opendrive",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+
+    assert launch.compatibility_source == "phase1_fixed_scene_runtime_sidecar_transition"
+    assert launch.commands
+    command = launch.commands[0]
+    config_index = command.index("--config")
+    assert command[config_index + 1] == selected_profile
+
+
+def test_apollo_dynamic_coherent_simtime_accel_feasibility_is_quarantined_candidate() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_candidate.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert payload["extends"] == (
+        "phase1_baguang_apollo_dynamic_coherent_simtime_candidate.yaml"
+    )
+    acceleration_filter = payload["algo"]["apollo"]["bridge"][
+        "localization_acceleration_filter"
+    ]
+    assert acceleration_filter == {
+        "enabled": False,
+        "alpha": 1.0,
+        "max_abs_mps2": 0.0,
+        "max_delta_mps2": 0.0,
+        "nonnegative_speed_prediction_horizon_s": 0.1,
+    }
+
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_candidate.yaml"
+    )
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm=selected_profile,
+        scenario="baguang/lead_decel_accel_70_40_70_20m",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+    command = launch.commands[0]
+    config_index = command.index("--config")
+    assert command[config_index + 1] == selected_profile
+
+
+def test_apollo_dynamic_trajectory_stitcher_is_quarantined_longitudinal_candidate() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/"
+            "phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_"
+            "trajectory_stitcher_candidate.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert payload["extends"] == (
+        "phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_candidate.yaml"
+    )
+    assert payload["algo"]["apollo"]["planning"] == {
+        "enable_reference_line_stitching": False,
+        "enable_trajectory_stitcher": True,
+    }
+
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_"
+        "trajectory_stitcher_candidate.yaml"
+    )
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm=selected_profile,
+        scenario="baguang/lead_decel_accel_70_40_70_20m",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+    command = launch.commands[0]
+    config_index = command.index("--config")
+    assert command[config_index + 1] == selected_profile
 
 
 def test_apollo_static_spawn2m_profile_uses_fixed_scene_actor_without_legacy_assist() -> None:
@@ -478,6 +1013,55 @@ def test_apollo_static_spawn2m_profile_uses_fixed_scene_actor_without_legacy_ass
     assert ledger["active_assists"] == ["apollo_control_runtime_overlay"]
     assert ledger["blocking_assists"] == []
     assert "legacy_followstop" not in ledger["active_assists"]
+
+
+def test_apollo_static_follow_stop_planning_ready_physical_candidate_has_no_ego_preroll() -> None:
+    from carla_testbed.config.rig_loader import load_rig_file
+
+    payload = load_rig_file(
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_followstop_static_planning_ready_"
+        "portable_physical_steering_candidate.yaml"
+    )
+
+    runtime = payload["runtime"]["fixed_scene_player"]
+    assert runtime["start_gate"] == "apollo_planning_ready"
+    assert runtime["planning_ready_require_routing_success"] is True
+    assert runtime["planning_ready_min_trajectory_points"] == 2
+    assert runtime["planning_ready_disallow_fallback"] is True
+    assert runtime["scene_preroll_materialize_initial_speeds_on_gate"] is False
+    assert runtime["scene_preroll_ego_handover_mode"] == "planning_ready"
+
+    planning = payload["algo"]["apollo"]["planning"]
+    assert planning["min_stop_distance_obstacle_m"] == 8.0
+    mapping = payload["algo"]["apollo"]["control_mapping"]
+    assert mapping["actuator_mapping_mode"] == "physical"
+    assert mapping["steer_scale"] == 1.0
+    assert mapping["terminal_stop_hold"]["enabled"] is False
+    assert mapping["low_speed_steer_guard_enabled"] is False
+    assert mapping["sustained_lateral_guard_enabled"] is False
+    assert mapping["trajectory_contract_lateral_guard_enabled"] is False
+    assert mapping["physical"]["calibration_file"].endswith(
+        "configs/calibration/vehicles/vehicle.lincoln.mkz_2020/steering_front_wheel_v1.json"
+    )
+    assert mapping["physical"]["allow_legacy_fallback"] is False
+    assert mapping["physical"]["map_steering"] is True
+    assert mapping["physical"]["map_steering_feedback"] is True
+    assert mapping["physical"]["map_longitudinal"] is False
+
+    ledger = payload["assist_ledger"]
+    assert ledger["active_assists"] == ["apollo_control_runtime_overlay"]
+    assert ledger["blocking_assists"] == []
+    assert any("Apollo owns ego acceleration from rest" in note for note in ledger["notes"])
+
+    default_payload = load_rig_file(
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml"
+    )
+    assert (
+        "min_stop_distance_obstacle_m"
+        not in default_payload["algo"]["apollo"]["planning"]
+    )
 
 
 def test_apollo_dynamic_sidecar_steer_sign_inverted_profile_is_diagnostic_only() -> None:
@@ -668,3 +1252,61 @@ def test_apollo_fixed_scene_scaffold_accepts_explicit_readiness_bridge_config(tm
     assert readiness["actor_probe_enabled_effective"] is True
     assert readiness["target_role_covered_by_bridge_roles"] is True
     assert readiness["blocking_reasons"] == []
+
+
+def test_apollo_dynamic_physical_steering_candidate_is_bidirectional_and_isolated() -> None:
+    payload = yaml.safe_load(
+        Path(
+            "configs/io/examples/phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_trajectory_stitcher_physical_steering_candidate.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert (
+        payload["extends"]
+        == "phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_trajectory_stitcher_candidate.yaml"
+    )
+    mapping = payload["algo"]["apollo"]["control_mapping"]
+    physical = mapping["physical"]
+    assert mapping["actuator_mapping_mode"] == "physical"
+    assert physical["allow_legacy_fallback"] is False
+    assert physical["apollo_max_steer_angle_deg"] == 30.0
+    assert physical["map_steering"] is True
+    assert physical["map_steering_feedback"] is True
+    assert physical["map_longitudinal"] is False
+    assert physical["map_throttle"] is False
+    assert physical["map_brake"] is False
+    assert any("without changing steer_scale" in note for note in payload["assist_ledger"]["notes"])
+
+    from carla_testbed.backends.registry import default_backend_registry
+    from carla_testbed.config.rig_loader import load_rig_file
+    from carla_testbed.platform.compiler import compile_run_plan
+    from carla_testbed.platform.registry import PlatformRegistry
+
+    selected_profile = (
+        "configs/io/examples/"
+        "phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_"
+        "trajectory_stitcher_physical_steering_candidate.yaml"
+    )
+    resolved = load_rig_file(selected_profile)
+    resolved_apollo = resolved["algo"]["apollo"]
+    assert resolved_apollo["planning"] == {
+        "default_cruise_speed_mps": 19.44,
+        "planning_upper_speed_limit_mps": 23.61,
+        "enable_reference_line_stitching": False,
+        "enable_trajectory_stitcher": True,
+    }
+    assert resolved_apollo["control_mapping"]["steer_scale"] == 1.0
+    assert resolved_apollo["control_mapping"]["physical"]["map_steering_feedback"] is True
+
+    plan = compile_run_plan(
+        platform="apollo_cyberrt",
+        algorithm=selected_profile,
+        scenario="baguang/lead_decel_accel_70_40_70_20m",
+        recording="none",
+        gate="scenario_validation",
+        registry=PlatformRegistry(repo_root="."),
+    )
+    launch = default_backend_registry().for_plan(plan).build_launch_plan(plan)
+    command = launch.commands[0]
+    config_index = command.index("--config")
+    assert command[config_index + 1] == selected_profile

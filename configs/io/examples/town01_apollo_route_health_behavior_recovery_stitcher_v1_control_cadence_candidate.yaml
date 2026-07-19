@@ -1,0 +1,25 @@
+# Diagnostic Apollo reference-runtime candidate.
+# This isolates control-bridge timer cadence from Planning/control semantics:
+# CARLA remains one-control-per-world-frame, while the timer gets two chances
+# per 20 Hz world tick instead of dropping a command on a phase miss.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_stitcher_candidate.yaml
+
+run:
+  profile_name: town01_apollo_route_health_behavior_recovery_stitcher_v1_control_cadence_candidate
+  claim_profile: false
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic control-bridge cadence candidate; not claim-grade.
+    - Sync-to-world-tick remains enabled; apply_hz is intentionally 2x the 20 Hz CARLA tick.
+
+algo:
+  apollo:
+    carla_control_bridge:
+      apply_hz: 40.0
+      sync_to_world_tick: true

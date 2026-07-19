@@ -292,6 +292,80 @@ def test_zero_trajectory_fraction_without_stale_target_is_diagnostic_only(tmp_pa
     assert summary["speed_evidence"]["simple_lat_target_point_v_mps"]["p95"] > 1.0
 
 
+def test_zero_unset_input_header_is_not_counted_as_trajectory_age(tmp_path: Path) -> None:
+    rows = _base_rows()
+    for index, row in enumerate(rows):
+        row["control_header_timestamp_sec"] = 10.0 + index * 0.1
+        row["debug_input_trajectory_header_timestamp_sec"] = 0.0
+        row["debug_input_latest_replan_trajectory_header_timestamp_sec"] = 0.0
+
+    report = _analyze(tmp_path, rows)
+
+    age = report["control_target_point_summary"]["trajectory_header_age"]
+    assert age["control_header_minus_input_trajectory_header_s"]["count"] == 0
+    assert age["control_header_minus_latest_replan_header_s"]["count"] == 0
+
+
+def test_control_decode_presence_flags_suppress_unset_zero_debug_fields(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    _write_rows(run_dir / "timeseries.csv", _base_rows())
+    (artifacts / "control_decode_debug.jsonl").write_text(
+        json.dumps(
+            {
+                "ts_sec": 10.0,
+                "raw_control_msg_dump": {
+                    "control_header_timestamp_sec": 10.0,
+                    "debug_input_trajectory_header_present": False,
+                    "debug_input_trajectory_header_timestamp_sec": 0.0,
+                    "debug_input_latest_replan_trajectory_header_present": False,
+                    "debug_input_latest_replan_trajectory_header_timestamp_sec": 0.0,
+                    "debug_simple_lon_current_matched_point_present": False,
+                    "debug_simple_lon_current_matched_point_s": 0.0,
+                    "debug_simple_lon_current_matched_point_x": 0.0,
+                    "debug_simple_lon_current_matched_point_y": 0.0,
+                    "debug_simple_lat_current_target_point_present": False,
+                    "debug_simple_lat_current_target_point_s": 0.0,
+                    "debug_simple_lat_current_target_point_x": 0.0,
+                    "debug_simple_lat_current_target_point_y": 0.0,
+                    "debug_simple_lat_current_target_point_relative_time": 0.0,
+                    "trajectory_fraction_present": False,
+                    "trajectory_fraction": 0.0,
+                },
+                "parsed_control": {
+                    "debug_input_trajectory_header_timestamp_sec": 0.0,
+                    "debug_input_latest_replan_trajectory_header_timestamp_sec": 0.0,
+                    "debug_simple_lon_matched_point_s": 0.0,
+                    "debug_simple_lon_matched_point_x": 0.0,
+                    "debug_simple_lon_matched_point_y": 0.0,
+                    "debug_simple_lat_target_point_s": 0.0,
+                    "debug_simple_lat_target_point_x": 0.0,
+                    "debug_simple_lat_target_point_y": 0.0,
+                    "debug_simple_lat_target_point_relative_time_sec": 0.0,
+                    "trajectory_fraction": 0.0,
+                },
+                "output_to_carla": {"gt_state_sim_time_sec": 0.0},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_apollo_lateral_semantics_run_dir(run_dir)
+
+    summary = report["control_target_point_summary"]
+    assert summary["trajectory_fraction"]["count"] == 0
+    assert summary["trajectory_header_age"][
+        "control_header_minus_input_trajectory_header_s"
+    ]["count"] == 0
+    assert report["correlation_summary"]["apollo_simple_lon_matched_point_s_abs"][
+        "count"
+    ] == 0
+
+
 def test_raw_mapped_mismatch_suspects_control_mapping(tmp_path: Path) -> None:
     rows = _base_rows()
     for row in rows:

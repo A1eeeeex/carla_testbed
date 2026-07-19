@@ -1,0 +1,28 @@
+# One-variable follow-up to the minimal authored-speed gate. CARLA reports the
+# one-shot setup velocity assignment as a very large physical acceleration for
+# one frame. Suppress exactly that marker-bound setup sample so Apollo receives
+# the authored speed without treating the assignment itself as vehicle motion.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_minimal_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_minimal_transition_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_minimal_transition_candidate
+
+algo:
+  apollo:
+    bridge:
+      localization_authored_initial_state_transition:
+        mode: marker_zero_once
+        marker_path: fixed_scene_gate_initial_state_materialization.json
+        required_status: pass
+        max_world_frame_delta: 2
+        max_sim_time_delta_s: 0.11
+        speed_tolerance_mps: 0.5
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only input-boundary A/B; exactly one Localization acceleration sample may be zeroed after a passing authored-speed marker within the configured frame, time, and speed window.
+    - This does not filter or tune real vehicle acceleration; every later CARLA physics sample is published unchanged.
+    - Routing, strict NORMAL Planning readiness, one-shot speed materialization, two-message current-speed compatibility, target-ready handover, map, steering, longitudinal mapping, Planning constraints, and guards are unchanged from the matched minimal candidate.
+    - Formal scenario time still begins only after handover, and this setup experiment is not Apollo acceleration-from-rest or natural-driving evidence.

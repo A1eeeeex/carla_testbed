@@ -1,0 +1,34 @@
+# Diagnostic Apollo reference-runtime candidate.
+#
+# Apollo Cyber MODE_MOCK consumes the bridge-published /clock value, so
+# Planning/Control and GT localization use the same CARLA simulation time.
+# Keep this profile separate from the frozen default until an online A/B shows
+# that the clock handoff improves trajectory freshness without a lateral
+# regression.  It is not a natural-driving claim profile.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_simtime_reference_stitching_candidate.yaml
+
+run:
+  profile_name: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_simtime_reference_stitching_cyberclock_candidate
+  claim_profile: false
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Apollo mock-clock synchronization candidate; diagnostic only until online evidence is reviewed.
+    - The profile does not enable a route follower, lateral guard, or physical mapping.
+
+algo:
+  apollo:
+    bridge:
+      # Do not synchronously rewrite cyber_bridge_stats.json from the 20 Hz
+      # GT publish loop. The final bridge shutdown path still writes the full
+      # stats artifact; this diagnostic A/B isolates publish-cadence impact.
+      artifact_stats_flush_interval_s: 0.0
+      cyber_clock:
+        enabled: true
+        mode: mock
+        channel: /clock

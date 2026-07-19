@@ -4,6 +4,184 @@ import math
 from typing import Any, Mapping, Sequence
 
 
+def build_prediction_obstacles_debug(
+    msg: Any,
+    *,
+    max_obstacles: int = 16,
+    max_trajectory_samples: int = 7,
+) -> dict[str, Any]:
+    """Build compact, protobuf-agnostic Prediction output diagnostics.
+
+    Planning's ST boundary only exposes the downstream constraint.  Recording
+    the corresponding Prediction trajectories makes it possible to distinguish
+    a bad GT obstacle state from a Prediction or Planning transformation without
+    retaining the full high-rate protobuf payload.
+    """
+
+    obstacles = _as_sequence(_nested(msg, ("prediction_obstacle",)))
+    summaries = [
+        _prediction_obstacle_summary(
+            obstacle,
+            max_trajectory_samples=max_trajectory_samples,
+        )
+        for obstacle in obstacles[: max(0, int(max_obstacles))]
+    ]
+    return {
+        "prediction_header_timestamp_sec": _num(
+            _nested(msg, ("header", "timestamp_sec"))
+        ),
+        "prediction_header_sequence_num": _integer_or_none(
+            _nested(msg, ("header", "sequence_num"))
+        ),
+        "prediction_start_timestamp_sec": _num(
+            _nested(msg, ("start_timestamp",))
+        ),
+        "prediction_end_timestamp_sec": _num(_nested(msg, ("end_timestamp",))),
+        "prediction_obstacle_count": len(obstacles),
+        "prediction_obstacles_recorded_count": len(summaries),
+        "prediction_obstacles_truncated": len(summaries) < len(obstacles),
+        "prediction_obstacles": summaries,
+        "claim_boundary": (
+            "Prediction topic diagnostics localize GT-to-Prediction-to-Planning "
+            "transformations only; they do not prove scenario behavior success."
+        ),
+    }
+
+
+def _prediction_obstacle_summary(
+    obstacle: Any,
+    *,
+    max_trajectory_samples: int,
+) -> dict[str, Any]:
+    perception = _nested(obstacle, ("perception_obstacle",))
+    velocity = _nested(perception, ("velocity",))
+    velocity_xyz = {
+        axis: _num(_nested(velocity, (axis,))) for axis in ("x", "y", "z")
+    }
+    planar_velocity_values = [
+        velocity_xyz[axis] for axis in ("x", "y") if velocity_xyz[axis] is not None
+    ]
+    velocity_3d_values = [
+        value for value in velocity_xyz.values() if value is not None
+    ]
+    planar_speed_mps = (
+        math.sqrt(sum(float(value) ** 2 for value in planar_velocity_values))
+        if planar_velocity_values
+        else None
+    )
+    speed_3d_mps = (
+        math.sqrt(sum(float(value) ** 2 for value in velocity_3d_values))
+        if velocity_3d_values
+        else None
+    )
+    trajectories = _as_sequence(_nested(obstacle, ("trajectory",)))
+    selected_index = _highest_probability_trajectory_index(trajectories)
+    selected = trajectories[selected_index] if selected_index is not None else None
+    points = _as_sequence(_nested(selected, ("trajectory_point",)))
+    return {
+        "perception_id": _integer_or_none(_nested(perception, ("id",))),
+        "perception_timestamp_sec": _num(_nested(perception, ("timestamp",))),
+        "prediction_obstacle_timestamp_sec": _num(
+            _nested(obstacle, ("timestamp",))
+        ),
+        "perception_position": {
+            axis: _num(_nested(perception, ("position", axis)))
+            for axis in ("x", "y", "z")
+        },
+        "perception_velocity": velocity_xyz,
+        "perception_speed_mps": planar_speed_mps,
+        "perception_speed_3d_mps": speed_3d_mps,
+        "perception_theta_rad": _num(_nested(perception, ("theta",))),
+        "is_static": _bool_or_none(_nested(obstacle, ("is_static",))),
+        "predicted_period_sec": _num(_nested(obstacle, ("predicted_period",))),
+        "trajectory_count": len(trajectories),
+        "selected_trajectory_index": selected_index,
+        "selected_trajectory_probability": _num(
+            _nested(selected, ("probability",))
+        ),
+        "selected_trajectory_point_count": len(points),
+        "selected_trajectory_samples": _prediction_trajectory_samples(
+            points,
+            max_samples=max_trajectory_samples,
+        ),
+    }
+
+
+def _highest_probability_trajectory_index(
+    trajectories: Sequence[Any],
+) -> int | None:
+    if not trajectories:
+        return None
+    probabilities = [
+        _num(_nested(trajectory, ("probability",))) for trajectory in trajectories
+    ]
+    return max(
+        range(len(trajectories)),
+        key=lambda index: (
+            probabilities[index] is not None,
+            probabilities[index] if probabilities[index] is not None else float("-inf"),
+            -index,
+        ),
+    )
+
+
+def _prediction_trajectory_samples(
+    points: Sequence[Any],
+    *,
+    max_samples: int,
+) -> list[dict[str, Any]]:
+    if not points or max_samples <= 0:
+        return []
+    target_times = (0.0, 0.5, 1.0, 2.0, 3.0, 6.0)
+    indices = {0, len(points) - 1}
+    timed_points = [
+        (_num(_nested(point, ("relative_time",))), index)
+        for index, point in enumerate(points)
+    ]
+    timed_points = [(time_sec, index) for time_sec, index in timed_points if time_sec is not None]
+    for target in target_times:
+        if not timed_points:
+            break
+        _, index = min(timed_points, key=lambda item: abs(float(item[0]) - target))
+        indices.add(index)
+    selected_indices = sorted(indices)
+    if len(selected_indices) > max_samples:
+        selected_indices = selected_indices[: max(1, max_samples - 1)] + [
+            selected_indices[-1]
+        ]
+    return [
+        {
+            "index": index,
+            "relative_time_sec": _num(_nested(points[index], ("relative_time",))),
+            "x": _num(_nested(points[index], ("path_point", "x"))),
+            "y": _num(_nested(points[index], ("path_point", "y"))),
+            "lane_id": _scalar_or_none(
+                _nested(points[index], ("path_point", "lane_id"))
+            ),
+            "v_mps": _num(_nested(points[index], ("v",))),
+            "a_mps2": _num(_nested(points[index], ("a",))),
+        }
+        for index in selected_indices
+    ]
+
+
+def _integer_or_none(value: Any) -> int | None:
+    number = _num(value)
+    return int(number) if number is not None else None
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _scalar_or_none(value: Any) -> str | int | float | bool | None:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
 def build_trajectory_shape_debug(points: Any, *, max_sample_points: int = 8) -> dict[str, Any]:
     """Build small JSON-safe trajectory shape diagnostics without depending on protobuf classes."""
     seq = _as_sequence(points)
@@ -504,7 +682,12 @@ def _future_segment_debug(points: Sequence[Any]) -> dict[str, Any]:
             "trajectory_first_nonexpired_point_index": None,
             "trajectory_first_nonexpired_point_relative_time": None,
             "trajectory_first_nonexpired_point_theta": None,
+            "trajectory_first_nonexpired_point_v": None,
+            "trajectory_first_nonexpired_point_a": None,
             "trajectory_first_nonexpired_remaining_point_count": None,
+            "trajectory_speed_at_1s_mps": None,
+            "trajectory_speed_at_1s_relative_time_sec": None,
+            "trajectory_speed_at_1s_point_index": None,
             "trajectory_future_first_segment_heading": None,
             "trajectory_first_nonexpired_theta_minus_future_segment_heading_rad": None,
             "trajectory_future_lookahead_heading": None,
@@ -519,6 +702,13 @@ def _future_segment_debug(points: Sequence[Any]) -> dict[str, Any]:
     first_future = future_points[0] if future_points else None
     first_future_theta = _num(_nested(first_future, ("path_point", "theta")))
     first_future_relative_time = _num(_nested(first_future, ("relative_time",)))
+    first_future_v = _num(_nested(first_future, ("v",)))
+    first_future_a = _num(_nested(first_future, ("a",)))
+    speed_lookahead = _trajectory_lookahead_point(
+        points,
+        first_index=first_future_index,
+        lookahead_s=1.0,
+    )
     future_segment_heading = _first_segment_heading(future_points)
     lookahead = _future_lookahead_heading(
         future_points,
@@ -536,7 +726,12 @@ def _future_segment_debug(points: Sequence[Any]) -> dict[str, Any]:
         "trajectory_first_nonexpired_point_index": first_future_index,
         "trajectory_first_nonexpired_point_relative_time": first_future_relative_time,
         "trajectory_first_nonexpired_point_theta": first_future_theta,
+        "trajectory_first_nonexpired_point_v": first_future_v,
+        "trajectory_first_nonexpired_point_a": first_future_a,
         "trajectory_first_nonexpired_remaining_point_count": len(points) - first_future_index,
+        "trajectory_speed_at_1s_mps": speed_lookahead.get("v_mps"),
+        "trajectory_speed_at_1s_relative_time_sec": speed_lookahead.get("relative_time_sec"),
+        "trajectory_speed_at_1s_point_index": speed_lookahead.get("point_index"),
         "trajectory_future_first_segment_heading": future_segment_heading,
         "trajectory_first_nonexpired_theta_minus_future_segment_heading_rad": (
             _wrap_to_pi(float(first_future_theta) - float(future_segment_heading))
@@ -558,6 +753,39 @@ def _future_segment_debug(points: Sequence[Any]) -> dict[str, Any]:
             radius=3,
             max_points=16,
         ),
+    }
+
+
+def _trajectory_lookahead_point(
+    points: Sequence[Any],
+    *,
+    first_index: int,
+    lookahead_s: float,
+) -> dict[str, Any]:
+    first_time = _num(_nested(points[first_index], ("relative_time",)))
+    if first_time is None:
+        return {}
+    target_time = float(first_time) + max(0.0, float(lookahead_s))
+    candidates: list[tuple[float, int, float, float | None]] = []
+    for index in range(first_index, len(points)):
+        relative_time = _num(_nested(points[index], ("relative_time",)))
+        if relative_time is None or relative_time < first_time:
+            continue
+        candidates.append(
+            (
+                abs(float(relative_time) - target_time),
+                index,
+                float(relative_time),
+                _num(_nested(points[index], ("v",))),
+            )
+        )
+    if not candidates or max(item[2] for item in candidates) < target_time:
+        return {}
+    _, index, relative_time, speed = min(candidates, key=lambda item: (item[0], item[1]))
+    return {
+        "point_index": index,
+        "relative_time_sec": relative_time,
+        "v_mps": speed,
     }
 
 

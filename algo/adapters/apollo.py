@@ -934,8 +934,25 @@ PY
             bridge["obstacle_publish_rate_hz"] = float(
                 apollo_bridge_cfg["obstacle_publish_rate_hz"]
             )
+        if "obstacle_publish_policy" in apollo_bridge_cfg:
+            bridge["obstacle_publish_policy"] = str(
+                apollo_bridge_cfg["obstacle_publish_policy"]
+            )
+        if "obstacle_alignment_policy" in apollo_bridge_cfg:
+            bridge["obstacle_alignment_policy"] = str(
+                apollo_bridge_cfg["obstacle_alignment_policy"]
+            )
         if "localization_time_source" in apollo_bridge_cfg:
             bridge["localization_time_source"] = str(apollo_bridge_cfg["localization_time_source"])
+        if "obstacle_time_source" in apollo_bridge_cfg:
+            bridge["obstacle_time_source"] = str(apollo_bridge_cfg["obstacle_time_source"])
+        if "cyber_clock" in apollo_bridge_cfg:
+            cyber_clock_cfg = apollo_bridge_cfg["cyber_clock"]
+            bridge["cyber_clock"] = (
+                dict(cyber_clock_cfg)
+                if isinstance(cyber_clock_cfg, dict)
+                else cyber_clock_cfg
+            )
         if "max_obstacles" in apollo_bridge_cfg:
             bridge["max_obstacles"] = int(apollo_bridge_cfg["max_obstacles"])
         if "radius_m" in apollo_bridge_cfg:
@@ -973,11 +990,32 @@ PY
         ):
             if key in apollo_bridge_cfg:
                 bridge[key] = float(apollo_bridge_cfg[key])
+        if "control_debug_artifact_sample_strides" in apollo_bridge_cfg:
+            sample_strides = apollo_bridge_cfg["control_debug_artifact_sample_strides"]
+            if not isinstance(sample_strides, dict):
+                raise RuntimeError(
+                    "algo.apollo.bridge.control_debug_artifact_sample_strides must be a mapping"
+                )
+            bridge["control_debug_artifact_sample_strides"] = {
+                str(artifact_name): int(sample_stride)
+                for artifact_name, sample_stride in sample_strides.items()
+            }
         if isinstance(apollo_bridge_cfg.get("claim_grade"), dict):
             bridge["claim_grade"] = dict(apollo_bridge_cfg["claim_grade"])
         if isinstance(apollo_bridge_cfg.get("localization_acceleration_filter"), dict):
             bridge["localization_acceleration_filter"] = dict(
                 apollo_bridge_cfg["localization_acceleration_filter"]
+            )
+        if "localization_acceleration_source" in apollo_bridge_cfg:
+            bridge["localization_acceleration_source"] = str(
+                apollo_bridge_cfg["localization_acceleration_source"]
+            )
+        if isinstance(
+            apollo_bridge_cfg.get("localization_authored_initial_state_transition"),
+            dict,
+        ):
+            bridge["localization_authored_initial_state_transition"] = dict(
+                apollo_bridge_cfg["localization_authored_initial_state_transition"]
             )
         bridge["claim_profile"] = bool(bridge_run_cfg.get("claim_profile", False))
         bridge["materialization_probe"] = bool(
@@ -1166,6 +1204,9 @@ PY
 
         runtime_carla = (profile.get("runtime", {}) or {}).get("carla", {}) or {}
         carla_feedback = bridge.setdefault("carla_feedback", {})
+        profile_carla_feedback = apollo_bridge_cfg.get("carla_feedback", {}) or {}
+        if isinstance(profile_carla_feedback, dict) and "state_source" in profile_carla_feedback:
+            carla_feedback["state_source"] = str(profile_carla_feedback["state_source"])
         carla_feedback["enabled"] = bool(carla_feedback.get("enabled", True))
         carla_feedback["host"] = str(runtime_carla.get("host", "127.0.0.1"))
         carla_feedback["port"] = int(runtime_carla.get("port", 2000))
@@ -1246,6 +1287,9 @@ PY
             "force_zero_steer_output",
             "throttle_brake_mutual_exclusion_enabled",
             "require_valid_planning_before_first_publish",
+            "require_exact_planning_match_before_first_publish",
+            "require_nonfallback_planning_before_first_publish",
+            "require_fixed_scene_handover_before_publish",
         ):
             if key in ctrl_cfg:
                 ctrl_map[key] = bool(ctrl_cfg[key])

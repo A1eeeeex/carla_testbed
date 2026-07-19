@@ -199,15 +199,31 @@ def _phase1_status_needs_refresh(
         return True
     if not isinstance(current, dict):
         return True
-    if current.get("status") != "invalid" or current.get("failure_reason") != "no_timeseries":
+    if current.get("status") != "invalid":
         return False
-    if (status_path.parents[2] / "timeseries.csv").exists() or (
-        status_path.parents[2] / "timeseries.jsonl"
-    ).exists():
-        return True
-    if artifact_normalization and artifact_normalization.get("status") == "promoted":
-        return True
-    return False
+    root = status_path.parents[2]
+    failure_reason = current.get("failure_reason")
+    if failure_reason == "no_timeseries":
+        if (root / "timeseries.csv").exists() or (root / "timeseries.jsonl").exists():
+            return True
+        if artifact_normalization and artifact_normalization.get("status") == "promoted":
+            return True
+        return False
+
+    # Compatibility commands can write an early ``missing_required_artifact``
+    # status before their nested postprocess has materialized the final
+    # timeseries/report surface. Reclassify only this stale evidence status;
+    # intentional setup failures such as backend_not_ready remain untouched.
+    if failure_reason != "missing_required_artifact":
+        return False
+    refreshed = classify_phase1_run(root)
+    return (
+        refreshed.get("status"),
+        refreshed.get("failure_reason"),
+    ) != (
+        current.get("status"),
+        failure_reason,
+    )
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

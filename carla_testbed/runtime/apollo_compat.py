@@ -556,7 +556,13 @@ def _legacy_effective_config_from_typed(
     _copy_typed_apollo_bridge_fields(
         payload,
         resolved_config,
-        field_names=("localization_time_source", "obstacle_publish_rate_hz"),
+        field_names=(
+            "localization_time_source",
+            "obstacle_time_source",
+            "obstacle_publish_rate_hz",
+            "obstacle_publish_policy",
+            "obstacle_alignment_policy",
+        ),
     )
     return payload
 
@@ -774,7 +780,37 @@ def _run_declares_phase1_scenario(root: Path) -> bool:
         if _contains_key(payload, "phase1_scenario_path"):
             return True
     manifest = _read_json(root / "manifest.json")
-    return _contains_key(manifest, "phase1_scenario_path")
+    if _contains_key(manifest, "phase1_scenario_path"):
+        return True
+
+    # Town01 route-health runs are Phase 1 Apollo reference-runtime probes even
+    # when they do not use a fixed-scene scenario file.  They still need the
+    # same post-run analyzers to replace the startup compatibility placeholders
+    # with evidence from the completed raw artifacts.
+    backend = str(manifest.get("backend") or manifest.get("backend_name") or "").strip().lower()
+    scenario_id = str(manifest.get("scenario_id") or "").strip().lower()
+    capability_profile = str(manifest.get("capability_profile") or "").strip().lower()
+    has_route_identity = bool(str(manifest.get("route_id") or "").strip())
+    has_runtime_evidence = any(
+        (root / relative).is_file()
+        for relative in (
+            "artifacts/planning_topic_debug.jsonl",
+            "artifacts/control_decode_debug.jsonl",
+            "artifacts/bridge_control_decode.jsonl",
+        )
+    )
+    return backend == "apollo_cyberrt" and (
+        has_runtime_evidence
+        and (
+            ("route_health" in scenario_id and has_route_identity)
+            or capability_profile in {
+                "lane_keep",
+                "curve_lane_follow",
+                "junction_traverse",
+                "traffic_light_actual",
+            }
+        )
+    )
 
 
 def _contains_key(payload: Any, key: str) -> bool:

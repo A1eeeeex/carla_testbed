@@ -1,0 +1,25 @@
+# Default-off Baguang compute-pacing diagnostic. Preserve the native
+# Prediction, exact-GT, atomic readiness, Planning, Control, mapping, and
+# scenario contracts while slowing simulation time enough for the measured CPU
+# VectorNet path to publish at Apollo's intended 10 Hz simulation-time cadence.
+extends: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_compute_paced_candidate
+  profile_name: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_compute_paced_candidate
+  wall_time_pacing:
+    enabled: true
+    # v62 measured CPU VectorNet inference at 384-559 ms (p95 470 ms).
+    # Two 50 ms simulation ticks therefore receive 500 ms wall time, enough
+    # for the intended 10 Hz Prediction/Planning cadence without relying on
+    # incidental artifact-read latency to slow CARLA.
+    target_interval_s: 0.25
+    max_sleep_s: 0.25
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only Baguang compute-pacing A/B; default-off and not a Planning, Prediction, mapping, controller, guard, route-follower, or natural-driving promotion.
+    - The measured v62 CPU VectorNet path takes 384-559 ms per inference with p95 about 470 ms, while the prior 50 ms wall pacing advanced simulation too quickly and reduced post-transition Prediction/Planning cadence to about 2.5 Hz.
+    - This candidate allocates 250 ms wall time per 50 ms simulation tick so two ticks cover the measured p95 inference cost; authored scenario timing and all acceptance measurements remain in simulation time.
+    - Strict Routing plus fresh NORMAL replan readiness, exact non-fallback handover, native Prediction semantics, exact-GT alignment, physical-steering quarantine, legacy longitudinal mapping, disabled guards, and Town01 remain unchanged.

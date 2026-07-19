@@ -490,6 +490,49 @@ def test_fixed_scene_probe_drop_after_publish_remains_failure(tmp_path: Path) ->
     assert "fixed_scene_actor_probe_not_published_to_apollo_obstacles" in report["errors"]
 
 
+def test_fixed_scene_probe_source_fresh_cadence_skip_is_not_a_publish_drop(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "fixed_scene_runtime_state.json").write_text(
+        json.dumps({"schema_version": "fixed_scene_runtime_state.v1", "actor_roles": {"lead_vehicle": 101}}),
+        encoding="utf-8",
+    )
+    published = _obstacle(
+        carla_actor_id="101",
+        apollo_perception_id="lead_vehicle_101",
+        front_obstacle_actor_found=True,
+        front_obstacle_visible=True,
+        published_obstacle_count=1,
+        published_obstacle_matches_front_actor=True,
+        obstacle_publish_policy="source_fresh",
+        obstacle_publish_decision="source_fresh_published",
+    )
+    cadence_skip = dict(
+        published,
+        timestamp=1.05,
+        tracking_time=0.15,
+        published_obstacle_count=0,
+        obstacle_publish_decision="source_frame_not_fresh",
+    )
+    next_published = dict(published, timestamp=1.1, tracking_time=0.2)
+    (artifacts / "obstacle_gt_contract.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in (published, cadence_skip, next_published)) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_obstacle_gt_contract_run_dir(run_dir, scenario_class="follow_stop")
+
+    assert report["status"] == "pass"
+    assert "fixed_scene_actor_probe_not_published_to_apollo_obstacles" not in report["errors"]
+    assert report["publish_decision_counts"] == {
+        "source_frame_not_fresh": 1,
+        "source_fresh_published": 2,
+    }
+    assert report["intentional_non_publish_probe_row_count"] == 1
+    assert report["unexplained_non_publish_probe_row_count"] == 0
+
+
 def test_background_vehicle_from_traffic_flow_must_appear_in_obstacle_gt(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     artifacts = run_dir / "artifacts"

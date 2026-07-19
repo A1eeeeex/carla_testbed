@@ -1,4 +1,3 @@
-algo.apollo.routing.target_speed_mps=7.0
 algo.apollo.planning.default_cruise_speed_mps=14.0
 algo.apollo.planning.disable_traffic_light_rule=true
 algo.apollo.planning.lane_follow_only_scenario=true

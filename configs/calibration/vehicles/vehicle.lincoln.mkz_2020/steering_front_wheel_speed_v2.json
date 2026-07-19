@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "calibration_id": "carla_0_9_16__vehicle.lincoln.mkz_2020__steering_front_wheel_speed_v2",
+  "scope": {
+    "simulator": "CARLA",
+    "simulator_version": "0.9.16",
+    "actuator": "steering",
+    "input_semantics": "target_front_wheel_angle_deg_at_speed_mps",
+    "output_semantics": "carla_steer_cmd"
+  },
+  "provenance": {
+    "base_calibration_id": "carla_0_9_16__vehicle.lincoln.mkz_2020__steering_front_wheel_v1",
+    "base_source_library_entry_id": "e969a34a5f43fd25",
+    "speed_response_run": "runs/diagnostics/cycle_inf_baguang_steering_authority_multispeed_20260718",
+    "speed_response_created_at": "2026-07-18",
+    "source_map": "OpenDriveMap",
+    "claim_boundary": "diagnostic_carla_direct; default_off; no_apollo_control_in_loop"
+  },
+  "vehicle": {
+    "type_id": "vehicle.lincoln.mkz_2020",
+    "length": 4.89238166809082,
+    "width": 1.8367133140563965,
+    "height": 1.490277647972107,
+    "mass_kg": 1696.0,
+    "max_steer_angle_deg": 69.99999237060547
+  },
+  "steering": {
+    "inverse": {
+      "target_front_wheel_angle_deg_to_carla_cmd": [
+        {
+          "target_front_wheel_angle_deg": 0.0,
+          "carla_steer_cmd": 0.0
+        },
+        {
+          "target_front_wheel_angle_deg": 13.167906522750854,
+          "carla_steer_cmd": 0.2
+        },
+        {
+          "target_front_wheel_angle_deg": 13.172813653945923,
+          "carla_steer_cmd": 0.2
+        },
+        {
+          "target_front_wheel_angle_deg": 25.141672134399414,
+          "carla_steer_cmd": 0.4
+        },
+        {
+          "target_front_wheel_angle_deg": 25.150734901428223,
+          "carla_steer_cmd": 0.4
+        },
+        {
+          "target_front_wheel_angle_deg": 36.46246862411499,
+          "carla_steer_cmd": 0.6
+        },
+        {
+          "target_front_wheel_angle_deg": 36.4736704826355,
+          "carla_steer_cmd": 0.6
+        },
+        {
+          "target_front_wheel_angle_deg": 47.526851654052734,
+          "carla_steer_cmd": 0.8
+        },
+        {
+          "target_front_wheel_angle_deg": 47.534563064575195,
+          "carla_steer_cmd": 0.8
+        },
+        {
+          "target_front_wheel_angle_deg": 58.18940734863281,
+          "carla_steer_cmd": 1.0
+        },
+        {
+          "target_front_wheel_angle_deg": 58.67182540893555,
+          "carla_steer_cmd": 1.0
+        }
+      ]
+    },
+    "speed_compensation": {
+      "method": "divide_target_by_measured_front_wheel_tracking_ratio_then_use_static_inverse",
+      "front_wheel_target_tracking_ratio_by_speed_mps": [
+        {
+          "speed_mps": 4.960356012153636,
+          "tracking_ratio": 0.9718698561191559
+        },
+        {
+          "speed_mps": 10.765165838582067,
+          "tracking_ratio": 0.8991503119468689
+        },
+        {
+          "speed_mps": 15.241926029645487,
+          "tracking_ratio": 0.8578947981198628
+        },
+        {
+          "speed_mps": 19.358724895338973,
+          "tracking_ratio": 0.8254004120826721
+        }
+      ],
+      "evidence": {
+        "valid_trial_count": 32,
+        "distinct_speed_count": 4,
+        "directions": [-1, 1],
+        "target_front_wheel_angles_deg": [-6.0, -3.0, 3.0, 6.0],
+        "carla_steering_curve_speed_axis_unit": "kph",
+        "curve_fit_absolute_error_median": 0.007101547449152257,
+        "curve_fit_absolute_error_p95": 0.012414400346928567,
+        "promotion_allowed": false
+      }
+    }
+  }
+}

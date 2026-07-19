@@ -1,0 +1,23 @@
+# Default-off diagnostic that combines the observed 20 Hz Apollo Control timer
+# with the existing Baguang low-capture policy. The full applied-control trace
+# and critical-window evidence remain at their inherited claim-evidence stride.
+extends: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_stats_flush_2s_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_low_capture_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_low_capture_extended_opendrive_candidate
+
+algo:
+  apollo:
+    bridge:
+      # The four redundant full Control debug streams are diagnostic inputs to
+      # offline analysis. control_apply_trace and its critical windows remain
+      # at the inherited stride of one for frame-level actuation attribution.
+      control_debug_artifact_sample_stride: 10
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only artifact-load A/B; default-off and not a GT republish, controller-gain, mapping, guard, or natural-driving promotion.
+    - Apollo Control, CARLA, the ROS2 GT source, and the bridge remain at 20 Hz; only redundant full Control debug serialization is sampled.
+    - Full applied-control and critical-window evidence, strict planning-ready and exact NORMAL handover gates, physical steering calibration, legacy longitudinal mapping, and disabled guards remain unchanged.

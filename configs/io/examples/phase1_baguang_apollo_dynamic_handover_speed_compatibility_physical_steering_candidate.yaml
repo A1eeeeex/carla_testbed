@@ -1,0 +1,44 @@
+# Diagnostic one-variable follow-up to the online-proven speed-compatible
+# handover. Keep the handover, obstacle clock, and legacy longitudinal path,
+# but align steering output and measured feedback in Apollo's 30-degree
+# front-wheel domain. This profile is not a default mapping.
+extends: phase1_baguang_apollo_dynamic_handover_speed_compatibility_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_handover_speed_compatibility_physical_steering_candidate
+  profile_name: phase1_baguang_apollo_dynamic_handover_speed_compatibility_physical_steering_candidate
+
+algo:
+  apollo:
+    control_mapping:
+      actuator_mapping_mode: physical
+      # Keep this diagnostic attributable to steering-domain alignment only.
+      # The inherited low-speed guard did not apply in the first online sample,
+      # but all guard surfaces are explicitly disabled here to remove ambiguity.
+      force_zero_steer_output_enabled: false
+      straight_lane_zero_steer_enabled: false
+      low_speed_steer_guard_enabled: false
+      low_speed_sustained_guard_enabled: false
+      sustained_lateral_guard_enabled: false
+      trajectory_contract_lateral_guard_enabled: false
+      physical:
+        calibration_file: configs/calibration/vehicles/vehicle.lincoln.mkz_2020/steering_front_wheel_v1.json
+        allow_legacy_fallback: false
+        apollo_max_steer_angle_deg: 30.0
+        preferred_steering_field: steering_target
+        steering_field_priority:
+          - steering_target
+          - steering_percentage
+          - steering
+          - steering_rate
+        map_steering: true
+        map_steering_feedback: true
+        map_longitudinal: false
+        map_throttle: false
+        map_brake: false
+
+assist_ledger:
+  notes:
+    - Diagnostic-only Baguang speed-compatible handover plus bidirectional steering-domain candidate.
+    - Steering output and measured feedback use the same explicit 30-degree Apollo front-wheel domain without changing steer_scale.
+    - All lateral guards are explicitly disabled; longitudinal mapping, readiness thresholds, formal scenario ownership, and Town01 profiles remain unchanged.

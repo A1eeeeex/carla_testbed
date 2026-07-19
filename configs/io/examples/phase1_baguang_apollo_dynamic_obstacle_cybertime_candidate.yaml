@@ -1,0 +1,23 @@
+extends: phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_obstacle_cybertime_candidate
+  profile_name: phase1_baguang_apollo_dynamic_obstacle_cybertime_candidate
+
+algo:
+  apollo:
+    bridge:
+      # Apollo 10 Prediction's jointly prediction/planning evaluator aligns the
+      # latest obstacle feature against the previous Planning header. Planning
+      # uses Cyber time in this runtime, so publishing the obstacle header with
+      # CARLA's run-relative timestamp creates an epoch-scale offset. Align only
+      # obstacle headers with Planning while preserving the established
+      # sim-time localization/chassis contract and CARLA sim-time evidence.
+      # Online evidence reduced early speed fallback but exposed a progressive
+      # lane departure, so this override remains quarantined from the P0 profile.
+      obstacle_time_source: cyber_time
+
+assist_ledger:
+  notes:
+    - Diagnostic-only Baguang obstacle-header Cyber-time alignment candidate.
+    - Online alignment evidence is not a behavior pass and cannot support an Apollo natural-driving claim.

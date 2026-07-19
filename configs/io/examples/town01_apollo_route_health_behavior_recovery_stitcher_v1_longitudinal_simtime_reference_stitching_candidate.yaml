@@ -1,0 +1,24 @@
+# Diagnostic Apollo reference-runtime candidate with claim-grade GT time.
+# This isolates reference-line stitching from the cyber-time timing probe.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_stitcher_candidate.yaml
+
+run:
+  profile_name: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_simtime_reference_stitching_candidate
+  claim_profile: false
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic reference-line stitching A/B with sim_time GT input; not a natural-driving claim profile.
+    - This preserves the candidate brake-deadzone and trajectory-stitcher settings without changing steer scale.
+
+algo:
+  apollo:
+    bridge:
+      localization_time_source: sim_time
+    planning:
+      enable_reference_line_stitching: true

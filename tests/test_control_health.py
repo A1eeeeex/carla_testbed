@@ -58,6 +58,309 @@ def test_control_health_passes_and_writes_report(tmp_path: Path) -> None:
     assert Path(outputs["control_health_summary"]).is_file()
 
 
+def test_control_health_reports_same_state_control_update_drift(tmp_path: Path) -> None:
+    run_dir = _copy_run(tmp_path)
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    rows = []
+    for index, (steer, acceleration) in enumerate(
+        [(-3.0, 0.1), (0.0, 0.2), (6.0, 0.4)]
+    ):
+        rows.append(
+            {
+                "ts_sec": 12.0,
+                "apollo_control_raw": {
+                    "control_header_timestamp_sec": 12.0,
+                    "control_header_sequence_num": 100 + index,
+                    "debug_input_trajectory_header_sequence_num": 20,
+                    "steering_target": steer,
+                    "acceleration": acceleration,
+                    "throttle": max(acceleration, 0.0) * 10.0,
+                    "brake": 0.0,
+                },
+            }
+        )
+    rows.append(
+        {
+            "ts_sec": 12.05,
+            "apollo_control_raw": {
+                "control_header_timestamp_sec": 12.05,
+                "control_header_sequence_num": 103,
+                "debug_input_trajectory_header_sequence_num": 21,
+                "steering_target": 6.5,
+                "acceleration": 0.5,
+                "throttle": 5.0,
+                "brake": 0.0,
+            },
+        }
+    )
+    (artifact_dir / "apollo_control_raw.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+    drift = report["metrics"]["same_state_control_update_drift"]
+
+    assert drift["available"] is True
+    assert drift["message_count"] == 4
+    assert drift["unique_control_header_timestamp_count"] == 2
+    assert drift["same_state_duplicate_group_count"] == 1
+    assert drift["messages_per_same_state_group_max"] == 3
+    assert drift["steering_target_range_p95"] == 9.0
+    assert drift["steering_target_range_max"] == 9.0
+    assert drift["acceleration_range_p95_mps2"] == pytest.approx(0.3)
+    assert drift["acceleration_range_max_mps2"] == pytest.approx(0.3)
+    assert drift["same_state_output_drift_group_count"] == 1
+    assert drift["same_state_output_drift_present"] is True
+    assert drift["post_lqr_steering_drift_with_stable_prefilter_group_count"] == 0
+    assert drift["examples"][0]["planning_sequence_num"] == 20
+
+
+def test_control_health_separates_formal_pre_event_post_lqr_drift(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    (artifact_dir / "fixed_scene_ego_handover.json").write_text(
+        json.dumps({"official_scenario_start_world_sim_time_s": 10.0}),
+        encoding="utf-8",
+    )
+    (run_dir / "events.jsonl").write_text(
+        json.dumps({"event_type": "lane_invasion", "t": 15.0}) + "\n",
+        encoding="utf-8",
+    )
+
+    def raw_row(
+        *,
+        row_time: float,
+        header_time: float,
+        sequence: int,
+        planning_sequence: int,
+        steering_target: float,
+        steer_angle_limited: float,
+    ) -> dict[str, object]:
+        return {
+            "ts_sec": row_time,
+            "apollo_control_raw": {
+                "control_header_timestamp_sec": header_time,
+                "control_header_sequence_num": sequence,
+                "debug_input_trajectory_header_sequence_num": planning_sequence,
+                "debug_simple_lat_steer_angle_limited": steer_angle_limited,
+                "steering_target": steering_target,
+                "acceleration": 0.0,
+                "throttle": 0.0,
+                "brake": 0.0,
+            },
+        }
+
+    rows = [
+        raw_row(
+            row_time=9.0,
+            header_time=9.0,
+            sequence=1,
+            planning_sequence=10,
+            steering_target=0.0,
+            steer_angle_limited=0.0,
+        ),
+        raw_row(
+            row_time=9.01,
+            header_time=9.0,
+            sequence=2,
+            planning_sequence=10,
+            steering_target=0.1,
+            steer_angle_limited=0.0,
+        ),
+        raw_row(
+            row_time=12.0,
+            header_time=12.0,
+            sequence=3,
+            planning_sequence=20,
+            steering_target=1.0,
+            steer_angle_limited=2.0,
+        ),
+        raw_row(
+            row_time=12.01,
+            header_time=12.0,
+            sequence=4,
+            planning_sequence=20,
+            steering_target=5.0,
+            steer_angle_limited=2.0,
+        ),
+        raw_row(
+            row_time=15.0,
+            header_time=15.0,
+            sequence=5,
+            planning_sequence=30,
+            steering_target=0.0,
+            steer_angle_limited=3.0,
+        ),
+        raw_row(
+            row_time=15.01,
+            header_time=15.0,
+            sequence=6,
+            planning_sequence=30,
+            steering_target=100.0,
+            steer_angle_limited=3.0,
+        ),
+    ]
+    (artifact_dir / "apollo_control_raw.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+    drift = report["metrics"]["same_state_control_update_drift"]
+    phases = drift["phase_summaries"]
+
+    assert drift["formal_start_sim_time_sec"] == 10.0
+    assert drift["first_safety_event_sim_time_sec"] == 15.0
+    assert drift["steering_target_range_max"] == 100.0
+    assert phases["setup_before_formal_start"]["steering_target_range_max"] == 0.1
+    assert phases["formal_pre_event"]["steering_target_range_max"] == 4.0
+    assert phases["formal_pre_event"][
+        "post_lqr_steering_drift_with_stable_prefilter_group_count"
+    ] == 1
+    assert phases["terminal_event_or_after"]["steering_target_range_max"] == 100.0
+
+
+def test_control_health_uses_exact_input_state_and_control_consumed_replans(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    (artifact_dir / "fixed_scene_ego_handover.json").write_text(
+        json.dumps({"official_scenario_start_world_sim_time_s": 10.0}),
+        encoding="utf-8",
+    )
+    (run_dir / "events.jsonl").write_text(
+        json.dumps({"event_type": "lane_invasion", "t": 15.0}) + "\n",
+        encoding="utf-8",
+    )
+
+    def raw_row(
+        *,
+        row_time: float,
+        control_sequence: int,
+        localization_sequence: int,
+        canbus_sequence: int,
+        planning_sequence: int,
+        latest_replan_sequence: int,
+        steering_target: float,
+        steer_angle_limited: float,
+        target_y: float,
+        target_theta: float,
+    ) -> dict[str, object]:
+        return {
+            "ts_sec": row_time,
+            "apollo_control_raw": {
+                "control_header_timestamp_sec": row_time,
+                "control_header_sequence_num": control_sequence,
+                "debug_input_localization_header_sequence_num": localization_sequence,
+                "debug_input_localization_header_timestamp_sec": row_time,
+                "debug_input_canbus_header_sequence_num": canbus_sequence,
+                "debug_input_canbus_header_timestamp_sec": row_time,
+                "debug_input_trajectory_header_sequence_num": planning_sequence,
+                "debug_input_latest_replan_trajectory_header_sequence_num": (
+                    latest_replan_sequence
+                ),
+                "debug_input_latest_replan_trajectory_header_timestamp_sec": (
+                    row_time - 0.1
+                ),
+                "debug_simple_lat_current_target_point_x": 50.0,
+                "debug_simple_lat_current_target_point_y": target_y,
+                "debug_simple_lat_current_target_point_theta": target_theta,
+                "debug_simple_lat_current_target_point_kappa": 0.0,
+                "debug_simple_lat_lateral_error": 0.01,
+                "debug_simple_lat_heading_error": 0.001,
+                "debug_simple_lat_steer_angle_limited": steer_angle_limited,
+                "steering_target": steering_target,
+                "acceleration": 0.0,
+                "throttle": 0.0,
+                "brake": 0.0,
+            },
+        }
+
+    rows = [
+        raw_row(
+            row_time=11.0,
+            control_sequence=1,
+            localization_sequence=101,
+            canbus_sequence=201,
+            planning_sequence=301,
+            latest_replan_sequence=299,
+            steering_target=1.0,
+            steer_angle_limited=2.0,
+            target_y=-2.50,
+            target_theta=0.001,
+        ),
+        raw_row(
+            row_time=11.01,
+            control_sequence=2,
+            localization_sequence=101,
+            canbus_sequence=201,
+            planning_sequence=301,
+            latest_replan_sequence=299,
+            steering_target=5.0,
+            steer_angle_limited=2.0,
+            target_y=-2.50,
+            target_theta=0.001,
+        ),
+        raw_row(
+            row_time=12.0,
+            control_sequence=3,
+            localization_sequence=102,
+            canbus_sequence=202,
+            planning_sequence=305,
+            latest_replan_sequence=305,
+            steering_target=4.0,
+            steer_angle_limited=3.0,
+            target_y=-2.35,
+            target_theta=0.006,
+        ),
+    ]
+    (artifact_dir / "apollo_control_raw.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    (artifact_dir / "planning_topic_debug.jsonl").write_text(
+        json.dumps(
+            {
+                "planning_header_sequence_num": 301,
+                "is_replan": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+    drift = report["metrics"]["same_state_control_update_drift"]
+    exact_state = drift["same_input_state"]
+    formal_exact_state = exact_state["phase_summaries"]["formal_pre_event"]
+    replans = drift["consumed_replan_transitions"]
+
+    assert exact_state["input_identity_complete_ratio"] == 1.0
+    assert formal_exact_state["same_input_state_duplicate_group_count"] == 1
+    assert formal_exact_state["steering_target_range_max"] == 4.0
+    assert formal_exact_state[
+        "post_lqr_steering_drift_with_stable_prefilter_group_count"
+    ] == 1
+    assert replans["formal_pre_event_transition_count"] == 1
+    assert replans["formal_pre_event_planning_topic_exact_replan_observed_count"] == 0
+    assert replans["formal_pre_event_planning_topic_missing_exact_replan_count"] == 1
+    assert replans["formal_pre_event_target_point_y_delta_abs_max_m"] == pytest.approx(
+        0.15
+    )
+    assert replans[
+        "formal_pre_event_target_point_theta_delta_abs_max_rad"
+    ] == pytest.approx(0.005)
+    assert replans["examples"][0]["latest_replan_sequence_num"] == 305
+    assert replans["examples"][0]["formal_time_s"] == pytest.approx(2.0)
+
+
 def test_control_health_reports_lane_event_vehicle_response_context(tmp_path: Path) -> None:
     run_dir = _copy_run(tmp_path)
     timeseries_rows = []
@@ -1257,6 +1560,59 @@ def test_control_health_records_calibration_profile_for_steering_parameters(
     assert boundary["steering_parameters_source"] == "calibration_profile"
     assert boundary["claim_grade_control_mapping"] is False
     assert "legacy_mapping_smoke_only" in boundary["warnings"]
+
+
+def test_control_health_uses_loaded_runtime_calibration_identity(
+    tmp_path: Path,
+) -> None:
+    run_dir = _copy_run(tmp_path)
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["actuator_mapping_mode"] = "physical"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    artifacts_dir = run_dir / "artifacts"
+    artifacts_dir.mkdir(exist_ok=True)
+    (artifacts_dir / "cyber_bridge_stats.json").write_text(
+        json.dumps(
+            {
+                "actuator_mapping": {
+                    "mode": "physical",
+                    "steer_scale": 1.0,
+                    "steer_sign": -1.0,
+                    "calibration": {
+                        "loaded": True,
+                        "calibration_id": (
+                            "carla_0_9_16__vehicle.lincoln.mkz_2020__"
+                            "steering_front_wheel_v1"
+                        ),
+                        "vehicle_type_id": "vehicle.lincoln.mkz_2020",
+                        "source_sha256": "a" * 64,
+                    },
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_control_health_run_dir(run_dir)
+    boundary = report["metrics"]["control_mapping_claim_boundary"]
+
+    assert boundary["calibration_profile_id"] == (
+        "carla_0_9_16__vehicle.lincoln.mkz_2020__steering_front_wheel_v1"
+    )
+    assert boundary["calibration_identity_source"] == "runtime_loaded_calibration"
+    assert boundary["calibration_source_sha256"] == "a" * 64
+    assert boundary["calibration_vehicle_type_id"] == "vehicle.lincoln.mkz_2020"
+    assert boundary["steering_parameters_source"] == "runtime_loaded_calibration"
+    assert boundary["steer_scale"] == 1.0
+    assert boundary["steering_sign"] == -1.0
+    assert boundary["claim_grade_control_mapping"] is True
+    assert "calibration_profile_missing" not in boundary["warnings"]
+    assert "steering_parameters_not_backed_by_calibration_profile" not in boundary[
+        "warnings"
+    ]
 
 
 def test_control_health_bridge_mapped_command_oscillation_is_not_mislabelled_as_applied(

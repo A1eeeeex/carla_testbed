@@ -1,0 +1,23 @@
+# Default-off diagnostic for the Baguang GT publish hot path. Keep the bridge
+# and harness at 20 Hz and retain the 50 ms Apollo Control cadence candidate;
+# only move the growing stats JSON rewrite off the 100 ms periodic path.
+extends: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_stats_flush_2s_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_stats_flush_2s_extended_opendrive_candidate
+
+algo:
+  apollo:
+    bridge:
+      # This file is only a live readiness snapshot; full summaries and buffered
+      # claim evidence are still forced at shutdown. A prior standalone A/B
+      # showed that 2 s reduces GT-loop overruns without changing GT freshness.
+      artifact_stats_flush_interval_s: 2.0
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only stats-flush A/B; default-off and not a GT republish, controller-gain, mapping, guard, or natural-driving promotion.
+    - CARLA, the ROS2 GT source, the bridge, and Apollo Control remain at 20 Hz; claim-grade freshness still publishes Localization/Chassis at most once per new simulation frame.
+    - Matched road, strict planning-ready and exact NORMAL handover gates, authored initial state, physical steering calibration, legacy longitudinal mapping, and disabled guards are unchanged.

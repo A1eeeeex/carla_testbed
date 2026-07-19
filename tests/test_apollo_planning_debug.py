@@ -7,6 +7,7 @@ import pytest
 
 from tools.apollo10_cyber_bridge.planning_debug import (
     build_planning_debug_presence,
+    build_prediction_obstacles_debug,
     build_trajectory_shape_debug,
 )
 
@@ -17,6 +18,63 @@ def _point(x: float, y: float, theta: float, kappa: float, v: float, t: float) -
         v=v,
         relative_time=t,
     )
+
+
+def test_build_prediction_obstacles_debug_records_selected_future_speed() -> None:
+    points = [
+        SimpleNamespace(
+            path_point=SimpleNamespace(x=100.0 - index, y=5.0, lane_id="0_0_2"),
+            v=12.0,
+            a=-0.5,
+            relative_time=float(index),
+        )
+        for index in range(7)
+    ]
+    msg = SimpleNamespace(
+        header=SimpleNamespace(timestamp_sec=1234.5, sequence_num=42),
+        start_timestamp=1234.4,
+        end_timestamp=1234.6,
+        prediction_obstacle=[
+            SimpleNamespace(
+                perception_obstacle=SimpleNamespace(
+                    id=147,
+                    timestamp=35.0,
+                    position=SimpleNamespace(x=100.0, y=5.0, z=0.0),
+                    velocity=SimpleNamespace(x=-19.0, y=0.0, z=0.0),
+                    theta=math.pi,
+                ),
+                timestamp=35.0,
+                is_static=False,
+                predicted_period=6.0,
+                trajectory=[
+                    SimpleNamespace(probability=0.2, trajectory_point=[]),
+                    SimpleNamespace(probability=0.8, trajectory_point=points),
+                ],
+            )
+        ],
+    )
+
+    debug = build_prediction_obstacles_debug(msg)
+
+    assert debug["prediction_header_timestamp_sec"] == pytest.approx(1234.5)
+    assert debug["prediction_header_sequence_num"] == 42
+    assert debug["prediction_obstacle_count"] == 1
+    obstacle = debug["prediction_obstacles"][0]
+    assert obstacle["perception_id"] == 147
+    assert obstacle["perception_speed_mps"] == pytest.approx(19.0)
+    assert obstacle["perception_speed_3d_mps"] == pytest.approx(19.0)
+    assert obstacle["selected_trajectory_index"] == 1
+    assert obstacle["selected_trajectory_probability"] == pytest.approx(0.8)
+    assert obstacle["selected_trajectory_point_count"] == 7
+    assert [sample["relative_time_sec"] for sample in obstacle["selected_trajectory_samples"]] == [
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+        6.0,
+    ]
+    assert all(sample["v_mps"] == pytest.approx(12.0) for sample in obstacle["selected_trajectory_samples"])
+    assert all(sample["lane_id"] == "0_0_2" for sample in obstacle["selected_trajectory_samples"])
 
 
 def test_build_trajectory_shape_debug_from_fake_points() -> None:
@@ -55,10 +113,11 @@ def test_build_trajectory_shape_debug_handles_dict_points_and_heading_wrap() -> 
 
 def test_build_trajectory_shape_debug_reports_nonexpired_future_segment() -> None:
     points = [
-        _point(0.0, 0.0, math.pi / 2.0, 0.0, 0.0, -0.2),
-        _point(0.0, -1.0, math.pi / 2.0, 0.0, 0.0, -0.1),
-        _point(0.0, 0.0, math.pi / 2.0, 0.0, 0.0, 0.0),
-        _point(0.0, 1.0, math.pi / 2.0, 0.0, 0.0, 0.1),
+        _point(0.0, 0.0, math.pi / 2.0, 0.0, 8.0, -0.2),
+        _point(0.0, -1.0, math.pi / 2.0, 0.0, 8.5, -0.1),
+        _point(0.0, 0.0, math.pi / 2.0, 0.0, 9.0, 0.0),
+        _point(0.0, 1.0, math.pi / 2.0, 0.0, 9.5, 0.1),
+        _point(0.0, 10.0, math.pi / 2.0, 0.0, 10.0, 1.0),
     ]
 
     debug = build_trajectory_shape_debug(points)
@@ -67,12 +126,16 @@ def test_build_trajectory_shape_debug_reports_nonexpired_future_segment() -> Non
     assert debug["trajectory_first_nonexpired_point_index"] == 2
     assert debug["trajectory_first_nonexpired_point_relative_time"] == 0.0
     assert debug["trajectory_first_nonexpired_point_theta"] == math.pi / 2.0
+    assert debug["trajectory_first_nonexpired_point_v"] == pytest.approx(9.0)
+    assert debug["trajectory_speed_at_1s_mps"] == pytest.approx(10.0)
+    assert debug["trajectory_speed_at_1s_relative_time_sec"] == pytest.approx(1.0)
+    assert debug["trajectory_speed_at_1s_point_index"] == 4
     assert debug["trajectory_future_first_segment_heading"] == math.pi / 2.0
     assert debug["trajectory_first_nonexpired_theta_minus_future_segment_heading_rad"] == 0.0
     assert debug["trajectory_future_lookahead_heading"] == math.pi / 2.0
     assert debug["trajectory_first_nonexpired_theta_minus_future_lookahead_heading_rad"] == 0.0
-    assert debug["trajectory_first_nonexpired_remaining_point_count"] == 2
-    assert [point["index"] for point in debug["trajectory_future_window_points"]] == [0, 1, 2, 3]
+    assert debug["trajectory_first_nonexpired_remaining_point_count"] == 3
+    assert [point["index"] for point in debug["trajectory_future_window_points"]] == [0, 1, 2, 3, 4]
 
 
 def test_build_trajectory_shape_debug_reports_lookahead_separately_from_short_segment() -> None:

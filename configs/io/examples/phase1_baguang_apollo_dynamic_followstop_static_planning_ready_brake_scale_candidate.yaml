@@ -1,0 +1,27 @@
+# Default-off Baguang longitudinal-actuation A/B on the stationary-start
+# follow-stop case.  This isolates the same legacy Apollo-to-CARLA brake-domain
+# scale used by the dynamic lead candidate without reintroducing scene-driven
+# ego motion or changing the established steering calibration.
+extends: phase1_baguang_apollo_dynamic_followstop_static_planning_ready_portable_physical_steering_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_followstop_static_planning_ready_brake_scale_candidate
+  profile_name: phase1_baguang_apollo_dynamic_followstop_static_planning_ready_brake_scale_candidate
+
+algo:
+  apollo:
+    control_mapping:
+      # 0.10 / 0.26 ~= 0.38 from the isolated CARLA Lincoln brake probe.
+      brake_scale: 0.38
+      # Normalized CARLA command units; keep ordinary scaled corrections above
+      # the legacy deadzone without enabling physical longitudinal mapping.
+      brake_deadzone: 0.01
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only stationary-start follow-stop brake-domain A/B; default-off and not a backend or natural-driving promotion.
+    - The fixed-scene player keeps ego and the stopped lead stationary until Routing plus fresh multi-point NORMAL Planning readiness, then Apollo owns ego acceleration and braking from rest.
+    - This candidate changes only legacy brake_scale from 1.0 to 0.38 and normalized-CARLA brake_deadzone from 0.05 to 0.01.
+    - Steering calibration, Apollo Planning and Control, the authored 8 m stop distance, disabled guards, and disabled physical longitudinal mapping remain unchanged.
+    - A successful static follow-stop A/B is necessary actuator evidence only; it cannot prove the dynamic lead-deceleration blocker closed.

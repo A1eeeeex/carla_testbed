@@ -87,7 +87,8 @@ class ApolloCyberRTBackend:
         )
 
     def legacy_dispatch_hint(self, plan: RunPlan) -> Mapping[str, Any]:
-        compat_config = _static_follow_stop_compat_config(plan)
+        dynamic_sidecar_config = _dynamic_fixed_scene_sidecar_config(plan)
+        compat_config = None if dynamic_sidecar_config is not None else _static_follow_stop_compat_config(plan)
         fixed_scene_compat = compat_config is not None
         return {
             "runtime_dispatched": False,
@@ -110,9 +111,9 @@ class ApolloCyberRTBackend:
             if plan.scenario.fixed_scene
             else False
         )
-        compat_config = _static_follow_stop_compat_config(plan)
-        fixed_scene_compat = compat_config is not None
         dynamic_sidecar_config = _dynamic_fixed_scene_sidecar_config(plan)
+        compat_config = None if dynamic_sidecar_config is not None else _static_follow_stop_compat_config(plan)
+        fixed_scene_compat = compat_config is not None
         fixed_scene_command = [
             "python3",
             "-m",
@@ -289,10 +290,10 @@ class ApolloCyberRTBackend:
                 ),
                 *(
                     [
-                        "Apollo dynamic fixed-scene command uses a guarded sidecar hook in the legacy follow-stop runner; it is a migration path, not completed online evidence.",
+                        "Apollo dynamic fixed-scene command uses a guarded sidecar hook in the legacy follow-stop runner; each scenario still requires its own online evidence.",
                         "The sidecar must produce fixed_scene_runtime_state, scenario_actor_trace, scenario_phase_events, obstacle GT, v-t-gap, and phase1_status before the run is evaluable.",
                         "The sidecar uses the diagnostic control-runtime overlay and wall-time pacing path because the non-overlay Apollo control process crashes before producing /apollo/control on current Baguang compatibility runs.",
-                        "The default dynamic sidecar profile materializes the complete scene before Apollo startup, keeps Control subscribed eagerly, and suppresses CARLA publication only until the first valid Planning trajectory; this is a startup-handoff diagnostic, not a behavior claim.",
+                        "The default dynamic sidecar profile materializes the complete scene before Apollo startup, keeps Control subscribed eagerly, and suppresses CARLA publication through Planning readiness and the setup-only ego handover marker; this is a startup-handoff diagnostic, not a behavior claim.",
                     ]
                     if dynamic_sidecar_config is not None
                     else []
@@ -360,18 +361,54 @@ def _dynamic_fixed_scene_sidecar_config(plan: RunPlan) -> str | None:
     template = str(fixed_scene.get("template") or "").strip()
     scenario_class = str(plan.scenario.scenario_class or "").strip()
     map_name = str(plan.scenario.map or "").strip()
+    algorithm_profile = _algorithm_baguang_fixed_scene_profile(plan)
     if bool(plan.gate.can_claim_natural_driving):
         return None
-    if map_name != "straight_road_for_baguang":
+    if map_name == "OpenDriveMap":
+        if not algorithm_profile or "extended_opendrive" not in Path(algorithm_profile).name:
+            return None
+    elif map_name != "straight_road_for_baguang":
         return None
-    if scenario_class in {"follow_stop_static", "static_lead_stop"}:
-        return None
-    if template not in {"lead_vehicle_accel_decel", "cut_in", "cut_out"}:
+    static_follow_stop = (
+        scenario_class in {"follow_stop_static", "static_lead_stop"}
+        and template == "static_lead_stop"
+    )
+    dynamic_target_scene = (
+        scenario_class not in {"follow_stop_static", "static_lead_stop"}
+        and template in {"lead_vehicle_accel_decel", "cut_in", "cut_out"}
+    )
+    if not dynamic_target_scene and not (static_follow_stop and algorithm_profile):
         return None
     scenario_path = str(plan.source_profiles.get("scenario") or "").strip()
     if not scenario_path:
         return None
-    return ApolloCyberRTBackend._BAGUANG_FIXED_SCENE_SIDECAR_BASE_CONFIG
+    return (
+        algorithm_profile
+        or ApolloCyberRTBackend._BAGUANG_FIXED_SCENE_SIDECAR_BASE_CONFIG
+    )
+
+
+def _algorithm_baguang_fixed_scene_profile(plan: RunPlan) -> str | None:
+    """Forward an explicit Baguang dynamic profile to legacy dispatch.
+
+    The platform compiler records the selected ``--apollo-profile`` as the
+    RunPlan algorithm source, while the legacy config loader owns ``extends``
+    resolution. Restrict forwarding to tracked Baguang dynamic example YAMLs;
+    registry-style algorithm ids continue to use the established base profile.
+    """
+
+    source = str(plan.source_profiles.get("algorithm") or "").strip()
+    if not source:
+        return None
+    path = Path(source).expanduser()
+    if path.suffix not in {".yaml", ".yml"}:
+        return None
+    normalized = source.replace("\\", "/")
+    if "/configs/io/examples/" not in f"/{normalized.lstrip('/')}/":
+        return None
+    if not path.name.startswith("phase1_baguang_apollo_dynamic_"):
+        return None
+    return source
 
 
 def _dynamic_fixed_scene_sidecar_command(
@@ -393,7 +430,7 @@ def _dynamic_fixed_scene_sidecar_command(
         "runtime.fixed_scene_player.scenario_path": scenario_path,
         "runtime.fixed_scene_player.replace_legacy_front": True,
         "runtime.fixed_scene_player.require_setup_success": True,
-        "runtime.fixed_scene_player.materialize_ego_initial_speed": True,
+        "runtime.fixed_scene_player.materialize_ego_initial_speed": False,
         "runtime.postprocess.phase1_scenario_path": scenario_path,
         "recording.artifacts.phase1_scenario_path": scenario_path,
         "backend.params.legacy_run.scenario_id": plan.scenario.scenario_id,
@@ -447,13 +484,45 @@ def _town01_route_only_command(plan: RunPlan, *, run_dir: str) -> list[str]:
 
 
 def _town01_route_health_config(plan: RunPlan) -> str | None:
-    raw = (
-        plan.platform.params.get("town01_route_health_config")
-        or plan.algorithm.params.get("town01_route_health_config")
-        or plan.scenario.success_intent.get("apollo_route_health_config")
+    # A route-health profile supplied as the algorithm input must reach the
+    # legacy compatibility command.  Otherwise Phase 1's ``--apollo-profile``
+    # is recorded in RunPlan but silently replaced by the platform default.
+    # Keep an explicit scenario override highest priority, then an algorithm
+    # profile-specific config, and use the platform default only as fallback.
+    candidates = (
+        plan.scenario.success_intent.get("apollo_route_health_config"),
+        plan.algorithm.params.get("town01_route_health_config"),
+        _algorithm_route_health_profile(plan),
+        plan.platform.params.get("town01_route_health_config"),
     )
-    value = str(raw or "").strip()
-    return value or None
+    for raw in candidates:
+        value = str(raw or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _algorithm_route_health_profile(plan: RunPlan) -> str | None:
+    """Use an explicit Town01 Apollo example profile as the route config.
+
+    The profile registry intentionally remains metadata-only and does not
+    merge ``extends`` files.  The legacy route-health loader does that merge,
+    so forwarding the selected profile path preserves the profile's complete
+    runtime semantics without duplicating config inheritance here.
+    """
+
+    source = str(plan.source_profiles.get("algorithm") or "").strip()
+    if not source:
+        return None
+    path = Path(source).expanduser()
+    if path.suffix not in {".yaml", ".yml"}:
+        return None
+    normalized = source.replace("\\", "/")
+    if "/configs/io/examples/" not in f"/{normalized.lstrip('/')}/":
+        return None
+    if "town01_apollo" not in path.name:
+        return None
+    return source
 
 
 def _append_runtime_overrides(command: list[str], plan: RunPlan) -> list[str]:

@@ -519,6 +519,14 @@ def build_control_apply_trace_payload(
                     False,
                 )
             ),
+            "actuator_mapping_speed_mps": first_finite(
+                row.get("actuator_mapping_speed_mps"),
+                control_out.get("actuator_mapping_speed_mps"),
+            ),
+            "decel_actuation_mapping_source": first_value(
+                row.get("decel_actuation_mapping_source"),
+                control_out.get("decel_actuation_mapping_source"),
+            ),
         },
         "carla_applied": {
             "throttle": first_finite(row.get("throttle_applied"), row.get("measured_throttle"), measured.get("throttle")),

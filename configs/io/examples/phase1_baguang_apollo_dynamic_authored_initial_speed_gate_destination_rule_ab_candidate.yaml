@@ -1,0 +1,21 @@
+# Diagnostic A/B for the finite Baguang route budget. The fixed-duration lead
+# profile is the stimulus; the routing goal is only the reference-path anchor.
+# Remove Apollo's DESTINATION traffic rule for this candidate so destination
+# braking cannot enter the scored 18s window. All other traffic rules remain.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_physical_steering_fresh_gt_coherent_simtime_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_destination_rule_ab_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_destination_rule_ab_candidate
+
+algo:
+  apollo:
+    planning:
+      disable_destination_rule: true
+
+assist_ledger:
+  notes:
+    - Diagnostic-only route-budget A/B; it removes only Apollo's DESTINATION traffic rule while retaining obstacle handling and every other configured traffic rule.
+    - The Baguang routing goal remains the finite reference-path anchor, not a scored stop stimulus; this candidate must never support an unassisted or natural-driving claim.
+    - Strict apollo_planning_ready, authored-speed materialization, compatible NORMAL replan confirmation, target-ready handover, source-fresh obstacles, and coherent simulation time remain unchanged.
+    - Physical steering remains candidate-only, longitudinal mapping stays legacy, steer_scale stays 1.0, and all lateral guards remain disabled.

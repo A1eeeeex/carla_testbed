@@ -196,6 +196,7 @@ algo:
       max_obstacles: 64
       radius_m: 120.0
       localization_back_offset_m: 1.4235
+      localization_acceleration_source: finite_difference
       localization_acceleration_filter:
         # Conservative GT input-quality filter. It limits physically implausible
         # finite-difference acceleration spikes before Apollo Planning/Control
@@ -220,6 +221,17 @@ algo:
         # CARLA actor probes so GT localization/chassis cadence is not coupled
         # to obstacle diagnostics.
         actor_probe_enabled: false
+    vehicle_param:
+      enabled: true
+      auto_from_carla: false
+      # Keep Apollo's generated vehicle_param.pb.txt consistent with the
+      # bridge control_mapping brake deadzone.  The previous backend default
+      # (14.5) converted small negative acceleration commands into a fixed
+      # brake command and caused longitudinal command switching.
+      brake_deadzone: 0.05
+      # Preserve the existing throttle calibration while making the generated
+      # vehicle parameter file deterministic.
+      throttle_deadzone: 15.7
     map_speed_limit:
       # Some Town01 connector lane blocks omit speed_limit. Apollo protobuf
       # defaults those fields to zero and Planning converts that into a

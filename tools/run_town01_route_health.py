@@ -48,7 +48,6 @@ _DOTENV_CACHE: Dict[str, str] | None = None
 
 CAPABILITY_PROFILE_OVERRIDES: Dict[str, List[str]] = {
     "lane_keep": [
-        "algo.apollo.routing.target_speed_mps=8.0",
         "algo.apollo.planning.default_cruise_speed_mps=16.67",
         "algo.apollo.planning.disable_traffic_light_rule=true",
         "algo.apollo.planning.lane_follow_only_scenario=true",
@@ -56,7 +55,6 @@ CAPABILITY_PROFILE_OVERRIDES: Dict[str, List[str]] = {
         "scenario.traffic_lights.freeze=true",
     ],
     "curve_lane_follow": [
-        "algo.apollo.routing.target_speed_mps=7.0",
         "algo.apollo.planning.default_cruise_speed_mps=14.0",
         "algo.apollo.planning.disable_traffic_light_rule=true",
         "algo.apollo.planning.lane_follow_only_scenario=true",

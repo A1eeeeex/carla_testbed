@@ -1,0 +1,27 @@
+# Diagnostic-only timing freshness candidate.
+# Cached GT republish is intentionally non-claim-grade; this isolates whether
+# the bridge's stale-sample skips are a runtime cofactor rather than a fix.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_cybertime_candidate.yaml
+
+run:
+  profile_name: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_cybertime_republish_candidate
+  claim_profile: false
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Cached GT republish is enabled only for timing diagnosis; this is not claim-grade.
+    - A clean result must be followed by a fresh-sample scheduling fix, not promotion of republish.
+
+algo:
+  apollo:
+    bridge:
+      claim_grade:
+        enabled: false
+        stale_world_frame_policy: republish_debug
+        localization_publish_policy: allow_cached_republish
+        chassis_publish_policy: allow_cached_republish

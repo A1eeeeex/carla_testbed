@@ -1,0 +1,23 @@
+# Diagnostic one-variable follow-up to the authored initial-state transition.
+# The one-shot velocity assignment immediately invalidates the stationary
+# stitched trajectory, so request an Apollo-native replan before the default
+# longitudinal position-error threshold accumulates several metres.
+extends: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_initial_state_transition_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_initial_state_transition_early_replan_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_initial_state_transition_early_replan_extended_opendrive_candidate
+
+algo:
+  apollo:
+    planning:
+      replan_longitudinal_distance_threshold: 0.5
+
+assist_ledger:
+  notes:
+    - Diagnostic-only Apollo Planning A/B; the lower longitudinal mismatch threshold asks the native trajectory stitcher to replan promptly after the authored initial-speed transition.
+    - The threshold remains active for this quarantined sample and is not promoted to the Baguang or Town01 mainline profiles without online evidence and regression review.
+    - Strict apollo_planning_ready still requires routing success and a fresh NORMAL trajectory with at least two points before actors move; every fallback trajectory remains rejected.
+    - Target-ready handover still requires authored ego/lead speed and gap, current Planning speed compatibility, and two distinct compatible NORMAL messages.
+    - No velocity hold, manual gear control, route follower, guard, dummy lateral control, or post-handover scene control is enabled.
+    - The one-shot 70kph assignment remains an authored initial condition, not an Apollo acceleration-from-rest result; this is not natural-driving evidence.

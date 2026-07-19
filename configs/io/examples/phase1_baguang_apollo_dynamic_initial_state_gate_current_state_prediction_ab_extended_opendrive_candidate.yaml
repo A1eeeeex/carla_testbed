@@ -1,0 +1,22 @@
+# Diagnostic A/B for Apollo Prediction fresh-object handling. The lead remains
+# truthful and hidden until the initial-state gate, while Apollo's native
+# current-state geometric evaluator and lane-sequence predictor handle the
+# VEHICLE/ON_LANE/CAUTION path.
+extends: phase1_baguang_apollo_dynamic_initial_state_gate_noninteractive_prediction_ab_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_ab_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_ab_extended_opendrive_candidate
+
+algo:
+  apollo:
+    prediction:
+      vehicle_on_lane_caution_mode: cost_move_sequence_current_state
+
+assist_ledger:
+  notes:
+    - Diagnostic-only native Apollo Prediction A/B; VEHICLE/ON_LANE/CAUTION uses COST_EVALUATOR plus MOVE_SEQUENCE_PREDICTOR from Apollo 10.
+    - COST_EVALUATOR uses the latest obstacle dimensions and lane geometry; MOVE_SEQUENCE_PREDICTOR starts from the latest truthful position, velocity, and lane direction.
+    - Interactive-tag assignment stays disabled so this exact caution path is exercised; no obstacle history, pose, velocity, dimensions, or identity is fabricated.
+    - The scenario_initial_state_gate, routing requirement, strict two-point non-fallback NORMAL Planning gate, and ego ownership remain unchanged.
+    - This candidate is not a promoted Phase 1 default or natural-driving evidence; physical steering remains candidate-only, longitudinal mapping stays legacy, steer_scale stays 1.0, and all guards remain disabled.

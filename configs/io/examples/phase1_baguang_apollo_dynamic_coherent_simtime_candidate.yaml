@@ -1,0 +1,25 @@
+extends: phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_coherent_simtime_candidate
+  profile_name: phase1_baguang_apollo_dynamic_coherent_simtime_candidate
+
+algo:
+  apollo:
+    bridge:
+      # Keep every bridge input header in CARLA simulation time and make Apollo
+      # Cyber modules consume the same bridge-published clock. This avoids the
+      # obstacle-only mixed-clock shortcut and remains diagnostic until an
+      # online run proves Planning/Prediction/Control clock materialization.
+      localization_time_source: sim_time
+      obstacle_time_source: localization_time
+      cyber_clock:
+        enabled: true
+        mode: mock
+        channel: /clock
+
+assist_ledger:
+  notes:
+    - Diagnostic-only Baguang coherent CARLA-sim-time / Apollo mock-clock candidate.
+    - The profile does not enable guards, route followers, physical mapping, or fallback acceptance.
+    - Online clock materialization and behavior must be reviewed before any P0-profile promotion.

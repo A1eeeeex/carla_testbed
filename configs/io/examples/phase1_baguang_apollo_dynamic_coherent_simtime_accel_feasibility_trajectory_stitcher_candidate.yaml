@@ -1,0 +1,20 @@
+# Diagnostic Baguang longitudinal-continuity candidate. Keep reference-line
+# stitching disabled so the established lateral workaround is unchanged; only
+# preserve the previous trajectory tail across Planning cycles.
+extends: phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_trajectory_stitcher_candidate
+  profile_name: phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_trajectory_stitcher_candidate
+
+algo:
+  apollo:
+    planning:
+      enable_reference_line_stitching: false
+      enable_trajectory_stitcher: true
+
+assist_ledger:
+  notes:
+    - Diagnostic-only Baguang trajectory-continuity candidate; not a natural-driving claim profile.
+    - Reference-line stitching remains disabled; this candidate changes only Apollo trajectory stitching after the coherent-time and acceleration-feasibility input corrections.
+    - The candidate does not alter steering, control mapping, physical mapping, fixed-scene ownership, or fallback readiness rules.

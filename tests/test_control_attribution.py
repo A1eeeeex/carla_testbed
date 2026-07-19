@@ -165,6 +165,278 @@ def test_raw_ok_mapped_wrong_is_bridge_mapping(tmp_path: Path) -> None:
     assert report["attribution"]["raw_to_mapped_steer_consistency"]["status"] == "fail"
 
 
+def test_physical_mapping_uses_front_wheel_contract_not_legacy_linear_formula(
+    tmp_path: Path,
+) -> None:
+    rows = _base_rows()
+    for row in rows:
+        raw = float(row["apollo_steer_raw"])
+        mapped = -raw * 0.45
+        row["actuator_mapping_mode"] = "physical"
+        row["steer_scale"] = 1.0
+        row["steering_sign"] = -1.0
+        row["bridge_steer_mapped"] = mapped
+        row["carla_steer_applied"] = mapped
+        row["ego_yaw_rate"] = mapped * 0.2
+    control_path = _write_rows(tmp_path / "control_apply_trace.csv", rows)
+    auxiliary_path = _write_jsonl(
+        tmp_path / "bridge_control_decode.jsonl",
+        [
+            {
+                "ts_sec": float(index),
+                "actuator_mapping_mode": "physical",
+                "raw_steer": float(row["apollo_steer_raw"]),
+                "steer_scale": 1.0,
+                "steering_sign": -1.0,
+                "target_front_wheel_angle_deg": -30.0
+                * float(row["apollo_steer_raw"]),
+                "mapped_carla_steer_cmd": float(row["bridge_steer_mapped"]),
+                "steer_mapping_source": "physical_inverse_front_wheel_angle",
+                "physical_fallback_reason": "",
+            }
+            for index, row in enumerate(rows)
+        ],
+    )
+    stats_path = tmp_path / "cyber_bridge_stats.json"
+    stats_path.write_text(
+        json.dumps(
+            {
+                "actuator_mapping": {
+                    "apollo_max_steer_angle_deg": 30.0,
+                    "calibration": {
+                        "loaded": True,
+                        "calibration_id": "lincoln_front_wheel_v1",
+                        "source_sha256": "abc123",
+                        "steering_pairs": 11,
+                    },
+                },
+                "last_control_out": {
+                    "steer_mapping_source": "physical_inverse_front_wheel_angle",
+                    "physical_fallback_reason": "",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_control_attribution(
+        control_path,
+        cyber_bridge_stats_json=stats_path,
+        auxiliary_control_decode_json=auxiliary_path,
+    )
+
+    consistency = report["attribution"]["raw_to_mapped_steer_consistency"]
+    assert consistency["status"] == "pass"
+    assert consistency["mapping_domain"] == "physical_calibrated_front_wheel_angle"
+    assert consistency["target_angle_error_deg_p95"] == 0.0
+    assert consistency["calibration_id"] == "lincoln_front_wheel_v1"
+    assert consistency["source"] == "auxiliary_bridge_control_decode"
+    assert consistency["primary_trace_status"] == "insufficient_data"
+    assert report["attribution"]["mapped_to_applied_steer_consistency"]["status"] == "pass"
+    assert report["attribution"]["dominant_breakpoint"] == "none"
+
+
+def test_physical_mapping_validates_speed_compensation_query_contract(
+    tmp_path: Path,
+) -> None:
+    rows = _base_rows()
+    for row in rows:
+        row["actuator_mapping_mode"] = "physical"
+        row["steer_scale"] = 0.25
+        row["steering_sign"] = -1.0
+        row["bridge_steer_mapped"] = -float(row["apollo_steer_raw"]) * 0.5
+        row["carla_steer_applied"] = row["bridge_steer_mapped"]
+        row["ego_yaw_rate"] = float(row["bridge_steer_mapped"]) * 0.2
+    control_path = _write_rows(tmp_path / "control_apply_trace.csv", rows)
+    auxiliary_path = _write_jsonl(
+        tmp_path / "bridge_control_decode.jsonl",
+        [
+            {
+                "actuator_mapping_mode": "physical",
+                "raw_steer": float(row["apollo_steer_raw"]),
+                "steer_scale": 0.25,
+                "steering_sign": -1.0,
+                "target_front_wheel_angle_deg": -30.0
+                * float(row["apollo_steer_raw"]),
+                "steering_speed_compensation_enabled": True,
+                "steering_speed_compensation_applied": True,
+                "steering_speed_tracking_ratio": 0.8,
+                "steering_calibration_query_angle_deg": -37.5
+                * float(row["apollo_steer_raw"]),
+                "mapped_carla_steer_cmd": float(row["bridge_steer_mapped"]),
+                "steer_mapping_source": "physical_inverse_front_wheel_angle",
+                "physical_fallback_reason": "",
+            }
+            for row in rows
+        ],
+    )
+    stats_path = tmp_path / "cyber_bridge_stats.json"
+    stats_path.write_text(
+        json.dumps(
+            {
+                "actuator_mapping": {
+                    "apollo_max_steer_angle_deg": 30.0,
+                    "steering_speed_compensation_enabled": True,
+                    "calibration": {
+                        "loaded": True,
+                        "calibration_id": "lincoln_front_wheel_speed_v2",
+                        "source_sha256": "def456",
+                        "steering_pairs": 11,
+                        "steering_speed_compensation_pairs": 4,
+                    },
+                },
+                "last_control_out": {
+                    "steer_mapping_source": "physical_inverse_front_wheel_angle",
+                    "physical_fallback_reason": "",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_control_attribution(
+        control_path,
+        cyber_bridge_stats_json=stats_path,
+        auxiliary_control_decode_json=auxiliary_path,
+    )
+
+    consistency = report["attribution"]["raw_to_mapped_steer_consistency"]
+    assert consistency["status"] == "pass"
+    assert consistency["target_angle_error_deg_p95"] == 0.0
+    assert consistency["steering_speed_compensation_enabled"] is True
+    assert consistency["steering_speed_compensation_pair_count"] == 4.0
+    assert consistency["steering_speed_compensation_applied_count"] == len(rows)
+    assert (
+        consistency["steering_speed_compensation_query_angle_error_deg_p95"]
+        < 1.0e-12
+    )
+    assert consistency["blocking_reasons"] == []
+
+
+def test_physical_mapping_rejects_speed_compensation_query_mismatch(
+    tmp_path: Path,
+) -> None:
+    rows = _base_rows()
+    for row in rows:
+        row["actuator_mapping_mode"] = "physical"
+        row["steer_scale"] = 1.0
+        row["steering_sign"] = -1.0
+        row["bridge_steer_mapped"] = -float(row["apollo_steer_raw"])
+        row["carla_steer_applied"] = row["bridge_steer_mapped"]
+        row["ego_yaw_rate"] = -0.04
+    control_path = _write_rows(tmp_path / "control_apply_trace.csv", rows)
+    auxiliary_path = _write_jsonl(
+        tmp_path / "bridge_control_decode.jsonl",
+        [
+            {
+                "actuator_mapping_mode": "physical",
+                "raw_steer": float(row["apollo_steer_raw"]),
+                "steering_sign": -1.0,
+                "target_front_wheel_angle_deg": -30.0
+                * float(row["apollo_steer_raw"]),
+                "steering_speed_compensation_enabled": True,
+                "steering_speed_compensation_applied": True,
+                "steering_speed_tracking_ratio": 0.8,
+                "steering_calibration_query_angle_deg": 0.0,
+                "mapped_carla_steer_cmd": float(row["bridge_steer_mapped"]),
+                "steer_mapping_source": "physical_inverse_front_wheel_angle",
+                "physical_fallback_reason": "",
+            }
+            for row in rows
+        ],
+    )
+    stats_path = tmp_path / "cyber_bridge_stats.json"
+    stats_path.write_text(
+        json.dumps(
+            {
+                "actuator_mapping": {
+                    "apollo_max_steer_angle_deg": 30.0,
+                    "steering_speed_compensation_enabled": True,
+                    "calibration": {
+                        "loaded": True,
+                        "calibration_id": "lincoln_front_wheel_speed_v2",
+                        "source_sha256": "def456",
+                        "steering_pairs": 11,
+                        "steering_speed_compensation_pairs": 4,
+                    },
+                },
+                "last_control_out": {
+                    "steer_mapping_source": "physical_inverse_front_wheel_angle"
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_control_attribution(
+        control_path,
+        cyber_bridge_stats_json=stats_path,
+        auxiliary_control_decode_json=auxiliary_path,
+    )
+
+    consistency = report["attribution"]["raw_to_mapped_steer_consistency"]
+    assert consistency["status"] == "fail"
+    assert "steering_speed_compensation_query_mapping_mismatch" in consistency[
+        "blocking_reasons"
+    ]
+    assert report["attribution"]["dominant_breakpoint"] == "bridge_mapping"
+
+
+def test_physical_mapping_fallback_is_bridge_mapping_failure(tmp_path: Path) -> None:
+    rows = _base_rows()
+    for row in rows:
+        row["actuator_mapping_mode"] = "physical"
+        row["steer_scale"] = 1.0
+        row["steering_sign"] = -1.0
+        row["bridge_steer_mapped"] = -float(row["apollo_steer_raw"])
+        row["carla_steer_applied"] = row["bridge_steer_mapped"]
+        row["ego_yaw_rate"] = -0.04
+    control_path = _write_rows(tmp_path / "control_apply_trace.csv", rows)
+    auxiliary_path = _write_jsonl(
+        tmp_path / "bridge_control_decode.jsonl",
+        [
+            {
+                "actuator_mapping_mode": "physical",
+                "raw_steer": 0.2,
+                "steer_scale": 1.0,
+                "steering_sign": -1.0,
+                "target_front_wheel_angle_deg": -6.0,
+                "mapped_carla_steer_cmd": -0.2,
+                "steer_mapping_source": "physical_inverse_front_wheel_angle",
+                "physical_fallback_reason": "calibration_missing",
+            }
+        ],
+    )
+    stats_path = tmp_path / "cyber_bridge_stats.json"
+    stats_path.write_text(
+        json.dumps(
+            {
+                "actuator_mapping": {
+                    "apollo_max_steer_angle_deg": 30.0,
+                    "calibration": {
+                        "loaded": True,
+                        "calibration_id": "lincoln_front_wheel_v1",
+                        "source_sha256": "abc123",
+                        "steering_pairs": 11,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_control_attribution(
+        control_path,
+        cyber_bridge_stats_json=stats_path,
+        auxiliary_control_decode_json=auxiliary_path,
+    )
+
+    consistency = report["attribution"]["raw_to_mapped_steer_consistency"]
+    assert consistency["status"] == "fail"
+    assert consistency["physical_fallback_reasons"] == ["calibration_missing"]
+    assert report["attribution"]["dominant_breakpoint"] == "bridge_mapping"
+
+
 def test_raw_mapped_mismatch_with_guard_is_guard_intervention(tmp_path: Path) -> None:
     rows = _base_rows()
     for row in rows:

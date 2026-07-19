@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 
 AttemptCallback = Callable[[str, Dict[str, Any]], None]
+
+_OPENDRIVE_GENERATION_PARAMETER_KEYS = {
+    "vertex_distance",
+    "max_road_length",
+    "wall_height",
+    "additional_width",
+    "smooth_junctions",
+    "enable_mesh_visibility",
+    "enable_pedestrian_navigation",
+}
 
 
 @dataclass
@@ -226,6 +238,105 @@ def load_world_with_retry(
     raise last_exc or RuntimeError("load_world failed")
 
 
+def generate_opendrive_world_with_retry(
+    client: Any,
+    opendrive_path: str | Path,
+    *,
+    generation_parameters: Mapping[str, Any] | None = None,
+    expected_map_name: str = "OpenDriveMap",
+    attempts: int = 3,
+    delay_s: float = 3.0,
+    timeout_s: float = 60.0,
+    restore_timeout_s: Optional[float] = None,
+    attempt_callback: Optional[AttemptCallback] = None,
+) -> Any:
+    """Materialize a CARLA OpenDRIVE world with retry and source evidence."""
+
+    source = Path(opendrive_path).expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"OpenDRIVE source is missing: {source}")
+    xodr = source.read_text(encoding="utf-8")
+    source_sha256 = hashlib.sha256(xodr.encode("utf-8")).hexdigest()
+    raw_parameters = dict(generation_parameters or {})
+    unknown = sorted(set(raw_parameters) - _OPENDRIVE_GENERATION_PARAMETER_KEYS)
+    if unknown:
+        raise ValueError(f"unsupported OpenDRIVE generation parameters: {unknown}")
+
+    import carla
+
+    parameters = carla.OpendriveGenerationParameters(**raw_parameters)
+    attempts = max(1, int(attempts))
+    previous_timeout = float(restore_timeout_s) if restore_timeout_s is not None else None
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, attempts + 1):
+        started = time.time()
+        common = {
+            "attempt": attempt,
+            "attempts": attempts,
+            "timeout_sec": float(timeout_s),
+            "opendrive_path": str(source),
+            "opendrive_sha256": source_sha256,
+            "opendrive_bytes": len(xodr.encode("utf-8")),
+            "generation_parameters": raw_parameters,
+            "expected_map_name": str(expected_map_name),
+        }
+        _emit_attempt(attempt_callback, "generate_opendrive_world_attempt_start", common)
+        try:
+            setter = getattr(client, "set_timeout", None)
+            if callable(setter):
+                setter(float(timeout_s))
+            world = client.generate_opendrive_world(xodr, parameters)
+            loaded_map_name = ""
+            try:
+                loaded_map_name = str(world.get_map().name or "").split("/")[-1]
+            except Exception:
+                loaded_map_name = ""
+            if expected_map_name and loaded_map_name != str(expected_map_name):
+                raise RuntimeError(
+                    "generated OpenDRIVE map identity mismatch: "
+                    f"loaded={loaded_map_name!r} expected={expected_map_name!r}"
+                )
+            _emit_attempt(
+                attempt_callback,
+                "generate_opendrive_world_attempt_ok",
+                {
+                    **common,
+                    "elapsed_sec": time.time() - started,
+                    "loaded_map_name": loaded_map_name,
+                },
+            )
+            if callable(setter) and previous_timeout is not None:
+                setter(previous_timeout)
+            return world
+        except Exception as exc:
+            last_exc = exc
+            _emit_attempt(
+                attempt_callback,
+                "generate_opendrive_world_attempt_failed",
+                {
+                    **common,
+                    "elapsed_sec": time.time() - started,
+                    "error": repr(exc),
+                },
+            )
+            if attempt < attempts:
+                time.sleep(float(delay_s))
+    setter = getattr(client, "set_timeout", None)
+    if callable(setter) and previous_timeout is not None:
+        setter(previous_timeout)
+    _emit_attempt(
+        attempt_callback,
+        "generate_opendrive_world_failed",
+        {
+            "attempts": attempts,
+            "opendrive_path": str(source),
+            "opendrive_sha256": source_sha256,
+            "error": repr(last_exc) if last_exc is not None else "RuntimeError('generate OpenDRIVE world failed')",
+        },
+    )
+    raise last_exc or RuntimeError("generate OpenDRIVE world failed")
+
+
 def connect_world_with_retry(
     *,
     host: str,
@@ -239,6 +350,9 @@ def connect_world_with_retry(
     load_world_attempts: int = 3,
     load_world_delay_s: float = 3.0,
     load_world_timeout_s: float = 60.0,
+    opendrive_path: str | Path | None = None,
+    opendrive_generation_parameters: Mapping[str, Any] | None = None,
+    opendrive_expected_map_name: str = "OpenDriveMap",
     root: Any = None,
     attempt_callback: Optional[AttemptCallback] = None,
 ) -> CarlaWorldBringupResult:
@@ -271,7 +385,30 @@ def connect_world_with_retry(
     except Exception:
         current_town = ""
     final_town = current_town
-    if current_town != str(target_town):
+    if opendrive_path is not None:
+        world = generate_opendrive_world_with_retry(
+            client,
+            opendrive_path,
+            generation_parameters=opendrive_generation_parameters,
+            expected_map_name=str(opendrive_expected_map_name),
+            attempts=int(load_world_attempts),
+            delay_s=float(load_world_delay_s),
+            timeout_s=float(load_world_timeout_s),
+            restore_timeout_s=float(client_timeout_s),
+            attempt_callback=_trace_attempt,
+        )
+        time.sleep(1.0)
+        try:
+            final_town = str(world.get_map().name or "").split("/")[-1]
+        except Exception:
+            final_town = str(opendrive_expected_map_name)
+        expected_generated_town = str(opendrive_expected_map_name)
+        if final_town != expected_generated_town:
+            raise RuntimeError(
+                "generated OpenDRIVE world does not match configured OpenDRIVE map identity: "
+                f"loaded={final_town!r} expected={expected_generated_town!r}"
+            )
+    elif current_town != str(target_town):
         world = load_world_with_retry(
             client,
             str(target_town),
@@ -296,6 +433,11 @@ def connect_world_with_retry(
             "client_timeout_s": float(client_timeout_s),
             "current_town_before_load": current_town,
             "final_town": final_town,
+            "world_source": "opendrive" if opendrive_path is not None else "packaged_map",
+            "opendrive_path": str(Path(opendrive_path).expanduser().resolve()) if opendrive_path is not None else "",
+            "opendrive_expected_map_name": (
+                str(opendrive_expected_map_name) if opendrive_path is not None else ""
+            ),
         },
         startup_trace=startup_trace,
     )

@@ -1,0 +1,21 @@
+# Matched cut-in Prediction A/B. Preserve the proven authored-role setup and
+# atomic handover, but route VEHICLE/ON_LANE/CAUTION through Apollo's native
+# current-state geometric evaluator and lane-sequence predictor.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_physical_steering_fresh_gt_coherent_simtime_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_cut_in_current_state_prediction_ab_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_cut_in_current_state_prediction_ab_candidate
+
+algo:
+  apollo:
+    prediction:
+      enable_interactive_tag: false
+      vehicle_on_lane_caution_mode: cost_move_sequence_current_state
+
+assist_ledger:
+  notes:
+    - Diagnostic-only matched Prediction A/B for the authored 40/35kph cut-in initial state; it is not an Apollo acceleration-from-rest result.
+    - VEHICLE/ON_LANE/CAUTION uses Apollo 10 COST_EVALUATOR plus MOVE_SEQUENCE_PREDICTOR; no obstacle history, pose, velocity, dimensions, or identity is fabricated.
+    - Routing, source-fresh GT, coherent simulation time, strict non-fallback Planning readiness, authored role speeds, target-ready handover, and scenario scoring remain unchanged.
+    - Physical steering remains candidate-only, longitudinal mapping stays legacy, steer_scale stays 1.0, every lateral guard remains disabled, and this is not natural-driving evidence.

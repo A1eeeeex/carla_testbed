@@ -1,0 +1,26 @@
+# Default-off diagnostic input-contract A/B for the latest matched-road
+# physical-steering candidate. Keep the exact route, readiness, native-state,
+# drivetrain, handover, and steering settings unchanged; publish Apollo GT
+# only once per new CARLA simulation frame so repeated timestamps cannot enter
+# Apollo Localization/Chassis.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_physical_steering_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_physical_steering_fresh_gt_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_physical_steering_fresh_gt_candidate
+
+algo:
+  apollo:
+    bridge:
+      claim_grade:
+        enabled: true
+        stale_world_frame_policy: skip
+        localization_publish_policy: once_per_new_sim_frame
+        chassis_publish_policy: once_per_new_sim_frame
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only fresh-GT input-contract A/B; this profile is default-off and does not promote physical mapping.
+    - Cached Localization and Chassis states are skipped between CARLA frames instead of being republished with duplicate timestamps.
+    - The matched 639.68m road, strict apollo_planning_ready gate, native-state startup boundary, drivetrain handover, steering calibration, longitudinal legacy mapping, and disabled lateral guards remain unchanged.

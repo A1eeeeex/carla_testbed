@@ -1,0 +1,38 @@
+# Default-off Baguang Prediction A/B. The tick-aligned GT path keeps the real
+# lead visible before motion, so restore Apollo 10's native VEHICLE/ON_LANE/
+# CAUTION obstacle configuration instead of retaining the earlier cold-start
+# current-state override. No scenario, Planning, Control, mapping, or gate
+# setting changes.
+extends: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_candidate
+  profile_name: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_candidate
+
+algo:
+  apollo:
+    prediction:
+      # An empty mode removes the managed obstacle-config overlay and restores
+      # Apollo's packaged VEHICLE/ON_LANE/CAUTION evaluator/predictor block.
+      vehicle_on_lane_caution_mode: ""
+    bridge:
+      # Odom is published before objects JSON on each runner tick. Wait for the
+      # matching objects frame instead of pairing a current Localization frame
+      # with the previous 50 ms obstacle snapshot when ROS callbacks race.
+      obstacle_alignment_policy: wait_for_exact_source_time
+
+runtime:
+  fixed_scene_player:
+    # Routing can arrive after Apollo's first stationary-state replan. Do not
+    # combine that later Routing success with an aging stitched continuation
+    # when the gate is about to materialize the authored nonzero speed.
+    scene_preroll_planning_require_replan_anchor: true
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only Baguang native-Prediction A/B; default-off and not a Planning, Control, mapping, guard, route-follower, or natural-driving promotion.
+    - The real tick-aligned GT lead remains continuously visible; this candidate removes only the earlier COST_EVALUATOR plus MOVE_SEQUENCE_PREDICTOR obstacle-config overlay.
+    - The bridge waits for an obstacle source frame with the same simulation timestamp as each queued odom frame, preventing a ROS cross-topic callback race from relabeling the previous 50 ms actor position with the current Localization time.
+    - Initial-speed materialization requires the latest eligible NORMAL trajectory itself to be a replan anchor after Routing; a stitched continuation cannot open the one-shot state-transition gate.
+    - Apollo's packaged VEHICLE/ON_LANE/CAUTION configuration, CPU execution path, interactive-tag setting, strict NORMAL readiness and handover gates, matched road, physical steering quarantine, legacy longitudinal mapping, and disabled guards remain unchanged.

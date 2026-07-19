@@ -102,7 +102,14 @@ def test_baguang_lead_decel_accel_profile_matches_canonical_case_name() -> None:
         {"t": 17.0, "speed_mps": 19.44},
         {"t": 18.0, "speed_mps": 19.44},
     ]
-    assert storyboard["params"]["duration_policy"] == "lead_reaches_road_end"
+    assert storyboard["params"]["duration_policy"] == "fixed_duration"
+    assert "lead_route_end_s_m" not in storyboard["params"]
+    assert storyboard["storyboard"]["stop"] == {
+        "type": "simulation_time",
+        "op": ">=",
+        "value": 18.0,
+    }
+    assert storyboard["params"]["expected_lead_travel_m"] == 287.5
     assert storyboard["params"]["lead_decel_target_speed_mps"] == 11.11
     assert storyboard["params"]["lead_final_speed_mps"] == 19.44
     assert storyboard["target_actor_contract"]["target_actor_role"] == "lead_vehicle"

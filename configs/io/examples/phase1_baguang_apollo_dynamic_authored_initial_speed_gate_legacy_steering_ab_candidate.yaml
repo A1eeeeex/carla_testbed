@@ -1,0 +1,20 @@
+# Matched steering-domain A/B for the proven authored-state readiness lifecycle.
+# Preserve every setup, Planning, GT, and control-publication condition from the
+# clean cut-in baseline; change only the active actuator mapping mode to legacy.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_physical_steering_fresh_gt_coherent_simtime_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_legacy_steering_ab_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_legacy_steering_ab_candidate
+
+algo:
+  apollo:
+    control_mapping:
+      actuator_mapping_mode: legacy
+
+assist_ledger:
+  notes:
+    - Diagnostic-only matched steering A/B; it does not change repository defaults or promote either mapping mode.
+    - Routing, source-fresh GT, coherent simulation time, strict non-fallback Planning readiness, authored role speeds, target-ready handover, and formal scoring are inherited unchanged.
+    - Only the active actuator mapping mode changes from candidate physical steering to legacy; steer_scale remains 1.0, longitudinal physical mapping remains disabled, and every lateral guard remains disabled.
+    - The one-shot authored-speed assignment is setup evidence, not Apollo acceleration from rest, and this run cannot support a natural-driving claim.

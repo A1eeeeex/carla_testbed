@@ -7,6 +7,10 @@ from typing import Any, Mapping, Sequence
 
 OBSTACLE_GT_CONTRACT_SCHEMA_VERSION = "obstacle_gt_contract.v1"
 _PARSE_ERROR_KEY = "_obstacle_gt_contract_parse_error"
+_INTENTIONAL_NON_PUBLISH_DECISIONS = {
+    "rate_limited_not_published",
+    "source_frame_not_fresh",
+}
 
 DYNAMIC_SCENARIO_CLASSES = {
     "cut_in",
@@ -119,6 +123,17 @@ def analyze_obstacle_gt_contract_records(
     tracking_by_apollo_id: dict[str, float] = {}
     message_count = len(valid_records)
     source_row_count = message_count + len(parse_error_records)
+    publish_decision_counts: dict[str, int] = {}
+    intentional_non_publish_probe_row_count = 0
+    unexplained_non_publish_probe_row_count = 0
+    for record in valid_records:
+        decision = _optional_text(record.get("obstacle_publish_decision"))
+        if decision:
+            publish_decision_counts[decision] = publish_decision_counts.get(decision, 0) + 1
+        if _intentional_obstacle_non_publish(record):
+            intentional_non_publish_probe_row_count += 1
+        elif _front_obstacle_probe_not_published(record):
+            unexplained_non_publish_probe_row_count += 1
     empty_message_count = 0
     pedestrian_results: list[dict[str, Any]] = []
     fixed_scene = dict(fixed_scene_context or _fixed_scene_context_from_roles(fixed_scene_actor_roles))
@@ -276,6 +291,9 @@ def analyze_obstacle_gt_contract_records(
         "dynamic_obstacle_required": dynamic_required,
         "pedestrian_required": pedestrian_required,
         "message_count": message_count,
+        "publish_decision_counts": dict(sorted(publish_decision_counts.items())),
+        "intentional_non_publish_probe_row_count": intentional_non_publish_probe_row_count,
+        "unexplained_non_publish_probe_row_count": unexplained_non_publish_probe_row_count,
         "empty_message_count": empty_message_count,
         "empty_obstacle_messages_healthy": bool(
             valid_records and empty_message_count == message_count and not dynamic_required
@@ -751,11 +769,19 @@ def _record_declares_empty_obstacle_message(record: Mapping[str, Any]) -> bool:
 def _front_obstacle_probe_not_published(obstacle: Mapping[str, Any]) -> bool:
     if _boolish(obstacle.get("front_obstacle_actor_found")) is not True:
         return False
+    if _intentional_obstacle_non_publish(obstacle):
+        return False
     visible_value = obstacle.get("front_obstacle_visible")
     visible_false = visible_value not in {None, ""} and _boolish(visible_value) is False
     published_count = _num(obstacle.get("published_obstacle_count"))
     published_empty = published_count is not None and published_count <= 0
     return visible_false or published_empty
+
+
+def _intentional_obstacle_non_publish(obstacle: Mapping[str, Any]) -> bool:
+    """Return whether this probe row records an intentional cadence skip."""
+    decision = _optional_text(obstacle.get("obstacle_publish_decision"))
+    return decision in _INTENTIONAL_NON_PUBLISH_DECISIONS
 
 
 def _downgrade_leading_probe_publish_warmup(

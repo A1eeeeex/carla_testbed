@@ -83,6 +83,39 @@ corresponding output cells stay empty and the trial `notes` field records the
 missing evidence. This keeps the extractor useful for old runs while preventing
 it from inventing calibration certainty.
 
+## Vehicle-Scoped Steering Response Probe
+
+The CARLA-direct probe separates vehicle actuator response from Apollo Control,
+Planning, bridge cadence, and scenario behavior:
+
+```bash
+python tools/probe_carla_steering_response.py \
+  --output-dir runs/diagnostics/<probe_id> \
+  --target-speeds-mps 5,10,15,19.2 \
+  --target-front-wheel-angles-deg=-6,-3,3,6 \
+  --repeats 2 \
+  --fixed-delta-seconds 0.01
+```
+
+The output records each commanded CARLA steer, target and measured front-wheel
+angle, actual speed, dead/rise/settling time, spawned physics control, and the
+vehicle `steering_curve`. Multi-speed analysis compares `m/s`, `kph`, and `mph`
+interpretations of the curve axis and reports target-angle tracking by operating
+point.
+
+The `2026-07-18` Lincoln run
+`runs/diagnostics/cycle_inf_baguang_steering_authority_multispeed_20260718`
+contains `32/32` valid trials and selects `kph`; target tracking falls from about
+`97.2%` at `4.96m/s` to `82.5%` at `19.36m/s`. Its owner is
+`diagnostic_carla_direct`: Apollo is out of loop, Phase 1/capability promotion is
+false, and the result cannot update a mainline profile by itself.
+
+A follow-up Baguang-only Apollo pair applied `target / tracking_ratio` before
+the same static inverse. The mapping contract materialized correctly, but the
+run still lane-invaded and replanned earlier/more often. Speed compensation
+therefore remains default-off and quarantined; physical consistency is not the
+same as closed-loop behavior improvement.
+
 ## Report
 
 The offline report pipeline is:
@@ -181,6 +214,44 @@ does not prove Apollo algorithm limitation; route, reference-line, matched
 point, and target-point semantics must still be checked. A bridge or vehicle
 response breakpoint is a reason to inspect mapping, latency, or actuation, not
 permission to automatically change the mainline config.
+
+## Vehicle-Scoped Steering Response Probe
+
+Use the CARLA-direct step-response probe when control attribution leaves a
+vehicle-response latency hypothesis. CARLA must already be running with no
+vehicles in the world:
+
+```bash
+conda run -n carla16 python tools/probe_carla_steering_response.py \
+  --output-dir runs/diagnostics/<probe_id> \
+  --target-speed-mps 18.9 \
+  --target-front-wheel-angles-deg=-6,-3,3,6 \
+  --repeats 2 \
+  --fixed-delta-seconds 0.01
+```
+
+The tool temporarily uses synchronous fixed-step simulation, spawns its own
+vehicle five metres beyond the first map spawn point, accelerates naturally to
+the declared operating speed, applies the tracked vehicle steering
+calibration, destroys only its own actor, and restores the prior world
+settings. It refuses to run when another vehicle exists. CARLA itself remains
+running.
+
+Outputs:
+
+- `steering_response_probe.json`: vehicle/calibration identity, operating-
+  point speed gate, per-direction dead/rise/settling response, target-angle
+  tracking ratio, and an explicit claim boundary;
+- `steering_response_timeseries.csv`: frame-level command, measured front-
+  wheel angle, speed, yaw, and trial phase.
+
+This is `diagnostic_carla_direct` evidence. Apollo Control is not in the loop,
+so the report is ineligible for Phase 1 status or an Apollo capability claim.
+Even a temporally resolved report sets `promotion_allowed=false`; it cannot by
+itself enable MRAC, change LQR/vehicle parameters, tune `steer_scale`, or
+promote physical mapping. A target-speed failure makes the affected trial
+insufficient rather than silently treating a stationary response as the
+requested operating point.
 
 ## CI-Friendly Tests
 

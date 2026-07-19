@@ -124,6 +124,13 @@ def analyze_control_health_run_dir(
             "control_apply_trace.jsonl",
         ],
     )
+    apollo_control_raw_path = _find_first(
+        root,
+        [
+            "artifacts/apollo_control_raw.jsonl",
+            "apollo_control_raw.jsonl",
+        ],
+    )
     direct_control_apply_path = _find_first(
         root,
         [
@@ -276,6 +283,8 @@ def analyze_control_health_run_dir(
     if materialization_evidence.get("control_handoff_status") not in {None, ""}:
         effective_summary["control_handoff_status"] = materialization_evidence.get("control_handoff_status")
     rows = _read_rows(timeseries_path)
+    apollo_control_raw_rows = _read_rows(apollo_control_raw_path)
+    planning_topic_debug_rows = _read_rows(planning_topic_debug_path)
     control_bridge_log = _analyze_control_bridge_log(control_bridge_log_path)
     control_row_level_trace_path = control_apply_trace_path or control_decode_debug_path
     control_decode_debug = _analyze_control_decode_debug(
@@ -349,6 +358,10 @@ def analyze_control_health_run_dir(
         _applied_throttle_brake_switch_metrics(rows),
         control_decode_debug,
     )
+    control_drift_window_anchors = _control_drift_window_anchors(
+        root,
+        summary=summary,
+    )
     report_metrics = {
         "control_latency_p95_ms": control_latency_p95_ms,
         "control_latency_source": _control_latency_source(
@@ -392,6 +405,16 @@ def analyze_control_health_run_dir(
             control_decode_debug=control_decode_debug,
         ),
         "control_bridge_log": control_bridge_log,
+        "same_state_control_update_drift": _same_state_control_update_drift(
+            apollo_control_raw_rows,
+            planning_topic_debug_rows=planning_topic_debug_rows,
+            formal_start_sim_time_sec=control_drift_window_anchors.get(
+                "formal_start_sim_time_sec"
+            ),
+            first_safety_event_sim_time_sec=control_drift_window_anchors.get(
+                "first_safety_event_sim_time_sec"
+            ),
+        ),
         "control_decode_debug": control_decode_debug,
         "control_process_health": _control_process_health(apollo_control_handoff),
         "planning_log_fallback_diagnostics": _planning_log_fallback_diagnostics(
@@ -484,6 +507,7 @@ def analyze_control_health_run_dir(
             "manifest_path": str(manifest_path) if manifest_path.exists() else None,
             "timeseries_path": str(timeseries_path) if timeseries_path else None,
             "control_bridge_log_path": str(control_bridge_log_path) if control_bridge_log_path else None,
+            "apollo_control_raw_path": str(apollo_control_raw_path) if apollo_control_raw_path else None,
             "control_decode_debug_path": str(control_decode_debug_path) if control_decode_debug_path else None,
             "auxiliary_control_decode_debug_path": (
                 str(control_decode_debug_path)
@@ -803,6 +827,716 @@ def _contract_precondition(
         "blocking_reasons": sorted(set(blocking)),
         "warnings": sorted(set(warnings)),
         "path": str(path) if path else None,
+    }
+
+
+def _control_drift_window_anchors(
+    root: Path,
+    *,
+    summary: Mapping[str, Any],
+) -> dict[str, float | None]:
+    handover_path = _find_first(
+        root,
+        [
+            "artifacts/fixed_scene_ego_handover.json",
+            "fixed_scene_ego_handover.json",
+        ],
+    )
+    handover = _read_json(handover_path) if handover_path else {}
+    formal_start = _first_number(
+        handover.get("official_scenario_start_world_sim_time_s"),
+        handover.get("apollo_control_start_observed_world_sim_time_s"),
+        summary.get("official_scenario_start_world_sim_time_s"),
+        summary.get("official_scenario_start_sim_time_sec"),
+        summary.get("scenario_start_sim_time"),
+    )
+
+    events_path = _find_first(root, ["events.jsonl"])
+    events = _read_rows(events_path)
+    explicit_safety_times = [
+        event_time
+        for event in events
+        if str(event.get("event_type") or "").strip().lower()
+        in {"lane_invasion", "collision"}
+        and (
+            event_time := _first_number(
+                event.get("t"),
+                event.get("sim_time"),
+                event.get("ts_sec"),
+            )
+        )
+        is not None
+    ]
+    failure_safety_times = [
+        event_time
+        for event in events
+        if str(event.get("event_type") or "").strip().lower() == "failure"
+        and any(
+            token in str(event.get("reason") or "").upper()
+            for token in ("LANE_INVASION", "COLLISION")
+        )
+        and (
+            event_time := _first_number(
+                event.get("t"),
+                event.get("sim_time"),
+                event.get("ts_sec"),
+            )
+        )
+        is not None
+    ]
+    safety_times = explicit_safety_times or failure_safety_times
+    return {
+        "formal_start_sim_time_sec": formal_start,
+        "first_safety_event_sim_time_sec": min(safety_times)
+        if safety_times
+        else None,
+    }
+
+
+def _same_state_control_update_drift(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    planning_topic_debug_rows: Sequence[Mapping[str, Any]] = (),
+    formal_start_sim_time_sec: float | None = None,
+    first_safety_event_sim_time_sec: float | None = None,
+) -> dict[str, Any]:
+    samples: list[dict[str, float | int | None]] = []
+    for row in rows:
+        raw = row.get("apollo_control_raw")
+        if not isinstance(raw, Mapping):
+            continue
+        header_timestamp = _num(raw.get("control_header_timestamp_sec"))
+        if header_timestamp is None:
+            continue
+        planning_sequence_value = _num(
+            raw.get("debug_input_trajectory_header_sequence_num")
+        )
+        planning_sequence = (
+            int(planning_sequence_value)
+            if planning_sequence_value is not None
+            else None
+        )
+        samples.append(
+            {
+                "row_sim_time_sec": _row_time_s(row),
+                "control_header_timestamp_sec": header_timestamp,
+                "planning_sequence_num": planning_sequence,
+                "localization_sequence_num": _int(
+                    raw.get("debug_input_localization_header_sequence_num")
+                ),
+                "localization_timestamp_sec": _num(
+                    raw.get("debug_input_localization_header_timestamp_sec")
+                ),
+                "canbus_sequence_num": _int(
+                    raw.get("debug_input_canbus_header_sequence_num")
+                ),
+                "canbus_timestamp_sec": _num(
+                    raw.get("debug_input_canbus_header_timestamp_sec")
+                ),
+                "latest_replan_sequence_num": _int(
+                    raw.get(
+                        "debug_input_latest_replan_trajectory_header_sequence_num"
+                    )
+                ),
+                "latest_replan_timestamp_sec": _num(
+                    raw.get(
+                        "debug_input_latest_replan_trajectory_header_timestamp_sec"
+                    )
+                ),
+                "control_sequence_num": _num(raw.get("control_header_sequence_num")),
+                "steering_target": _num(raw.get("steering_target")),
+                "steer_angle_limited": _num(
+                    raw.get("debug_simple_lat_steer_angle_limited")
+                ),
+                "acceleration": _num(raw.get("acceleration")),
+                "throttle": _num(raw.get("throttle")),
+                "brake": _num(raw.get("brake")),
+                "lateral_error": _num(raw.get("debug_simple_lat_lateral_error")),
+                "heading_error": _num(raw.get("debug_simple_lat_heading_error")),
+                "target_point_x": _num(
+                    raw.get("debug_simple_lat_current_target_point_x")
+                ),
+                "target_point_y": _num(
+                    raw.get("debug_simple_lat_current_target_point_y")
+                ),
+                "target_point_theta": _num(
+                    raw.get("debug_simple_lat_current_target_point_theta")
+                ),
+                "target_point_kappa": _num(
+                    raw.get("debug_simple_lat_current_target_point_kappa")
+                ),
+            }
+        )
+
+    if not samples:
+        return {
+            "available": False,
+            "missing_inputs": ["apollo_control_raw.jsonl"],
+        }
+
+    overall = _summarize_control_update_drift_samples(samples)
+    phase_summaries = _control_update_drift_phase_summaries(
+        samples,
+        formal_start_sim_time_sec=formal_start_sim_time_sec,
+        first_safety_event_sim_time_sec=first_safety_event_sim_time_sec,
+    )
+    same_input_state = _same_input_state_control_update_drift(
+        samples,
+        formal_start_sim_time_sec=formal_start_sim_time_sec,
+        first_safety_event_sim_time_sec=first_safety_event_sim_time_sec,
+    )
+    consumed_replans = _consumed_replan_transition_summary(
+        samples,
+        planning_topic_debug_rows=planning_topic_debug_rows,
+        formal_start_sim_time_sec=formal_start_sim_time_sec,
+        first_safety_event_sim_time_sec=first_safety_event_sim_time_sec,
+    )
+    return {
+        "available": True,
+        **overall,
+        "formal_start_sim_time_sec": formal_start_sim_time_sec,
+        "first_safety_event_sim_time_sec": first_safety_event_sim_time_sec,
+        "phase_summaries": phase_summaries,
+        "same_input_state": same_input_state,
+        "consumed_replan_transitions": consumed_replans,
+        "claim_boundary": (
+            "Repeated Control outputs with one output-header timestamp and one "
+            "consumed Planning sequence do not alone prove unchanged vehicle state. "
+            "The same_input_state view additionally requires identical Control-input "
+            "Localization, Chassis, and Planning sequence identities. When those "
+            "identities and the pre-digital-filter steer_angle_limited value are all "
+            "stable but steering_target drifts, the evidence localizes the change to "
+            "post-LQR stateful command processing; it still does not alone prove that "
+            "the drift caused the behavior failure."
+        ),
+    }
+
+
+def _control_sample_phase(
+    sample: Mapping[str, Any],
+    *,
+    formal_start_sim_time_sec: float | None,
+    first_safety_event_sim_time_sec: float | None,
+) -> str:
+    row_time = _num(sample.get("row_sim_time_sec"))
+    if row_time is None or formal_start_sim_time_sec is None:
+        return "unclassified"
+    tolerance_s = 1e-6
+    if row_time < formal_start_sim_time_sec - tolerance_s:
+        return "setup_before_formal_start"
+    if (
+        first_safety_event_sim_time_sec is not None
+        and row_time >= first_safety_event_sim_time_sec - tolerance_s
+    ):
+        return "terminal_event_or_after"
+    return "formal_pre_event"
+
+
+def _same_input_state_control_update_drift(
+    samples: Sequence[Mapping[str, Any]],
+    *,
+    formal_start_sim_time_sec: float | None,
+    first_safety_event_sim_time_sec: float | None,
+) -> dict[str, Any]:
+    def summarize(selected: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        eligible = [
+            sample
+            for sample in selected
+            if _int(sample.get("localization_sequence_num")) is not None
+            and _int(sample.get("canbus_sequence_num")) is not None
+            and _int(sample.get("planning_sequence_num")) is not None
+        ]
+        grouped: dict[tuple[int, int, int], list[Mapping[str, Any]]] = {}
+        for sample in eligible:
+            identity = (
+                int(_int(sample.get("localization_sequence_num")) or 0),
+                int(_int(sample.get("canbus_sequence_num")) or 0),
+                int(_int(sample.get("planning_sequence_num")) or 0),
+            )
+            grouped.setdefault(identity, []).append(sample)
+        duplicate_groups = [
+            (identity, group)
+            for identity, group in grouped.items()
+            if len(group) > 1
+        ]
+        steering_ranges: list[float] = []
+        prefilter_ranges: list[float] = []
+        stable_prefilter_drift_count = 0
+        examples: list[dict[str, Any]] = []
+        for identity, group in duplicate_groups:
+            steering_values = [
+                float(value)
+                for sample in group
+                if (value := _num(sample.get("steering_target"))) is not None
+            ]
+            prefilter_values = [
+                float(value)
+                for sample in group
+                if (value := _num(sample.get("steer_angle_limited"))) is not None
+            ]
+            steering_range = (
+                max(steering_values) - min(steering_values)
+                if len(steering_values) >= 2
+                else 0.0
+            )
+            prefilter_complete = len(prefilter_values) == len(group)
+            prefilter_range = (
+                max(prefilter_values) - min(prefilter_values)
+                if len(prefilter_values) >= 2
+                else 0.0
+            )
+            prefilter_stable = prefilter_complete and prefilter_range <= 1e-6
+            steering_ranges.append(steering_range)
+            if prefilter_complete:
+                prefilter_ranges.append(prefilter_range)
+            if steering_range > 1e-6 and prefilter_stable:
+                stable_prefilter_drift_count += 1
+            examples.append(
+                {
+                    "localization_sequence_num": identity[0],
+                    "canbus_sequence_num": identity[1],
+                    "planning_sequence_num": identity[2],
+                    "message_count": len(group),
+                    "first_row_sim_time_sec": group[0].get("row_sim_time_sec"),
+                    "last_row_sim_time_sec": group[-1].get("row_sim_time_sec"),
+                    "steering_target_first": steering_values[0]
+                    if steering_values
+                    else None,
+                    "steering_target_last": steering_values[-1]
+                    if steering_values
+                    else None,
+                    "steering_target_range": steering_range,
+                    "steer_angle_limited_first": prefilter_values[0]
+                    if prefilter_values
+                    else None,
+                    "steer_angle_limited_last": prefilter_values[-1]
+                    if prefilter_values
+                    else None,
+                    "steer_angle_limited_range": prefilter_range
+                    if prefilter_complete
+                    else None,
+                    "steer_angle_limited_complete": prefilter_complete,
+                    "steer_angle_limited_stable": prefilter_stable,
+                }
+            )
+        examples.sort(
+            key=lambda item: float(item.get("steering_target_range") or 0.0),
+            reverse=True,
+        )
+        return {
+            "available": bool(eligible),
+            "message_count": len(selected),
+            "input_identity_complete_message_count": len(eligible),
+            "input_identity_complete_ratio": _safe_div(len(eligible), len(selected)),
+            "unique_input_state_count": len(grouped),
+            "same_input_state_duplicate_group_count": len(duplicate_groups),
+            "steering_target_range_p95": _percentile(steering_ranges, 0.95),
+            "steering_target_range_max": max(steering_ranges)
+            if steering_ranges
+            else None,
+            "steer_angle_limited_range_p95": _percentile(
+                prefilter_ranges, 0.95
+            ),
+            "steer_angle_limited_range_max": max(prefilter_ranges)
+            if prefilter_ranges
+            else None,
+            "post_lqr_steering_drift_with_stable_prefilter_group_count": (
+                stable_prefilter_drift_count
+            ),
+            "post_lqr_steering_drift_with_stable_prefilter_present": (
+                stable_prefilter_drift_count > 0
+            ),
+            "examples": examples[:8],
+        }
+
+    phase_names = (
+        "setup_before_formal_start",
+        "formal_pre_event",
+        "terminal_event_or_after",
+    )
+    phases = {
+        name: summarize(
+            [
+                sample
+                for sample in samples
+                if _control_sample_phase(
+                    sample,
+                    formal_start_sim_time_sec=formal_start_sim_time_sec,
+                    first_safety_event_sim_time_sec=first_safety_event_sim_time_sec,
+                )
+                == name
+            ]
+        )
+        for name in phase_names
+    }
+    overall = summarize(samples)
+    return {
+        **overall,
+        "phase_summaries": phases,
+        "claim_boundary": (
+            "A same-input-state group requires exact Localization, Chassis, and "
+            "Planning sequence identity from Apollo Control InputDebug. Stable "
+            "identities do not imply a static vehicle unless the corresponding "
+            "timestamps and state values are also checked."
+        ),
+    }
+
+
+def _consumed_replan_transition_summary(
+    samples: Sequence[Mapping[str, Any]],
+    *,
+    planning_topic_debug_rows: Sequence[Mapping[str, Any]],
+    formal_start_sim_time_sec: float | None,
+    first_safety_event_sim_time_sec: float | None,
+) -> dict[str, Any]:
+    observed_replan_sequences = {
+        sequence
+        for row in planning_topic_debug_rows
+        if _parse_bool(row.get("is_replan")) is True
+        and (sequence := _int(row.get("planning_header_sequence_num"))) is not None
+    }
+    transitions: list[dict[str, Any]] = []
+    previous: Mapping[str, Any] | None = None
+    for sample in samples:
+        current_sequence = _int(sample.get("latest_replan_sequence_num"))
+        if previous is not None:
+            previous_sequence = _int(previous.get("latest_replan_sequence_num"))
+            if (
+                current_sequence is not None
+                and previous_sequence is not None
+                and current_sequence != previous_sequence
+            ):
+                phase = _control_sample_phase(
+                    sample,
+                    formal_start_sim_time_sec=formal_start_sim_time_sec,
+                    first_safety_event_sim_time_sec=first_safety_event_sim_time_sec,
+                )
+
+                def delta(field: str) -> float | None:
+                    before = _num(previous.get(field))
+                    after = _num(sample.get(field))
+                    return after - before if before is not None and after is not None else None
+
+                row_time = _num(sample.get("row_sim_time_sec"))
+                transitions.append(
+                    {
+                        "phase": phase,
+                        "row_sim_time_sec": row_time,
+                        "formal_time_s": (
+                            row_time - formal_start_sim_time_sec
+                            if row_time is not None
+                            and formal_start_sim_time_sec is not None
+                            else None
+                        ),
+                        "previous_latest_replan_sequence_num": previous_sequence,
+                        "latest_replan_sequence_num": current_sequence,
+                        "latest_replan_timestamp_sec": sample.get(
+                            "latest_replan_timestamp_sec"
+                        ),
+                        "planning_sequence_num": sample.get("planning_sequence_num"),
+                        "planning_topic_exact_replan_observed": (
+                            current_sequence in observed_replan_sequences
+                        ),
+                        "target_point_x_delta_m": delta("target_point_x"),
+                        "target_point_y_delta_m": delta("target_point_y"),
+                        "target_point_theta_delta_rad": delta("target_point_theta"),
+                        "target_point_kappa_delta_inv_m": delta("target_point_kappa"),
+                        "lateral_error_delta_m": delta("lateral_error"),
+                        "heading_error_delta_rad": delta("heading_error"),
+                        "steer_angle_limited_delta": delta("steer_angle_limited"),
+                        "steering_target_delta": delta("steering_target"),
+                    }
+                )
+        previous = sample
+
+    formal = [
+        item for item in transitions if item.get("phase") == "formal_pre_event"
+    ]
+    missing = [
+        item
+        for item in formal
+        if item.get("planning_topic_exact_replan_observed") is False
+    ]
+    target_y_deltas = [
+        abs(float(value))
+        for item in formal
+        if (value := _num(item.get("target_point_y_delta_m"))) is not None
+    ]
+    target_theta_deltas = [
+        abs(float(value))
+        for item in formal
+        if (value := _num(item.get("target_point_theta_delta_rad"))) is not None
+    ]
+    return {
+        "available": bool(samples),
+        "transition_count": len(transitions),
+        "formal_pre_event_transition_count": len(formal),
+        "formal_pre_event_planning_topic_exact_replan_observed_count": (
+            len(formal) - len(missing)
+        ),
+        "formal_pre_event_planning_topic_missing_exact_replan_count": len(missing),
+        "formal_pre_event_target_point_y_delta_abs_p95_m": _percentile(
+            target_y_deltas, 0.95
+        ),
+        "formal_pre_event_target_point_y_delta_abs_max_m": max(target_y_deltas)
+        if target_y_deltas
+        else None,
+        "formal_pre_event_target_point_theta_delta_abs_p95_rad": _percentile(
+            target_theta_deltas, 0.95
+        ),
+        "formal_pre_event_target_point_theta_delta_abs_max_rad": max(
+            target_theta_deltas
+        )
+        if target_theta_deltas
+        else None,
+        "examples": transitions[:12],
+        "claim_boundary": (
+            "Apollo Control updates latest_replan_trajectory_header only after "
+            "consuming a Planning trajectory with is_replan=true. This surface is "
+            "therefore authoritative for replan identities seen by Control, while "
+            "target deltas remain correlation evidence rather than proof that a "
+            "replan initiated the closed-loop failure."
+        ),
+    }
+
+
+def _summarize_control_update_drift_samples(
+    samples: Sequence[Mapping[str, float | int | None]],
+) -> dict[str, Any]:
+    grouped: dict[
+        tuple[float, int | None], list[Mapping[str, float | int | None]]
+    ] = {}
+    header_timestamps: set[float] = set()
+    for sample in samples:
+        header_timestamp = _num(sample.get("control_header_timestamp_sec"))
+        if header_timestamp is None:
+            continue
+        planning_sequence_value = _num(sample.get("planning_sequence_num"))
+        planning_sequence = (
+            int(planning_sequence_value)
+            if planning_sequence_value is not None
+            else None
+        )
+        header_timestamps.add(header_timestamp)
+        grouped.setdefault((header_timestamp, planning_sequence), []).append(sample)
+
+    duplicate_groups = [
+        (key, group_samples)
+        for key, group_samples in grouped.items()
+        if len(group_samples) > 1
+    ]
+
+    steering_ranges: list[float] = []
+    prefilter_ranges: list[float] = []
+    acceleration_ranges: list[float] = []
+    group_sizes: list[float] = []
+    output_drift_group_count = 0
+    stable_prefilter_steering_drift_group_count = 0
+    throttle_brake_state_flip_count = 0
+    examples: list[dict[str, Any]] = []
+    for (header_timestamp, planning_sequence), group_samples in duplicate_groups:
+        steering_values = [
+            float(value)
+            for sample in group_samples
+            if (value := sample.get("steering_target")) is not None
+        ]
+        prefilter_values = [
+            float(value)
+            for sample in group_samples
+            if (value := sample.get("steer_angle_limited")) is not None
+        ]
+        acceleration_values = [
+            float(value)
+            for sample in group_samples
+            if (value := sample.get("acceleration")) is not None
+        ]
+        steering_range = (
+            max(steering_values) - min(steering_values)
+            if len(steering_values) >= 2
+            else 0.0
+        )
+        prefilter_range = (
+            max(prefilter_values) - min(prefilter_values)
+            if len(prefilter_values) >= 2
+            else 0.0
+        )
+        prefilter_complete = len(prefilter_values) == len(group_samples)
+        prefilter_stable = prefilter_complete and prefilter_range <= 1e-6
+        acceleration_range = (
+            max(acceleration_values) - min(acceleration_values)
+            if len(acceleration_values) >= 2
+            else 0.0
+        )
+        steering_ranges.append(steering_range)
+        if prefilter_complete:
+            prefilter_ranges.append(prefilter_range)
+        acceleration_ranges.append(acceleration_range)
+        group_sizes.append(float(len(group_samples)))
+        if steering_range > 1e-6 or acceleration_range > 1e-6:
+            output_drift_group_count += 1
+        if steering_range > 1e-6 and prefilter_stable:
+            stable_prefilter_steering_drift_group_count += 1
+
+        states: list[str] = []
+        for sample in group_samples:
+            throttle = float(sample.get("throttle") or 0.0)
+            brake = float(sample.get("brake") or 0.0)
+            states.append("throttle" if throttle > 0.1 else "brake" if brake > 0.1 else "neutral")
+        state_flips = sum(
+            before != after for before, after in zip(states, states[1:])
+        )
+        throttle_brake_state_flip_count += state_flips
+        examples.append(
+            {
+                "control_header_timestamp_sec": header_timestamp,
+                "planning_sequence_num": planning_sequence,
+                "message_count": len(group_samples),
+                "first_row_sim_time_sec": group_samples[0].get(
+                    "row_sim_time_sec"
+                ),
+                "last_row_sim_time_sec": group_samples[-1].get(
+                    "row_sim_time_sec"
+                ),
+                "first_control_sequence_num": group_samples[0].get(
+                    "control_sequence_num"
+                ),
+                "last_control_sequence_num": group_samples[-1].get(
+                    "control_sequence_num"
+                ),
+                "steering_target_first": steering_values[0]
+                if steering_values
+                else None,
+                "steering_target_last": steering_values[-1]
+                if steering_values
+                else None,
+                "steering_target_range": steering_range,
+                "steer_angle_limited_first": prefilter_values[0]
+                if prefilter_values
+                else None,
+                "steer_angle_limited_last": prefilter_values[-1]
+                if prefilter_values
+                else None,
+                "steer_angle_limited_range": prefilter_range
+                if prefilter_complete
+                else None,
+                "steer_angle_limited_complete": prefilter_complete,
+                "steer_angle_limited_stable": prefilter_stable,
+                "acceleration_first_mps2": acceleration_values[0]
+                if acceleration_values
+                else None,
+                "acceleration_last_mps2": acceleration_values[-1]
+                if acceleration_values
+                else None,
+                "acceleration_range_mps2": acceleration_range,
+                "throttle_brake_state_flip_count": state_flips,
+            }
+        )
+
+    examples.sort(
+        key=lambda item: (
+            float(item.get("steering_target_range") or 0.0),
+            float(item.get("acceleration_range_mps2") or 0.0),
+        ),
+        reverse=True,
+    )
+    return {
+        "message_count": len(samples),
+        "unique_control_header_timestamp_count": len(header_timestamps),
+        "same_state_group_count": len(grouped),
+        "same_state_duplicate_group_count": len(duplicate_groups),
+        "messages_per_same_state_group_p50": _percentile(group_sizes, 0.50),
+        "messages_per_same_state_group_p95": _percentile(group_sizes, 0.95),
+        "messages_per_same_state_group_max": max(group_sizes)
+        if group_sizes
+        else None,
+        "steering_target_range_p95": _percentile(steering_ranges, 0.95),
+        "steering_target_range_max": max(steering_ranges)
+        if steering_ranges
+        else None,
+        "steer_angle_limited_range_p95": _percentile(prefilter_ranges, 0.95),
+        "steer_angle_limited_range_max": max(prefilter_ranges)
+        if prefilter_ranges
+        else None,
+        "acceleration_range_p95_mps2": _percentile(
+            acceleration_ranges, 0.95
+        ),
+        "acceleration_range_max_mps2": max(acceleration_ranges)
+        if acceleration_ranges
+        else None,
+        "same_state_output_drift_group_count": output_drift_group_count,
+        "same_state_output_drift_present": output_drift_group_count > 0,
+        "post_lqr_steering_drift_with_stable_prefilter_group_count": (
+            stable_prefilter_steering_drift_group_count
+        ),
+        "post_lqr_steering_drift_with_stable_prefilter_present": (
+            stable_prefilter_steering_drift_group_count > 0
+        ),
+        "same_state_throttle_brake_state_flip_count": throttle_brake_state_flip_count,
+        "examples": examples[:8],
+    }
+
+
+def _control_update_drift_phase_summaries(
+    samples: Sequence[Mapping[str, float | int | None]],
+    *,
+    formal_start_sim_time_sec: float | None,
+    first_safety_event_sim_time_sec: float | None,
+) -> dict[str, Any]:
+    tolerance_s = 1e-6
+
+    def summarize(selected: Sequence[Mapping[str, float | int | None]]) -> dict[str, Any]:
+        return {
+            "available": bool(selected),
+            **_summarize_control_update_drift_samples(selected),
+        }
+
+    if formal_start_sim_time_sec is None:
+        missing = {
+            "available": False,
+            "missing_inputs": ["official_scenario_start_world_sim_time_s"],
+        }
+        return {
+            "setup_before_formal_start": dict(missing),
+            "formal_pre_event": dict(missing),
+            "terminal_event_or_after": {
+                "available": False,
+                "missing_inputs": ["official_scenario_start_world_sim_time_s"],
+            },
+        }
+
+    setup = [
+        sample
+        for sample in samples
+        if (row_time := _num(sample.get("row_sim_time_sec"))) is not None
+        and row_time < formal_start_sim_time_sec - tolerance_s
+    ]
+    formal_pre_event = [
+        sample
+        for sample in samples
+        if (row_time := _num(sample.get("row_sim_time_sec"))) is not None
+        and row_time >= formal_start_sim_time_sec - tolerance_s
+        and (
+            first_safety_event_sim_time_sec is None
+            or row_time < first_safety_event_sim_time_sec - tolerance_s
+        )
+    ]
+    terminal = [
+        sample
+        for sample in samples
+        if first_safety_event_sim_time_sec is not None
+        and (row_time := _num(sample.get("row_sim_time_sec"))) is not None
+        and row_time >= first_safety_event_sim_time_sec - tolerance_s
+    ]
+    terminal_summary = summarize(terminal)
+    if first_safety_event_sim_time_sec is None:
+        terminal_summary = {
+            "available": False,
+            "missing_inputs": ["first_safety_event_sim_time_sec"],
+        }
+    return {
+        "setup_before_formal_start": summarize(setup),
+        "formal_pre_event": summarize(formal_pre_event),
+        "terminal_event_or_after": terminal_summary,
     }
 
 
@@ -1521,31 +2255,68 @@ def _control_mapping_claim_boundary(
         stats_mapping = cyber_bridge_stats.get("actuator_mapping")
         if isinstance(stats_mapping, Mapping):
             mode = _text_or_none(stats_mapping.get("mode"))
+    stats_mapping = cyber_bridge_stats.get("actuator_mapping")
+    if not isinstance(stats_mapping, Mapping):
+        stats_mapping = {}
     steer_scale = _first_number(
         manifest.get("steer_scale"),
         summary.get("steer_scale"),
         _first_present_number(rows, ("steer_scale",)),
+        stats_mapping.get("steer_scale"),
     )
     steering_sign = _first_number(
         manifest.get("steering_sign"),
         summary.get("steering_sign"),
         _first_present_number(rows, ("steering_sign",)),
+        stats_mapping.get("steering_sign"),
+        stats_mapping.get("steer_sign"),
     )
-    calibration_profile_id = _first_text(
+    configured_calibration_profile_id = _first_text(
         manifest,
         "calibration_profile_id",
         summary,
         "calibration_profile_id",
     )
-    stats_mapping = cyber_bridge_stats.get("actuator_mapping")
     calibration_status = None
+    runtime_calibration_id = None
+    calibration_source_sha256 = None
+    calibration_vehicle_type_id = None
     if isinstance(stats_mapping, Mapping):
         calibration = stats_mapping.get("calibration")
         if isinstance(calibration, Mapping):
-            calibration_status = calibration.get("loaded") or calibration.get("status")
-    claim_grade = bool(str(mode or "").lower() == "physical" and calibration_profile_id)
-    steering_parameters_source = (
-        "calibration_profile" if calibration_profile_id else "runtime_config_or_unknown"
+            calibration_status = (
+                calibration.get("loaded")
+                if "loaded" in calibration
+                else calibration.get("status")
+            )
+            runtime_calibration_id = _text_or_none(
+                calibration.get("calibration_id")
+            )
+            calibration_source_sha256 = _text_or_none(
+                calibration.get("source_sha256")
+            )
+            calibration_vehicle_type_id = _text_or_none(
+                calibration.get("vehicle_type_id")
+            )
+    calibration_profile_id = (
+        configured_calibration_profile_id or runtime_calibration_id
+    )
+    if configured_calibration_profile_id:
+        calibration_identity_source = "explicit_calibration_profile"
+        steering_parameters_source = "calibration_profile"
+        calibration_identity_ready = True
+    elif runtime_calibration_id:
+        calibration_identity_source = "runtime_loaded_calibration"
+        steering_parameters_source = "runtime_loaded_calibration"
+        calibration_identity_ready = calibration_status is True
+    else:
+        calibration_identity_source = "missing"
+        steering_parameters_source = "runtime_config_or_unknown"
+        calibration_identity_ready = False
+    claim_grade = bool(
+        str(mode or "").lower() == "physical"
+        and calibration_profile_id
+        and calibration_identity_ready
     )
     warnings: list[str] = []
     if str(mode or "").lower() == "legacy":
@@ -1553,12 +2324,17 @@ def _control_mapping_claim_boundary(
     if not calibration_profile_id:
         warnings.append("calibration_profile_missing")
         warnings.append("steering_parameters_not_backed_by_calibration_profile")
+    elif runtime_calibration_id and not calibration_identity_ready:
+        warnings.append("runtime_calibration_identity_not_loaded")
     return {
         "actuator_mapping_mode": mode,
         "steer_scale": steer_scale,
         "steering_sign": steering_sign,
         "steering_parameters_source": steering_parameters_source,
         "calibration_profile_id": calibration_profile_id,
+        "calibration_identity_source": calibration_identity_source,
+        "calibration_source_sha256": calibration_source_sha256,
+        "calibration_vehicle_type_id": calibration_vehicle_type_id,
         "calibration_loaded_or_status": calibration_status,
         "claim_grade_control_mapping": claim_grade,
         "warnings": warnings,
@@ -5267,6 +6043,10 @@ def _markdown(report: Mapping[str, Any]) -> str:
         f"- mapped_applied_brake_abs_error_p95: `{metrics.get('mapped_applied_brake_abs_error_p95')}`",
         f"- upstream_contract_preconditions: `{_markdown_upstream_contract_preconditions(metrics)}`",
         f"- oscillation_decomposition: `{_markdown_oscillation_decomposition(metrics)}`",
+        (
+            "- same_state_control_update_drift: "
+            f"`{_markdown_same_state_control_update_drift(metrics)}`"
+        ),
         f"- lane_event_response_context: `{_markdown_lane_event_response_context(metrics)}`",
         f"- steering_mapping_saturation: `{_markdown_steering_mapping_saturation(metrics)}`",
         f"- control_mapping_claim_boundary: `{metrics.get('control_mapping_claim_boundary')}`",
@@ -5295,6 +6075,89 @@ def _markdown_control_bridge_log(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "first_watchdog_apply_wall_s": log_metrics.get("first_watchdog_apply_wall_s"),
         "final_rx_count": log_metrics.get("final_rx_count"),
         "final_applied_count": log_metrics.get("final_applied_count"),
+    }
+
+
+def _markdown_same_state_control_update_drift(
+    metrics: Mapping[str, Any],
+) -> dict[str, Any]:
+    drift = metrics.get("same_state_control_update_drift")
+    if not isinstance(drift, Mapping):
+        return {"available": False}
+    phase_summaries = drift.get("phase_summaries")
+    if not isinstance(phase_summaries, Mapping):
+        phase_summaries = {}
+    formal_pre_event = phase_summaries.get("formal_pre_event")
+    if not isinstance(formal_pre_event, Mapping):
+        formal_pre_event = {}
+    same_input_state = drift.get("same_input_state")
+    if not isinstance(same_input_state, Mapping):
+        same_input_state = {}
+    same_input_phases = same_input_state.get("phase_summaries")
+    if not isinstance(same_input_phases, Mapping):
+        same_input_phases = {}
+    same_input_formal = same_input_phases.get("formal_pre_event")
+    if not isinstance(same_input_formal, Mapping):
+        same_input_formal = {}
+    consumed_replans = drift.get("consumed_replan_transitions")
+    if not isinstance(consumed_replans, Mapping):
+        consumed_replans = {}
+    return {
+        "available": drift.get("available"),
+        "message_count": drift.get("message_count"),
+        "unique_control_header_timestamp_count": drift.get(
+            "unique_control_header_timestamp_count"
+        ),
+        "same_state_duplicate_group_count": drift.get(
+            "same_state_duplicate_group_count"
+        ),
+        "messages_per_same_state_group_p95": drift.get(
+            "messages_per_same_state_group_p95"
+        ),
+        "steering_target_range_p95": drift.get("steering_target_range_p95"),
+        "acceleration_range_p95_mps2": drift.get(
+            "acceleration_range_p95_mps2"
+        ),
+        "same_state_output_drift_group_count": drift.get(
+            "same_state_output_drift_group_count"
+        ),
+        "post_lqr_steering_drift_with_stable_prefilter_group_count": drift.get(
+            "post_lqr_steering_drift_with_stable_prefilter_group_count"
+        ),
+        "formal_pre_event_message_count": formal_pre_event.get("message_count"),
+        "formal_pre_event_duplicate_group_count": formal_pre_event.get(
+            "same_state_duplicate_group_count"
+        ),
+        "formal_pre_event_steering_target_range_p95": formal_pre_event.get(
+            "steering_target_range_p95"
+        ),
+        "formal_pre_event_post_lqr_steering_drift_with_stable_prefilter_group_count": (
+            formal_pre_event.get(
+                "post_lqr_steering_drift_with_stable_prefilter_group_count"
+            )
+        ),
+        "formal_pre_event_same_input_state_complete_ratio": same_input_formal.get(
+            "input_identity_complete_ratio"
+        ),
+        "formal_pre_event_same_input_state_duplicate_group_count": (
+            same_input_formal.get("same_input_state_duplicate_group_count")
+        ),
+        "formal_pre_event_same_input_state_post_lqr_drift_group_count": (
+            same_input_formal.get(
+                "post_lqr_steering_drift_with_stable_prefilter_group_count"
+            )
+        ),
+        "formal_pre_event_consumed_replan_transition_count": consumed_replans.get(
+            "formal_pre_event_transition_count"
+        ),
+        "formal_pre_event_consumed_replans_missing_from_planning_topic_count": (
+            consumed_replans.get(
+                "formal_pre_event_planning_topic_missing_exact_replan_count"
+            )
+        ),
+        "same_state_throttle_brake_state_flip_count": drift.get(
+            "same_state_throttle_brake_state_flip_count"
+        ),
     }
 
 

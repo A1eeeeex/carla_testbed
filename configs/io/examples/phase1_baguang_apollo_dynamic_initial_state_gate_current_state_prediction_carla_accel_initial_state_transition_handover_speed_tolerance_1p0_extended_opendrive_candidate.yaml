@@ -1,0 +1,20 @@
+# Diagnostic handover-boundary follow-up. The strict Planning continuity gate
+# is already satisfied before the automatic-transmission speed drop, while the
+# measured initial speed misses the 0.5m/s setup tolerance by only 0.03-0.06m/s.
+extends: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_initial_state_transition_extended_opendrive_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_initial_state_transition_handover_speed_tolerance_1p0_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_initial_state_gate_current_state_prediction_carla_accel_initial_state_transition_handover_speed_tolerance_1p0_extended_opendrive_candidate
+
+runtime:
+  fixed_scene_player:
+    scene_preroll_speed_tolerance_mps: 1.0
+
+assist_ledger:
+  notes:
+    - Diagnostic-only handover-boundary A/B; the authored 19.44m/s initial-state tolerance is 1.0m/s, about five percent of target speed.
+    - Strict apollo_planning_ready still requires routing success and a fresh NORMAL trajectory with at least two points before actors move; every fallback trajectory remains rejected.
+    - Handover still requires ego and lead inside the explicit speed tolerance, the authored bumper gap, current Planning speed compatibility within 1.0m/s, and two distinct compatible NORMAL messages.
+    - No Planning replan threshold override, velocity hold, manual gear control, route follower, guard, dummy lateral control, or post-handover scene control is enabled.
+    - Any drivetrain speed drop after handover belongs to ApolloBackend behavior; the setup interval is not Apollo acceleration-from-rest or natural-driving evidence.

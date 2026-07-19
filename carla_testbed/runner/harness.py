@@ -98,6 +98,26 @@ def _finite_float(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _hook_termination_outcome(request: dict[str, Any]) -> tuple[bool, str | None, str]:
+    success = bool(request.get("success", True))
+    fail_reason = None
+    if not success:
+        fail_reason = str(request.get("fail_reason") or request.get("reason") or "setup_failed")
+    event_type = "scenario_completed" if success else "scenario_setup_failed"
+    return success, fail_reason, event_type
+
+
+def _failure_reason_for_scene_phase(
+    failure_reason: str | None, metadata: dict[str, Any]
+) -> str | None:
+    if not failure_reason:
+        return failure_reason
+    fixed_scene = metadata.get("fixed_scene_runtime")
+    if isinstance(fixed_scene, dict) and fixed_scene.get("armed") is False:
+        return "setup_failed"
+    return failure_reason
+
+
 def _percentile(values: list[float], percentile: float) -> float | None:
     finite = sorted(value for value in values if _finite_float(value) is not None)
     if not finite:
@@ -316,6 +336,28 @@ class TestHarness:
             "y": loc.y,
             "z": loc.z,
             "heading": math.radians(rot.yaw or 0.0),
+            "pitch": math.radians(rot.pitch or 0.0),
+            "roll": math.radians(rot.roll or 0.0),
+        }
+
+    def _route_curve_ego_acceleration(self, ego) -> dict[str, float] | None:
+        getter = getattr(ego, "get_acceleration", None)
+        if getter is None:
+            return None
+        try:
+            acceleration = getter()
+            transform = ego.get_transform()
+        except Exception as exc:
+            print(f"[WARN] route-curve ego acceleration unavailable: {exc}")
+            return None
+        yaw = math.radians(float(getattr(transform.rotation, "yaw", 0.0) or 0.0))
+        ax = float(getattr(acceleration, "x", 0.0) or 0.0)
+        ay = float(getattr(acceleration, "y", 0.0) or 0.0)
+        az = float(getattr(acceleration, "z", 0.0) or 0.0)
+        return {
+            "longitudinal": ax * math.cos(yaw) + ay * math.sin(yaw),
+            "lateral": -ax * math.sin(yaw) + ay * math.cos(yaw),
+            "vertical": az,
         }
 
     def _route_curve_ego_yaw_rate(self, ego) -> float | None:
@@ -836,6 +878,7 @@ class TestHarness:
                 v = (ego.get_velocity().length())
                 route_curve_ego_pose = self._route_curve_ego_pose(ego)
                 route_curve_ego_yaw_rate = self._route_curve_ego_yaw_rate(ego)
+                route_curve_ego_acceleration = self._route_curve_ego_acceleration(ego)
                 self.state.max_speed_mps = max(self.state.max_speed_mps, v)
                 collisions = col_src.fetch_and_clear() if col_src else []
                 invasions = inv_src.fetch_and_clear() if inv_src else []
@@ -1017,6 +1060,31 @@ class TestHarness:
                     "applied_throttle": applied_throttle,
                     "applied_brake": applied_brake,
                     "applied_steer": applied_steer,
+                    "applied_reverse": applied_snapshot.get("reverse"),
+                    "applied_hand_brake": applied_snapshot.get("hand_brake"),
+                    "applied_manual_gear_shift": applied_snapshot.get("manual_gear_shift"),
+                    "applied_gear": applied_snapshot.get("gear"),
+                    "ego_pitch": (
+                        None if route_curve_ego_pose is None else route_curve_ego_pose.get("pitch")
+                    ),
+                    "ego_roll": (
+                        None if route_curve_ego_pose is None else route_curve_ego_pose.get("roll")
+                    ),
+                    "ego_accel_longitudinal_mps2": (
+                        None
+                        if route_curve_ego_acceleration is None
+                        else route_curve_ego_acceleration.get("longitudinal")
+                    ),
+                    "ego_accel_lateral_mps2": (
+                        None
+                        if route_curve_ego_acceleration is None
+                        else route_curve_ego_acceleration.get("lateral")
+                    ),
+                    "ego_accel_vertical_mps2": (
+                        None
+                        if route_curve_ego_acceleration is None
+                        else route_curve_ego_acceleration.get("vertical")
+                    ),
                     "control_applied_ok": "" if control_apply_result is None else control_apply_result.applied_ok,
                     "control_apply_error": "" if control_apply_result is None else control_apply_result.error or "",
                     "control_actor_id": "" if control_apply_result is None else control_apply_result.actor_id,
@@ -1078,7 +1146,11 @@ class TestHarness:
                     route_s=route_curve_row.get("route_s"),
                 )
 
-                fail_now = self._check_fail(collisions, invasions)
+                behavior_fail_now = self._check_fail(collisions, invasions)
+                fail_now = _failure_reason_for_scene_phase(
+                    behavior_fail_now,
+                    frame_ctx.metadata,
+                )
                 if fail_cap:
                     fail_cap.capture()
 
@@ -1092,6 +1164,7 @@ class TestHarness:
                             "t": timestamp,
                             "step": step,
                             "reason": fail_now,
+                            "underlying_safety_reason": behavior_fail_now,
                         }
                     )
                     if fail_cap:
@@ -1123,10 +1196,14 @@ class TestHarness:
                     break
                 hook_termination = frame_ctx.metadata.get("run_termination_request")
                 if isinstance(hook_termination, dict):
-                    self.state.success = True
+                    termination_success, termination_fail_reason, termination_event_type = (
+                        _hook_termination_outcome(hook_termination)
+                    )
+                    self.state.success = termination_success
+                    self.state.fail_reason = termination_fail_reason
                     artifact_events.append(
                         {
-                            "event_type": "scenario_completed",
+                            "event_type": termination_event_type,
                             "frame": frame_id,
                             "t": timestamp,
                             "step": step,

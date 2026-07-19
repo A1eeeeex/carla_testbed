@@ -1,0 +1,31 @@
+# Default-off Baguang brake-mapping diagnostic. Preserve the matched v32/v33
+# native-Prediction, exact-GT, readiness, Planning, Control, and physical
+# steering setup while mapping only Apollo deceleration requests through the
+# vehicle-scoped CARLA brake calibration. Uncovered requests remain explicit
+# zero-brake results; legacy fallback is forbidden.
+extends: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_physical_brake_candidate
+  profile_name: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_physical_brake_candidate
+
+algo:
+  apollo:
+    control_mapping:
+      actuator_mapping_mode: physical
+      physical:
+        calibration_file: configs/calibration/vehicles/vehicle.lincoln.mkz_2020/steering_brake_v57_diagnostic_candidate.json
+        allow_legacy_fallback: false
+        map_steering: true
+        map_steering_feedback: true
+        map_longitudinal: true
+        map_throttle: false
+        map_brake: true
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only Baguang physical-brake A/B; default-off and ineligible for automatic mapping or Phase 1 profile promotion.
+    - Steering uses the byte-for-byte-equivalent tracked v1 inverse table; steer_scale, steer_sign, Planning, Prediction, exact-GT alignment, readiness/handover, guards, and Town01 remain unchanged.
+    - Only brake requests use the v57 CARLA-direct speed-binned and low-speed inverse. Throttle remains legacy, legacy fallback is forbidden, and uncovered deceleration requests produce observable zero brake.
+    - The calibration has no Apollo-in-loop provenance; online lead_decel_accel evidence is required before any behavior conclusion.

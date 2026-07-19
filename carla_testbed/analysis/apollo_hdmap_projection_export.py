@@ -84,6 +84,24 @@ def infer_map_xysl_config_from_run_dir(
         if isinstance(probe.get("component_paths"), Mapping)
         else {}
     )
+    runtime_map_dir_host = _first_text(
+        [
+            guard.get("runtime_map_dir"),
+            (
+                guard.get("host_container_map_path_mapping", {}).get("runtime_map_dir_host")
+                if isinstance(guard.get("host_container_map_path_mapping"), Mapping)
+                else None
+            ),
+        ]
+    )
+    run_map_basename = (
+        Path(runtime_map_dir_host).name if runtime_map_dir_host else None
+    )
+    inferred_container_family_dir = (
+        str(Path(cfg.map_dir).parent / run_map_basename)
+        if run_map_basename and cfg.map_dir
+        else None
+    )
 
     map_dir = _first_text(
         [
@@ -95,6 +113,7 @@ def infer_map_xysl_config_from_run_dir(
             Path(str(component_paths.get("base_map"))).parent
             if component_paths.get("base_map")
             else None,
+            inferred_container_family_dir,
         ]
     )
     base_map_filename = _first_text(
@@ -104,6 +123,9 @@ def infer_map_xysl_config_from_run_dir(
             else None,
             Path(str(component_paths.get("base_map"))).name
             if component_paths.get("base_map")
+            else None,
+            Path(str(guard.get("effective_bridge_map_file"))).name
+            if guard.get("effective_bridge_map_file")
             else None,
         ]
     )

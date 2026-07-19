@@ -1,0 +1,23 @@
+# Diagnostic Apollo reference-runtime baseline with the frozen Town01 lateral
+# configuration and the explicit mock-clock overlay.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_simtime_reference_stitching_cyberclock_candidate.yaml
+
+run:
+  profile_name: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_simtime_cyberclock_frozen_lateral_candidate
+  claim_profile: false
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Apollo frozen-lateral baseline with explicit mock-clock synchronization; diagnostic only.
+    - Reference-line and trajectory stitching are disabled to preserve the baseline lateral semantics.
+
+algo:
+  apollo:
+    planning:
+      enable_reference_line_stitching: false
+      enable_trajectory_stitcher: false

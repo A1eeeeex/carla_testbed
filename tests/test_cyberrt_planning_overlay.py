@@ -5,6 +5,8 @@ import shlex
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+
 from tbio.backends.cyberrt import CyberRTBackend
 
 
@@ -148,6 +150,443 @@ def test_planning_overlay_default_does_not_touch_control_interactive_replan() ->
     assert "--enable_control_interactive_replan" not in shell
 
 
+def test_planning_overlay_replaces_existing_min_stop_distance_obstacle_flag(
+    tmp_path,
+) -> None:
+    src = tmp_path / "planning.conf"
+    src.write_text(
+        "--flagfile=modules/common/data/global_flagfile.txt\n"
+        "--min_stop_distance_obstacle=6.0\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.conf"
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "planning": {
+                        "min_stop_distance_obstacle_m": 8.0,
+                    }
+                }
+            }
+        }
+    )
+    script = _extract_python_overlay_script(backend._planning_flags_overlay_shell())
+    script = script.replace(
+        "'/apollo/modules/planning/planning_component/conf/planning.conf'",
+        repr(str(src)),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/share/modules/planning/planning_component/conf/planning.conf'",
+        repr(str(tmp_path / "missing-share.conf")),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/src/modules/planning/planning_component/conf/planning.conf'",
+        repr(str(tmp_path / "missing-src.conf")),
+    )
+    script = script.replace(
+        "out=Path('/apollo_workspace/conf_overlay/modules/planning/planning_component/conf/planning.conf'); ",
+        f"out=Path({str(out)!r}); ",
+    )
+
+    subprocess.run(
+        ["python3", "-c", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert out.read_text(encoding="utf-8").splitlines() == [
+        "--flagfile=modules/common/data/global_flagfile.txt",
+        "--min_stop_distance_obstacle=8.000",
+    ]
+
+
+def test_prediction_overlay_can_disable_interactive_tag_assignment() -> None:
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "prediction": {
+                        "enable_interactive_tag": False,
+                    }
+                }
+            }
+        }
+    )
+
+    shell = backend._prediction_flags_overlay_shell()
+    script = _extract_python_overlay_script(shell)
+
+    assert "--enable_interactive_tag=false" in shell
+    assert "--noenable_interactive_tag" in script
+    assert "/apollo/modules/prediction/conf/prediction.conf" in shell
+
+
+def test_prediction_overlay_default_restores_managed_target() -> None:
+    shell = CyberRTBackend({})._prediction_flags_overlay_shell()
+
+    assert "python3 -c" not in shell
+    assert "prediction.conf.carla_testbed.bak" in shell
+    assert "rm -f /apollo_workspace/conf_overlay/modules/prediction/conf/prediction.conf" in shell
+
+
+def test_prediction_cpu_device_materializes_flag_and_process_isolation() -> None:
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "docker": {"start_modules": True},
+                    "prediction": {"compute_device": "cpu"},
+                }
+            }
+        }
+    )
+
+    flags_shell = backend._prediction_flags_overlay_shell()
+    launch_shell = backend._docker_start_modules_cmd()
+
+    assert "--use_cuda=false" in flags_shell
+    assert "--nouse_cuda" in _extract_python_overlay_script(flags_shell)
+    assert "CUDA_VISIBLE_DEVICES='' setsid -f cyber_launch" in launch_shell
+    assert '$(basename "$lf")" = "prediction.launch"' in launch_shell
+
+
+def test_prediction_compute_device_rejects_unknown_value() -> None:
+    backend = CyberRTBackend(
+        {"algo": {"apollo": {"prediction": {"compute_device": "tpu"}}}}
+    )
+
+    with pytest.raises(ValueError, match=r"expected auto\|cpu"):
+        backend._prediction_flags_overlay_shell()
+
+
+def test_managed_module_overlay_restore_script_restores_only_managed_links(
+    tmp_path,
+) -> None:
+    apollo_root = tmp_path / "apollo"
+    overlay_root = tmp_path / "conf_overlay"
+    managed_target = apollo_root / "modules/prediction/conf/prediction.conf"
+    managed_overlay = overlay_root / "modules/prediction/conf/prediction.conf"
+    managed_backup = managed_target.with_name(
+        managed_target.name + ".carla_testbed.bak"
+    )
+    managed_target.parent.mkdir(parents=True)
+    managed_overlay.parent.mkdir(parents=True)
+    managed_overlay.write_text("candidate\n", encoding="utf-8")
+    managed_backup.write_text("baseline\n", encoding="utf-8")
+    managed_target.symlink_to(managed_overlay)
+
+    originally_missing_target = apollo_root / "modules/common/data/vehicle_param.pb.txt"
+    originally_missing_overlay = (
+        overlay_root / "modules/common/data/vehicle_param.pb.txt"
+    )
+    originally_missing_target.parent.mkdir(parents=True)
+    originally_missing_overlay.parent.mkdir(parents=True)
+    originally_missing_overlay.write_text("vehicle candidate\n", encoding="utf-8")
+    originally_missing_target.symlink_to(originally_missing_overlay)
+
+    external_target = apollo_root / "modules/control/conf/control.conf"
+    external_source = tmp_path / "external/control.conf"
+    external_backup = external_target.with_name(
+        external_target.name + ".carla_testbed.bak"
+    )
+    external_target.parent.mkdir(parents=True)
+    external_source.parent.mkdir(parents=True)
+    external_source.write_text("external\n", encoding="utf-8")
+    external_backup.write_text("must-not-restore\n", encoding="utf-8")
+    external_target.symlink_to(external_source)
+
+    script = CyberRTBackend({})._managed_module_overlay_restore_script(
+        apollo_root=apollo_root,
+        overlay_root=overlay_root,
+    )
+    completed = subprocess.run(
+        ["python3", "-c", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert managed_target.is_file()
+    assert not managed_target.is_symlink()
+    assert managed_target.read_text(encoding="utf-8") == "baseline\n"
+    assert not originally_missing_target.exists()
+    assert external_target.is_symlink()
+    assert external_target.resolve() == external_source
+    assert payload["restored_count"] == 1
+    assert payload["removed_count"] == 1
+    assert payload["restored_targets"][0]["target"] == str(managed_target)
+    assert payload["removed_targets"][0]["target"] == str(
+        originally_missing_target
+    )
+
+
+def test_stop_restores_managed_module_overlays(tmp_path, monkeypatch) -> None:
+    backend = CyberRTBackend({})
+    restore_calls = []
+    monkeypatch.setattr(backend, "_artifacts_dir", lambda: tmp_path)
+    monkeypatch.setattr(backend, "_snapshot_docker_modules_status", lambda *_args: None)
+    monkeypatch.setattr(backend, "_cleanup_stale_control_bridge", lambda *_args: None)
+    monkeypatch.setattr(backend, "_cleanup_stale_apollo_bridge", lambda: None)
+    monkeypatch.setattr(backend, "_stop_dreamview", lambda *_args: None)
+    monkeypatch.setattr(backend, "_docker_restore_control_runtime_overlay", lambda *_args: None)
+    monkeypatch.setattr(
+        backend,
+        "_docker_restore_managed_module_overlays",
+        lambda artifacts=None: restore_calls.append(artifacts),
+    )
+    monkeypatch.setattr(backend, "_snapshot_apollo_logs", lambda *_args: None)
+    monkeypatch.setattr(backend, "_snapshot_apollo_bvar_dumps", lambda *_args: None)
+    monkeypatch.setattr(backend, "_snapshot_apollo_internal_debug", lambda *_args: None)
+
+    backend.stop()
+
+    assert restore_calls == [tmp_path]
+
+
+def test_prediction_overlay_replaces_existing_interactive_tag_flags(tmp_path) -> None:
+    src = tmp_path / "prediction.conf"
+    src.write_text(
+        "--flagfile=modules/common/data/global_flagfile.txt\n"
+        "--noenable_interactive_tag\n"
+        "--enable_interactive_tag=true\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.conf"
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "prediction": {
+                        "enable_interactive_tag": False,
+                    }
+                }
+            }
+        }
+    )
+    script = _extract_python_overlay_script(backend._prediction_flags_overlay_shell())
+    script = script.replace(
+        "'/apollo/modules/prediction/conf/prediction.conf.carla_testbed.bak'",
+        repr(str(src)),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/share/modules/prediction/conf/prediction.conf'",
+        repr(str(tmp_path / "missing-share.conf")),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/src/modules/prediction/conf/prediction.conf'",
+        repr(str(tmp_path / "missing-src.conf")),
+    )
+    script = script.replace(
+        "'/apollo/modules/prediction/conf/prediction.conf'",
+        repr(str(tmp_path / "missing-target.conf")),
+    )
+    script = script.replace(
+        "out=Path('/apollo_workspace/conf_overlay/modules/prediction/conf/prediction.conf'); ",
+        f"out=Path({str(out)!r}); ",
+    )
+
+    completed = subprocess.run(
+        ["python3", "-c", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0
+    assert out.read_text(encoding="utf-8").splitlines() == [
+        "--flagfile=modules/common/data/global_flagfile.txt",
+        "--enable_interactive_tag=false",
+    ]
+
+
+def test_prediction_obstacle_overlay_selects_current_state_caution_path() -> None:
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "prediction": {
+                        "vehicle_on_lane_caution_mode": (
+                            "cost_move_sequence_current_state"
+                        ),
+                    }
+                }
+            }
+        }
+    )
+
+    shell = backend._prediction_obstacle_conf_overlay_shell()
+    script = _extract_python_overlay_script(shell)
+
+    assert "COST_EVALUATOR" in script
+    assert "MOVE_SEQUENCE_PREDICTOR" in script
+    assert "VEHICLE/ON_LANE/CAUTION" in script
+    assert "/apollo/modules/prediction/conf/prediction_conf.pb.txt" in shell
+
+
+def test_prediction_obstacle_overlay_default_restores_managed_target() -> None:
+    shell = CyberRTBackend({})._prediction_obstacle_conf_overlay_shell()
+
+    assert "python3 -c" not in shell
+    assert "prediction_conf.pb.txt.carla_testbed.bak" in shell
+    assert (
+        "rm -f /apollo_workspace/conf_overlay/modules/prediction/conf/"
+        "prediction_conf.pb.txt" in shell
+    )
+
+
+def test_prediction_obstacle_overlay_rejects_unknown_mode() -> None:
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "prediction": {
+                        "vehicle_on_lane_caution_mode": "unknown",
+                    }
+                }
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="vehicle_on_lane_caution_mode"):
+        backend._prediction_obstacle_conf_overlay_shell()
+
+
+def test_prediction_obstacle_overlay_rewrites_only_vehicle_on_lane_caution(
+    tmp_path,
+) -> None:
+    src = tmp_path / "prediction_conf.pb.txt"
+    src.write_text(
+        "obstacle_conf {\n"
+        "  obstacle_type: VEHICLE\n"
+        "  obstacle_status: ON_LANE\n"
+        "  priority_type: CAUTION\n"
+        "  evaluator_type: VECTORNET_EVALUATOR\n"
+        "  predictor_type: EXTRAPOLATION_PREDICTOR\n"
+        "}\n"
+        "obstacle_conf {\n"
+        "  obstacle_type: VEHICLE\n"
+        "  obstacle_status: ON_LANE\n"
+        "  priority_type: NORMAL\n"
+        "  evaluator_type: CRUISE_MLP_EVALUATOR\n"
+        "  predictor_type: MOVE_SEQUENCE_PREDICTOR\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.pb.txt"
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "prediction": {
+                        "vehicle_on_lane_caution_mode": (
+                            "cost_move_sequence_current_state"
+                        ),
+                    }
+                }
+            }
+        }
+    )
+    script = _extract_python_overlay_script(
+        backend._prediction_obstacle_conf_overlay_shell()
+    )
+    script = script.replace(
+        "'/apollo/modules/prediction/conf/prediction_conf.pb.txt.carla_testbed.bak'",
+        repr(str(src)),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/share/modules/prediction/conf/prediction_conf.pb.txt'",
+        repr(str(tmp_path / "missing-share.pb.txt")),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/src/modules/prediction/conf/prediction_conf.pb.txt'",
+        repr(str(tmp_path / "missing-src.pb.txt")),
+    )
+    script = script.replace(
+        "'/apollo/modules/prediction/conf/prediction_conf.pb.txt'",
+        repr(str(tmp_path / "missing-target.pb.txt")),
+    )
+    script = script.replace(
+        "out=Path('/apollo_workspace/conf_overlay/modules/prediction/conf/"
+        "prediction_conf.pb.txt'); ",
+        f"out=Path({str(out)!r}); ",
+    )
+
+    completed = subprocess.run(
+        ["python3", "-c", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    updated = out.read_text(encoding="utf-8")
+
+    assert completed.returncode == 0
+    assert updated.count("evaluator_type: COST_EVALUATOR") == 1
+    assert updated.count("predictor_type: MOVE_SEQUENCE_PREDICTOR") == 2
+    assert "evaluator_type: VECTORNET_EVALUATOR" not in updated
+    assert "evaluator_type: CRUISE_MLP_EVALUATOR" in updated
+
+
+def test_module_launch_applies_prediction_flags_before_obstacle_config() -> None:
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "docker": {"start_modules": True},
+                    "prediction": {
+                        "enable_interactive_tag": False,
+                        "vehicle_on_lane_caution_mode": (
+                            "cost_move_sequence_current_state"
+                        ),
+                    },
+                }
+            }
+        }
+    )
+
+    shell = backend._docker_start_modules_cmd()
+
+    flags_overlay = (
+        "/apollo_workspace/conf_overlay/modules/prediction/conf/prediction.conf"
+    )
+    obstacle_overlay = (
+        "/apollo_workspace/conf_overlay/modules/prediction/conf/"
+        "prediction_conf.pb.txt"
+    )
+    assert "--enable_interactive_tag=false" in shell
+    assert "COST_EVALUATOR" in shell
+    assert "MOVE_SEQUENCE_PREDICTOR" in shell
+    assert shell.index(flags_overlay) < shell.index(obstacle_overlay)
+
+
+def test_mock_clock_overlay_is_explicit_and_preserves_default_boundary() -> None:
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "bridge": {
+                        "cyber_clock": {
+                            "enabled": True,
+                            "mode": "mock",
+                            "channel": "/clock",
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+    shell = backend._docker_cyber_clock_prefix()
+
+    assert "MODE_MOCK" in shell
+    assert "/apollo_workspace/conf_overlay/cyber/conf/cyber.pb.conf" in shell
+    assert "export CYBER_PATH=/apollo_workspace/conf_overlay/cyber" in shell
+    assert "CYBER_CLOCK_SOURCE" in shell
+    assert CyberRTBackend({})._docker_cyber_clock_prefix() == ""
+
+
 def test_planning_overlay_replaces_existing_control_interactive_replan_flag(tmp_path, monkeypatch) -> None:
     src = tmp_path / "planning.conf"
     src.parent.mkdir(parents=True, exist_ok=True)
@@ -192,6 +631,68 @@ def test_planning_overlay_replaces_existing_control_interactive_replan_flag(tmp_
     assert completed.returncode == 0
     assert "--enable_control_interactive_replan=true" not in out.read_text(encoding="utf-8")
     assert "--enable_control_interactive_replan=false" in out.read_text(encoding="utf-8")
+
+
+def test_destination_rule_overlay_removes_only_destination(tmp_path) -> None:
+    src = tmp_path / "traffic_rule_config.pb.txt"
+    src.write_text(
+        'rule {\n  name: "BACKSIDE_VEHICLE"\n  type: "BacksideVehicle"\n}\n'
+        'rule {\n  name: "CROSSWALK"\n  type: "Crosswalk"\n}\n'
+        'rule {\n  name: "DESTINATION"\n  type: "Destination"\n}\n'
+        'rule {\n  name: "KEEP_CLEAR"\n  type: "KeepClear"\n}\n'
+        'rule {\n  name: "REFERENCE_LINE_END"\n  type: "ReferenceLineEnd"\n}\n'
+        'rule {\n  name: "REROUTING"\n  type: "Rerouting"\n}\n'
+        'rule {\n  name: "STOP_SIGN"\n  type: "StopSign"\n}\n'
+        'rule {\n  name: "TRAFFIC_LIGHT"\n  type: "TrafficLight"\n}\n'
+        'rule {\n  name: "YIELD_SIGN"\n  type: "YieldSign"\n}\n',
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.pb.txt"
+    backend = CyberRTBackend(
+        {"algo": {"apollo": {"planning": {"disable_destination_rule": True}}}}
+    )
+    script = _extract_python_overlay_script(backend._traffic_rules_pipeline_overlay_shell())
+    script = script.replace(
+        "'/apollo/modules/planning/planning_component/conf/traffic_rule_config.pb.txt'",
+        repr(str(src)),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/share/modules/planning/planning_component/conf/traffic_rule_config.pb.txt'",
+        repr(str(tmp_path / "missing-share.pb.txt")),
+    )
+    script = script.replace(
+        "'/opt/apollo/neo/src/modules/planning/planning_component/conf/traffic_rule_config.pb.txt'",
+        repr(str(tmp_path / "missing-src.pb.txt")),
+    )
+    script = script.replace(
+        "out=Path('/apollo_workspace/conf_overlay/modules/planning/planning_component/conf/traffic_rule_config.pb.txt'); ",
+        f"out=Path({str(out)!r}); ",
+    )
+
+    subprocess.run(["python3", "-c", script], check=True, text=True, capture_output=True)
+
+    text = out.read_text(encoding="utf-8")
+    assert 'name: "DESTINATION"' not in text
+    assert 'type: "Destination"' not in text
+    assert text.count("rule {") == 8
+    for rule_name in (
+        "BACKSIDE_VEHICLE",
+        "CROSSWALK",
+        "KEEP_CLEAR",
+        "REFERENCE_LINE_END",
+        "REROUTING",
+        "STOP_SIGN",
+        "TRAFFIC_LIGHT",
+        "YIELD_SIGN",
+    ):
+        assert f'name: "{rule_name}"' in text
+
+
+def test_destination_rule_overlay_is_default_off() -> None:
+    shell = CyberRTBackend({})._traffic_rules_pipeline_overlay_shell()
+
+    assert "python3 -c" not in shell
+    assert "traffic_rule_config.pb.txt.carla_testbed.bak" in shell
 
 
 def test_control_runtime_dag_overlay_sets_timer_interval(tmp_path) -> None:
@@ -477,6 +978,36 @@ def test_control_lqr_overlay_keeps_query_relative_time_configurable(tmp_path) ->
     text = out.read_text(encoding="utf-8")
     assert "query_relative_time: 0.1800" in text
     assert "query_time_nearest_point_only: true" in text
+
+
+def test_control_lqr_overlay_materializes_cutoff_frequency(tmp_path) -> None:
+    out = tmp_path / "controller_conf.pb.txt"
+    backend = CyberRTBackend(
+        {
+            "algo": {
+                "apollo": {
+                    "control_lqr": {
+                        "enabled": True,
+                        "ts": 0.05,
+                        "cutoff_freq": 2,
+                    }
+                }
+            }
+        }
+    )
+    script = _extract_python_overlay_script(backend._control_lqr_overlay_shell())
+    script = script.replace(
+        "p=Path('/apollo_workspace/conf_overlay/modules/control/controllers/"
+        "lat_based_lqr_controller/conf/controller_conf.pb.txt'); ",
+        f"p=Path({str(out)!r}); ",
+    )
+
+    subprocess.run(["python3", "-c", script], check=True, text=True, capture_output=True)
+
+    text = out.read_text(encoding="utf-8")
+    assert "ts: 0.0500" in text
+    assert "cutoff_freq: 2" in text
+    assert "cutoff_freq: 10" not in text
 
 
 def test_control_lqr_overlay_keeps_lookahead_back_control_configurable(tmp_path) -> None:

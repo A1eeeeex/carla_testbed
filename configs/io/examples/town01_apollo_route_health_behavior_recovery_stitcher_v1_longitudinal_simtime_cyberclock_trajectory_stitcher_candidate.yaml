@@ -1,0 +1,26 @@
+# Diagnostic Apollo reference-runtime A/B candidate.
+#
+# Keep reference-line stitching frozen while enabling only the trajectory
+# stitcher. This isolates longitudinal trajectory continuity from the known
+# lateral reference-line regression. It is not a claim-grade profile.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_simtime_cyberclock_frozen_lateral_candidate.yaml
+
+run:
+  profile_name: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_simtime_cyberclock_trajectory_stitcher_candidate
+  claim_profile: false
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic trajectory-stitcher A/B; not a natural-driving claim profile.
+    - Reference-line stitching remains disabled to preserve the frozen lateral configuration.
+
+algo:
+  apollo:
+    planning:
+      enable_reference_line_stitching: false
+      enable_trajectory_stitcher: true

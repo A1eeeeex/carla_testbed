@@ -1,0 +1,28 @@
+# Default-off diagnostic for Apollo Control state-update cadence. The current
+# CARLA world, Localization/Chassis publication, and actuator application all
+# advance at one 50 ms simulation tick, while Apollo Control runs every 10 ms
+# and can update its internal filters several times on the same GT timestamp.
+# Align the Control timer and LQR discrete step with that observed state tick;
+# keep Planning, mapping, scenario ownership, and every guard unchanged.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_physical_steering_fresh_gt_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_extended_opendrive_candidate
+  profile_name: phase1_baguang_apollo_dynamic_control_state_cadence_aligned_extended_opendrive_candidate
+  # Compatibility runtime dispatch currently requires the inherited claim-profile
+  # flag; assist_ledger below remains the capability-claim boundary.
+  claim_profile: true
+
+algo:
+  apollo:
+    control_runtime:
+      control_interval_ms: 50
+    control_lqr:
+      ts: 0.05
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only Apollo Control cadence A/B; default-off and not a mapping, controller-gain, or natural-driving promotion.
+    - Apollo Control timer and LQR discrete step match the observed 20 Hz CARLA/GT state cadence so one simulation state is not consumed repeatedly by controller filters.
+    - The matched road, strict planning-ready and exact NORMAL handover gates, authored initial state, physical steering calibration, legacy longitudinal mapping, and disabled guards remain unchanged.

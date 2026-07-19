@@ -1,0 +1,32 @@
+# Diagnostic ownership follow-up to the replan-confirmed target-speed handover.
+# Give ego to Apollo as soon as routing plus a fresh multi-point NORMAL Planning
+# trajectory exists. The fixed-scene runtime controls only the lead during
+# setup; formal time still waits for 70kph/20m and the existing compatible
+# replan plus distinct NORMAL confirmation.
+extends: phase1_baguang_apollo_dynamic_handover_replan_confirmed_physical_steering_fresh_gt_coherent_simtime_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_planning_ready_early_handover_physical_steering_fresh_gt_coherent_simtime_candidate
+  profile_name: phase1_baguang_apollo_dynamic_planning_ready_early_handover_physical_steering_fresh_gt_coherent_simtime_candidate
+
+runtime:
+  fixed_scene_player:
+    scene_preroll_ego_handover_mode: planning_ready
+    scene_preroll_lead_speed_headroom_mps: 0.5
+    scene_preroll_lead_acceleration_mps2: 0.8
+
+algo:
+  apollo:
+    bridge:
+      obstacle_time_source: source_time
+      obstacle_publish_policy: source_fresh
+
+assist_ledger:
+  notes:
+    - Diagnostic-only early ownership candidate; Apollo controls ego throughout setup acceleration after the Planning-ready handover.
+    - The fixed-scene runtime controls only the lead actor after handover and never applies ego steering, throttle, or brake.
+    - Lead setup speed follows an independent 0.8m/s2 time ramp with 0.5m/s headroom plus gap correction, avoiding both a circular ego-follow-lead loop and the observed lead run-away during startup.
+    - Obstacle headers preserve the ROS2 GT object payload timestamp instead of relabeling a cached 10Hz object sample with the latest 20Hz localization time.
+    - Each distinct ROS2 GT object source frame observed by the bridge is published to Apollo exactly once; the bridge no longer applies a second fixed-rate gate or republishes a cached source timestamp into Prediction history.
+    - Formal scenario time still requires the declared 70kph/20m state and the inherited compatible replan plus distinct NORMAL confirmation.
+    - Physical steering remains candidate-only, longitudinal mapping stays legacy, all lateral guards remain disabled, and this is not a natural-driving claim.

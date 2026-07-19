@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from carla_testbed.platform.compiler import compile_run_plan, write_run_plan
-from carla_testbed.platform.executor import execute_run_plan
+from carla_testbed.platform.executor import _phase1_status_needs_refresh, execute_run_plan
 from carla_testbed.platform.registry import PlatformRegistry
 
 
@@ -94,3 +94,43 @@ def test_cli_plan_show_launch_outputs_backend_launch_plan(tmp_path: Path) -> Non
 
     assert "launch_plan_preview.v1" in result.stdout
     assert "legacy_apollo_cyberrt_compat" in result.stdout
+
+
+def test_stale_missing_required_phase1_status_is_refreshed_after_nested_artifacts(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    (run / "analysis" / "phase1_status").mkdir(parents=True)
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "lane_keep",
+                "scenario_id": "town01_lane_keep_097",
+                "scenario_class": "lane_keep",
+                "backend": "apollo_cyberrt",
+                "backend_type": "apollo_reference_backend",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text(
+        json.dumps({"run_id": "lane_keep", "success": True}),
+        encoding="utf-8",
+    )
+    (run / "timeseries.csv").write_text("sim_time,ego_speed_mps\n0.0,1.0\n", encoding="utf-8")
+    (run / "analysis" / "v_t_gap").mkdir(parents=True)
+    (run / "analysis" / "v_t_gap" / "v_t_gap_report.json").write_text(
+        json.dumps({"status": "not_applicable", "warnings": ["lane_keep"]}),
+        encoding="utf-8",
+    )
+    status_path = run / "analysis" / "phase1_status" / "phase1_status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1_status.v1",
+                "status": "invalid",
+                "failure_reason": "missing_required_artifact",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _phase1_status_needs_refresh(status_path, artifact_normalization=None) is True

@@ -294,6 +294,87 @@ def _phase1_fixed_scene_runtime_settings(effective_cfg: Dict[str, Any]) -> Dict[
         ),
         "ego_speed_ready_mps": float(runtime_cfg.get("ego_speed_ready_mps") or 0.0),
         "ego_speed_ready_hold_ticks": int(runtime_cfg.get("ego_speed_ready_hold_ticks") or 1),
+        "planning_ready_min_nonempty_count": int(
+            runtime_cfg.get("planning_ready_min_nonempty_count") or 1
+        ),
+        "planning_ready_require_routing_success": bool(
+            runtime_cfg.get("planning_ready_require_routing_success", True)
+        ),
+        "planning_ready_min_trajectory_points": int(
+            runtime_cfg.get("planning_ready_min_trajectory_points") or 2
+        ),
+        "planning_ready_disallow_fallback": bool(
+            runtime_cfg.get("planning_ready_disallow_fallback", True)
+        ),
+        "planning_ready_max_message_age_s": runtime_cfg.get(
+            "planning_ready_max_message_age_s"
+        ),
+        "scene_preroll_enabled": bool(runtime_cfg.get("scene_preroll_enabled", False)),
+        "scene_preroll_target_speed_mps": runtime_cfg.get("scene_preroll_target_speed_mps"),
+        "scene_preroll_materialize_initial_speeds_on_gate": bool(
+            runtime_cfg.get(
+                "scene_preroll_materialize_initial_speeds_on_gate", False
+            )
+        ),
+        "scene_preroll_ego_handover_mode": str(
+            runtime_cfg.get("scene_preroll_ego_handover_mode") or "target_ready"
+        ),
+        "scene_preroll_lead_speed_headroom_mps": float(
+            runtime_cfg.get("scene_preroll_lead_speed_headroom_mps", 1.5)
+        ),
+        "scene_preroll_lead_acceleration_mps2": float(
+            runtime_cfg.get("scene_preroll_lead_acceleration_mps2", 1.5)
+        ),
+        "scene_preroll_speed_tolerance_mps": float(
+            runtime_cfg.get("scene_preroll_speed_tolerance_mps") or 0.5
+        ),
+        "scene_preroll_gap_tolerance_m": float(
+            runtime_cfg.get("scene_preroll_gap_tolerance_m") or 1.0
+        ),
+        "scene_preroll_ready_hold_ticks": int(
+            runtime_cfg.get("scene_preroll_ready_hold_ticks") or 10
+        ),
+        "scene_preroll_planning_speed_gate_enabled": bool(
+            runtime_cfg.get("scene_preroll_planning_speed_gate_enabled", False)
+        ),
+        "scene_preroll_planning_current_speed_tolerance_mps": float(
+            runtime_cfg.get("scene_preroll_planning_current_speed_tolerance_mps") or 1.0
+        ),
+        "scene_preroll_planning_lookahead_speed_gate_enabled": bool(
+            runtime_cfg.get(
+                "scene_preroll_planning_lookahead_speed_gate_enabled", True
+            )
+        ),
+        "scene_preroll_planning_lookahead_speed_tolerance_mps": float(
+            runtime_cfg.get("scene_preroll_planning_lookahead_speed_tolerance_mps") or 2.0
+        ),
+        "scene_preroll_planning_compatible_min_messages": int(
+            runtime_cfg.get("scene_preroll_planning_compatible_min_messages") or 1
+        ),
+        "scene_preroll_planning_require_replan_anchor": bool(
+            runtime_cfg.get(
+                "scene_preroll_planning_require_replan_anchor", False
+            )
+        ),
+        "planning_ready_require_initial_replan_anchor": bool(
+            runtime_cfg.get(
+                "planning_ready_require_initial_replan_anchor",
+                runtime_cfg.get(
+                    "scene_preroll_planning_require_replan_anchor", False
+                ),
+            )
+        ),
+        "scene_preroll_drivetrain_gate_enabled": bool(
+            runtime_cfg.get("scene_preroll_drivetrain_gate_enabled", False)
+        ),
+        "scene_preroll_drivetrain_max_abs_acceleration_mps2": float(
+            runtime_cfg.get(
+                "scene_preroll_drivetrain_max_abs_acceleration_mps2", 2.0
+            )
+        ),
+        "scene_preroll_max_time_s": float(
+            runtime_cfg.get("scene_preroll_max_time_s") or 30.0
+        ),
         "source": "runtime.fixed_scene_player" if runtime_cfg else "phase1_scenario_path",
     }
 
@@ -1695,6 +1776,7 @@ def main():
         "wait_ready_attempts": [],
         "get_world_attempts": [],
         "load_world_attempts": [],
+        "opendrive_world_attempts": [],
         "current_town_before_load": None,
         "final_town": None,
     }
@@ -2212,6 +2294,32 @@ def main():
     carla_load_world_attempts = int(runtime_carla_cfg.get("load_world_attempts", 3) or 3)
     carla_load_world_delay_sec = float(runtime_carla_cfg.get("load_world_delay_sec", 3.0) or 3.0)
     carla_load_world_timeout_sec = float(runtime_carla_cfg.get("load_world_timeout_sec", 60.0) or 60.0)
+    opendrive_cfg = runtime_carla_cfg.get("opendrive")
+    if opendrive_cfg is not None and not isinstance(opendrive_cfg, dict):
+        raise ValueError("runtime.carla.opendrive must be a mapping")
+    opendrive_enabled = bool(
+        isinstance(opendrive_cfg, dict)
+        and _config_bool(opendrive_cfg.get("enabled"), default=False)
+    )
+    opendrive_path = None
+    opendrive_generation_parameters = None
+    opendrive_expected_map_name = "OpenDriveMap"
+    if opendrive_enabled:
+        raw_opendrive_path = str(opendrive_cfg.get("path") or "").strip()
+        if not raw_opendrive_path:
+            raise ValueError("runtime.carla.opendrive.path is required when enabled")
+        opendrive_path = Path(raw_opendrive_path).expanduser()
+        if not opendrive_path.is_absolute():
+            opendrive_path = (repo_root / opendrive_path).resolve()
+        opendrive_generation_parameters = opendrive_cfg.get("generation_parameters")
+        if opendrive_generation_parameters is not None and not isinstance(
+            opendrive_generation_parameters,
+            dict,
+        ):
+            raise ValueError("runtime.carla.opendrive.generation_parameters must be a mapping")
+        opendrive_expected_map_name = str(
+            opendrive_cfg.get("expected_map_name") or "OpenDriveMap"
+        )
     carla_launch_with_map = _config_bool(runtime_carla_cfg.get("launch_with_map"), default=True)
     carla_env_overrides = _followstop_carla_env_overrides(runtime_carla_cfg)
     carla_bootstrap_stability_window_s = float(
@@ -2232,6 +2340,11 @@ def main():
             "force_headless_env": bool(_config_bool(runtime_carla_cfg.get("force_headless_env"), default=False)),
             "use_systemd_scope_memory_guard": bool(carla_use_memory_guard),
             "bootstrap_stability_window_s": carla_bootstrap_stability_window_s,
+            "world_source": "opendrive" if opendrive_enabled else "packaged_map",
+            "opendrive_path": str(opendrive_path) if opendrive_path is not None else "",
+            "opendrive_expected_map_name": (
+                opendrive_expected_map_name if opendrive_enabled else ""
+            ),
         }
     )
     if args.start_carla:
@@ -2393,6 +2506,43 @@ def main():
             _write_carla_world_ready_summary(status="carla_get_world_failed", error=payload.get("error"))
             _write_carla_world_ready_event("carla_get_world_failed", **payload)
             return
+        if phase == "generate_opendrive_world_attempt_start":
+            if int(payload.get("attempt") or 0) == 1:
+                _write_startup_stage(
+                    "carla_generate_opendrive_world_start",
+                    target_town=args.town,
+                    opendrive_path=payload.get("opendrive_path"),
+                    opendrive_sha256=payload.get("opendrive_sha256"),
+                )
+                _write_carla_world_ready_summary(status="carla_generate_opendrive_world_start")
+            _write_carla_world_ready_event("carla_generate_opendrive_world_attempt_start", **payload)
+            return
+        if phase == "generate_opendrive_world_attempt_ok":
+            row["success"] = True
+            carla_world_ready_summary["opendrive_world_attempts"].append(row)
+            _write_carla_world_ready_summary(
+                status="carla_generate_opendrive_world_ok",
+                final_town=row.get("loaded_map_name"),
+                opendrive_path=row.get("opendrive_path"),
+                opendrive_sha256=row.get("opendrive_sha256"),
+                opendrive_bytes=row.get("opendrive_bytes"),
+                opendrive_generation_parameters=row.get("generation_parameters"),
+            )
+            _write_carla_world_ready_event("carla_generate_opendrive_world_attempt_ok", **row)
+            return
+        if phase == "generate_opendrive_world_attempt_failed":
+            row["success"] = False
+            carla_world_ready_summary["opendrive_world_attempts"].append(row)
+            _write_carla_world_ready_summary(status="carla_generate_opendrive_world_retrying")
+            _write_carla_world_ready_event("carla_generate_opendrive_world_attempt_failed", **row)
+            return
+        if phase == "generate_opendrive_world_failed":
+            _write_carla_world_ready_summary(
+                status="carla_generate_opendrive_world_failed",
+                error=payload.get("error"),
+            )
+            _write_carla_world_ready_event("carla_generate_opendrive_world_failed", **payload)
+            return
         if phase == "load_world_attempt_start":
             if int(payload.get("attempt") or 0) == 1:
                 current_town_before_load = str(carla_world_ready_summary.get("current_town_before_load") or "")
@@ -2446,6 +2596,9 @@ def main():
         load_world_attempts=carla_load_world_attempts,
         load_world_delay_s=carla_load_world_delay_sec,
         load_world_timeout_s=carla_load_world_timeout_sec,
+        opendrive_path=opendrive_path,
+        opendrive_generation_parameters=opendrive_generation_parameters,
+        opendrive_expected_map_name=opendrive_expected_map_name,
         root=args.carla_root,
         attempt_callback=_record_bringup_phase,
     )
@@ -2458,7 +2611,41 @@ def main():
         current_town_before_load=current_town,
     )
     _write_carla_world_ready_event("carla_get_world_ok", current_town=current_town)
-    if current_town != args.town:
+    if opendrive_enabled:
+        loaded_town = str(bringup_result.final_town or "")
+        _write_startup_stage(
+            "carla_generate_opendrive_world_ok",
+            current_town=loaded_town,
+            opendrive_path=str(opendrive_path),
+        )
+        _write_carla_world_ready_summary(status="world_ready", final_town=loaded_town)
+        _write_carla_world_ready_event(
+            "carla_generate_opendrive_world_ok",
+            current_town=loaded_town,
+            opendrive_path=str(opendrive_path),
+        )
+        (out_run_dir / "artifacts" / "carla_opendrive_world.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "carla_opendrive_world.v1",
+                    "status": "materialized",
+                    "configured_town": str(args.town),
+                    "loaded_map_name": loaded_town,
+                    "opendrive_path": str(opendrive_path),
+                    "opendrive_sha256": carla_world_ready_summary.get("opendrive_sha256"),
+                    "opendrive_bytes": carla_world_ready_summary.get("opendrive_bytes"),
+                    "generation_parameters": dict(opendrive_generation_parameters or {}),
+                    "claim_boundary": (
+                        "CARLA world materialization evidence only; not backend behavior evidence."
+                    ),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    elif current_town != args.town:
         loaded_town = str(bringup_result.final_town or "")
         _write_startup_stage("carla_load_world_ok", current_town=loaded_town)
         _write_carla_world_ready_summary(status="world_ready", final_town=loaded_town)
@@ -2723,17 +2910,23 @@ def main():
                 scenario_path=scenario_path,
                 replace_legacy_front=bool(fixed_scene_runtime_settings["replace_legacy_front"]),
             )
+            requested_start_gate = fixed_scene_runtime_settings["start_gate"]
+            fixed_scene_start_gate = (
+                requested_start_gate
+                if requested_start_gate == "apollo_planning_ready"
+                else (
+                    "prestarted_scene_pending"
+                    if apollo_prestarted_fixed_scene
+                    else requested_start_gate
+                )
+            )
             fixed_scene_runtime_hook = setup_fixed_scene_runtime_hook(
                 world=world,
                 ego_actor=ego,
                 run_dir=out_run_dir,
                 artifact_dir=out_run_dir / "artifacts",
                 scenario_path=scenario_path,
-                start_gate=(
-                    "prestarted_scene_pending"
-                    if apollo_prestarted_fixed_scene
-                    else fixed_scene_runtime_settings["start_gate"]
-                ),
+                start_gate=fixed_scene_start_gate,
                 materialize_ego_initial_speed_on_arm=bool(
                     fixed_scene_runtime_settings["materialize_ego_initial_speed"]
                 ),
@@ -2757,6 +2950,102 @@ def main():
                 ego_speed_ready_mps=float(fixed_scene_runtime_settings["ego_speed_ready_mps"]),
                 ego_speed_ready_hold_ticks=int(
                     fixed_scene_runtime_settings["ego_speed_ready_hold_ticks"]
+                ),
+                planning_ready_min_nonempty_count=int(
+                    fixed_scene_runtime_settings["planning_ready_min_nonempty_count"]
+                ),
+                planning_ready_require_routing_success=bool(
+                    fixed_scene_runtime_settings["planning_ready_require_routing_success"]
+                ),
+                planning_ready_min_trajectory_points=int(
+                    fixed_scene_runtime_settings["planning_ready_min_trajectory_points"]
+                ),
+                planning_ready_disallow_fallback=bool(
+                    fixed_scene_runtime_settings["planning_ready_disallow_fallback"]
+                ),
+                planning_ready_max_message_age_s=fixed_scene_runtime_settings[
+                    "planning_ready_max_message_age_s"
+                ],
+                scene_preroll_enabled=bool(
+                    fixed_scene_runtime_settings["scene_preroll_enabled"]
+                ),
+                scene_preroll_target_speed_mps=fixed_scene_runtime_settings[
+                    "scene_preroll_target_speed_mps"
+                ],
+                scene_preroll_materialize_initial_speeds_on_gate=bool(
+                    fixed_scene_runtime_settings[
+                        "scene_preroll_materialize_initial_speeds_on_gate"
+                    ]
+                ),
+                scene_preroll_ego_handover_mode=str(
+                    fixed_scene_runtime_settings["scene_preroll_ego_handover_mode"]
+                ),
+                scene_preroll_lead_speed_headroom_mps=float(
+                    fixed_scene_runtime_settings[
+                        "scene_preroll_lead_speed_headroom_mps"
+                    ]
+                ),
+                scene_preroll_lead_acceleration_mps2=float(
+                    fixed_scene_runtime_settings[
+                        "scene_preroll_lead_acceleration_mps2"
+                    ]
+                ),
+                scene_preroll_speed_tolerance_mps=float(
+                    fixed_scene_runtime_settings["scene_preroll_speed_tolerance_mps"]
+                ),
+                scene_preroll_gap_tolerance_m=float(
+                    fixed_scene_runtime_settings["scene_preroll_gap_tolerance_m"]
+                ),
+                scene_preroll_ready_hold_ticks=int(
+                    fixed_scene_runtime_settings["scene_preroll_ready_hold_ticks"]
+                ),
+                scene_preroll_planning_speed_gate_enabled=bool(
+                    fixed_scene_runtime_settings[
+                        "scene_preroll_planning_speed_gate_enabled"
+                    ]
+                ),
+                scene_preroll_planning_current_speed_tolerance_mps=float(
+                    fixed_scene_runtime_settings[
+                        "scene_preroll_planning_current_speed_tolerance_mps"
+                    ]
+                ),
+                scene_preroll_planning_lookahead_speed_gate_enabled=bool(
+                    fixed_scene_runtime_settings[
+                        "scene_preroll_planning_lookahead_speed_gate_enabled"
+                    ]
+                ),
+                scene_preroll_planning_lookahead_speed_tolerance_mps=float(
+                    fixed_scene_runtime_settings[
+                        "scene_preroll_planning_lookahead_speed_tolerance_mps"
+                    ]
+                ),
+                scene_preroll_planning_compatible_min_messages=int(
+                    fixed_scene_runtime_settings[
+                        "scene_preroll_planning_compatible_min_messages"
+                    ]
+                ),
+                scene_preroll_planning_require_replan_anchor=bool(
+                    fixed_scene_runtime_settings[
+                        "scene_preroll_planning_require_replan_anchor"
+                    ]
+                ),
+                planning_ready_require_initial_replan_anchor=bool(
+                    fixed_scene_runtime_settings[
+                        "planning_ready_require_initial_replan_anchor"
+                    ]
+                ),
+                scene_preroll_drivetrain_gate_enabled=bool(
+                    fixed_scene_runtime_settings[
+                        "scene_preroll_drivetrain_gate_enabled"
+                    ]
+                ),
+                scene_preroll_drivetrain_max_abs_acceleration_mps2=float(
+                    fixed_scene_runtime_settings[
+                        "scene_preroll_drivetrain_max_abs_acceleration_mps2"
+                    ]
+                ),
+                scene_preroll_max_time_s=float(
+                    fixed_scene_runtime_settings["scene_preroll_max_time_s"]
                 ),
             )
             cleanup_state["fixed_scene_runtime_hook"] = fixed_scene_runtime_hook
@@ -2916,12 +3205,19 @@ def main():
             )
             _start_stack_adapter("post_scenario_spawn")
             if apollo_prestarted_fixed_scene and fixed_scene_runtime_hook is not None:
-                readiness = fixed_scene_runtime_hook.arm_prestarted_scene()
-                _write_startup_stage(
-                    "apollo_fixed_scene_armed_before_harness",
-                    readiness=readiness,
-                    active_roles=fixed_scene_runtime_hook.runtime.active_roles(),
-                )
+                if fixed_scene_runtime_settings["start_gate"] == "apollo_planning_ready":
+                    _write_startup_stage(
+                        "apollo_fixed_scene_waiting_for_planning_ready",
+                        start_gate=fixed_scene_runtime_settings["start_gate"],
+                        active_roles=fixed_scene_runtime_hook.runtime.active_roles(),
+                    )
+                else:
+                    readiness = fixed_scene_runtime_hook.arm_prestarted_scene()
+                    _write_startup_stage(
+                        "apollo_fixed_scene_armed_before_harness",
+                        readiness=readiness,
+                        active_roles=fixed_scene_runtime_hook.runtime.active_roles(),
+                    )
 
         ros2_runner = _build_ros2_runner(effective_cfg, adapter_started)
 

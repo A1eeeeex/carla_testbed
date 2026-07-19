@@ -1,0 +1,24 @@
+# Default-off diagnostic candidate for the Baguang bridge publish-loop A/B.
+# Keep the fresh-GT input policy and physical-steering candidate unchanged; only
+# move the heavyweight periodic stats JSON write off the 20 Hz deadline.
+extends: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_physical_steering_fresh_gt_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_physical_steering_fresh_gt_stats_flush_2s_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_native_state_drivetrain_ready_extended_opendrive_physical_steering_fresh_gt_stats_flush_2s_candidate
+
+algo:
+  apollo:
+    bridge:
+      # The 0.1 s diagnostic flush inherited by this Baguang profile can write
+      # a multi-megabyte cyber_bridge_stats.json synchronously in the GT loop.
+      # Two seconds preserves live readiness snapshots while removing that
+      # per-100-ms write from the control/input deadline.
+      artifact_stats_flush_interval_s: 2.0
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only publish-loop A/B; default-off and not a physical-mapping or natural-driving claim.
+    - The only behavioral input change from the fresh-GT candidate is the periodic stats flush interval.
+    - Fresh Localization/Chassis publication, strict planning-ready gate, native-state startup, drivetrain handover, steering calibration, longitudinal legacy mapping, and disabled lateral guards remain unchanged.

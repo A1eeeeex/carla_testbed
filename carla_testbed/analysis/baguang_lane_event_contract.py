@@ -44,6 +44,7 @@ def analyze_baguang_lane_event_contract(
     *,
     xodr_path: str | Path = DEFAULT_BAGUANG_XODR,
     run_dirs: Iterable[str | Path] = (),
+    map_name: str = "straight_road_for_baguang",
     target_lane_id: int = DEFAULT_TARGET_LANE_ID,
     ego_half_width_m: float = DEFAULT_EGO_HALF_WIDTH_M,
     cte_warn_m: float = DEFAULT_CTE_WARN_M,
@@ -82,7 +83,7 @@ def analyze_baguang_lane_event_contract(
     report = {
         "schema_version": BAGUANG_LANE_EVENT_CONTRACT_SCHEMA_VERSION,
         "status": status,
-        "map_name": "straight_road_for_baguang",
+        "map_name": str(map_name),
         "xodr": xodr_report,
         "run_reports": run_reports,
         "quarantine_recommended": quarantine,

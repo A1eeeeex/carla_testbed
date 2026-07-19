@@ -1,0 +1,26 @@
+# Default-off Baguang longitudinal-actuation A/B.  The current CARLA 0.9.16
+# Lincoln probe reaches roughly -4 m/s^2 with brake=0.10, while Apollo's
+# loaded speed/acceleration table requests about 0.26 for the same response.
+# Keep Apollo Planning/Control and the legacy longitudinal path intact, but
+# scale its brake percentage into the measured CARLA command domain.
+extends: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_brake_scale_candidate
+  profile_name: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_brake_scale_candidate
+
+algo:
+  apollo:
+    control_mapping:
+      # 0.10 / 0.26 ~= 0.38 from the isolated same-vehicle brake probe.
+      brake_scale: 0.38
+      # This remains in normalized CARLA command units.  Lower it with the
+      # scale so ordinary Apollo corrections are not erased after scaling.
+      brake_deadzone: 0.01
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only Baguang brake-domain A/B; default-off and not a Planning, Control, guard, route-follower, physical-longitudinal, or natural-driving promotion.
+    - The 0.38 scale is derived from a CARLA-direct Lincoln probe at about 5-6 m/s, where brake 0.10 produced about -4 m/s2 and brake 0.26 reproduced the near-stop seen online.
+    - Native Prediction, exact source-time obstacle alignment, strict NORMAL readiness/handover, physical steering quarantine, disabled guards, and the matched extended road remain unchanged.

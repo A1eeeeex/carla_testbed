@@ -1,0 +1,32 @@
+# Default-off ownership-boundary A/B for the canonical lead_decel_accel case.
+# The ScenarioCase already declares both actors at 19.44 m/s at formal time
+# zero. Materialize that authored initial condition only after strict Apollo
+# Planning readiness, then require two post-materialization NORMAL trajectories
+# to agree with the new current speed before handing ego to Apollo. This avoids
+# scene-driving ego from rest for several seconds without accepting the stale
+# stationary trajectory that opened the initial gate.
+extends: phase1_baguang_apollo_dynamic_sidecar_eager_control_overlay_low_capture_paced_compat.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_minimal_candidate
+  profile_name: phase1_baguang_apollo_dynamic_authored_initial_speed_gate_minimal_candidate
+
+runtime:
+  fixed_scene_player:
+    scene_preroll_materialize_initial_speeds_on_gate: true
+    scene_preroll_speed_tolerance_mps: 1.0
+    scene_preroll_planning_speed_gate_enabled: true
+    scene_preroll_planning_current_speed_tolerance_mps: 1.0
+    scene_preroll_planning_lookahead_speed_gate_enabled: false
+    scene_preroll_planning_compatible_min_messages: 2
+    scene_preroll_planning_require_replan_anchor: false
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only ownership-boundary A/B for the authored 70kph initial condition; this is not Apollo acceleration from rest.
+    - Ego and lead remain stationary until Routing succeeds and a fresh multi-point NORMAL trajectory opens apollo_planning_ready.
+    - Handover requires two distinct post-materialization NORMAL Planning messages whose current trajectory speed is within 1.0m/s of ego; any fallback or incompatible message resets the count.
+    - The one-second lookahead speed remains Apollo behavior rather than a setup condition, and no replan flag is required once two fresh compatible messages establish continuity.
+    - The candidate changes only one-shot initial-speed materialization and setup-handover compatibility; Prediction, map, steering, longitudinal mapping, Planning constraints, and guards remain inherited from the matched baseline.
+    - Formal scenario time and Apollo CARLA publication still begin only after the atomic handover; fallback Planning remains rejected.

@@ -64,6 +64,7 @@ class ControlMappingConfig:
     physical_map_longitudinal: bool = True
     physical_map_throttle: bool = True
     physical_map_brake: bool = True
+    physical_steering_speed_compensation_enabled: bool = False
 
 
 def select_steering_field(
@@ -157,6 +158,8 @@ def legacy_map_base_controls(
         "mapped_throttle_cmd": throttle,
         "mapped_brake_cmd": brake,
         "mapped_carla_steer_cmd": steer,
+        "actuator_mapping_speed_mps": None,
+        "decel_actuation_mapping_source": "legacy_scale",
         "physical_fallback_reason": "",
         "target_accel_source": "",
         "target_decel_source": "",
@@ -362,13 +365,28 @@ def physical_map_base_controls(
     out["mode"] = "physical"
     out["physical_fallback_reason"] = ""
     target_front_wheel_angle_deg = None
+    steering_speed_tracking_ratio = None
+    steering_calibration_query_angle_deg = None
+    steering_speed_compensation_applied = False
     if config.physical_map_steering:
         target_front_wheel_angle_deg = (
             float(raw_steer)
             * float(config.steer_sign)
             * float(config.physical_apollo_max_steer_angle_deg)
         )
-        mapped_steer = calibration.steering_cmd_for_angle(target_front_wheel_angle_deg)
+        steering_calibration_query_angle_deg = target_front_wheel_angle_deg
+        if config.physical_steering_speed_compensation_enabled:
+            steering_speed_tracking_ratio = calibration.steering_speed_tracking_ratio(
+                latest_speed_mps
+            )
+            if steering_speed_tracking_ratio is not None:
+                steering_calibration_query_angle_deg = (
+                    target_front_wheel_angle_deg / steering_speed_tracking_ratio
+                )
+                steering_speed_compensation_applied = True
+        mapped_steer = calibration.steering_cmd_for_angle(
+            steering_calibration_query_angle_deg
+        )
         if mapped_steer is None and config.physical_allow_legacy_fallback:
             out["steer_source"] = "legacy_scale_fallback"
             out["physical_fallback_reason"] = "steering_inverse_missing"
@@ -386,6 +404,8 @@ def physical_map_base_controls(
         config=config,
     )
     speed_mps = max(0.0, float(latest_speed_mps))
+    out["actuator_mapping_speed_mps"] = speed_mps
+    out["decel_actuation_mapping_source"] = ""
     target_accel = float(targets["target_accel_mps2"])
     target_decel = float(targets["target_decel_mps2"])
     if config.physical_map_throttle and target_decel <= 0.0:
@@ -410,6 +430,9 @@ def physical_map_base_controls(
         out["throttle_source"] = "legacy_scale_component_disabled"
     if config.physical_map_brake and target_decel > 0.0:
         decel_mapping = calibration.decel_actuation_mapping(target_decel, speed_mps=speed_mps)
+        out["decel_actuation_mapping_source"] = str(
+            decel_mapping.get("source") or "missing_decel_mapping"
+        )
         mapped_decel_throttle = decel_mapping.get("throttle_cmd")
         mapped_brake = decel_mapping.get("brake_cmd")
         if mapped_decel_throttle is not None and float(mapped_decel_throttle) > 0.0:
@@ -441,10 +464,18 @@ def physical_map_base_controls(
         out["brake_before_deadzone"] = 0.0
         out["brake_after_deadzone"] = 0.0
         out["brake_source"] = "zero_request"
+        out["decel_actuation_mapping_source"] = "zero_request"
     else:
         out["brake_source"] = "legacy_scale_component_disabled"
+        out["decel_actuation_mapping_source"] = "component_disabled"
     out.update(targets)
     out["target_front_wheel_angle_deg"] = target_front_wheel_angle_deg
+    out["steering_speed_compensation_enabled"] = bool(
+        config.physical_steering_speed_compensation_enabled
+    )
+    out["steering_speed_compensation_applied"] = steering_speed_compensation_applied
+    out["steering_speed_tracking_ratio"] = steering_speed_tracking_ratio
+    out["steering_calibration_query_angle_deg"] = steering_calibration_query_angle_deg
     out["physical_map_steering"] = bool(config.physical_map_steering)
     out["physical_map_longitudinal"] = bool(config.physical_map_longitudinal)
     out["physical_map_throttle"] = bool(config.physical_map_throttle)

@@ -690,7 +690,16 @@ def _align_actor_trace_timebase(
     current_delta = abs(trace_min - ts_min)
     if start_sim_time is not None:
         shifted_delta = abs((trace_min + start_sim_time) - ts_min)
-        if current_delta > 1.0 and shifted_delta < current_delta:
+        current_overlap_s = _time_range_overlap_s(ts_min, ts_max, trace_min, trace_max)
+        shifted_overlap_s = _time_range_overlap_s(
+            ts_min,
+            ts_max,
+            trace_min + start_sim_time,
+            (trace_max + start_sim_time) if trace_max is not None else None,
+        )
+        if current_delta > 1.0 and (
+            shifted_delta < current_delta or shifted_overlap_s > current_overlap_s
+        ):
             aligned = _shift_trace_times(
                 target_rows,
                 offset_s=start_sim_time,
@@ -724,6 +733,17 @@ def _align_actor_trace_timebase(
         warnings.append("actor_trace_timeseries_timebase_mismatch_unresolved")
         report["status"] = "unresolved"
     return target_rows, report
+
+
+def _time_range_overlap_s(
+    first_min: float | None,
+    first_max: float | None,
+    second_min: float | None,
+    second_max: float | None,
+) -> float:
+    if None in (first_min, first_max, second_min, second_max):
+        return 0.0
+    return max(0.0, min(float(first_max), float(second_max)) - max(float(first_min), float(second_min)))
 
 
 def _fixed_scene_runtime_start_sim_time_s(manifest: Mapping[str, Any], root: Path | None) -> float | None:

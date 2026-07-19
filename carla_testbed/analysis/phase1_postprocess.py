@@ -780,14 +780,57 @@ def _obstacle_gt_contract_raw_exists(root: Path) -> bool:
 def _write_baguang_lane_event_contract(root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
     manifest = _read_json(root / "manifest.json")
     summary = _read_json(root / "summary.json")
-    map_name = str(manifest.get("map") or _nested_value(summary, ("carla", "town")) or "")
-    if map_name != "straight_road_for_baguang":
+    context = _baguang_lane_event_context(root, manifest, summary)
+    if context is None:
         return None, None
     if not (root / "timeseries.csv").exists():
         return None, None
-    report = analyze_baguang_lane_event_contract(run_dirs=[root])
+    map_name, xodr_path = context
+    analyze_kwargs: dict[str, Any] = {
+        "run_dirs": [root],
+        "map_name": map_name,
+    }
+    if xodr_path is not None:
+        analyze_kwargs["xodr_path"] = xodr_path
+    report = analyze_baguang_lane_event_contract(**analyze_kwargs)
     paths = write_baguang_lane_event_contract_report(report, root / "analysis" / "baguang_lane_event_contract")
     return report, paths
+
+
+def _baguang_lane_event_context(
+    root: Path,
+    manifest: Mapping[str, Any],
+    summary: Mapping[str, Any],
+) -> tuple[str, Path | None] | None:
+    scenario_path = _phase1_scenario_path(root, manifest)
+    scenario = _read_yaml(scenario_path) if scenario_path is not None else {}
+    map_name = str(
+        manifest.get("map")
+        or scenario.get("map")
+        or _nested_value(summary, ("carla", "town"))
+        or ""
+    )
+    xodr_path = _existing_path(
+        root,
+        _nested_value(scenario, ("carla_world", "opendrive", "path")),
+    )
+    identity_tokens = (
+        map_name,
+        manifest.get("scenario_id"),
+        manifest.get("route_id"),
+        manifest.get("fixed_scene_case"),
+        scenario.get("scenario_id"),
+        scenario.get("route_id"),
+        str(xodr_path or ""),
+    )
+    is_baguang = map_name == "straight_road_for_baguang" or any(
+        "baguang" in str(token).lower() for token in identity_tokens if token not in {None, ""}
+    )
+    if not is_baguang:
+        return None
+    if map_name != "straight_road_for_baguang" and xodr_path is None:
+        return None
+    return map_name or "straight_road_for_baguang", xodr_path
 
 
 def _write_apollo_readiness(root: Path) -> tuple[dict[str, Any], dict[str, str]]:

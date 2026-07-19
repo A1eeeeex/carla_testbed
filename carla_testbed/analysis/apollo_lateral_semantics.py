@@ -1733,7 +1733,11 @@ def _control_target_point_summary(
             simple_lat_target_point_speeds.append(float(simple_lat_target_point_speed))
         if source_steer is not None:
             source_steers.append(float(source_steer))
-        if control_header_timestamp is not None and input_trajectory_header is not None:
+        if (
+            control_header_timestamp is not None
+            and input_trajectory_header is not None
+            and float(input_trajectory_header) > 0.0
+        ):
             input_trajectory_header_age_s.append(
                 float(control_header_timestamp) - float(input_trajectory_header)
             )
@@ -2273,11 +2277,11 @@ def _critical_window_sample(
 
 
 def _samples_with_projection_lateral(
-    samples: Sequence[Mapping[str, float]],
+    samples: Sequence[Mapping[str, Any]],
     projection_rows: Sequence[Mapping[str, Any]],
     *,
     max_dt_s: float,
-) -> list[dict[str, float]]:
+) -> list[dict[str, Any]]:
     if not samples or not projection_rows:
         return [dict(sample) for sample in samples]
     candidates: list[tuple[float, Mapping[str, Any]]] = []
@@ -2296,7 +2300,7 @@ def _samples_with_projection_lateral(
         return [dict(sample) for sample in samples]
     candidates.sort(key=lambda item: item[0])
     times = [item[0] for item in candidates]
-    annotated: list[dict[str, float]] = []
+    annotated: list[dict[str, Any]] = []
     for sample in samples:
         current = dict(sample)
         sim_time = sample.get("sim_time")
@@ -2324,7 +2328,7 @@ def _samples_with_projection_lateral(
             current["apollo_hdmap_projection_match_dt_s"] = float(dt)
             lane_id = projection.get("nearest_lane_id")
             if lane_id not in {None, ""}:
-                current["apollo_hdmap_projection_lane_id"] = str(lane_id)  # type: ignore[assignment]
+                current["apollo_hdmap_projection_lane_id"] = str(lane_id)
         annotated.append(current)
     return annotated
 
@@ -4782,22 +4786,24 @@ def _normalize_control_decode_debug_row(row: Mapping[str, Any]) -> dict[str, Any
         "control_header_sequence_num",
         _first_numeric_value(raw.get("control_header_sequence_num"), parsed.get("control_header_sequence_num")),
     )
-    _set_if_numeric(
-        normalized,
-        "debug_input_trajectory_header_timestamp_sec",
-        _first_numeric_value(
-            raw.get("debug_input_trajectory_header_timestamp_sec"),
-            parsed.get("debug_input_trajectory_header_timestamp_sec"),
-        ),
-    )
-    _set_if_numeric(
-        normalized,
-        "debug_input_latest_replan_trajectory_header_timestamp_sec",
-        _first_numeric_value(
-            raw.get("debug_input_latest_replan_trajectory_header_timestamp_sec"),
-            parsed.get("debug_input_latest_replan_trajectory_header_timestamp_sec"),
-        ),
-    )
+    if raw.get("debug_input_trajectory_header_present") is not False:
+        _set_if_numeric(
+            normalized,
+            "debug_input_trajectory_header_timestamp_sec",
+            _first_numeric_value(
+                raw.get("debug_input_trajectory_header_timestamp_sec"),
+                parsed.get("debug_input_trajectory_header_timestamp_sec"),
+            ),
+        )
+    if raw.get("debug_input_latest_replan_trajectory_header_present") is not False:
+        _set_if_numeric(
+            normalized,
+            "debug_input_latest_replan_trajectory_header_timestamp_sec",
+            _first_numeric_value(
+                raw.get("debug_input_latest_replan_trajectory_header_timestamp_sec"),
+                parsed.get("debug_input_latest_replan_trajectory_header_timestamp_sec"),
+            ),
+        )
     _set_if_numeric(normalized, "apollo_steer_raw", _first_numeric_value(parsed.get("steer")))
     _set_if_numeric(
         normalized,
@@ -4827,51 +4833,53 @@ def _normalize_control_decode_debug_row(row: Mapping[str, Any]) -> dict[str, Any
         "apollo_debug_simple_lat_curvature",
         _first_numeric_value(parsed.get("debug_simple_lat_curvature"), raw.get("debug_simple_lat_curvature")),
     )
-    _set_if_numeric(
-        normalized,
-        "apollo_debug_simple_lat_target_point_kappa",
-        _first_numeric_value(
-            parsed.get("debug_simple_lat_target_point_kappa"),
-            raw.get("debug_simple_lat_current_target_point_kappa"),
-        ),
-    )
-    _set_if_numeric(
-        normalized,
-        "apollo_debug_simple_lat_target_point_s",
-        _first_numeric_value(
-            parsed.get("debug_simple_lat_target_point_s"),
-            raw.get("debug_simple_lat_current_target_point_s"),
-        ),
-    )
-    _set_if_numeric(
-        normalized,
-        "apollo_debug_simple_lat_target_point_x",
-        _first_numeric_value(
-            parsed.get("debug_simple_lat_target_point_x"),
-            raw.get("debug_simple_lat_current_target_point_x"),
-        ),
-    )
-    _set_if_numeric(
-        normalized,
-        "apollo_debug_simple_lat_target_point_y",
-        _first_numeric_value(
-            parsed.get("debug_simple_lat_target_point_y"),
-            raw.get("debug_simple_lat_current_target_point_y"),
-        ),
-    )
-    _set_if_numeric(
-        normalized,
-        "apollo_debug_simple_lat_target_point_relative_time_sec",
-        _first_numeric_value(
-            parsed.get("debug_simple_lat_target_point_relative_time_sec"),
-            raw.get("debug_simple_lat_current_target_point_relative_time"),
-        ),
-    )
-    _set_if_numeric(
-        normalized,
-        "trajectory_fraction",
-        _first_numeric_value(parsed.get("trajectory_fraction"), raw.get("trajectory_fraction")),
-    )
+    if raw.get("debug_simple_lat_current_target_point_present") is not False:
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_target_point_kappa",
+            _first_numeric_value(
+                parsed.get("debug_simple_lat_target_point_kappa"),
+                raw.get("debug_simple_lat_current_target_point_kappa"),
+            ),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_target_point_s",
+            _first_numeric_value(
+                parsed.get("debug_simple_lat_target_point_s"),
+                raw.get("debug_simple_lat_current_target_point_s"),
+            ),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_target_point_x",
+            _first_numeric_value(
+                parsed.get("debug_simple_lat_target_point_x"),
+                raw.get("debug_simple_lat_current_target_point_x"),
+            ),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_target_point_y",
+            _first_numeric_value(
+                parsed.get("debug_simple_lat_target_point_y"),
+                raw.get("debug_simple_lat_current_target_point_y"),
+            ),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lat_target_point_relative_time_sec",
+            _first_numeric_value(
+                parsed.get("debug_simple_lat_target_point_relative_time_sec"),
+                raw.get("debug_simple_lat_current_target_point_relative_time"),
+            ),
+        )
+    if raw.get("trajectory_fraction_present") is not False:
+        _set_if_numeric(
+            normalized,
+            "trajectory_fraction",
+            _first_numeric_value(parsed.get("trajectory_fraction"), raw.get("trajectory_fraction")),
+        )
     _set_if_numeric(
         normalized,
         "control_speed_mps",
@@ -4932,21 +4940,22 @@ def _normalize_control_decode_debug_row(row: Mapping[str, Any]) -> dict[str, Any
             raw.get("debug_simple_lon_station_reference"),
         ),
     )
-    _set_if_numeric(
-        normalized,
-        "apollo_debug_simple_lon_matched_point_s",
-        _first_numeric_value(parsed.get("debug_simple_lon_matched_point_s"), raw.get("debug_simple_lon_current_matched_point_s")),
-    )
-    _set_if_numeric(
-        normalized,
-        "apollo_debug_simple_lon_matched_point_x",
-        _first_numeric_value(parsed.get("debug_simple_lon_matched_point_x"), raw.get("debug_simple_lon_current_matched_point_x")),
-    )
-    _set_if_numeric(
-        normalized,
-        "apollo_debug_simple_lon_matched_point_y",
-        _first_numeric_value(parsed.get("debug_simple_lon_matched_point_y"), raw.get("debug_simple_lon_current_matched_point_y")),
-    )
+    if raw.get("debug_simple_lon_current_matched_point_present") is not False:
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lon_matched_point_s",
+            _first_numeric_value(parsed.get("debug_simple_lon_matched_point_s"), raw.get("debug_simple_lon_current_matched_point_s")),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lon_matched_point_x",
+            _first_numeric_value(parsed.get("debug_simple_lon_matched_point_x"), raw.get("debug_simple_lon_current_matched_point_x")),
+        )
+        _set_if_numeric(
+            normalized,
+            "apollo_debug_simple_lon_matched_point_y",
+            _first_numeric_value(parsed.get("debug_simple_lon_matched_point_y"), raw.get("debug_simple_lon_current_matched_point_y")),
+        )
     _set_if_numeric(
         normalized,
         "apollo_debug_simple_mpc_matched_point_s",
@@ -5386,6 +5395,20 @@ def _normalize_apollo_control_raw_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "control_header_sequence_num",
         _first_numeric_value(row.get("control_header_sequence_num"), raw.get("control_header_sequence_num")),
     )
+    if raw.get("debug_input_trajectory_header_present") is not False:
+        _set_if_numeric(
+            normalized,
+            "debug_input_trajectory_header_timestamp_sec",
+            raw.get("debug_input_trajectory_header_timestamp_sec"),
+        )
+    if raw.get("debug_input_latest_replan_trajectory_header_present") is not False:
+        _set_if_numeric(
+            normalized,
+            "debug_input_latest_replan_trajectory_header_timestamp_sec",
+            raw.get("debug_input_latest_replan_trajectory_header_timestamp_sec"),
+        )
+    if raw.get("trajectory_fraction_present") is not False:
+        _set_if_numeric(normalized, "trajectory_fraction", raw.get("trajectory_fraction"))
     _set_if_numeric(
         normalized,
         "apollo_debug_simple_lat_lateral_error_m",

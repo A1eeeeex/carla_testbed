@@ -9,7 +9,9 @@ meter frame used by CARLA.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
 import hashlib
+import math
 from pathlib import Path
 import re
 from typing import Mapping
@@ -28,6 +30,9 @@ class LaneYLine:
     y0: float
     x1: float
     y1: float
+
+
+_EXTENDED_LANE_POINT_MAX_STEP_M = 20.0
 
 
 def derive_header_scale(source_xml: str | Path, reference_xml: str | Path) -> HeaderScale:
@@ -292,8 +297,8 @@ def _extend_driving_lane_point_order(root: ET.Element, extend_m: float) -> None:
                 points = list(point_set.findall("point"))
                 if len(points) <= 1:
                     continue
-                _extend_point_set(points, extend_m)
-                first = points[0]
+                extended_points = _extend_point_set(point_set, points, extend_m)
+                first = extended_points[0]
                 geometry.set("x", first.attrib["x"])
                 geometry.set("y", first.attrib["y"])
                 if "length" in geometry.attrib:
@@ -306,7 +311,11 @@ def _extend_driving_lane_point_order(root: ET.Element, extend_m: float) -> None:
                         pass
 
 
-def _extend_point_set(points: list[ET.Element], extend_m: float) -> None:
+def _extend_point_set(
+    point_set: ET.Element,
+    points: list[ET.Element],
+    extend_m: float,
+) -> list[ET.Element]:
     first_x = float(points[0].attrib["x"])
     first_y = float(points[0].attrib["y"])
     second_x = float(points[1].attrib["x"])
@@ -323,12 +332,32 @@ def _extend_point_set(points: list[ET.Element], extend_m: float) -> None:
 
     start_norm = (start_dx * start_dx + start_dy * start_dy) ** 0.5
     end_norm = (end_dx * end_dx + end_dy * end_dy) ** 0.5
+    start_points: list[ET.Element] = []
     if start_norm > 1e-9:
-        points[0].set("x", _format_float(first_x + (start_dx / start_norm) * extend_m))
-        points[0].set("y", _format_float(first_y + (start_dy / start_norm) * extend_m))
+        start_step_count = max(1, math.ceil(extend_m / _EXTENDED_LANE_POINT_MAX_STEP_M))
+        for index in range(start_step_count):
+            distance_m = extend_m * (start_step_count - index) / start_step_count
+            point = copy.deepcopy(points[0])
+            point.set("x", _format_float(first_x + (start_dx / start_norm) * distance_m))
+            point.set("y", _format_float(first_y + (start_dy / start_norm) * distance_m))
+            start_points.append(point)
+
+    end_points: list[ET.Element] = []
     if end_norm > 1e-9:
-        points[-1].set("x", _format_float(last_x + (end_dx / end_norm) * extend_m))
-        points[-1].set("y", _format_float(last_y + (end_dy / end_norm) * extend_m))
+        end_step_count = max(1, math.ceil(extend_m / _EXTENDED_LANE_POINT_MAX_STEP_M))
+        for index in range(1, end_step_count + 1):
+            distance_m = extend_m * index / end_step_count
+            point = copy.deepcopy(points[-1])
+            point.set("x", _format_float(last_x + (end_dx / end_norm) * distance_m))
+            point.set("y", _format_float(last_y + (end_dy / end_norm) * distance_m))
+            end_points.append(point)
+
+    extended_points = [*start_points, *points, *end_points]
+    for point in points:
+        point_set.remove(point)
+    for point in extended_points:
+        point_set.append(point)
+    return extended_points
 
 
 def summarize_text_map(map_txt: str | Path) -> dict[str, object]:

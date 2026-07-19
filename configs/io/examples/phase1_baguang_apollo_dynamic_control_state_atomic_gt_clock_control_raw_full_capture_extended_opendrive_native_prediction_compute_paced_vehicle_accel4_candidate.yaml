@@ -1,0 +1,24 @@
+# Default-off vehicle-dynamics contract A/B for the compute-paced Baguang
+# lead-decel/accel profile.  A formal-window replan in v64 started from a
+# measured CARLA acceleration of 2.049083 m/s^2 while Apollo's MKZ vehicle
+# model constrained Piecewise Jerk to 2.0 m/s^2, making the initial state
+# infeasible.  Preserve measured Localization truth and describe the tested
+# simulator vehicle capability in Apollo's vehicle model instead.
+extends: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_compute_paced_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_compute_paced_vehicle_accel4_candidate
+  profile_name: phase1_baguang_apollo_dynamic_control_state_atomic_gt_clock_control_raw_full_capture_extended_opendrive_native_prediction_compute_paced_vehicle_accel4_candidate
+
+algo:
+  apollo:
+    vehicle_param:
+      max_acceleration: 4.0
+
+assist_ledger:
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only Baguang vehicle-dynamics contract A/B; it is not a natural-driving capability claim.
+    - The candidate changes only Apollo vehicle_param.max_acceleration from 2.0 to 4.0 m/s^2 for this default-off compute-paced profile.
+    - CARLA Localization acceleration remains measured and unmodified; no filtering, clamping, longitudinal physical mapping, guard, fallback acceptance, or scene-driven ego motion is enabled.
+    - Online evidence must show whether the formal forced-replan Piecewise Jerk infeasibility and SPEED_FALLBACK disappear before this value can be promoted.

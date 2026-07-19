@@ -1,0 +1,23 @@
+# Diagnostic-only Apollo Planning reference-line stitching probe.
+# The current mainline keeps this disabled as a frozen lateral condition; this
+# probe tests whether repeated reference-line rebuilds are the shared blocker.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_cybertime_candidate.yaml
+
+run:
+  profile_name: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_reference_stitching_probe
+  claim_profile: false
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic-only reference-line stitching probe; not a natural-driving claim profile.
+    - The mainline frozen lateral configuration is not changed by this probe.
+
+algo:
+  apollo:
+    planning:
+      enable_reference_line_stitching: true

@@ -232,11 +232,56 @@ def test_roadrunner_apollo_xml_can_extend_driving_lane_ends(tmp_path: Path) -> N
 
     root = ET.parse(output).getroot()
     points = root.findall(".//right/lane/centerLine/geometry/pointSet/point")
-    assert [float(point.attrib["x"]) for point in points] == [-2.0, 12.0]
+    assert [float(point.attrib["x"]) for point in points] == [-2.0, 0.0, 10.0, 12.0]
     geometry = root.find(".//right/lane/centerLine/geometry")
     assert geometry is not None
     assert float(geometry.attrib["x"]) == -2.0
     assert float(geometry.attrib["length"]) == 14.0
+
+
+def test_roadrunner_apollo_xml_densifies_long_lane_extensions(tmp_path: Path) -> None:
+    source = tmp_path / "source.xml"
+    reference = tmp_path / "reference.xml"
+    output = tmp_path / "output.xml"
+
+    source.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<OpenDRIVE>
+  <header north="1.0" south="-1.0" east="1.0" west="-1.0" />
+  <road id="0" junction="-1">
+    <lanes><laneSection><right>
+      <lane id="-1" uid="0_0_-1" type="driving">
+        <centerLine><geometry x="0.0" y="0.0" length="10"><pointSet>
+          <point x="0.0" y="0.0"/><point x="10.0" y="0.0"/>
+        </pointSet></geometry></centerLine>
+      </lane>
+    </right></laneSection></lanes>
+  </road>
+</OpenDRIVE>
+""",
+        encoding="utf-8",
+    )
+    reference.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<OpenDRIVE><header north="1.0" south="-1.0" east="1.0" west="-1.0" /></OpenDRIVE>
+""",
+        encoding="utf-8",
+    )
+
+    convert_roadrunner_apollo_xml_to_metric(
+        source,
+        reference,
+        output,
+        extend_driving_lane_ends_m=120.0,
+    )
+
+    points = ET.parse(output).getroot().findall(
+        ".//right/lane/centerLine/geometry/pointSet/point"
+    )
+    xs = [float(point.attrib["x"]) for point in points]
+    assert xs[0] == -120.0
+    assert xs[-1] == 130.0
+    assert max(right - left for left, right in zip(xs, xs[1:])) <= 20.0
 
 
 def test_apply_lane_y_shifts_only_changes_selected_lane_geometry() -> None:

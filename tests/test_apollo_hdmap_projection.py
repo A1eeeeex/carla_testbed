@@ -661,6 +661,39 @@ def test_infer_map_xysl_config_from_run_dir_uses_map_contract_guard(tmp_path: Pa
     assert cfg.docker_container == "apollo"
 
 
+def test_infer_map_xysl_config_uses_run_map_family_when_container_probe_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "artifacts" / "map_contract_guard.json",
+        {
+            "dreamview_selected_map": "OpenDriveMap",
+            "runtime_map_dir": "/host/apollo/data/map_data/OpenDriveMap",
+            "runtime_map_dir_container_actual": "",
+            "effective_bridge_map_file": "/host/apollo/data/map_data/OpenDriveMap/base_map.txt",
+            "container_runtime_probe": {
+                "available": False,
+                "selected_runtime_map_dir": "",
+                "component_paths": {},
+            },
+        },
+    )
+
+    cfg = infer_map_xysl_config_from_run_dir(
+        run_dir,
+        base_config=MapXyslConfig(
+            map_dir="/apollo/modules/map/data/carla_town01",
+            map_name="Town01",
+            docker_container="apollo",
+        ),
+    )
+
+    assert cfg.map_dir == "/apollo/modules/map/data/OpenDriveMap"
+    assert cfg.map_name == "OpenDriveMap"
+    assert cfg.base_map_filename == "base_map.txt"
+
+
 def test_projection_samples_transform_runtime_route_json_carla_frame(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_json(

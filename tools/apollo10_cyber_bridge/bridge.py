@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import importlib
 import importlib.util
@@ -33,6 +34,27 @@ from carla_testbed.adapters.apollo.vehicle_reference import (
     load_vehicle_reference,
     resolve_localization_back_offset_m as resolve_vehicle_reference_localization_back_offset_m,
 )
+
+
+def _stable_json_snapshot(value: Any) -> Any:
+    """Detach mutable runtime diagnostics before JSON encoding.
+
+    Cyber and ROS callbacks update nested stats dictionaries concurrently with
+    the publish loop.  Copy each container while holding the GIL so the JSON
+    encoder never iterates a live mapping whose size can change underneath it.
+    The snapshot is diagnostic and need not be globally transactional.
+    """
+
+    if isinstance(value, Mapping):
+        return {
+            key: _stable_json_snapshot(item)
+            for key, item in dict(value).items()
+        }
+    if isinstance(value, list):
+        return [_stable_json_snapshot(item) for item in list(value)]
+    if isinstance(value, tuple):
+        return [_stable_json_snapshot(item) for item in tuple(value)]
+    return value
 from carla_testbed.analysis.apollo_reference_line_contract import build_reference_line_contract_event
 from carla_testbed.sim.vehicle_geometry import wheelbase_from_world_positions
 from tools.apollo10_cyber_bridge.control_apply_trace import (
@@ -198,11 +220,13 @@ except Exception:
 try:
     from planning_debug import (
         build_planning_debug_presence as build_planning_debug_presence_impl,
+        build_prediction_obstacles_debug as build_prediction_obstacles_debug_impl,
         build_trajectory_shape_debug as build_trajectory_shape_debug_impl,
     )
 except Exception:
     from tools.apollo10_cyber_bridge.planning_debug import (  # type: ignore
         build_planning_debug_presence as build_planning_debug_presence_impl,
+        build_prediction_obstacles_debug as build_prediction_obstacles_debug_impl,
         build_trajectory_shape_debug as build_trajectory_shape_debug_impl,
     )
 
@@ -411,6 +435,35 @@ def _filter_localization_acceleration(
     return out[0], out[1], out[2]
 
 
+def _carla_feedback_acceleration_to_map(
+    heading_rad: float,
+    forward_accel_mps2: float,
+    lateral_accel_mps2: Optional[float] = None,
+    vertical_accel_mps2: float = 0.0,
+) -> Tuple[float, float, float]:
+    """Convert CARLA body acceleration components to Apollo map ENU."""
+
+    heading = float(heading_rad)
+    forward = float(forward_accel_mps2)
+    if not math.isfinite(heading) or not math.isfinite(forward):
+        raise ValueError("forward acceleration and heading must be finite")
+    lateral = float(lateral_accel_mps2) if lateral_accel_mps2 is not None else 0.0
+    if not math.isfinite(lateral):
+        lateral = 0.0
+    vertical = float(vertical_accel_mps2)
+    if not math.isfinite(vertical):
+        vertical = 0.0
+
+    # In Apollo ENU, the vehicle right axis is (sin(h), -cos(h)).
+    cos_heading = math.cos(heading)
+    sin_heading = math.sin(heading)
+    return (
+        cos_heading * forward + sin_heading * lateral,
+        sin_heading * forward - cos_heading * lateral,
+        vertical,
+    )
+
+
 def _limit_forward_acceleration_for_nonnegative_speed_prediction(
     speed_mps: float,
     forward_acceleration_mps2: float,
@@ -440,6 +493,113 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+def _load_json_mapping_file(path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _authored_initial_state_transition_marker_status(
+    marker_path: Path,
+    *,
+    direct_world_frame: Optional[int],
+    localization_timestamp_sec: Optional[float] = None,
+    localization_speed_mps: float,
+    required_status: str = "pass",
+    max_world_frame_delta: int = 2,
+    max_sim_time_delta_s: float = 0.11,
+    speed_tolerance_mps: float = 0.5,
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "apply": False,
+        "reason": "marker_missing_or_invalid",
+        "marker_path": str(marker_path),
+        "direct_world_frame": direct_world_frame,
+        "localization_timestamp_sec": localization_timestamp_sec,
+        "localization_speed_mps": float(localization_speed_mps),
+    }
+    marker = _load_json_mapping_file(marker_path)
+    if not marker:
+        return result
+    marker_status = str(marker.get("status") or "").strip().lower()
+    result["marker_status"] = marker_status
+    if marker_status != str(required_status or "pass").strip().lower():
+        result["reason"] = f"marker_status:{marker_status or 'missing'}"
+        return result
+    if marker.get("start_gate") != "apollo_planning_ready":
+        result["reason"] = "marker_start_gate_not_apollo_planning_ready"
+        return result
+    if marker.get("official_scenario_timer_started") is not False:
+        result["reason"] = "marker_not_setup_only"
+        return result
+    materialization = marker.get("ego_initial_state_materialization") or {}
+    if not isinstance(materialization, Mapping):
+        result["reason"] = "ego_materialization_missing"
+        return result
+    if materialization.get("status") != "pass" or materialization.get("enabled") is not True:
+        result["reason"] = "ego_materialization_not_applied"
+        return result
+    marker_world_frame = marker.get("world_frame")
+    if direct_world_frame is not None and marker_world_frame is not None:
+        try:
+            marker_world_frame = int(marker_world_frame)
+            current_world_frame = int(direct_world_frame)
+        except (TypeError, ValueError):
+            result["reason"] = "world_frame_invalid"
+            return result
+        frame_delta = current_world_frame - marker_world_frame
+        result["boundary_source"] = "world_frame"
+        result["marker_world_frame"] = marker_world_frame
+        result["world_frame_delta"] = frame_delta
+        if frame_delta <= 0:
+            result["reason"] = "waiting_for_post_materialization_frame"
+            return result
+        if frame_delta > max(1, int(max_world_frame_delta)):
+            result["reason"] = "post_materialization_frame_window_expired"
+            return result
+    else:
+        marker_sim_time_s = _safe_float(marker.get("world_sim_time_s"), float("nan"))
+        localization_sim_time_s = _safe_float(
+            localization_timestamp_sec,
+            float("nan"),
+        )
+        if not math.isfinite(marker_sim_time_s) or not math.isfinite(
+            localization_sim_time_s
+        ):
+            result["reason"] = "frame_and_sim_time_unavailable"
+            return result
+        sim_time_delta_s = localization_sim_time_s - marker_sim_time_s
+        result["boundary_source"] = "sim_time"
+        result["marker_sim_time_s"] = marker_sim_time_s
+        result["sim_time_delta_s"] = sim_time_delta_s
+        result["max_sim_time_delta_s"] = max(0.0, float(max_sim_time_delta_s))
+        if sim_time_delta_s <= 1e-9:
+            result["reason"] = "waiting_for_post_materialization_sim_time"
+            return result
+        if sim_time_delta_s > result["max_sim_time_delta_s"]:
+            result["reason"] = "post_materialization_sim_time_window_expired"
+            return result
+    expected_speed_mps = _safe_float(
+        materialization.get("expected_ego_initial_speed_mps"),
+        float("nan"),
+    )
+    speed_delta_mps = abs(float(localization_speed_mps) - expected_speed_mps)
+    result["expected_speed_mps"] = expected_speed_mps
+    result["speed_delta_mps"] = speed_delta_mps
+    result["speed_tolerance_mps"] = max(0.0, float(speed_tolerance_mps))
+    if not math.isfinite(expected_speed_mps) or expected_speed_mps <= 0.0:
+        result["reason"] = "expected_speed_unavailable"
+        return result
+    if speed_delta_mps > result["speed_tolerance_mps"]:
+        result["reason"] = "waiting_for_authored_initial_speed"
+        return result
+    result["apply"] = True
+    result["reason"] = "authored_initial_state_transition_detected"
+    return result
 
 
 def _localization_reference_mode(back_offset_m: float) -> str:
@@ -809,6 +969,150 @@ class Transform2D:
         return yaw + self.yaw_rad + self.heading_offset_rad
 
 
+def _objects_json_yaw_to_apollo_radians(yaw_deg: float, transform: Transform2D) -> float:
+    """Convert the objects_gt_json degree contract to Apollo's radian theta."""
+
+    return transform.apply_yaw(math.radians(float(yaw_deg)))
+
+
+def _published_obstacle_debug(obs: Any) -> Dict[str, Any]:
+    """Read back the fields materialized in an Apollo PerceptionObstacle."""
+
+    def point(field: str) -> Dict[str, Optional[float]]:
+        value = getattr(obs, field, None)
+        return {
+            axis: _finite_or_none(getattr(value, axis, None)) if value is not None else None
+            for axis in ("x", "y", "z")
+        }
+
+    return {
+        "id": getattr(obs, "id", None),
+        "position": point("position"),
+        "theta_rad": _finite_or_none(getattr(obs, "theta", None)),
+        "velocity": point("velocity"),
+    }
+
+
+def _planning_decision_debug(msg: Any) -> Dict[str, Any]:
+    """Extract compact main/object decisions from an ADCTrajectory."""
+
+    decision = getattr(msg, "decision", None)
+    main = getattr(decision, "main_decision", None) if decision is not None else None
+
+    def active_tag(value: Any, oneof: str, candidates: Sequence[str]) -> Optional[str]:
+        which = getattr(value, "WhichOneof", None)
+        if callable(which):
+            try:
+                selected = which(oneof)
+                if selected:
+                    return str(selected)
+            except Exception:
+                pass
+        for candidate in candidates:
+            has_field = getattr(value, "HasField", None)
+            if callable(has_field):
+                try:
+                    if has_field(candidate):
+                        return candidate
+                except Exception:
+                    pass
+        return None
+
+    main_tag = active_tag(
+        main,
+        "task",
+        ("cruise", "stop", "estop", "change_lane", "mission_complete", "not_ready", "parking"),
+    ) if main is not None else None
+    main_payload = getattr(main, main_tag, None) if main is not None and main_tag else None
+    object_rows: List[Dict[str, Any]] = []
+    object_decisions = getattr(getattr(decision, "object_decision", None), "decision", ())
+    for item in list(object_decisions or ()):
+        tags: List[Dict[str, Any]] = []
+        for object_decision in list(getattr(item, "object_decision", ()) or ()):
+            tag = active_tag(
+                object_decision,
+                "object_tag",
+                ("ignore", "stop", "follow", "yield", "overtake", "nudge", "avoid", "side_pass"),
+            )
+            payload = getattr(object_decision, tag, None) if tag else None
+            fence_point = getattr(payload, "fence_point", None)
+            tags.append(
+                {
+                    "type": tag,
+                    "distance_s": _finite_or_none(getattr(payload, "distance_s", None)),
+                    "reason_code": getattr(payload, "reason_code", None),
+                    "fence_point": {
+                        axis: _finite_or_none(getattr(fence_point, axis, None))
+                        if fence_point is not None
+                        else None
+                        for axis in ("x", "y", "z")
+                    },
+                    "fence_heading_rad": _finite_or_none(
+                        getattr(payload, "fence_heading", None)
+                    ),
+                }
+            )
+        object_rows.append(
+            {
+                "id": getattr(item, "id", None),
+                "perception_id": getattr(item, "perception_id", None),
+                "decisions": tags,
+            }
+        )
+    return {
+        "main": {
+            "type": main_tag,
+            "reason": getattr(main_payload, "reason", None),
+            "reason_code": getattr(main_payload, "reason_code", None),
+        },
+        "objects": object_rows,
+    }
+
+
+def _planning_st_graph_debug(msg: Any) -> List[Dict[str, Any]]:
+    """Extract compact ST-boundary and speed-constraint summaries."""
+
+    planning_data = getattr(getattr(getattr(msg, "debug", None), "planning_data", None), "st_graph", ())
+
+    def finite_values(values: Any) -> List[float]:
+        return [float(value) for value in list(values or ()) if _finite_or_none(value) is not None]
+
+    def bounds(values: Any) -> Dict[str, Optional[float]]:
+        vals = finite_values(values)
+        return {"min": min(vals) if vals else None, "max": max(vals) if vals else None}
+
+    rows: List[Dict[str, Any]] = []
+    for graph in list(planning_data or ()):
+        boundary_rows: List[Dict[str, Any]] = []
+        for boundary in list(getattr(graph, "boundary", ()) or ()):
+            points = list(getattr(boundary, "point", ()) or ())
+            boundary_rows.append(
+                {
+                    "name": getattr(boundary, "name", None),
+                    "type": getattr(boundary, "type", None),
+                    "point_count": len(points),
+                    "s": bounds(getattr(point, "s", None) for point in points),
+                    "t": bounds(getattr(point, "t", None) for point in points),
+                }
+            )
+        constraint = getattr(graph, "speed_constraint", None)
+        follow_ref = getattr(graph, "kernel_follow_ref", None)
+        rows.append(
+            {
+                "name": getattr(graph, "name", None),
+                "boundaries": boundary_rows,
+                "speed_constraint_lower": bounds(getattr(constraint, "lower_bound", ())),
+                "speed_constraint_upper": bounds(getattr(constraint, "upper_bound", ())),
+                "follow_reference_s": bounds(getattr(follow_ref, "follow_line_s", ())),
+                "speed_limit_v": bounds(
+                    getattr(point, "v", None)
+                    for point in list(getattr(graph, "speed_limit", ()) or ())
+                ),
+            }
+        )
+    return rows
+
+
 def _extract_xy_series(map_file: Path) -> List[Tuple[float, float]]:
     text = map_file.read_text(errors="ignore")
     pairs: List[Tuple[float, float]] = []
@@ -1037,32 +1341,111 @@ def _build_map_segments_from_polylines(
     return segs
 
 
-def _nearest_segment_metrics(
-    x: float,
-    y: float,
+def _prepare_map_segments(
     segments: Sequence[Tuple[float, float, float, float]],
-) -> Optional[Dict[str, float]]:
-    best: Optional[Dict[str, float]] = None
-    best_dist = float("inf")
+) -> List[Tuple[float, ...]]:
+    """Precompute invariant line-segment geometry for per-sample projection.
+
+    The bridge still evaluates every segment, so this is an exact optimization,
+    not a spatial approximation.  The first four values preserve the original
+    segment representation; the remaining values avoid recomputing direction,
+    length, and trigonometry in the GT publish loop.
+    """
+    prepared: List[Tuple[float, ...]] = []
     for x1, y1, x2, y2 in segments:
-        dx = x2 - x1
-        dy = y2 - y1
+        dx = float(x2) - float(x1)
+        dy = float(y2) - float(y1)
         denom = dx * dx + dy * dy
         if denom <= 1e-9:
             continue
-        t = _clamp(((x - x1) * dx + (y - y1) * dy) / denom, 0.0, 1.0)
+        length = math.sqrt(denom)
+        prepared.append(
+            (
+                float(x1),
+                float(y1),
+                float(x2),
+                float(y2),
+                dx,
+                dy,
+                1.0 / denom,
+                math.atan2(dy, dx),
+                dy / length,
+                dx / length,
+            )
+        )
+    return prepared
+
+
+_MAP_SEGMENT_GRID_CELL_SIZE_M = 25.0
+
+
+def _build_segment_spatial_index(
+    segments: Sequence[Tuple[float, ...]],
+    *,
+    cell_size_m: float = _MAP_SEGMENT_GRID_CELL_SIZE_M,
+) -> Dict[Tuple[int, int], Tuple[int, ...]]:
+    """Index segment bounding boxes without changing projection semantics."""
+    cell_size = max(1.0, float(cell_size_m))
+    buckets: Dict[Tuple[int, int], List[int]] = {}
+    for index, segment in enumerate(segments):
+        if len(segment) < 4:
+            continue
+        x1, y1, x2, y2 = (float(value) for value in segment[:4])
+        min_ix = math.floor(min(x1, x2) / cell_size)
+        max_ix = math.floor(max(x1, x2) / cell_size)
+        min_iy = math.floor(min(y1, y2) / cell_size)
+        max_iy = math.floor(max(y1, y2) / cell_size)
+        for ix in range(min_ix, max_ix + 1):
+            for iy in range(min_iy, max_iy + 1):
+                buckets.setdefault((ix, iy), []).append(index)
+    return {key: tuple(value) for key, value in buckets.items()}
+
+
+def _nearest_segment_metrics(
+    x: float,
+    y: float,
+    segments: Sequence[Tuple[float, ...]],
+) -> Optional[Dict[str, float]]:
+    best: Optional[Dict[str, float]] = None
+    best_dist_sq = float("inf")
+    for segment in segments:
+        if len(segment) >= 10:
+            (
+                x1,
+                y1,
+                _x2,
+                _y2,
+                dx,
+                dy,
+                inverse_denom,
+                seg_yaw,
+                sin_seg_yaw,
+                cos_seg_yaw,
+            ) = segment[:10]
+        else:
+            x1, y1, x2, y2 = segment[:4]
+            dx = x2 - x1
+            dy = y2 - y1
+            denom = dx * dx + dy * dy
+            if denom <= 1e-9:
+                continue
+            inverse_denom = 1.0 / denom
+            seg_yaw = math.atan2(dy, dx)
+            length = math.sqrt(denom)
+            sin_seg_yaw = dy / length
+            cos_seg_yaw = dx / length
+        t = _clamp(((x - x1) * dx + (y - y1) * dy) * inverse_denom, 0.0, 1.0)
         px = x1 + t * dx
         py = y1 + t * dy
         ex = x - px
         ey = y - py
-        dist = math.hypot(ex, ey)
-        if dist >= best_dist:
+        dist_sq = ex * ex + ey * ey
+        if dist_sq >= best_dist_sq:
             continue
-        seg_yaw = math.atan2(dy, dx)
-        signed = math.sin(seg_yaw) * (x - px) - math.cos(seg_yaw) * (y - py)
-        best_dist = dist
+        signed = sin_seg_yaw * ex - cos_seg_yaw * ey
+        best_dist_sq = dist_sq
         best = {
-            "dist": dist,
+            "dist": math.sqrt(dist_sq),
             "proj_x": px,
             "proj_y": py,
             "seg_yaw": seg_yaw,
@@ -1070,6 +1453,54 @@ def _nearest_segment_metrics(
             "curvature": 0.0,
         }
     return best
+
+
+def _nearest_segment_metrics_indexed(
+    x: float,
+    y: float,
+    segments: Sequence[Tuple[float, ...]],
+    spatial_index: Optional[Mapping[Tuple[int, int], Sequence[int]]],
+    *,
+    cell_size_m: float = _MAP_SEGMENT_GRID_CELL_SIZE_M,
+) -> Optional[Dict[str, float]]:
+    """Return the exact nearest segment while avoiding a full scan on normal queries.
+
+    The initial grid cell supplies candidates.  The search then covers every grid
+    cell whose bounding square can contain a segment closer than the current best
+    distance.  If the query is outside the indexed geometry, the exact full scan
+    remains the safe fallback.
+    """
+    if not segments:
+        return None
+    if not spatial_index:
+        return _nearest_segment_metrics(x, y, segments)
+    cell_size = max(1.0, float(cell_size_m))
+    cell = (math.floor(float(x) / cell_size), math.floor(float(y) / cell_size))
+    initial_indices = spatial_index.get(cell, ())
+    if not initial_indices:
+        return _nearest_segment_metrics(x, y, segments)
+
+    candidate_indices = set(int(index) for index in initial_indices)
+    candidate_segments = [segments[index] for index in sorted(candidate_indices)]
+    best = _nearest_segment_metrics(x, y, candidate_segments)
+    if best is None:
+        return _nearest_segment_metrics(x, y, segments)
+
+    best_distance = max(0.0, float(best["dist"])) + 1e-9
+    min_ix = math.floor((float(x) - best_distance) / cell_size)
+    max_ix = math.floor((float(x) + best_distance) / cell_size)
+    min_iy = math.floor((float(y) - best_distance) / cell_size)
+    max_iy = math.floor((float(y) + best_distance) / cell_size)
+    for ix in range(min_ix, max_ix + 1):
+        for iy in range(min_iy, max_iy + 1):
+            candidate_indices.update(spatial_index.get((ix, iy), ()))
+    if len(candidate_indices) == len(segments):
+        return best
+    return _nearest_segment_metrics(
+        x,
+        y,
+        [segments[index] for index in sorted(candidate_indices)],
+    )
 
 
 class CarlaFeedbackClient:
@@ -1401,6 +1832,8 @@ class RosCacheNode(Node):
         control_out_type: str,
         use_objects3d: bool,
         use_markers: bool,
+        odom_queue_depth: int = 1,
+        obstacle_alignment_policy: str = "latest_source_not_after_odom",
     ) -> None:
         super().__init__("apollo10_ros_cache_bridge")
         self.lock = threading.Lock()
@@ -1409,6 +1842,10 @@ class RosCacheNode(Node):
         self.latest_markers: Optional[Any] = None
         self.latest_objects_json: Optional[str] = None
         self.rx_counts = {"odom": 0, "objects3d": 0, "markers": 0, "objects_json": 0}
+        self._initialize_input_queues(
+            odom_queue_depth,
+            obstacle_alignment_policy=obstacle_alignment_policy,
+        )
         self.control_out_type = str(control_out_type or "ackermann").lower()
         if self.control_out_type == "ackermann":
             if AckermannDriveStamped is None:
@@ -1438,34 +1875,257 @@ class RosCacheNode(Node):
             self.create_subscription(MarkerArray, objects_markers_topic, self._on_markers, best_effort_qos)
         self.create_subscription(String, objects_json_topic, self._on_objects_json, best_effort_qos)
 
+    def _initialize_input_queues(
+        self,
+        odom_queue_depth: int,
+        *,
+        obstacle_alignment_policy: str = "latest_source_not_after_odom",
+    ) -> None:
+        self.odom_queue_depth = max(1, int(odom_queue_depth or 1))
+        policy = str(obstacle_alignment_policy or "latest_source_not_after_odom").strip().lower()
+        self.obstacle_alignment_policy = {
+            "latest": "latest_source_not_after_odom",
+            "not_future": "latest_source_not_after_odom",
+            "exact": "wait_for_exact_source_time",
+            "wait_exact": "wait_for_exact_source_time",
+        }.get(policy, policy)
+        if self.obstacle_alignment_policy not in {
+            "latest_source_not_after_odom",
+            "wait_for_exact_source_time",
+        }:
+            self.obstacle_alignment_policy = "latest_source_not_after_odom"
+        self._odom_queue = deque()
+        self._objects3d_queue = deque()
+        self._markers_queue = deque()
+        self._objects_json_queue = deque()
+        self._selected_objects3d: Optional[Any] = None
+        self._selected_markers: Optional[Any] = None
+        self._selected_objects_json: Optional[str] = None
+        self._odom_queue_dequeued = 0
+        self._odom_queue_overflow_dropped = 0
+        self._odom_queue_max_pending = 0
+        self._obstacle_alignment_wait_count = 0
+        self._obstacle_alignment_missing_exact_count = 0
+        self._obstacle_alignment_dropped_odom_count = 0
+
+    def _append_bounded(self, values: deque, value: Any) -> None:
+        while len(values) >= self.odom_queue_depth:
+            values.popleft()
+        values.append(value)
+
+    @staticmethod
+    def _message_source_time_sec(kind: str, msg: Any) -> Optional[float]:
+        try:
+            if kind == "objects_json":
+                payload = json.loads(str(msg or ""))
+                stamp_sec = float(payload.get("stamp"))
+            elif kind == "markers":
+                markers = list(getattr(msg, "markers", []) or [])
+                if not markers:
+                    return None
+                stamp_sec = _stamp_to_sec(getattr(markers[0].header, "stamp", None))
+            else:
+                stamp_sec = _stamp_to_sec(getattr(getattr(msg, "header", None), "stamp", None))
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return float(stamp_sec) if math.isfinite(stamp_sec) and stamp_sec > 0.0 else None
+
+    def _select_not_future(
+        self,
+        values: deque,
+        *,
+        kind: str,
+        odom_time_sec: Optional[float],
+        previous: Any,
+    ) -> Any:
+        if not values:
+            return previous
+        eligible: List[Tuple[Optional[float], int, Any]] = []
+        future = deque()
+        for index, value in enumerate(values):
+            source_time_sec = self._message_source_time_sec(kind, value)
+            if (
+                odom_time_sec is None
+                or source_time_sec is None
+                or source_time_sec <= odom_time_sec + 1e-9
+            ):
+                eligible.append((source_time_sec, index, value))
+            else:
+                future.append(value)
+        values.clear()
+        values.extend(future)
+        if not eligible:
+            return previous
+        return max(
+            eligible,
+            key=lambda item: (
+                float("-inf") if item[0] is None else float(item[0]),
+                item[1],
+            ),
+        )[2]
+
+    def _exact_source_alignment_status(
+        self,
+        values: deque,
+        *,
+        kind: str,
+        odom_time_sec: Optional[float],
+        previous: Any,
+    ) -> str:
+        """Report whether a same-timestamp source frame is ready or still in flight."""
+
+        if odom_time_sec is None:
+            return "source_time_unavailable"
+        tolerance_sec = 1e-6
+        source_times = [
+            self._message_source_time_sec(kind, value)
+            for value in values
+        ]
+        previous_time_sec = self._message_source_time_sec(kind, previous)
+        if previous_time_sec is not None:
+            source_times.append(previous_time_sec)
+        finite_times = [value for value in source_times if value is not None]
+        if any(abs(value - odom_time_sec) <= tolerance_sec for value in finite_times):
+            return "exact_ready"
+        if any(value > odom_time_sec + tolerance_sec for value in finite_times):
+            return "exact_missing_future_seen"
+        if source_times and not finite_times:
+            return "source_time_unavailable"
+        return "exact_pending"
+
+    def _obstacle_alignment_status(self, odom_time_sec: Optional[float]) -> str:
+        statuses = [
+            self._exact_source_alignment_status(
+                values,
+                kind=kind,
+                odom_time_sec=odom_time_sec,
+                previous=previous,
+            )
+            for values, kind, previous in (
+                (self._objects3d_queue, "objects3d", self._selected_objects3d),
+                (self._objects_json_queue, "objects_json", self._selected_objects_json),
+                (self._markers_queue, "markers", self._selected_markers),
+            )
+            if values or previous is not None
+        ]
+        if "exact_ready" in statuses:
+            return "exact_ready"
+        if "exact_missing_future_seen" in statuses:
+            return "exact_missing_future_seen"
+        if statuses and all(status == "source_time_unavailable" for status in statuses):
+            return "source_time_unavailable"
+        return "exact_pending"
+
     def _on_odom(self, msg: Odometry) -> None:
         with self.lock:
             self.latest_odom = msg
+            if self.odom_queue_depth > 1:
+                if len(self._odom_queue) >= self.odom_queue_depth:
+                    self._odom_queue.popleft()
+                    self._odom_queue_overflow_dropped += 1
+                self._odom_queue.append(msg)
+                self._odom_queue_max_pending = max(
+                    self._odom_queue_max_pending,
+                    len(self._odom_queue),
+                )
             self.rx_counts["odom"] += 1
 
     def _on_objects3d(self, msg: Any) -> None:
         with self.lock:
             self.latest_objects3d = msg
+            if self.odom_queue_depth > 1:
+                self._append_bounded(self._objects3d_queue, msg)
             self.rx_counts["objects3d"] += 1
 
     def _on_markers(self, msg: Any) -> None:
         with self.lock:
             self.latest_markers = msg
+            if self.odom_queue_depth > 1:
+                self._append_bounded(self._markers_queue, msg)
             self.rx_counts["markers"] += 1
 
     def _on_objects_json(self, msg: String) -> None:
         with self.lock:
             self.latest_objects_json = msg.data
+            if self.odom_queue_depth > 1:
+                self._append_bounded(self._objects_json_queue, msg.data)
             self.rx_counts["objects_json"] += 1
 
     def snapshot(self) -> Dict[str, Any]:
         with self.lock:
+            odom = self.latest_odom
+            objects3d = self.latest_objects3d
+            markers = self.latest_markers
+            objects_json = self.latest_objects_json
+            alignment_waiting = False
+            alignment_dropped_odom = False
+            alignment_status = "not_requested"
+            if self.odom_queue_depth > 1 and self._odom_queue:
+                odom = self._odom_queue[0]
+                odom_time_sec = self._message_source_time_sec("odom", odom)
+                if self.obstacle_alignment_policy == "wait_for_exact_source_time":
+                    alignment_status = self._obstacle_alignment_status(odom_time_sec)
+                    if alignment_status == "exact_pending":
+                        alignment_waiting = True
+                        self._obstacle_alignment_wait_count += 1
+                        odom = None
+                    elif alignment_status == "exact_missing_future_seen":
+                        self._obstacle_alignment_missing_exact_count += 1
+                        self._odom_queue.popleft()
+                        self._obstacle_alignment_dropped_odom_count += 1
+                        alignment_dropped_odom = True
+                        odom = None
+                if not alignment_waiting and not alignment_dropped_odom:
+                    odom = self._odom_queue.popleft()
+                    self._odom_queue_dequeued += 1
+                    self._selected_objects3d = self._select_not_future(
+                        self._objects3d_queue,
+                        kind="objects3d",
+                        odom_time_sec=odom_time_sec,
+                        previous=self._selected_objects3d,
+                    )
+                    self._selected_markers = self._select_not_future(
+                        self._markers_queue,
+                        kind="markers",
+                        odom_time_sec=odom_time_sec,
+                        previous=self._selected_markers,
+                    )
+                    self._selected_objects_json = self._select_not_future(
+                        self._objects_json_queue,
+                        kind="objects_json",
+                        odom_time_sec=odom_time_sec,
+                        previous=self._selected_objects_json,
+                    )
+                    objects3d = self._selected_objects3d
+                    markers = self._selected_markers
+                    objects_json = self._selected_objects_json
+            queue_pending = len(self._odom_queue) if self.odom_queue_depth > 1 else 0
             return {
-                "odom": self.latest_odom,
-                "objects3d": self.latest_objects3d,
-                "markers": self.latest_markers,
-                "objects_json": self.latest_objects_json,
+                "odom": odom,
+                "objects3d": objects3d,
+                "markers": markers,
+                "objects_json": objects_json,
                 "rx_counts": dict(self.rx_counts),
+                "odom_queue_pending": queue_pending,
+                "ros_input_queue": {
+                    "configured_depth": self.odom_queue_depth,
+                    "enabled": self.odom_queue_depth > 1,
+                    "pending": queue_pending,
+                    "max_pending": self._odom_queue_max_pending,
+                    "dequeued": self._odom_queue_dequeued,
+                    "overflow_dropped": self._odom_queue_overflow_dropped,
+                    "obstacle_alignment_policy": self.obstacle_alignment_policy,
+                    "obstacle_alignment_status": alignment_status,
+                    "obstacle_alignment_waiting": alignment_waiting,
+                    "obstacle_alignment_dropped_odom": alignment_dropped_odom,
+                    "obstacle_alignment_wait_count": self._obstacle_alignment_wait_count,
+                    "obstacle_alignment_missing_exact_count": (
+                        self._obstacle_alignment_missing_exact_count
+                    ),
+                    "obstacle_alignment_dropped_odom_count": (
+                        self._obstacle_alignment_dropped_odom_count
+                    ),
+                },
             }
 
     def publish_control(self, msg: Any) -> None:
@@ -1589,21 +2249,207 @@ class ApolloGtBridge:
         self.obstacle_publish_rate_hz = float(
             bridge_cfg.get("obstacle_publish_rate_hz", self.publish_rate_hz)
         )
+        self.obstacle_alignment_policy = str(
+            bridge_cfg.get(
+                "obstacle_alignment_policy",
+                "latest_source_not_after_odom",
+            )
+            or "latest_source_not_after_odom"
+        ).strip().lower()
+        self.obstacle_publish_policy = str(
+            bridge_cfg.get("obstacle_publish_policy", "rate_limited")
+            or "rate_limited"
+        ).strip().lower()
+        self.obstacle_publish_policy = {
+            "fixed_rate": "rate_limited",
+            "rate": "rate_limited",
+            "fresh": "source_fresh",
+            "fresh_source": "source_fresh",
+        }.get(self.obstacle_publish_policy, self.obstacle_publish_policy)
+        if self.obstacle_publish_policy not in {"rate_limited", "source_fresh"}:
+            self.obstacle_publish_policy = "rate_limited"
         self._last_obstacle_publish_sim_time: Optional[float] = None
+        self._last_obstacle_source_time_sec: Optional[float] = None
         self.stats["obstacle_publish_rate_policy"] = {
             "configured_hz": self.obstacle_publish_rate_hz,
-            "time_base": "simulation_time",
-            "reason": "align_prediction_triggered_planning_with_planning_loop_rate",
+            "policy": self.obstacle_publish_policy,
+            "time_base": (
+                "obstacle_source_time"
+                if self.obstacle_publish_policy == "source_fresh"
+                else "simulation_time"
+            ),
+            "reason": (
+                "publish_each_distinct_source_frame_once_for_prediction_history"
+                if self.obstacle_publish_policy == "source_fresh"
+                else "align_prediction_triggered_planning_with_planning_loop_rate"
+            ),
         }
         self.localization_time_source = str(
             bridge_cfg.get("localization_time_source", "auto") or "auto"
         ).strip().lower()
         if self.localization_time_source not in {"auto", "sim_time", "cyber_time"}:
             self.localization_time_source = "auto"
+        self.obstacle_time_source = str(
+            bridge_cfg.get("obstacle_time_source", "localization_time")
+            or "localization_time"
+        ).strip().lower()
+        self.obstacle_time_source = {
+            "localization": "localization_time",
+            "sim": "sim_time",
+            "cyber": "cyber_time",
+            "source": "source_time",
+            "objects": "source_time",
+            "objects_time": "source_time",
+        }.get(self.obstacle_time_source, self.obstacle_time_source)
+        if self.obstacle_time_source not in {
+            "localization_time",
+            "sim_time",
+            "cyber_time",
+            "source_time",
+        }:
+            self.obstacle_time_source = "localization_time"
+        cyber_clock_cfg = bridge_cfg.get("cyber_clock", {}) or {}
+        if not isinstance(cyber_clock_cfg, dict):
+            cyber_clock_cfg = {}
+        self.cyber_clock_mode = str(cyber_clock_cfg.get("mode", "disabled") or "disabled").strip().lower()
+        if self.cyber_clock_mode not in {"disabled", "cyber", "mock"}:
+            self.cyber_clock_mode = "disabled"
+        self.cyber_clock_enabled = bool(
+            cyber_clock_cfg.get("enabled", False) and self.cyber_clock_mode == "mock"
+        )
+        self.cyber_clock_channel = str(cyber_clock_cfg.get("channel", "/clock") or "/clock")
+        self.cyber_clock_publish_phase = str(
+            cyber_clock_cfg.get("publish_phase", "before_gt") or "before_gt"
+        ).strip().lower()
+        if self.cyber_clock_publish_phase not in {"before_gt", "after_state"}:
+            self.cyber_clock_publish_phase = "before_gt"
+        self.cyber_clock_odom_queue_depth = max(
+            1,
+            int(cyber_clock_cfg.get("odom_queue_depth", 1) or 1),
+        )
+        if not self.cyber_clock_enabled:
+            self.cyber_clock_odom_queue_depth = 1
+        self.cyber_clock_pb2 = None
+        self.cyber_clock_writer = None
+        self._cyber_clock_last_published_ts_sec: Optional[float] = None
         self.stats["localization_time_source_policy"] = {
             "configured": self.localization_time_source,
             "boundary": (
                 "sim_time_is_claim_grade_gt_time_base; cyber_time_is_diagnostic_only"
+            ),
+        }
+        self.stats["obstacle_time_source_policy"] = {
+            "configured": self.obstacle_time_source,
+            "localization_time_source": self.localization_time_source,
+            "boundary": (
+                "cyber_time_is_diagnostic_prediction_alignment_only; "
+                "carla_sim_time_remains_in_evidence_rows"
+            ),
+        }
+        self.localization_acceleration_source = str(
+            bridge_cfg.get("localization_acceleration_source", "finite_difference")
+            or "finite_difference"
+        ).strip().lower()
+        if self.localization_acceleration_source not in {
+            "finite_difference",
+            "carla_feedback",
+            "auto",
+        }:
+            self.localization_acceleration_source = "finite_difference"
+        self.stats["localization_acceleration_source"] = {
+            "configured": self.localization_acceleration_source,
+            "available_sources": ["finite_difference", "carla_feedback", "auto"],
+            "physical_feedback_component_frame": "carla_vehicle_body",
+            "physical_feedback_output_frame": "apollo_map_enu",
+            "fallback_policy": "finite_difference_with_explicit_source",
+            "claim_boundary": "gt_input_quality_only_not_control_smoothing",
+            "fallback_count": 0,
+            "source_counts": {},
+        }
+        initial_state_transition_cfg = (
+            bridge_cfg.get("localization_authored_initial_state_transition", {}) or {}
+        )
+        if not isinstance(initial_state_transition_cfg, Mapping):
+            initial_state_transition_cfg = {}
+        self.localization_authored_initial_state_transition_mode = str(
+            initial_state_transition_cfg.get("mode", "disabled") or "disabled"
+        ).strip().lower()
+        if self.localization_authored_initial_state_transition_mode not in {
+            "disabled",
+            "marker_zero_once",
+        }:
+            self.localization_authored_initial_state_transition_mode = "disabled"
+        transition_marker_path = Path(
+            str(
+                initial_state_transition_cfg.get(
+                    "marker_path",
+                    "fixed_scene_gate_initial_state_materialization.json",
+                )
+            )
+        ).expanduser()
+        if not transition_marker_path.is_absolute():
+            transition_marker_path = self.artifacts_dir / transition_marker_path
+        self.localization_authored_initial_state_transition_marker_path = (
+            transition_marker_path
+        )
+        self.localization_authored_initial_state_transition_required_status = str(
+            initial_state_transition_cfg.get("required_status", "pass") or "pass"
+        ).strip().lower()
+        self.localization_authored_initial_state_transition_max_world_frame_delta = max(
+            1,
+            int(initial_state_transition_cfg.get("max_world_frame_delta", 2) or 2),
+        )
+        self.localization_authored_initial_state_transition_max_sim_time_delta_s = max(
+            0.0,
+            _safe_float(
+                initial_state_transition_cfg.get("max_sim_time_delta_s"),
+                0.11,
+            ),
+        )
+        self.localization_authored_initial_state_transition_speed_tolerance_mps = max(
+            0.0,
+            _safe_float(
+                initial_state_transition_cfg.get("speed_tolerance_mps"),
+                0.5,
+            ),
+        )
+        self._localization_authored_initial_state_transition_consumed = False
+        self.stats["localization_authored_initial_state_transition"] = {
+            "configured_mode": self.localization_authored_initial_state_transition_mode,
+            "marker_path": str(
+                self.localization_authored_initial_state_transition_marker_path
+            ),
+            "required_status": (
+                self.localization_authored_initial_state_transition_required_status
+            ),
+            "max_world_frame_delta": (
+                self.localization_authored_initial_state_transition_max_world_frame_delta
+            ),
+            "max_sim_time_delta_s": (
+                self.localization_authored_initial_state_transition_max_sim_time_delta_s
+            ),
+            "speed_tolerance_mps": (
+                self.localization_authored_initial_state_transition_speed_tolerance_mps
+            ),
+            "applied_count": 0,
+            "last_observation": {},
+            "claim_boundary": (
+                "setup_state_discontinuity_only_not_acceleration_filter_or_control_tuning"
+            ),
+        }
+        self.stats["cyber_clock"] = {
+            "configured_mode": self.cyber_clock_mode,
+            "enabled": self.cyber_clock_enabled,
+            "channel": self.cyber_clock_channel,
+            "publish_phase": self.cyber_clock_publish_phase,
+            "odom_queue_depth": self.cyber_clock_odom_queue_depth,
+            "unit": "nanoseconds",
+            "source": "carla_sim_time",
+            "publish_count": 0,
+            "last_timestamp_sec": None,
+            "error": "",
+            "claim_boundary": (
+                "mock_clock_is_claim_grade_only_when_apollo_clock_mode_is_explicitly_verified"
             ),
         }
         run_cfg = (cfg.get("run", {}) or {})
@@ -1693,6 +2539,7 @@ class ApolloGtBridge:
             ),
             "nonnegative_speed_correction_count": 0,
             "source": "finite_difference_filter",
+            "configured_acceleration_source": self.localization_acceleration_source,
             "claim_boundary": "gt_input_quality_only_not_control_smoothing",
         }
         self.max_obstacles = int(bridge_cfg.get("max_obstacles", 64))
@@ -1739,7 +2586,9 @@ class ApolloGtBridge:
         self.map_file_path = _bridge_path_text(self.map_file_path_raw)
         self.map_bounds_file_raw = str(bridge_cfg.get("map_bounds_file", "")).strip()
         self.map_bounds_file = _bridge_path_text(self.map_bounds_file_raw)
-        self.map_segments: List[Tuple[float, float, float, float]] = []
+        self.map_segments: List[Tuple[float, ...]] = []
+        self._map_segment_spatial_index: Dict[Tuple[int, int], Tuple[int, ...]] = {}
+        self._map_segment_grid_cell_size_m = _MAP_SEGMENT_GRID_CELL_SIZE_M
         self.map_geometry_source_file = ""
         self.map_geometry_source_type = "missing"
         self.map_geometry_trusted_lane_centerline = False
@@ -1771,6 +2620,7 @@ class ApolloGtBridge:
         self.startup_geometry_summary_path = self.artifacts_dir / "startup_geometry_summary.json"
         self.planning_topic_debug_path = self.artifacts_dir / "planning_topic_debug.jsonl"
         self.planning_topic_debug_summary_path = self.artifacts_dir / "planning_topic_debug_summary.json"
+        self.prediction_topic_debug_path = self.artifacts_dir / "prediction_topic_debug.jsonl"
         self.planning_route_segment_debug_path = self.artifacts_dir / "planning_route_segment_debug.jsonl"
         self.apollo_reference_line_contract_path = (
             self.artifacts_dir / "apollo_reference_line_contract.jsonl"
@@ -1870,6 +2720,16 @@ class ApolloGtBridge:
             1,
             int(bridge_cfg.get("control_debug_artifact_sample_stride", 1) or 1),
         )
+        control_debug_artifact_sample_strides = bridge_cfg.get(
+            "control_debug_artifact_sample_strides", {}
+        ) or {}
+        if not isinstance(control_debug_artifact_sample_strides, dict):
+            raise ValueError("bridge.control_debug_artifact_sample_strides must be a mapping")
+        self.control_debug_artifact_sample_strides = {
+            str(artifact_name): max(1, int(sample_stride or 1))
+            for artifact_name, sample_stride in control_debug_artifact_sample_strides.items()
+            if str(artifact_name).strip()
+        }
         self.claim_evidence_artifact_sample_stride = max(
             1,
             int(bridge_cfg.get("claim_evidence_artifact_sample_stride", 1) or 1),
@@ -1933,6 +2793,10 @@ class ApolloGtBridge:
             "reference_debug_artifact_sampled_out_counts": {},
             "reference_debug_artifact_written_counts": {},
             "control_debug_artifact_sample_stride": self.control_debug_artifact_sample_stride,
+            "control_debug_artifact_sample_strides": dict(
+                self.control_debug_artifact_sample_strides
+            ),
+            "control_debug_artifact_effective_strides": {},
             "control_debug_artifact_seen_counts": {},
             "control_debug_artifact_sampled_out_counts": {},
             "control_debug_artifact_written_counts": {},
@@ -2010,19 +2874,62 @@ class ApolloGtBridge:
             "snap_right_angle": self.auto_calib_snap_right_angle,
         }
         ctrl_map = bridge_cfg.get("control_mapping", {}) or {}
+        self.require_exact_planning_match_before_first_publish = bool(
+            ctrl_map.get("require_exact_planning_match_before_first_publish", False)
+        )
+        self.require_nonfallback_planning_before_first_publish = bool(
+            ctrl_map.get("require_nonfallback_planning_before_first_publish", False)
+        )
         self.require_valid_planning_before_first_publish = bool(
             ctrl_map.get("require_valid_planning_before_first_publish", False)
+            or self.require_exact_planning_match_before_first_publish
+            or self.require_nonfallback_planning_before_first_publish
         )
+        self.require_fixed_scene_handover_before_publish = bool(
+            ctrl_map.get("require_fixed_scene_handover_before_publish", False)
+        )
+        self.fixed_scene_handover_path = self.artifacts_dir / "fixed_scene_ego_handover.json"
+        self.fixed_scene_control_handover_ack_path = (
+            self.artifacts_dir / "fixed_scene_control_handover_ack.json"
+        )
+        self._fixed_scene_control_handover_ack_written = False
         self._valid_planning_publish_gate_open = not self.require_valid_planning_before_first_publish
+        self._startup_pending_control_lock = threading.Lock()
+        self._startup_pending_controls: Dict[int, Dict[str, Any]] = {}
         self.stats["control_startup_publish_gate"] = {
-            "enabled": self.require_valid_planning_before_first_publish,
-            "open": self._valid_planning_publish_gate_open,
+            "enabled": bool(
+                self.require_valid_planning_before_first_publish
+                or self.require_fixed_scene_handover_before_publish
+            ),
+            "open": bool(
+                self._valid_planning_publish_gate_open
+                and not self.require_fixed_scene_handover_before_publish
+            ),
+            "planning_open": self._valid_planning_publish_gate_open,
+            "exact_planning_match_required": (
+                self.require_exact_planning_match_before_first_publish
+            ),
+            "nonfallback_planning_required": (
+                self.require_nonfallback_planning_before_first_publish
+            ),
+            "fixed_scene_handover_required": self.require_fixed_scene_handover_before_publish,
+            "fixed_scene_handover_open": not self.require_fixed_scene_handover_before_publish,
+            "fixed_scene_handover_path": str(self.fixed_scene_handover_path),
             "skip_count": 0,
+            "pending_control_sequence_nums": [],
+            "pending_control_enqueue_count": 0,
+            "pending_control_replace_count": 0,
+            "pending_control_expired_count": 0,
+            "exact_match_retry_count": 0,
+            "exact_match_retry_publish_count": 0,
             "first_open_timestamp_sec": None,
+            "first_open_planning_sequence_num": None,
+            "first_open_planning_trajectory_type": None,
+            "first_open_planning_exact_match": None,
             "last_skip_reason": "",
             "claim_boundary": (
-                "startup_handoff_only; raw Apollo Control remains recorded and the gate never "
-                "closes after the first valid Planning trajectory"
+                "setup_handoff_only; raw Apollo Control remains recorded; neither Planning "
+                "readiness nor scene pre-roll is backend behavior evidence"
             ),
         }
         self.debug_dump_control_raw = bool(bridge_cfg.get("debug_dump_control_raw", False))
@@ -2070,6 +2977,26 @@ class ApolloGtBridge:
         self._actuator_calibration = load_actuator_calibration(self._actuator_calibration_path)
         self.physical_allow_legacy_fallback = bool(physical_cfg.get("allow_legacy_fallback", True))
         self.physical_map_steering = bool(physical_cfg.get("map_steering", True))
+        self.physical_map_steering_feedback = bool(
+            physical_cfg.get("map_steering_feedback", self.physical_map_steering)
+        )
+        self.physical_steering_speed_compensation_enabled = bool(
+            physical_cfg.get("steering_speed_compensation_enabled", False)
+        )
+        if (
+            self.physical_steering_speed_compensation_enabled
+            and int(
+                self._actuator_calibration.status().get(
+                    "steering_speed_compensation_pairs", 0
+                )
+                or 0
+            )
+            < 2
+        ):
+            raise RuntimeError(
+                "physical steering speed compensation requires at least two "
+                "front-wheel tracking-ratio calibration points"
+            )
         self.physical_map_longitudinal = bool(physical_cfg.get("map_longitudinal", True))
         self.physical_map_throttle = bool(
             physical_cfg.get("map_throttle", self.physical_map_longitudinal)
@@ -2119,6 +3046,10 @@ class ApolloGtBridge:
             "steer_sign": self.steer_sign,
             "allow_legacy_fallback": self.physical_allow_legacy_fallback,
             "map_steering": self.physical_map_steering,
+            "map_steering_feedback": self.physical_map_steering_feedback,
+            "steering_speed_compensation_enabled": (
+                self.physical_steering_speed_compensation_enabled
+            ),
             "map_longitudinal": self.physical_map_longitudinal,
             "map_throttle": self.physical_map_throttle,
             "map_brake": self.physical_map_brake,
@@ -2369,6 +3300,29 @@ class ApolloGtBridge:
         self.front_obstacle_role_names = [
             str(item) for item in (front_obstacle_cfg.get("role_names") or ["front"])
         ]
+        activation_marker = Path(
+            str(
+                front_obstacle_cfg.get(
+                    "activation_marker_path",
+                    "fixed_scene_obstacle_activation.json",
+                )
+            )
+        ).expanduser()
+        if not activation_marker.is_absolute():
+            activation_marker = self.artifacts_dir / activation_marker
+        self.front_obstacle_activation_marker_path = activation_marker
+        self.front_obstacle_activation_required_status = str(
+            front_obstacle_cfg.get("activation_required_status", "pass") or "pass"
+        ).strip().lower()
+        self._front_obstacle_activation_gate_open = (
+            self.front_obstacle_behavior_mode != "scenario_initial_state_gate"
+        )
+        self._front_obstacle_activation_gate_reason = (
+            "not_configured"
+            if self._front_obstacle_activation_gate_open
+            else "activation_marker_missing"
+        )
+        self._front_obstacle_activation_gate_opened_ts = 0.0
         self._front_obstacle_visible = self.front_obstacle_behavior_mode == "normal"
         self._front_obstacle_last_gap: Dict[str, Any] = {}
         self._front_obstacle_suppressed_frames = 0
@@ -2444,6 +3398,7 @@ class ApolloGtBridge:
         )
         self.traffic_light_channel = str(cyber_cfg.get("traffic_light_channel", "/apollo/perception/traffic_light"))
         self.planning_channel = str(cyber_cfg.get("planning_channel", "/apollo/planning"))
+        self.prediction_channel = str(cyber_cfg.get("prediction_channel", "/apollo/prediction"))
 
         auto_routing_cfg = ((cfg.get("bridge", {}) or {}).get("auto_routing", {}) or {})
         self.auto_routing_enabled = bool(auto_routing_cfg.get("enabled", False))
@@ -2734,6 +3689,12 @@ class ApolloGtBridge:
         self._ignore_roll_start_xy: Optional[Tuple[float, float]] = None
 
         self.planning_pb2 = None
+        self.prediction_pb2 = None
+        self._prediction_reader_enabled = False
+        self._prediction_reader_enable_reason = "prediction_proto_not_loaded"
+        self._prediction_message_type = "apollo.prediction.PredictionObstacles"
+        self._prediction_msg_count = 0
+        self._prediction_last_event: Optional[Dict[str, Any]] = None
         self._planning_reader_enabled = False
         self._planning_reader_enable_reason = "planning_proto_not_loaded"
         self._planning_message_type = "apollo.planning.ADCTrajectory"
@@ -2741,8 +3702,10 @@ class ApolloGtBridge:
         self._planning_nonempty_count = 0
         self._planning_empty_count = 0
         self._planning_last_points = 0
+        self._planning_last_trajectory_type: Optional[str] = None
         self._planning_last_distance_to_destination: Optional[float] = None
         self._planning_last_msg_ts = 0.0
+        self._planning_last_msg_wall_time_sec = 0.0
         self._planning_first_msg_ts_sec: Optional[float] = None
         self._planning_first_nonempty_ts_sec: Optional[float] = None
         self._planning_first_msg_last_reroute_ts_sec: Optional[float] = None
@@ -2782,6 +3745,14 @@ class ApolloGtBridge:
         self.bridge_timing_source_model = "ros_odom_header_stamp_for_sim_time"
 
         carla_feedback_cfg = (bridge_cfg.get("carla_feedback", {}) or {})
+        self.carla_feedback_state_source = str(
+            carla_feedback_cfg.get("state_source", "carla_rpc") or "carla_rpc"
+        ).strip().lower()
+        if self.carla_feedback_state_source not in {"carla_rpc", "ros_objects_json"}:
+            raise RuntimeError(
+                "unsupported bridge.carla_feedback.state_source="
+                f"{self.carla_feedback_state_source}; expected carla_rpc|ros_objects_json"
+            )
         self.carla_feedback = None
         if bool(carla_feedback_cfg.get("enabled", True)):
             self.carla_feedback = CarlaFeedbackClient(
@@ -2807,10 +3778,25 @@ class ApolloGtBridge:
             self.pb_root,
             "modules.common_msgs.perception_msgs.traffic_light_detection_pb2",
         )
+        if self.cyber_clock_enabled:
+            self.cyber_clock_pb2 = _import_optional_pb_module(
+                self.apollo_root,
+                self.pb_root,
+                "cyber.proto.clock_pb2",
+            )
+            if self.cyber_clock_pb2 is None or not hasattr(self.cyber_clock_pb2, "Clock"):
+                raise RuntimeError(
+                    "cyber clock mode=mock is enabled but cyber.proto.clock_pb2 is unavailable"
+                )
         self.planning_pb2 = _import_optional_pb_module(
             self.apollo_root,
             self.pb_root,
             "modules.common_msgs.planning_msgs.planning_pb2",
+        )
+        self.prediction_pb2 = _import_optional_pb_module(
+            self.apollo_root,
+            self.pb_root,
+            "modules.common_msgs.prediction_msgs.prediction_obstacle_pb2",
         )
 
         if self.transport_mode == "carla_direct":
@@ -2916,6 +3902,8 @@ class ApolloGtBridge:
                 control_out_type=self.control_out_type,
                 use_objects3d=Detection3DArray is not None,
                 use_markers=MarkerArray is not None,
+                odom_queue_depth=self.cyber_clock_odom_queue_depth,
+                obstacle_alignment_policy=self.obstacle_alignment_policy,
             )
             self.executor = MultiThreadedExecutor(num_threads=2)
             self.executor.add_node(self.node)
@@ -2923,6 +3911,11 @@ class ApolloGtBridge:
 
         self.cyber.init(self.bridge_node_name)
         self.cyber_node = self.cyber.Node(self.bridge_node_name)
+        if self.cyber_clock_enabled:
+            self.cyber_clock_writer = self._cyber_create_writer(
+                self.cyber_clock_channel,
+                self.cyber_clock_pb2.Clock,
+            )
         self.loc_writer = self._cyber_create_writer(
             self.localization_channel, self.localization_pb2.LocalizationEstimate
         )
@@ -3006,6 +3999,30 @@ class ApolloGtBridge:
             print(
                 "[bridge][planning][warn] planning reader disabled: ADCTrajectory missing "
                 f"for channel {self.planning_channel}"
+            )
+        if self.prediction_pb2 is not None and hasattr(
+            self.prediction_pb2, "PredictionObstacles"
+        ):
+            self._cyber_create_reader(
+                self.prediction_channel,
+                self.prediction_pb2.PredictionObstacles,
+                self._on_prediction,
+            )
+            self._prediction_reader_enabled = True
+            self._prediction_reader_enable_reason = "enabled"
+        elif self.prediction_pb2 is None:
+            self._prediction_reader_enable_reason = "prediction_obstacle_pb2_import_failed"
+            print(
+                "[bridge][prediction][warn] prediction reader disabled: failed to import "
+                f"prediction_obstacle_pb2 for channel {self.prediction_channel}"
+            )
+        else:
+            self._prediction_reader_enable_reason = (
+                "PredictionObstacles_missing_in_prediction_obstacle_pb2"
+            )
+            print(
+                "[bridge][prediction][warn] prediction reader disabled: "
+                f"PredictionObstacles missing for channel {self.prediction_channel}"
             )
         self._cyber_create_reader(self.control_channel, self.control_pb2.ControlCommand, self._on_control_cmd)
         self.cyber_spin_thread = None
@@ -3102,6 +4119,13 @@ class ApolloGtBridge:
         return sequence_num
 
     def _command_now_sec(self) -> float:
+        # A few offline bridge probes construct a lightweight adapter without
+        # running the full __init__. Treat the optional clock as disabled in
+        # that case; fully initialized runtime instances always set it.
+        if bool(getattr(self, "cyber_clock_enabled", False)):
+            latest_sim_time = _finite_or_none(getattr(self, "_latest_sim_time_sec", None))
+            if latest_sim_time is not None:
+                return float(latest_sim_time)
         try:
             now_fn = getattr(self.cyber_time.Time, "now", None)
             if callable(now_fn):
@@ -3112,6 +4136,32 @@ class ApolloGtBridge:
         except Exception:
             pass
         return time.time()
+
+    def _planning_age_reference_time_sec(self, control_rx_ts: float) -> float:
+        """Use the same clock domain as Apollo Planning headers for age checks."""
+        if bool(getattr(self, "cyber_clock_enabled", False)):
+            return float(control_rx_ts)
+        return time.time()
+
+    def _publish_cyber_clock(self, timestamp_sec: float) -> None:
+        """Publish CARLA time for Apollo Cyber MODE_MOCK consumers."""
+        if not self.cyber_clock_enabled or self.cyber_clock_writer is None:
+            return
+        try:
+            timestamp = float(timestamp_sec)
+            if not math.isfinite(timestamp) or timestamp < 0.0:
+                raise ValueError(f"invalid simulation timestamp: {timestamp_sec!r}")
+            msg = self.cyber_clock_pb2.Clock()
+            msg.clock = int(round(timestamp * 1_000_000_000.0))
+            self.cyber_clock_writer.write(msg)
+            self._cyber_clock_last_published_ts_sec = timestamp
+            clock_stats = self.stats.setdefault("cyber_clock", {})
+            clock_stats["publish_count"] = int(clock_stats.get("publish_count", 0) or 0) + 1
+            clock_stats["last_timestamp_sec"] = timestamp
+            clock_stats["error"] = ""
+        except Exception as exc:
+            self.stats.setdefault("cyber_clock", {})["error"] = str(exc)
+            raise
 
     def _warn_bad_value(self, field: str, value: Any, source: str) -> None:
         now = time.time()
@@ -3430,20 +4480,16 @@ class ApolloGtBridge:
             self._publish_phase_overrun_counts = overrun_counts
         if target_period_s > 0.0 and duration_s > target_period_s:
             overrun_counts[phase_name] += 1
-        phase_stats: Dict[str, Any] = {}
-        for name, values in sorted(windows.items()):
-            ordered = sorted(float(item) for item in values)
-            if not ordered:
-                continue
-            p95 = ordered[int(round((len(ordered) - 1) * 0.95))]
-            phase_stats[name] = {
-                "recent_sample_count": len(ordered),
-                "last_duration_s": float(values[-1]),
-                "recent_duration_p95_s": p95,
-                "recent_duration_max_s": ordered[-1],
-                "over_target_period_count": int(overrun_counts.get(name, 0)),
-            }
-        self.stats["publish_loop_phase_timing"] = phase_stats
+        ordered = sorted(float(item) for item in window)
+        p95 = ordered[int(round((len(ordered) - 1) * 0.95))]
+        phase_stats = self.stats.setdefault("publish_loop_phase_timing", {})
+        phase_stats[phase_name] = {
+            "recent_sample_count": len(ordered),
+            "last_duration_s": float(window[-1]),
+            "recent_duration_p95_s": p95,
+            "recent_duration_max_s": ordered[-1],
+            "over_target_period_count": int(overrun_counts.get(phase_name, 0)),
+        }
 
     def _record_topic_publish_stats(
         self,
@@ -3564,7 +4610,25 @@ class ApolloGtBridge:
         ) + 1
         return True, key, "stale_sample_republished_for_debug"
 
-    def _should_publish_obstacles(self, sim_time_sec: float) -> bool:
+    def _should_publish_obstacles(
+        self,
+        sim_time_sec: float,
+        *,
+        obstacle_source_time_sec: Optional[float] = None,
+    ) -> bool:
+        if str(getattr(self, "obstacle_publish_policy", "rate_limited")) == "source_fresh":
+            source_time = _finite_or_none(obstacle_source_time_sec)
+            if source_time is None:
+                return False
+            previous_source = getattr(self, "_last_obstacle_source_time_sec", None)
+            if (
+                previous_source is None
+                or source_time < float(previous_source) - 1e-9
+                or source_time > float(previous_source) + 1e-9
+            ):
+                self._last_obstacle_source_time_sec = float(source_time)
+                return True
+            return False
         period_s = 1.0 / max(float(self.obstacle_publish_rate_hz), 1e-3)
         previous = self._last_obstacle_publish_sim_time
         if (
@@ -3616,7 +4680,7 @@ class ApolloGtBridge:
     def _write_json_file(self, path: Path, payload: Dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2))
+        tmp.write_text(json.dumps(_stable_json_snapshot(payload), indent=2))
         tmp.replace(path)
 
     def _extract_ros_stamp_sec(self, msg: Any) -> Optional[float]:
@@ -3644,6 +4708,77 @@ class ApolloGtBridge:
         if sim_time_sec is not None:
             return float(sim_time_sec), "sim_time"
         return float(fallback_wall_time_sec), "cyber_time_fallback"
+
+    def _obstacle_time_from_odom(
+        self,
+        odom: Any,
+        *,
+        localization_header_time_sec: float,
+        fallback_cyber_time_sec: float,
+        obstacle_source_time_sec: Optional[float] = None,
+        obstacle_source_time_base: str = "obstacle_source_time_unavailable",
+    ) -> Tuple[float, str]:
+        source = str(
+            getattr(self, "obstacle_time_source", "localization_time")
+            or "localization_time"
+        ).lower()
+        if source == "cyber_time":
+            return float(fallback_cyber_time_sec), "cyber_time_prediction_alignment"
+        if source == "sim_time":
+            sim_time_sec = self._extract_ros_stamp_sec(odom)
+            if sim_time_sec is not None:
+                return float(sim_time_sec), "sim_time"
+            return (
+                float(fallback_cyber_time_sec),
+                "sim_time_missing_cyber_time_fallback",
+            )
+        if source == "source_time":
+            if (
+                obstacle_source_time_sec is not None
+                and math.isfinite(float(obstacle_source_time_sec))
+                and float(obstacle_source_time_sec) > 0.0
+            ):
+                return (
+                    float(obstacle_source_time_sec),
+                    str(obstacle_source_time_base or "obstacle_source_time"),
+                )
+            return (
+                float(localization_header_time_sec),
+                "obstacle_source_time_missing_localization_time_fallback",
+            )
+        return float(localization_header_time_sec), "localization_time"
+
+    def _obstacle_source_time_from_snapshot(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> Tuple[Optional[float], str]:
+        dets = snapshot.get("objects3d")
+        if dets is not None and list(getattr(dets, "detections", []) or []):
+            stamp_sec = self._extract_ros_stamp_sec(dets)
+            if stamp_sec is not None:
+                return float(stamp_sec), "objects3d_header_time"
+
+        raw_json = snapshot.get("objects_json")
+        if raw_json:
+            try:
+                payload = json.loads(raw_json)
+                if list(payload.get("objects", []) or []):
+                    stamp_sec = float(payload.get("stamp"))
+                    if math.isfinite(stamp_sec) and stamp_sec > 0.0:
+                        return stamp_sec, "objects_json_source_time"
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+
+        markers = snapshot.get("markers")
+        for marker in list(getattr(markers, "markers", []) or []):
+            header = getattr(marker, "header", None)
+            stamp = getattr(header, "stamp", None) if header is not None else None
+            if stamp is None:
+                continue
+            stamp_sec = _stamp_to_sec(stamp)
+            if math.isfinite(stamp_sec) and stamp_sec > 0.0:
+                return float(stamp_sec), "objects_marker_header_time"
+        return None, "obstacle_source_time_unavailable"
 
     def _record_timing_from_odom(
         self,
@@ -3967,9 +5102,18 @@ class ApolloGtBridge:
             self._append_jsonl(path, payload)
 
     def _should_write_control_debug_artifact(self, artifact_name: str) -> bool:
-        stride = max(1, int(getattr(self, "control_debug_artifact_sample_stride", 1) or 1))
+        global_stride = max(
+            1,
+            int(getattr(self, "control_debug_artifact_sample_stride", 1) or 1),
+        )
+        sample_strides = getattr(self, "control_debug_artifact_sample_strides", {}) or {}
+        stride = max(1, int(sample_strides.get(artifact_name, global_stride) or 1))
         buffering = self.stats.setdefault("artifact_buffering", {})
-        buffering["control_debug_artifact_sample_stride"] = stride
+        buffering["control_debug_artifact_sample_stride"] = global_stride
+        buffering["control_debug_artifact_sample_strides"] = dict(sample_strides)
+        buffering.setdefault("control_debug_artifact_effective_strides", {})[
+            artifact_name
+        ] = stride
         seen_counts = buffering.setdefault("control_debug_artifact_seen_counts", {})
         sampled_out_counts = buffering.setdefault("control_debug_artifact_sampled_out_counts", {})
         written_counts = buffering.setdefault("control_debug_artifact_written_counts", {})
@@ -5340,7 +6484,30 @@ class ApolloGtBridge:
             "parse_fail_count": int(self._planning_parse_fail_count),
             "parse_fail_reasons_topk": parse_fail_topk,
             "last_trajectory_point_count": int(self._planning_last_points),
+            "last_trajectory_type": self._planning_last_trajectory_type,
+            "last_is_replan": (
+                bool(last_event.get("is_replan"))
+                if last_event.get("is_replan") is not None
+                else None
+            ),
+            "last_replan_reason": last_event.get("replan_reason"),
+            "last_trajectory_first_nonexpired_point_v": _finite_or_none(
+                last_event.get("trajectory_first_nonexpired_point_v")
+            ),
+            "last_trajectory_first_nonexpired_point_a": _finite_or_none(
+                last_event.get("trajectory_first_nonexpired_point_a")
+            ),
+            "last_trajectory_speed_at_1s_mps": _finite_or_none(
+                last_event.get("trajectory_speed_at_1s_mps")
+            ),
+            "last_trajectory_speed_at_1s_relative_time_sec": _finite_or_none(
+                last_event.get("trajectory_speed_at_1s_relative_time_sec")
+            ),
+            "last_trajectory_speed_at_1s_point_index": last_event.get(
+                "trajectory_speed_at_1s_point_index"
+            ),
             "last_msg_ts_sec": self._planning_last_msg_ts or None,
+            "last_msg_wall_time_sec": self._planning_last_msg_wall_time_sec or None,
             "last_distance_to_destination": self._planning_last_distance_to_destination,
             "last_routing_total_length": _finite_or_none(last_event.get("routing_total_length")),
             "last_routing_lane_window_count": int(last_event.get("routing_lane_window_count", 0) or 0),
@@ -5412,7 +6579,15 @@ class ApolloGtBridge:
                 "source_type": self.map_geometry_source_type,
                 "trusted_lane_centerline": bool(self.map_geometry_trusted_lane_centerline),
             }
-        metrics = _nearest_segment_metrics(x, y, self.map_segments)
+        metrics = _nearest_segment_metrics_indexed(
+            x,
+            y,
+            self.map_segments,
+            getattr(self, "_map_segment_spatial_index", None),
+            cell_size_m=getattr(
+                self, "_map_segment_grid_cell_size_m", _MAP_SEGMENT_GRID_CELL_SIZE_M
+            ),
+        )
         if metrics is None:
             return {
                 "available": False,
@@ -5606,8 +6781,36 @@ class ApolloGtBridge:
             "nonempty_trajectory_count": self._planning_nonempty_count,
             "empty_trajectory_count": self._planning_empty_count,
             "last_trajectory_point_count": self._planning_last_points,
+            "last_trajectory_type": self._planning_last_trajectory_type,
+            "last_is_replan": (
+                bool((self._planning_last_event or {}).get("is_replan"))
+                if (self._planning_last_event or {}).get("is_replan") is not None
+                else None
+            ),
+            "last_replan_reason": (self._planning_last_event or {}).get(
+                "replan_reason"
+            ),
+            "last_trajectory_first_nonexpired_point_v": _finite_or_none(
+                (self._planning_last_event or {}).get(
+                    "trajectory_first_nonexpired_point_v"
+                )
+            ),
+            "last_trajectory_first_nonexpired_point_a": _finite_or_none(
+                (self._planning_last_event or {}).get(
+                    "trajectory_first_nonexpired_point_a"
+                )
+            ),
+            "last_trajectory_speed_at_1s_mps": _finite_or_none(
+                (self._planning_last_event or {}).get("trajectory_speed_at_1s_mps")
+            ),
+            "last_trajectory_speed_at_1s_relative_time_sec": _finite_or_none(
+                (self._planning_last_event or {}).get(
+                    "trajectory_speed_at_1s_relative_time_sec"
+                )
+            ),
             "last_distance_to_destination": self._planning_last_distance_to_destination,
             "last_msg_ts_sec": self._planning_last_msg_ts,
+            "last_msg_wall_time_sec": self._planning_last_msg_wall_time_sec or None,
             "first_nonempty_ts_sec": self._planning_first_nonempty_ts_sec,
             "last_reroute_boundary_semantics": timing_summary["last_reroute_boundary_semantics"],
             "first_msg_ts_sec": timing_summary["first_msg_ts_sec"],
@@ -5772,6 +6975,11 @@ class ApolloGtBridge:
             "suppressed_frames": self._front_obstacle_suppressed_frames,
             "last_state_changed_ts_sec": self._front_obstacle_state_changed_ts,
             "last_gap": gap,
+            "activation_gate_open": self._front_obstacle_activation_gate_open,
+            "activation_gate_reason": self._front_obstacle_activation_gate_reason,
+            "activation_gate_opened_ts_sec": self._front_obstacle_activation_gate_opened_ts,
+            "activation_marker_path": str(self.front_obstacle_activation_marker_path),
+            "activation_required_status": self.front_obstacle_activation_required_status,
             "cache_enabled": self.front_obstacle_cache_enabled,
             "cache_ttl_sec": self.front_obstacle_cache_ttl_sec,
             "cache_hit_count": self._obstacle_cache_hit_count,
@@ -6099,10 +7307,57 @@ class ApolloGtBridge:
             dict(payload.get("command_materialization", {}) or {}),
         )
 
+    def _on_prediction(self, msg: Any) -> None:
+        self._prediction_msg_count += 1
+        now_sec = self._command_now_sec()
+        timing = self._timing_snapshot(event_wall_time_sec=now_sec)
+        row: Dict[str, Any] = {
+            "timestamp": now_sec,
+            "wall_time_sec": timing.get("wall_time_sec"),
+            "sim_time_sec": timing.get("sim_time_sec"),
+            "world_frame": timing.get("world_frame"),
+            "topic_name": self.prediction_channel,
+            "message_type": self._prediction_message_type,
+            "message_received": True,
+            "prediction_message_parsed_successfully": False,
+            "parse_fail_reason": "",
+        }
+        try:
+            row.update(build_prediction_obstacles_debug_impl(msg))
+            row["prediction_message_parsed_successfully"] = True
+        except Exception as exc:
+            row["parse_fail_reason"] = f"{type(exc).__name__}:{exc}"
+        self._prediction_last_event = row
+        self.stats["prediction_topic_debug"] = {
+            "reader_enabled": bool(self._prediction_reader_enabled),
+            "reader_enable_reason": self._prediction_reader_enable_reason,
+            "topic_name": self.prediction_channel,
+            "message_type": self._prediction_message_type,
+            "total_messages_received": int(self._prediction_msg_count),
+            "last_prediction_header_timestamp_sec": row.get(
+                "prediction_header_timestamp_sec"
+            ),
+            "last_prediction_header_sequence_num": row.get(
+                "prediction_header_sequence_num"
+            ),
+            "last_prediction_obstacle_count": row.get("prediction_obstacle_count"),
+            "last_message_parsed_successfully": row.get(
+                "prediction_message_parsed_successfully"
+            ),
+            "last_parse_fail_reason": row.get("parse_fail_reason"),
+            "artifact_path": str(self.prediction_topic_debug_path),
+            "claim_boundary": (
+                "Prediction topic diagnostics localize the reference-runtime "
+                "input chain only; they do not prove behavior success."
+            ),
+        }
+        self._append_jsonl(self.prediction_topic_debug_path, row)
+
     def _on_planning(self, msg: Any) -> None:
         self._planning_msg_count += 1
         now_sec = self._command_now_sec()
         self._planning_last_msg_ts = now_sec
+        self._planning_last_msg_wall_time_sec = time.time()
         current_last_routing_send_ts: Optional[float] = None
         if self.auto_routing_last_routing_ts and math.isfinite(float(self.auto_routing_last_routing_ts)):
             current_last_routing_send_ts = float(self.auto_routing_last_routing_ts)
@@ -6205,6 +7460,8 @@ class ApolloGtBridge:
             "planning_debug_routing_passage_count": None,
             "planning_debug_routing_segment_count": None,
             "planning_debug_diagnosis": None,
+            "planning_decision": {"main": {"type": None, "reason": None, "reason_code": None}, "objects": []},
+            "planning_st_graph": [],
         }
         route_debug_row: Dict[str, Any] = {
             "timestamp": now_sec,
@@ -6280,6 +7537,8 @@ class ApolloGtBridge:
         try:
             planning_debug_presence = build_planning_debug_presence_impl(msg)
             debug_row.update(planning_debug_presence)
+            debug_row["planning_decision"] = _planning_decision_debug(msg)
+            debug_row["planning_st_graph"] = _planning_st_graph_debug(msg)
             route_debug_row.update(planning_debug_presence)
             pts = getattr(msg, "trajectory_point", None)
             pt_count = len(pts) if pts is not None else 0
@@ -6321,6 +7580,12 @@ class ApolloGtBridge:
                 msg,
                 "trajectory_type",
                 self._resolve_nested_value(msg, (("trajectory_type",),)),
+            )
+            trajectory_type_value = self._proto_scalar(trajectory_type)
+            self._planning_last_trajectory_type = (
+                str(trajectory_type_value).strip() or None
+                if trajectory_type_value is not None
+                else None
             )
             rel_time_min, rel_time_max = self._trajectory_time_bounds(pts)
             lane_ids = getattr(msg, "lane_id", None)
@@ -6403,7 +7668,7 @@ class ApolloGtBridge:
                     "trajectory_header_status": self._proto_scalar(header_status),
                     "estop": self._proto_scalar(estop),
                     "engage_advice": self._proto_scalar(engage_advice),
-                    "trajectory_type": self._proto_scalar(trajectory_type),
+                    "trajectory_type": trajectory_type_value,
                     "planning_message_parsed_successfully": True,
                     "first_trajectory_point_x": first_x,
                     "first_trajectory_point_y": first_y,
@@ -6600,6 +7865,7 @@ class ApolloGtBridge:
             reason = f"{type(exc).__name__}:{exc}"
             self._planning_parse_fail_reasons[reason] += 1
             self._planning_last_points = 0
+            self._planning_last_trajectory_type = None
             self._planning_empty_count += 1
             self._planning_last_distance_to_destination = None
             debug_row["parse_fail_reason"] = reason
@@ -6701,6 +7967,7 @@ class ApolloGtBridge:
         self._planning_last_route_debug_event = dict(enriched_route_debug)
         self.stats["planning"] = self._planning_status()
         self._write_planning_topic_debug_summary()
+        self._retry_control_for_observed_planning(planning_header_seq)
 
     def _maybe_publish_traffic_lights(self, ts_sec: float) -> None:
         if self.traffic_light_policy not in {"force_green", "carla_actual"} or self.traffic_light_writer is None:
@@ -6795,7 +8062,19 @@ class ApolloGtBridge:
         if self.map_bounds_xy is not None:
             x_min, x_max, y_min, y_max = self.map_bounds_xy
             in_bounds = (x_min <= x <= x_max) and (y_min <= y <= y_max)
-        lane = _nearest_segment_metrics(x, y, self.map_segments) if self.map_segments else None
+        lane = (
+            _nearest_segment_metrics_indexed(
+                x,
+                y,
+                self.map_segments,
+                getattr(self, "_map_segment_spatial_index", None),
+                cell_size_m=getattr(
+                    self, "_map_segment_grid_cell_size_m", _MAP_SEGMENT_GRID_CELL_SIZE_M
+                ),
+            )
+            if self.map_segments
+            else None
+        )
         lane_dist = float(lane["dist"]) if lane is not None else float("inf")
         e_y = float(lane["signed_e_y"]) if lane is not None else float("nan")
         e_psi = _wrap_to_pi(yaw - float(lane["seg_yaw"])) if lane is not None else float("nan")
@@ -6850,7 +8129,7 @@ class ApolloGtBridge:
         self._write_json_file(self.carla_vehicle_path, payload)
         self._carla_vehicle_written = True
 
-    def _read_measured_control(self) -> Dict[str, Any]:
+    def _read_measured_control(self, snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         measured: Dict[str, Any] = {
             "available": False,
             "source": "unavailable",
@@ -6858,6 +8137,75 @@ class ApolloGtBridge:
             "brake": None,
             "steer": None,
         }
+        if getattr(self, "carla_feedback_state_source", "carla_rpc") == "ros_objects_json":
+            state_stats = self.stats.setdefault(
+                "ros_objects_json_ego_state",
+                {"success_count": 0, "missing_count": 0, "parse_error_count": 0},
+            )
+            try:
+                raw_json = (snapshot or {}).get("objects_json")
+                payload = json.loads(raw_json) if raw_json else {}
+                state = payload.get("ego_state") if isinstance(payload, dict) else None
+                if not isinstance(state, dict):
+                    state_stats["missing_count"] = int(state_stats.get("missing_count", 0) or 0) + 1
+                    measured["source"] = "ros_objects_json:ego_state_missing"
+                    self.stats["last_measured_control"] = measured
+                    return measured
+                control = state.get("control", {}) or {}
+                pose = state.get("pose", {}) or {}
+                measured.update(
+                    {
+                        "available": True,
+                        "source": "ros_objects_json:"
+                        + str(state.get("steer_feedback_source") or "carla_control"),
+                        "throttle": float(control["throttle"]),
+                        "brake": float(control["brake"]),
+                        "steer": float(
+                            state.get(
+                                "steer_feedback_pct",
+                                float(control.get("steer", 0.0)) * 100.0,
+                            )
+                        )
+                        / 100.0,
+                        "reverse": bool(control.get("reverse", False)),
+                        "hand_brake": bool(control.get("hand_brake", False)),
+                        "source_stamp_sec": float(state.get("stamp", payload.get("stamp"))),
+                        "pose_x": float(pose.get("x", 0.0)),
+                        "pose_y": float(pose.get("y", 0.0)),
+                        "pose_z": float(pose.get("z", 0.0)),
+                        "pose_yaw_deg": float(pose.get("yaw", 0.0)),
+                    }
+                )
+                for field in (
+                    "steer_feedback_pct",
+                    "steer_feedback_deg",
+                    "speed_mps",
+                    "accel_mps2",
+                    "forward_accel_mps2",
+                    "raw_forward_accel_mps2",
+                    "dvdt_forward_accel_mps2",
+                    "lateral_accel_mps2",
+                    "yaw_rate_rps",
+                    "curvature",
+                    "max_steer_angle_deg",
+                ):
+                    if state.get(field) is not None:
+                        measured[field] = float(state[field])
+                if control.get("gear") is not None:
+                    measured["gear"] = float(control["gear"])
+                vehicle_characteristics = state.get("vehicle_characteristics")
+                if isinstance(vehicle_characteristics, dict):
+                    self._maybe_record_carla_vehicle(vehicle_characteristics)
+                state_stats["success_count"] = int(state_stats.get("success_count", 0) or 0) + 1
+                state_stats["last_source_stamp_sec"] = measured["source_stamp_sec"]
+                self.stats["last_measured_control"] = measured
+                return measured
+            except Exception as exc:
+                state_stats["parse_error_count"] = int(state_stats.get("parse_error_count", 0) or 0) + 1
+                state_stats["last_error"] = str(exc)
+                measured["source"] = f"ros_objects_json:parse_error:{exc}"
+                self.stats["last_measured_control"] = measured
+                return measured
         if self.carla_feedback is None:
             self.stats["last_measured_control"] = measured
             return measured
@@ -6913,24 +8261,77 @@ class ApolloGtBridge:
         self.stats["last_measured_control"] = measured
         return measured
 
+    def _front_actor_from_objects_json(self, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        raw_json = snapshot.get("objects_json")
+        if not raw_json:
+            return None
+        try:
+            payload = json.loads(raw_json)
+            wanted = {str(name) for name in self.front_obstacle_role_names if str(name)}
+            for item in payload.get("objects", []):
+                if str(item.get("role_name", "") or "") in wanted:
+                    return dict(item)
+        except Exception as exc:
+            self.stats["front_obstacle_objects_json_error"] = str(exc)
+        return None
+
     def _extract_raw_control_fields(self, cmd: Any) -> Dict[str, Any]:
         raw: Dict[str, Any] = {}
         raw["control_header_timestamp_sec"] = self._header_timestamp_sec(cmd)
         raw["control_header_sequence_num"] = self._header_sequence_num(cmd)
 
+        def field_present(parent: Any, field: str) -> bool:
+            """Respect protobuf presence while retaining lightweight test doubles."""
+
+            if parent is None:
+                return False
+            has_field = getattr(parent, "HasField", None)
+            if callable(has_field):
+                try:
+                    return bool(has_field(field))
+                except (TypeError, ValueError):
+                    # Some proto3 scalar fields do not expose presence. ListFields
+                    # still distinguishes materialized non-default values.
+                    pass
+                except Exception:
+                    pass
+            list_fields = getattr(parent, "ListFields", None)
+            if callable(list_fields):
+                try:
+                    return any(
+                        str(getattr(descriptor, "name", "")) == field
+                        for descriptor, _ in list_fields()
+                    )
+                except Exception:
+                    pass
+            # SimpleNamespace-style test doubles do not implement protobuf
+            # presence; preserve the previous attribute-based behavior for them.
+            return hasattr(parent, field) and getattr(parent, field, None) is not None
+
+        def present_message(parent: Any, field: str) -> Any:
+            if not field_present(parent, field):
+                return None
+            return getattr(parent, field, None)
+
         def capture_trajectory_point(prefix: str, point: Any) -> None:
-            path_point = getattr(point, "path_point", None) if point is not None else None
-            if point is not None:
+            raw[f"{prefix}_present"] = point is not None
+            if point is None:
+                return
+            path_point = present_message(point, "path_point")
+            if field_present(point, "relative_time"):
                 raw[f"{prefix}_relative_time"] = self._resolve_nested_float(
                     point,
                     (("relative_time",),),
                 )
+            if field_present(point, "v"):
                 raw[f"{prefix}_v"] = self._resolve_nested_float(
                     point,
                     (("v",),),
                 )
             if path_point is not None:
                 for suffix in ("x", "y", "theta", "kappa", "dkappa", "s"):
+                    if not field_present(path_point, suffix):
+                        continue
                     raw[f"{prefix}_{suffix}"] = self._resolve_nested_float(
                         path_point,
                         ((suffix,),),
@@ -6951,13 +8352,15 @@ class ApolloGtBridge:
             "estop",
             "is_in_safe_mode",
         ):
-            if hasattr(cmd, key):
+            if field_present(cmd, key):
                 try:
                     raw[key] = getattr(cmd, key)
                 except Exception:
                     raw[key] = "<unreadable>"
-        debug_msg = getattr(cmd, "debug", None)
-        lon_debug = getattr(debug_msg, "simple_lon_debug", None) if debug_msg is not None else None
+        debug_msg = present_message(cmd, "debug")
+        raw["debug_present"] = debug_msg is not None
+        lon_debug = present_message(debug_msg, "simple_lon_debug")
+        raw["debug_simple_lon_present"] = lon_debug is not None
         if lon_debug is not None:
             for key in (
                 "station_reference",
@@ -6998,7 +8401,7 @@ class ApolloGtBridge:
                 "current_steer_interval",
                 "is_wait_steer",
             ):
-                if hasattr(lon_debug, key):
+                if field_present(lon_debug, key):
                     try:
                         raw[f"debug_simple_lon_{key}"] = getattr(lon_debug, key)
                     except Exception:
@@ -7008,8 +8411,9 @@ class ApolloGtBridge:
                 ("debug_simple_lon_current_reference_point", "current_reference_point"),
                 ("debug_simple_lon_preview_reference_point", "preview_reference_point"),
             ):
-                capture_trajectory_point(prefix, getattr(lon_debug, field, None))
-        lat_debug = getattr(debug_msg, "simple_lat_debug", None) if debug_msg is not None else None
+                capture_trajectory_point(prefix, present_message(lon_debug, field))
+        lat_debug = present_message(debug_msg, "simple_lat_debug")
+        raw["debug_simple_lat_present"] = lat_debug is not None
         if lat_debug is not None:
             for key in (
                 "lateral_error",
@@ -7037,7 +8441,7 @@ class ApolloGtBridge:
                 "lateral_centripetal_acceleration",
                 "ref_speed",
             ):
-                if hasattr(lat_debug, key):
+                if field_present(lat_debug, key):
                     try:
                         raw[f"debug_simple_lat_{key}"] = getattr(lat_debug, key)
                     except Exception:
@@ -7047,33 +8451,65 @@ class ApolloGtBridge:
                 ("debug_simple_lat_current_reference_point", "current_reference_point"),
                 ("debug_simple_lat_preview_reference_point", "preview_reference_point"),
             ):
-                capture_trajectory_point(prefix, getattr(lat_debug, field, None))
-        mpc_debug = getattr(debug_msg, "simple_mpc_debug", None) if debug_msg is not None else None
+                capture_trajectory_point(prefix, present_message(lat_debug, field))
+        mpc_debug = present_message(debug_msg, "simple_mpc_debug")
+        raw["debug_simple_mpc_present"] = mpc_debug is not None
         if mpc_debug is not None:
             for prefix, field in (
                 ("debug_simple_mpc_current_matched_point", "current_matched_point"),
                 ("debug_simple_mpc_current_reference_point", "current_reference_point"),
                 ("debug_simple_mpc_preview_reference_point", "preview_reference_point"),
             ):
-                capture_trajectory_point(prefix, getattr(mpc_debug, field, None))
-        raw["engage_advice"] = self._proto_scalar(self._resolve_nested_value(cmd, (("engage_advice", "advice"), ("engage_advice",))))
-        input_debug = getattr(debug_msg, "input_debug", None) if debug_msg is not None else None
+                capture_trajectory_point(prefix, present_message(mpc_debug, field))
+        if field_present(cmd, "engage_advice"):
+            raw["engage_advice"] = self._proto_scalar(
+                self._resolve_nested_value(
+                    cmd,
+                    (("engage_advice", "advice"), ("engage_advice",)),
+                )
+            )
+        input_debug = present_message(debug_msg, "input_debug")
+        raw["debug_input_present"] = input_debug is not None
         if input_debug is not None:
-            raw["debug_input_trajectory_header_timestamp_sec"] = self._resolve_nested_float(
-                input_debug,
-                (("trajectory_header", "timestamp_sec"),),
-            )
-            raw["debug_input_trajectory_header_sequence_num"] = self._header_sequence_num(
-                getattr(input_debug, "trajectory_header", None)
-            )
-            raw["debug_input_latest_replan_trajectory_header_timestamp_sec"] = self._resolve_nested_float(
-                input_debug,
-                (("latest_replan_trajectory_header", "timestamp_sec"),),
-            )
-            raw["debug_input_latest_replan_trajectory_header_sequence_num"] = self._header_sequence_num(
-                getattr(input_debug, "latest_replan_trajectory_header", None)
-            )
-        if hasattr(cmd, "trajectory_fraction"):
+            localization_header = present_message(input_debug, "localization_header")
+            canbus_header = present_message(input_debug, "canbus_header")
+            trajectory_header = present_message(input_debug, "trajectory_header")
+            latest_replan_header = present_message(input_debug, "latest_replan_trajectory_header")
+            raw["debug_input_localization_header_present"] = localization_header is not None
+            raw["debug_input_canbus_header_present"] = canbus_header is not None
+            raw["debug_input_trajectory_header_present"] = trajectory_header is not None
+            raw["debug_input_latest_replan_trajectory_header_present"] = latest_replan_header is not None
+            if localization_header is not None:
+                raw["debug_input_localization_header_timestamp_sec"] = self._header_timestamp_sec(
+                    localization_header
+                )
+                raw["debug_input_localization_header_sequence_num"] = self._header_sequence_num(
+                    localization_header
+                )
+            if canbus_header is not None:
+                raw["debug_input_canbus_header_timestamp_sec"] = self._header_timestamp_sec(
+                    canbus_header
+                )
+                raw["debug_input_canbus_header_sequence_num"] = self._header_sequence_num(
+                    canbus_header
+                )
+            if trajectory_header is not None:
+                raw["debug_input_trajectory_header_timestamp_sec"] = self._header_timestamp_sec(
+                    trajectory_header
+                )
+                raw["debug_input_trajectory_header_sequence_num"] = self._header_sequence_num(
+                    trajectory_header
+                )
+            if latest_replan_header is not None:
+                raw["debug_input_latest_replan_trajectory_header_timestamp_sec"] = self._header_timestamp_sec(
+                    latest_replan_header
+                )
+                raw["debug_input_latest_replan_trajectory_header_sequence_num"] = self._header_sequence_num(
+                    latest_replan_header
+                )
+        trajectory_fraction_present = field_present(cmd, "trajectory_fraction")
+        raw["trajectory_fraction_present"] = trajectory_fraction_present
+        if trajectory_fraction_present:
             raw["trajectory_fraction"] = self._resolve_nested_float(
                 cmd,
                 (("trajectory_fraction",),),
@@ -7135,6 +8571,9 @@ class ApolloGtBridge:
             physical_map_longitudinal=bool(self.physical_map_longitudinal),
             physical_map_throttle=bool(self.physical_map_throttle),
             physical_map_brake=bool(self.physical_map_brake),
+            physical_steering_speed_compensation_enabled=bool(
+                self.physical_steering_speed_compensation_enabled
+            ),
         )
 
     def _allow_control_publish_after_startup(
@@ -7143,37 +8582,307 @@ class ApolloGtBridge:
         planning_valid: bool,
         planning_reason: str,
         timestamp_sec: float,
+        planning_sequence_num: int | None = None,
+        planning_trajectory_type: str | None = None,
+        planning_exact_match: bool | None = None,
     ) -> bool:
-        """Latch CARLA publication open after the first valid Planning trajectory."""
+        """Open CARLA publication after Planning and setup-handover readiness."""
 
-        enabled = bool(getattr(self, "require_valid_planning_before_first_publish", False))
-        gate_open = bool(getattr(self, "_valid_planning_publish_gate_open", not enabled))
+        planning_required = bool(
+            getattr(self, "require_valid_planning_before_first_publish", False)
+        )
+        planning_open = bool(
+            getattr(self, "_valid_planning_publish_gate_open", not planning_required)
+        )
+        handover_required = bool(
+            getattr(self, "require_fixed_scene_handover_before_publish", False)
+        )
+        handover_path = Path(
+            getattr(
+                self,
+                "fixed_scene_handover_path",
+                getattr(self, "artifacts_dir", Path(".")) / "fixed_scene_ego_handover.json",
+            )
+        )
+        handover_open = not handover_required
+        if handover_required:
+            handover = _load_json_mapping_file(handover_path)
+            handover_open = str(handover.get("status") or "").strip().lower() == "ready"
+        # When both conditions are configured they form one atomic startup
+        # gate. Do not latch an earlier Planning sample while handover is still
+        # closed, because the first post-marker Control command may consume a
+        # different (including fallback) trajectory.
+        if planning_required and not planning_open and planning_valid and handover_open:
+            self._valid_planning_publish_gate_open = True
+            planning_open = True
+        enabled = planning_required or handover_required
+        gate_open = bool(planning_open and handover_open)
         gate = self.stats.setdefault(
             "control_startup_publish_gate",
             {
                 "enabled": enabled,
                 "open": gate_open,
+                "planning_open": planning_open,
+                "exact_planning_match_required": bool(
+                    getattr(self, "require_exact_planning_match_before_first_publish", False)
+                ),
+                "nonfallback_planning_required": bool(
+                    getattr(self, "require_nonfallback_planning_before_first_publish", False)
+                ),
+                "fixed_scene_handover_required": handover_required,
+                "fixed_scene_handover_open": handover_open,
+                "fixed_scene_handover_path": str(handover_path),
                 "skip_count": 0,
                 "first_open_timestamp_sec": None,
+                "first_open_planning_sequence_num": None,
+                "first_open_planning_trajectory_type": None,
+                "first_open_planning_exact_match": None,
                 "last_skip_reason": "",
                 "claim_boundary": (
-                    "startup_handoff_only; raw Apollo Control remains recorded and the gate never "
-                    "closes after the first valid Planning trajectory"
+                    "setup_handoff_only; raw Apollo Control remains recorded; neither Planning "
+                    "readiness nor scene pre-roll is backend behavior evidence"
                 ),
             },
         )
+        gate.update(
+            {
+                "enabled": enabled,
+                "open": gate_open,
+                "planning_open": planning_open,
+                "fixed_scene_handover_required": handover_required,
+                "fixed_scene_handover_open": handover_open,
+                "fixed_scene_handover_path": str(handover_path),
+                "last_planning_sequence_num": planning_sequence_num,
+                "last_planning_trajectory_type": planning_trajectory_type,
+                "last_planning_exact_match": planning_exact_match,
+            }
+        )
         if not enabled or gate_open:
-            gate["open"] = True
-            return True
-        if planning_valid:
-            self._valid_planning_publish_gate_open = True
-            gate["open"] = True
-            gate["first_open_timestamp_sec"] = float(timestamp_sec)
+            if gate.get("first_open_timestamp_sec") is None:
+                gate["first_open_timestamp_sec"] = float(timestamp_sec)
+                gate["first_open_planning_sequence_num"] = planning_sequence_num
+                gate["first_open_planning_trajectory_type"] = planning_trajectory_type
+                gate["first_open_planning_exact_match"] = planning_exact_match
             gate["last_skip_reason"] = ""
             return True
         gate["skip_count"] = int(gate.get("skip_count", 0) or 0) + 1
-        gate["last_skip_reason"] = str(planning_reason or "planning_not_valid")
+        gate["last_skip_reason"] = (
+            "fixed_scene_handover_not_ready"
+            if not handover_open
+            else str(planning_reason or "planning_not_valid")
+        )
         return False
+
+    def _write_fixed_scene_control_handover_ack(
+        self,
+        *,
+        control_timestamp_sec: float,
+        control_sequence_num: int | None,
+        planning_sequence_num: int | None,
+        planning_trajectory_type: str | None,
+        planning_exact_match: bool,
+    ) -> None:
+        """Materialize the first successful fixed-scene Control publish promptly."""
+
+        if not bool(
+            getattr(self, "require_fixed_scene_handover_before_publish", False)
+        ) or bool(getattr(self, "_fixed_scene_control_handover_ack_written", False)):
+            return
+        handover_path = Path(
+            getattr(
+                self,
+                "fixed_scene_handover_path",
+                getattr(self, "artifacts_dir", Path("."))
+                / "fixed_scene_ego_handover.json",
+            )
+        )
+        handover = _load_json_mapping_file(handover_path)
+        if str(handover.get("status") or "").strip().lower() != "ready":
+            return
+        ack_path = Path(
+            getattr(
+                self,
+                "fixed_scene_control_handover_ack_path",
+                getattr(self, "artifacts_dir", Path("."))
+                / "fixed_scene_control_handover_ack.json",
+            )
+        )
+        payload = {
+            "schema_version": "fixed_scene_control_handover_ack.v1",
+            "status": "published",
+            "control_tx_count": int(self.stats.get("control_tx_count", 0) or 0),
+            "control_timestamp_sec": float(control_timestamp_sec),
+            "control_header_sequence_num": control_sequence_num,
+            "planning_sequence_num": planning_sequence_num,
+            "planning_trajectory_type": planning_trajectory_type,
+            "planning_exact_match": bool(planning_exact_match),
+            "handover_world_frame": handover.get("world_frame"),
+            "handover_world_sim_time_s": handover.get("world_sim_time_s"),
+            "handover_path": str(handover_path),
+            "claim_boundary": "setup_handoff_observation_only_not_backend_behavior",
+        }
+        try:
+            self._write_json_file(ack_path, payload)
+        except OSError as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            self.stats["fixed_scene_control_handover_ack_error"] = error
+            print(
+                f"[bridge][warning] fixed_scene_control_handover_ack_failed: {error}",
+                file=sys.stderr,
+            )
+            return
+        self._fixed_scene_control_handover_ack_written = True
+        self.stats["fixed_scene_control_handover_ack"] = payload
+
+    def _startup_planning_publish_validity(
+        self,
+        *,
+        planning_valid: bool,
+        planning_reason: str,
+        control_input_sequence_num: int | None,
+        exact_planning: Mapping[str, Any] | None,
+        effective_planning: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        exact_required = bool(
+            getattr(self, "require_exact_planning_match_before_first_publish", False)
+        )
+        nonfallback_required = bool(
+            getattr(self, "require_nonfallback_planning_before_first_publish", False)
+        )
+        exact_match = exact_planning is not None
+        selected_planning = exact_planning if exact_match else effective_planning
+        raw_type = selected_planning.get("trajectory_type") if selected_planning else None
+        trajectory_type = str(raw_type).strip().upper() if raw_type not in (None, "") else None
+        valid = bool(planning_valid)
+        reason = str(planning_reason or "")
+        if valid and exact_required and control_input_sequence_num is None:
+            valid = False
+            reason = "control_input_planning_sequence_missing"
+        elif valid and exact_required and not exact_match:
+            valid = False
+            reason = "control_input_planning_sequence_not_observed"
+        elif valid and nonfallback_required and trajectory_type in {
+            None,
+            "SPEED_FALLBACK",
+            "PATH_FALLBACK",
+            "UNKNOWN",
+        }:
+            valid = False
+            reason = "fallback_or_unknown_planning_trajectory"
+        return {
+            "valid": valid,
+            "reason": reason,
+            "sequence_num": control_input_sequence_num,
+            "trajectory_type": trajectory_type,
+            "exact_match": exact_match,
+        }
+
+    @staticmethod
+    def _clone_control_command_for_startup_retry(cmd: Any) -> Any:
+        """Detach a Cyber callback message before retaining it past the callback."""
+
+        try:
+            cloned = cmd.__class__()
+            copy_from = getattr(cloned, "CopyFrom", None)
+            if callable(copy_from):
+                copy_from(cmd)
+                return cloned
+        except Exception:
+            pass
+        return copy.deepcopy(cmd)
+
+    def _queue_control_for_exact_planning_retry(
+        self,
+        cmd: Any,
+        *,
+        planning_sequence_num: int,
+        control_rx_ts: float,
+    ) -> None:
+        """Retain a bounded set of Control messages awaiting their exact Planning event.
+
+        Apollo Control and this bridge subscribe to Planning independently. Control can
+        therefore report consuming sequence N before the bridge's Planning callback for
+        N runs. Retaining the original command lets the Planning callback re-evaluate the
+        unchanged exact/non-fallback startup gate instead of waiting for callback order to
+        align by chance.
+        """
+
+        sequence_num = int(planning_sequence_num)
+        lock = getattr(self, "_startup_pending_control_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._startup_pending_control_lock = lock
+        pending = getattr(self, "_startup_pending_controls", None)
+        if not isinstance(pending, dict):
+            pending = {}
+            self._startup_pending_controls = pending
+        cloned = self._clone_control_command_for_startup_retry(cmd)
+        gate = self.stats.setdefault("control_startup_publish_gate", {})
+        with lock:
+            replaced = sequence_num in pending
+            pending[sequence_num] = {
+                "cmd": cloned,
+                "control_rx_ts": float(control_rx_ts),
+            }
+            while len(pending) > 8:
+                oldest_sequence_num = next(iter(pending))
+                del pending[oldest_sequence_num]
+                gate["pending_control_expired_count"] = int(
+                    gate.get("pending_control_expired_count", 0) or 0
+                ) + 1
+            gate["pending_control_sequence_nums"] = list(pending)
+        gate["pending_control_enqueue_count"] = int(
+            gate.get("pending_control_enqueue_count", 0) or 0
+        ) + 1
+        if replaced:
+            gate["pending_control_replace_count"] = int(
+                gate.get("pending_control_replace_count", 0) or 0
+            ) + 1
+
+    def _retry_control_for_observed_planning(self, planning_sequence_num: int | None) -> None:
+        """Re-evaluate a pending command only when its exact Planning sequence arrives."""
+
+        if planning_sequence_num is None:
+            return
+        sequence_num = int(planning_sequence_num)
+        lock = getattr(self, "_startup_pending_control_lock", None)
+        pending = getattr(self, "_startup_pending_controls", None)
+        if lock is None or not isinstance(pending, dict):
+            return
+        gate = self.stats.setdefault("control_startup_publish_gate", {})
+        with lock:
+            item = pending.pop(sequence_num, None)
+            gate["pending_control_sequence_nums"] = list(pending)
+        if not isinstance(item, dict):
+            return
+        now_sec = self._command_now_sec()
+        control_rx_ts = float(item.get("control_rx_ts", now_sec))
+        retry_age_sec = max(0.0, float(now_sec) - control_rx_ts)
+        gate["last_exact_match_retry_sequence_num"] = sequence_num
+        gate["last_exact_match_retry_age_sec"] = retry_age_sec
+        if retry_age_sec > 0.5:
+            gate["pending_control_expired_count"] = int(
+                gate.get("pending_control_expired_count", 0) or 0
+            ) + 1
+            gate["last_exact_match_retry_status"] = "expired"
+            return
+        gate["exact_match_retry_count"] = int(
+            gate.get("exact_match_retry_count", 0) or 0
+        ) + 1
+        gate["last_exact_match_retry_status"] = "re_evaluating"
+        self._on_control_cmd(
+            item.get("cmd"),
+            _startup_exact_retry=True,
+            _original_control_rx_ts=control_rx_ts,
+        )
+        if bool(gate.get("open", False)):
+            gate["exact_match_retry_publish_count"] = int(
+                gate.get("exact_match_retry_publish_count", 0) or 0
+            ) + 1
+            gate["last_exact_match_retry_status"] = "published"
+            with lock:
+                pending.clear()
+                gate["pending_control_sequence_nums"] = []
 
     def _legacy_map_base_controls(
         self,
@@ -7323,6 +9032,38 @@ class ApolloGtBridge:
             return None
 
     def _front_obstacle_visible_now(self) -> bool:
+        if self.front_obstacle_behavior_mode == "scenario_initial_state_gate":
+            if self._front_obstacle_activation_gate_open:
+                self._front_obstacle_visible = True
+                return True
+            marker_path = self.front_obstacle_activation_marker_path
+            try:
+                marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                self._front_obstacle_activation_gate_reason = "activation_marker_missing"
+                self._front_obstacle_visible = False
+                return False
+            except (OSError, ValueError, TypeError):
+                self._front_obstacle_activation_gate_reason = "activation_marker_invalid"
+                self._front_obstacle_visible = False
+                return False
+            marker_status = str(marker.get("status") or "").strip().lower()
+            if marker_status != self.front_obstacle_activation_required_status:
+                self._front_obstacle_activation_gate_reason = (
+                    f"activation_marker_status:{marker_status or 'missing'}"
+                )
+                self._front_obstacle_visible = False
+                return False
+            if marker.get("speed_ready") is not True or marker.get("gap_ready") is not True:
+                self._front_obstacle_activation_gate_reason = "activation_marker_state_not_ready"
+                self._front_obstacle_visible = False
+                return False
+            self._front_obstacle_activation_gate_open = True
+            self._front_obstacle_activation_gate_reason = "activation_marker_ready"
+            self._front_obstacle_activation_gate_opened_ts = time.time()
+            self._front_obstacle_state_changed_ts = self._front_obstacle_activation_gate_opened_ts
+            self._front_obstacle_visible = True
+            return True
         if self.front_obstacle_behavior_mode != "cruise_then_stop":
             self._front_obstacle_visible = True
             self._front_obstacle_last_gap = {}
@@ -7876,7 +9617,102 @@ class ApolloGtBridge:
         out = self.artifacts_dir / f"steer_saturation_snapshot_{key}.json"
         out.write_text(json.dumps(payload, indent=2))
 
-    def _odom_to_loc(self, odom: Odometry, *, direct_world_frame: Optional[int] = None):
+    def _consume_authored_initial_state_acceleration_transition(
+        self,
+        *,
+        direct_world_frame: Optional[int],
+        localization_speed_mps: float,
+        header_ts_sec: float,
+        raw_acceleration: Tuple[float, float, float],
+        raw_acceleration_source: str,
+    ) -> Optional[Dict[str, Any]]:
+        mode = str(
+            getattr(
+                self,
+                "localization_authored_initial_state_transition_mode",
+                "disabled",
+            )
+            or "disabled"
+        ).strip().lower()
+        if mode != "marker_zero_once" or getattr(
+            self,
+            "_localization_authored_initial_state_transition_consumed",
+            False,
+        ):
+            return None
+        observation = _authored_initial_state_transition_marker_status(
+            getattr(
+                self,
+                "localization_authored_initial_state_transition_marker_path",
+                self.artifacts_dir
+                / "fixed_scene_gate_initial_state_materialization.json",
+            ),
+            direct_world_frame=direct_world_frame,
+            localization_timestamp_sec=header_ts_sec,
+            localization_speed_mps=localization_speed_mps,
+            required_status=getattr(
+                self,
+                "localization_authored_initial_state_transition_required_status",
+                "pass",
+            ),
+            max_world_frame_delta=getattr(
+                self,
+                "localization_authored_initial_state_transition_max_world_frame_delta",
+                2,
+            ),
+            max_sim_time_delta_s=getattr(
+                self,
+                "localization_authored_initial_state_transition_max_sim_time_delta_s",
+                0.11,
+            ),
+            speed_tolerance_mps=getattr(
+                self,
+                "localization_authored_initial_state_transition_speed_tolerance_mps",
+                0.5,
+            ),
+        )
+        observation.update(
+            {
+                "schema_version": "localization_authored_initial_state_transition.v1",
+                "configured_mode": mode,
+                "localization_timestamp_sec": float(header_ts_sec),
+                "raw_acceleration_source": raw_acceleration_source,
+                "raw_acceleration_mps2": {
+                    "x": float(raw_acceleration[0]),
+                    "y": float(raw_acceleration[1]),
+                    "z": float(raw_acceleration[2]),
+                },
+                "claim_boundary": (
+                    "setup_state_discontinuity_only_not_acceleration_filter_or_control_tuning"
+                ),
+            }
+        )
+        transition_stats = self.stats.setdefault(
+            "localization_authored_initial_state_transition", {}
+        )
+        transition_stats["last_observation"] = dict(observation)
+        if observation.get("apply") is not True:
+            return None
+        self._localization_authored_initial_state_transition_consumed = True
+        transition_stats["applied_count"] = int(
+            transition_stats.get("applied_count", 0) or 0
+        ) + 1
+        transition_stats["applied_world_frame"] = direct_world_frame
+        transition_stats["applied_localization_timestamp_sec"] = float(header_ts_sec)
+        self._write_json_file(
+            self.artifacts_dir
+            / "localization_authored_initial_state_transition.json",
+            observation,
+        )
+        return observation
+
+    def _odom_to_loc(
+        self,
+        odom: Odometry,
+        *,
+        direct_world_frame: Optional[int] = None,
+        measured_control: Optional[Dict[str, Any]] = None,
+    ):
         loc = self.localization_pb2.LocalizationEstimate()
         wall_time_sec = self._command_now_sec()
         header_ts_sec, localization_time_base = self._localization_time_from_odom(
@@ -7910,6 +9746,7 @@ class ApolloGtBridge:
         y = pose_info["map_y"]
         z = pose_info["map_z"]
         vx, vy, vz = self.tf.apply_vector(float(vel.x), float(vel.y), float(vel.z))
+        localization_speed_mps = math.sqrt(vx * vx + vy * vy + vz * vz)
         wx_raw, wy_raw, wz_raw = _odom_angular_velocity_rad_per_s(odom)
         wx, wy, wz = self.tf.apply_vector(wx_raw, wy_raw, wz_raw)
         yaw_ap = pose_info["map_yaw"]
@@ -7919,37 +9756,111 @@ class ApolloGtBridge:
         velocity_forward_vrf = c_yaw * vx + s_yaw * vy
         angular_right_vrf = s_yaw * wx - c_yaw * wy
         angular_forward_vrf = c_yaw * wx + s_yaw * wy
-        ax, ay, az, acceleration_source = _localization_acceleration_from_velocity(
-            getattr(self, "_last_localization_velocity_sample", None),
-            header_ts_sec,
-            vx,
-            vy,
-            vz,
-            previous_acceleration=(
-                getattr(self, "_last_localization_acceleration_sample", None)
-                if getattr(self, "localization_acceleration_filter_enabled", False)
-                else None
-            ),
-            smoothing_alpha=(
-                getattr(self, "localization_acceleration_filter_alpha", 1.0)
-                if getattr(self, "localization_acceleration_filter_enabled", False)
-                else 1.0
-            ),
-            max_abs_mps2=(
-                getattr(self, "localization_acceleration_filter_max_abs_mps2", None)
-                if getattr(self, "localization_acceleration_filter_enabled", False)
-                else None
-            ),
-            max_delta_mps2=(
-                getattr(self, "localization_acceleration_filter_max_delta_mps2", None)
-                if getattr(self, "localization_acceleration_filter_enabled", False)
-                else None
-            ),
+        configured_acceleration_source = str(
+            getattr(self, "localization_acceleration_source", "finite_difference")
+            or "finite_difference"
+        ).strip().lower()
+        acceleration_source = ""
+        if configured_acceleration_source in {"carla_feedback", "auto"}:
+            measured = measured_control or {}
+            forward_accel = measured.get("forward_accel_mps2")
+            if forward_accel is not None and math.isfinite(float(forward_accel)):
+                lateral_accel = measured.get("lateral_accel_mps2")
+                ax, ay, az = _carla_feedback_acceleration_to_map(
+                    yaw_ap,
+                    float(forward_accel),
+                    float(lateral_accel) if lateral_accel is not None else None,
+                )
+                acceleration_source = "carla_feedback_physical"
+                if lateral_accel is None or not math.isfinite(float(lateral_accel)):
+                    acceleration_source += "_lateral_missing"
+                if getattr(self, "localization_acceleration_filter_enabled", False):
+                    filtered_acceleration = _filter_localization_acceleration(
+                        (ax, ay, az),
+                        previous_acceleration=(
+                            getattr(self, "_last_localization_acceleration_sample", None)
+                        ),
+                        smoothing_alpha=getattr(
+                            self, "localization_acceleration_filter_alpha", 1.0
+                        ),
+                        max_abs_mps2=getattr(
+                            self, "localization_acceleration_filter_max_abs_mps2", None
+                        ),
+                        max_delta_mps2=getattr(
+                            self, "localization_acceleration_filter_max_delta_mps2", None
+                        ),
+                    )
+                    if filtered_acceleration != (ax, ay, az):
+                        acceleration_source = f"{acceleration_source}_filtered"
+                    ax, ay, az = filtered_acceleration
+            else:
+                self.stats.setdefault("localization_acceleration_source", {}).update(
+                    {
+                        "fallback_count": int(
+                            self.stats.get("localization_acceleration_source", {}).get(
+                                "fallback_count", 0
+                            )
+                            or 0
+                        )
+                        + 1,
+                    }
+                )
+
+        if not acceleration_source:
+            ax, ay, az, acceleration_source = _localization_acceleration_from_velocity(
+                getattr(self, "_last_localization_velocity_sample", None),
+                header_ts_sec,
+                vx,
+                vy,
+                vz,
+                previous_acceleration=(
+                    getattr(self, "_last_localization_acceleration_sample", None)
+                    if getattr(self, "localization_acceleration_filter_enabled", False)
+                    else None
+                ),
+                smoothing_alpha=(
+                    getattr(self, "localization_acceleration_filter_alpha", 1.0)
+                    if getattr(self, "localization_acceleration_filter_enabled", False)
+                    else 1.0
+                ),
+                max_abs_mps2=(
+                    getattr(self, "localization_acceleration_filter_max_abs_mps2", None)
+                    if getattr(self, "localization_acceleration_filter_enabled", False)
+                    else None
+                ),
+                max_delta_mps2=(
+                    getattr(self, "localization_acceleration_filter_max_delta_mps2", None)
+                    if getattr(self, "localization_acceleration_filter_enabled", False)
+                    else None
+                ),
+            )
+            if configured_acceleration_source in {"carla_feedback", "auto"}:
+                acceleration_source = (
+                    f"{configured_acceleration_source}_unavailable_fallback_{acceleration_source}"
+                )
+
+        acceleration_source_before_initial_state_transition = acceleration_source
+        initial_state_transition = (
+            self._consume_authored_initial_state_acceleration_transition(
+                direct_world_frame=direct_world_frame,
+                localization_speed_mps=localization_speed_mps,
+                header_ts_sec=header_ts_sec,
+                raw_acceleration=(ax, ay, az),
+                raw_acceleration_source=acceleration_source,
+            )
         )
+        if initial_state_transition is not None:
+            ax, ay, az = 0.0, 0.0, 0.0
+            acceleration_source = (
+                f"{acceleration_source}_authored_initial_state_transition_zero_once"
+            )
+
+        source_stats = self.stats.setdefault("localization_acceleration_source", {})
+        source_counts = source_stats.setdefault("source_counts", {})
+        source_counts[acceleration_source] = int(source_counts.get(acceleration_source, 0) or 0) + 1
         acceleration_right_vrf = s_yaw * ax - c_yaw * ay
         acceleration_forward_vrf = c_yaw * ax + s_yaw * ay
         acceleration_forward_vrf_unconstrained = acceleration_forward_vrf
-        localization_speed_mps = math.sqrt(vx * vx + vy * vy + vz * vz)
         (
             acceleration_forward_vrf,
             acceleration_nonnegative_speed_prediction_limited,
@@ -8009,6 +9920,15 @@ class ApolloGtBridge:
                 "angular_velocity_source": angular_velocity_source,
                 "acceleration_source": acceleration_source,
                 "acceleration_semantics": "finite_difference_or_physical",
+                "configured_acceleration_source": configured_acceleration_source,
+                "acceleration_source_before_authored_initial_state_transition": (
+                    acceleration_source_before_initial_state_transition
+                ),
+                "authored_initial_state_transition_applied": bool(
+                    initial_state_transition is not None
+                ),
+                "physical_acceleration_input_frame": "carla_vehicle_body",
+                "physical_acceleration_output_frame": "apollo_map_enu",
                 "localization_acceleration_filter_enabled": getattr(
                     self, "localization_acceleration_filter_enabled", False
                 ),
@@ -8135,6 +10055,29 @@ class ApolloGtBridge:
         # Apollo control-command sign semantics. CARLA applied steer remains in
         # CARLA sign semantics and is preserved separately for artifacts.
         steer_pct = carla_steer_pct * steer_feedback_sign
+        steering_feedback_normalization = "carla_max_wheel_angle_percent"
+        steering_feedback_apollo_max_steer_angle_deg = None
+        if (
+            str(getattr(self, "actuator_mapping_mode", "legacy")) == "physical"
+            and bool(getattr(self, "physical_map_steering", False))
+            and bool(getattr(self, "physical_map_steering_feedback", True))
+            and measured.get("steer_feedback_deg") is not None
+        ):
+            apollo_max_steer_angle_deg = abs(
+                float(getattr(self, "physical_apollo_max_steer_angle_deg", 0.0) or 0.0)
+            )
+            if apollo_max_steer_angle_deg > 1e-6:
+                steer_pct = (
+                    _clamp(
+                        float(measured["steer_feedback_deg"]) / apollo_max_steer_angle_deg,
+                        -1.0,
+                        1.0,
+                    )
+                    * 100.0
+                    * steer_feedback_sign
+                )
+                steering_feedback_normalization = "apollo_front_wheel_angle_percent"
+                steering_feedback_apollo_max_steer_angle_deg = apollo_max_steer_angle_deg
         self.stats["last_control_feedback"] = {
             "desired": {
                 "throttle_pct": throttle_cmd_pct,
@@ -8153,6 +10096,10 @@ class ApolloGtBridge:
                 "steering_percentage_frame": "apollo_control",
                 "carla_steering_percentage_frame": "carla_control",
                 "steer_feedback_sign": steer_feedback_sign,
+                "steering_feedback_normalization": steering_feedback_normalization,
+                "steering_feedback_apollo_max_steer_angle_deg": (
+                    steering_feedback_apollo_max_steer_angle_deg
+                ),
                 "available": bool(measured.get("available", False)),
                 "source": measured.get("source", "unavailable"),
                 "steer_angle_deg": measured.get("steer_feedback_deg"),
@@ -8203,6 +10150,10 @@ class ApolloGtBridge:
             "carla_steering_percentage": carla_steer_pct,
             "carla_steering_percentage_frame": "carla_control",
             "steering_feedback_sign": steer_feedback_sign,
+            "steering_feedback_normalization": steering_feedback_normalization,
+            "steering_feedback_apollo_max_steer_angle_deg": (
+                steering_feedback_apollo_max_steer_angle_deg
+            ),
             "throttle_percentage_cmd": throttle_cmd_pct,
             "brake_percentage_cmd": brake_cmd_pct,
             "steering_percentage_cmd": steer_cmd_pct,
@@ -8272,6 +10223,7 @@ class ApolloGtBridge:
                 _safe_set(pt, "x", x + dx * cos_yaw - dy * sin_yaw)
                 _safe_set(pt, "y", y + dx * sin_yaw + dy * cos_yaw)
                 _safe_set(pt, "z", z)
+        self.stats["last_published_obstacle"] = _published_obstacle_debug(obs)
 
     def _store_obstacle_cache(self, msg: Any, count: int, ts_sec: float) -> None:
         if (not self.front_obstacle_cache_enabled) or count <= 0:
@@ -8400,7 +10352,9 @@ class ApolloGtBridge:
                         x=x,
                         y=y,
                         z=z,
-                        yaw=self.tf.apply_yaw(float(pose.get("yaw", 0.0))),
+                        yaw=_objects_json_yaw_to_apollo_radians(
+                            float(pose.get("yaw", 0.0)), self.tf
+                        ),
                         vx=vx,
                         vy=vy,
                         vz=vz,
@@ -8457,9 +10411,20 @@ class ApolloGtBridge:
             return cached
         return msg, count
 
-    def _on_control_cmd(self, cmd: Any) -> None:
-        control_rx_ts = self._command_now_sec()
-        self.stats["control_rx_count"] += 1
+    def _on_control_cmd(
+        self,
+        cmd: Any,
+        *,
+        _startup_exact_retry: bool = False,
+        _original_control_rx_ts: float | None = None,
+    ) -> None:
+        control_rx_ts = (
+            float(_original_control_rx_ts)
+            if _startup_exact_retry and _original_control_rx_ts is not None
+            else self._command_now_sec()
+        )
+        if not _startup_exact_retry:
+            self.stats["control_rx_count"] += 1
         self.stats["last_control_rx_ts_sec"] = control_rx_ts
         raw_fields = self._extract_raw_control_fields(cmd)
         physical_mode = self.actuator_mapping_mode == "physical"
@@ -8748,7 +10713,7 @@ class ApolloGtBridge:
             if control_input_primary_seq_int is not None
             else ("latest_replan" if control_input_latest_replan_seq_int is not None else "missing")
         )
-        now_sec = time.time()
+        now_sec = self._planning_age_reference_time_sec(control_rx_ts)
         latest_known_planning = (
             dict(self._planning_last_event) if self._planning_last_event is not None else {}
         )
@@ -9137,6 +11102,12 @@ class ApolloGtBridge:
             "brake_mapping_source": base_mapping.get("brake_source", ""),
             "steer_mapping_source": base_mapping.get("steer_source", ""),
             "physical_fallback_reason": base_mapping.get("physical_fallback_reason", ""),
+            "actuator_mapping_speed_mps": base_mapping.get(
+                "actuator_mapping_speed_mps"
+            ),
+            "decel_actuation_mapping_source": base_mapping.get(
+                "decel_actuation_mapping_source", ""
+            ),
             "planning_lateral_contract_valid": planning_lateral_contract_valid,
             "planning_lateral_contract_reason": planning_lateral_contract_reason,
             "planning_lateral_latest_sequence_num": effective_planning.get(
@@ -9147,6 +11118,18 @@ class ApolloGtBridge:
             "planning_lateral_matched_sequence_num": matched_planning_seq_int,
             "planning_lateral_used_effective_match": bool(matched_planning),
             "target_front_wheel_angle_deg": base_mapping.get("target_front_wheel_angle_deg"),
+            "steering_speed_compensation_enabled": base_mapping.get(
+                "steering_speed_compensation_enabled", False
+            ),
+            "steering_speed_compensation_applied": base_mapping.get(
+                "steering_speed_compensation_applied", False
+            ),
+            "steering_speed_tracking_ratio": base_mapping.get(
+                "steering_speed_tracking_ratio"
+            ),
+            "steering_calibration_query_angle_deg": base_mapping.get(
+                "steering_calibration_query_angle_deg"
+            ),
             "target_accel_mps2": base_mapping.get("target_accel_mps2"),
             "target_decel_mps2": base_mapping.get("target_decel_mps2"),
             "target_accel_source": base_mapping.get("target_accel_source", ""),
@@ -9548,6 +11531,18 @@ class ApolloGtBridge:
                         "force_zero_steer_applied", False
                     ),
                     "target_front_wheel_angle_deg": self.stats["last_control_out"].get("target_front_wheel_angle_deg"),
+                    "steering_speed_compensation_enabled": self.stats["last_control_out"].get(
+                        "steering_speed_compensation_enabled", False
+                    ),
+                    "steering_speed_compensation_applied": self.stats["last_control_out"].get(
+                        "steering_speed_compensation_applied", False
+                    ),
+                    "steering_speed_tracking_ratio": self.stats["last_control_out"].get(
+                        "steering_speed_tracking_ratio"
+                    ),
+                    "steering_calibration_query_angle_deg": self.stats["last_control_out"].get(
+                        "steering_calibration_query_angle_deg"
+                    ),
                     "target_accel_mps2": self.stats["last_control_out"].get("target_accel_mps2"),
                     "target_decel_mps2": self.stats["last_control_out"].get("target_decel_mps2"),
                     "target_accel_source": self.stats["last_control_out"].get("target_accel_source", ""),
@@ -9559,6 +11554,12 @@ class ApolloGtBridge:
                     "mapped_brake_cmd": self.stats["last_control_out"].get("mapped_brake_cmd"),
                     "mapped_carla_steer_cmd": self.stats["last_control_out"].get("mapped_carla_steer_cmd"),
                     "physical_fallback_reason": self.stats["last_control_out"].get("physical_fallback_reason", ""),
+                    "actuator_mapping_speed_mps": self.stats["last_control_out"].get(
+                        "actuator_mapping_speed_mps"
+                    ),
+                    "decel_actuation_mapping_source": self.stats["last_control_out"].get(
+                        "decel_actuation_mapping_source", ""
+                    ),
                     "debug_simple_lat_lateral_error": _finite_or_none(
                         raw_fields.get("debug_simple_lat_lateral_error")
                     ),
@@ -9623,10 +11624,20 @@ class ApolloGtBridge:
                     steer,
                 )
             )
-        publish_allowed = self._allow_control_publish_after_startup(
+        startup_planning = self._startup_planning_publish_validity(
             planning_valid=planning_lateral_contract_valid,
             planning_reason=planning_lateral_contract_reason,
+            control_input_sequence_num=control_input_candidate_seq_int,
+            exact_planning=exact_candidate_planning,
+            effective_planning=effective_planning,
+        )
+        publish_allowed = self._allow_control_publish_after_startup(
+            planning_valid=bool(startup_planning["valid"]),
+            planning_reason=str(startup_planning["reason"]),
             timestamp_sec=control_ts,
+            planning_sequence_num=startup_planning["sequence_num"],
+            planning_trajectory_type=startup_planning["trajectory_type"],
+            planning_exact_match=bool(startup_planning["exact_match"]),
         )
         startup_gate = self.stats.get("control_startup_publish_gate", {}) or {}
         self.stats["last_control_out"].update(
@@ -9637,9 +11648,25 @@ class ApolloGtBridge:
                 "startup_publish_suppress_reason": (
                     str(startup_gate.get("last_skip_reason") or "") if not publish_allowed else ""
                 ),
+                "startup_planning_sequence_num": startup_planning["sequence_num"],
+                "startup_planning_trajectory_type": startup_planning["trajectory_type"],
+                "startup_planning_exact_match": bool(startup_planning["exact_match"]),
+                "startup_planning_valid": bool(startup_planning["valid"]),
+                "startup_planning_reason": str(startup_planning["reason"]),
             }
         )
         if not publish_allowed:
+            if (
+                not _startup_exact_retry
+                and startup_planning["reason"]
+                == "control_input_planning_sequence_not_observed"
+                and startup_planning["sequence_num"] is not None
+            ):
+                self._queue_control_for_exact_planning_retry(
+                    cmd,
+                    planning_sequence_num=int(startup_planning["sequence_num"]),
+                    control_rx_ts=control_rx_ts,
+                )
             return
         if self.node.control_out_type == "ackermann":
             speed_cmd = (
@@ -9692,6 +11719,15 @@ class ApolloGtBridge:
             return
         self.stats["last_control_publish_error"] = ""
         self.stats["control_tx_count"] += 1
+        self._write_fixed_scene_control_handover_ack(
+            control_timestamp_sec=control_ts,
+            control_sequence_num=_nonzero_int_or_none(
+                raw_fields.get("control_header_sequence_num")
+            ),
+            planning_sequence_num=startup_planning["sequence_num"],
+            planning_trajectory_type=startup_planning["trajectory_type"],
+            planning_exact_match=bool(startup_planning["exact_match"]),
+        )
 
     def _on_raw_routing_response(self, msg: Any) -> None:
         self._on_routing_response(
@@ -9848,15 +11884,17 @@ class ApolloGtBridge:
 
     def _load_lane_centerline_segments(
         self, map_file: Path, *, source_type: str
-    ) -> Tuple[List[Tuple[float, float, float, float]], Dict[str, Any]]:
+    ) -> Tuple[List[Tuple[float, ...]], Dict[str, Any]]:
         polylines = _extract_lane_centerline_polylines(map_file)
-        segments = _build_map_segments_from_polylines(polylines)
+        raw_segments = _build_map_segments_from_polylines(polylines)
+        segments = _prepare_map_segments(raw_segments)
         meta = {
             "enabled": bool(segments),
             "map_file": str(map_file),
             "points": sum(len(poly) for poly in polylines),
             "polylines": len(polylines),
             "segments": len(segments),
+            "segment_metrics_precomputed": True,
             "source_type": source_type,
             "risk_level": "low",
             "trusted_lane_centerline": True,
@@ -9865,14 +11903,16 @@ class ApolloGtBridge:
 
     def _load_legacy_map_segments(
         self, map_file: Path
-    ) -> Tuple[List[Tuple[float, float, float, float]], Dict[str, Any]]:
+    ) -> Tuple[List[Tuple[float, ...]], Dict[str, Any]]:
         points = _extract_xy_series(map_file)
-        segments = _build_map_segments(points)
+        raw_segments = _build_map_segments(points)
+        segments = _prepare_map_segments(raw_segments)
         meta = {
             "enabled": bool(segments),
             "map_file": str(map_file),
             "points": len(points),
             "segments": len(segments),
+            "segment_metrics_precomputed": True,
             "source_type": "base_map_text_xy_heuristic",
             "risk_level": "high",
             "trusted_lane_centerline": False,
@@ -9930,6 +11970,7 @@ class ApolloGtBridge:
         map_file = self._resolve_map_file()
         if map_dir is None and (map_file is None or not map_file.exists()):
             self.map_segments = []
+            self._map_segment_spatial_index = {}
             self.map_geometry_source_file = ""
             self.map_geometry_source_type = "missing"
             self.map_geometry_trusted_lane_centerline = False
@@ -9944,7 +11985,7 @@ class ApolloGtBridge:
             }
             return
         try:
-            selected_segments: List[Tuple[float, float, float, float]] = []
+            selected_segments: List[Tuple[float, ...]] = []
             selected_meta: Dict[str, Any] = {}
             source_mode = self.auto_routing_snap_source_mode
             allow_lane_centerline = source_mode in {
@@ -9988,6 +12029,10 @@ class ApolloGtBridge:
                     "trusted_lane_centerline": False,
                 }
             self.map_segments = selected_segments
+            self._map_segment_spatial_index = _build_segment_spatial_index(
+                self.map_segments,
+                cell_size_m=self._map_segment_grid_cell_size_m,
+            )
             self.map_geometry_source_file = str(selected_meta.get("map_file", ""))
             self.map_geometry_source_type = str(selected_meta.get("source_type", "missing"))
             self.map_geometry_trusted_lane_centerline = bool(
@@ -9997,9 +12042,15 @@ class ApolloGtBridge:
             selected_meta["apollo_runtime_map_dir"] = self.apollo_runtime_map_dir
             selected_meta["map_contract_invalid"] = self.map_contract_invalid
             selected_meta["map_contract_mismatch_reason"] = self.map_contract_mismatch_reason
+            selected_meta["spatial_index"] = {
+                "enabled": bool(self._map_segment_spatial_index),
+                "cell_size_m": float(self._map_segment_grid_cell_size_m),
+                "cell_count": len(self._map_segment_spatial_index),
+            }
             self.stats["map_geometry"] = selected_meta
         except Exception as exc:
             self.map_segments = []
+            self._map_segment_spatial_index = {}
             self.map_geometry_source_file = str(map_file) if map_file is not None else ""
             self.map_geometry_source_type = "parse_error"
             self.map_geometry_trusted_lane_centerline = False
@@ -10128,10 +12179,15 @@ class ApolloGtBridge:
         target_x = None
         target_y = None
         target_yaw = self.tf.yaw_rad
-        lane = _nearest_segment_metrics(
-            self.tf.apply_position(avg_raw_x, avg_raw_y, 0.0)[0],
-            self.tf.apply_position(avg_raw_x, avg_raw_y, 0.0)[1],
+        transformed_x, transformed_y, _ = self.tf.apply_position(avg_raw_x, avg_raw_y, 0.0)
+        lane = _nearest_segment_metrics_indexed(
+            transformed_x,
+            transformed_y,
             self.map_segments,
+            getattr(self, "_map_segment_spatial_index", None),
+            cell_size_m=getattr(
+                self, "_map_segment_grid_cell_size_m", _MAP_SEGMENT_GRID_CELL_SIZE_M
+            ),
         )
         if lane is not None:
             target_x = lane["proj_x"]
@@ -10543,9 +12599,76 @@ class ApolloGtBridge:
                     apollo_warmup_readiness=warmup_readiness,
                 )
                 return
+        # Once Apollo has accepted the long route, repeating projection, goal
+        # validation, and routing diagnostics on every GT sample only adds work
+        # to the 20 Hz publish loop. Keep the full path for lane-follow refresh
+        # and traffic-light ignore-roll cases, where a new command is intentional.
         if speed_mps is None:
             speed_mps = self._latest_speed_mps
-        phase = self._current_routing_phase(ts_sec, float(speed_mps))
+        routing_fast_path_phase = self._current_routing_phase(ts_sec, float(speed_mps))
+        lane_follow_runtime_enabled = bool(
+            (
+                self.lane_follow_client is not None
+                and self.auto_routing_send_lane_follow
+                and (not self._lane_follow_disabled_runtime)
+            )
+            or (self.action_client is not None and self.auto_routing_send_action)
+        )
+        lane_follow_phase_sent = (
+            self.auto_routing_startup_lane_follow_sent
+            if routing_fast_path_phase == "startup"
+            else self.auto_routing_long_lane_follow_sent
+        )
+        lane_follow_cooldown_ok = (
+            self.auto_routing_lane_follow_sent == 0
+            or (ts_sec - self.auto_routing_last_lane_follow_ts)
+            >= self.auto_routing_lane_follow_refresh_sec
+        )
+        lane_follow_refresh_due = bool(
+            lane_follow_runtime_enabled
+            and lane_follow_cooldown_ok
+            and not lane_follow_phase_sent
+        )
+        if (
+            bool(getattr(self, "_routing_freeze_active", False))
+            and bool(getattr(self, "auto_routing_long_routing_sent", False))
+            and not bool(getattr(self, "traffic_light_ignore_roll_enabled", False))
+            and not lane_follow_refresh_due
+        ):
+            routing_sent = int(getattr(self, "auto_routing_routing_sent", 0) or 0)
+            max_routing_attempts = max(1, int(getattr(self, "auto_routing_max_attempts", 1) or 1))
+            route_ready = self.routing_writer is not None and bool(
+                getattr(self, "auto_routing_send_routing", False)
+            )
+            route_cooldown_ok = (
+                routing_sent == 0
+                or (ts_sec - float(getattr(self, "auto_routing_last_routing_ts", 0.0)))
+                >= float(getattr(self, "auto_routing_resend_sec", 0.0))
+            )
+            self.auto_routing_current_phase = routing_fast_path_phase
+            self.stats["routing_freeze_fast_path_count"] = int(
+                self.stats.get("routing_freeze_fast_path_count", 0) or 0
+            ) + 1
+            self.stats["last_routing_reason"] = "freeze_after_success_skip"
+            self._update_command_gate_state(
+                ts_sec=ts_sec,
+                phase=routing_fast_path_phase,
+                status="blocked",
+                blocking_reason="routing_freeze",
+                blocking_detail="routing projection and validation skipped because freeze-after-success is active",
+                eligible=True,
+                route_ready=route_ready,
+                lane_follow_ready=lane_follow_runtime_enabled,
+                route_cooldown_ok=route_cooldown_ok,
+                lane_follow_cooldown_ok=lane_follow_cooldown_ok,
+                route_attempts_left=routing_sent < max_routing_attempts,
+                route_phase_sent=True,
+                lane_phase_sent=lane_follow_phase_sent,
+                send_routing_now=False,
+                send_lane_follow_now=False,
+            )
+            return
+        phase = routing_fast_path_phase
         self.auto_routing_current_phase = phase
         ignore_roll_active = self._ignore_roll_active(0.0, 0.0)
         route_phase_sent = (
@@ -11663,6 +13786,30 @@ class ApolloGtBridge:
 
         def sleep_until_next_publish_cycle() -> None:
             nonlocal next_publish_wall_s
+            backlog_pending = int(snapshot.get("odom_queue_pending", 0) or 0)
+            ros_input_queue = snapshot.get("ros_input_queue", {}) or {}
+            if bool(ros_input_queue.get("obstacle_alignment_waiting", False)):
+                sleep_s = min(period, 0.001)
+                time.sleep(sleep_s)
+                next_publish_wall_s = time.time()
+                self.stats["publish_loop_rate_limiter"] = {
+                    "target_period_s": period,
+                    "last_sleep_s": sleep_s,
+                    "last_overrun_s": 0.0,
+                    "mode": "obstacle_alignment_wait",
+                    "odom_queue_pending": backlog_pending,
+                }
+                return
+            if backlog_pending > 0:
+                next_publish_wall_s = time.time()
+                self.stats["publish_loop_rate_limiter"] = {
+                    "target_period_s": period,
+                    "last_sleep_s": 0.0,
+                    "last_overrun_s": 0.0,
+                    "mode": "odom_backlog_drain",
+                    "odom_queue_pending": backlog_pending,
+                }
+                return
             next_publish_wall_s += period
             now_sleep = time.time()
             overrun_s = max(0.0, now_sleep - next_publish_wall_s)
@@ -11727,6 +13874,7 @@ class ApolloGtBridge:
                     target_period_s=period,
                 )
                 self.stats["ros_input_counts"] = snapshot.get("rx_counts", self.stats["ros_input_counts"])
+                self.stats["ros_input_queue"] = snapshot.get("ros_input_queue", {})
                 odom = snapshot.get("odom")
                 if (
                     self.transport_mode == "carla_direct"
@@ -11774,6 +13922,19 @@ class ApolloGtBridge:
                         continue
                 if odom is not None:
                     direct_world_frame = snapshot.get("world_frame")
+                    measured: Optional[Dict[str, Any]] = None
+                    if str(
+                        getattr(self, "localization_acceleration_source", "finite_difference")
+                        or "finite_difference"
+                    ).strip().lower() in {"carla_feedback", "auto"}:
+                        phase_start_wall_s = time.time()
+                        measured = self._read_measured_control(snapshot)
+                        self._record_publish_phase_timing(
+                            "carla_feedback_read_acceleration",
+                            start_wall_s=phase_start_wall_s,
+                            end_wall_s=time.time(),
+                            target_period_s=period,
+                        )
                     phase_start_wall_s = time.time()
                     should_publish_gt, _sample_key, sample_reason = self._should_publish_gt_sample(
                         odom,
@@ -11810,6 +13971,7 @@ class ApolloGtBridge:
                     loc, ts_sec, vel_xyz, pose_debug, pose_info = self._odom_to_loc(
                         odom,
                         direct_world_frame=direct_world_frame,
+                        measured_control=measured,
                     )
                     self._record_publish_phase_timing(
                         "odom_to_localization",
@@ -11817,6 +13979,15 @@ class ApolloGtBridge:
                         end_wall_s=time.time(),
                         target_period_s=period,
                     )
+                    if self.cyber_clock_publish_phase == "before_gt":
+                        phase_start_wall_s = time.time()
+                        self._publish_cyber_clock(ts_sec)
+                        self._record_publish_phase_timing(
+                            "cyber_clock_publish_before_gt",
+                            start_wall_s=phase_start_wall_s,
+                            end_wall_s=time.time(),
+                            target_period_s=period,
+                        )
                     phase_start_wall_s = time.time()
                     self.loc_writer.write(loc)
                     self._record_publish_phase_timing(
@@ -11846,7 +14017,8 @@ class ApolloGtBridge:
                         },
                     )
                     phase_start_wall_s = time.time()
-                    measured = self._read_measured_control()
+                    if measured is None:
+                        measured = self._read_measured_control(snapshot)
                     self._record_publish_phase_timing(
                         "carla_feedback_read_control",
                         start_wall_s=phase_start_wall_s,
@@ -11898,12 +14070,54 @@ class ApolloGtBridge:
                             self._header_timestamp_sec(ch)
                         ),
                     }
+                    if self.cyber_clock_publish_phase == "after_state":
+                        phase_start_wall_s = time.time()
+                        self._publish_cyber_clock(ts_sec)
+                        self._record_publish_phase_timing(
+                            "cyber_clock_publish_after_state",
+                            start_wall_s=phase_start_wall_s,
+                            end_wall_s=time.time(),
+                            target_period_s=period,
+                        )
                     ex = float(pose_info["map_x"])
                     ey = float(pose_info["map_y"])
-                    if self._should_publish_obstacles(ts_sec):
+                    obstacle_header_ts_sec: Optional[float] = None
+                    obstacle_time_base = "rate_limited_not_published"
+                    obstacle_source_time_sec: Optional[float] = None
+                    obstacle_source_time_base = "obstacle_source_time_unavailable"
+                    obstacle_publish_decision = "rate_limited_not_published"
+                    obs_count = 0
+                    source_fresh_policy = (
+                        self.obstacle_publish_policy == "source_fresh"
+                    )
+                    if source_fresh_policy:
+                        (
+                            obstacle_source_time_sec,
+                            obstacle_source_time_base,
+                        ) = self._obstacle_source_time_from_snapshot(snapshot)
+                    if self._should_publish_obstacles(
+                        ts_sec,
+                        obstacle_source_time_sec=obstacle_source_time_sec,
+                    ):
                         obstacle_period = 1.0 / max(self.obstacle_publish_rate_hz, 1e-3)
+                        if not source_fresh_policy:
+                            (
+                                obstacle_source_time_sec,
+                                obstacle_source_time_base,
+                            ) = self._obstacle_source_time_from_snapshot(snapshot)
+                        obstacle_header_ts_sec, obstacle_time_base = self._obstacle_time_from_odom(
+                            odom,
+                            localization_header_time_sec=ts_sec,
+                            fallback_cyber_time_sec=self._command_now_sec(),
+                            obstacle_source_time_sec=obstacle_source_time_sec,
+                            obstacle_source_time_base=obstacle_source_time_base,
+                        )
                         phase_start_wall_s = time.time()
-                        obs_msg, obs_count = self._objects_to_obstacles(snapshot, ts_sec, (ex, ey))
+                        obs_msg, obs_count = self._objects_to_obstacles(
+                            snapshot,
+                            obstacle_header_ts_sec,
+                            (ex, ey),
+                        )
                         self._record_publish_phase_timing(
                             "objects_to_obstacles",
                             start_wall_s=phase_start_wall_s,
@@ -11921,6 +14135,15 @@ class ApolloGtBridge:
                         self.stats["obstacle_message_count"] = int(
                             self.stats.get("obstacle_message_count", 0) or 0
                         ) + 1
+                        obstacle_publish_decision = (
+                            "source_fresh_published"
+                            if source_fresh_policy
+                            else "rate_gate_published"
+                        )
+                        if source_fresh_policy:
+                            self.stats["obstacle_source_fresh_publish_count"] = int(
+                                self.stats.get("obstacle_source_fresh_publish_count", 0) or 0
+                            ) + 1
                         self.stats["obstacle_object_count"] = int(
                             self.stats.get("obstacle_object_count", 0) or 0
                         ) + int(obs_count)
@@ -11935,20 +14158,35 @@ class ApolloGtBridge:
                         self._record_topic_publish_stats(
                             channel=self.obstacles_channel,
                             msg=obs_msg,
-                            sim_time_sec=ts_sec,
+                            sim_time_sec=self._latest_sim_time_sec,
                             payload_count=int(obs_count),
                             source="bridge_writer",
                             extra={
+                                "source_clock": obstacle_time_base,
+                                "obstacle_header_time_source": obstacle_time_base,
                                 "obstacle_count": int(obs_count),
                                 "empty_message": int(obs_count) <= 0,
                                 "fresh_sample": sample_reason == "fresh_sample",
                                 "sample_reason": sample_reason,
+                                "obstacle_publish_policy": self.obstacle_publish_policy,
+                                "obstacle_publish_decision": obstacle_publish_decision,
                             },
                         )
                     else:
-                        self.stats["obstacle_publish_rate_limited_skip_count"] = int(
-                            self.stats.get("obstacle_publish_rate_limited_skip_count", 0) or 0
-                        ) + 1
+                        if source_fresh_policy:
+                            if obstacle_source_time_sec is None:
+                                obstacle_publish_decision = "source_time_missing_not_published"
+                                obstacle_time_base = obstacle_publish_decision
+                                counter = "obstacle_source_time_missing_skip_count"
+                            else:
+                                obstacle_publish_decision = "source_frame_not_fresh"
+                                obstacle_time_base = obstacle_publish_decision
+                                counter = "obstacle_source_duplicate_skip_count"
+                            self.stats[counter] = int(self.stats.get(counter, 0) or 0) + 1
+                        else:
+                            self.stats["obstacle_publish_rate_limited_skip_count"] = int(
+                                self.stats.get("obstacle_publish_rate_limited_skip_count", 0) or 0
+                            ) + 1
                     loop_published_gt = True
                     debug_row_build_start_wall_s = time.time()
                     desired_in = self.stats.get("last_control_in", {}) or {}
@@ -11984,6 +14222,7 @@ class ApolloGtBridge:
                     front_status = self._front_obstacle_behavior_status()
                     front_gap = front_status.get("last_gap", {}) or {}
                     front_actor = None
+                    front_actor_json = None
                     if self.front_obstacle_actor_probe_enabled and self.carla_feedback is not None:
                         phase_start_wall_s = time.time()
                         front_actor = self.carla_feedback.find_vehicle_by_roles(self.front_obstacle_role_names)
@@ -11993,6 +14232,8 @@ class ApolloGtBridge:
                             end_wall_s=time.time(),
                             target_period_s=period,
                         )
+                    else:
+                        front_actor_json = self._front_actor_from_objects_json(snapshot)
                     front_actor_id = None
                     front_actor_role = ""
                     front_actor_x = None
@@ -12005,7 +14246,37 @@ class ApolloGtBridge:
                     front_actor_dimension_source = "missing"
                     front_actor_dimension_warnings: List[str] = []
                     front_actor_type_id = None
+                    front_actor_state_source = "missing"
+                    front_actor_velocity_vector = {"x": None, "y": None, "z": None}
+                    if front_actor_json is not None:
+                        try:
+                            front_actor_id = int(front_actor_json.get("id"))
+                        except Exception:
+                            front_actor_id = None
+                        front_actor_role = str(front_actor_json.get("role_name", "") or "")
+                        front_actor_type_id = str(front_actor_json.get("type_id", "") or "") or None
+                        pose = front_actor_json.get("pose", {}) or {}
+                        velocity = front_actor_json.get("velocity", {}) or {}
+                        size = front_actor_json.get("size", {}) or {}
+                        front_actor_x = _finite_or_none(pose.get("x"))
+                        front_actor_y = _finite_or_none(pose.get("y"))
+                        front_actor_yaw_deg = _finite_or_none(pose.get("yaw"))
+                        front_actor_velocity_vector = {
+                            "x": _finite_or_none(velocity.get("x")),
+                            "y": _finite_or_none(velocity.get("y")),
+                            "z": _finite_or_none(velocity.get("z")),
+                        }
+                        if all(value is not None for value in front_actor_velocity_vector.values()):
+                            front_actor_speed_mps = math.sqrt(
+                                sum(float(value) ** 2 for value in front_actor_velocity_vector.values())
+                            )
+                        front_actor_length_m = _finite_or_none(size.get("x"))
+                        front_actor_width_m = _finite_or_none(size.get("y"))
+                        front_actor_height_m = _finite_or_none(size.get("z"))
+                        front_actor_dimension_source = "ros_objects_json_actor_bbox"
+                        front_actor_state_source = "ros_objects_json"
                     if front_actor is not None:
+                        front_actor_state_source = "carla_actor_state"
                         try:
                             front_actor_id = int(getattr(front_actor, "id"))
                         except Exception:
@@ -12038,6 +14309,11 @@ class ApolloGtBridge:
                                 + float(getattr(vel, "y", 0.0)) ** 2
                                 + float(getattr(vel, "z", 0.0)) ** 2
                             )
+                            front_actor_velocity_vector = {
+                                "x": _finite_or_none(getattr(vel, "x", None)),
+                                "y": _finite_or_none(getattr(vel, "y", None)),
+                                "z": _finite_or_none(getattr(vel, "z", None)),
+                            }
                         except Exception:
                             front_actor_speed_mps = None
                         dimensions = self._front_actor_dimensions(front_actor_id, front_actor)
@@ -12046,6 +14322,12 @@ class ApolloGtBridge:
                         front_actor_height_m = dimensions.get("height")
                         front_actor_dimension_source = str(dimensions.get("source") or "missing")
                         front_actor_dimension_warnings = list(dimensions.get("warnings") or [])
+                    published_obstacle = self.stats.get("last_published_obstacle", {}) or {}
+                    front_actor_found = front_actor is not None or front_actor_json is not None
+                    published_obstacle_matches_front = (
+                        front_actor_id is not None
+                        and str(published_obstacle.get("id")) == str(front_actor_id)
+                    )
                     def desired_point_distance(prefix: str) -> Optional[float]:
                         px = _finite_or_none(desired_in.get(f"{prefix}_x"))
                         py = _finite_or_none(desired_in.get(f"{prefix}_y"))
@@ -12573,6 +14855,17 @@ class ApolloGtBridge:
                             "chassis_feedback.steering_feedback_sign",
                             "publish_row",
                         ),
+                        "chassis_steering_feedback_normalization": chassis_feedback.get(
+                            "steering_feedback_normalization", ""
+                        ),
+                        "chassis_steering_feedback_apollo_max_steer_angle_deg": self._coerce_float(
+                            chassis_feedback.get(
+                                "steering_feedback_apollo_max_steer_angle_deg"
+                            ),
+                            float("nan"),
+                            "chassis_feedback.steering_feedback_apollo_max_steer_angle_deg",
+                            "publish_row",
+                        ),
                         "chassis_steering_percentage_cmd": self._coerce_float(
                             chassis_feedback.get("steering_percentage_cmd"),
                             float("nan"),
@@ -12653,8 +14946,35 @@ class ApolloGtBridge:
                         "brake_mapping_source": desired_out.get("brake_mapping_source", ""),
                         "steer_mapping_source": desired_out.get("steer_mapping_source", ""),
                         "physical_fallback_reason": desired_out.get("physical_fallback_reason", ""),
+                        "actuator_mapping_speed_mps": self._coerce_float(
+                            desired_out.get("actuator_mapping_speed_mps"),
+                            float("nan"),
+                            "desired_out.actuator_mapping_speed_mps",
+                            "publish_row",
+                        ),
+                        "decel_actuation_mapping_source": desired_out.get(
+                            "decel_actuation_mapping_source", ""
+                        ),
                         "target_front_wheel_angle_deg": self._coerce_float(
                             desired_out.get("target_front_wheel_angle_deg"), float("nan"), "desired_out.target_front_wheel_angle_deg", "publish_row"
+                        ),
+                        "steering_speed_compensation_enabled": desired_out.get(
+                            "steering_speed_compensation_enabled", False
+                        ),
+                        "steering_speed_compensation_applied": desired_out.get(
+                            "steering_speed_compensation_applied", False
+                        ),
+                        "steering_speed_tracking_ratio": self._coerce_float(
+                            desired_out.get("steering_speed_tracking_ratio"),
+                            float("nan"),
+                            "desired_out.steering_speed_tracking_ratio",
+                            "publish_row",
+                        ),
+                        "steering_calibration_query_angle_deg": self._coerce_float(
+                            desired_out.get("steering_calibration_query_angle_deg"),
+                            float("nan"),
+                            "desired_out.steering_calibration_query_angle_deg",
+                            "publish_row",
                         ),
                         "mapped_carla_steer_cmd": self._coerce_float(
                             desired_out.get("mapped_carla_steer_cmd"), float("nan"), "desired_out.mapped_carla_steer_cmd", "publish_row"
@@ -12746,6 +15066,17 @@ class ApolloGtBridge:
                         "measured_forward_accel_dvdt_mps2": self._coerce_float(measured.get("dvdt_forward_accel_mps2"), float("nan"), "measured.dvdt_forward_accel_mps2", "publish_row"),
                         "measured_available": measured.get("available", False),
                         "measured_source": measured.get("source", "unavailable"),
+                        "measured_source_stamp_sec": self._coerce_float(
+                            measured.get("source_stamp_sec"),
+                            float("nan"),
+                            "measured.source_stamp_sec",
+                            "publish_row",
+                        ),
+                        "measured_source_age_at_localization_s": (
+                            max(0.0, ts_sec - float(measured["source_stamp_sec"]))
+                            if _finite_or_none(measured.get("source_stamp_sec")) is not None
+                            else float("nan")
+                        ),
                         "measured_vs_command_throttle_gap": self._coerce_float(measured.get("throttle"), 0.0, "measured.throttle_gap_src", "publish_row") - self._coerce_float(desired_out.get("throttle"), 0.0, "desired_out.throttle_gap_src", "publish_row"),
                         "measured_vs_command_brake_gap": self._coerce_float(measured.get("brake"), 0.0, "measured.brake_gap_src", "publish_row") - self._coerce_float(desired_out.get("brake"), 0.0, "desired_out.brake_gap_src", "publish_row"),
                         "measured_vs_command_steer_gap": self._coerce_float(measured.get("steer"), 0.0, "measured.steer_gap_src", "publish_row") - self._coerce_float(desired_out.get("steer"), 0.0, "desired_out.steer_gap_src", "publish_row"),
@@ -12788,10 +15119,21 @@ class ApolloGtBridge:
                         {
                             "timestamp": ts_sec,
                             **self._timing_snapshot(event_wall_time_sec=ts_sec),
+                            "obstacle_header_timestamp_sec": obstacle_header_ts_sec,
+                            "obstacle_header_time_source": obstacle_time_base,
+                            "obstacle_publish_policy": self.obstacle_publish_policy,
+                            "obstacle_publish_decision": obstacle_publish_decision,
+                            "obstacle_source_timestamp_sec": obstacle_source_time_sec,
+                            "obstacle_source_time_base": obstacle_source_time_base,
+                            "obstacle_source_age_at_localization_s": (
+                                max(0.0, float(ts_sec) - float(obstacle_source_time_sec))
+                                if obstacle_source_time_sec is not None
+                                else None
+                            ),
                             "front_obstacle_visible": front_status.get("visible"),
                             "front_obstacle_mode": front_status.get("mode"),
                             "front_obstacle_role_names": list(front_status.get("role_names", []) or []),
-                            "front_obstacle_actor_found": front_actor is not None,
+                            "front_obstacle_actor_found": front_actor_found,
                             "front_obstacle_actor_probe_enabled": self.front_obstacle_actor_probe_enabled,
                             "front_obstacle_actor_id": front_actor_id,
                             "front_obstacle_actor_role": front_actor_role,
@@ -12806,20 +15148,22 @@ class ApolloGtBridge:
                             "front_obstacle_actor_y": front_actor_y,
                             "front_obstacle_actor_yaw_deg": front_actor_yaw_deg,
                             "front_obstacle_actor_speed_mps": front_actor_speed_mps,
-                            "frame_transform_checked": front_actor is not None,
-                            "theta_frame_checked": front_actor is not None,
-                            "position_frame_apollo_map": front_actor is not None,
+                            "published_obstacle_matches_front_actor": published_obstacle_matches_front,
+                            "published_obstacle": (
+                                dict(published_obstacle)
+                                if published_obstacle_matches_front
+                                else None
+                            ),
+                            "frame_transform_checked": front_actor_found,
+                            "theta_frame_checked": front_actor_found,
+                            "position_frame_apollo_map": front_actor_found,
                             "length": _finite_or_none(front_actor_length_m),
                             "width": _finite_or_none(front_actor_width_m),
                             "height": _finite_or_none(front_actor_height_m),
                             "dimension_source": front_actor_dimension_source,
                             "dimension_warnings": front_actor_dimension_warnings,
-                            "velocity_source": "carla_actor_state" if front_actor is not None else "missing",
-                            "velocity": {
-                                "x": _finite_or_none(front_actor_speed_mps),
-                                "y": 0.0,
-                                "z": 0.0,
-                            },
+                            "velocity_source": front_actor_state_source,
+                            "velocity": front_actor_velocity_vector,
                             "dynamic": bool(front_actor_speed_mps and front_actor_speed_mps > 1e-3),
                             "actually_stationary": bool(front_actor_speed_mps is not None and front_actor_speed_mps <= 1e-3),
                             "tracking_time": max(0.1, ts_sec),
@@ -13123,6 +15467,15 @@ def _default_config() -> Dict[str, Any]:
         "bridge": {
             "publish_rate_hz": 20.0,
             "obstacle_publish_rate_hz": 10.0,
+            "obstacle_publish_policy": "rate_limited",
+            "obstacle_alignment_policy": "latest_source_not_after_odom",
+            "cyber_clock": {
+                "enabled": False,
+                "mode": "disabled",
+                "channel": "/clock",
+                "publish_phase": "before_gt",
+                "odom_queue_depth": 1,
+            },
             "max_obstacles": 64,
             "radius_m": 120.0,
             "localization_back_offset_m": "auto",
@@ -13195,6 +15548,7 @@ def _default_config() -> Dict[str, Any]:
             },
             "carla_feedback": {
                 "enabled": True,
+                "state_source": "carla_rpc",
                 "host": "127.0.0.1",
                 "port": 2000,
                 "ego_role_name": "hero",

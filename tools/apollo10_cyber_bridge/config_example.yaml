@@ -17,8 +17,20 @@ cyber:
   routing_response_channel: /apollo/routing_response
   traffic_light_channel: /apollo/perception/traffic_light
   planning_channel: /apollo/planning
+  prediction_channel: /apollo/prediction
 bridge:
   publish_rate_hz: 20.0
+  cyber_clock:
+    enabled: false
+    mode: disabled
+    channel: /clock
+    # Legacy-compatible default. A mock-clock diagnostic may select after_state
+    # so Localization/Chassis precede clock advance and the obstacle-driven
+    # Prediction/Planning trigger follows it in the current clock domain.
+    publish_phase: before_gt
+    # Depth 1 preserves latest-only ROS odom behavior. Values above 1 are only
+    # active with mock clock and drain distinct odom samples before advancing it.
+    odom_queue_depth: 1
   # Native Prediction triggers Planning. Keep this aligned with Apollo's
   # default planning_loop_rate=10 while localization/chassis remain at 20 Hz.
   obstacle_publish_rate_hz: 10.0
@@ -57,6 +69,14 @@ bridge:
   radius_m: 120.0
   localization_back_offset_m: auto
   vehicle_reference_path: configs/vehicles/ego_vehicle_reference.verified.yaml
+  # Default keeps obstacle headers in the localization header time domain.
+  # Diagnostic profiles may use cyber_time when Apollo Prediction explicitly
+  # aligns obstacle history against Cyber-time Planning headers; CARLA sim time
+  # remains separately recorded in topic/evidence rows.
+  obstacle_time_source: localization_time
+  # Default preserves the historical velocity finite-difference GT source.
+  # Diagnostic profiles may select carla_feedback or auto explicitly.
+  localization_acceleration_source: finite_difference
   localization_acceleration_filter:
     # Disabled by default for legacy compatibility. Claim-grade lane-keep
     # profiles may enable this to remove finite-difference GT acceleration
@@ -150,6 +170,10 @@ bridge:
     timeout_sec: 1.5
   front_obstacle_behavior:
     mode: normal
+    # scenario_initial_state_gate keeps fixed-scene target actors out of
+    # Prediction until the runtime has observed the authored speed and gap.
+    activation_marker_path: fixed_scene_obstacle_activation.json
+    activation_required_status: pass
     # Per-frame CARLA actor probes are useful for follow-stop/obstacle
     # diagnostics but should not throttle lane_keep GT channel publication.
     # Leave false for no-object lane_keep runs; enable for dynamic-obstacle
@@ -174,6 +198,8 @@ bridge:
     brake_scale: 1.0
     steer_scale: 1.0
     brake_deadzone: 0.05
+    require_valid_planning_before_first_publish: false
+    require_fixed_scene_handover_before_publish: false
     actuator_mapping_mode: legacy
     physical:
       calibration_file: artifacts/carla_actuator_calibration.json

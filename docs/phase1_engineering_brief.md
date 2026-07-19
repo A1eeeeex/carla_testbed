@@ -1,6 +1,6 @@
 # Phase 1 Engineering Brief
 
-Last reviewed: 2026-07-11
+Last reviewed: 2026-07-19
 
 This brief freezes the Phase 1 engineering target for `carla_testbed`. It is a
 scope and status document, not a capability announcement. Status labels below
@@ -54,32 +54,2067 @@ success means:
 
 ## Current Phase 1 Progress Snapshot
 
-Latest reviewed snapshot: `2026-07-11`. The latest complete five-P0 matrix is
-still
-`runs/phase1_p0_matrix/phase1_p0_behavior_default_20260701_030213`; therefore
-its matrix-level result remains authoritative until all five rows are rerun.
-Since that matrix, targeted Town01 online runs have materially improved the
-Apollo reference backend: no-guard lane-follow samples can remain laterally
-bounded, and a junction longitudinal Planning failure was traced to missing
-Apollo HDMap lane speed-limit fields and removed in clean-map A/B validation.
-These are backend improvements, not a replacement five-P0 acceptance matrix
-and not an Apollo natural-driving claim. The acceptance/verifier/catalog layer
-remains frozen unless it demonstrably blocks a real valid run.
+Latest reviewed snapshot: `2026-07-19`. The latest complete five-P0 matrix is
+`runs/phase1_p0_matrix/cycle_inf_mainline_vehicle_param_map_speed_20260714`.
+All five pairs are materialized, evaluable, and comparable with no invalid
+rows. PlanningControlBackend succeeds in all five rows. Apollo succeeds in the
+two Town01 route rows and has three valid behavior failures: lane invasion in
+`follow_stop_static`, and collision in `lead_decel_accel` and
+`cut_in_simple`. The Town01 `lane_keep_curve` row remains a terminal-turn
+diagnostic route and is not claim-grade curve evidence. This matrix replaces
+the 2026-07-01 matrix as the Phase 1 comparison-surface baseline; it does not
+support an Apollo natural-driving claim.
 
 Layered progress status:
 
 - Phase 1 overall: `PARTIAL`
 - Code-level platform delivery estimate: about `88-90%`
-- Current repo independently provable completion: about `82-86%`
+- Current repo independently provable completion: about `84-88%`
 - Platform skeleton estimate: about `90%`
-- Apollo reference runtime estimate: about `72-78%`
-- Five-P0 online pair matrix estimate: `DONE for evaluable comparison surface; behavior failures remain`
+- Apollo reference runtime estimate: about `78-82%`
+- Five-P0 online pair matrix estimate: `DONE for evaluable comparison surface; Apollo behavior succeeds in 2/5 rows`
 - Local accepted comparison-surface catalog: `PARTIAL after verifier hardening`
 - Package-level acceptance surface: `PARTIAL until rebuilt from verifier-passed bundles`
 - Latest external Pro-audit completion verdict: `PARTIAL / Phase 1 done claim rejected`
 - Phase 1 completion gate: `PARTIAL`
-- Representative Apollo behavior capability: `PARTIAL / targeted Town01 lane-follow and longitudinal improvements; full P0 rerun pending`
+- Representative Apollo behavior capability: `PARTIAL / latest complete matrix has two Town01 successes and three Baguang failures; targeted cut-in short-handover success is repeated only under quarantined bidirectional steering alignment, while the matched legacy-steering row is an evaluable lane-invasion failure`
 - Apollo natural-driving or no-interference capability claim: `NOT_CLAIMED`
+
+2026-07-19 targeted online evidence:
+
+- The atomic initial-readiness gate and the post-transition compute budget are
+  now separated. The opt-in native-Prediction candidate requires the latest
+  eligible Planning message itself to be a fresh NORMAL replan before the
+  one-shot authored-speed materialization. This prevents a later Routing
+  success from being combined with an aging stitched continuation; after
+  materialization, the existing distinct replan plus non-replan NORMAL
+  confirmation contract remains unchanged. Python compile, `148` focused
+  tests, and full pytest (`2471 passed`) cover the shared-code change.
+- Online v62
+  `runs/phase1_online_pairs/cycle_inf_baguang_native_prediction_replan_gate_physical_brake_v62_20260719`
+  proves the initial boundary but not handover. Routing plus Planning sequence
+  `54`, a `111`-point NORMAL replan, open the gate at sim `17.797s` while
+  ego/lead remain approximately stationary and formal time is false. After
+  speed materialization, however, Planning falls to about `2.5Hz` in simulation
+  time, its fallback trajectory decays to one point, Control tx remains zero,
+  and the Apollo row is correctly `invalid/setup_failed` rather than a backend
+  loss.
+- v33/v62 runtime evidence identifies why the older v33 recovered while v62
+  did not. v33's old readiness path accidentally spent p95 about `0.768s` per
+  tick in `after_world_tick`, so its configured `50ms` pacing almost never
+  slept and incidental artifact I/O slowed CARLA enough for CPU Prediction.
+  v62 removes that hot-path cost: inter-tick p95 becomes about `0.054s`, while
+  `79` measured CPU VectorNet inferences still take `384-559ms` with p95 about
+  `470ms`. The old success therefore depended on accidental I/O backpressure,
+  not an adequate explicit compute-time contract.
+- A default-off compute-paced candidate allocates `250ms` wall time per `50ms`
+  simulation tick; two ticks cover the measured VectorNet p95 without changing
+  Planning, Prediction semantics, scenario simulation time, mapping, steering,
+  guards, readiness, or Town01. Config validation and `26` profile tests pass.
+  Online pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_native_prediction_compute_paced_v63_20260719`
+  materializes the requested pacing on `619/620` ticks with inter-tick p95
+  about `0.253s` and restores both Prediction and Planning to median `0.10s`
+  simulation-time cadence.
+- v63 closes this runtime lifecycle in one online sample. Routing succeeds at
+  sim `13.867s`; the gate opens at `14.117s` on Planning sequence `71`, a
+  `111`-point NORMAL replan, with pre-materialization ego/lead speeds about
+  `1.43e-6/5.72e-7m/s` and formal time still false. Nine setup-only
+  SPEED_FALLBACK messages follow the state transition, NORMAL recovers at
+  `+1.0s`, and exact handover uses non-replan NORMAL sequence `115` with `116`
+  points. Control tx is `0` before handover and `1` at acknowledgement; formal
+  time begins at sim `18.667s` with ego/lead about `19.553/19.552m/s` and gap
+  `20.004m`.
+- Both v63 backend rows are completed/evaluable `success`, and the comparison
+  is `comparable / apollo_vs_planning_control_evaluable`. Apollo is runtime-
+  aligned, has zero collision and lane invasion, and all `181` formal Planning
+  messages are NORMAL. Its `361` valid gap rows have minimum about `20.001m`
+  and final about `45.592m`; final ego/lead speed is about
+  `16.532/19.184m/s`. This proves the compute-paced readiness/handover path and
+  one Phase 1 behavior success. It remains a default-off extended-map
+  diagnostic with Control health `warn`; it does not replace the canonical P0
+  matrix, establish repeatability, promote physical mapping, or support an
+  Apollo natural-driving claim.
+- Exact repeat v64
+  `runs/phase1_online_pairs/cycle_inf_baguang_native_prediction_compute_paced_repeat_v64_20260719`
+  repeats the strict lifecycle but not the behavior result. Routing and a
+  fresh multi-point NORMAL replan still precede one-shot speed
+  materialization; exact compatible NORMAL handover and zero pre-handover
+  Control tx remain intact. Both rows complete and are evaluable, the pair is
+  comparable, and there is no collision or lane invasion. Apollo is correctly
+  `degraded/large_final_gap`: final gap grows to about `83.199m`, final ego
+  speed falls to about `13.216m/s`, and formal Planning is `180 NORMAL / 1
+  SPEED_FALLBACK` rather than v63's `181/181 NORMAL`.
+- The v64 formal fallback is attributable to the declared simulator-vehicle
+  acceleration contract. At formal `+8.65s`, measured CARLA feedback enters a
+  replan at about `9.188m/s` and `2.049083m/s^2`, just above the active Apollo
+  vehicle parameter `max_acceleration=2.0m/s^2`. Piecewise Jerk Speed reports
+  OSQP primal infeasibility under acceleration bounds `[-6,2]` and emits
+  SPEED_FALLBACK. The matched v63 phase remains below the bound at about
+  `1.454409m/s^2` and stays NORMAL. This is a Planning initial-state/vehicle-
+  capability mismatch, not a steering-unit, road-length, readiness, or
+  Prediction-cadence regression.
+- A default-off candidate changes only the Apollo simulator vehicle parameter
+  `max_acceleration: 2.0 -> 4.0m/s^2`. It preserves measured/unfiltered CARLA
+  localization acceleration, strict Routing/NORMAL replan readiness, exact
+  handover, steering-only physical calibration, legacy longitudinal output,
+  disabled guards, `steer_scale=1.0`, and all Town01 profiles. The candidate
+  and resolved runtime shell are covered by `100` focused tests; no shared
+  runtime code changes are part of this candidate.
+- Online v65
+  `runs/phase1_online_pairs/cycle_inf_baguang_compute_paced_vehicle_accel4_v65_20260719`
+  materializes the candidate: the generated Apollo module script contains
+  `max_acceleration: 4.0000`, and Planning logs acceleration bounds `[-6,4]`.
+  The gate opens on Routing plus Planning sequence `71`, a `111`-point NORMAL
+  replan, while ego/lead remain approximately stationary and formal time is
+  false. Exact handover uses sequence `115`, a `116`-point NORMAL trajectory,
+  with zero Control tx before acknowledgement; only then do official scenario
+  time and Apollo ownership start.
+- Both v65 rows are completed/evaluable Phase 1 `success`; the pair is
+  comparable, Apollo is runtime-aligned, collision/lane-invasion counts are
+  zero, and formal Planning is `181/181 NORMAL`. All `361` v-t-gap rows are
+  valid, with minimum/final gap about `20.001/46.552m` and final ego/lead speed
+  about `16.514/19.184m/s`. Nine SPEED_FALLBACK messages remain confined to
+  the setup state transition. This is positive single-sample A/B evidence,
+  but the exact v64 `2.049083m/s^2` input did not recur at the corresponding
+  v65 replan, so it does not yet justify promoting `4.0m/s^2` as the default
+  vehicle contract.
+- Exact candidate repeat v66
+  `runs/phase1_online_pairs/cycle_inf_baguang_compute_paced_vehicle_accel4_repeat_v66_20260719`
+  independently repeats the same strict boundary. The gate opens at sim
+  `16.077s` on Routing plus sequence `71`, a `111`-point NORMAL replan, while
+  both actors are approximately stationary and formal time is false. Exact
+  handover uses sequence `115`, a `116`-point NORMAL trajectory, with Control
+  tx `0 -> 1`; formal time starts at sim `20.627s` with ego/lead about
+  `19.553/19.552m/s` and gap about `20.005m`.
+- v66 again has both rows completed/evaluable Phase 1 `success`, a comparable
+  pair, runtime alignment, and zero collision/lane invasion. Its full Planning
+  distribution exactly matches v65 at `218 NORMAL / 71 UNKNOWN / 9 setup
+  SPEED_FALLBACK`; formal Planning again remains `181/181 NORMAL`. All `361`
+  gap rows pass, with minimum/final gap about `20.001/45.949m` and final
+  ego/lead speed about `16.537/19.184m/s`. The v65/v66 final-gap spread is only
+  about `0.604m`, and final ego-speed spread is about `0.024m/s`, closing
+  candidate outcome repeatability for this extended-map diagnostic.
+- The promotion boundary remains open. v66's formal `+8.65s` replan is NORMAL
+  at about `1.731m/s^2`; like v65, it does not present the exact v64
+  `2.049083m/s^2` state to the widened solver. Formal frame-level CARLA
+  acceleration also still contains short transients above `4m/s^2`, so
+  `4.0m/s^2` is not yet a source-backed portable vehicle envelope. Broader
+  vehicle/gear-transition calibration and canonical-map regression remain
+  required before any default change.
+- Current-state Prediction v67
+  `runs/phase1_online_pairs/cycle_inf_baguang_compute_paced_vehicle_accel4_current_state_prediction_v67_20260719`
+  is negative setup evidence, not a lateral-control regression. The initial
+  `apollo_planning_ready` gate still opens on Routing plus sequence `71`, a
+  `111`-point NORMAL replan, while both actors are stationary. After speed and
+  drivetrain stabilization, Apollo emits many fresh, current-speed-compatible
+  NORMAL continuations, but the second-stage handover additionally waits for
+  `is_replan=true`. No qualifying replan arrives before the setup timeout;
+  `control_tx_count=0`, the Apollo row is correctly `invalid/setup_failed`,
+  and the pair is only partially evaluable. Its `285 NORMAL / 71 UNKNOWN / 16
+  SPEED_FALLBACK` distribution must not be counted as backend behavior or
+  steering evidence.
+- Default-off v68
+  `runs/phase1_online_pairs/cycle_inf_baguang_current_state_post_stability_handover_v68_20260719`
+  first showed that removing the post-stability `is_replan` wait permits
+  handover, but pre-push self-review found that the same legacy flag also
+  controlled the initial gate. The run did observe Routing plus a stationary
+  multi-point NORMAL replan before actor motion, but it did not prove that the
+  configured gate would reject a non-replan initial trajectory.
+- Both v68 rows are completed/evaluable Phase 1 `success`, the pair is
+  comparable, and Apollo records zero collision/lane invasion. Full Planning
+  is `212 NORMAL / 69 UNKNOWN / 5 setup SPEED_FALLBACK`; all formal behavior
+  rows remain safety-event-free. Apollo's `361` valid gap rows have
+  minimum/final gap about `18.644/35.364m`, with final ego/lead speed about
+  `15.785/19.184m/s`. The frozen steering chain is unchanged: Apollo
+  `steering_target` is decoded once from percent, `steer_sign=-1`,
+  `steer_scale=1`, and steering-only physical inverse calibration is used.
+  CTE absolute p95 is about `0.00237m`, raw Apollo steer absolute p95 about
+  `0.000324` in normalized full-scale units, and applied CARLA steer absolute
+  p95 about `0.000149`; no lateral guard fires. This closes the specific v67
+  replan-anchor starvation blocker and shows v67 was not a repeated lateral
+  failure. It does not promote current-state Prediction, the `4m/s^2` vehicle
+  candidate, physical mapping defaults, or an Apollo natural-driving claim.
+- The corrected v69 pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_split_replan_contract_v69_20260719`
+  splits the contract into
+  `planning_ready_require_initial_replan_anchor=true` and
+  `scene_preroll_planning_require_replan_anchor=false`. Effective config and
+  runtime artifacts materialize both values. The initial gate records
+  `initial_replan_anchor_required=true` and opens at sim `12.581s` on sequence
+  `68`, a fresh NORMAL replan, while ego/lead remain approximately stationary.
+  Post-stability handover completes on two distinct compatible NORMAL messages,
+  with the last sequence `101` explicitly non-replan; Control tx changes
+  `0 -> 1` and formal time starts at sim `15.931s`.
+- Both v69 rows are completed/evaluable `success`, the pair is comparable,
+  and Apollo has zero collision/lane invasion. Planning is `210 NORMAL / 68
+  UNKNOWN / 5 setup SPEED_FALLBACK`; gap minimum/final is about
+  `18.585/35.115m`, with final ego/lead speed about `15.769/19.184m/s`.
+  CTE absolute p95 remains about `0.00241m` with no lateral configuration or
+  guard change. This is the online proof for the split lifecycle contract;
+  v68 remains supporting behavior evidence only. The split implementation
+  passes `108` focused tests and full pytest (`2475 passed`).
+- The v26/v27 native-Prediction gap spread was traced to mixed-age obstacle
+  input at the ROS-to-Cyber boundary. The GT publisher emitted odometry before
+  the same-tick object snapshot, so the bridge could consume the preceding
+  object position and relabel it with the current Localization timestamp.
+  v26/v27 each contain `85` published obstacle samples with `0.05s` source age;
+  five phase-aligned age mismatches create roughly `0.7-0.97m` one-frame
+  position differences that remain in VectorNet's 20-position history.
+- Candidate policy `wait_for_exact_source_time` now requires an object snapshot
+  with the same source timestamp as the dequeued odometry sample, drops an odom
+  sample when a later object timestamp proves that exact data is missing, and
+  records wait/missing/drop counters. The producer also publishes objects
+  before odometry. The existing latest-not-after policy remains the default;
+  stable Town01 profiles are unchanged.
+- Two matched-map online pairs,
+  `runs/phase1_online_pairs/cycle_inf_baguang_native_prediction_exact_gt_matched_map_v32_20260719`
+  and
+  `runs/phase1_online_pairs/cycle_inf_baguang_native_prediction_exact_gt_matched_map_v33_20260719`,
+  prove the candidate path online. Both backend rows are completed/evaluable,
+  both comparisons are comparable, PlanningControl succeeds, and Apollo has
+  zero collision/lane invasion. Every one of the `304` published obstacle
+  samples in each Apollo run has source age exactly `0.0s`; wait, missing-exact,
+  dropped-odom, and overflow counters are all zero.
+- Both repeats preserve the strict lifecycle: Routing succeeds before a
+  multi-point NORMAL trajectory opens `apollo_planning_ready`; two compatible
+  NORMAL messages and Apollo Control precede formal start. Full-run Planning is
+  identical at `213 NORMAL / 9 setup SPEED_FALLBACK / 78 UNKNOWN`, while the
+  formal `361` v-t-gap rows remain valid and fallback-free.
+- Exact alignment closes the run-to-run Prediction variability, but not the
+  behavior blocker. v32/v33 end at `107.877/107.942m` gap with final ego speed
+  `11.221/11.709m/s` against the same `19.184m/s` lead speed, and both are
+  evaluable `degraded/large_final_gap` results. Their native Prediction samples
+  and NORMAL Planning speed profiles are nearly identical; near formal
+  `+9-10s`, Planning reduces the ego speed profile to nearly zero and recovers
+  too slowly after the lead accelerates. This is now the highest-value
+  longitudinal follow-up. It is not a lateral-unit failure: both repeats have
+  zero lane invasion, with CTE p95 about `0.076/0.123m`.
+- A default-off legacy-brake calibration candidate changes only
+  `brake_scale: 1.0 -> 0.38` and normalized-CARLA-domain
+  `brake_deadzone: 0.05 -> 0.01`; steering, Planning, GT policy, readiness,
+  guards, legacy longitudinal ownership, and Town01 remain unchanged. CARLA-
+  direct response motivates the ratio, but that probe is diagnostic-only and
+  cannot establish Apollo behavior.
+- Its v36 online attempt is invalid/incomplete. The Apollo dispatch times out
+  after about `11.3s` of formal playback, and two full-brake rows are traced to
+  `carla_control_bridge` watchdog writes at frames `1731/1804`, not to Apollo
+  raw or mapped brake. The timed-out child process and synchronous-world state
+  were cleaned before retry; CARLA was kept running.
+- Warm-CARLA v37 proves the strict initial readiness ordering independently of
+  behavior success. Routing and a fresh `176`-point NORMAL trajectory precede
+  the gate at sim `18.179s`; ego/lead are still approximately stationary and
+  official scenario time is false. Motion starts on the following frame.
+  After that transition, however, the first Planning message at `+0.45s` is
+  SPEED_FALLBACK with `lon_diff=-6.69473m`, all `82` post-gate Planning rows
+  remain fallback, and Apollo Control publishes zero commands. PlanningControl
+  succeeds, but Apollo is `invalid/setup_failed` and the comparison is only
+  `partially_evaluable`. This neither validates the brake-scale candidate nor
+  counts as an Apollo behavior loss.
+- v37 also separates the startup discontinuity from the finite-road tail. The
+  initial fallback appears long before the 640m road is consumed; the later
+  destination condition occurs after setup coasts near `19.55m/s` for the
+  timeout window. Do not restore scenario throttle control, relax NORMAL
+  readiness, or claim that a longer road alone closes this handover.
+- A stationary-start follow-stop cross-check isolates the same default-off
+  longitudinal scalar without the dynamic `0 -> 70kph` transition:
+  `runs/phase1_online_pairs/cycle_inf_baguang_followstop_static_brake_scale_v38_20260719`.
+  The pair completes and is comparable; Apollo is evaluable, hands over from
+  stationary ego/lead after Routing plus a fresh `111`-point NORMAL
+  trajectory, and has `1 UNKNOWN / 737 NORMAL`, zero fallback, zero watchdog,
+  zero collision, and zero lane invasion. This is nevertheless a negative
+  behavior result: applied-brake maximum falls from the matched native-8m
+  baseline's about `0.340` to `0.057`, but minimum/final bumper gap falls from
+  `8.163m` to `7.868m`, below the authored `8.0m` threshold. The constant
+  `brake_scale=0.38` candidate must remain diagnostic-only and cannot be
+  promoted or used to claim the dynamic lead blocker is fixed.
+- The next longitudinal-mapping step, when resumed, is source-backed
+  speed-binned CARLA brake identification. Do not select another scalar by
+  interpolating toward the acceptance threshold, relax the stop-gap contract,
+  or enable physical longitudinal mapping by default.
+- CARLA-direct diagnostic runs v39/v40 now provide the first isolated Lincoln
+  brake-only speed-bin sample without taking control of a Phase 1 scenario
+  ego. The calibration tool temporarily spawns its own vehicle, uses exact
+  synchronous simulation-duration ticks, destroys only that vehicle, and
+  restores the prior asynchronous world settings. It can preserve the tracked
+  steering table while regenerating only brake data; its output explicitly
+  sets `diagnostic_carla_direct`, Apollo-out-of-loop, and both Phase 1 and
+  mapping promotion to false.
+- v39 exposed and v40 closes a measurement-statistic defect in the diagnostic
+  tool. The old brake metric ignored `brake_effective_window_sec` and used an
+  85th percentile over the full sample, so terminal stop spikes up to about
+  `24.89m/s^2` dominated the 5-10m/s bin. With a declared `0.8s` effective
+  window, onset exclusion, and median forward deceleration, the same commands
+  produce a maximum about `3.10m/s^2` in that bin; all five 0-22m/s bins pass
+  the current loader quality check and materialize as five brake tables. This
+  is measurement evidence only.
+- v41/v42 add a `brake=0` coast trial to every main speed bin and record both
+  total deceleration and the incremental response above that baseline. Their
+  per-command physical measurements are identical, including zero difference
+  in coast baselines and incremental-response MAE/p95/maximum. This proves
+  deterministic fixed-step repeatability; it does not make every response
+  physically usable. The repeated 0-2m/s and 5-10m/s bins contain deterministic
+  command-response reversals that the initial `0.35m/s^2` tolerance hid.
+- Final-policy v43 tightens the diagnostic monotonic tolerance to `0.1m/s^2`
+  and preserves the negative evidence. The loader retains only 3/5 bins:
+  2-5m/s, 10-15m/s, and 15-22m/s. It rejects 0-2m/s and 5-10m/s with
+  `non_monotonic_incremental_brake_response`. Physical longitudinal mapping
+  remains default-off and no Apollo A/B is justified from this incomplete
+  table.
+- Focused v44 records pre-brake state, per-frame gear, forward speed,
+  acceleration, pose, and sample index. It localizes the apparent reversals:
+  0-2m/s remains in first gear but stronger commands reach the near-stop
+  boundary at `0.50-0.60s`, reducing the old metric's active sample count from
+  `15` to `8`; 5-10m/s starts in second gear and crosses `2 -> 0 -> 1` between
+  `0.50s` and `0.70s`. The 2-5m/s control bin stays in first gear and remains
+  monotonic. The old `0.8s` instantaneous-acceleration median therefore mixed
+  different drivetrain and stop phases rather than measuring a common brake
+  response interval.
+- v45 uses forward-speed delta over the fixed `0.20-0.40s` interval. At the
+  start all 30 trials have negative longitudinal acceleration; no trial shifts
+  gear or falls below `0.5m/s` before the interval ends. All five bins now have
+  coast baselines, monotonic incremental response, and loader-reliable tables.
+  Recalculated v44/v45 overlap is identical across all `18` shared trials
+  (`MAE=max=0.0`). This closes the diagnostic measurement blocker, not the
+  Apollo behavior blocker. The table remains under `runs/`, physical mapping
+  remains default-off, and a fixed actuator-tracking validation is required
+  before any default-off Apollo pair candidate.
+- The independent tracking path now supports axis-scoped validation, an
+  isolated self-spawned vehicle with exact simulation-duration ticks, actual
+  entry-speed lookup, explicit unavailable/high-clamp mapping evidence, and
+  the same declared `0.20-0.40s` forward-speed-delta response metric. It
+  refuses an occupied world, destroys only its diagnostic actor, restores the
+  prior CARLA settings, and requires nonzero samples, every requested speed
+  point, mean error at most `1.0m/s^2`, and maximum point error at most
+  `1.0m/s^2` for a brake pass. The earlier mean-only result v46 is therefore
+  not promotion evidence: its `0-2m/s` high requests were clamped to the last
+  command and one point had `5.160m/s^2` error despite a passing mean.
+- In-range repeat
+  `runs/diagnostics/cycle_inf_baguang_brake_tracking_in_range_v47_20260719`
+  tests each v45 speed bin at its own calibrated minimum, midpoint, and
+  maximum. It is a truthful full-range `fail`: 15/15 requests materialize and
+  all five speed points are covered, but the `1.8m/s` / bin-maximum /
+  `brake=0.15` trial falls from `1.878m/s` at `0.20s` to `0.215m/s` at
+  `0.40s`, crossing a sharp stop boundary and measuring `8.318m/s^2` against
+  the `2.249m/s^2` target. The other 14 points have maximum error
+  `0.241m/s^2`; the 12 points over `2-22m/s` have mean/maximum error about
+  `0.029/0.121m/s^2`. This validates the medium/high-speed inverse only and
+  rejects the v45 `0-2m/s` table as a continuous-deceleration promotion
+  surface. No physical longitudinal default or Apollo pair candidate follows.
+- Covered-bin calibration
+  `runs/diagnostics/cycle_inf_baguang_brake_covered_bins_v48_20260719`
+  closes the false-coverage defect behind that low-speed failure. The main
+  brake probe has a `2.0m/s` entry floor, so the old `0-2m/s` rows were all
+  collected from approximately `2.05-2.14m/s`, outside the declared bin. The
+  calibrator now records this bin as
+  `unavailable/entry_speed_floor_outside_bin`, materializes only the four
+  actually covered `2-22m/s` bins, and the runtime loader refuses to select a
+  nearest brake bin outside its declared speed interval.
+- Independent repeat
+  `runs/diagnostics/cycle_inf_baguang_brake_covered_bins_tracking_v49_20260719`
+  passes all `12/12` calibrated min/mid/max targets over four entry speeds,
+  with mean/maximum error about `0.0095/0.0283m/s^2`, zero skips, and complete
+  `4/4` speed coverage. This is a scoped medium/high-speed CARLA-direct pass,
+  not a full longitudinal contract.
+- Dedicated low-speed probes v50-v52 separate the excluded interval into
+  explicit rolling, stop, and hold states instead of forcing one continuous-
+  deceleration table over `0-2m/s`. At approximately `0.5/1.0m/s`, every
+  tested nonzero brake command enters the stop state within `0.05-0.10s`, so
+  those rows are excluded from rolling identification. The reliable rolling
+  section is explicitly bounded to `1.25-1.75m/s`; the loader will not select
+  it outside that interval. The stop section uses `stop_cmd=0.01` only below
+  `1.0m/s` and for requests of at least `0.8m/s^2`.
+- v51 initially rejected every stationary hold command because CARLA's
+  spawn-settling vertical velocity made the 3D speed norm approximately
+  `0.168m/s` even though planar displacement was zero. v52
+  `runs/diagnostics/cycle_inf_baguang_low_speed_brake_state_contract_hold_planar_v52_20260719`
+  measures forward/planar motion for stationary hold while retaining the 3D
+  norm as a diagnostic field. It identifies `hold_cmd=0.0`; maximum forward
+  speed is below `4e-6m/s` with zero displacement. This is a state-semantic
+  correction, not a relaxed threshold.
+- Independent low-speed tracking v53
+  `runs/diagnostics/cycle_inf_baguang_low_speed_brake_state_tracking_v53_20260719`
+  passes all `3/3` states against the v52 artifact. Stationary hold uses
+  `brake=0.0` with maximum forward speed about `6.6e-8m/s`; a fresh
+  `0.944m/s` stop request maps to `brake=0.01` and reaches the `0.05m/s`
+  threshold in `0.05s`; a fresh `1.625m/s` rolling request maps to about
+  `0.0232`, drops `0.212m/s` in the declared `0.3s` window, and does not enter
+  stop until `0.5s`. This closes the isolated low-speed state-identification
+  and tracking blocker, but not the full Apollo longitudinal transition.
+  Physical mapping remains default-off and no Apollo pair candidate follows.
+- Composite calibration v54
+  `runs/diagnostics/cycle_inf_baguang_composite_brake_states_v54_20260719`
+  uses the new brake-low-speed-only mode to replace only
+  `brake.low_speed` while retaining v48's four reliable `2-22m/s` main bins.
+  Canonical JSON hashes of the two main-brake payloads are identical
+  (`f24159b8...c42c`). The first composite probe truthfully loads zero rolling
+  sections: all five requested sections fail reliability, so the loader
+  exposes `(1.0,2.0)m/s` as unavailable rather than selecting a nearest table.
+- Dense transition probe v57
+  `runs/diagnostics/cycle_inf_baguang_low_speed_transition_dense_v57_20260719`
+  expands the measured command range to `0.002-0.5`. It identifies stationary
+  hold `brake=0`, independently measured stop `brake=0.002` through the
+  declared `1.25m/s` stop boundary, and one reliable rolling section bounded
+  to `[1.5,2.0)m/s`. At the `1.25m/s` entry, all `17` nonzero commands enter
+  the stop state inside the rolling evaluation boundary; the `1.5m/s` section
+  remains rejected as non-monotonic. The resulting `(1.25,1.5)m/s` transition
+  gap is explicit and must not be nearest-filled or described as covered.
+- Independent composite validation v58
+  `runs/diagnostics/cycle_inf_baguang_composite_brake_tracking_v58_20260719`
+  passes all `12/12` main-bin min/mid/max targets with mean/maximum error
+  `0.0095/0.0283m/s^2`, plus hold/stop/rolling `3/3`. The fresh stop trial
+  starts at `1.078m/s`, maps to `brake=0.002`, and stops in `0.10s`; the fresh
+  rolling trial starts at `1.800m/s`, maps to about `0.2079`, and produces
+  `0.228m/s` drop against the `0.300m/s` target (`0.072m/s` error) without
+  stopping inside the `0.3s` window. This validates only materialized states
+  and bins, not the uncovered transition gap or an Apollo-in-loop behavior.
+  The calibration remains under `runs/`, is CARLA-direct/Apollo-out-of-loop,
+  and is ineligible for Phase 1 or mapping promotion.
+- Two intervening online attempts exposed an independent map-selection
+  regression: a scenario `run.map` override replaced the explicit extended
+  `OpenDriveMap` profile and left the initial Localization about `114.42m` from
+  the loaded Apollo lane, producing no reference line and only UNKNOWN
+  Planning. Removing that override restores profile-owned map selection;
+  v32/v33 use `OpenDriveMap` and start about `3.9e-7m` from its lane geometry.
+- The implementation passes Python compilation, the current `46` focused
+  tracking/control-mapping/calibration tests, and the full CARLA 0.9.16 suite
+  (`2468 passed`). This
+  evidence does not replace the canonical five-P0 matrix or support an Apollo
+  natural-driving claim.
+
+2026-07-18 targeted online evidence:
+
+- Native Apollo Prediction plus the strict Planning-ready lifecycle now
+  completes the matched-map Baguang `lead_decel_accel` pair in
+  `runs/phase1_online_pairs/cycle_inf_baguang_native_prediction_matched_map_v26_20260718`.
+  The preceding v25 attempt is an invalid setup timeout: it records `434`
+  Routing-success, multi-point NORMAL observations, but wall-clock receipt age
+  `0.451-1.302s` makes all of them stale under the old gate while CPU
+  Prediction runs synchronous CARLA slower than real time.
+- Readiness now uses the Planning header and current CARLA simulation time
+  when both are available, while retaining the wall age as a diagnostic and
+  falling back to wall time when sim-time evidence is absent. The `0.25s`
+  threshold, Routing requirement, two-point minimum, and rejection of
+  `SPEED_FALLBACK`, `PATH_FALLBACK`, and `UNKNOWN` are unchanged. In v26 the
+  gate opens on a `136`-point NORMAL trajectory after Routing success;
+  materialization, obstacle activation, Apollo Control handover, and formal
+  time occur in that order.
+- Both v26 rows are completed/evaluable, invalid reasons are empty, and the
+  comparison is `comparable`. Apollo's formal window is `180/180 NORMAL`, with
+  zero collision/lane invasion; all ten full-run SPEED_FALLBACK rows are
+  confined to setup. Gap is valid for all `361` rows and changes from about
+  `20.006m` to `48.314m`; final ego/lead speed is about
+  `16.514/19.184m/s`. This closes the readiness clock blocker and improves the
+  v23 final gap of `70.725m`. v26 alone was still one extended-map diagnostic;
+  the exact repeat below strengthens lifecycle repeatability but still does
+  not make either run a canonical P0 replacement or Apollo natural-driving
+  claim.
+- The readiness change passes Python compilation, `44` runtime-hook tests,
+  and the full suite (`2439 passed`).
+- Exact same-config repeat
+  `runs/phase1_online_pairs/cycle_inf_baguang_native_prediction_matched_map_v27_20260718`
+  repeats completed/evaluable/comparable status, strict Routing plus
+  `111`-point NORMAL readiness before actor activation, runtime alignment,
+  Apollo `success`, and zero collision/lane invasion. v26 and v27 have the
+  exact same full-run Planning distribution (`210 NORMAL / 10 setup
+  SPEED_FALLBACK / 78 UNKNOWN`) and the same formal `180/180 NORMAL` window.
+- This establishes repeated lifecycle/no-formal-fallback completion, but not
+  stable longitudinal quality. v27 ends at about `54.591m` gap and
+  `15.912m/s` ego speed versus v26's `48.314m` and `16.514m/s`. Prediction
+  topic evidence places the first material divergence upstream of Planning:
+  near-identical lead observations produce materially different selected
+  native trajectories, after which Planning emits different NORMAL speed
+  profiles. The next blocker is native Prediction trajectory repeatability,
+  not steering units, mapping, readiness, or fallback acceptance.
+
+- Tick-aligned ego feedback is now online-proven on matched-map diagnostic
+  pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_tick_aligned_gt_state_matched_map_v23_20260718`.
+  The bridge consumes ego control, physical wheel feedback, acceleration,
+  gear, pose and vehicle dimensions from the runner's same-tick
+  `carla_gt_state.v2` snapshot rather than per-cycle CARLA RPC. It records
+  `3337` successful JSON state reads with zero missing/parse errors, about
+  `8.08ms` publish-loop p95, queue maximum `1`, and zero overflow. The blocked
+  v18 baseline had about `0.529s` synchronous state-read p95, `0.795s` loop
+  p95, queue maximum `64`, and `361` overflows.
+- The strict lifecycle boundary is preserved. Routing success plus a fresh
+  `111`-point NORMAL trajectory precedes one-shot initial-speed
+  materialization while ego/lead are stationary and formal time is false.
+  Target-ready handover later uses a fresh `116`-point NORMAL trajectory,
+  about `19.439/19.438m/s` ego/lead speed, `20.005m` bumper gap, and zero
+  prior Control tx. Fallback is never accepted as readiness.
+- Both v23 rows complete and are evaluable, invalid reasons are empty, the
+  comparison is `comparable`, and PlanningControl succeeds. Apollo has zero
+  collision/lane invasion and `220/291` non-empty Planning messages
+  (`212 NORMAL / 8 SPEED_FALLBACK / 71 UNKNOWN`). Vehicle dimensions now
+  remain in the JSON evidence path, so all `361` v-t-gap rows are valid
+  bumper-to-bumper projections rather than degraded center distances.
+- This closes the startup/state hot-path blocker, not longitudinal quality.
+  Apollo remains `degraded/large_final_gap`: gap changes from about `20.005m`
+  to `70.725m`, ego speed falls to about `3.895m/s`, and final ego/lead speed
+  is about `12.544/19.184m/s`. v23 is an extended-OpenDRIVE matched-map
+  diagnostic, not a canonical P0 replacement or natural-driving claim. The
+  next blocker is formal-window fallback/replan and longitudinal recovery.
+- Python compile, `161` focused tests, and the full CARLA 0.9.16 suite
+  (`2437 passed`) validate the code path offline; v23 supplies the required
+  online evidence.
+
+- Exact Apollo Control input identities are now captured from `InputDebug`
+  for Localization, Chassis, and Planning, alongside Control's consumed replan
+  identity. In the formal window of
+  `runs/phase1_online_pairs/cycle_inf_baguang_control_input_identity_v15_20260718`,
+  all `227/227` Control messages have complete input identity. There are `13`
+  duplicate exact-input groups; `12` keep the LQR
+  `steer_angle_limited` value stable to the analyzer tolerance while final
+  `steering_target` changes, with a maximum change of about `5.02` percentage
+  points. Apollo source places the stateful digital filter between those two
+  fields, while maximum-steer-rate limiting is disabled in the active LQR
+  config. This localizes the observed repeated-input drift after the LQR
+  prefilter; it does not yet prove that this is the sole initiator of the
+  closed-loop failure.
+- The v15 pair is completed/evaluable/comparable with no invalid row and a
+  successful PlanningControl row. The strict `apollo_planning_ready` gate sees
+  Routing success and a fresh `176`-point NORMAL trajectory while ego/lead are
+  stationary and formal time is false; exact NORMAL handover occurs with zero
+  prior Control tx at about `19.51/19.51m/s` and `20.005m` gap. Apollo remains
+  an evaluable `failed/lane_invasion` row at formal about `+11.30s`, with no
+  collision and valid gap evidence. This is diagnostic localization, not a
+  behavior fix or natural-driving evidence.
+- Control's authoritative `latest_replan_trajectory_header` reveals `6`
+  formal pre-event replans in v15, while the Planning topic artifact observes
+  only `4`; target-point deltas reach about `1.44m` in y and `0.221rad` in
+  theta. The same method finds `3` formal replans in matched v12 rather than
+  the single topic-captured late replan. Replans remain proven amplifiers, not
+  a proven first cause. The next smallest causal experiment should isolate
+  repeated exact-input digital-filter updates without changing steering
+  units, scale/sign, physical calibration, guards, Planning, or Town01.
+- Phase-aware Control diagnosis now separates setup, formal-pre-event, and
+  terminal safety-event windows. It also stops treating a repeated Control
+  header and Planning sequence alone as unchanged vehicle state; post-LQR
+  attribution requires stable complete `steer_angle_limited` input while the
+  final `steering_target` changes. Reprocessed v12 formal-pre-event duplicate
+  groups have steering range p95/max about `3.79/4.49` percentage points and
+  `15` stable-prefilter drift groups; v13 has about `27.24/32.60` and `18`.
+- The isolated cutoff-preservation A/B
+  `runs/phase1_online_pairs/cycle_inf_baguang_cutoff_preserved_v14_20260718`
+  is completed/evaluable/comparable with no invalid row and PlanningControl
+  success. Runtime launch evidence materializes the only behavior variable,
+  `control_lqr.cutoff_freq: 10 -> 2`, at inherited `ts=0.05s`; the strict
+  Routing/NORMAL gate, `116`-point handover trajectory, about
+  `19.51/19.51m/s` ego/lead speed, `20.005m` gap, mapping, guards,
+  longitudinal ownership and Town01 remain unchanged.
+- The candidate reduces formal-pre-event steering drift p95/max to about
+  `1.90/3.17`, but it is behavior-negative: lane invasion moves from v12
+  formal `+10.75s` to `+7.10s`, and same-method first-`4.4s` CTE p95/max
+  worsens from about `0.036/0.039m` to `0.102/0.114m`. Formal Planning is
+  `61 NORMAL / 1 SPEED_FALLBACK`, has two replans (first about `+3.75s`), and
+  valid gap remains about `19.99-22.94m`. Do not promote `2Hz` or continue
+  scalar cutoff tuning; next align prefilter input/filter phase with consumed
+  Planning target continuity, applied steer, and yaw response.
+- A four-speed CARLA-direct probe now resolves the amplitude candidate exposed
+  by the earlier single-speed run. Across `32/32` valid trials, static-target
+  tracking falls from about `97.2%` at `4.96m/s` to `82.5%` at `19.36m/s`;
+  intermediate points are about `89.9%` at `10.77m/s` and `85.8%` at
+  `15.24m/s`. Fitting the observed wheel authority against the spawned
+  Lincoln's native steering curve selects a `kph` speed axis with median/p95
+  absolute error about `0.0071/0.0124`. This is CARLA-direct diagnostic
+  evidence, not Apollo behavior evidence.
+- A default-off, Baguang-only candidate maps the unchanged Apollo front-wheel
+  target through `target / measured_tracking_ratio` before the unchanged
+  static Lincoln inverse. Physical attribution requires the v2 calibration
+  identity/hash, four speed points, per-row enabled/applied state, positive
+  ratio, exact query-angle contract, and no fallback. The physical target is
+  `raw * steering_sign * apollo_max_steer_angle_deg`; legacy `steer_scale` is
+  not part of that formula. Defaults and Town01 remain unchanged.
+- Strict pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_speed_compensated_steering_v13_20260718`
+  is completed/evaluable/comparable with no invalid row; PlanningControl
+  succeeds. Runtime evidence loads the v2 Lincoln calibration and observes
+  compensation enabled/applied on all `56/56` sampled commands with `0deg`
+  query-contract error p95 and no fallback. Routing, a stationary-actor fresh
+  `176`-point NORMAL trajectory, and later fresh `116`-point speed-compatible
+  NORMAL handover all precede formal time; Control tx before handover is zero,
+  and ego/lead/gap are about `19.50/19.50m/s` and `20.005m`.
+- The online A/B is negative for behavior promotion. Apollo still lane-invades
+  without collision at formal `+11.10s`, versus matched v12 at `+10.75s`.
+  First-`4.4s` CTE p95/max worsens from about `0.029/0.041m` to
+  `0.046/0.098m`; raw steer crosses `0.25%` at about `+1.85s` instead of
+  `+2.60s`; and formal replans through the event increase from `1` to `10`,
+  with the first moving from about `+10.00s` to `+2.85s`. Formal Planning is
+  `92 NORMAL / 1 SPEED_FALLBACK`, and v-t-gap remains valid. Speed compensation
+  is therefore quarantined and not promoted; the next root-cause target is
+  repeated-state Control output drift and replan-target continuity.
+- A vehicle-scoped CARLA-direct steering step probe now separates actuator
+  dynamics from Apollo/bridge cadence. The valid `10ms` run
+  `runs/diagnostics/cycle_inf_baguang_steering_response_probe_10ms_v4_20260718`
+  contains `8/8` bidirectional trials at `19.22-19.25m/s` using the same
+  Lincoln calibration identity/hash as v12. Dead time is `10ms`, median/p95
+  rise time is `20/30ms`, and median/p95 settling time is `30/40ms`. This is
+  CARLA-direct diagnostic evidence with Apollo Control out of loop, so it is
+  ineligible for Phase 1 status, Apollo capability claims, or automatic
+  latency-parameter promotion.
+- The probe corrects the earlier v12 response decomposition. In the pre-replan
+  v12 window, bridge `commanded_steer` to CARLA `measured_steer` correlation
+  peaks one `50ms` row later, while normalized measured steer and measured
+  front-wheel degrees are same-row proportional (`corr=1.0`). Command-to-yaw
+  peaks about three rows later (`150ms`). Median actuator dead plus rise or
+  settling is `30/40ms`, with the p95 settling bound reaching one `50ms` LQR
+  step; the evidence does not support enabling steering MRAC or adding a
+  vehicle latency parameter.
+- The same operating-point probe exposes a separate amplitude candidate:
+  static-calibration targets of `3/6deg` materialize at about
+  `2.475/4.896deg` near `69kph`, or `81.6-82.5%` of target. This may indicate a
+  speed-dependent CARLA steering curve or a calibration-scope mismatch, but it
+  is not yet a proven cause of v12's later oscillation. No `steer_scale`, LQR,
+  mapping-default, guard, Town01, or pair-status change follows from this
+  diagnostic cycle.
+- Reprocessing the strict matched v12 online artifacts now evaluates physical
+  steering in its declared nonlinear front-wheel domain instead of applying
+  the legacy linear `raw * steer_scale * steer_sign` expectation. Across `58`
+  sampled bridge-decode rows, Apollo raw steering maps to the declared `30deg`
+  front-wheel target with `0deg` p95 error; runtime evidence also records the
+  expected Lincoln calibration identity/hash, `11` steering pairs, physical
+  mapping source, and no legacy fallback. The `440` mapped-to-applied rows
+  retain `0` p95 error. Control attribution changes from the false
+  `fail/bridge_mapping` result to `warn/dominant_breakpoint=none`; the run
+  remains an evaluable `failed/lane_invasion` behavior row. This is an evidence
+  attribution repair, not an Apollo behavior repair.
+- A pre-replan response audit on the same v12 evidence originally grouped the
+  bridge observation frame with actuator response and overestimated
+  command-to-wheel delay as about `100ms`; the vehicle-scoped `10ms` probe and
+  row-level decomposition above supersede that estimate. The remaining
+  behavior question is closed-loop state/Control cadence, speed-dependent
+  steering gain, LQR/vehicle interaction, and Planning target continuity, not
+  another steering-unit change. Apollo steering MRAC remains disabled.
+- Fixed-scene Control start observation no longer depends on the periodic
+  bridge stats snapshot. The bridge writes
+  `fixed_scene_control_handover_ack.json` immediately after the first
+  successful post-gate Control publication, and the runtime hook validates it
+  against the current handover marker. This closes a v9 lifecycle confounder:
+  with `artifact_stats_flush_interval_s=2.0`, the ready marker preceded formal
+  time by about `2.05s` while Apollo Control was already being applied.
+- Strict matched pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_handover_ack_matched_v12_20260718`
+  uses the same extended ScenarioCase, `OpenDriveMap`, and `639.68m` XODR for
+  both backends. Both rows complete and are evaluable, invalid reasons are
+  empty, comparison is `comparable`, and PlanningControl succeeds. The ack
+  confirms exact NORMAL Planning sequence `139`; formal time follows the first
+  successful publish by `0.10s`, with zero prior Control tx, ego/lead about
+  `19.548/19.547m/s`, and `20.005m` bumper gap.
+- The lifecycle correction materially improves but does not solve behavior.
+  Over the first formal `2.1s`, raw steer stays within about
+  `-0.104%..+0.232%`, lateral error below `0.0030m`, heading error below
+  `0.00075rad`, and heading-rate error below `0.00443rad/s`, roughly `4-8x`
+  lower than v9. Apollo still progressively lane-invades at formal `+10.75s`
+  with no collision; formal Planning is `69 NORMAL / 1 SPEED_FALLBACK` and
+  valid gap remains about `18.70-22.60m`. A `lon_diff=2.64706m` NORMAL replan
+  at `+9.85s` amplifies an oscillation that began earlier. This remains an
+  evaluable behavior loss and not an Apollo natural-driving claim.
+- v10 is invalid setup evidence for an original-scenario/extended-profile map
+  mismatch. v11 validates the ack timing mechanism but used different road
+  assets across backend rows, so it is diagnostic only. ScenarioCase map
+  ownership remains mandatory for strict pair evidence. Python compile and
+  focused tests pass; the full CARLA 0.9.16 Python suite is `2408 passed`.
+
+- The Control-attribution evidence path is now online materialized without a
+  steering or behavior change. The first v8 attempt exposed that the merged
+  profile contained the per-artifact override but `ApolloAdapter.prepare()`
+  did not forward it into the bridge-effective config; all four Control debug
+  streams therefore remained at `1/10`. The adapter now preserves the typed
+  override, and pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_control_raw_full_capture_v9_20260718`
+  records all `524/524` canonical `apollo_control_raw` messages while the
+  three redundant streams remain `53/524`. Both rows are completed and
+  evaluable, invalid reasons are empty, comparison is `comparable`, and
+  PlanningControl succeeds. Fresh Localization/Chassis is about `18.05Hz`
+  against `20.27Hz` Control; the extra raw evidence raises queue peak/maximum
+  lag to `1620/6.10s`, so this remains a diagnostic capture profile rather
+  than a runtime-load improvement.
+- v9 independently preserves the readiness boundary. Initial-state
+  materialization at sim `13.085160935s` sees Routing success, a fresh
+  `176`-point non-fallback NORMAL trajectory, formal time false, and ego/lead
+  below `1e-6m/s`. Formal handover at `19.085161024s` has two compatible
+  NORMAL messages, a current fresh `121`-point NORMAL trajectory, ego/lead
+  about `19.483/19.482m/s`, gear `4`, `20.005m` bumper gap, and zero
+  pre-handover Control tx. Apollo nevertheless progressively lane-invades at
+  formal `+6.70s`, about `233.49m` from road start and `0.751m` CTE, with no
+  collision; this is an evaluable behavior failure, not invalid evidence.
+- Full-cycle Control evidence materially narrows the lateral chain. All `57`
+  formal Planning messages before the event are NORMAL and none is fallback.
+  Across `103` distinct formal Control timestamps, Apollo steer spans about
+  `-8.36%..+9.30%` with ten sign reversals; command-to-feedback correlation
+  is strongest two applied frames later (`0.956`, about `0.10s`). LQR heading
+  and lateral contributions reach about `+22.82/-13.88` and
+  `+12.47/-11.17` percentage points. A NORMAL replan at `+2.10s` reports
+  `lon_diff=2.50387m`; after oscillation grows, consumed trajectory sequence
+  `202` shifts the Control target line about `+0.57m`, and the explicit
+  `+5.50s` replan reports `lat_diff=0.507834m` while shifting it about
+  `-0.78m`. This establishes Planning trajectory-replan lateral
+  discontinuity as an amplifier of the existing closed-loop oscillation. It
+  does not yet prove whether the first low-amplitude instability originates
+  in Control dynamics, the first longitudinal replan, or their interaction;
+  no scale/gain/mapping change follows. Python compile and `143` focused tests
+  pass; the full CARLA 0.9.16 Python suite is `2407 passed`.
+- The exact cadence-candidate repeat is now negative. Pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_control_state_cadence_v4_20260718`
+  remains completed/evaluable/comparable with strict NORMAL readiness, but
+  Apollo progressively lane-invades at formal `+8.15s`; a same-state Control
+  group changes steering by about `8.96` percentage points. Therefore the
+  single v3 success does not justify promotion of the `50ms` candidate.
+- Two GT-loop A/Bs isolate runtime load without changing steering mapping.
+  Raising bridge cache polling from `20Hz` to `40Hz` in
+  `cycle_inf_baguang_gt_source_poll_40hz_v5_20260718` is harmful: fresh
+  Localization/Chassis falls to about `11.93Hz`, Control/state ratio rises to
+  `1.69`, and Apollo lane-invades. Keeping bridge/Control at `20Hz` while only
+  moving the growing stats snapshot to `2s` in
+  `cycle_inf_baguang_control_cadence_stats_flush_2s_v6_20260718` is also not
+  sufficient: GT is about `14.35Hz`, queue lag reaches `14.8s`, and the same
+  real lane failure recurs. Neither candidate is a control or capability fix.
+- The default-off combined low-capture pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_control_cadence_low_capture_v7_20260718`
+  reduces redundant full Control-debug serialization while retaining all
+  `432` frame-level `control_apply_trace` rows and critical-window evidence.
+  Fresh GT improves to about `17.76Hz`, Control/state ratio to `1.14`, bridge
+  overruns to `48`, queue peak to `707`, and maximum queue lag to `2.89s`.
+  Both rows are evaluable, invalid reasons are empty, comparison is
+  `comparable`, and PlanningControl succeeds. Apollo nevertheless has a
+  geometry-backed progressive lane invasion at formal `+7.65s`, about
+  `244.11m` from road start, with no collision. In the preceding `1.55s`,
+  Apollo raw steering reverses from about `+8.7%` through `-10.3%` to
+  `+11.4%`; physical mapping remains sign-consistent and mapped-to-applied
+  actuation remains intact. The next blocker is Apollo lateral/reference-
+  target oscillation under the still-imperfect `17.76Hz` GT feed, not a
+  recurrence of steering-unit decoding. This remains diagnostic evidence,
+  not natural-driving or default-promotion evidence. Focused config/dispatch
+  tests are `89 passed`; the CARLA 0.9.16 Python full suite is `2405 passed`.
+- A default-off Baguang diagnostic now aligns Apollo Control's timer and LQR
+  discrete step with the `50ms` CARLA/GT state tick; it does not change
+  steering scale/sign, physical calibration, longitudinal mapping, Planning,
+  guards, scenario ownership, or Town01. In the matched baseline, Apollo
+  Control ran at about `67.51Hz` against about `16.42Hz` fresh Localization/
+  Chassis and emitted `362` duplicate same-state groups; `192` groups changed
+  output without a new Control timestamp/Planning sequence. The worst such
+  steering range was about `10.27%`.
+- Online pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_control_state_cadence_v3_20260718`
+  materializes the `50ms` candidate and is completed, evaluable, and
+  `comparable`, with both backend rows successful and no invalid reasons.
+  The actual gate remains `apollo_planning_ready`: Routing succeeds at sim
+  `11.082263188s`; at `11.482263195s`, a fresh `111`-point NORMAL trajectory
+  is present while ego/lead are effectively stationary and formal time is
+  false. Formal start at `15.632263256s` has two distinct compatible NORMAL
+  messages, a current fresh `116`-point NORMAL trajectory, ego/lead about
+  `19.499/19.498m/s`, automatic gear `4`, about `0.32m/s^2` acceleration,
+  `20.005m` bumper gap, and zero pre-handover Control tx.
+- In that single online A/B, Control receive cadence is about `20.24Hz`, the
+  Control/Localization count ratio falls from `4.11` to `1.32`, duplicate
+  same-state groups fall from `362` to `93`, output-drift groups from `192`
+  to `64`, worst same-state steering range from about `10.27%` to `5.91%`,
+  and throttle/brake flips inside such groups from `2` to `0`. Apollo plays
+  the complete `18s` profile with zero collision/lane invasion. This is one
+  successful diagnostic sample, not a default promotion or natural-driving
+  claim: formal Planning still contains `150 NORMAL / 2 SPEED_FALLBACK`,
+  three large-station replans remain, and final gap grows to about `32.74m`
+  with ego/lead about `15.89/19.18m/s`. Repetition and longitudinal
+  attribution remain open.
+- The prior `28.65s` matched-road materialization-to-handover delay was an
+  accidental combined hold, not a requirement to wait continuously for a
+  fresh Planning snapshot on every CARLA poll. Setup speed/gap/drivetrain/
+  Control stability is now counted independently from distinct fresh,
+  non-fallback, speed-compatible NORMAL Planning messages. A repeated stale
+  snapshot can never open handover; fallback, a new ineligible message, or
+  setup instability resets the relevant message evidence.
+- Online pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_planning_freshness_gap_gate_20260718`
+  proves the separated hold with the same extended ScenarioCase and mapping
+  candidate. Actual `apollo_planning_ready` materialization at sim
+  `11.423342757s` has Routing success, a fresh `111`-point NORMAL trajectory,
+  formal time false, and stationary ego/lead. Both actors first move one
+  CARLA tick later. Setup stability starts at `14.573342804s`; compatible
+  NORMAL sequences `115/116` arrive at `15.223342813/15.323342815s`, and the
+  latter opens handover with setup hold `16/4`, message hold `2/2`, a current
+  fresh `116`-point NORMAL trajectory, automatic gear `4`, about
+  `0.482m/s^2` acceleration, `20.005m` bumper gap, and zero pre-handover
+  Control tx. Formal Control starts at `15.423342816s`. The strict
+  materialization-to-handover delay is therefore about `3.90s` rather than
+  `28.65s`, without accepting fallback or moving actors before readiness.
+- Both dispatches/postprocess complete, both rows are evaluable with empty
+  invalid reasons, and comparison is `comparable`; PlanningControl succeeds.
+  Apollo is still a behavior loss, not a lifecycle success: formal Planning
+  is `85 NORMAL / 2 SPEED_FALLBACK`, and a geometry-backed progressive lane
+  invasion occurs about `244.90m` from road start at about `0.777m` CTE with
+  actual footprint/marking intersection. This is distinct from the preceding
+  quarantined road-end sensor event. The online final window did not contain
+  a same-sequence `>0.25s` freshness gap, so that preservation branch remains
+  directly offline-proven only. Runtime-hook tests are `43 passed`, the
+  focused set is `128 passed`, and full pytest is `2401 passed`. The next
+  blocker is downstream Planning/control-target/lateral attribution; this is
+  not Apollo natural-driving evidence and does not justify steering tuning or
+  default physical-mapping promotion.
+- Latest matched-road pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_640m_proto_presence_physical_steering_extended_opendrive_20260718`
+  online-proves the strict dynamic readiness boundary. The actual gate is
+  `apollo_planning_ready`: at sim `12.322892570s`, Routing has succeeded, a
+  fresh `111`-point non-fallback `NORMAL` trajectory is present, the official
+  timer is false, and ego/lead are effectively stationary. Handover/formal
+  start at `16.822892637s` has two compatible `NORMAL` messages, a current
+  `119`-point `NORMAL` trajectory, ego/lead `19.546/19.544m/s`, gear `4`,
+  about `0.076m/s^2` acceleration, a `20.005m` bumper gap, and zero Control
+  transmissions before handover. Both dispatches complete, both rows are
+  evaluable, invalid reasons are empty, and comparison is `comparable`;
+  PlanningControl succeeds. Apollo remains an evaluable lane-invasion failure
+  with zero collision. This proves lifecycle order, not behavior success or
+  natural driving.
+- Presence-aware protobuf capture removes fake default `(0,0)` Control points,
+  zero trajectory fractions, and zero-header trajectory ages. In the new
+  online sample, valid matched-point distance p95/max are about `1.95/3.32m`
+  and primary input-trajectory age p95 is about `0.15s`; the previous
+  `matched_point_too_large` signature disappears. A separate postprocess root
+  cause was also isolated: when container map probing was empty, projection
+  incorrectly fell back to `carla_town01` instead of the run-local aligned
+  `OpenDriveMap`. Correct-map re-projection of the unchanged online sample is
+  `80/80` valid with static route lateral p95 about `0.00017m`, but runtime ego
+  lateral p95 remains about `0.296m`. The evidence pipeline is corrected;
+  lateral behavior is not. Proto/runtime targeted tests are `275 passed`, map/
+  postprocess targeted tests are `132 passed`, and full pytest is
+  `2399 passed`.
+- Integrated repeat
+  `runs/phase1_online_pairs/cycle_inf_baguang_640m_correct_map_integrated_20260718`
+  now proves the corrected map selection in the normal finalized postprocess
+  path. Its `OpenDriveMap` HDMap projection is claim-grade `pass` with `80/80`
+  valid rows, about `633.48m` coverage, static route lateral/heading p95 about
+  `0.000173m/7.08e-7rad`, and runtime ego lateral p95 about `0.00639m`.
+  Raw-to-mapped and mapped-to-applied steering checks pass, no lateral guard
+  intervenes, and maximum absolute route CTE is about `0.00646m`.
+- The same repeat retains the raw CARLA lane-invasion event about `637.08m`
+  from road start, but the ScenarioCase-bound extended XODR contract shows
+  only `0.000077m` CTE, about `0.906m` footprint clearance, no marking
+  intersection, and a CARLA `Broken` versus XODR `Solid` type mismatch. The
+  Apollo row remains `failed/evaluable` with no invalid reason, while the
+  event is not backend-loss or hard-gate eligible; comparison is
+  `partially_evaluable/lane_event_contract_blocks_hard_gate`. The
+  postprocessor now resolves the bound XODR for noncanonical Baguang runtime
+  map names instead of skipping the contract. Related tests are `115 passed`
+  and full pytest under the CARLA 0.9.16 Python environment is `2400 passed`.
+  This is an evidence-classification correction, not an Apollo behavior pass.
+- The next runtime blocker is the setup spatial budget, not steering:
+  materialization-to-handover takes about `28.65s`, followed by about `3.90s`
+  to formal Control, so the authored approximately `70kph` state consumes
+  nearly the full `639.68m` road before formal behavior. The next cycle must
+  align drivetrain readiness, compatible NORMAL sequences, exact-match retry
+  timing, actor state, and position without accepting fallback, moving actors
+  earlier, extending the diagnostic road again, or changing steering.
+
+2026-07-17 targeted online evidence:
+
+- The exact Planning-to-Control startup gate no longer depends on two
+  independent Cyber readers observing the same sequence in the same callback
+  order. The bridge now retains only original Apollo Control messages whose
+  declared Planning input sequence has not yet reached the bridge Planning
+  reader, and re-evaluates the unchanged exact/non-fallback gate when that
+  exact sequence arrives. Pending commands are sequence-keyed, bounded, and
+  discarded after `0.5s`; no command, trajectory type, or control value is
+  synthesized. In
+  `runs/phase1_online_pairs/cycle_inf_baguang_640m_exact_match_retry_physical_steering_20260717`,
+  Routing succeeds at sim `10.864s`, the first `111`-point NORMAL trajectory
+  arrives at `11.114s`, and the readiness materialization at `11.214s` still
+  observes ego/lead effectively stationary. Drivetrain/handover readiness is
+  written at `14.814s`; the same timestamp opens the publish gate on exact
+  NORMAL `seq=117` through a `0.05s`-old retry, and formal time begins at
+  `15.014s`. This removes the preceding sample's approximately `4.25s`
+  marker-to-publish wait without accepting `N-1`, fallback, UNKNOWN, or stale
+  Control. Runtime counters record `35` exact retries before/at handover, one
+  retry that opens publication, and zero expired pending commands. Both rows
+  remain completed/evaluable/comparable with zero invalid rows;
+  PlanningControl succeeds. Apollo remains an evaluable lane-invasion failure
+  with no collision: a geometry-backed solid-solid marking intersection
+  occurs at formal `+10.20s`, with mapped-to-applied steering error zero.
+  Formal Planning is `88 NORMAL / 3 SPEED_FALLBACK`, so the lifecycle change
+  is online-proven but lateral behavior and non-uniform Planning health remain
+  unresolved. Valid bumper-gap rows are `205`, starting at `20.008m`, with
+  minimum `18.933m`, maximum `22.019m`, and final `19.400m`. Targeted tests are
+  `94 passed`; the full suite is `2391 passed`. This is neither a behavior
+  pass nor an Apollo natural-driving claim.
+- A vehicle/profile-scoped physical-steering repeat of the latest `639.68m`
+  drivetrain-ready candidate is recorded in
+  `runs/phase1_online_pairs/cycle_inf_baguang_640m_drivetrain_ready_physical_steering_20260717`.
+  The candidate changes only active steering/feedback mapping: Apollo's
+  full-scale steering percentage is converted through the pinned Lincoln MKZ
+  front-wheel calibration before CARLA actuation; longitudinal mapping and
+  every guard/assist remain off, `steer_scale=1`, `steer_sign=-1`, and the
+  mapping remains default-off. The observed runtime loaded the expected
+  calibration identity and hash. Routing succeeds at sim `11.097s`; the
+  readiness snapshot at `11.447s` has a fresh `111`-point NORMAL trajectory,
+  while ego/lead are effectively stationary. Authored speed begins only
+  after that gate, and drivetrain handover is ready at `15.497s` with both
+  actors in automatic gear `4`, about `0.257m/s^2` acceleration, and a
+  `20.005m` bumper gap. However, the exact non-fallback Planning-to-Control
+  publish gate does not first open until `19.747s` (`seq=156`), and formal
+  time starts at `19.947s`; this approximately `4.25s` marker-to-publish delay
+  is retained as a diagnostic rather than relaxed. Both rows are
+  completed/evaluable/comparable with zero invalid rows; PlanningControl
+  succeeds, while Apollo is an evaluable `failed/lane_invasion` row with no
+  collision. The geometry-backed lane contract confirms a progressive real
+  marking crossing at formal `+7.45s`, with mapped-to-applied steering error
+  zero. This is later than the legacy sample's `+3.25s`, but it is not a full
+  repair: formal Planning contains `55 NORMAL / 5 SPEED_FALLBACK`, and the
+  event remains. Valid bumper-gap rows start at `19.999m`, reach a minimum
+  and final value of `19.349m`, and a maximum of `21.604m`. Targeted tests are
+  `65 passed`; the full suite is `2389 passed`. This single repeat proves the
+  mapping loaded and the failure moved, not that mapping alone caused the
+  timing difference or that Apollo natural driving passed.
+- The existing matched Baguang road candidate already provides a `639.68m`
+  CARLA OpenDRIVE world and a separately densified Apollo `OpenDriveMap`
+  HDMap. A new default-off composition with the native-state drivetrain-ready
+  gate was exercised in
+  `runs/phase1_online_pairs/cycle_inf_baguang_640m_drivetrain_ready_20260717`.
+  Routing and a fresh `111`-point NORMAL trajectory precede the one-shot
+  authored-speed materialization at sim `11.514s`; handover occurs at
+  `15.564s` only after both vehicles are in automatic gear `4` with measured
+  longitudinal acceleration about `0.257m/s^2`, and Apollo Control/formal time
+  begins at `15.914s`. The pair is completed/evaluable/comparable with no
+  invalid row; PlanningControl succeeds. Setup Planning is `80 UNKNOWN / 39
+  NORMAL / 4 SPEED_FALLBACK`, and all `29` formal messages through formal
+  `+3.25s` are NORMAL. Thus the short-map fallbacks at approximately formal
+  `+0.85s/+2.95s` do not recur in the matched window. Apollo then crosses a
+  Broken marking under the unchanged legacy steering mapping and is an
+  evaluable `failed/lane_invasion` row with zero collision. This short formal
+  window does not by itself prove uniform 18-second Planning health, although
+  the earlier matched-map physical-steering sample independently recorded
+  `177/177` formal NORMAL messages over the complete actor profile. The
+  inherited but inactive terminal stop hold is explicitly disabled in the new
+  candidate; no steer scale, Planning constraint, physical-mapping default,
+  ScenarioCase timing, or Town01 profile changes. Related targeted tests are
+  `64 passed` and the full suite is `2388 passed`.
+- The default-off native-state startup candidate now removes the long
+  scene-owned handover interval without weakening the gate. In
+  `cycle_inf_baguang_dynamic_native_state_handover_20260717`, Routing and a
+  `111`-point NORMAL trajectory are present while ego/lead remain `0/0m/s`.
+  After the authored speed is materialized, `seq=82` is a rejected
+  `SPEED_FALLBACK`; `seq=83/84` are two current-speed-compatible NORMAL
+  trajectories. Handover readiness occurs after `0.40s`, and Apollo
+  control/formal time starts after `0.60s`, versus `4.30/4.45s` in the
+  minimal-input sample. The input boundary uses CARLA physical acceleration,
+  a marker-bounded one-frame authored-transition rule, sim-time Localization
+  with the existing mock Cyber clock, and Apollo's native current-state
+  caution Prediction path. It does not change Planning constraints, steering,
+  mapping, or the ScenarioCase. Both rows are evaluable, invalid rows are
+  empty, comparison is `comparable`, PlanningControl succeeds, and Apollo's
+  later lane invasion remains a valid behavior failure rather than a setup
+  failure or natural-driving pass.
+- Dynamic `lead_decel_accel` ownership/readiness A/Bs now separate three
+  startup choices. The matched baseline
+  `cycle_inf_baguang_dynamic_ownership_baseline_20260717` scene-controls ego
+  and lead for about `7.70s` and starts formal time about `8.05s` after the
+  first NORMAL trajectory. The default-off minimal authored-speed candidate
+  `cycle_inf_baguang_dynamic_minimal_compatible_handover_20260717` assigns the
+  canonical `19.44m/s` initial condition only after Routing and a `111`-point
+  NORMAL trajectory, then requires two distinct current-speed-compatible
+  NORMAL messages. Its pair is completed/evaluable/comparable with no invalid
+  row, and formal time starts `4.45s` after assignment; PlanningControl
+  succeeds while Apollo has a valid lane-invasion behavior failure. This is a
+  setup-latency improvement, not an Apollo behavior pass.
+- Giving Apollo ego immediately after the first NORMAL trajectory is not a
+  valid replacement for this canonical case. In
+  `cycle_inf_baguang_dynamic_apollo_owns_accel_setup_20260717`, Apollo owns ego
+  after `0.10s`, but reaches only `11.96m/s` and incurs lane invasion before
+  the authored `70kph` initial condition is ready. Formal scenario time never
+  starts; the Apollo row is correctly `invalid/setup_failed`, not a backend
+  loss, and the comparison is only partially evaluable. The repository also
+  continues to reject the unsafe combination of one-shot speed assignment and
+  immediate `planning_ready` handover.
+- The isolated marker-bound Localization transition A/B
+  `cycle_inf_baguang_dynamic_minimal_transition_20260717` proves that the
+  one-shot assignment creates a `-379.71m/s^2` finite-difference sample and
+  zeros exactly that setup-only sample. It does not improve readiness:
+  assignment-to-formal time is `4.60s` versus `4.45s`, and fallback remains.
+  The single GT acceleration sample is therefore not sufficient by itself.
+  The native-state candidate above shows that the coherent startup input
+  boundary prevents the `56.96m/s` fallback initial-speed artifact and makes
+  compatible NORMAL Planning available within two messages. Relative
+  contribution of its time/Prediction/acceleration inputs remains a promotion
+  question, not a reason to relax fallback rejection. Related focused tests
+  for the new profile are `15 passed`; the full suite is `2385 passed`.
+- Native-8m repeat and runtime-evidence hardening
+  `runs/phase1_online_pairs/cycle_inf_baguang_followstop_static_native8_stats_snapshot_fix_20260717`
+  repeats the Apollo stop result at `8.163m` with zero collision/lane
+  invasion. The strict gate accepts a stationary ego/lead and a fresh
+  `111`-point NORMAL trajectory; Apollo owns ego about `0.15s` before formal
+  scenario time. Apollo is evaluable `success`, PlanningControl remains an
+  evaluable `failed/unsafe_gap` at `7.721/7.776m`, invalid rows are empty, and
+  comparison is `comparable`.
+- Default-off stationary-start brake-domain A/B
+  `runs/phase1_online_pairs/cycle_inf_baguang_followstop_static_brake_scale_v38_20260719`
+  is completed/evaluable/comparable and preserves the strict ownership
+  boundary. Apollo receives ownership with ego/lead at zero speed only after
+  Routing plus a fresh `111`-point NORMAL trajectory; pre-handover Control tx
+  is zero. Full Planning is `1 UNKNOWN / 737 NORMAL`, with no fallback or
+  watchdog actuation. Apollo reaches a stop with zero collision/lane invasion,
+  but minimum/final valid bumper gaps are `7.86812/7.86826m`, so the authored
+  `8.0m` contract correctly emits evaluable `failed/unsafe_gap`. This rejects
+  the constant `0.38` scale as a follow-stop promotion candidate; it is not a
+  setup failure and zero collision is not a substitute for the stop-gap gate.
+- The preceding same-config repeat exposed an independent bridge lifecycle
+  defect: periodic stats serialization raced nested callback mutation and
+  exited with `RuntimeError: dictionary changed size during iteration`.
+  Subsequent watchdog braking was platform safety behavior, not Apollo
+  follow-stop success. Stats writing now serializes a recursively detached
+  container snapshot, and `phase1_status` classifies an unhandled bridge
+  traceback as `invalid/bridge_runtime_failed`, never a backend loss. In the
+  fix run the bridge has no traceback or publish error and spans the complete
+  scene with `1279` localization/chassis publishes, `887` nonempty target
+  obstacle messages, `886` Planning messages (`805` nonempty), and Control
+  through the terminal stopped window.
+- The online GT stream also exposed an evidence-classification mismatch, not
+  a publish loss. Its 20Hz probe rows contain `887 source_fresh_published`
+  rows and `392 source_frame_not_fresh` cadence skips for the 10Hz obstacle
+  source. All `887` actual publishes contain an obstacle and the target actor
+  linkage passes. The obstacle-GT analyzer now distinguishes those explicit
+  cadence skips from unexplained zero-count rows; reprocessing changes the
+  false `apollo_obstacle_gt_contract_failed` invalid result to
+  `success/evaluable` without changing runtime behavior. Unexplained drops
+  remain failures. Related tests are `89 passed`; the full suite is
+  `2380 passed`.
+- The native-8m Planning anomaly is not closed: the fix run repeats one formal
+  `SPEED_FALLBACK` at `seq=291 / 69 points` while route segments and four
+  reference lines remain present. The gate never accepts fallback, but this
+  repeated single-frame event keeps the candidate default-off and prevents a
+  profile-promotion claim. None of this is Apollo natural-driving evidence.
+- Source-log alignment localizes that formal fallback to a forced replan whose
+  Piecewise Jerk initial acceleration equality is `3.216676m/s^2`, while the
+  active Apollo vehicle model bounds acceleration at `2.0m/s^2`. The same QP
+  cannot satisfy both constraints; the normal and relaxed-velocity attempts
+  are primal-infeasible before constant-deceleration fallback. Route, reference
+  line, and target-obstacle ST bounds remain materialized in that frame.
+- Default-off vehicle-contract A/B
+  `runs/phase1_online_pairs/cycle_inf_baguang_followstop_static_accel4_ab_retry_20260717`
+  changes only this follow-stop candidate's
+  `vehicle_param.max_acceleration` to `4.0m/s^2`. Both dispatches and
+  postprocess chains complete; both rows are evaluable, invalid rows are
+  empty, and comparison is `comparable`. Apollo is conservatively
+  `degraded/evaluable` because some gap rows use a degraded method, although
+  its minimum/final valid gap is `8.201m`; PlanningControl is the unchanged
+  evaluable `failed/unsafe_gap` row at `7.721/7.776m`.
+- The A/B captures `81 UNKNOWN` empty startup rows followed by `658 NORMAL`
+  rows. After the first NORMAL trajectory, non-NORMAL count is zero; three
+  later longitudinal-distance replans (`seq=266/286/322`) all publish NORMAL,
+  versus the repeatable formal `SPEED_FALLBACK` with the 2.0 model. Routing
+  succeeds at sim `102.273789s`, first `111`-point NORMAL Planning is at
+  `102.573789s`, stationary handover is at `102.673789s`, Apollo Control starts
+  at `102.823789s`, and formal scenario time starts at `103.073789s`.
+  Initial-speed materialization remains disabled and the scene never drives
+  ego.
+- The candidate/config boundary has Python compile and `11` focused tests;
+  the full shared-tree suite is `2381 passed`.
+- Same-config repeat
+  `runs/phase1_online_pairs/cycle_inf_baguang_followstop_static_accel4_repeat_20260717`
+  also completes both runtimes and all postprocess/cleanup stages. Its
+  Planning stream is `82 UNKNOWN / 663 NORMAL`; all `663` messages from the
+  first NORMAL onward and all `657` formal-window messages are NORMAL. Later
+  forced replans at `seq=268/289/329` also publish NORMAL. Routing succeeds at
+  `101.668523s`, first `111`-point NORMAL Planning is at `101.968524s`,
+  stationary handover is at `102.068524s`, Apollo Control starts at
+  `102.268524s`, and formal time starts at `102.468524s`. Pre-handover Control
+  tx remains zero and initial-speed materialization remains disabled.
+- The repeat is again `degraded/evaluable` only because `7/1624` v-t-gap rows
+  use the lateral-degraded projection method; its non-degraded minimum/final
+  gap is `8.191m`, collision/lane-invasion counts are zero, and comparison is
+  `comparable`. PlanningControl remains the same evaluable
+  `failed/unsafe_gap` result at `7.721/7.776m`; invalid rows remain empty.
+- The two valid 4.0 samples are repeatability evidence, not promotion proof.
+  Source/log alignment shows that the first sample's residual Piecewise Jerk
+  first-attempt failures are local-speed-bound conflicts recovered by Apollo's
+  native relaxed-velocity retry; they are not the baseline's unrecovered
+  initial-acceleration-bound failure. Measured positive acceleration still has
+  p99/maximum transients around `4.66/10.65m/s^2`, so raising the vehicle bound
+  further would overstate safe planning capability. Vehicle-model provenance
+  and Town01/remaining-Baguang no-regression remain required before any
+  profile-scoped promotion. The preceding `accel4_ab` attempt is setup-invalid
+  because a diagnostic `claim_profile: false` accidentally selected the
+  unwired typed-v0 runner; it never entered Apollo and is not a backend loss.
+- Native Apollo static-obstacle stop-distance A/B
+  `runs/phase1_online_pairs/cycle_inf_baguang_followstop_static_native8_retry_20260717`
+  localizes the repeated `6.229-6.336m` Apollo gap to the compiled Planning
+  default `min_stop_distance_obstacle=6.0`. The default-off follow-stop-only
+  candidate now materializes `--min_stop_distance_obstacle=8.000`; default
+  Baguang and Town01 profiles remain unchanged. Captured Planning emits the
+  target actor's stop fence at `distance_s=-8.0`, and Apollo stops with a valid
+  non-degraded minimum/final bumper gap of `8.212m` over a `714`-row, `35.65s`
+  stopped window. Apollo is therefore evaluable Phase 1 `success` for this
+  pair; PlanningControl remains an evaluable `failed/unsafe_gap` at
+  `7.721/7.776m`, invalid rows are empty, and comparison is `comparable`.
+- The A/B preserves the strict ownership boundary: Routing succeeds at sim
+  `104.892939s`, first nonempty Planning arrives at `105.192939s`, handover at
+  `105.292939s` accepts `seq=82 / 111 points / NORMAL` with ego/lead both
+  stationary, Apollo Control starts at `105.442939s`, and formal scenario time
+  starts at `105.692939s`. Control tx is zero before handover and three after;
+  initial-speed materialization, terminal hold, and all lateral guards remain
+  disabled. Python compile, `71` related tests, and the full suite
+  (`2377 passed`) support the shared overlay change.
+- This is one default-off scenario/profile result. Persisted Planning includes
+  `499 NORMAL / 1 SPEED_FALLBACK / 82 UNKNOWN`; the gate did not accept the
+  fallback, but repeat and no-regression evidence remain necessary. The pair
+  has no `natural_driving_report.json` and is not Apollo natural-driving or
+  global mapping-promotion evidence.
+- Zero-speed static follow-stop pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_followstop_static_planning_ready_portable_steering_v2_20260716`
+  proves that the strict ownership boundary does not require the scene player
+  to accelerate ego. The real RoutingResponse is at sim `101.686701s`, the
+  first nonempty Planning output is `seq=82 / 111 points / NORMAL` at
+  `101.936701s`, and ego ownership transfers at `102.036701s`. Apollo's first
+  Control reaches the boundary at `102.186701s`, only `0.15s` after handover;
+  official scenario time begins at `102.436702s`, `0.25s` after Apollo Control
+  starts. Control tx count is zero before handover and three afterward.
+- Runtime materializes `start_gate=apollo_planning_ready`, requires Routing,
+  at least two trajectory points, freshness, and non-fallback Planning, and
+  keeps initial-speed materialization disabled. The seven setup trace rows
+  control only `lead_vehicle` with zero throttle/brake/steer; there are zero
+  scene-owned ego-control rows. The apparent initial `2.45m/s` speed norm is a
+  vertical CARLA spawn-settling transient (`z: 0.1815 -> -0.0051m`): planar
+  ego displacement and maximum planar step speed before handover are both
+  `0`, and measured speed is `0m/s` at handover.
+- The first online attempt without the zero-value fix is invalid
+  `setup_failed/scene_preroll_target_speed_missing`; it is not an Apollo
+  behavior loss. The root cause was a truthiness check that treated the
+  authored static target speed `0.0m/s` as missing. The accepted v2 pair has
+  both dispatches completed, both rows evaluable, comparison `comparable`,
+  and no invalid row. Complete Apollo Planning is `431 NORMAL / 81 UNKNOWN`
+  with zero nonempty fallback; all `424` formal messages are nonempty NORMAL.
+  Collision and lane-invasion counts are zero, the stopped-lead actor contract
+  passes, and all `852` v-t-gap rows use valid non-degraded bumper projection.
+- The old Phase 1 `success` labels for this pair were incorrect because the
+  classifier treated only negative gap as unsafe and did not consume the
+  authored `min_stop_gap_m: 8.0`. The classifier now evaluates the final
+  contiguous stopped window using only valid, non-degraded bumper-gap methods.
+  Reprocessing the unchanged online artifacts classifies both rows as
+  evaluable `failed/unsafe_gap` behavior results, with empty invalid reasons;
+  comparison remains `comparable`. Apollo's stopped tail is `20` rows over
+  `0.95s`, with minimum/final gap `6.229m`. PlanningControl's stopped tail is
+  `1407` rows over `70.3s`, with minimum gap `7.721m` and final gap `7.776m`.
+  Both violate the authored `8.0m` threshold. This is a deterministic
+  classification correction of existing evidence, not a new online runtime
+  result. The sample proves strict readiness, prompt Apollo ownership,
+  portable steering execution, and comparison materialization, but neither a
+  follow-stop behavior pass nor a `natural_driving_report.json`-backed Apollo
+  natural-driving claim.
+- The static compatibility path previously overrode an explicitly selected
+  dynamic sidecar with the legacy static profile. Explicit repository Baguang
+  sidecar selection now takes precedence while default static dispatch remains
+  unchanged. The zero-speed check uses presence rather than truthiness.
+  Python compile, `91` focused runtime/launch/pair tests, and the full suite
+  (`2372 passed`) cover these shared changes. The candidate remains
+  default-off; physical mapping is not promoted and `steer_scale` is unchanged.
+- The stopped-gap classifier correction is covered by pass, fail,
+  moving-final-state, and degraded-gap regressions. The focused
+  status/comparison/pair-runner set is `92 passed`; the real pair statuses and
+  comparison were regenerated in place while preserving the raw online
+  artifacts. The current full suite is `2376 passed`.
+
+2026-07-16 targeted online evidence:
+
+- Portable Baguang steering-calibration pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_cut_in_portable_steering_calibration_20260716`
+  closes the local/ignored calibration-file dependency for the quarantined
+  physical-steering candidate. Both Baguang physical branches now point to
+  `configs/calibration/vehicles/vehicle.lincoln.mkz_2020/steering_front_wheel_v1.json`.
+  The compact file carries the exact 11-point front-wheel-angle inverse table,
+  vehicle identity, and source-library provenance; it intentionally contains
+  no longitudinal tables because the candidate keeps
+  `map_longitudinal/map_throttle/map_brake=false`.
+- Runtime stats prove that the bridge loaded that repository file with
+  calibration id
+  `carla_0_9_16__vehicle.lincoln.mkz_2020__steering_front_wheel_v1`, vehicle
+  `vehicle.lincoln.mkz_2020`, and SHA-256
+  `5951ecc556a2243d63e7ad39b2ca4de1f5d7699a368c69ca5626e3b0c56cefae`.
+  A dense `-70deg..+70deg` differential over `140001` inputs reports zero
+  output difference from the original full local calibration. The matched
+  runtime effective configs differ only in run-local paths/ids and the
+  calibration path. Existing `control_health` now consumes this loaded runtime
+  identity and records the same id/hash/vehicle plus `steer_scale=1.0` and
+  `steering_sign=-1.0`, instead of the false `calibration_profile_missing`
+  warning. Python compile, `130` targeted
+  config/mapping/bridge/launch/control-health tests, and the full suite
+  (`2369 passed`) support the shared loader/status/analyzer change.
+- Strict readiness and ownership remain unchanged online. Routing count `1`
+  and a fresh `111`-point NORMAL trajectory open
+  `apollo_planning_ready` with pre-materialization ego/target speeds `0/0m/s`;
+  handover follows after `0.40s`, official Apollo/scenario time after `0.55s`,
+  and Control tx is zero before the marker. Both pair rows are
+  completed/evaluable Phase 1 `success`, comparison is `comparable`, invalid
+  rows and safety-event counts are zero, the actor contract passes with a
+  `3.481m` lateral shift and no teleport, and all `578` v-t-gap rows are valid
+  (`1.855m` minimum, `18.816m` final gap). Formal Planning still contains
+  `16` SPEED_FALLBACK rows, so the candidate remains quarantined; this is not
+  default-mapping promotion or Apollo natural-driving evidence. Town01 online
+  no-regression and the other affected Baguang P0 cases remain required before
+  any vehicle/profile-scoped promotion.
+- Short-handover candidate
+  `runs/phase1_online_pairs/cycle_inf_baguang_early_handover_tolerance_20260716`
+  now has two same-session repeats:
+  `cycle_inf_baguang_early_handover_tolerance_repeat_20260716` and
+  `cycle_inf_baguang_overlay_restore_lifecycle_20260716`. Across the three
+  `lead_decel_accel` samples, the strict `apollo_planning_ready` gate opens
+  with both actors stationary after Routing success and a `111`-point NORMAL
+  trajectory. The atomic setup marker follows after `0.50-0.55s`, and formal
+  Apollo control follows after `0.60-0.70s`, versus about `3.55s / 3.65s` in
+  the preceding one-shot initial-state-transition sample. The formal
+  lead-speed phase starts in the same frame as official Apollo ownership, so
+  setup control does not consume the scored `18s` phase.
+- The candidate changes only the explicit setup speed tolerance to `1.0m/s`.
+  At handover both actors are about `18.901m/s`, only `0.539m/s` (`2.77%`)
+  below the authored `19.44m/s`, with about `20.007m` bumper gap. In the latest
+  lifecycle repeat, handover is about `18.892m/s`, `20.007m`, and `0.432m/s`
+  from the consumed trajectory's current speed. A setup SPEED_FALLBACK resets
+  compatibility; only two later distinct compatible NORMAL trajectories open
+  handover. The latest complete Planning stream is `185 NORMAL / 1
+  SPEED_FALLBACK / 81 UNKNOWN`; no Apollo control reaches CARLA before
+  handover, and all repeated pairs complete as comparable/evaluable Phase 1
+  `success` with zero collision/lane invasion and no invalid reason. Python
+  compile, `31` overlay tests, and the full suite (`2364 passed`) support the
+  current code state.
+- Cross-scenario cut-in repeat
+  `runs/phase1_online_pairs/cycle_inf_baguang_cut_in_role_preroll_repeat_20260716`
+  closes two runtime portability defects hidden by the equal-speed lead case.
+  Setup control/readiness now preserves the authored ego/target speeds
+  `11.11/9.72m/s` and honors the cut-in spawn's default
+  `center_to_center=10m` contract while recording bumper gap separately. A red
+  regression also caught and corrected a handover artifact that mislabeled
+  the center gap as `bumper_gap_m`. Python compile, `40` runtime tests, `71`
+  compiler/schema/dispatch tests, and the full suite (`2365 passed`) support
+  the corrected shared runtime.
+- In the clean repeat, Routing response at sim `46.365763s` and the first
+  `111`-point NORMAL trajectory at `46.565763s` precede the strict
+  `apollo_planning_ready` gate at `46.715763s`. Both actors are observed at
+  `0m/s` immediately before gate-time materialization; pre-gate planar
+  displacement is `0m` for ego and about `0.00017m` for the target. Freshly
+  spawned actors do show an earlier vertical-settling speed-norm transient,
+  which is recorded rather than relabeled as perfect zero-velocity startup.
+  The handover marker follows at `47.065763s` with about `10.813/9.376m/s`, a
+  `9.522m` center gap, and a `4.630m` bumper gap. Official Apollo ownership
+  and scenario time start together at `47.165763s`, only `0.45s` after the
+  gate; no Apollo control transmission precedes the handover marker.
+- Both repeat rows are completed/evaluable Phase 1 `success`, comparison is
+  `comparable/apollo_vs_planning_control_evaluable`, invalid reasons are
+  empty, and collision/lane-invasion counts are zero. The cut-in actor
+  contract passes with a `3.481m` lateral shift and no teleport; all `579`
+  Apollo v-t-gap rows are valid, with bumper gap about `4.494m` initially,
+  `2.131m` minimum, and `19.215m` finally. The preceding same-profile sample
+  independently reproduces the behavior result with a `0.60s` gate-to-formal
+  delay, but its pre-fix handover gap label is not authoritative.
+- This does not promote the profile or prove Apollo natural driving. Complete
+  repeat Planning is `270 NORMAL / 15 SPEED_FALLBACK / 82 UNKNOWN`; every
+  fallback is in formal time from about `+1.20s` to `+3.40s`, overlapping the
+  minimum-gap interval near `+2.15s`. The strict gate accepts only NORMAL, but
+  the formal cut-in fallback cluster is a remaining Planning diagnostic
+  boundary.
+- The fallback task chain is now attributed. All `15` formal baseline rows
+  keep `4` reference lines, `1` Routing road, `1` segment, `LANE_FOLLOW`, and
+  source-fresh GT, while each lacks a successful `PIECEWISE_JERK_SPEED` graph.
+  Apollo 10 source records that graph only after successful optimization;
+  failure clears speed data and the native fallback task sets
+  `SPEED_FALLBACK`. The cluster follows the target's lateral ingress and
+  minimum-gap interval; later FOLLOW boundaries begin at `t=0` with negative
+  longitudinal clearance, so the current nonzero ego state cannot immediately
+  satisfy the ST speed bounds.
+- Matched negative A/B
+  `runs/phase1_online_pairs/cycle_inf_baguang_cut_in_current_state_prediction_ab_20260716`
+  switches only the relevant Apollo Prediction semantics to native
+  `COST_EVALUATOR + MOVE_SEQUENCE_PREDICTOR` under a default-off profile.
+  Apollo logs `243` COST target rows; selected `+1s/+3s` target speeds stay
+  about `9.52-9.69m/s` with a `0.10m/s` maximum adjacent change, eliminating
+  the Jointly baseline's `7.47m/s` jump. Formal fallback nevertheless changes
+  from `15` to `17` rows (`259 NORMAL / 17 SPEED_FALLBACK`) rather than
+  disappearing. The smoother Prediction is therefore not a fix and the
+  candidate is not promoted.
+- The A/B retains the strict stationary boundary: Routing and a fresh
+  `111`-point NORMAL trajectory precede the gate, both pre-materialization
+  speeds are `0m/s`, and official Apollo/scenario time starts `0.55s` after
+  the gate with zero control transmissions before handover. Both backend rows
+  are completed/evaluable Phase 1 `success`, comparison is
+  `comparable/apollo_vs_planning_control_evaluable`, invalid and safety-event
+  counts are zero, actor lateral shift is `3.481m` with no teleport, and all
+  `578` v-t-gap rows pass with a `3.590m` minimum bumper gap. Related targeted
+  tests are `94 passed`; the full suite is `2366 passed`.
+- Matched steering-domain A/B
+  `runs/phase1_online_pairs/cycle_inf_baguang_cut_in_legacy_steering_ab_20260716`
+  confirms that the strict short handover does not depend on physical mapping,
+  but the accepted cut-in behavior does. The online resolved backend configs
+  differ only at `actuator_mapping_mode: physical -> legacy`; `steer_scale=1.0`,
+  longitudinal legacy mapping, source-fresh/coherent GT, strict fallback
+  rejection, target-ready handover, and disabled guards are unchanged.
+  Routing count `1` plus a fresh `111`-point NORMAL trajectory opens stationary
+  materialization at sim `46.885958s`; handover follows after `0.55s` on
+  `seq=88 NORMAL / 116 points`, and official Apollo/scenario time follows after
+  `0.65s`. Control tx remains zero before handover.
+- Both dispatches and postprocess complete, invalid rows remain empty, and the
+  comparison is `comparable/apollo_vs_planning_control_evaluable`.
+  PlanningControl succeeds; Apollo is a valid behavior
+  `failed/lane_invasion` row rather than a setup failure. It crosses a Broken
+  marking at formal `+19.80s`, with zero collision, CTE about `-0.445m`,
+  heading error about `-0.228rad`, and a confirmed footprint intersection.
+  The actor contract still passes with about `3.528m` lateral shift and no
+  teleport.
+- Over the matched first `19.8s`, legacy CTE p95/max is about
+  `0.265/0.560m` versus `0.085/0.086m` for the clean physical repeat;
+  heading-error p95/max is about `0.152/0.230rad` versus
+  `0.0054/0.0101rad`. Legacy first exceeds `0.1m` CTE at `+8.15s` and `0.1`
+  raw steer at `+12.85s`; its four PATH_FALLBACK rows begin later at
+  `+13.80s`. Mapped-to-applied steering remains consistent through the
+  departure. The two same-profile physical runs both finish with zero safety
+  events, supporting a bidirectional steering-domain dependency rather than a
+  readiness or dropped-actuation explanation.
+- This A/B does not promote physical mapping. The new legacy profile is
+  default-off, the active five-P0 matrix and Town01 profiles are unchanged,
+  `109` related tests pass, and the full suite is `2367 passed`. Portable
+  calibration identity plus Baguang/Town01 no-regression remain required;
+  neither candidate supports an Apollo natural-driving claim.
+- Lowering Apollo's longitudinal replan threshold to `0.5m` is negative A/B
+  evidence: it triggers replanning by about `0.55s` but does not shorten the
+  roughly `3.55s` handover, and the Apollo row later has an evaluable lane
+  invasion. That candidate must not be promoted. The tolerance result also
+  remains quarantined pending cross-scenario regression. It is not
+  Apollo `0 -> 70kph` evidence, and the final Apollo gap of about `41.57m`
+  prevents a representative-following or natural-driving claim.
+- The latest repeat also online-verifies Apollo managed-config cleanup. Before
+  the fix, normal `stop()` restored only the Control binary overlay and left
+  Prediction, Planning, Control, flagfile, and vehicle-parameter config links
+  pointed into `conf_overlay`. `CyberRTBackend` now restores only symlinks that
+  resolve inside its managed overlay root both at stop and defensively at the
+  next start. The lifecycle pair restores seven backed-up files, removes one
+  originally absent target, records zero restore errors, and leaves every
+  post-run file hash or missing state identical to the pre-run baseline.
+- Native current-state Prediction A/B
+  `runs/phase1_online_pairs/cycle_inf_baguang_initial_state_gate_current_state_prediction_ab_20260716`
+  proves that Apollo's own `COST_EVALUATOR + MOVE_SEQUENCE_PREDICTOR` path can
+  remove the learned-evaluator fresh-history speed collapse without fabricating
+  target history. The first visible lead is measured at `18.986m/s`, and its
+  first selected Prediction trajectory remains `18.986m/s` at `+1s`, versus
+  about `0.132m/s` for Jointly and `0.027m/s` for VectorNet. The managed
+  overlay is default-off and rewrites only `VEHICLE/ON_LANE/CAUTION`; Apollo
+  logs `218 COST_EVALUATOR` target rows. Python compile, `81` related tests,
+  and the full suite (`2349 passed`) succeed.
+- This is a partial diagnostic result, not a promoted fix. The strict gate
+  passes at sim `11.503s` with Routing success, a `111`-point NORMAL
+  trajectory, no fallback, and ego/lead speeds below `2e-6m/s`. Target
+  activation follows at `11.553s`, but formal Apollo ownership does not begin
+  until `15.553s`: the setup pre-roll still controls both ego and lead for
+  about `4.00s / 69.60m`. This is shorter than the matched Jointly sample
+  (`4.45s / 77.44m`) and VectorNet sample (`4.80s / 84.29m`), but it confirms
+  the user's concern that the present compatibility handover remains late.
+  The current runtime must therefore not be described as Apollo owning ego
+  from process start.
+- The Planning transition is not clean enough for promotion. The first
+  post-activation message is a 62-point SPEED_FALLBACK with about
+  `56.96m/s` current and `52.96m/s` `+1s` speed after a backward-time
+  trajectory-stitcher replan; Piecewise Jerk fallback is primal-infeasible.
+  The complete stream is `209 NORMAL / 7 SPEED_FALLBACK / 82 UNKNOWN`, and
+  formal time still contains `172 NORMAL / 2 SPEED_FALLBACK`. Nevertheless,
+  both rows are completed/evaluable/comparable, invalid count is zero, both
+  Phase 1 statuses are `success`, collision/lane-invasion counts are zero, and
+  all `361` Apollo v-t-gap rows are valid (`18.25m` minimum, `34.41m` final).
+  This closes learned Prediction history as the sole blocker and moves the
+  next investigation to gate-time velocity discontinuity, trajectory
+  stitching, and Piecewise Jerk constraints; the gate remains strict and no
+  natural-driving claim is allowed.
+- Native Prediction evaluator A/B
+  `runs/phase1_online_pairs/cycle_inf_baguang_initial_state_gate_noninteractive_prediction_ab_v2_20260716`
+  falsifies interactive-tag assignment as the late-takeover root cause. A
+  default-off managed `prediction.conf` overlay sets Apollo's own
+  `enable_interactive_tag=false`; the recorded module-start script proves the
+  flag was active. Target processing changes from `220`
+  `JOINTLY_PREDICTION_PLANNING_EVALUATOR` rows in the initial-state-gate
+  baseline to `221 VECTORNET_EVALUATOR` rows, but the first real `18.97m/s`
+  lead still has only about `0.027m/s` predicted speed at `+1s`. Formal Apollo
+  ownership becomes later, not earlier: about `4.80s / 84.29m` after target
+  activation versus about `4.45s / 77.44m` in the matched gate-only sample.
+  The accepted v2 pair is completed/evaluable/comparable, both rows are Phase
+  1 `success`, all `175` formal Planning rows are NORMAL, and collision/lane
+  invasion counts are zero. This is valid negative diagnostic evidence, not a
+  promoted fix or natural-driving claim.
+- Apollo 10 source explains the shared result: both Jointly and VectorNet
+  evaluators allocate a 20-position obstacle-history input initialized with
+  zeros and fill only history that actually exists. Merely changing evaluator
+  selection cannot supply a newly visible target's missing motion history.
+  The next candidate must preserve real actor identity/kinematics and test a
+  truthful fresh-object fallback or startup lifecycle; the strict non-fallback
+  Planning gate stays unchanged. Python compile, `74` related tests, and the
+  full suite (`2342 passed`) succeed.
+- The first noninteractive A/B orchestration artifact without the v2 suffix is
+  setup-invalid: its profile filename omitted the required
+  `extended_opendrive` dispatch marker, so PlanningControl ran but Apollo had
+  `missing_command`. It is not backend behavior evidence. The renamed profile
+  has a launch-plan regression test and the v2 pair is the only accepted A/B.
+- The candidate-only initial-state obstacle gate is online-materialized in
+  `runs/phase1_online_pairs/cycle_inf_baguang_initial_state_obstacle_gate_20260716`.
+  It publishes the real lead only after authored speed/gap readiness, and the
+  pair remains completed/evaluable/comparable with zero safety events. It does
+  not make Apollo takeover earlier: materialization-to-formal ownership is
+  about `4.50s / 78.39m`. The first real `18.97m/s` target is predicted at
+  only about `0.132m/s` one second ahead, isolating fresh-target Prediction
+  startup as the current wait source rather than old stationary history.
+- A per-tick velocity-hold diagnostic shortened compatible Planning to about
+  `2.40s / 46.41m` but crossed `SolidSolid` before formal time because setup
+  still owned ego with zero steer. That Apollo row is invalid setup evidence,
+  not a behavior loss; the velocity-hold implementation was removed. Apollo
+  Prediction process-reset attempts were likewise rejected after restart
+  failure or a roughly `13.9s` Planning-output outage. The strict NORMAL gate
+  remains unchanged.
+
+- Zero-speed early-handover pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_planning_ready_early_handover_obstacle_source_time_20260716`
+  separates ego ownership from official scenario start. The opt-in
+  `planning_ready` ownership mode hands the stationary ego to Apollo as soon
+  as Routing and a fresh multi-point NORMAL trajectory are present; the scene
+  then controls only the lead vehicle while the formal timer continues to
+  wait for the declared speed/gap condition. Online, handover occurs at sim
+  `29.581s` with ego/lead both at `0m/s`, a `111`-point NORMAL trajectory, and
+  a successful route. Apollo's first applied control follows at `29.681s`.
+  All `600` setup trace rows control only `lead_vehicle`; none controls ego.
+  This proves that the new boundary does not defer Apollo ownership until
+  `70kph`.
+- The same candidate preserves the ROS2 object snapshot's source time instead
+  of relabeling its older position with the newer Localization time. Online,
+  position-derived versus reported lead-speed residual improves from mean /
+  p95 / max about `1.188 / 5.087 / 12.965m/s` in the matched localization-time
+  sample to `0.025 / 0.083 / 0.357m/s`; residuals above `2m/s` fall from `77`
+  to `0`. Source age at Localization is bounded at about `0.10s`. This is an
+  online-proven input-contract correction in the quarantined Baguang
+  candidate, not a default-profile promotion. Python compile, two exact
+  tests, `111` related tests, and the carla16 full suite (`2322 passed`)
+  succeed.
+- The pair does not complete formal Apollo playback. After the `30s` setup
+  window, ego/lead are about `15.29/15.74m/s` with `27.09m` gap, so the formal
+  timer never starts. Apollo is correctly classified
+  `invalid/setup_failed`, non-evaluable, and not a backend loss;
+  PlanningControl succeeds. There are no collisions or lane invasions, and
+  the setup trace observes NORMAL Planning throughout, but Apollo Prediction's
+  three-second lead-speed projection still has large oscillations. The next
+  blocker is Prediction obstacle history/acceleration semantics, not a late
+  control handover. This sample does not support an Apollo natural-driving
+  claim.
+- Source-fresh Prediction-history follow-up
+  `runs/phase1_online_pairs/cycle_inf_baguang_prediction_source_fresh_materialized_20260716`
+  isolates the bridge cadence defect behind most of that oscillation. Apollo's
+  jointly prediction/planning evaluator consumes adjacent obstacle positions
+  from a fixed history without receiving the corresponding time deltas. The
+  previous bridge also applied its own `10Hz` simulation-time rate gate to an
+  already `10Hz` ROS2 objects stream, producing repeated timestamps and
+  `0.2s` holes. The candidate-only `obstacle_publish_policy=source_fresh`
+  instead publishes every distinct source timestamp observed by the bridge
+  once. The default remains `rate_limited`; stable Town01 profiles are
+  unchanged.
+- The first attempted source-fresh pair
+  `cycle_inf_baguang_prediction_source_fresh_20260716` was not an A/B result:
+  its typed config requested `source_fresh`, but the transition and adapter
+  materialization paths omitted the field and the effective bridge remained
+  `rate_limited`. Both paths now preserve `obstacle_time_source` and
+  `obstacle_publish_policy`. Python compile, four exact tests, `171` related
+  tests, and the full suite (`2323 passed`) succeed.
+- In the materialized online pair, effective bridge artifacts record
+  `source_fresh`; `385` ROS2 objects JSON frames yield `384` bridge inputs and
+  `383` obstacle publications. Consecutive Prediction obstacle stamps improve
+  from `315 x 0.1s / 34 x 0.2s / 7 duplicates` in the immediately preceding
+  rate-limited sample to `381 x 0.1s / 1 x 0.2s / 0 duplicates`. Apollo logs
+  contain no invalid/older obstacle timestamp error. Three-second predicted
+  speed minus current obstacle speed improves from mean absolute / p95 about
+  `1.991 / 7.673m/s` with `34` samples above `5m/s` to
+  `0.827 / 1.924m/s` with `2` above `5m/s`. Both remaining outliers follow the
+  sole `0.2s` gap.
+- This cadence repair still does not make the row evaluable. Routing succeeds
+  at sim `29.420s`, a `111`-point NORMAL trajectory appears at `29.670s`, the
+  stationary handover opens at `29.770s`, and Apollo control starts about
+  `0.10s` later. The `600` setup rows control only the lead actor, but after
+  `30s` ego/lead are about `14.72/16.35m/s` and the gap is `26.53m`, outside
+  the declared `20+/-1m` setup condition. Formal time never starts; Apollo is
+  `invalid/setup_failed`, non-evaluable, and not a backend loss.
+- Authored-initial-state follow-up
+  `runs/phase1_online_pairs/cycle_inf_baguang_authored_initial_speed_gate_20260716`
+  closes that route-budget blocker without treating scene acceleration as
+  Apollo behavior. The canonical case declares ego and lead initial speed as
+  `19.44m/s`; the prior zero-speed setup consumed about `304m` even though the
+  `398.75m` route must retain about `287.5m` for the authored 18-second lead
+  profile. A default-off runtime option now performs one one-shot assignment
+  of the authored initial velocities only after the strict
+  `apollo_planning_ready` gate. It then retains the existing target-ready,
+  speed-compatible replan plus distinct-NORMAL confirmation before allowing
+  Apollo Control or formal scenario time. This is setup materialization, not
+  an Apollo `0 -> 70kph` claim.
+- Online, Apollo's real RoutingResponse succeeds at sim `29.361s`, the first
+  `111`-point NORMAL trajectory appears at `29.611s`, and the materialization
+  gate opens at `29.711s`. Ego position is unchanged before the gate and lead
+  position varies by less than `1mm`; both gate-side observed speeds are
+  `0m/s`. The first post-gate setup observation is at `29.761s`. Setup reaches
+  a compatible `seq=120` NORMAL replan plus `seq=121` NORMAL confirmation at
+  `33.711s`; Apollo's first published control and formal scene start follow at
+  `33.811s`. Setup therefore uses `4.10s / 70.58m`, versus the prior
+  `30s / about 304m` timeout. The handover marker records zero pre-handover
+  Apollo control publications, ego/lead about `19.50/19.50m/s`, and a
+  `20.005m` gap.
+- The atomic velocity change causes `10` SPEED_FALLBACK messages during setup,
+  but none opens the handover: the setup window contains `31 NORMAL / 10
+  SPEED_FALLBACK`, while all `179` formal-window Planning messages are NORMAL.
+  The complete lead profile finishes at `18.00s`; the actor contract passes,
+  initial-state materialization passes with about `0.016m/s` error, both rows
+  are completed/evaluable, and comparison is `comparable`. PlanningControl and
+  Apollo are both labeled Phase 1 `success`, with zero collision and lane
+  invasion. Python compile, `git diff --check`, four exact tests, `103`
+  related tests, and the full suite (`2326 passed`) succeed.
+- This is not representative longitudinal success or an Apollo
+  natural-driving claim. Apollo's formal bumper gap grows from about `20.01m`
+  to `45.15m`; final ego/lead speeds are about `10.70/19.18m/s`, and Control
+  health is `warn`. The option remains candidate-only, does not change the
+  stable Town01 profiles, does not default physical mapping, and does not tune
+  `steer_scale`. The next runtime blocker is reproducible post-handover
+  longitudinal fidelity and candidate portability, not readiness or route
+  budget.
+- Destination-rule A/B pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_destination_rule_ab_20260716`
+  disproves the initial hypothesis that Planning's late `stop by DEST`
+  decision causes the weak recovery. The diagnostic candidate removes only
+  `DESTINATION`; the other eight traffic rules remain present. Both rows are
+  completed/evaluable, comparison is `comparable`, and Apollo completes the
+  full actor profile with zero collision/lane invasion. Its formal Planning
+  window is `180 NORMAL / 0 fallback`, with no main stop decision, but the
+  bumper gap still grows from about `20.01m` to `45.81m` and final ego/lead
+  speeds remain about `10.96/19.18m/s`. The rule crop is therefore rejected as
+  a fix or promotion candidate. Three exact tests, `76` related tests, and the
+  full suite (`2329 passed`) succeed.
+- The A/B trace confirms that the setup ownership interval is materially too
+  long for the available Baguang road budget. The gate opens at sim
+  `29.709s`, while Apollo Control and formal time start at `33.959s`; during
+  those `4.25s`, lead advances about `74.48m`. At formal `t=14.7s`, Apollo
+  Prediction first clamps the lead trajectory at the Baguang lane endpoint
+  near `x=-104.977m`. At `t=18s`, the lead is already near `x=-85.530m` and
+  Prediction's nominal `5.9s` future covers only about `19.45m` before that
+  same endpoint, rather than the roughly `113m` implied by current speed.
+  Planning consequently follows an obstacle predicted to stop at the map
+  boundary even though the published current lead velocity is correct.
+- Shortening setup is necessary but not sufficient: even with zero setup
+  travel, the authored 18-second profile plus the high-speed Prediction
+  horizon exceeds the remaining straight by about `29m`. With the current
+  lifecycle, the combined deficit is about `104m`; a clean map-level candidate
+  should extend both the CARLA and Apollo Baguang lane/route by at least
+  `110-120m` before repeating the pair. An alternative is an explicit,
+  backend-symmetric ScenarioCase redesign that declares the initial cruise as
+  setup and starts scoring at the dynamic stimulus. Letting the scene own ego
+  for part of the existing formal case is useful only as assisted diagnostic
+  evidence; it cannot support full Apollo-ownership or natural-driving
+  evidence.
+- The isolated matched-map candidate has now been exercised online. CARLA
+  loads a generated straight extended by `120m` at both ends, while Apollo
+  loads a separate `OpenDriveMap` with `125m` driving-lane extensions. The
+  first attempt serialized each extension as one long segment; the bridge's
+  trusted parser correctly rejected segments over `25m`, snapped Routing
+  start `119.664m` forward, and produced `898/898` empty Planning messages.
+  That Apollo row is invalid setup evidence, not a behavior loss.
+- The HDMap converter now samples only the new extension at no more than
+  `20m` spacing. Python compile, `14` focused tests, and the full suite
+  (`2335 passed`) succeed. In
+  `runs/phase1_online_pairs/cycle_inf_baguang_extended_opendrive_densified_hdmap_20260716`,
+  Routing succeeds at sim `10.840s` with start-projection error about
+  `3.9e-7m`; a `111`-point NORMAL trajectory follows at `11.040s`. Both
+  actors stay stationary until after that strict gate. The pair is
+  completed/evaluable/comparable, both Phase 1 rows are `success`, the full
+  actor profile completes, and collision/lane-invasion counts are zero.
+- All `177` formal Apollo Planning messages are NORMAL. The final lead is near
+  `x=164.27m`, Prediction carries it through a full `5.9s` horizon to about
+  `x=263.93m`, and the lane continues to about `x=424.70m`; the finite-map
+  clamp is absent. Apollo's valid bumper gap has minimum/final about
+  `17.42/40.03m`, with final ego/lead speeds about `15.10/19.18m/s`.
+- This does not remove the ownership concern. Formal time/Apollo handover is
+  at `15.340s`, about `4.3s` after the first NORMAL trajectory; ego and lead
+  each travel about `72.5m` while the setup layer establishes the authored
+  `19.44m/s` initial condition and waits for a compatible replan. The current
+  case therefore validates a `70kph` initial-state dynamic event, not Apollo
+  acceleration from rest. If `0 -> 70kph` is a required measured behavior,
+  it needs a separate backend-symmetric ScenarioCase with formal initial speed
+  zero and Apollo ownership from its first valid Planning handover.
+
+- Replan-confirmed handover pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_replan_confirmed_handover_20260716`
+  tests whether the setup controller was retaining ego ownership longer than
+  needed. The quarantined candidate replaces the arbitrary ten-distinct-
+  message streak with a compatible fresh NORMAL replan plus one subsequent
+  compatible distinct NORMAL message. Fallback, stale, short, and
+  speed-incompatible trajectories still block or reset the gate. The option is
+  default-off and does not change `steer_scale=1.0`, longitudinal mapping,
+  guards, or the stable Town01 profiles. Python compile, three exact tests,
+  `138` related tests, and the carla16 full suite (`2318 passed`) succeed.
+- Online, Routing succeeds at sim `29.290s` before setup motion begins at
+  `29.640s`. Target-speed readiness occurs after `7.65s`. A compatible replan
+  at `seq=168` is correctly rejected when `seq=169 SPEED_FALLBACK` follows;
+  the final ownership transfer is anchored by `seq=183 NORMAL / 111 points`
+  and confirmed by `seq=184 NORMAL / 119 points`. Handover occurs after
+  `11.40s`, versus `13.45s` in the coherent-time ten-message baseline, and
+  formal playback starts `0.20s` later. This removes about `2.05s / 40m` of
+  setup-owned travel. The marker records zero pre-handover Apollo control
+  publications, ego/lead about `19.53/19.55m/s`, gap about `19.93m`, and a
+  non-fallback speed-compatible trajectory.
+- Both dispatches complete, both rows are evaluable, comparison is
+  `comparable`, and there are no invalid rows. PlanningControl succeeds.
+  Apollo has zero collisions but is a valid behavior `failed/lane_invasion`:
+  after `4.85s` of formal playback, CTE has grown from about `+0.12m` to
+  `-0.824m` and heading error to about `-0.062rad`. The formal Planning window
+  contains `44 NORMAL / 1 SPEED_FALLBACK`; the shortened v-t-gap trace grows
+  from about `19.95m` to `26.54m` before termination. The candidate therefore
+  proves the replan-confirmed ownership boundary and shorter setup interval,
+  but it is not promoted and does not prove behavior improvement or Apollo
+  natural driving.
+
+- Coherent-time fresh-GT pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_fresh_gt_coherent_simtime_20260716`
+  isolates one variable from the 2026-07-15 fresh-GT candidate: Apollo mock
+  `/clock`, Localization/Chassis headers, and obstacle headers now all use
+  CARLA simulation time. The strict ten-distinct-message speed-compatible
+  NORMAL handover, steering-only physical-domain candidate, legacy
+  longitudinal mapping, disabled guards, and `steer_scale=1.0` are unchanged.
+  The two exact tests, `43` related tests, and the carla16 full suite
+  (`2317 passed`) succeed.
+- Online, a `398.75m` RoutingResponse at sim `30.222s` and the first
+  `111`-point NORMAL trajectory at `30.722s` precede setup-preroll motion at
+  `30.872s`. The actual runtime gate is `apollo_planning_ready`; official
+  actor playback and evaluation start only at `44.472s`, after handover.
+  Apollo publishes no CARLA control before ownership transfer. At handover,
+  `seq=204` is NORMAL with `137` points, ego/lead are about
+  `19.54/19.55m/s`, gap is about `19.96m`, and current/one-second planned
+  speeds are about `19.33/18.38m/s`.
+- Relative to the otherwise matched fresh-GT wall-time sample, coherent time
+  removes all five pre-roll `current time smaller than the previous
+  trajectory` replans, reduces the pre-roll Planning mix from `131 NORMAL / 9
+  SPEED_FALLBACK` to `117 NORMAL / 6 SPEED_FALLBACK`, and advances handover
+  from `15.60s / 229.43m` to `13.45s / 187.40m`. This is a real improvement,
+  but it still consumes about `47%` of the `398.75m` route before Apollo owns
+  ego. Eight pre-roll matched-point `lon_diff` replans remain because the
+  fixed setup controller holds measured speed near `19.5m/s` while stitched
+  NORMAL trajectories repeatedly decay toward roughly `12-15m/s`.
+- The pair is completed/evaluable/comparable with no invalid row;
+  PlanningControl succeeds. Apollo has zero collision/lane invasion and
+  formal Planning is `170 NORMAL / 2 SPEED_FALLBACK`, but remains
+  `degraded/large_final_gap`: final ego speed is about `2.95m/s` and final gap
+  about `122.02m`. Coherent time is therefore retained only as a quarantined
+  diagnostic candidate. It does not prove acceptable handover latency,
+  longitudinal behavior, candidate promotion, or Apollo natural driving.
+
+2026-07-15 targeted online evidence:
+
+- Fresh-GT pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_fresh_gt_candidate_20260715`
+  closes the upstream duplicate-timestamp blocker exposed by the guard-free
+  speed-handover sample. The inherited bridge template allowed cached GT state
+  republish between CARLA frames, producing `37` repeated Localization and
+  Chassis timestamps. A quarantined one-variable candidate changes only these
+  channels to `skip / once_per_new_sim_frame`; it does not change Planning,
+  Control, steering scale, longitudinal mapping, guards, or scenario ownership.
+- Online, runtime detects and skips `57` cached iterations and publishes
+  `749/749` fresh Localization/Chassis messages with zero duplicate
+  timestamps. Localization becomes non-blocking `warn`, channel cadence is
+  non-blocking, and Control health changes from
+  `fail/apollo_raw_command_oscillation` to `warn/control_health_warn` as
+  raw/mapped/applied throttle-brake switches decrease from `13` to `9`.
+  Routing and a fresh `137`-point NORMAL trajectory precede the same ten-message
+  speed-compatible handover at ego/lead about `19.55/19.55m/s`; zero Apollo
+  control publications occur before ownership transfer. Formal Planning is
+  `176 NORMAL / 0 fallback`.
+- The pair is completed/evaluable/comparable and both rows have zero collision
+  and lane invasion, but Apollo remains `degraded/large_final_gap`: final ego
+  speed is about `2.28m/s`, final gap about `154.00m`, and formal CTE p95/max
+  grows to about `0.526/0.529m`. The candidate therefore remains quarantined.
+  Here `claim_grade` means strict GT timestamp publication only; it is not an
+  Apollo natural-driving claim. The two exact tests, `41` related tests, and
+  the carla16 full suite (`2315 passed`) succeed.
+
+- The requested setup-owned acceleration model is now exercised as a strict
+  pre-roll contract: the scene player can accelerate ego and lead from rest to
+  about `70kph` while Apollo observes live inputs in shadow. Official scenario
+  time and backend evaluation start only after Routing succeeds and Apollo
+  presents ten distinct fresh NORMAL trajectories whose current and
+  one-second-lookahead speeds are compatible with measured ego speed. This
+  makes the initial-speed setup reproducible; it must not be reported as
+  Apollo naturally accelerating from zero.
+- Guard-free pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_handover_speed_physical_steering_guard_free_20260715`
+  keeps that speed-compatible handover and isolates the subsequent early lane
+  departure to the legacy bidirectional steering full-scale contract. It maps
+  steering output and measured feedback through the same `30deg` Apollo
+  front-wheel domain, while leaving longitudinal mapping legacy and
+  `steer_scale=1.0`. Every lateral guard is explicitly disabled and runtime
+  guard apply counts are zero.
+- Relative to the matched legacy speed-gate run, first-`2.7s` CTE p95/max
+  changes from about `0.440/0.656m` to `0.063/0.071m`, and heading-error
+  p95/max changes from about `0.151/0.164rad` to
+  `0.0079/0.0084rad`. The Apollo row completes all `18.0s` with zero collision
+  and lane invasion, but remains `degraded/large_final_gap`: ego slows from
+  about `19.29m/s` to `12.14m/s`, final gap reaches about `118.29m`, and formal
+  Planning contains `161 NORMAL / 4 SPEED_FALLBACK`. The local/ignored
+  calibration, one-scenario coverage, and unresolved longitudinal behavior
+  keep this profile quarantined. The final guard-free config passes `39`
+  focused tests and the carla16 full suite (`2313 passed`). Defaults and
+  Town01 lateral profiles are unchanged; this is not an Apollo
+  natural-driving claim.
+
+- Pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_handover_speed_compatibility_20260715`
+  closes the next rolling-handover gap. The earlier gate accepted a fresh
+  NORMAL label without proving that its speed profile matched the physically
+  pre-rolled ego, and tick-based holds could count the same Planning message
+  more than once.
+- Planning diagnostics now expose the first nonexpired speed and nearest
+  one-second lookahead speed. A default-off setup gate can compare both with
+  measured ego speed and count distinct compatible Planning sequences. The
+  quarantined candidate uses `1.0m/s` current tolerance, `2.0m/s` lookahead
+  tolerance, and ten distinct messages. It never edits Apollo output and is
+  not a behavior assist. Python compile, `122` targeted tests, and the carla16
+  full suite (`2311 passed`) succeed.
+- Online, the `398.75m` RoutingResponse and a 111-point NORMAL Planning
+  trajectory precede setup-preroll ego/lead motion. Handover waits until
+  `seq=191 NORMAL` with `141` points: ego/lead are about
+  `19.54/19.55m/s`, gap is `19.94m`, and current/one-second planned speeds are
+  about `19.16/19.10m/s`. Formal scene time starts after the first Apollo
+  control publication.
+- The pair is completed/evaluable/comparable. PlanningControlBackend succeeds;
+  Apollo is a valid `failed/lane_invasion` row with zero collision and no
+  invalid reasons. Its 2.7-second formal window contains `21 NORMAL` and two
+  PATH_FALLBACK Planning messages, with no SPEED_FALLBACK. This proves the
+  setup handover, not the full scenario or Apollo natural driving; the active
+  five-P0 matrix and default mapping remain unchanged.
+
+- Pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_latest_planning_snapshot_gate_20260715`
+  closes a cross-process readiness-materialization race. The fixed-scene hook
+  previously read `cyber_bridge_stats.json`, which is flushed every `0.1s`;
+  in the first bidirectional-steering sample its handover marker still
+  reported `seq=152 NORMAL` after Planning had emitted `seq=153/154
+  SPEED_FALLBACK`. The bridge's exact non-fallback publish gate prevented
+  those fallback Control inputs from reaching CARLA, but the scene marker was
+  not a truthful snapshot of the latest Planning callback.
+- The bridge now includes `last_msg_wall_time_sec` in the atomically replaced
+  per-message `planning_topic_debug_summary.json`. The scene gate retains
+  Routing and cumulative counters from bridge stats but selects the
+  per-message Planning snapshot when its receipt timestamp is newer. Targeted
+  tests cover stale-stats NORMAL versus newer fallback and subsequent newer
+  NORMAL transitions; `101` related tests and the full `2307`-test suite pass.
+- Online, RoutingResponse arrives at sim time about `29.358s`, before physical
+  pre-roll begins around `29.758s`. At the handover marker, stats still report
+  `seq=154`, while the selected per-message snapshot is `0.115s` newer and
+  reports `seq=155 NORMAL`, `137` points, and message age about `0.095s`.
+  The bridge's first publish opening then exact-matches `seq=156 NORMAL`;
+  `control_tx_count_before_handover=0`, and official scenario time begins
+  `0.20s` after the marker.
+- Both backend rows are completed, evaluable, Phase 1 `success`, and the pair
+  is comparable with no invalid rows. Apollo has zero collision/lane invasion,
+  all `163` formal Planning messages are NORMAL, all `361` v-t-gap rows use
+  normal bumper projection, and there are three `lon_diff` replans. This
+  validates latest-message readiness materialization, not longitudinal
+  recovery: just before handover Apollo Control already requests about `41%`
+  brake and `-5.39m/s2` from a NORMAL trajectory whose speed reference is
+  about `15.29m/s` while ego is about `19.04m/s`; the first formal replan at
+  `+0.25s` reports `lon_diff=-2.67585m`. Ego finishes around `9.01m/s` versus
+  lead `19.18m/s`, with gap about `49.74m`, and Control health remains `warn`.
+  No default physical mapping or Apollo natural-driving claim follows.
+
+- Pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_bidirectional_steering_20260715`
+  isolates the first stitched-run lateral failure to a bidirectional steering
+  full-scale mismatch. Apollo Chassis/Control interprets steering percentage
+  in the configured Apollo front-wheel range (about `30deg` here), while the
+  legacy bridge path applied the normalized Apollo command directly to the
+  CARLA Lincoln's larger actuator range and normalized measured CARLA wheel
+  angle back by that CARLA range. In the failed legacy window, measured
+  feedback therefore had absolute p95 about `26.5%` where the same wheel
+  angles represent about `61.7%` in Apollo's configured domain, while the
+  output-side legacy command had about `2.2x` the calibrated steering
+  authority.
+- The isolated candidate explicitly enables physical mapping for steering
+  only, maps measured wheel-angle feedback through the same `30deg` Apollo
+  domain, keeps longitudinal throttle/brake on the inherited legacy path,
+  leaves `steer_scale=1.0`, and preserves strict readiness, exact NORMAL
+  handover, coherent sim time, and trajectory stitching. Runtime artifacts
+  materialize `actuator_mapping_mode=physical`, `map_steering=true`,
+  `map_steering_feedback=true`, no physical fallback, and
+  `steering_feedback_normalization=apollo_front_wheel_angle_percent`.
+- Relative to the legacy stitcher pair's first `4.4s`, cross-track-error
+  p95/max changes from about `0.612/0.657m` to `0.059/0.063m`, and heading
+  error p95/max changes from about `0.192/0.222rad` to
+  `0.0081/0.0091rad`. The new pair completes the full 18-second actor profile
+  with zero collision and lane invasion; both rows are completed, evaluable,
+  and Phase 1 `success`, and the comparison is `comparable /
+  apollo_vs_planning_control_evaluable`. Formal Planning has `163 NORMAL`, no
+  fallback trajectory, `161` preserved trajectories, and two longitudinal
+  difference replans.
+- This closes the early stitched lateral-regression attribution for this one
+  Baguang sample, not candidate promotion. Full-window maximum CTE still
+  reaches about `0.667m`, Control health remains `warn`, final ego speed is
+  about `7.92m/s` versus lead `19.16m/s`, and final bumper gap is about
+  `48.29m`. `chassis_gt_contract` is `insufficient_data` because runtime
+  Chassis samples are missing from the claim-grade contract. The calibration
+  file is local/ignored, and Baguang/Town01 cross-scenario no-regression
+  evidence is required. The active P0 profile and five-P0 matrix remain
+  unchanged; no default physical mapping or Apollo natural-driving claim
+  follows.
+- Same-config repeat
+  `runs/phase1_online_pairs/cycle_inf_baguang_bidirectional_steering_repeat_20260715`
+  confirms the early steering-domain effect but does not reproduce the first
+  pair's Phase 1 `success` label. Handover again uses a fresh 134-point NORMAL
+  trajectory with ego/lead about `19.11/19.10m/s`, gap about `19.82m`, and
+  zero pre-handover Apollo control publications. The first `4.4s` CTE p95/max
+  is about `0.086/0.087m` and heading-error p95/max is about
+  `0.0074/0.0077rad`; the full formal window has CTE p95/max about
+  `0.134/0.587m`, with zero collision and lane invasion.
+- The repeat remains completed, evaluable, and comparable, but Apollo is
+  `degraded/degraded_gap_method`: `6/361` gap rows become lateral-degraded as
+  the large longitudinal separation combines with late heading error. Final
+  ego/lead speeds are about `8.74/19.18m/s` and final gap is about `53.45m`.
+  Formal Planning is still fallback-free (`162 NORMAL`), with `159`
+  non-replans and three `lon_diff` replans. The repeat therefore supports the
+  early bidirectional steering diagnosis while strengthening the quarantine:
+  stable Phase 1 status and post-handover longitudinal/trajectory continuity
+  are not yet reproducible.
+
+- Pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_trajectory_stitcher_20260715`
+  materializes a Baguang-only trajectory-stitching A/B while keeping
+  reference-line stitching disabled and preserving coherent time, the 0.1s
+  acceleration-feasibility constraint, legacy mapping, steering, and the
+  strict handover gate. The pair is completed, evaluable, and comparable;
+  PlanningControl succeeds, while Apollo is a valid `failed/lane_invasion`
+  behavior outcome rather than an invalid run.
+- The A/B confirms a longitudinal continuity mechanism. Over the first 4.4s,
+  the matched stitcher-off candidate has `38 NORMAL / 2 SPEED_FALLBACK` and
+  all 40 Planning messages replan because stitching is disabled; ego reaches
+  `2.92m/s`. With trajectory stitching enabled, the window has
+  `37 NORMAL / 1 PATH_FALLBACK`, 37 messages preserve stitching, ego bottoms
+  at `8.08m/s` near `+2.35s`, and recovers to about `10.97m/s` at `+4s`.
+- The candidate is not promotable. Apollo crosses a Broken marking at
+  `+4.40s`; the vehicle footprint intersects the marking, so the lane hard
+  gate is valid. Same-window maximum CTE grows from `0.138m` to `0.657m` and
+  heading error from `0.041rad` to `0.222rad`. The sole replan is triggered by
+  matched-point `lat_diff=-0.582932` and produces PATH_FALLBACK. Raw, mapped,
+  and applied steer are consistent, and Control's target remains on the
+  Planning path-candidate line. That evidence rules out dropped, guarded, or
+  sign-inverted actuation, but it did not rule out a bidirectional full-scale
+  mismatch; the steering-only A/B above supersedes the earlier mapping
+  attribution.
+
+- Pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_coherent_simtime_accel_feasibility_20260715`
+  validates the existing setup-only scene-to-Apollo handover with a narrowly
+  isolated localization-acceleration feasibility candidate. The scene player
+  physically accelerates ego and lead from rest to about `70kph` while Apollo
+  receives live inputs in shadow; the marker records ego/lead
+  `19.36/19.38m/s`, bumper gap about `19.82m`, a fresh 111-point NORMAL
+  trajectory, and zero Apollo control publications before atomic handover.
+  Official scenario time and backend evaluation begin only after handover.
+- The matched coherent-simtime baseline exposes negative projected Planning
+  replan states such as `v=-0.0088m/s, a=-8.80m/s2` and
+  `v=-0.784m/s, a=-7.88m/s2`. Apollo's 0.1-second forward projection can
+  therefore violate the Piecewise Jerk optimizer's nonnegative-speed bound.
+  The candidate preserves measured acceleration and adds only the existing
+  `nonnegative_speed_prediction_horizon_s=0.1` constraint; it does not change
+  control mapping, steering, PID, physical mapping, or the active P0 profile.
+- The run is completed, evaluable, and comparable with no collision or lane
+  invasion. Runtime stats materialize the candidate and record `23`
+  nonnegative-speed corrections. Post-handover Planning improves from the
+  matched baseline's `135 NORMAL / 20 SPEED_FALLBACK` to
+  `145 NORMAL / 11 SPEED_FALLBACK`.
+- This is not a behavior repair or promotion. Ego still falls from about
+  `19.38m/s` to `4.24m/s` by `+4s` and about `0.08m/s` by `+18s`; bumper gap
+  grows to about `248.64m`, so Apollo remains `degraded`. The candidate
+  Planning INFO artifact is only a bounded tail and cannot prove that all QP
+  infeasibility disappeared. Remaining work is the post-obstacle Planning
+  trajectory/source-control recovery chain, not setup ownership or bridge
+  actuation mapping.
+
+- Pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_coherent_simtime_materialized_v2_20260715`
+  proves Apollo mock clock can unify the Baguang runtime without the
+  obstacle-only mixed-clock shortcut. The LaunchPlan uses the explicit
+  coherent-simtime candidate; effective config sets Localization and obstacles
+  to CARLA sim time and publishes 643 increasing Cyber `/clock` messages.
+  Planning headers advance in that domain at a stable one-tick offset, and
+  nearest-by-sim obstacle-minus-Planning header delta has median `0s`.
+- The pair is completed, evaluable, and comparable. PlanningControl succeeds;
+  Apollo has zero collision/lane invasion and is `degraded`, not invalid.
+  Relative to the full-profile baseline, post-handover Planning changes from
+  `107 NORMAL / 40 SPEED_FALLBACK / 1 PATH_FALLBACK` to
+  `135 NORMAL / 20 SPEED_FALLBACK`, and applied throttle/brake switches fall
+  from `69` to `53`.
+- This is not a longitudinal pass. Ego still falls from about `19.39m/s` to
+  `3.20m/s` by `+4s` and about `0.08m/s` at `+18s`; gap grows to about
+  `248.94m`. The first post-start Planning message is SPEED_FALLBACK and later
+  NORMAL follow trajectories also request deceleration. The coherent-clock
+  profile therefore remains an isolated candidate pending repeat and
+  no-regression evidence.
+- The first attempted coherent-clock directory is excluded: runtime inspection
+  showed Baguang legacy dispatch silently replaced the selected YAML with the
+  base profile, so the process was stopped as config-not-materialized. The
+  backend now forwards explicit tracked
+  `phase1_baguang_apollo_dynamic_*.yaml` algorithm profiles while preserving
+  the registry/default fallback; the `v2` run proves that forwarding online.
+
+- Baguang Prediction input timing has a proven mixed-clock defect. In
+  `cycle_inf_baguang_full_profile_road_budget_20260715`, PerceptionObstacle
+  headers are CARLA sim time while Planning headers are Cyber epoch time;
+  nearest obstacle-minus-Planning header differences have median about
+  `-1784054524.61s`. Apollo 10's jointly prediction/planning evaluator uses
+  these timestamps to align obstacle history with the previous trajectory.
+- Pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_obstacle_header_alignment_materialized_20260715`
+  proves an obstacle-only Cyber-time header override is materialized while
+  localization/chassis retain the established `auto`/sim-time policy. Header
+  delta moves to median about `0.052s` (range about `[-0.099, 0.115]s`), and
+  the post-handover Planning window contains `32` NORMAL and `4`
+  PATH_FALLBACK messages with no SPEED_FALLBACK. The pair is still comparable
+  and evaluable, but Apollo has a real progressive lane invasion at scene time
+  `4.0s`; PlanningControl succeeds. This is a valid behavior regression, not
+  an invalid run or a longitudinal pass.
+- The bridge retains explicit obstacle-header time-source support with the
+  backward-compatible default `localization_time`. The Cyber-time override is
+  removed from the active P0 dynamic profile and isolated in
+  `phase1_baguang_apollo_dynamic_obstacle_cybertime_candidate.yaml`. Lane-event
+  evidence shows raw/mapped/applied steer consistency and a Control target on
+  the Planning path candidate, so the next cycle stays on coherent time-domain
+  and Planning/lateral feedback attribution; it must not tune `steer_scale`,
+  enable physical mapping, or weaken the hard lane gate.
+
+- Pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_full_profile_road_budget_20260715`
+  closes the road-budget/setup-invalid blocker exposed by the strict handover
+  sample below. The Apollo request uses a `390m` same-lane goal and the real
+  RoutingResponse covers `398.75m` on lane `0_0_2`, instead of ending near the
+  old `s=300m` scene stop.
+- The setup remains continuous and physical: no reset or teleport is used.
+  Two consecutive fresh NORMAL observations end the rolling pre-roll after
+  `7.80s`; the formal target trace starts near CARLA route `s=112.60m`, versus
+  `s=174.18m` in the previous sample. At handover ego/lead are
+  `19.28/19.29m/s`, gap is about `19.82m`, Planning is a fresh 111-point
+  NORMAL trajectory, and `control_tx_count_before_handover=0`.
+- The canonical `lead_decel_accel` stop condition is now the complete authored
+  `18s` profile rather than the incorrect intermediate `s=300m` road-end
+  assumption. Apollo's lead trace reaches `18.00s` and `s=397.42m`; both the
+  40kph deceleration target and the final 70kph restoration are observed.
+  PlanningControl also completes the same 18-second profile.
+- Both runtime rows are completed and evaluable, the comparison is
+  `comparable / apollo_vs_planning_control_evaluable`, and neither row records
+  a collision or lane invasion. Apollo is `degraded` only because 175/361
+  v-t-gap rows use the lateral-degraded longitudinal projection; it is no
+  longer invalid for incomplete actor playback.
+- This is lifecycle and comparison-surface success, not Apollo longitudinal
+  success. After handover Apollo rapidly brakes from about `19.43m/s` to near
+  zero in about four seconds, then oscillates between brake and throttle.
+  Planning contains `130` NORMAL, `100` SPEED_FALLBACK, `1` PATH_FALLBACK,
+  and `82` UNKNOWN rows; Planning logs contain 32 Piecewise Jerk speed-optimizer
+  failure lines and control health reports 69 applied throttle/brake switches.
+  The moving lead obstacle contract passes, so the next blocker is the
+  Planning speed-constraint/fallback to source-control oscillation chain, not
+  road budget or initial actor-state materialization.
+
+- Pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_exact_normal_gate_materialized_20260715`
+  closes the remaining runtime-materialization gap in the Baguang setup
+  lifecycle. The active bridge config and runtime stats both show that first
+  publication requires an exact Planning-sequence match and rejects
+  `SPEED_FALLBACK`, `PATH_FALLBACK`, and `UNKNOWN` at handover.
+- The observed Apollo routing response is at wall time about
+  `1784052937.509s`; the first eligible 111-point `NORMAL` trajectory follows
+  at about `1784052937.793s` / sim time `29.650s`. The first setup pre-roll
+  observation is later at sim time `29.850s`, and ego/lead first exceed
+  `0.1m/s` together at about `30.450s`. Thus routing and fresh NORMAL Planning
+  precede both actor motion and official scene timing.
+- The setup handover marker is written at sim time about `41.000s`, with ego
+  and lead at `19.53/19.55m/s`, bumper gap about `19.93m`, a fresh 111-point
+  NORMAL trajectory, and `control_tx_count_before_handover=0`. The bridge
+  suppresses an early unmatched Control event, then opens on exact-matched
+  sequence `189` with trajectory type `NORMAL`; formal scene time starts later
+  at about `41.200s`.
+- Both backend runtimes complete, Apollo has 134 valid v-t-gap rows, and
+  neither row records a collision or lane invasion. Raw runtime evidence closes
+  the readiness/ownership blocker. Before the speed-profile contract was
+  hardened, postprocess incorrectly labeled both rows evaluable and the pair
+  `comparable`; the corrected classification is described below. Apollo's raw
+  behavior remains poor: Planning contains `81` NORMAL,
+  `86` SPEED_FALLBACK, `1` PATH_FALLBACK, and `81` zero-point UNKNOWN
+  messages, and final bumper gap is about `95.99m` after ego stops.
+- The physical pre-roll still consumes formal-scene road budget. The Apollo
+  actor trace starts near route `s=174.18m` and reaches the `s=300m` stop
+  trigger after only `6.65s`, while lead target speed is still about
+  `16.00m/s`; the declared 70-to-40-to-70 profile has not completed. The
+  original analyzers nevertheless marked the interaction evaluable/comparable.
+  `scenario_actor_contract` now checks the last distinct speed-profile
+  transition and the declared deceleration/restoration targets. Reprocessing
+  the same online evidence keeps PlanningControl `success` because it completes
+  the last transition at `17.0s`, but classifies Apollo
+  `invalid/fixed_scene_failed`; the pair is now `partially_evaluable` with a
+  missing evaluable Apollo row. This is setup/evidence failure, not a backend
+  behavior loss. Targeted tests report `102 passed`; the full suite reports
+  `2297 passed`.
+
+2026-07-14 targeted online evidence:
+
+- Fresh five-P0 matrix
+  `runs/phase1_p0_matrix/cycle_inf_mainline_vehicle_param_map_speed_20260714`
+  reports `comparable_pair_count=5`, `invalid_pair_count=0`, and
+  `partially_evaluable_pair_count=0`. PlanningControlBackend is successful in
+  5/5 rows. Apollo is successful in `lane_keep_straight` and
+  `lane_keep_curve`, fails `follow_stop_static` with lane invasion, and fails
+  `lead_decel_accel` and `cut_in_simple` with collision. These are valid
+  behavior outcomes, not setup losses.
+- Targeted Town01 runs under
+  `runs/phase1_online_pairs/cycle_inf_mainline_vehicle_param_20260714` remain
+  bounded in the observed windows. `lane_keep_097` records about `188.13m`
+  route distance, lateral-error p95 about `0.247m`, heading-error p95 about
+  `0.0428rad`, and zero collision/lane invasion. The curve217 diagnostic
+  records about `148.84m`, lateral-error p95 about `0.155m`, heading-error p95
+  about `0.0127rad`, and zero collision/lane invasion. Localization,
+  reference-line, link-health, and claim-boundary warnings still prevent a
+  no-interference natural-driving claim.
+- Targeted Baguang dynamic pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_vehicle_param_20260714` exposes
+  an Apollo startup-lifecycle blocker rather than a comparison-platform
+  blocker. The scene starts lead/ego motion before Apollo has a normal
+  trajectory; Planning produces only two non-empty one-point
+  `SPEED_FALLBACK` trajectories out of 84 messages, followed by collision.
+  At that point the Planning-ready scene-start gate had only offline tests;
+  the follow-up evidence below supersedes that pending status.
+- Follow-up pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_planning_ready_stats_flush_20260714`
+  validates that lifecycle gate online. Lightweight bridge stats are now live
+  at one-second cadence for this dynamic profile. Routing succeeds at sim time
+  about `32.33s`, the first eligible 111-point `NORMAL` trajectory arrives at
+  about `32.83s`, and the fixed-scene phase starts later at about `33.43s`.
+  Apollo completes the storyboard with zero collision/lane invasion and the
+  pair is evaluable and comparable. This is lifecycle success, not complete
+  longitudinal behavior success: Apollo remains `degraded`, Planning still
+  contains fallback output, and bumper gap grows from about `20.01m` to
+  `225.93m`.
+- A matched follow-up pair,
+  `runs/phase1_online_pairs/cycle_inf_baguang_obstacle_yaw_units_20260714`,
+  corrects a GT input-contract error: `objects_gt_json` yaw is expressed in
+  degrees but was previously passed directly to Apollo's radian-valued
+  `PerceptionObstacle.theta`. The new run remains evaluable/comparable with
+  zero collision/lane invasion and preserves the Planning-ready gate. The
+  pronounced ego slowdown is delayed from about scene second `3` to `4`, and
+  final bumper gap improves from about `225.93m` to `214.08m`. Apollo still
+  approaches zero speed by about second `6`, retains fallback Planning, and
+  remains `degraded`; the unit correction is online-proven but is not a
+  longitudinal behavior fix.
+- A subsequent dynamics probe,
+  `runs/phase1_online_pairs/cycle_inf_baguang_vehicle_dynamics_probe_20260714`,
+  localizes the next startup-state discontinuity. The ego is moving at the
+  injected `19.44m/s` while CARLA still reports automatic gear `0`; at about
+  scene second `2.90`, gear changes to `1` and longitudinal acceleration drops
+  to about `-19.035m/s2` despite positive throttle, zero brake, no hand brake,
+  and near-zero steer. Path curvature and Planning speed-limit collapse follow
+  this event. This is stronger evidence than the rejected asynchronous manual
+  gear-handoff attempts and motivates physical setup acceleration from rest.
+- The v3 physical-pre-roll pair
+  `runs/phase1_online_pairs/cycle_inf_baguang_physical_preroll_handover_v3_20260714`
+  first demonstrated setup-only acceleration and separate official timing,
+  but its one-second stats refresh and lack of explicit Planning message-age
+  checking allowed a stale NORMAL snapshot to support the marker. It therefore
+  does not prove exact non-fallback first-control handover. The 2026-07-15 pair
+  above supersedes that lifecycle claim with explicit freshness and exact
+  sequence evidence. The v3 post-handover lane invasion and gap growth remain
+  diagnostic behavior evidence only.
 
 2026-07-11 targeted online evidence:
 
@@ -231,17 +2266,18 @@ Current P0 delivery and behavior blockers:
 
 - Runtime delivery for the five-P0 comparison surface is no longer the active
   blocker after the fresh online matrix
-  `runs/phase1_p0_matrix/phase1_p0_behavior_default_20260701_030213`. Its
+  `runs/phase1_p0_matrix/cycle_inf_mainline_vehicle_param_map_speed_20260714`.
+  Its
   top-level manifest reports `comparable_pair_count=5`,
   `invalid_pair_count=0`, and
   `comparison_target_status_counts={"apollo_vs_planning_control_evaluable": 5}`.
   PlanningControlBackend is `success` in all five rows. ApolloBackend is
-  evaluable but behavior-failed in all five rows: three Baguang rows fail with
-  `lane_invasion`, while the two Town01 route-only rows now use the
-  `apollo_cyberrt_town01_behavior_recovery` diagnostic profile and fail as
-  finalized `route_health_failed` samples instead of old Control-process
-  timeout samples. This upgrades the Phase 1 comparison-surface evidence, not
-  Apollo capability.
+  successful in the two Town01 route rows and behavior-failed in the three
+  Baguang rows: `follow_stop_static` fails with `lane_invasion`, while
+  `lead_decel_accel` and `cut_in_simple` fail with `collision`. The Town01
+  curve row remains diagnostic because its route is a terminal-turn candidate.
+  This upgrades Phase 1 comparison evidence and Apollo reference-runtime
+  coverage, not Apollo natural-driving capability.
 - Accepted Apollo P0 runs must continue to record clean assist evidence. Any
   run with `blocking_assists`, such as historical `legacy_followstop`, cannot
   support Apollo ego-ownership evidence.
@@ -270,15 +2306,15 @@ Current P0 delivery and behavior blockers:
   `python3 -m carla_testbed phase1 run-pair --scenario <case> --out <dir>`
   entry. Behavior failure is acceptable evidence when the run is evaluable;
   setup/config/artifact `invalid` is not.
-- The previous full five-P0 matrix
+- The earlier full five-P0 matrix
   `runs/phase1_p0_matrix/phase1_p0_auto_artifacts_20260625_153515` proved the
   automatic artifact-normalization path but still carried timeout-era Town01
-  Apollo rows. The current matrix
-  `runs/phase1_p0_matrix/phase1_p0_behavior_default_20260701_030213` replaces
-  that matrix-level status for Phase 1 delivery: it keeps all five pairs
-  comparable, preserves PlanningControlBackend success in all rows, and moves
-  both Town01 Apollo rows to finalized `route_health_failed` behavior failures.
-  This is still not Apollo behavior success.
+  Apollo rows. The 2026-07-01 matrix then moved those rows to evaluable
+  route-health failures. The current 2026-07-14 matrix supersedes both for
+  matrix-level status: it keeps all five pairs comparable, preserves
+  PlanningControlBackend success in all rows, and records Apollo success in
+  both Town01 route rows while retaining three explicit Baguang behavior
+  failures. This is still not a natural-driving claim.
 - Follow-up route-start alignment refresh on the current matrix now consumes
   `artifacts/startup_geometry_summary.json` instead of reusing runtime
   placeholder reports with

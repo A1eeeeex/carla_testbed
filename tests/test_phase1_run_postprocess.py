@@ -4,11 +4,65 @@ import csv
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import carla_testbed.analysis.phase1_postprocess as phase1_postprocess
 from carla_testbed.analysis.phase1_postprocess import run_phase1_postprocess
 from carla_testbed.scenario_player.compiler import compile_fixed_scene_template
 from carla_testbed.scenario_player.schema import load_fixed_scene_template
+
+
+def test_baguang_lane_event_postprocess_uses_bound_extended_opendrive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    xodr = tmp_path / "straight_road_for_baguang_extended.xodr"
+    xodr.write_text("<OpenDRIVE />\n", encoding="utf-8")
+    scenario = tmp_path / "scenario.yaml"
+    scenario.write_text(
+        "scenario_id: baguang_extended\n"
+        "map: OpenDriveMap\n"
+        "route_id: straight_road_for_baguang_extended\n"
+        "carla_world:\n"
+        "  source: opendrive\n"
+        "  opendrive:\n"
+        f"    path: {xodr}\n",
+        encoding="utf-8",
+    )
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "map": "OpenDriveMap",
+                "scenario_id": "baguang_extended",
+                "route_id": "straight_road_for_baguang_extended",
+                "phase1_scenario_path": str(scenario),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "summary.json").write_text("{}\n", encoding="utf-8")
+    (run / "timeseries.csv").write_text("sim_time\n0.0\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_analyze(**kwargs):
+        captured.update(kwargs)
+        return {"status": "warn", "map_name": kwargs["map_name"]}
+
+    def fake_write(report, out):
+        return {"report": str(out / "baguang_lane_event_contract_report.json")}
+
+    monkeypatch.setattr(phase1_postprocess, "analyze_baguang_lane_event_contract", fake_analyze)
+    monkeypatch.setattr(phase1_postprocess, "write_baguang_lane_event_contract_report", fake_write)
+
+    report, paths = phase1_postprocess._write_baguang_lane_event_contract(run)
+
+    assert report == {"status": "warn", "map_name": "OpenDriveMap"}
+    assert paths is not None
+    assert captured["xodr_path"] == xodr
+    assert captured["map_name"] == "OpenDriveMap"
+    assert captured["run_dirs"] == [run]
 
 
 def test_phase1_postprocess_writes_v_t_gap_status_and_completeness(tmp_path) -> None:

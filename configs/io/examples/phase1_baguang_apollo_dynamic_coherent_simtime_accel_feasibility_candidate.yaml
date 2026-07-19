@@ -1,0 +1,25 @@
+extends: phase1_baguang_apollo_dynamic_coherent_simtime_candidate.yaml
+
+run:
+  id: phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_candidate
+  profile_name: phase1_baguang_apollo_dynamic_coherent_simtime_accel_feasibility_candidate
+
+algo:
+  apollo:
+    bridge:
+      localization_acceleration_filter:
+        # Preserve the measured finite-difference acceleration, but prevent a
+        # one-Planning-cycle constant-acceleration projection from producing a
+        # negative initial speed. Apollo PiecewiseJerk enforces v >= 0 and the
+        # unbounded low-speed projection is otherwise structurally infeasible.
+        enabled: false
+        alpha: 1.0
+        max_abs_mps2: 0.0
+        max_delta_mps2: 0.0
+        nonnegative_speed_prediction_horizon_s: 0.1
+
+assist_ledger:
+  notes:
+    - Diagnostic-only Baguang coherent sim-time acceleration-feasibility candidate.
+    - The candidate changes only GT localization acceleration feasibility for Apollo's next 0.1s Planning cycle; it does not filter control commands or change actuation mapping.
+    - Online evidence is required before promotion; behavior remains Phase 1 diagnostic evidence only.

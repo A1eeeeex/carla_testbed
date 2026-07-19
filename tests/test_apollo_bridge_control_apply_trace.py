@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
+import threading
 import types
 
 import pytest
@@ -97,6 +99,52 @@ def test_bridge_chassis_steering_feedback_uses_apollo_sign_and_preserves_carla_s
     assert feedback["chassis"]["carla_steering_percentage_cmd"] == pytest.approx(-50.0)
 
 
+def test_bridge_physical_steering_feedback_uses_apollo_front_wheel_angle_domain() -> None:
+    _install_fake_runtime_modules()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.seq = 0
+    adapter.chassis_pb2 = _ChassisPb2
+    adapter.steer_sign = -1.0
+    adapter.actuator_mapping_mode = "physical"
+    adapter.physical_map_steering = True
+    adapter.physical_map_steering_feedback = True
+    adapter.physical_apollo_max_steer_angle_deg = 30.0
+    adapter.stats = {
+        "last_control_out": {
+            "steer": -0.25,
+            "steer_sign": -1.0,
+            "steering_normalized_for_mapping": 0.50,
+            "throttle": 0.0,
+            "brake": 0.0,
+        }
+    }
+
+    chassis = adapter._odom_to_chassis(
+        3.0,
+        (1.0, 0.0, 0.0),
+        {
+            "available": True,
+            "source": "wheel_angle",
+            "steer": -0.25,
+            "steer_feedback_pct": -25.0,
+            "steer_feedback_deg": -15.0,
+            "throttle": 0.0,
+            "brake": 0.0,
+        },
+    )
+
+    assert chassis.steering_percentage == pytest.approx(50.0)
+    feedback = adapter.stats["last_control_feedback"]
+    assert feedback["measured"]["steer_pct"] == pytest.approx(50.0)
+    assert feedback["measured"]["carla_steer_pct"] == pytest.approx(-25.0)
+    assert (
+        feedback["measured"]["steering_feedback_normalization"]
+        == "apollo_front_wheel_angle_percent"
+    )
+    assert feedback["chassis"]["steering_feedback_apollo_max_steer_angle_deg"] == 30.0
+
+
 def test_startup_control_publish_gate_latches_after_first_valid_planning() -> None:
     _install_fake_runtime_modules()
     bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
@@ -146,6 +194,225 @@ def test_startup_control_publish_gate_disabled_does_not_suppress() -> None:
         timestamp_sec=1.0,
     )
     assert adapter.stats["control_startup_publish_gate"]["skip_count"] == 0
+
+
+def test_startup_control_publish_gate_waits_for_fixed_scene_handover(tmp_path) -> None:
+    _install_fake_runtime_modules()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.require_valid_planning_before_first_publish = True
+    adapter._valid_planning_publish_gate_open = False
+    adapter.require_fixed_scene_handover_before_publish = True
+    adapter.fixed_scene_handover_path = tmp_path / "fixed_scene_ego_handover.json"
+    adapter.stats = {}
+
+    assert not adapter._allow_control_publish_after_startup(
+        planning_valid=True,
+        planning_reason="",
+        timestamp_sec=1.0,
+    )
+    gate = adapter.stats["control_startup_publish_gate"]
+    assert gate["planning_open"] is False
+    assert gate["fixed_scene_handover_open"] is False
+    assert gate["last_skip_reason"] == "fixed_scene_handover_not_ready"
+
+    adapter.fixed_scene_handover_path.write_text(
+        json.dumps({"status": "ready"}), encoding="utf-8"
+    )
+    assert not adapter._allow_control_publish_after_startup(
+        planning_valid=False,
+        planning_reason="trajectory_all_points_expired",
+        timestamp_sec=1.1,
+    )
+    assert gate["open"] is False
+    assert gate["fixed_scene_handover_open"] is True
+    assert gate["last_skip_reason"] == "trajectory_all_points_expired"
+
+    assert adapter._allow_control_publish_after_startup(
+        planning_valid=True,
+        planning_reason="",
+        timestamp_sec=1.2,
+    )
+    assert gate["open"] is True
+    assert gate["first_open_timestamp_sec"] == pytest.approx(1.2)
+
+
+def test_first_fixed_scene_control_publish_writes_immediate_handover_ack(
+    tmp_path,
+) -> None:
+    _install_fake_runtime_modules()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.require_fixed_scene_handover_before_publish = True
+    adapter.fixed_scene_handover_path = tmp_path / "fixed_scene_ego_handover.json"
+    adapter.fixed_scene_control_handover_ack_path = (
+        tmp_path / "fixed_scene_control_handover_ack.json"
+    )
+    adapter._fixed_scene_control_handover_ack_written = False
+    adapter.stats = {"control_tx_count": 1}
+    adapter.fixed_scene_handover_path.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "world_frame": 120,
+                "world_sim_time_s": 6.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    adapter._write_fixed_scene_control_handover_ack(
+        control_timestamp_sec=6.05,
+        control_sequence_num=42,
+        planning_sequence_num=18,
+        planning_trajectory_type="NORMAL",
+        planning_exact_match=True,
+    )
+
+    ack = json.loads(adapter.fixed_scene_control_handover_ack_path.read_text())
+    assert ack["status"] == "published"
+    assert ack["control_tx_count"] == 1
+    assert ack["control_timestamp_sec"] == pytest.approx(6.05)
+    assert ack["control_header_sequence_num"] == 42
+    assert ack["planning_sequence_num"] == 18
+    assert ack["planning_trajectory_type"] == "NORMAL"
+    assert ack["planning_exact_match"] is True
+    assert ack["handover_world_frame"] == 120
+    assert ack["handover_world_sim_time_s"] == pytest.approx(6.0)
+
+    adapter.stats["control_tx_count"] = 2
+    adapter._write_fixed_scene_control_handover_ack(
+        control_timestamp_sec=6.10,
+        control_sequence_num=43,
+        planning_sequence_num=19,
+        planning_trajectory_type="NORMAL",
+        planning_exact_match=True,
+    )
+    unchanged = json.loads(adapter.fixed_scene_control_handover_ack_path.read_text())
+    assert unchanged["control_tx_count"] == 1
+    assert unchanged["control_header_sequence_num"] == 42
+
+
+def test_startup_planning_publish_validity_requires_exact_nonfallback_sequence() -> None:
+    _install_fake_runtime_modules()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter.require_exact_planning_match_before_first_publish = True
+    adapter.require_nonfallback_planning_before_first_publish = True
+    normal = {
+        "planning_header_sequence_num": 10,
+        "trajectory_type": "NORMAL",
+    }
+
+    missing_exact = adapter._startup_planning_publish_validity(
+        planning_valid=True,
+        planning_reason="",
+        control_input_sequence_num=11,
+        exact_planning=None,
+        effective_planning=normal,
+    )
+    assert missing_exact["valid"] is False
+    assert missing_exact["reason"] == "control_input_planning_sequence_not_observed"
+
+    fallback = adapter._startup_planning_publish_validity(
+        planning_valid=True,
+        planning_reason="",
+        control_input_sequence_num=11,
+        exact_planning={"trajectory_type": "SPEED_FALLBACK"},
+        effective_planning=normal,
+    )
+    assert fallback["valid"] is False
+    assert fallback["reason"] == "fallback_or_unknown_planning_trajectory"
+
+    ready = adapter._startup_planning_publish_validity(
+        planning_valid=True,
+        planning_reason="",
+        control_input_sequence_num=12,
+        exact_planning={"trajectory_type": "NORMAL"},
+        effective_planning=normal,
+    )
+    assert ready == {
+        "valid": True,
+        "reason": "",
+        "sequence_num": 12,
+        "trajectory_type": "NORMAL",
+        "exact_match": True,
+    }
+
+
+def test_startup_exact_planning_retry_replays_only_matching_fresh_sequence() -> None:
+    _install_fake_runtime_modules()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter._startup_pending_control_lock = threading.Lock()
+    adapter._startup_pending_controls = {}
+    adapter.stats = {"control_startup_publish_gate": {"open": False}}
+    adapter._command_now_sec = lambda: 10.2
+    calls = []
+
+    class FakeControl:
+        def __init__(self) -> None:
+            self.value = 0
+
+        def CopyFrom(self, other) -> None:
+            self.value = other.value
+
+    cmd = FakeControl()
+    cmd.value = 7
+    adapter._on_control_cmd = lambda replayed, **kwargs: calls.append(
+        (replayed.value, kwargs)
+    )
+    adapter._queue_control_for_exact_planning_retry(
+        cmd,
+        planning_sequence_num=42,
+        control_rx_ts=10.0,
+    )
+    cmd.value = 99
+
+    adapter._retry_control_for_observed_planning(41)
+    assert calls == []
+    assert adapter.stats["control_startup_publish_gate"]["pending_control_sequence_nums"] == [42]
+
+    adapter._retry_control_for_observed_planning(42)
+    assert calls == [
+        (
+            7,
+            {
+                "_startup_exact_retry": True,
+                "_original_control_rx_ts": 10.0,
+            },
+        )
+    ]
+    gate = adapter.stats["control_startup_publish_gate"]
+    assert gate["exact_match_retry_count"] == 1
+    assert gate["last_exact_match_retry_sequence_num"] == 42
+    assert gate["last_exact_match_retry_age_sec"] == pytest.approx(0.2)
+    assert gate["last_exact_match_retry_status"] == "re_evaluating"
+
+
+def test_startup_exact_planning_retry_drops_expired_command() -> None:
+    _install_fake_runtime_modules()
+    bridge = importlib.import_module("tools.apollo10_cyber_bridge.bridge")
+    adapter = bridge.ApolloGtBridge.__new__(bridge.ApolloGtBridge)
+    adapter._startup_pending_control_lock = threading.Lock()
+    adapter._startup_pending_controls = {}
+    adapter.stats = {"control_startup_publish_gate": {"open": False}}
+    adapter._command_now_sec = lambda: 20.0
+    adapter._on_control_cmd = lambda *_args, **_kwargs: pytest.fail(
+        "expired Control must not be replayed"
+    )
+    adapter._queue_control_for_exact_planning_retry(
+        object(),
+        planning_sequence_num=43,
+        control_rx_ts=19.0,
+    )
+
+    adapter._retry_control_for_observed_planning(43)
+
+    gate = adapter.stats["control_startup_publish_gate"]
+    assert gate["pending_control_expired_count"] == 1
+    assert gate["last_exact_match_retry_status"] == "expired"
+    assert gate.get("exact_match_retry_count", 0) == 0
 
 
 def test_control_apply_trace_falls_back_to_latest_control_cache() -> None:
@@ -215,6 +482,8 @@ def test_control_apply_trace_falls_back_to_latest_control_cache() -> None:
             "planning_message_age_ms": 5.0,
             "throttle_brake_mutual_exclusion_applied": False,
             "throttle_brake_hysteresis_held": False,
+            "actuator_mapping_speed_mps": 7.3,
+            "decel_actuation_mapping_source": "physical_inverse_decel_high_clamp",
         },
         "last_gt_state_publish": {
             "sim_time_sec": 1.0,
@@ -270,6 +539,10 @@ def test_control_apply_trace_falls_back_to_latest_control_cache() -> None:
     assert payload["bridge_mapped"]["steer"] == 0.025
     assert payload["bridge_mapped"]["base_mapped_carla_steer_cmd"] == 0.1
     assert payload["bridge_mapped"]["mapped_carla_steer_cmd"] == 0.025
+    assert payload["bridge_mapped"]["actuator_mapping_speed_mps"] == 7.3
+    assert payload["bridge_mapped"]["decel_actuation_mapping_source"] == (
+        "physical_inverse_decel_high_clamp"
+    )
     assert payload["throttle_mapped"] == 0.42
     assert payload["brake_mapped"] == 0.0
     assert payload["bridge_steer_mapped"] == 0.025

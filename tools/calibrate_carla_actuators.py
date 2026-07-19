@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import statistics
@@ -34,6 +35,17 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 def _parse_float_list(raw: str) -> List[float]:
     return [float(item.strip()) for item in str(raw).split(",") if item.strip()]
+
+
+def _parse_axes(raw: str) -> Tuple[str, ...]:
+    supported = ("steering", "throttle", "brake")
+    requested = {item.strip().lower() for item in str(raw).split(",") if item.strip()}
+    unknown = sorted(requested.difference(supported))
+    if unknown:
+        raise ValueError(f"unsupported calibration axes: {','.join(unknown)}")
+    if not requested:
+        raise ValueError("at least one calibration axis is required")
+    return tuple(axis for axis in supported if axis in requested)
 
 
 def _parse_speed_edges(raw: str) -> List[Tuple[float, float]]:
@@ -198,12 +210,14 @@ class CarlaProbe:
         self._step(max(0.1, settle_sec * 0.5))
 
     def _step(self, duration_sec: float) -> None:
+        if self.sync_mode:
+            step_count = max(0, int(math.ceil(max(0.0, float(duration_sec)) / self.step_sec)))
+            for _ in range(step_count):
+                self.world.tick()
+            return
         deadline = time.monotonic() + max(0.0, float(duration_sec))
         while time.monotonic() < deadline:
-            if self.sync_mode:
-                self.world.tick()
-            else:
-                time.sleep(self.step_sec)
+            time.sleep(self.step_sec)
 
     def apply(self, *, throttle: float, brake: float, steer: float) -> None:
         ctrl = carla.VehicleControl(
@@ -217,7 +231,7 @@ class CarlaProbe:
         self.apply(throttle=throttle, brake=brake, steer=steer)
         self._step(duration_sec)
 
-    def state(self) -> Dict[str, float]:
+    def state(self) -> Dict[str, Any]:
         actor = self.vehicle()
         vel = actor.get_velocity()
         accel = actor.get_acceleration()
@@ -226,6 +240,11 @@ class CarlaProbe:
         ctrl = actor.get_control()
         speed = math.sqrt(float(vel.x) ** 2 + float(vel.y) ** 2 + float(vel.z) ** 2)
         fwd = tr.get_forward_vector()
+        forward_speed = (
+            float(vel.x) * float(fwd.x)
+            + float(vel.y) * float(fwd.y)
+            + float(vel.z) * float(fwd.z)
+        )
         forward_accel = (
             float(accel.x) * float(fwd.x)
             + float(accel.y) * float(fwd.y)
@@ -233,11 +252,28 @@ class CarlaProbe:
         )
         out = {
             "speed_mps": float(speed),
+            "forward_speed_mps": float(forward_speed),
             "forward_accel_mps2": float(forward_accel),
+            "velocity_x_mps": float(vel.x),
+            "velocity_y_mps": float(vel.y),
+            "velocity_z_mps": float(vel.z),
+            "accel_x_mps2": float(accel.x),
+            "accel_y_mps2": float(accel.y),
+            "accel_z_mps2": float(accel.z),
             "yaw_rate_rps": math.radians(float(getattr(ang, "z", 0.0))),
+            "location_x_m": float(tr.location.x),
+            "location_y_m": float(tr.location.y),
+            "location_z_m": float(tr.location.z),
+            "roll_deg": float(tr.rotation.roll),
+            "pitch_deg": float(tr.rotation.pitch),
+            "yaw_deg": float(tr.rotation.yaw),
             "throttle_cmd": float(getattr(ctrl, "throttle", 0.0)),
             "brake_cmd": float(getattr(ctrl, "brake", 0.0)),
             "carla_steer_cmd": float(getattr(ctrl, "steer", 0.0)),
+            "gear": int(getattr(ctrl, "gear", 0)),
+            "manual_gear_shift": bool(getattr(ctrl, "manual_gear_shift", False)),
+            "reverse": bool(getattr(ctrl, "reverse", False)),
+            "hand_brake": bool(getattr(ctrl, "hand_brake", False)),
         }
         wheel_angle = self._wheel_steer_angle_deg(actor)
         if wheel_angle is not None:
@@ -268,29 +304,46 @@ class CarlaProbe:
         steer: float,
         settle_sec: float,
         sample_sec: float,
-    ) -> List[Dict[str, float]]:
+    ) -> List[Dict[str, Any]]:
         self.settle(throttle=throttle, brake=brake, steer=steer, duration_sec=settle_sec)
         samples: List[Dict[str, float]] = []
+        if self.sync_mode:
+            step_count = max(0, int(math.ceil(max(0.0, float(sample_sec)) / self.step_sec)))
+            for index in range(step_count):
+                self.apply(throttle=throttle, brake=brake, steer=steer)
+                self.world.tick()
+                item = self.state()
+                item["sample_index"] = int(index)
+                item["elapsed_sec"] = float((index + 1) * self.step_sec)
+                samples.append(item)
+            return samples
         deadline = time.monotonic() + max(0.0, float(sample_sec))
+        sample_index = 0
         while time.monotonic() < deadline:
             self.apply(throttle=throttle, brake=brake, steer=steer)
-            if self.sync_mode:
-                self.world.tick()
-            else:
-                time.sleep(self.step_sec)
+            time.sleep(self.step_sec)
             item = self.state()
+            item["sample_index"] = int(sample_index)
             item["elapsed_sec"] = float(sample_sec - max(0.0, deadline - time.monotonic()))
             samples.append(item)
+            sample_index += 1
         return samples
 
     def brake_to_stop(self, *, hold_brake: float = 1.0, timeout_sec: float = 6.0) -> None:
+        if self.sync_mode:
+            step_count = max(0, int(math.ceil(max(0.0, float(timeout_sec)) / self.step_sec)))
+            for _ in range(step_count):
+                self.apply(throttle=0.0, brake=hold_brake, steer=0.0)
+                self.world.tick()
+                if self.state()["speed_mps"] <= 0.1:
+                    break
+            self.settle(throttle=0.0, brake=hold_brake, steer=0.0, duration_sec=0.5)
+            self.settle(throttle=0.0, brake=0.0, steer=0.0, duration_sec=0.2)
+            return
         deadline = time.monotonic() + max(0.0, float(timeout_sec))
         while time.monotonic() < deadline:
             self.apply(throttle=0.0, brake=hold_brake, steer=0.0)
-            if self.sync_mode:
-                self.world.tick()
-            else:
-                time.sleep(self.step_sec)
+            time.sleep(self.step_sec)
             if self.state()["speed_mps"] <= 0.1:
                 break
         self.settle(throttle=0.0, brake=hold_brake, steer=0.0, duration_sec=0.5)
@@ -303,14 +356,25 @@ class CarlaProbe:
         throttle: float,
         timeout_sec: float = 8.0,
     ) -> Dict[str, float]:
+        if self.sync_mode:
+            step_count = max(0, int(math.ceil(max(0.0, float(timeout_sec)) / self.step_sec)))
+            final_speed = 0.0
+            for _ in range(step_count):
+                self.apply(throttle=throttle, brake=0.0, steer=0.0)
+                self.world.tick()
+                final_speed = self.state()["speed_mps"]
+                if final_speed >= float(target_speed_mps):
+                    break
+            return {
+                "target_speed_mps": float(target_speed_mps),
+                "final_speed_mps": float(final_speed),
+                "reached": bool(final_speed >= float(target_speed_mps)),
+            }
         deadline = time.monotonic() + max(0.0, float(timeout_sec))
         final_speed = 0.0
         while time.monotonic() < deadline:
             self.apply(throttle=throttle, brake=0.0, steer=0.0)
-            if self.sync_mode:
-                self.world.tick()
-            else:
-                time.sleep(self.step_sec)
+            time.sleep(self.step_sec)
             final_speed = self.state()["speed_mps"]
             if final_speed >= float(target_speed_mps):
                 break
@@ -425,17 +489,26 @@ def _within_speed_bin(speed: float, *, speed_min: float, speed_max: float, toler
     return lower <= float(speed) < upper
 
 
-def _effective_brake_decel(samples: Sequence[Dict[str, float]]) -> float:
-    active = []
-    for item in samples:
-        speed = _safe_float(item.get("speed_mps"), 0.0)
-        elapsed = _safe_float(item.get("elapsed_sec"), 0.0)
-        decel = max(0.0, -_safe_float(item.get("forward_accel_mps2"), 0.0))
-        if speed >= 0.5 or elapsed <= 1.0:
-            active.append(decel)
-    if not active:
-        active = [max(0.0, -_safe_float(item.get("forward_accel_mps2"), 0.0)) for item in samples]
-    return _percentile(active, 0.85, default=0.0)
+def _effective_brake_decel(
+    samples: Sequence[Dict[str, Any]],
+    *,
+    start_sec: float = 0.2,
+    window_sec: float = 0.4,
+) -> float:
+    if not samples:
+        return 0.0
+    start = max(0.0, float(start_sec))
+    end = max(0.0, float(window_sec))
+    if end <= start:
+        return 0.0
+    speed_key = (
+        "forward_speed_mps"
+        if any("forward_speed_mps" in item for item in samples)
+        else "speed_mps"
+    )
+    start_speed = _value_at_elapsed(samples, start, speed_key, default=0.0)
+    end_speed = _value_at_elapsed(samples, end, speed_key, default=start_speed)
+    return max(0.0, (start_speed - end_speed) / (end - start))
 
 
 def _effective_throttle_accel(samples: Sequence[Dict[str, float]], *, window_sec: float) -> float:
@@ -473,6 +546,17 @@ def _effective_brake_speed(samples: Sequence[Dict[str, float]], *, window_sec: f
     if not active:
         active = [_safe_float(item.get("speed_mps"), 0.0) for item in samples]
     return _percentile(active, 0.7, default=0.0)
+
+
+def _hold_motion_speed_mps(item: Dict[str, Any]) -> float:
+    if "forward_speed_mps" in item:
+        return abs(_safe_float(item.get("forward_speed_mps"), 0.0))
+    if "velocity_x_mps" in item or "velocity_y_mps" in item:
+        return math.hypot(
+            _safe_float(item.get("velocity_x_mps"), 0.0),
+            _safe_float(item.get("velocity_y_mps"), 0.0),
+        )
+    return abs(_safe_float(item.get("speed_mps"), 0.0))
 
 
 def _bucketize_samples(
@@ -576,7 +660,13 @@ def _is_monotonic_non_decreasing(values: Sequence[float], *, tolerance: float = 
     return True
 
 
-def _annotate_axis_reliability(speed_bins: List[Dict[str, Any]], *, axis: str) -> None:
+def _annotate_axis_reliability(
+    speed_bins: List[Dict[str, Any]],
+    *,
+    axis: str,
+    brake_min_incremental_signal_mps2: float = 0.2,
+    brake_incremental_monotonic_tolerance_mps2: float = 0.1,
+) -> None:
     for bucket in speed_bins:
         measurements = list(bucket.get("measurements", []) or [])
         values = []
@@ -599,29 +689,108 @@ def _annotate_axis_reliability(speed_bins: List[Dict[str, Any]], *, axis: str) -
                 reasons.append("non_monotonic")
         else:
             values = [_safe_float(item.get("target_decel_mps2"), 0.0) for item in measurements]
+            incremental_values = [
+                _safe_float(item.get("incremental_brake_decel_mps2"), 0.0)
+                for item in measurements
+            ]
+            positive_measurements = [
+                item for item in measurements if _safe_float(item.get("brake_cmd"), 0.0) > 1e-6
+            ]
             observed = [_safe_float(item.get("observed_speed_mps"), 0.0) for item in bucket.get("raw_measurements", [])]
             max_value = max(values) if values else 0.0
+            max_incremental = max(incremental_values) if incremental_values else 0.0
+            coast_baseline = bucket.get("coast_baseline", {})
+            coast_baseline_available = bool(
+                isinstance(coast_baseline, dict) and coast_baseline.get("available")
+            )
             reliable = bool(
-                len(measurements) >= 3
-                and max_value >= 2.0
+                coast_baseline_available
+                and len(positive_measurements) >= 3
+                and max_incremental >= float(brake_min_incremental_signal_mps2)
                 and max(observed, default=0.0) >= 1.0
-                and _is_monotonic_non_decreasing(values, tolerance=0.6)
+                and _is_monotonic_non_decreasing(
+                    incremental_values,
+                    tolerance=float(brake_incremental_monotonic_tolerance_mps2),
+                )
             )
             reasons = []
-            if len(measurements) < 3:
+            if not coast_baseline_available:
+                reasons.append("missing_coast_baseline")
+            if len(positive_measurements) < 3:
                 reasons.append("insufficient_measurements")
-            if max_value < 2.0:
-                reasons.append("weak_decel")
+            if max_incremental < float(brake_min_incremental_signal_mps2):
+                reasons.append("weak_incremental_brake_signal")
             if max(observed, default=0.0) < 1.0:
                 reasons.append("low_observed_speed")
-            if values and not _is_monotonic_non_decreasing(values, tolerance=0.6):
-                reasons.append("non_monotonic")
+            if incremental_values and not _is_monotonic_non_decreasing(
+                incremental_values,
+                tolerance=float(brake_incremental_monotonic_tolerance_mps2),
+            ):
+                reasons.append("non_monotonic_incremental_brake_response")
         bucket["quality"] = {
             "reliable": reliable,
             "reasons": reasons,
             "max_value": float(max(values) if values else 0.0),
             "max_observed_speed_mps": float(max(observed, default=0.0)),
         }
+        if axis == "brake":
+            bucket["quality"].update(
+                {
+                    "coast_baseline_available": coast_baseline_available,
+                    "max_incremental_brake_decel_mps2": float(max_incremental),
+                    "incremental_monotonic_tolerance_mps2": float(
+                        brake_incremental_monotonic_tolerance_mps2
+                    ),
+                    "minimum_incremental_signal_mps2": float(
+                        brake_min_incremental_signal_mps2
+                    ),
+                }
+            )
+
+
+def _annotate_brake_coast_baseline(speed_bins: List[Dict[str, Any]]) -> None:
+    for bucket in speed_bins:
+        raw_measurements = list(bucket.get("raw_measurements", []) or [])
+        baseline_rows = [
+            item
+            for item in raw_measurements
+            if abs(_safe_float(item.get("brake_cmd"), 0.0)) <= 1e-6
+        ]
+        baseline = (
+            _median((item.get("target_decel_mps2", 0.0) for item in baseline_rows), default=0.0)
+            if baseline_rows
+            else None
+        )
+        bucket["coast_baseline"] = {
+            "available": baseline is not None,
+            "brake_cmd": 0.0,
+            "target_decel_mps2": float(baseline) if baseline is not None else None,
+            "sample_count": int(
+                sum(int(item.get("sample_count", 0) or 0) for item in baseline_rows)
+            ),
+            "response_metric": "forward_speed_delta_over_fixed_window",
+        }
+        measurements = list(bucket.get("measurements", []) or [])
+        for item in measurements:
+            total_decel = _safe_float(item.get("target_decel_mps2"), 0.0)
+            item["coast_baseline_decel_mps2"] = (
+                float(baseline) if baseline is not None else None
+            )
+            item["incremental_brake_decel_mps2"] = (
+                max(0.0, total_decel - float(baseline))
+                if baseline is not None
+                else None
+            )
+        bucket.setdefault("inverse", {})[
+            "target_incremental_brake_decel_mps2_to_brake_cmd"
+        ] = build_inverse_table(
+            measurements,
+            measured_key="incremental_brake_decel_mps2",
+            command_key="brake_cmd",
+            target_key="target_incremental_brake_decel_mps2",
+            absolute=False,
+            positive_only=True,
+        )
 
 
 def _value_at_elapsed(samples: Sequence[Dict[str, float]], elapsed_sec: float, key: str, *, default: float = 0.0) -> float:
@@ -907,7 +1076,7 @@ def calibrate_low_speed_brake(probe: CarlaProbe, args: argparse.Namespace) -> Di
     commands = _parse_float_list(args.low_speed_brake_commands)
     raw_series: List[Dict[str, Any]] = []
 
-    hold_rows: List[Dict[str, Any]] = []
+    stop_rows: List[Dict[str, Any]] = []
     for cmd in commands:
         probe.reset_to_reference_pose(settle_sec=args.longitudinal_reset_settle_sec)
         prep = probe.accelerate_to_speed(
@@ -925,20 +1094,102 @@ def calibrate_low_speed_brake(probe: CarlaProbe, args: argparse.Namespace) -> Di
         if not samples:
             continue
         residual_speed = _value_at_elapsed(samples, args.low_speed_hold_eval_sec, "speed_mps", default=0.0)
-        hold_rows.append(
+        stop_rows.append(
             {
                 "brake_cmd": float(cmd),
                 "residual_speed_mps": float(residual_speed),
                 "stop_time_sec": _time_to_stop(samples, stop_speed_mps=args.low_speed_hold_stop_speed_mps),
-                "holds_vehicle": bool(residual_speed <= float(args.low_speed_hold_residual_speed_threshold_mps)),
+                "stops_vehicle": bool(residual_speed <= float(args.low_speed_hold_residual_speed_threshold_mps)),
                 "entry_reached": bool(prep.get("reached")),
                 "sample_count": len(samples),
                 "prep": prep,
             }
         )
+        raw_series.extend({**item, "low_speed_mode": "stop"} for item in samples)
+    stop_quality_rows = [
+        {"brake_cmd": row["brake_cmd"], "stop_strength": max(0.0, 1.0 - _safe_float(row.get("residual_speed_mps"), 0.0))}
+        for row in stop_rows
+    ]
+    stop_quality = _quality_for_measurements(
+        stop_quality_rows,
+        command_key="brake_cmd",
+        value_key="stop_strength",
+        reliable_min_samples=4,
+        monotonic_tolerance=0.12,
+        min_max_value=0.8,
+    )
+    stop_cmds = [
+        _safe_float(row.get("brake_cmd"), 0.0)
+        for row in stop_rows
+        if bool(row.get("entry_reached")) and bool(row.get("stops_vehicle"))
+    ]
+
+    hold_rows: List[Dict[str, Any]] = []
+    for cmd in commands:
+        probe.reset_to_reference_pose(settle_sec=args.longitudinal_reset_settle_sec)
+        start_state = probe.state()
+        samples = probe.hold_and_sample(
+            throttle=0.0,
+            brake=cmd,
+            steer=0.0,
+            settle_sec=0.0,
+            sample_sec=args.low_speed_hold_sample_sec,
+        )
+        if not samples:
+            continue
+        eval_rows = [
+            item
+            for item in samples
+            if _safe_float(item.get("elapsed_sec"), 0.0)
+            <= float(args.low_speed_hold_eval_sec) + 1e-9
+        ]
+        if not eval_rows:
+            eval_rows = list(samples)
+        max_speed = max(
+            (_hold_motion_speed_mps(item) for item in eval_rows),
+            default=0.0,
+        )
+        residual_row = next(
+            (
+                item
+                for item in samples
+                if _safe_float(item.get("elapsed_sec"), 0.0)
+                >= float(args.low_speed_hold_eval_sec)
+            ),
+            samples[-1],
+        )
+        residual_speed = _hold_motion_speed_mps(residual_row)
+        end_state = eval_rows[-1]
+        displacement_m = math.hypot(
+            _safe_float(end_state.get("location_x_m"), 0.0)
+            - _safe_float(start_state.get("location_x_m"), 0.0),
+            _safe_float(end_state.get("location_y_m"), 0.0)
+            - _safe_float(start_state.get("location_y_m"), 0.0),
+        )
+        holds_vehicle = bool(
+            max_speed <= float(args.low_speed_hold_residual_speed_threshold_mps)
+        )
+        hold_rows.append(
+            {
+                "brake_cmd": float(cmd),
+                "initial_speed_mps": _hold_motion_speed_mps(start_state),
+                "initial_speed_norm_mps": _safe_float(start_state.get("speed_mps"), 0.0),
+                "max_speed_mps": float(max_speed),
+                "residual_speed_mps": float(residual_speed),
+                "displacement_m": float(displacement_m),
+                "holds_vehicle": holds_vehicle,
+                "sample_count": len(samples),
+            }
+        )
         raw_series.extend({**item, "low_speed_mode": "hold"} for item in samples)
     hold_quality_rows = [
-        {"brake_cmd": row["brake_cmd"], "hold_strength": max(0.0, 1.0 - _safe_float(row.get("residual_speed_mps"), 0.0))}
+        {
+            "brake_cmd": row["brake_cmd"],
+            "hold_strength": max(
+                0.0,
+                1.0 - _safe_float(row.get("max_speed_mps"), 0.0),
+            ),
+        }
         for row in hold_rows
     ]
     hold_quality = _quality_for_measurements(
@@ -981,7 +1232,16 @@ def calibrate_low_speed_brake(probe: CarlaProbe, args: argparse.Namespace) -> Di
                 "brake_cmd": float(cmd),
                 "speed_drop_mps": float(max(0.0, start_speed - eval_speed)),
                 "residual_speed_mps": float(eval_speed),
-                "target_decel_mps2": float(_effective_brake_decel(samples)),
+                "target_decel_mps2": float(
+                    _effective_brake_decel(
+                        samples,
+                        start_sec=min(
+                            float(args.brake_response_start_sec),
+                            0.5 * float(args.low_speed_rolling_brake_eval_sec),
+                        ),
+                        window_sec=float(args.low_speed_rolling_brake_eval_sec),
+                    )
+                ),
                 "stop_time_sec": _time_to_stop(samples, stop_speed_mps=args.low_speed_hold_stop_speed_mps),
                 "entry_reached": bool(prep.get("reached")),
                 "sample_count": len(samples),
@@ -989,8 +1249,20 @@ def calibrate_low_speed_brake(probe: CarlaProbe, args: argparse.Namespace) -> Di
             }
             section_rows.append(row)
             raw_series.extend({**item, "low_speed_mode": "rolling_brake", "entry_speed_mps": float(entry_speed)} for item in samples)
+        rolling_rows = [
+            row
+            for row in section_rows
+            if bool(row.get("entry_reached"))
+            and _safe_float(row.get("residual_speed_mps"), 0.0)
+            > float(args.low_speed_hold_stop_speed_mps)
+            and (
+                row.get("stop_time_sec") is None
+                or _safe_float(row.get("stop_time_sec"), 0.0)
+                > float(args.low_speed_rolling_brake_eval_sec)
+            )
+        ]
         quality = _quality_for_measurements(
-            section_rows,
+            rolling_rows,
             command_key="brake_cmd",
             value_key="speed_drop_mps",
             reliable_min_samples=4,
@@ -998,7 +1270,7 @@ def calibrate_low_speed_brake(probe: CarlaProbe, args: argparse.Namespace) -> Di
             min_max_value=0.5,
         )
         inverse = build_inverse_table(
-            section_rows,
+            rolling_rows,
             measured_key="speed_drop_mps",
             command_key="brake_cmd",
             target_key="target_speed_drop_mps",
@@ -1008,17 +1280,51 @@ def calibrate_low_speed_brake(probe: CarlaProbe, args: argparse.Namespace) -> Di
         rolling_sections.append(
             {
                 "entry_speed_mps": float(entry_speed),
+                "speed_min_mps": max(
+                    0.0,
+                    float(entry_speed)
+                    - float(args.low_speed_rolling_speed_coverage_half_width_mps),
+                ),
+                "speed_max_mps": float(entry_speed)
+                + float(args.low_speed_rolling_speed_coverage_half_width_mps),
+                "probe": {
+                    "sample_sec": float(args.low_speed_rolling_brake_sample_sec),
+                    "eval_sec": float(args.low_speed_rolling_brake_eval_sec),
+                },
                 "measurements": section_rows,
+                "rolling_measurements": rolling_rows,
                 "inverse": {"target_speed_drop_mps_to_brake_cmd": inverse},
-                "quality": quality,
+                "quality": {
+                    **quality,
+                    "state_transition_excluded_count": len(section_rows)
+                    - len(rolling_rows),
+                    "rolling_measurement_count": len(rolling_rows),
+                },
             }
         )
     return {
-        "hold": {
+        "stop": {
             "probe": {
                 "entry_speed_mps": float(args.low_speed_hold_entry_speed_mps),
                 "sample_sec": float(args.low_speed_hold_sample_sec),
                 "eval_sec": float(args.low_speed_hold_eval_sec),
+                "activation_max_speed_mps": float(args.low_speed_stop_activation_max_speed_mps),
+                "request_decel_threshold_mps2": float(
+                    args.low_speed_stop_request_decel_threshold_mps2
+                ),
+            },
+            "measurements": stop_rows,
+            "summary": {
+                "stop_cmd": min(stop_cmds) if stop_cmds else None,
+            },
+            "quality": stop_quality,
+        },
+        "hold": {
+            "probe": {
+                "initial_state": "stationary",
+                "sample_sec": float(args.low_speed_hold_sample_sec),
+                "eval_sec": float(args.low_speed_hold_eval_sec),
+                "activation_max_speed_mps": float(args.low_speed_hold_stop_speed_mps),
             },
             "measurements": hold_rows,
             "summary": {
@@ -1234,15 +1540,37 @@ def calibrate_brake(probe: CarlaProbe, args: argparse.Namespace) -> Dict[str, An
     target_bins = _speed_bin_targets(speed_bins)
     rows: List[Dict[str, Any]] = []
     raw_series: List[Dict[str, Any]] = []
+    unavailable_speed_bins: List[Dict[str, Any]] = []
     commands = _parse_float_list(args.brake_commands)
     for speed_min, speed_max, target_speed in target_bins:
+        entry_target = max(
+            float(target_speed),
+            float(args.brake_entry_speed_mps_min),
+        )
+        if not _within_speed_bin(
+            entry_target,
+            speed_min=speed_min,
+            speed_max=speed_max,
+            tolerance=0.0,
+        ):
+            unavailable_speed_bins.append(
+                {
+                    "speed_min_mps": float(speed_min),
+                    "speed_max_mps": float(speed_max),
+                    "target_entry_speed_mps": float(target_speed),
+                    "effective_entry_speed_mps": float(entry_target),
+                    "reason": "entry_speed_floor_outside_bin",
+                }
+            )
+            continue
         for cmd in commands:
             probe.reset_to_reference_pose(settle_sec=args.longitudinal_reset_settle_sec)
             prep = probe.accelerate_to_speed(
-                target_speed_mps=max(float(target_speed), float(args.brake_entry_speed_mps_min)),
+                target_speed_mps=entry_target,
                 throttle=max(float(args.brake_prep_throttle), float(args.longitudinal_prep_throttle)),
                 timeout_sec=max(float(args.brake_prep_timeout_sec), float(args.longitudinal_prep_timeout_sec)),
             )
+            pre_brake_state = probe.state()
             # Brake identification should start from brake onset rather than after a
             # separate settle phase; otherwise strong brake commands get sampled only
             # after the vehicle has already bled off most of its speed.
@@ -1262,18 +1590,23 @@ def calibrate_brake(probe: CarlaProbe, args: argparse.Namespace) -> Dict[str, An
                 "neg_forward_accel_mps2",
             )
             median_speed = _median((item.get("speed_mps", 0.0) for item in samples), default=0.0)
-            entry_target = max(float(target_speed), float(args.brake_entry_speed_mps_min))
+            actual_entry_speed = float(prep.get("final_speed_mps", 0.0))
             entry_reached = bool(
-                abs(float(prep.get("final_speed_mps", 0.0)) - entry_target)
-                <= float(args.longitudinal_entry_speed_tolerance_mps)
-                or float(prep.get("final_speed_mps", 0.0)) >= float(speed_min)
+                _within_speed_bin(
+                    actual_entry_speed,
+                    speed_min=speed_min,
+                    speed_max=speed_max,
+                    tolerance=0.0,
+                )
             )
             if not entry_reached:
                 raw_series.extend(
                     {
                         **item,
                         "target_speed_bin": [speed_min, speed_max],
-                        "dropped_reason": "entry_speed_mismatch",
+                        "target_entry_speed_mps": float(entry_target),
+                        "actual_entry_speed_mps": actual_entry_speed,
+                        "dropped_reason": "entry_speed_outside_target_bin",
                     }
                     for item in samples
                 )
@@ -1283,7 +1616,11 @@ def calibrate_brake(probe: CarlaProbe, args: argparse.Namespace) -> Dict[str, An
                     "speed_min_mps": float(speed_min),
                     "speed_max_mps": float(speed_max),
                     "brake_cmd": float(cmd),
-                    "target_decel_mps2": _effective_brake_decel(samples),
+                    "target_decel_mps2": _effective_brake_decel(
+                        samples,
+                        start_sec=float(args.brake_response_start_sec),
+                        window_sec=float(args.brake_effective_window_sec),
+                    ),
                     "sample_count": len(samples),
                     "response_delay_sec": delay,
                     "observed_speed_mps": _effective_brake_speed(
@@ -1292,23 +1629,48 @@ def calibrate_brake(probe: CarlaProbe, args: argparse.Namespace) -> Dict[str, An
                     ),
                     "sample_median_speed_mps": float(median_speed),
                     "target_entry_speed_mps": float(target_speed),
+                    "effective_entry_speed_mps": float(entry_target),
+                    "actual_entry_speed_mps": actual_entry_speed,
                     "entry_reached": entry_reached,
                     "prep": prep,
+                    "pre_brake_state": pre_brake_state,
                 }
             )
-            raw_series.extend({**item, "target_speed_bin": [speed_min, speed_max]} for item in samples)
+            raw_series.extend(
+                {
+                    **item,
+                    "target_speed_bin": [speed_min, speed_max],
+                    "pre_brake_gear": pre_brake_state.get("gear"),
+                    "pre_brake_speed_mps": pre_brake_state.get("speed_mps"),
+                    "pre_brake_forward_accel_mps2": pre_brake_state.get(
+                        "forward_accel_mps2"
+                    ),
+                }
+                for item in samples
+            )
     aggregated = _aggregate_speed_bins(
         rows,
         command_key="brake_cmd",
         value_key="target_decel_mps2",
         target_key="target_decel_mps2",
     )
-    _annotate_axis_reliability(aggregated, axis="brake")
+    _annotate_brake_coast_baseline(aggregated)
+    _annotate_axis_reliability(
+        aggregated,
+        axis="brake",
+        brake_min_incremental_signal_mps2=float(
+            args.brake_min_incremental_signal_mps2
+        ),
+        brake_incremental_monotonic_tolerance_mps2=float(
+            args.brake_incremental_monotonic_tolerance_mps2
+        ),
+    )
     all_measurements = [item for bucket in aggregated for item in bucket.get("measurements", [])]
     deadzone_candidates = [
         _safe_float(item.get("brake_cmd"), 0.0)
         for item in all_measurements
-        if _safe_float(item.get("target_decel_mps2"), 0.0) >= float(args.brake_deadzone_threshold_mps2)
+        if _safe_float(item.get("incremental_brake_decel_mps2"), 0.0)
+        >= float(args.brake_deadzone_threshold_mps2)
     ]
     low_speed_hold_candidates = [
         _safe_float(item.get("brake_cmd"), 0.0)
@@ -1319,22 +1681,35 @@ def calibrate_brake(probe: CarlaProbe, args: argparse.Namespace) -> Dict[str, An
     ]
     max_effective_cmd = 0.0
     if all_measurements:
-        max_decel = max(_safe_float(item.get("target_decel_mps2"), 0.0) for item in all_measurements)
+        max_decel = max(
+            _safe_float(item.get("incremental_brake_decel_mps2"), 0.0)
+            for item in all_measurements
+        )
         threshold = 0.95 * max_decel
         for item in sorted(all_measurements, key=lambda row: _safe_float(row.get("brake_cmd"), 0.0)):
-            if _safe_float(item.get("target_decel_mps2"), 0.0) >= threshold:
+            if _safe_float(item.get("incremental_brake_decel_mps2"), 0.0) >= threshold:
                 max_effective_cmd = _safe_float(item.get("brake_cmd"), 0.0)
                 break
     return {
         "probe": {
             "settle_sec": float(args.brake_settle_sec),
             "sample_sec": float(args.brake_sample_sec),
+            "response_start_sec": float(args.brake_response_start_sec),
+            "effective_window_sec": float(args.brake_effective_window_sec),
+            "response_metric": "forward_speed_delta_over_fixed_window",
+            "incremental_response_metric": "total_decel_minus_zero_brake_coast_baseline",
             "entry_speed_mps_min": float(args.brake_entry_speed_mps_min),
             "prep_throttle": float(args.brake_prep_throttle),
             "speed_bins": [{"min": float(lo), "max": float(hi)} for lo, hi in speed_bins],
         },
         "speed_bins": aggregated,
+        "unavailable_speed_bins": unavailable_speed_bins,
         "summary": {
+            "response_basis": "incremental_brake_decel_above_zero_brake_coast",
+            "declared_speed_bin_count": len(speed_bins),
+            "materialized_speed_bin_count": len(aggregated),
+            "unavailable_speed_bin_count": len(unavailable_speed_bins),
+            "full_declared_speed_range_covered": not unavailable_speed_bins,
             "deadzone_cmd": min(deadzone_candidates) if deadzone_candidates else None,
             "low_speed_hold_cmd": min(low_speed_hold_candidates) if low_speed_hold_candidates else None,
             "max_effective_brake_cmd": float(max_effective_cmd),
@@ -1343,7 +1718,109 @@ def calibrate_brake(probe: CarlaProbe, args: argparse.Namespace) -> Dict[str, An
     }
 
 
-def parse_args() -> argparse.Namespace:
+def _resolve_input_path(raw: str) -> Path:
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    return path
+
+
+def _load_base_calibration(raw: str) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    if not str(raw or "").strip():
+        return {}, None
+    path = _resolve_input_path(raw)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"base calibration must be a JSON object: {path}")
+    metadata = {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "calibration_id": str(payload.get("calibration_id") or ""),
+    }
+    return payload, metadata
+
+
+def build_calibration_payload(
+    probe: CarlaProbe,
+    args: argparse.Namespace,
+    *,
+    axes: Sequence[str],
+) -> Dict[str, Any]:
+    payload, base_metadata = _load_base_calibration(args.base_calibration_file)
+    payload = dict(payload)
+    base_provenance = payload.pop("provenance", None)
+    payload["schema_version"] = 1
+    payload["generated_at_unix_sec"] = time.time()
+    payload["calibration_id"] = str(args.calibration_id or "")
+    payload["claim_boundary"] = {
+        "evidence_owner": "diagnostic_carla_direct",
+        "apollo_in_loop": False,
+        "phase1_promotion_allowed": False,
+        "mapping_promotion_allowed": False,
+    }
+    payload["recommendation_policy"] = {
+        "automatic_promotion": False,
+        "can_modify_mainline_config": False,
+    }
+    payload["generator"] = {
+        "script": "tools/calibrate_carla_actuators.py",
+        "carla_host": args.carla_host,
+        "carla_port": int(args.carla_port),
+        "ego_role_name": args.ego_role_name,
+        "axes": list(axes),
+        "synchronous_mode": bool(probe.sync_mode),
+        "step_sec": float(probe.step_sec),
+        "brake_low_speed_probes_only": bool(args.brake_low_speed_probes_only),
+    }
+    present_axes = [
+        axis for axis in ("steering", "throttle", "brake") if axis in payload or axis in axes
+    ]
+    payload["scope"] = {
+        "simulator": "CARLA",
+        "actuator_axes": present_axes,
+        "input_semantics": {
+            "steering": "target_front_wheel_angle_deg",
+            "throttle": "target_accel_mps2",
+            "brake": "target_decel_mps2",
+        },
+        "output_semantics": {
+            "steering": "carla_steer_cmd",
+            "throttle": "throttle_cmd",
+            "brake": "brake_cmd",
+        },
+    }
+    payload["provenance"] = {
+        "evidence_owner": "diagnostic_carla_direct",
+        "base_calibration": base_metadata,
+        "base_provenance": base_provenance,
+    }
+    payload["vehicle"] = probe.vehicle_characteristics()
+    if "steering" in axes:
+        payload["steering"] = calibrate_steering(probe, args)
+    if "throttle" in axes:
+        payload["throttle"] = calibrate_throttle(probe, args)
+        if not args.skip_low_speed_probes:
+            payload["throttle"]["low_speed"] = calibrate_low_speed_throttle(
+                probe,
+                args,
+            )
+    if "brake" in axes:
+        if args.brake_low_speed_probes_only:
+            base_brake = payload.get("brake")
+            if not isinstance(base_brake, dict):
+                raise ValueError(
+                    "--brake-low-speed-probes-only requires a base calibration with brake data"
+                )
+            payload["brake"] = dict(base_brake)
+            payload["brake"]["low_speed"] = calibrate_low_speed_brake(probe, args)
+        else:
+            payload["brake"] = calibrate_brake(probe, args)
+            if not args.skip_low_speed_probes:
+                payload["brake"]["low_speed"] = calibrate_low_speed_brake(probe, args)
+    return payload
+
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Calibrate CARLA steering/throttle/brake into lookup tables")
     ap.add_argument("--carla-host", default="127.0.0.1")
     ap.add_argument("--carla-port", type=int, default=2000)
@@ -1354,6 +1831,35 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--ego-discovery-poll-sec", type=float, default=1.0)
     ap.add_argument("--output", default="artifacts/carla_actuator_calibration.json")
     ap.add_argument("--list-vehicles", action="store_true", help="print current CARLA vehicles and exit")
+    ap.add_argument(
+        "--axes",
+        default="steering,throttle,brake",
+        help="comma-separated calibration axes; supported: steering,throttle,brake",
+    )
+    ap.add_argument(
+        "--base-calibration-file",
+        default="",
+        help="optional JSON whose unrequested axes are preserved in the diagnostic output",
+    )
+    ap.add_argument("--calibration-id", default="")
+    ap.add_argument(
+        "--spawn-vehicle",
+        action="store_true",
+        help="spawn and later destroy an isolated diagnostic vehicle; refuses an occupied world",
+    )
+    ap.add_argument("--vehicle-blueprint", default="vehicle.lincoln.mkz_2020")
+    ap.add_argument("--fixed-delta-seconds", type=float, default=0.05)
+    ap.add_argument("--spawn-offset-m", type=float, default=5.0)
+    ap.add_argument(
+        "--skip-low-speed-probes",
+        action="store_true",
+        help="skip the separate launch/crawl/hold/rolling probe sections",
+    )
+    ap.add_argument(
+        "--brake-low-speed-probes-only",
+        action="store_true",
+        help="preserve base brake speed bins and replace only brake.low_speed",
+    )
     ap.add_argument("--speed-bins", default="0,2,5,10,15,25")
     ap.add_argument("--max-raw-series-per-axis", type=int, default=500)
     ap.add_argument("--steering-commands", default="-1.0,-0.8,-0.6,-0.4,-0.2,0.0,0.2,0.4,0.6,0.8,1.0")
@@ -1374,69 +1880,154 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--longitudinal-prep-timeout-sec", type=float, default=18.0)
     ap.add_argument("--longitudinal-entry-speed-tolerance-mps", type=float, default=0.75)
     ap.add_argument("--longitudinal-reset-settle-sec", type=float, default=0.8)
-    ap.add_argument("--brake-commands", default="0.05,0.1,0.2,0.3,0.4,0.6,0.8,1.0")
+    ap.add_argument("--brake-commands", default="0.0,0.05,0.1,0.2,0.3,0.4,0.6,0.8,1.0")
     ap.add_argument("--brake-entry-speed-mps-min", type=float, default=2.0)
     ap.add_argument("--brake-prep-throttle", type=float, default=0.45)
     ap.add_argument("--brake-prep-timeout-sec", type=float, default=8.0)
     ap.add_argument("--brake-settle-sec", type=float, default=0.0)
     ap.add_argument("--brake-sample-sec", type=float, default=3.5)
-    ap.add_argument("--brake-effective-window-sec", type=float, default=0.8)
+    ap.add_argument("--brake-response-start-sec", type=float, default=0.2)
+    ap.add_argument("--brake-effective-window-sec", type=float, default=0.4)
     ap.add_argument("--brake-deadzone-threshold-mps2", type=float, default=0.4)
+    ap.add_argument("--brake-min-incremental-signal-mps2", type=float, default=0.2)
+    ap.add_argument(
+        "--brake-incremental-monotonic-tolerance-mps2",
+        type=float,
+        default=0.1,
+    )
     ap.add_argument("--low-speed-bin-upper-mps", type=float, default=1.5)
     ap.add_argument("--low-speed-hold-threshold-mps2", type=float, default=0.8)
-    ap.add_argument("--low-speed-brake-commands", default="0.02,0.04,0.05,0.08,0.1,0.12,0.15,0.2,0.25,0.3,0.4")
+    ap.add_argument("--low-speed-brake-commands", default="0.0,0.01,0.02,0.04,0.05,0.08,0.1,0.12,0.15,0.2,0.25,0.3,0.4")
     ap.add_argument("--low-speed-hold-entry-speed-mps", type=float, default=1.0)
     ap.add_argument("--low-speed-hold-sample-sec", type=float, default=1.2)
     ap.add_argument("--low-speed-hold-eval-sec", type=float, default=0.8)
     ap.add_argument("--low-speed-hold-stop-speed-mps", type=float, default=0.1)
     ap.add_argument("--low-speed-hold-residual-speed-threshold-mps", type=float, default=0.05)
+    ap.add_argument("--low-speed-stop-activation-max-speed-mps", type=float, default=1.0)
+    ap.add_argument("--low-speed-stop-request-decel-threshold-mps2", type=float, default=0.8)
     ap.add_argument("--low-speed-rolling-brake-entry-speeds", default="2.0,4.0,6.0")
     ap.add_argument("--low-speed-rolling-brake-sample-sec", type=float, default=1.2)
     ap.add_argument("--low-speed-rolling-brake-eval-sec", type=float, default=0.3)
-    return ap.parse_args()
+    ap.add_argument("--low-speed-rolling-speed-coverage-half-width-mps", type=float, default=0.25)
+    return ap.parse_args(argv)
 
 
 def main() -> int:
     args = parse_args()
-    probe = CarlaProbe(
-        host=args.carla_host,
-        port=args.carla_port,
-        ego_role_name=args.ego_role_name,
-        timeout_sec=args.timeout_sec,
-        actor_id=args.actor_id,
-        ego_discovery_timeout_sec=args.ego_discovery_timeout_sec,
-        ego_discovery_poll_sec=args.ego_discovery_poll_sec,
-    )
-    if args.list_vehicles:
-        print(json.dumps({"vehicles": probe.list_vehicles()}, indent=2))
+    axes = _parse_axes(args.axes)
+    if "brake" in axes and not (
+        0.0 <= float(args.brake_response_start_sec)
+        < float(args.brake_effective_window_sec)
+        <= float(args.brake_sample_sec)
+    ):
+        raise ValueError(
+            "brake response window must satisfy "
+            "0 <= start < effective_window <= sample_sec"
+        )
+    if args.spawn_vehicle and args.actor_id is not None:
+        raise ValueError("--spawn-vehicle cannot be combined with --actor-id")
+    if args.spawn_vehicle and float(args.fixed_delta_seconds) <= 0.0:
+        raise ValueError("--fixed-delta-seconds must be positive")
+    if args.brake_low_speed_probes_only:
+        if axes != ("brake",):
+            raise ValueError("--brake-low-speed-probes-only requires --axes brake")
+        if args.skip_low_speed_probes:
+            raise ValueError(
+                "--brake-low-speed-probes-only cannot be combined with --skip-low-speed-probes"
+            )
+        if not str(args.base_calibration_file or "").strip():
+            raise ValueError(
+                "--brake-low-speed-probes-only requires --base-calibration-file"
+            )
+
+    actor: Optional[carla.Vehicle] = None
+    spawned_world: Any = None
+    original_settings: Any = None
+    try:
+        if args.spawn_vehicle:
+            client = carla.Client(args.carla_host, int(args.carla_port))
+            client.set_timeout(float(args.timeout_sec))
+            spawned_world = client.get_world()
+            existing = list(spawned_world.get_actors().filter("vehicle.*"))
+            if existing:
+                raise RuntimeError(
+                    "refusing to spawn diagnostic calibration vehicle while CARLA vehicles exist: "
+                    + ",".join(str(item.id) for item in existing)
+                )
+            original_settings = spawned_world.get_settings()
+            settings = spawned_world.get_settings()
+            settings.synchronous_mode = True
+            settings.fixed_delta_seconds = float(args.fixed_delta_seconds)
+            spawned_world.apply_settings(settings)
+
+            blueprints = spawned_world.get_blueprint_library().filter(args.vehicle_blueprint)
+            if not blueprints:
+                raise RuntimeError(f"vehicle blueprint unavailable: {args.vehicle_blueprint}")
+            blueprint = blueprints[0]
+            role_name = "diagnostic_actuator_calibration"
+            if blueprint.has_attribute("role_name"):
+                blueprint.set_attribute("role_name", role_name)
+            spawn_points = spawned_world.get_map().get_spawn_points()
+            if not spawn_points:
+                raise RuntimeError("current CARLA map has no spawn points")
+            spawn_transform = spawn_points[0]
+            spawn_forward = spawn_transform.get_forward_vector()
+            spawn_transform.location.x += float(args.spawn_offset_m) * float(spawn_forward.x)
+            spawn_transform.location.y += float(args.spawn_offset_m) * float(spawn_forward.y)
+            spawn_transform.location.z += 0.1
+            actor = spawned_world.try_spawn_actor(blueprint, spawn_transform)
+            if actor is None:
+                raise RuntimeError("failed to spawn diagnostic actuator-calibration vehicle")
+            spawned_world.tick()
+            probe = CarlaProbe(
+                host=args.carla_host,
+                port=args.carla_port,
+                ego_role_name=role_name,
+                timeout_sec=args.timeout_sec,
+                actor_id=actor.id,
+                ego_discovery_timeout_sec=2.0,
+                ego_discovery_poll_sec=0.05,
+            )
+            probe.world = spawned_world
+            probe.ego = actor
+            probe.sync_mode = True
+            probe.step_sec = float(args.fixed_delta_seconds)
+            probe.reference_transform = actor.get_transform()
+        else:
+            probe = CarlaProbe(
+                host=args.carla_host,
+                port=args.carla_port,
+                ego_role_name=args.ego_role_name,
+                timeout_sec=args.timeout_sec,
+                actor_id=args.actor_id,
+                ego_discovery_timeout_sec=args.ego_discovery_timeout_sec,
+                ego_discovery_poll_sec=args.ego_discovery_poll_sec,
+            )
+        if args.list_vehicles:
+            print(json.dumps({"vehicles": probe.list_vehicles()}, indent=2))
+            return 0
+        output = _resolve_input_path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        payload = build_calibration_payload(probe, args, axes=axes)
+        output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"[calibrate] wrote {output}")
         return 0
-    output = Path(args.output).expanduser()
-    if not output.is_absolute():
-        output = (Path.cwd() / output).resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "schema_version": 1,
-        "generated_at_unix_sec": time.time(),
-        "generator": {
-            "script": "tools/calibrate_carla_actuators.py",
-            "carla_host": args.carla_host,
-            "carla_port": int(args.carla_port),
-            "ego_role_name": args.ego_role_name,
-        },
-        "vehicle": probe.vehicle_characteristics(),
-        "steering": calibrate_steering(probe, args),
-        "throttle": {
-            **calibrate_throttle(probe, args),
-            "low_speed": calibrate_low_speed_throttle(probe, args),
-        },
-        "brake": {
-            **calibrate_brake(probe, args),
-            "low_speed": calibrate_low_speed_brake(probe, args),
-        },
-    }
-    output.write_text(json.dumps(payload, indent=2))
-    print(f"[calibrate] wrote {output}")
-    return 0
+    finally:
+        if actor is not None and spawned_world is not None:
+            try:
+                actor.apply_control(carla.VehicleControl(throttle=0.0, brake=1.0, steer=0.0))
+                spawned_world.tick()
+            except Exception:
+                pass
+            try:
+                actor.destroy()
+            except Exception:
+                pass
+        if spawned_world is not None and original_settings is not None:
+            try:
+                spawned_world.apply_settings(original_settings)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

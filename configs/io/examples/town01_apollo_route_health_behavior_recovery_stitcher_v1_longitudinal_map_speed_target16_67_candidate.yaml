@@ -1,0 +1,34 @@
+# Diagnostic Apollo reference-runtime candidate for a higher longitudinal target.
+#
+# This keeps the frozen lane-follow lateral semantics (both stitchers disabled)
+# and makes the speed/map assumptions explicit instead of relying on the
+# lane_keep runner's historical 8 m/s override. It is not claim-grade.
+extends: town01_apollo_route_health_behavior_recovery_stitcher_v1.yaml
+
+run:
+  profile_name: town01_apollo_route_health_behavior_recovery_stitcher_v1_longitudinal_map_speed_target16_67_candidate
+  claim_profile: false
+
+assist_ledger:
+  schema_version: assist_ledger.v1
+  active_assists: []
+  assist_confidence: explicit
+  source_artifact: config
+  can_claim_unassisted_natural_driving: false
+  notes:
+    - Diagnostic 16.67 m/s Apollo lane-follow target; not a natural-driving claim.
+    - Reference-line and trajectory stitching remain disabled to preserve the frozen lateral configuration.
+    - Map speed override is explicit for this longitudinal probe and is not a repository-wide default.
+
+algo:
+  apollo:
+    routing:
+      target_speed_mps: 16.67
+    planning:
+      default_cruise_speed_mps: 16.67
+    map_speed_limit:
+      enabled: true
+      override_mps: 23.61
+      fill_missing_lane_speed_limits: true
+      missing_lane_default_mps: 23.61
+      restore_original: false

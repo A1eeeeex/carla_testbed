@@ -230,9 +230,70 @@ def _analyze_speed_profile(
     if not errors:
         missing_fields.append("target_speed_mps_or_actual_speed_mps")
     p95 = _percentile(errors, 95.0) if errors else None
-    threshold = _num(_success_criteria(storyboard).get("speed_profile_error_p95_mps", 2.0)) or 2.0
+    criteria = _success_criteria(storyboard)
+    threshold = _num(criteria.get("speed_profile_error_p95_mps", 2.0)) or 2.0
     if p95 is not None and p95 > threshold:
         blocking_reasons.append("speed_profile_error_too_high")
+    profile_points = _speed_profile_points(storyboard)
+    profile_end_time_sec = max((point[0] for point in profile_points), default=None)
+    profile_required_completion_time_sec = _final_speed_segment_start_time(profile_points)
+    observed_profile_end_time_sec = max(
+        (
+            value
+            for value in (_num(row.get("sim_time_sec")) for row in evaluated_rows)
+            if value is not None
+        ),
+        default=None,
+    )
+    completion_tolerance_s = (
+        _num(criteria.get("speed_profile_completion_tolerance_s", 0.25))
+        if criteria
+        else 0.25
+    )
+    if completion_tolerance_s is None:
+        completion_tolerance_s = 0.25
+    speed_profile_completed = bool(
+        profile_required_completion_time_sec is not None
+        and observed_profile_end_time_sec is not None
+        and observed_profile_end_time_sec + completion_tolerance_s
+        >= profile_required_completion_time_sec
+    )
+    if criteria.get("speed_profile_executed") is True:
+        if not profile_points:
+            missing_fields.append("speed_profile_action.profile")
+        elif not speed_profile_completed:
+            blocking_reasons.append("speed_profile_not_fully_executed")
+
+    target_tolerance_mps = _num(criteria.get("speed_target_tolerance_mps", threshold))
+    if target_tolerance_mps is None:
+        target_tolerance_mps = threshold
+    actual_speed_samples = [
+        (sim_time, actual)
+        for row in evaluated_rows
+        if (sim_time := _num(row.get("sim_time_sec"))) is not None
+        and (actual := _num(row.get("actual_speed_mps"))) is not None
+    ]
+    decel_target_mps = min((point[1] for point in profile_points), default=None)
+    final_target_mps = profile_points[-1][1] if profile_points else None
+    final_target_start_time_sec = _final_speed_segment_start_time(profile_points)
+    decel_target_reached = _target_speed_observed(
+        actual_speed_samples,
+        target_speed_mps=decel_target_mps,
+        min_time_sec=0.0,
+        tolerance_mps=target_tolerance_mps,
+    )
+    final_target_reached = _target_speed_observed(
+        actual_speed_samples,
+        target_speed_mps=final_target_mps,
+        min_time_sec=final_target_start_time_sec,
+        tolerance_mps=target_tolerance_mps,
+    )
+    if criteria.get("lead_speed_reaches_decel_target") is True and not decel_target_reached:
+        blocking_reasons.append("lead_speed_decel_target_not_reached")
+    if criteria.get("lead_speed_reaches_final_target") is True and not final_target_reached:
+        blocking_reasons.append("lead_speed_final_target_not_reached")
+    if criteria.get("lead_speed_restores_final_target") is True and not final_target_reached:
+        blocking_reasons.append("lead_speed_final_target_not_restored")
     return {
         "type": "lead_vehicle_accel_decel",
         "lead_trace_rows": len(lead_rows),
@@ -240,6 +301,17 @@ def _analyze_speed_profile(
         "phase_completed_time_sec": phase_completed_at,
         "speed_profile_error_p95_mps": p95,
         "speed_profile_error_threshold_mps": threshold,
+        "profile_end_time_sec": profile_end_time_sec,
+        "profile_required_completion_time_sec": profile_required_completion_time_sec,
+        "observed_profile_end_time_sec": observed_profile_end_time_sec,
+        "speed_profile_completion_tolerance_s": completion_tolerance_s,
+        "speed_profile_completed": speed_profile_completed,
+        "decel_target_speed_mps": decel_target_mps,
+        "decel_target_reached": decel_target_reached,
+        "final_target_speed_mps": final_target_mps,
+        "final_target_start_time_sec": final_target_start_time_sec,
+        "final_target_reached": final_target_reached,
+        "speed_target_tolerance_mps": target_tolerance_mps,
         "missing_fields": missing_fields,
         "warnings": warnings,
         "blocking_reasons": blocking_reasons,
@@ -397,6 +469,59 @@ def _metrics_from_behavior(
 def _success_criteria(storyboard: Mapping[str, Any]) -> Mapping[str, Any]:
     criteria = storyboard.get("success_criteria")
     return criteria if isinstance(criteria, Mapping) else {}
+
+
+def _speed_profile_points(storyboard: Mapping[str, Any]) -> list[tuple[float, float]]:
+    storyboard_body = storyboard.get("storyboard")
+    phases = storyboard_body.get("phases") if isinstance(storyboard_body, Mapping) else None
+    if not isinstance(phases, list):
+        return []
+    points: list[tuple[float, float]] = []
+    for phase in phases:
+        if not isinstance(phase, Mapping) or str(phase.get("id") or "") != "lead_speed_profile":
+            continue
+        actions = phase.get("actions")
+        if not isinstance(actions, list):
+            continue
+        for action in actions:
+            if not isinstance(action, Mapping) or str(action.get("type") or "") != "speed_profile":
+                continue
+            profile = action.get("profile")
+            if not isinstance(profile, list):
+                continue
+            for point in profile:
+                if not isinstance(point, Mapping):
+                    continue
+                sim_time = _num(point.get("t"))
+                speed = _num(point.get("speed_mps"))
+                if sim_time is not None and speed is not None:
+                    points.append((sim_time, speed))
+    return sorted(points, key=lambda point: point[0])
+
+
+def _final_speed_segment_start_time(points: Sequence[tuple[float, float]]) -> float | None:
+    if not points:
+        return None
+    final_speed = points[-1][1]
+    start_index = len(points) - 1
+    while start_index > 0 and abs(points[start_index - 1][1] - final_speed) <= 1e-9:
+        start_index -= 1
+    return points[start_index][0]
+
+
+def _target_speed_observed(
+    samples: Sequence[tuple[float, float]],
+    *,
+    target_speed_mps: float | None,
+    min_time_sec: float | None,
+    tolerance_mps: float,
+) -> bool | None:
+    if target_speed_mps is None or min_time_sec is None:
+        return None
+    candidates = [speed for sim_time, speed in samples if sim_time + 1e-9 >= min_time_sec]
+    if not candidates:
+        return False
+    return any(abs(speed - target_speed_mps) <= tolerance_mps for speed in candidates)
 
 
 def _lane_change_min_lateral_shift(

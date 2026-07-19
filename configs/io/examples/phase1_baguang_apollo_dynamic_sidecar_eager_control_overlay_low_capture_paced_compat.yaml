@@ -6,27 +6,48 @@ run:
 
 runtime:
   fixed_scene_player:
-    # Wait only until Apollo demonstrates sustained motion control. The
-    # scenario's 70kph initial state is materialized at arm; waiting for 18m/s
-    # here would consume half the short Baguang road and force a large
-    # Planning matched-point jump when the canonical start pose is restored.
-    start_gate: ego_speed_ready
-    ego_speed_ready_mps: 2.0
-    ego_speed_ready_hold_ticks: 10
-    defer_role_spawn_until_arm: true
-    # Restore the canonical scenario start once after Apollo warmup. Without
-    # this reset a deferred 18s profile starts mid-road and reaches the real
-    # Baguang road end before the speed change can complete.
-    reset_ego_pose_on_arm: true
-    post_reset_ego_speed_ready_mps: 18.0
-    post_reset_ego_speed_ready_hold_ticks: 10
+    # Spawn the complete scene before Apollo so the bridge can discover the
+    # target actor. Keep both actors stopped until routing plus NORMAL Planning
+    # is ready, then physically pre-roll both actors before formal scene time.
+    start_gate: apollo_planning_ready
+    planning_ready_min_nonempty_count: 1
+    planning_ready_require_routing_success: true
+    planning_ready_min_trajectory_points: 2
+    planning_ready_disallow_fallback: true
+    # Reject a cached NORMAL snapshot after live Planning has stopped or moved
+    # to fallback. The bridge exposes an explicit wall-clock receive timestamp.
+    planning_ready_max_message_age_s: 0.25
+    # Setup-only physical pre-roll: after NORMAL Planning is available, the
+    # scene accelerates ego and lead from rest with CARLA controls. Apollo
+    # publication and the official scenario clock start only after a stable
+    # 70kph/20m handover. This setup interval is not backend evidence.
+    materialize_ego_initial_speed: false
+    scene_preroll_enabled: true
+    scene_preroll_speed_tolerance_mps: 0.5
+    scene_preroll_gap_tolerance_m: 1.0
+    # Two consecutive 20Hz observations prove a current rolling state without
+    # spending several seconds at 70kph waiting through intermittent Planning
+    # fallback. The exact non-fallback Planning/Control match below remains the
+    # authoritative first-publication gate.
+    scene_preroll_ready_hold_ticks: 2
+    scene_preroll_max_time_s: 30.0
+    defer_role_spawn_until_arm: false
+    reset_ego_pose_on_arm: false
 
 algo:
   apollo:
-    # Spawn the complete fixed scene before Apollo starts. Initial velocities
-    # are assigned after adapter startup but before the harness's first tick,
-    # so Planning never transitions from an empty world to a sudden lead.
+    # Spawn the complete fixed scene before Apollo starts. The fixed-scene
+    # runtime owns only the explicit setup pre-roll before the atomic handover.
     start_after_scenario_spawn: true
+    bridge:
+      # The scene-start gate reads cyber_bridge_stats.json while the bridge is
+      # running. Keep this dynamic profile's lightweight readiness surface live.
+      artifact_stats_flush_interval_s: 0.1
+    routing:
+      # The CARLA lane is about 399.68m long. The inherited 300m goal ended the
+      # route before the setup-only rolling pre-roll plus the 18s scored speed
+      # profile could fit; keep the extended goal on the same verified lane.
+      scenario_goal_ahead_m: 390.0
     planning:
       # Keep the scenario cruise contract explicit. Runtime speed remains
       # bounded by the effective Apollo base-map lane speed limit.
@@ -34,16 +55,20 @@ algo:
       planning_upper_speed_limit_mps: 23.61
     docker:
       # Keep Control subscribed from startup, but gate CARLA publication below
-      # until the first valid Planning trajectory. Delaying the whole module
-      # can miss the dynamic-scene handoff window.
+      # through Planning readiness and the setup-only handover marker. Delaying
+      # the whole module can miss the dynamic-scene handoff window.
       defer_control_until_planning_ready: false
       control_start_gate: none
       control_planning_ready_require_routing_success: true
     control_mapping:
       require_valid_planning_before_first_publish: true
+      require_exact_planning_match_before_first_publish: true
+      require_nonfallback_planning_before_first_publish: true
+      require_fixed_scene_handover_before_publish: true
 
 assist_ledger:
   notes:
     - Phase 1 Apollo dynamic fixed-scene sidecar eager-control profile; diagnostic only.
-    - Control subscribes from startup, while bridge publication stays closed until the first valid Planning trajectory; the complete target scene is present before Apollo startup.
+    - Control subscribes from startup, while bridge publication stays closed through Planning readiness and the setup-only physical pre-roll; the complete target scene is present before Apollo startup.
+    - Scene control of ego ends at the atomic handover marker, before formal scenario time; it is setup evidence and cannot be counted as Apollo behavior.
     - This remains a legacy follow-stop sidecar transition with control-runtime overlay and cannot support natural-driving or no-interference capability claims.
