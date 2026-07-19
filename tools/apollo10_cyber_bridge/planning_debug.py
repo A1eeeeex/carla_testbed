@@ -8,6 +8,7 @@ def build_prediction_obstacles_debug(
     msg: Any,
     *,
     max_obstacles: int = 16,
+    max_trajectories_per_obstacle: int = 8,
     max_trajectory_samples: int = 7,
 ) -> dict[str, Any]:
     """Build compact, protobuf-agnostic Prediction output diagnostics.
@@ -22,6 +23,7 @@ def build_prediction_obstacles_debug(
     summaries = [
         _prediction_obstacle_summary(
             obstacle,
+            max_trajectories=max_trajectories_per_obstacle,
             max_trajectory_samples=max_trajectory_samples,
         )
         for obstacle in obstacles[: max(0, int(max_obstacles))]
@@ -51,6 +53,7 @@ def build_prediction_obstacles_debug(
 def _prediction_obstacle_summary(
     obstacle: Any,
     *,
+    max_trajectories: int,
     max_trajectory_samples: int,
 ) -> dict[str, Any]:
     perception = _nested(obstacle, ("perception_obstacle",))
@@ -75,6 +78,21 @@ def _prediction_obstacle_summary(
         else None
     )
     trajectories = _as_sequence(_nested(obstacle, ("trajectory",)))
+    recorded_trajectories = trajectories[: max(0, int(max_trajectories))]
+    trajectory_summaries = [
+        {
+            "index": index,
+            "probability": _num(_nested(trajectory, ("probability",))),
+            "point_count": len(
+                _as_sequence(_nested(trajectory, ("trajectory_point",)))
+            ),
+            "samples": _prediction_trajectory_samples(
+                _as_sequence(_nested(trajectory, ("trajectory_point",))),
+                max_samples=max_trajectory_samples,
+            ),
+        }
+        for index, trajectory in enumerate(recorded_trajectories)
+    ]
     selected_index = _highest_probability_trajectory_index(trajectories)
     selected = trajectories[selected_index] if selected_index is not None else None
     points = _as_sequence(_nested(selected, ("trajectory_point",)))
@@ -95,6 +113,9 @@ def _prediction_obstacle_summary(
         "is_static": _bool_or_none(_nested(obstacle, ("is_static",))),
         "predicted_period_sec": _num(_nested(obstacle, ("predicted_period",))),
         "trajectory_count": len(trajectories),
+        "trajectories_recorded_count": len(trajectory_summaries),
+        "trajectories_truncated": len(trajectory_summaries) < len(trajectories),
+        "trajectory_summaries": trajectory_summaries,
         "selected_trajectory_index": selected_index,
         "selected_trajectory_probability": _num(
             _nested(selected, ("probability",))

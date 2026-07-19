@@ -254,6 +254,70 @@ Layered progress status:
   guard change. This is the online proof for the split lifecycle contract;
   v68 remains supporting behavior evidence only. The split implementation
   passes `108` focused tests and full pytest (`2475 passed`).
+- Exact current-state repeat v70
+  `runs/phase1_online_pairs/cycle_inf_baguang_split_replan_contract_current_state_repeat_v70_20260719`
+  repeats both lifecycle stages. The stationary initial gate opens on sequence
+  `72`, a fresh `111`-point NORMAL replan, with strict initial-replan evidence
+  materialized. Post-stability handover counts two compatible NORMAL messages
+  and finishes on non-replan sequence `105`; Control tx changes `0 -> 1`
+  before formal start. Both rows are completed/evaluable `success`, the pair
+  is comparable, and Apollo again has zero collision/lane invasion. Planning
+  is `210 NORMAL / 72 UNKNOWN / 5 setup SPEED_FALLBACK`.
+- v70 repeats v69's behavior within a narrow spread: final gap is
+  `35.237m` versus `35.115m`, final ego speed is `15.771m/s` versus
+  `15.769m/s`, and minimum gap is `18.597m` versus `18.585m`. At formal
+  `+8/+10/+18s`, selected Prediction and Planning speeds are nearly identical
+  between the runs. This closes repeatability for the isolated current-state
+  diagnostic, not its promotion boundary.
+- Matched native-Prediction v32/v33 identify the first upstream behavior
+  divergence. At formal `+8s`, the lead still travels at `13.123m/s`, but the
+  selected VectorNet trajectory predicts about `1.29/1.37m/s` at `+3s`;
+  Planning then commands an approximately `9.34/9.38m/s` one-second speed.
+  By formal `+10s`, the actual lead remains near `10.773m/s`, while Apollo's
+  ego is nearly stopped and gap has already grown to `43.03/43.22m`. In
+  v69/v70, the COST plus MOVE_SEQUENCE candidate holds the selected trajectory
+  at current lead speed; ego remains near `8.62/8.61m/s` and gap near
+  `19.19/19.18m` at `+10s`. Native learned-trajectory over-deceleration is
+  therefore the first proven cause of the roughly `108m` final-gap result.
+  The remaining roughly `35m` final gap is a separate longitudinal recovery /
+  vehicle-envelope blocker; do not promote the default-off Prediction mode or
+  treat this as Apollo natural-driving evidence.
+- Prediction instrumentation now records every trajectory's index,
+  probability, point count, and bounded speed/position samples instead of only
+  the highest-probability trajectory. The change preserves all prior selected-
+  trajectory fields, is capped at eight trajectories per obstacle, and passes
+  `123` focused tests plus full pytest (`2476 passed`). Online diagnostic v71
+  `runs/phase1_online_pairs/cycle_inf_baguang_prediction_all_trajectories_v71_20260719`
+  repeats completed/evaluable `success`, comparable status, zero collision /
+  lane invasion, and v69/v70 behavior (`35.242m` final gap,
+  `15.771m/s` final ego speed).
+- v71 proves that the second current-state-candidate trajectory is not a
+  hidden longitudinal deceleration hypothesis. Both trajectories have the
+  same constant longitudinal speed at every recorded horizon. Trajectory `0`
+  remains near the lead's lane; trajectory `1` drifts laterally from about
+  `y=-2.4m` toward `y=-6.1m`, so Planning retains its ST boundary only to
+  about `2.8s` versus `5.9s` for trajectory `0`. Control follows Planning
+  closely after the lead accelerates, while Planning itself requests only
+  about `0.5-0.93m/s^2`; it therefore does not recover the roughly `2.2m/s`
+  speed deficit present at formal `+10s`. The remaining gap is a Planning
+  recovery objective / scenario-horizon question, not an unobserved second
+  Prediction deceleration or a Control tracking failure.
+- The first matched-road attempt v72
+  `runs/phase1_online_pairs/cycle_inf_baguang_matched_extended_scenario_v72_20260719`
+  does not provide backend behavior evidence. PlanningControl calls CARLA
+  OpenDRIVE generation with the ScenarioCase-owned `639.68m` XODR and records
+  three consecutive `60s` RPC timeouts. It therefore has no timeseries and is
+  correctly non-evaluable/invalid; CARLA is no longer available when the
+  Apollo row starts, so that row is also non-evaluable/invalid. Neither row
+  counts as a backend loss, and v72 cannot answer the `18s` gap-recovery
+  question.
+- The next runtime blocker is now OpenDRIVE world materialization stability,
+  before further longitudinal tuning. Determine whether CARLA remains busy or
+  exits during the first generation request, and whether immediate retries
+  against the same server are safe. Do not raise the timeout or alter mesh
+  generation parameters without a one-shot reproduction that distinguishes a
+  slow successful generation from a terminated server. Keep the existing
+  XODR hash and record the load attempt as setup evidence only.
 - The v26/v27 native-Prediction gap spread was traced to mixed-age obstacle
   input at the ROS-to-Cyber boundary. The GT publisher emitted odometry before
   the same-tick object snapshot, so the bridge could consume the preceding

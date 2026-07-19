@@ -63,6 +63,21 @@ def test_build_prediction_obstacles_debug_records_selected_future_speed() -> Non
     assert obstacle["perception_id"] == 147
     assert obstacle["perception_speed_mps"] == pytest.approx(19.0)
     assert obstacle["perception_speed_3d_mps"] == pytest.approx(19.0)
+    assert obstacle["trajectories_recorded_count"] == 2
+    assert obstacle["trajectories_truncated"] is False
+    assert obstacle["trajectory_summaries"][0] == {
+        "index": 0,
+        "probability": pytest.approx(0.2),
+        "point_count": 0,
+        "samples": [],
+    }
+    assert obstacle["trajectory_summaries"][1]["index"] == 1
+    assert obstacle["trajectory_summaries"][1]["probability"] == pytest.approx(0.8)
+    assert obstacle["trajectory_summaries"][1]["point_count"] == 7
+    assert all(
+        sample["v_mps"] == pytest.approx(12.0)
+        for sample in obstacle["trajectory_summaries"][1]["samples"]
+    )
     assert obstacle["selected_trajectory_index"] == 1
     assert obstacle["selected_trajectory_probability"] == pytest.approx(0.8)
     assert obstacle["selected_trajectory_point_count"] == 7
@@ -75,6 +90,32 @@ def test_build_prediction_obstacles_debug_records_selected_future_speed() -> Non
     ]
     assert all(sample["v_mps"] == pytest.approx(12.0) for sample in obstacle["selected_trajectory_samples"])
     assert all(sample["lane_id"] == "0_0_2" for sample in obstacle["selected_trajectory_samples"])
+
+
+def test_build_prediction_obstacles_debug_caps_per_obstacle_trajectories() -> None:
+    msg = SimpleNamespace(
+        prediction_obstacle=[
+            SimpleNamespace(
+                perception_obstacle=SimpleNamespace(),
+                trajectory=[
+                    SimpleNamespace(probability=float(index), trajectory_point=[])
+                    for index in range(3)
+                ],
+            )
+        ]
+    )
+
+    debug = build_prediction_obstacles_debug(
+        msg,
+        max_trajectories_per_obstacle=2,
+    )
+
+    obstacle = debug["prediction_obstacles"][0]
+    assert obstacle["trajectory_count"] == 3
+    assert obstacle["trajectories_recorded_count"] == 2
+    assert obstacle["trajectories_truncated"] is True
+    assert [item["index"] for item in obstacle["trajectory_summaries"]] == [0, 1]
+    assert obstacle["selected_trajectory_index"] == 2
 
 
 def test_build_trajectory_shape_debug_from_fake_points() -> None:
